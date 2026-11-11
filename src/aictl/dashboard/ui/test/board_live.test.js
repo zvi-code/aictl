@@ -173,6 +173,30 @@ describe('Kusto incremental board integration', () => {
     expect(view.container.querySelector('#p-agentsT tbody').textContent).toContain('Live native agent');
   });
 
+  it('settles unavailable history without a permanent loading state or stopping runtime updates', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({})));
+    const view = render(html`<${BoardScreen} liveController=${controller()}/>`);
+    const source = await sourceOf();
+    const query = queryOf(source);
+    await bootstrap(source, [...runtime(), historyStatus(query, false, 1, {
+      pending: false, stale: true, incomplete: true, retryable: false,
+      reason: 'unresolved_observations',
+      error: 'Canonical results are incomplete; observations are retained.',
+      unresolved_families: ['requests'],
+    })]);
+    await waitFor(() => expect(view.container.textContent).not.toContain('Loading the board'));
+    expect(view.container.textContent).toContain('observations are retained');
+    expect(view.container.textContent).not.toContain('Queryable history is not ready');
+    expect(view.container.querySelector('#p-agentsT tbody').textContent).toContain('Live native agent');
+    expect(source.closed).toBe(false);
+    await act(async () => source.emit('change', liveEnvelope(2, { upserts: [
+      liveEntity('runtime.agent', 'native-1', { ...runtimeAgent, title: 'Still receiving runtime updates' }, 2),
+    ] }, query)));
+    await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody').textContent).toContain('Still receiving runtime updates'));
+    expect(view.container.querySelector('.bd-kpis').textContent).toContain('n/a');
+    expect(ControlledEventSource.instances).toHaveLength(1);
+  });
+
   it('keeps SQLite on its existing stream-triggered REST behavior', async () => {
     const calls = [];
     vi.stubGlobal('fetch', vi.fn(async url => {

@@ -1487,9 +1487,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response({"error": str(exc)}, status=400)
             return
         except UnresolvedObservationsError as exc:
-            self._json_response(
-                {"error": str(exc), "incomplete": True, "unresolved_families": list(exc.families)}, status=409
-            )
+            self._json_response(exc.to_dict(), status=409)
             return
         except Exception as exc:  # any failure must reach the panel's error state
             logger.exception("Board route failed")
@@ -1534,10 +1532,14 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
     def _serve_board_context(self) -> None:
         """Context-window budget, files, memory and lifetime telemetry for the board."""
+        from ..kusto.observations import UnresolvedObservationsError
         from .board_api import context_bytes
 
         try:
             body = context_bytes(self._db, self.server.store, urlparse(self.path).query)
+        except UnresolvedObservationsError as exc:
+            self._json_response(exc.to_dict(), status=409)
+            return
         except Exception as exc:  # any failure must reach the panel's error state
             logger.exception("Board context route failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)

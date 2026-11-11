@@ -305,6 +305,100 @@ def test_runtime_only_health_subscription_does_not_start_history_reader():
         hub.close()
 
 
+def test_unresolved_cutover_does_not_start_reader_or_compute_history(caplog):
+    hub = LiveHub()
+    calls = []
+
+    def unexpected(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("Unresolved history must not start cluster work")
+
+    dashboard = LiveDashboard(
+        hub,
+        SimpleNamespace(streams_observations=True),
+        SimpleNamespace(),
+        health_provider=lambda: ({}, {}),
+        reader_factory=unexpected,
+        compute=unexpected,
+    )
+    subscription = dashboard.subscribe("since=1&until=2")
+    try:
+        baseline = subscription.next(0)[1]
+        status = next(
+            row["data"]
+            for row in baseline["entities"]
+            if row["topic"] == "source.status" and row["data"].get("component") == "history"
+        )
+        assert status["incomplete"] and status["stale"]
+        assert not status["ready"] and not status["pending"] and not status["retryable"]
+        assert status["reason"] == "unresolved_observations"
+        assert "requests" in status["unresolved_families"]
+        assert dashboard._reader is None and calls == []
+        hub.publish("runtime.agent", "a", {"id": "a"}, source="runtime.collector")
+        assert any(row["topic"] == "runtime.agent" for row in subscription.next(1)[1]["upserts"])
+        assert not any("Live history projection failed" in record.message for record in caplog.records)
+    finally:
+        subscription.close()
+        dashboard.close()
+        hub.close()
+
+
+def test_unresolved_history_is_not_retried_after_clock_or_source_changes(monkeypatch, caplog):
+    from aictl.dashboard import live_projection
+    from aictl.dashboard.board_api import Filters
+    from aictl.kusto.observations import UnresolvedObservationsError
+
+    hub = LiveHub()
+    calls = []
+    clock = [100.0]
+
+    def compute(*_args, **_kwargs):
+        calls.append(True)
+        raise UnresolvedObservationsError(("requests",))
+
+    dashboard = LiveDashboard(
+        hub, SimpleNamespace(), SimpleNamespace(), health_provider=lambda: ({}, {}), compute=compute
+    )
+    entry = live_projection._Scope("since=1&until=2", Filters(1, 2), False, 1, refs=1)
+    dashboard._scopes[entry.query] = entry
+    dashboard._baseline_allowed = True
+
+    class Wake:
+        def wait(self, _timeout):
+            clock[0] += 10
+            if clock[0] > 140:
+                dashboard._stop.set()
+            dashboard._on_batch(
+                SimpleNamespace(
+                    kind="changes",
+                    changed_tables=("requests_observations",),
+                    frontier={},
+                    ready=True,
+                    stale=False,
+                    reason=None,
+                )
+            )
+
+        def clear(self):
+            pass
+
+        def set(self):
+            pass
+
+    dashboard._wake = Wake()
+    monkeypatch.setattr(live_projection, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
+    try:
+        dashboard._history_loop()
+        assert calls == [True]
+        assert entry.blocked and entry.status["incomplete"]
+        assert entry.status["unresolved_families"] == ["requests"]
+        assert not entry.status["retryable"]
+        assert not any("Live history projection failed" in record.message for record in caplog.records)
+    finally:
+        dashboard.close()
+        hub.close()
+
+
 def test_current_status_scope_waits_for_runtime_baseline_and_ignores_gauge_changes():
     hub = LiveHub()
     reader = FakeReader()

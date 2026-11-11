@@ -73,3 +73,41 @@ def test_live_payloads_keep_existing_loopback_access_rule():
     request.client_address = ("192.0.2.1", 1)
     request._do_GET()
     assert request.status == 403
+
+
+@pytest.mark.parametrize("route", ["context", "board"])
+def test_unresolved_history_is_a_structured_conflict_not_a_server_error(monkeypatch, caplog, route):
+    from aictl.dashboard import board_api
+    from aictl.kusto.observations import UnresolvedObservationsError
+
+    def unresolved(*_args, **_kwargs):
+        raise UnresolvedObservationsError(("requests",))
+
+    monkeypatch.setattr(board_api, "context_bytes" if route == "context" else "handle_get", unresolved)
+    request = handler("/api/board/context" if route == "context" else "/api/board")
+    request.server.store = SimpleNamespace(_db=object())
+    request.server.allowed = SimpleNamespace(is_allowed=lambda _: True)
+    if route == "context":
+        request._serve_board_context()
+    else:
+        request._serve_board("/api/board")
+    body = json.loads(request.wfile.getvalue())
+    assert request.status == 409
+    assert body["incomplete"] is True and body["retryable"] is False
+    assert body["unresolved_families"] == ["requests"]
+    assert body["reason"] == "unresolved_observations"
+    assert not caplog.records
+
+
+def test_context_still_reports_unexpected_errors_as_server_errors(monkeypatch):
+    from aictl.dashboard import board_api
+
+    def failed(*_args, **_kwargs):
+        raise RuntimeError("unexpected context failure")
+
+    monkeypatch.setattr(board_api, "context_bytes", failed)
+    request = handler("/api/board/context")
+    request.server.store = SimpleNamespace(_db=object())
+    request._serve_board_context()
+    assert request.status == 500
+    assert "unexpected context failure" in json.loads(request.wfile.getvalue())["error"]

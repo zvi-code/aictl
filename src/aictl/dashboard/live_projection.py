@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any
 
+from ..kusto.observations import FAMILIES, UnresolvedObservationsError
 from .live_hub import LiveCapacityError, LiveHub
 from .live_protocol import canonical_scope, stable_id
 from .live_queries import ProjectionConnection, ProjectionQueries
@@ -149,6 +150,7 @@ class _Scope:
     last_used: float = 0.0
     grid: tuple = ()
     retry_at: float = 0.0
+    blocked: bool = False
     status: dict = dataclass_field(default_factory=dict)
 
 
@@ -213,6 +215,7 @@ class LiveDashboard:
         from .board_api import CLOCK_RANGE_SLACK_S, parse_filters
 
         scope = canonical_scope(query)
+        read_history = history
         if history:
             filters = parse_filters(scope, time.time())
             with self._lock:
@@ -235,12 +238,15 @@ class LiveDashboard:
                     entry.dirty = True
                 entry.refs += 1
                 entry.last_used = time.monotonic()
+                if getattr(self.db, "streams_observations", False) is True and not entry.blocked:
+                    self._block_history(entry, UnresolvedObservationsError(FAMILIES))
+                read_history = not entry.blocked
         with self._lock:
             self._clients += 1
         subscription = None
         try:
             subscription = self.hub.subscribe(scope, history=history, cursor=cursor)
-            self._ensure_started(history)
+            self._ensure_started(read_history)
         except Exception:
             if subscription is not None:
                 subscription.close()
@@ -302,7 +308,9 @@ class LiveDashboard:
                 self._generation += 1
                 for entry in self._scopes.values():
                     entry.dirty = True
-            stale_scopes = list(self._scopes.values()) if batch.stale or consumer_gap else []
+            stale_scopes = (
+                [entry for entry in self._scopes.values() if not entry.blocked] if batch.stale or consumer_gap else []
+            )
         self.hub.publish(
             "source.status",
             "kusto.reader",
@@ -342,6 +350,19 @@ class LiveDashboard:
             data = {**entry.status, "scope": scope, "component": "history", "topic": "history.board", **fields}
             entry.status = data
             self.hub.publish("source.status", entity_id, data, source="runtime.operational")
+
+    def _block_history(self, entry: _Scope, error: UnresolvedObservationsError) -> None:
+        with self._lock:
+            entry.blocked = True
+            entry.dirty = False
+            self._scope_status(
+                entry.query,
+                **error.to_dict(),
+                ready=False,
+                pending=False,
+                stale=True,
+                refresh_pending=False,
+            )
 
     @staticmethod
     def _safe_reason(reason: Any) -> str | None:
@@ -391,7 +412,10 @@ class LiveDashboard:
                 candidates = [
                     entry
                     for entry in self._scopes.values()
-                    if self._baseline_allowed and entry.refs and time.monotonic() >= entry.retry_at
+                    if self._baseline_allowed
+                    and entry.refs
+                    and not entry.blocked
+                    and time.monotonic() >= entry.retry_at
                 ]
             for entry in candidates:
                 if self._stop.is_set():
@@ -466,6 +490,8 @@ class LiveDashboard:
                         entry.grid = grid
                         entry.retry_at = 0.0
                         entry.status = status
+                except UnresolvedObservationsError as exc:
+                    self._block_history(entry, exc)
                 except Exception as exc:  # noqa: BLE001 - a failed source must preserve the last complete projection
                     error = self._safe_reason(exc) or type(exc).__name__
                     logger.warning("Live history projection failed: %s", error)

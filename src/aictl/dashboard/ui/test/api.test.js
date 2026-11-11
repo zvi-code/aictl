@@ -1,5 +1,5 @@
 import {
-  fetchJson, getSessionEvents, getSamples, getOtelStatus,
+  fetchJson, getBoard, getSessionEvents, getSamples, getOtelStatus,
   getToolConfig, updateToolConfig, killSession, setBaseUrl, streamUrl, liveStreamUrl,
 } from '../src/api.js';
 
@@ -110,6 +110,25 @@ describe('fetchJson', () => {
     const err = await fetchJson('/api/session-kill').catch(e => e);
     expect(err.message).toContain('bad session id');
     expect(err.status).toBe(400);
+  });
+
+  it.each([
+    ['context', () => fetchJson('/api/board/context')],
+    ['board', () => getBoard('since=1&until=2')],
+  ])('preserves non-retryable history errors from %s', async (_route, read) => {
+    const body = {
+      error: 'Canonical results are incomplete; observations are retained.',
+      incomplete: true, retryable: false, reason: 'unresolved_observations',
+      unresolved_families: ['requests'],
+    };
+    mockErrorResponse(409, JSON.stringify(body));
+    const error = await read().catch(e => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      status: 409, incomplete: true, retryable: false,
+      reason: 'unresolved_observations', unresolved_families: ['requests'],
+    });
+    expect(error.message).toContain(body.error);
   });
 
   it('still throws when the body is unreadable', async () => {

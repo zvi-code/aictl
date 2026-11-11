@@ -115,3 +115,12 @@ class UnresolvedObservationsError(RuntimeError):
             + ", ".join(table_name(family) for family in families)
             + f" ({reason}). Observations are retained; arrival order has not been used to guess totals."
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error": str(self),
+            "incomplete": True,
+            "unresolved_families": list(self.families),
+            "reason": "unresolved_observations",
+            "retryable": False,
+        }

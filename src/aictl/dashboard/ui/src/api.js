@@ -8,6 +8,26 @@ export function setBaseUrl(url) { _baseUrl = url; }
 
 function url(path) { return _baseUrl + path; }
 
+async function responseError(response, path) {
+  let detail = '';
+  let body = null;
+  try {
+    const text = await response.text();
+    if (text) {
+      try { body = JSON.parse(text); detail = body?.error || text; }
+      catch { detail = text; }
+    }
+  } catch { /* body unreadable — status alone will have to do */ }
+  const error = new Error(
+    `HTTP ${response.status} ${path}` + (detail ? `: ${String(detail).slice(0, 200)}` : ''),
+  );
+  error.status = response.status;
+  for (const key of ['incomplete', 'retryable', 'reason', 'unresolved_families']) {
+    if (body && Object.hasOwn(body, key)) error[key] = body[key];
+  }
+  return error;
+}
+
 /**
  * Fetch `path` and parse the JSON body, throwing on any non-2xx status.
  * Without this, 500-error JSON bodies flowed into components as if they
@@ -21,21 +41,7 @@ export async function fetchJson(path, opts = undefined) {
   // Only forward opts when given — keeps plain GETs as single-argument
   // fetch(url) calls (matching prior behaviour and call-site assertions).
   const r = await (opts === undefined ? fetch(url(path)) : fetch(url(path), opts));
-  if (!r.ok) {
-    let detail = '';
-    try {
-      const text = await r.text();
-      if (text) {
-        try { detail = JSON.parse(text).error || text; }
-        catch { detail = text; }
-      }
-    } catch { /* body unreadable — status alone will have to do */ }
-    const err = new Error(
-      `HTTP ${r.status} ${path}` + (detail ? `: ${String(detail).slice(0, 200)}` : ''),
-    );
-    err.status = r.status;
-    throw err;
-  }
+  if (!r.ok) throw await responseError(r, path);
   return r.json();
 }
 
@@ -181,11 +187,7 @@ export async function getBoard(query, { signal, etag } = {}) {
   if (etag) opts.headers = { 'If-None-Match': etag };
   const r = await fetch(url('/api/board?' + query), opts);
   if (r.status === 304) return { status: 304 };
-  if (!r.ok) {
-    const err = new Error(`HTTP ${r.status} /api/board`);
-    err.status = r.status;
-    throw err;
-  }
+  if (!r.ok) throw await responseError(r, '/api/board');
   return { status: r.status, etag: r.headers.get('ETag'), data: await r.json() };
 }
 

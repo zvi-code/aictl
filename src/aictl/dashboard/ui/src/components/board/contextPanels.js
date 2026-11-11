@@ -444,6 +444,12 @@ export function dailySeries(daily, key) {
 function panelDailyModels(ctx, local) {
   const c = contextOf(ctx);
   const d = c.daily;
+  if (d.available === false || d.incomplete) {
+    return {
+      sub: d.error || 'Daily usage is unavailable. Missing totals are not zero usage.',
+      stats: ['Tokens', 'Calls', 'Cost', 'Models'].map(label => ({ label, value: NA })),
+    };
+  }
   const by = local.mode('by', 'tokens');
   const key = by === 'cost' ? 'cost_usd' : by;
   const series = dailySeries(d, key);

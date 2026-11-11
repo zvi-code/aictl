@@ -214,6 +214,24 @@ describe('normalizeContext and the pure helpers', () => {
 });
 
 describe('context panels on the board', () => {
+  it('keeps available context visible and shows unavailable daily totals as unknown, not zero', async () => {
+    const context = contextFixture();
+    context.daily = {
+      days: DAYS, rows: [], models: [], available: false, incomplete: true,
+      retryable: false, reason: 'unresolved_observations',
+      error: 'Canonical daily usage is unavailable; observations are retained.',
+    };
+    const { container } = await mountBoard(context);
+    const daily = panel(container, 'dailyModels');
+    expect(daily.textContent).toContain(context.daily.error);
+    expect(daily.textContent).not.toContain('No model calls');
+    expect(daily.querySelector('.bd-chart')).toBeNull();
+    expect([...daily.querySelectorAll('.bd-stat .bd-v')].map(node => node.textContent)).not.toContain('0');
+    expect(panel(container, 'inventory').textContent).toContain('AGENTS.md');
+    expect(panel(container, 'memory').textContent).toContain('notes.md');
+    expect(normalizeContext(context).daily).toMatchObject(context.daily);
+  });
+
   it('fetches /api/board/context and shows each panel', async () => {
     const { container, calls } = await mountBoard();
     expect(calls.some(u => u.startsWith('/api/board/context'))).toBe(true);

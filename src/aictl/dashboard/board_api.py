@@ -7619,6 +7619,8 @@ def _context_growth(conn: sqlite3.Connection, now: float) -> list[dict]:
 
 
 def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float) -> dict:
+    from ..kusto.observations import UnresolvedObservationsError
+
     empty = {"daily": _context_daily_empty(now), "growth": []}
     if db is None:
         return empty
@@ -7630,8 +7632,14 @@ def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float) -> dic
     try:
         with read_scope(db, Filters(since=_context_days(now)[1], until=now)):
             conn = db._conn()
-            parts = {"daily": _context_daily(conn, tools, now), "growth": _context_growth(conn, now)}
+            try:
+                daily = _context_daily(conn, tools, now)
+            except UnresolvedObservationsError as exc:
+                daily = {**_context_daily_empty(now), "available": False, **exc.to_dict()}
+            parts = {"daily": daily, "growth": _context_growth(conn, now)}
     except sqlite3.Error:
+        if getattr(db, "_kusto", None) is not None:
+            raise
         logger.debug("Could not read the context history", exc_info=True)
         return empty
     with _context_lock:

@@ -30,7 +30,7 @@ import { useBoardHealth } from './useBoardHealth.js';
 import { HealthOverview, healthSources, healthStatus } from './health.js';
 import { LiveProvider } from '../../live/context.js';
 import LiveStatus from '../../live/Status.js';
-import { historyReady, topicData } from '../../live/model.js';
+import { historyFailure, historyReady, topicData } from '../../live/model.js';
 import { isStoredToolSelected } from '../../utils/toolScope.js';
 import './board.css';
 
@@ -220,7 +220,7 @@ const FilterRow = memo(({ board, data, ctx, menu, act, subscription }) => {
   const shown = data.scope.shown_agents;
   const queryable = subscription?.mode !== 'incremental' || historyReady(subscription);
   const runtimeOnly = data.agents.filter(agent => agent.runtime_present && agent.queryable === false).length;
-  const scope = (queryable ? (shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time') : 'Queryable history is not ready')
+  const scope = (queryable ? (shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time') : historyFailure(subscription) ? 'Queryable history is unavailable' : 'Queryable history is not ready')
     + (runtimeOnly ? ' · ' + runtimeOnly + ' live runtime ' + (runtimeOnly === 1 ? 'agent' : 'agents') + ' not yet in this history' : '');
   // Tool calls, tests and errors belong to a session, not to one model or project.
   const narrowed = filters.model !== 'all' || filters.project !== 'all';

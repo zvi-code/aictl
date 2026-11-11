@@ -231,6 +231,10 @@ export function historyReady(state) {
     || topicEntities(state, 'history.board').length > 0;
 }
 
+export function historyFailure(state) {
+  return sourceStatuses(state).find(source => source.component === 'history' && source.pending === false && source.error);
+}
+
 export function runtimeReady(state) {
   return sourceStatuses(state).some(source => source.producer === 'runtime-collector' && source.ready === true);
 }

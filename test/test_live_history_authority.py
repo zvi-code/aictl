@@ -67,6 +67,46 @@ def test_context_inventory_and_usage_ignore_native_snapshot_values(monkeypatch):
         db.close()
 
 
+def test_unresolved_daily_usage_does_not_hide_queryable_context_inventory(monkeypatch):
+    from aictl.kusto.observations import UnresolvedObservationsError
+
+    board_api._context_db_memo.clear()
+    calls = []
+
+    def unresolved(*_args):
+        calls.append(True)
+        raise UnresolvedObservationsError(("requests",))
+
+    monkeypatch.setattr(board_api, "_context_daily", unresolved)
+    db = HistoryDB(db_path=":memory:", flush_interval=0)
+    try:
+        conn = db._conn()
+        conn.execute(
+            "INSERT INTO files(path,tool,category,tokens) VALUES (?,?,?,?)",
+            ("C:/recorded/instructions.md", "copilot-cli", "instructions", 200),
+        )
+        conn.execute(
+            "INSERT INTO system_snapshots(ts,mem_tokens,memory_entries) VALUES (?,?,?)",
+            (1_699_999_990, 200, 1),
+        )
+        queryable = QueryableFixture(db)
+        store = SimpleNamespace(snapshot=None)
+        result = board_api.compute_context(queryable, store, now=1_700_000_000)
+        assert result["daily"]["available"] is False
+        assert result["daily"]["incomplete"] is True
+        assert result["daily"]["retryable"] is False
+        assert result["daily"]["unresolved_families"] == ["requests"]
+        assert result["daily"]["rows"] == [] and result["daily"]["models"] == []
+        assert result["files"][0]["files"][0]["path"] == "C:/recorded/instructions.md"
+        assert result["memory"]["growth"] == [{"ts": 1_699_999_990, "mem_tokens": 200, "memory_entries": 1}]
+        assert result["source"] == "kusto.queryable"
+        board_api.compute_context(queryable, store, now=1_700_000_001)
+        assert calls == [True]
+    finally:
+        db.close()
+        board_api._context_db_memo.clear()
+
+
 def test_session_file_inventory_uses_stored_paths_and_loaded_evidence_only():
     db = HistoryDB(db_path=":memory:", flush_interval=0)
     try:

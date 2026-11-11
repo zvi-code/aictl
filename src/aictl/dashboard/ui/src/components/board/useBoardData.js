@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import * as api from '../../api.js';
 import { useSse } from '../../useSse.js';
 import { useLiveState } from '../../live/context.js';
-import { historyReady, mergeRuntimeAgents, projectedBoard, runtimeReady, topicData, topicEntities } from '../../live/model.js';
+import { historyFailure, historyReady, mergeRuntimeAgents, projectedBoard, runtimeReady, topicData, topicEntities } from '../../live/model.js';
 import { isStoredToolSelected } from '../../utils/toolScope.js';
 import { boardQuery, windowOf } from './filters.js';
 
@@ -57,7 +57,7 @@ export function normalizeContext(raw) {
     memory: { entries: list(memory.entries), tokens: memory.tokens || 0, growth: list(memory.growth) },
     files: list(raw.files).map(f => ({ ...f, files: list(f.files) })),
     telemetry: list(raw.telemetry).map(t => ({ ...t, by_model: list(t.by_model), errors: list(t.errors), quota: obj(t.quota) })),
-    daily: { days: list(daily.days), since: daily.since ?? null, models: list(daily.models), rows: list(daily.rows) },
+    daily: { ...daily, days: list(daily.days), since: daily.since ?? null, models: list(daily.models), rows: list(daily.rows) },
     workflows: list(raw.workflows),
     loaded: true,
   };
@@ -404,13 +404,15 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
       : sourceMain;
     return { ...base, machine, contextData: context };
   }, [incremental, incrementalData, filters.sel, main, mainQuery, wholeRangeQuery, withSel, selected, sourceMain, machine, context]);
+  const failure = incremental ? historyFailure(subscription) : null;
   return {
     data, machine: data.machine,
     chartSeries: incremental ? data.series : sourceMain.series,
     chartRange: incremental ? data.range : sourceMain.range,
     loaded: incremental ? historyReady(subscription) : !!main,
     busy: incremental ? !subscription.ready : busy,
-    error: incremental || subscription.mode === 'unavailable' ? subscription.error : error,
+    error: incremental || subscription.mode === 'unavailable'
+      ? subscription.error || (failure ? new Error(failure.error) : null) : error,
     refresh, connected, everConnected: incremental ? subscription.everConnected : everConnected.current,
     subscription,
     analyticsError: incremental ? error || contextError : null,
