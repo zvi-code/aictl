@@ -262,6 +262,10 @@ Queued tables appear after DM processes their batches, not necessarily when a cl
 Open `?screen=health` for the daemon's live collection and storage health. This
 screen uses `/api/board/health` independently of the historical board and reuses
 the existing source, collector, ingester, sink, OTel and data-quality monitors.
+The default **At a glance** view shows active measurements, pending work, failures
+and traffic by destination, without rows for routine zeros or unavailable values.
+No free cluster ingestion slots is still shown as a warning when measured.
+Select **Show all metrics** to inspect zeros, unavailable values, policies and table membership.
 It separates the stages rather than presenting submitted data as stored data:
 
 - **Queued ingestion / DM:** submission rates and volume, pending work, client

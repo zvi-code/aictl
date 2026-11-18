@@ -47,9 +47,12 @@ describe('live Health screen', () => {
       if (String(url) === '/api/board/health') return json(fixture());
       return new Promise(() => {});
     }));
-    const { container, findByRole } = render(html`<${BoardScreen}/>`);
+    const { container, findByRole, getByRole } = render(html`<${BoardScreen}/>`);
     await findByRole('heading', { name: 'aictl Health', level: 1 });
     await waitFor(() => expect(container.querySelector('#health-overview').textContent).toContain('kusto'));
+    expect(container.querySelector('#health-store-details')).toBeNull();
+    expect(container.querySelector('#health-overview').textContent).not.toContain('n/a');
+    fireEvent.click(getByRole('checkbox', { name: 'Show all metrics' }));
     expect(calls).toEqual(['/api/live/capabilities', '/api/board/health']);
     for (const id of ['self', 'sources', 'collectors', 'quality']) expect(container.querySelector('#p-' + id)).toBeTruthy();
     for (const id of ['cpu', 'procs', 'daemon', 'agentsT']) expect(container.querySelector('#p-' + id)).toBeNull();
@@ -86,6 +89,7 @@ describe('live Health screen', () => {
     expect(container.querySelector('#p-collectors')).toBeNull();
     expect(container.querySelector('#p-daemon')).toBeTruthy();
     fireEvent.click(container.querySelector('a[href="?screen=health"]'));
+    fireEvent.click(await within(container).findByRole('checkbox', { name: 'Show all metrics' }));
     await waitFor(() => expect(container.querySelector('#p-collectors')).toBeTruthy());
     expect(window.location.search).toContain('screen=health');
     fireEvent.click(container.querySelector('a[href="#sec-resources"]'));
@@ -98,8 +102,8 @@ describe('live Health screen', () => {
     const { container, findByRole } = render(html`<${BoardScreen}/>`);
     const alert = await findByRole('alert');
     expect(alert.textContent).toContain('does not provide /api/board/health');
-    expect(container.querySelector('#health-stages').textContent).toContain('unknown');
-    expect(container.querySelector('#health-stages').textContent).toContain('n/a');
+    expect(container.querySelector('#health-stages')).toBeNull();
+    expect(container.querySelector('#health-overview').textContent).toContain('Unavailable');
     expect(container.querySelector('#main-area .bd-good')).toBeNull();
   });
 
@@ -148,6 +152,7 @@ describe('live Health screen', () => {
       return json({});
     }));
     const { container } = render(html`<${BoardScreen}/>`);
+    fireEvent.click(await within(container).findByRole('checkbox', { name: 'Show all metrics' }));
     await waitFor(() => expect(container.querySelector('#p-collectors')).toBeTruthy());
     expect(container.querySelector('.bd-app').dataset.density).toBe('comfortable');
     expect(container.querySelector('.bd-rail.bd-mini')).toBeNull();
@@ -168,9 +173,10 @@ describe('live Health screen', () => {
   it('passes the non-visual accessibility rules with closed and expanded details', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(fixture())));
     const { container } = render(html`<${BoardScreen}/>`);
-    await waitFor(() => expect(container.querySelector('[data-stage="store"]').textContent).toContain('90'));
+    await waitFor(() => expect(container.querySelector('#health-stages')?.textContent).toContain('90'));
     const rules = { 'color-contrast': { enabled: false }, region: { enabled: false }, 'landmark-unique': { enabled: false }, 'scrollable-region-focusable': { enabled: false } };
     expect((await axe.run(container, { rules })).violations.map(item => item.id)).toEqual([]);
+    fireEvent.click(within(container).getByRole('checkbox', { name: 'Show all metrics' }));
     fireEvent.click(container.querySelector('#health-store-details > summary'));
     fireEvent.click(container.querySelector('#health-source-details > summary'));
     expect((await axe.run(container, { rules })).violations.map(item => item.id)).toEqual([]);
@@ -178,6 +184,44 @@ describe('live Health screen', () => {
 });
 
 describe('health data and status', () => {
+  it('shows only nonzero measurements by default, ordered by bytes, and restores all raw counters on demand', () => {
+    const health = normalizeHealth(fixture());
+    health.store.ingestion_traffic = {
+      streaming: { rows_per_s: 15, bytes_per_s: 4096, failed: 0, groups: [
+        { id: 'hooks', rows_per_s: 0, bytes_per_s: 0, failed: 0 },
+        { id: 'otel', rows_per_s: 15, bytes_per_s: 4096, failed: 0 },
+      ] },
+      inline: { groups: [{ id: 'monitoring', rows_per_s: 0.001, bytes_per_s: 12, pending: null }] },
+      queued: { groups: [{ id: 'files-config', rows_per_s: 0, bytes_per_s: 0, pending: 9 }] },
+    };
+    const view = render(html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`);
+    const table = view.getByRole('table', { name: 'Active destination metrics' });
+    expect([...table.querySelectorAll('tbody th')].map(e => e.textContent)).toEqual(['OTel', 'Monitoring', 'Files / configuration']);
+    expect(table.textContent).toContain('<0.01/s');
+    expect(table.textContent).toContain('Pending rows');
+    expect(table.textContent).not.toContain('Failures since start');
+    expect(table.textContent).not.toContain('n/a');
+    const toggle = view.getByRole('checkbox', { name: 'Show all metrics' });
+    fireEvent.click(toggle);
+    expect(view.getByRole('table', { name: 'Destination traffic by physical ingestion mode' }).textContent).toContain('0/s');
+    fireEvent.click(toggle);
+    expect(view.queryByRole('table', { name: 'Destination traffic by physical ingestion mode' })).toBeNull();
+  });
+
+  it('preserves a measured capacity warning and distinguishes idle traffic from unavailable measurements', () => {
+    const health = normalizeHealth(fixture());
+    health.store.ingestion_capacity = { checked_at: NOW, status: 'cached', total: 8, in_use: 8, available: 0 };
+    const project = () => html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`;
+    const view = render(project());
+    expect(view.getByRole('complementary').textContent).toContain('No ingestion slots were available');
+    expect(view.getByRole('region', { name: 'Destination activity' }).textContent).toContain('No per-mode traffic measurements');
+    health.store.ingestion_capacity.available = null;
+    health.store.ingestion_traffic = { streaming: { groups: [{ id: 'otel', rows_per_s: 0, bytes_per_s: 0 }] } };
+    view.rerender(project());
+    expect(view.getByRole('complementary').textContent).not.toContain('No ingestion slots were available');
+    expect(view.getByRole('region', { name: 'Destination activity' }).textContent).toContain('No nonzero traffic');
+  });
+
   it('separates local input, DM, engine traffic and cached queryable rows without mixed-mode guesses', () => {
     const health = normalizeHealth(fixture());
     health.store.writes.rows = 999999;
@@ -218,6 +262,7 @@ describe('health data and status', () => {
       inline: { groups: [{ id: 'otel', rows_per_s: 3, bytes_per_s: 512, pending: null, failed: 1 }] },
     };
     const { container, getByRole } = render(html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`);
+    fireEvent.click(getByRole('checkbox', { name: 'Show all metrics' }));
     const matrix = getByRole('table', { name: 'Destination traffic by physical ingestion mode' });
     expect(matrix.querySelectorAll('tbody tr')).toHaveLength(6);
     const otel = matrix.querySelector('[data-group="otel"]');
@@ -393,6 +438,7 @@ describe('health data and status', () => {
     expect(status.label).toBe('OK');
     const view = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
     expect(view.container.querySelector('.bd-crit')).toBeNull();
+    fireEvent.click(view.getByRole('checkbox', { name: 'Show all metrics' }));
     expect(view.getByRole('table', { name: 'Client requests since daemon start' }).textContent).toContain('read timeout');
     expect(view.container.querySelector('[data-stage="collection"]').textContent).toContain('Drops since start250');
     health.store.writes = { failed: 1, last_success_at: NOW - 50, last_error_at: NOW - 20, last_error: 'write denied' };
@@ -408,6 +454,7 @@ describe('health data and status', () => {
     health.store.ingestion_capacity = { status: 'cached', total: 8, in_use: 0, available: null, checked_at: checked, scope: 'cluster' };
     const project = () => html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`;
     const view = render(project());
+    fireEvent.click(view.getByRole('checkbox', { name: 'Show all metrics' }));
     const volumeText = () => view.getByRole('table', { name: 'Queryable store — cached stored volume and client health' }).textContent;
     expect(volumeText()).toContain('Last successful scan started' + stamp(started, true));
     expect(volumeText()).toContain('Last successful scan finished' + stamp(checked, true));

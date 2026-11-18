@@ -99,6 +99,20 @@ body.bd-resizing{cursor:col-resize;user-select:none}
 .bd-stats .bd-d{display:block;color:var(--ink3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bd-healtharea{padding-bottom:12px}
 .bd-healthoverview{display:grid;gap:8px;min-width:0}
+.bd-healtharea .bd-healthoverview{max-width:1540px;margin-inline:auto}
+.bd-healthview{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:8px 0 2px}
+.bd-healthview p{margin:3px 0 0;color:var(--ink3);font-size:12px}
+.bd-healthview label{display:inline-flex;align-items:center;gap:6px;min-height:32px;cursor:pointer;white-space:nowrap}
+.bd-healthhighlights{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:10px}
+.bd-healthhighlights:empty{display:none}
+.bd-healthpriority{display:grid;grid-template-columns:minmax(230px,1fr) minmax(0,2fr);gap:10px;align-items:start}
+.bd-healthpriority:has(>:only-child){grid-template-columns:minmax(0,1fr)}
+.bd-healthtable-wrap{overflow-x:auto}
+.bd-healthactive-traffic table{width:100%;border-collapse:collapse;font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+.bd-healthactive-traffic th,.bd-healthactive-traffic td{padding:7px 5px;border-bottom:1px solid var(--line);white-space:nowrap}
+.bd-healthactive-traffic th{font-weight:500}
+.bd-healthactive-traffic th:first-child,.bd-healthactive-traffic td:nth-child(2),.bd-healthactive-traffic th:nth-child(2){text-align:left}
+@container (max-width:780px){.bd-healthpriority{grid-template-columns:minmax(0,1fr)}}
 .bd-healthoverview .bd-warn{color:var(--warnink)}
 .bd-healthoverview .bd-crit{color:var(--crit)}
 .bd-healthoverview .bd-good{color:var(--good)}
