@@ -309,7 +309,7 @@ function BoardContent() {
       const q = new URLSearchParams(window.location.search);
       if (q.get('tab') === 'hidden') return [{ type: 'hidden' }];
       const id = q.get('agent');
-      return id ? [{ type: 'agent', id, tab: 'overview' }] : [];
+      return id ? [{ type: 'agent', id, tab: q.get('tab') === 'context' ? 'context' : 'flow', initialPrompts: q.get('show') === 'prompts' }] : [];
     } catch { return []; }
   });
   const [DrawerC, setDrawerC] = useState(null);
@@ -330,6 +330,18 @@ function BoardContent() {
     requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'settings' ? ['configuration.file'] : ['history.board', 'runtime.machine'],
   });
   const incremental = subscription.mode === 'incremental';
+  const landOnFlow = useRef(!window.location.search && !window.location.hash);
+  useEffect(() => {
+    if (!landOnFlow.current) return;
+    if (screen !== 'board' || drawer.length) { landOnFlow.current = false; return; }
+    if (!loaded) return;
+    const sessions = data.agents.filter(a => a.id && !a.parent_id && !a.placeholder && a.queryable !== false);
+    const selected = sessions.find(a => a.status === 'running') || sessions[0];
+    if (selected) {
+      landOnFlow.current = false;
+      setDrawer(current => current.length ? current : [{ type: 'agent', id: selected.id, tab: 'flow' }]);
+    }
+  }, [screen, drawer.length, loaded, data.agents]);
   const configured = topicData(subscription, 'configuration.file', 'current');
   const loadedConfiguration = subscription.topics?.get('configuration.loaded');
   const runtimeConfiguration = useMemo(() => [...(loadedConfiguration?.values() || [])]
@@ -636,8 +648,8 @@ function BoardContent() {
         // The Settings screen reads its pivot from the URL when the history moves.
         try { window.dispatchEvent(new PopStateEvent('popstate')); } catch { /* no PopStateEvent: the pivot applies on the next visit */ }
       },
-      openDrawer: (d, reset) => { setDrawer(s => (reset ? [d] : [...s, d])); closeMenu(); },
-      setDrawerTab: tab => setDrawer(s => s.map((d, i) => (i === s.length - 1 ? { ...d, tab, turnId: undefined, flowRef: undefined } : d))),
+      openDrawer: (d, reset) => { landOnFlow.current = false; setDrawer(s => (reset ? [d] : [...s, d])); closeMenu(); },
+      setDrawerTab: tab => setDrawer(s => s.map((d, i) => (i === s.length - 1 ? { ...d, tab: tab === 'evidence' ? 'flow' : tab, initialEvidence: tab === 'evidence', turnId: undefined, flowRef: undefined } : d))),
       drawerBack: () => setDrawer(s => s.slice(0, -1)),
       drawerClose: () => { setDrawer([]); writeUrl({ agent: null, tab: null }); },
       rescan: () => loadFindings(true),
@@ -842,7 +854,7 @@ function BoardContent() {
       agents: data.agents, theme: resolvedTheme, density: ui.density, screen,
       go: {
         section: act.jumpTo, screen: act.setScreen, settings: act.settingsPivot, range: act.setRange,
-        tool: id => act.toggleTool(id, toolIds), agent: id => act.openDrawer({ type: 'agent', id, tab: 'overview' }, true),
+        tool: id => act.toggleTool(id, toolIds), agent: id => act.openDrawer({ type: 'agent', id, tab: 'flow' }, true),
         theme: setTheme, density: act.setDensity, resetLayout: act.resetLayout, shortcuts: () => setShortcuts(true),
       },
     })}/>` : null}

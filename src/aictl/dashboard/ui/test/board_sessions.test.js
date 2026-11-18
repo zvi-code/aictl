@@ -147,7 +147,7 @@ describe('Sessions section', () => {
     stubSessions();
     const { findByText, actions } = mountView();
     fireEvent.click(await findByText('Add the report'));
-    expect(actions.openDrawer).toHaveBeenCalledWith({ type: 'agent', id: 's2', tab: 'overview' }, true);
+    expect(actions.openDrawer).toHaveBeenCalledWith({ type: 'agent', id: 's2', tab: 'flow' }, true);
   });
 
   it('shows more with the next offset and keeps the rows it has', async () => {

@@ -360,6 +360,24 @@ previews; detail returns up to 32,768 redacted characters with an explicit
 truncation state. Metadata capture never writes or returns this text. Step IDs
 are replay-stable, and transcript and span evidence is not added to billing totals.
 
+Open a session to see **Flow** first. Its search, category, tool, agent, failures and time
+filters apply before the newest-events limit. Source steps are available inside Flow.
+Choose **User prompts** to see what the user wrote, search the retained wording and
+select a row to read it. A link ending in `?agent=<session-id>&show=prompts` opens
+this filter directly. Native Copilot user messages take precedence over prompt
+indexes and hooks in their observed window. Delegate/autopilot messages and
+assistant replies are not substituted for user input.
+**Context** remains a separate tab: Measurements shows reported sizes and compactions;
+Model input shows per-call usage, with OTel cache-read, cache-write and reasoning counts
+when reported. Skills and MCP lists names the exporter reports, not a token attribution.
+Changes distinguishes command requests from observed model changes, rewinds and resets.
+Missing measurements stay unknown; a smaller later prompt is not evidence of a reset.
+
+On Kusto stores, Flow also offers session-scoped KQL examples and an editable query.
+Autocomplete uses observed session IDs, models and tools. Opening in Kusto uses the
+configured database and `autorun=false`: the user reviews and runs KQL in ADX, not
+through a management endpoint on the daemon.
+
 The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and put on a local queue without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are submitted in parallel and a slow cluster never holds up the tool that is exporting. In remote `auto` mode, these sends upload and enqueue DM sources; DM's batching policy controls ingestion time. Rows refused synchronously for now stay on the local queue and are sent again. The `kusto` block of `/api/otel-status` shows rows queued locally, sent, waiting, rejected and dropped, per table, with the last local/submission error. For queued mode, `rows_sent`, `last_sent_at` and a successful sink `flush()` mean **submitted**, not ingested; these counters do not report downstream DM failures.
 
 **Times.** A record sent without a time is stored with the time it was received, never in 1970.

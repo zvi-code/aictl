@@ -83,8 +83,8 @@ describe('session execution evidence', () => {
     expect(flow).not.toHaveTextContent('Wrong tool');
     fireEvent.click(ui.getByRole('button', { name: 'Show full flow' }));
     expect(flow).toHaveTextContent('Wrong tool');
-    fireEvent.click(ui.getByRole('button', { name: 'Search execution evidence →' }));
-    await ui.findByText('Run the suite');
+    fireEvent.click(ui.getByRole('button', { name: 'Source steps' }));
+    expect(await ui.findByRole('article', { name: 'Step detail' })).toHaveTextContent('pytest tests/test_worker.py -q');
   });
 
   it('shows context steps even without a legacy summary, with independent measurements, capacity, and compaction values', async () => {

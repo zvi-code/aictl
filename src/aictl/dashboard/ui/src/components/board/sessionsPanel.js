@@ -104,7 +104,7 @@ export function SessionsView({ ctx }) {
     return () => { if (ctrl.current) ctrl.current.abort(); };
   }, [q, toolKey]);
 
-  const open = id => ctx.actions.openDrawer({ type: 'agent', id, tab: 'overview' }, true);
+  const open = id => ctx.actions.openDrawer({ type: 'agent', id, tab: 'flow' }, true);
   const def = useMemo(() => sessionsDef(state.rows, { q, toolName: ctx.toolName, open }), [state.rows, q, ctx.toolName]);
   const more = state.total != null && state.rows.length < state.total;
   const toolNote = tools ? (tools.length ? ' Only the tools chosen in the Tool filter.' : ' No tool is chosen in the Tool filter.') : '';

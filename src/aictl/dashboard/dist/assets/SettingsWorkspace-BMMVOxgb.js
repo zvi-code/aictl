@@ -1,4 +1,4 @@
-import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a2 as cn,a3 as J,a4 as ut,a5 as Vt,a6 as ce,q as R,a7 as rn,h as ht,a8 as dn,T as P,a9 as pn,i as un,aa as re,ab as de,ac as hn}from"./index-BiM5ZHgi.js";import{C as $n}from"./LoadedConfiguration-kD4o3nOk.js";import{inferKind as fn,DASH as Ft,isOn as mn,optionsFor as bn,isEnvSource as tt,envName as W,agentInherits as kt,pinWins as yn,scopeLabel as O,isLockedEntry as Bt,commonModel as kn,matchEnv as Ht,envWhereText as gn,plainValue as xt,SECTION_ORDER as Rt,SECTION_TITLES as Ut,topicMatrix as vn,isAgentRow as Me,PURPOSES as _n,GIT_STATES as Oe,LOCATIONS as wn,purposeOf as q,SCOPE_LABELS as Ae,gitCategory as Gt,matchFile as Cn,listOf as K,purposeGroups as Sn,fileGroups as xn,LOCATION_LABELS as ze,tildePath as V,fileMatrix as Mn,LOCATION_SHORT as pe,PURPOSE_LABELS as et,fileFolders as On,listParam as An,gitRisk as zn,findingGroups as Te,matchFinding as Ee,findingTools as $t,envWhere as Tn,agentDecision as En,samePath as ft,isUnset as Ln,whyWins as Dn,ruleLabel as Pn,writableScope as Nn,snapOf as jn,toolEntries as Fn,aictlEntry as Rn,projectRoots as qn,rowFilter as ue,absentManaged as In,mergeFiles as Wn,withFindingIds as Vn,labelOf as Bn,settingsSummary as Hn,ENV_PREFIX as he,readSettingsUrl as $e,FILE_PARAMS as Un,settingsParams as Gn,CLEAR_PARAMS as Kn}from"./model-BDsGu7Ac.js";import{u as j,a as Jn,n as Le}from"./tableGrid-D293au0B.js";/**
+import{Y as sn,Z as nn,$ as jt,a0 as an,m as o,K as xe,a1 as on,a2 as ln,d as C,a3 as cn,a4 as J,a5 as ut,a6 as Vt,a7 as ce,q as R,a8 as rn,h as ht,a9 as dn,T as P,aa as pn,j as un,ab as re,ac as de,ad as hn}from"./index-AjcRvr9r.js";import{C as $n}from"./LoadedConfiguration-BJq6N8_g.js";import{inferKind as fn,DASH as Ft,isOn as mn,optionsFor as bn,isEnvSource as tt,envName as W,agentInherits as kt,pinWins as yn,scopeLabel as O,isLockedEntry as Bt,commonModel as kn,matchEnv as Ht,envWhereText as gn,plainValue as xt,SECTION_ORDER as Rt,SECTION_TITLES as Ut,topicMatrix as vn,isAgentRow as Me,PURPOSES as _n,GIT_STATES as Oe,LOCATIONS as wn,purposeOf as q,SCOPE_LABELS as Ae,gitCategory as Gt,matchFile as Cn,listOf as K,purposeGroups as Sn,fileGroups as xn,LOCATION_LABELS as ze,tildePath as V,fileMatrix as Mn,LOCATION_SHORT as pe,PURPOSE_LABELS as et,fileFolders as On,listParam as An,gitRisk as zn,findingGroups as Te,matchFinding as Ee,findingTools as $t,envWhere as Tn,agentDecision as En,samePath as ft,isUnset as Ln,whyWins as Dn,ruleLabel as Pn,writableScope as Nn,snapOf as jn,toolEntries as Fn,aictlEntry as Rn,projectRoots as qn,rowFilter as ue,absentManaged as In,mergeFiles as Wn,withFindingIds as Vn,labelOf as Bn,settingsSummary as Hn,ENV_PREFIX as he,readSettingsUrl as $e,FILE_PARAMS as Un,settingsParams as Gn,CLEAR_PARAMS as Kn}from"./model-BxGq3aC0.js";import{u as j,a as Jn,n as Le}from"./tableGrid-CbptgfmZ.js";/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
@@ -8,17 +8,17 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */function Xn(t,e,s=[]){throw new Error("[lucide]: iconNode is required when icon name is used")}/**
+ */function Yn(t,e,s=[]){throw new Error("[lucide]: iconNode is required when icon name is used")}/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Yn=t=>{let e="",s=!1;for(const a of t){if(a==="-"||a==="_"||a<=" "){s=e.length>0;continue}e.length===0?e+=a.toLowerCase():e+=s?a.toUpperCase():a,s=!1}return e};/**
+ */const Xn=t=>{let e="",s=!1;for(const a of t){if(a==="-"||a==="_"||a<=" "){s=e.length>0;continue}e.length===0?e+=a.toLowerCase():e+=s?a.toUpperCase():a,s=!1}return e};/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Zn=t=>{const e=Yn(t);return e.charAt(0).toUpperCase()+e.slice(1)};/**
+ */const Zn=t=>{const e=Xn(t);return e.charAt(0).toUpperCase()+e.slice(1)};/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
@@ -48,7 +48,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */function f(t,e,s=[]){const a=typeof t=="string"?Xn(t,e,s):t,n=({class:l="",className:i="",children:c,...p})=>jt(na,{...p,icon:a,class:wt(l,i)},c);return a.name&&(n.displayName=Zn(a.name)),n}/**
+ */function f(t,e,s=[]){const a=typeof t=="string"?Yn(t,e,s):t,n=({class:l="",className:i="",children:c,...p})=>jt(na,{...p,icon:a,class:wt(l,i)},c);return a.name&&(n.displayName=Zn(a.name)),n}/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
@@ -133,12 +133,12 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Xe={name:"file-pen",size:24,node:[["path",{d:"M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34",key:"o6klzx"}],["path",{d:"M14 2v5a1 1 0 0 0 1 1h5",key:"wfsgrz"}],["path",{d:"M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z",key:"zhnas1"}]],aliases:["file-edit"]};Xe.node;const ga=f(Xe);/**
+ */const Ye={name:"file-pen",size:24,node:[["path",{d:"M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34",key:"o6klzx"}],["path",{d:"M14 2v5a1 1 0 0 0 1 1h5",key:"wfsgrz"}],["path",{d:"M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z",key:"zhnas1"}]],aliases:["file-edit"]};Ye.node;const ga=f(Ye);/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Ye={name:"file-text",size:24,node:[["path",{d:"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z",key:"1oefj6"}],["path",{d:"M14 2v5a1 1 0 0 0 1 1h5",key:"wfsgrz"}],["path",{d:"M10 9H8",key:"b1mrlr"}],["path",{d:"M16 13H8",key:"t4e002"}],["path",{d:"M16 17H8",key:"z1uh3a"}]]};Ye.node;const va=f(Ye);/**
+ */const Xe={name:"file-text",size:24,node:[["path",{d:"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z",key:"1oefj6"}],["path",{d:"M14 2v5a1 1 0 0 0 1 1h5",key:"wfsgrz"}],["path",{d:"M10 9H8",key:"b1mrlr"}],["path",{d:"M16 13H8",key:"t4e002"}],["path",{d:"M16 17H8",key:"z1uh3a"}]]};Xe.node;const va=f(Xe);/**
  * @license lucide-preact v1.72.0 - ISC
  *
  * This source code is licensed under the ISC license.
@@ -278,7 +278,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const Ss={name:"zap",size:24,node:[["path",{d:"M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z",key:"1v7up4"}]]};Ss.node;const Ja=f(Ss),Xa={activity:aa,"alert-triangle":Wa,filter:wa,"eye-off":ka,archive:oa,banknote:la,"bar-chart-3":pa,"book-open":ia,bot:ca,brain:da,"brain-circuit":ra,"chevron-down":ha,"chevron-right":$a,"clipboard-list":fa,clock:ma,coins:ba,cpu:ya,"file-pen":ga,"file-text":va,folder:_a,"git-branch":Ca,globe:Sa,"grid-3x3":xa,layers:Ma,"layout-dashboard":Oa,"line-chart":ua,lock:Aa,mail:za,"message-square":Ta,moon:Ea,package:La,pen:Da,plug:Pa,radio:Na,"refresh-cw":ja,search:Fa,server:Ra,settings:qa,sun:Ia,user:Va,users:Ba,wallet:Ha,webhook:Ua,wrench:Ga,x:Ka,zap:Ja};function mt({name:t,size:e="1em",strokeWidth:s=2,...a}){if(!t)return null;const n=Xa[String(t)];return n?o`<${n} size=${e} strokeWidth=${s} aria-hidden="true" ...${a} />`:o`<span aria-hidden="true" ...${a}>${t}</span>`}function Ya({options:t=[],value:e,onChange:s,ariaLabel:a,class:n,className:l,...i}){const c=["aictl-ui-segmented",n,l].filter(Boolean).join(" "),p=xe([]),h=u=>{var k;if(!t.length)return;const r=Math.max(0,t.findIndex(y=>y.value===e));let d=null;u.key==="ArrowRight"||u.key==="ArrowDown"?d=(r+1)%t.length:u.key==="ArrowLeft"||u.key==="ArrowUp"?d=(r-1+t.length)%t.length:u.key==="Home"?d=0:u.key==="End"&&(d=t.length-1),d!=null&&(u.preventDefault(),s&&s(t[d].value),(k=p.current[d])==null||k.focus())};return o`<div
+ */const Ss={name:"zap",size:24,node:[["path",{d:"M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z",key:"1v7up4"}]]};Ss.node;const Ja=f(Ss),Ya={activity:aa,"alert-triangle":Wa,filter:wa,"eye-off":ka,archive:oa,banknote:la,"bar-chart-3":pa,"book-open":ia,bot:ca,brain:da,"brain-circuit":ra,"chevron-down":ha,"chevron-right":$a,"clipboard-list":fa,clock:ma,coins:ba,cpu:ya,"file-pen":ga,"file-text":va,folder:_a,"git-branch":Ca,globe:Sa,"grid-3x3":xa,layers:Ma,"layout-dashboard":Oa,"line-chart":ua,lock:Aa,mail:za,"message-square":Ta,moon:Ea,package:La,pen:Da,plug:Pa,radio:Na,"refresh-cw":ja,search:Fa,server:Ra,settings:qa,sun:Ia,user:Va,users:Ba,wallet:Ha,webhook:Ua,wrench:Ga,x:Ka,zap:Ja};function mt({name:t,size:e="1em",strokeWidth:s=2,...a}){if(!t)return null;const n=Ya[String(t)];return n?o`<${n} size=${e} strokeWidth=${s} aria-hidden="true" ...${a} />`:o`<span aria-hidden="true" ...${a}>${t}</span>`}function Xa({options:t=[],value:e,onChange:s,ariaLabel:a,class:n,className:l,...i}){const c=["aictl-ui-segmented",n,l].filter(Boolean).join(" "),p=xe([]),h=u=>{var k;if(!t.length)return;const r=Math.max(0,t.findIndex(y=>y.value===e));let d=null;u.key==="ArrowRight"||u.key==="ArrowDown"?d=(r+1)%t.length:u.key==="ArrowLeft"||u.key==="ArrowUp"?d=(r-1+t.length)%t.length:u.key==="Home"?d=0:u.key==="End"&&(d=t.length-1),d!=null&&(u.preventDefault(),s&&s(t[d].value),(k=p.current[d])==null||k.focus())};return o`<div
     class=${c}
     role="radiogroup"
     aria-label=${a||null}
@@ -309,7 +309,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     </ul>`}
   </span>`}function Ct({row:t,value:e,compact:s=!1}){const a=e!==void 0?e:t.value,n=t.kind||fn(a),l=!!t.risky;if(n==="flag"||typeof a=="boolean"){if(a==null)return o`<span class="st-none">${Ft}</span>`;const p=mn(a);return o`<span class=${"st-flag"+(p?" is-on":"")+(l?" is-risky":"")}>
       <span class="st-switch" aria-hidden="true"></span><span class="st-flag__text">${p?"on":"off"}</span>
-    </span>`}if(a==null||a==="")return o`<span class="st-none">${Ft}</span>`;if(n==="list"||n==="map"||typeof a=="object")return o`<${Qa} value=${a} compact=${s}/>`;const i=String(a),c=bn({...t,value:a});return c?o`<span class=${"st-select"+(l?" is-risky":"")} title=${"Options: "+c.join(", ")}>${i}</span>`:n==="path"?o`<span class="st-v st-path" title=${i}>${i}</span>`:o`<span class=${"st-v"+(l?" is-risky":"")} title=${i}>${i}</span>`}function X({scope:t,locked:e=!1,label:s=""}){const a=t||"default",n=o`<span class=${"st-chip st-scope st-scope--"+a.replace(/[^a-z-]/gi,"")+(e?" st-scope--locked":"")}
+    </span>`}if(a==null||a==="")return o`<span class="st-none">${Ft}</span>`;if(n==="list"||n==="map"||typeof a=="object")return o`<${Qa} value=${a} compact=${s}/>`;const i=String(a),c=bn({...t,value:a});return c?o`<span class=${"st-select"+(l?" is-risky":"")} title=${"Options: "+c.join(", ")}>${i}</span>`:n==="path"?o`<span class="st-v st-path" title=${i}>${i}</span>`:o`<span class=${"st-v"+(l?" is-risky":"")} title=${i}>${i}</span>`}function Y({scope:t,locked:e=!1,label:s=""}){const a=t||"default",n=o`<span class=${"st-chip st-scope st-scope--"+a.replace(/[^a-z-]/gi,"")+(e?" st-scope--locked":"")}
     title=${e?`Set by ${s||a}; cannot be changed here`:void 0}>${a}${e?o`<span class="st-sr"> (locked)</span>`:""}</span>`;return e?o`<span class="st-scopewrap"><${gt}/>${n}</span>`:n}function gt({label:t=""}){return t?o`<span class="st-lock" role="img" aria-label=${t} title=${t}><${mt} name="lock" size="11"/></span>`:o`<span class="st-lock" aria-hidden="true"><${mt} name="lock" size="11"/></span>`}function I({id:t,big:e=!1}){return o`<span class=${"st-sw"+(e?" st-sw--big":"")} aria-hidden="true"
     style=${{background:cn[t]||"var(--st-fg2)"}}></span>`}function bt({label:t}){return o`<span class="st-dot" role="img" aria-label=${t} title=${t}></span>`}function N({children:t}){return o`<div class="st-nav__h">${t}</div>`}function B({id:t,label:e}){return o`<span class="st-chip st-toolchip"><${I} id=${t}/>${e}</span>`}function yt({path:t,line:e,w:s,tool:a=""}){if(!t)return o`<span class="st-none">—</span>`;if(tt(t)){const l=W(t);return l?o`<button type="button" class="st-src st-src--env" data-env=${l}
       title=${"Environment variable "+l+": where it is set and what it drives"}
@@ -438,7 +438,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
       ${t.risky&&t.tip&&o`<div class="st-risknote">${t.tip}</div>`}
     </td>
     <td class="st-c-val"><${Ct} row=${t}/></td>
-    <td class="st-c-scope"><${X} scope=${t.scope} locked=${t.locked} label=${O(t.scope,s)}/></td>
+    <td class="st-c-scope"><${Y} scope=${t.scope} locked=${t.locked} label=${O(t.scope,s)}/></td>
     <td class="st-c-src"><${yt} path=${t.source} line=${t.line} w=${e} tool=${t.tool}/></td>
     <td class="st-c-what" title=${t.tip||void 0}>${t.tip}</td>
   </tr>`}function Go({w:t,entry:e}){const s=e.scopes||[];if(!s.length)return null;const a=e.rows.filter(t.pass);return o`<div class="st-scopes" data-testid="st-scopes">
@@ -468,7 +468,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
         ${n[c.id]&&o`<${ye} section=${c.id}>${n[c.id]}</${ye}>`}
         ${i.order(c.shown).map(h=>o`<${Uo} key=${h.uid} row=${h} w=${t} scopes=${s}/>`)}
       </tbody>`})}
-  </table>`}function Xo(t){const e=[];for(const s of t){const a=s.id==="agents"&&s.shown.every(l=>l.kind==="agent"&&l.agent),n=e[e.length-1];a?e.push({agents:!0,sections:[s]}):n&&!n.agents?n.sections.push(s):e.push({agents:!1,sections:[s]})}return e}function Yo({w:t,entry:e}){const s=e.envVars.filter(c=>Ht(c,t.q)),a=s.filter(c=>c.set),n=t.showUnset?s:a,l=s.length-n.length;if(!n.length&&!l)return null;const i=t.selectedEnv;return o`<table class="st-table st-envtable" data-testid="st-env-table">
+  </table>`}function Yo(t){const e=[];for(const s of t){const a=s.id==="agents"&&s.shown.every(l=>l.kind==="agent"&&l.agent),n=e[e.length-1];a?e.push({agents:!0,sections:[s]}):n&&!n.agents?n.sections.push(s):e.push({agents:!1,sections:[s]})}return e}function Xo({w:t,entry:e}){const s=e.envVars.filter(c=>Ht(c,t.q)),a=s.filter(c=>c.set),n=t.showUnset?s:a,l=s.length-n.length;if(!n.length&&!l)return null;const i=t.selectedEnv;return o`<table class="st-table st-envtable" data-testid="st-env-table">
     <thead><tr><th>Variable</th><th>Value</th><th>Where</th><th>Drives</th><th>What it does</th></tr></thead>
     <tbody data-section="env">
       <tr class="st-group"><th scope="colgroup" colspan="5">Environment variables
@@ -499,8 +499,8 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     ${e.id==="vscode"&&o`<p class="st-note">chat.* settings, used by every AI tool in VS Code</p>`}
     ${e.hints.map((r,d)=>o`<p key=${d} class="st-note">${r}</p>`)}
     <${Go} w=${t} entry=${e}/>
-    ${l.length?Xo(l).map((r,d)=>r.agents?o`<${no} key=${"a"+d} w=${t} section=${r.sections[0]}/>`:o`<${Jo} key=${"g"+d} w=${t} sections=${r.sections} scopes=${e.scopes} shared=${s} extras=${h}/>`):n?null:o`<p class="st-empty">${i?u?`No setting shown here is set at the ${u} layer.`:"No setting matches the search or the toggles.":"No settings were read for this tool."}</p>`}
-    ${a&&o`<${Yo} w=${t} entry=${e}/>`}
+    ${l.length?Yo(l).map((r,d)=>r.agents?o`<${no} key=${"a"+d} w=${t} section=${r.sections[0]}/>`:o`<${Jo} key=${"g"+d} w=${t} sections=${r.sections} scopes=${e.scopes} shared=${s} extras=${h}/>`):n?null:o`<p class="st-empty">${i?u?`No setting shown here is set at the ${u} layer.`:"No setting matches the search or the toggles.":"No settings were read for this tool."}</p>`}
+    ${a&&o`<${Xo} w=${t} entry=${e}/>`}
   </section>`}const ge=[{k:"collector",l:"Collector",cls:"st-c-set",get:t=>t.name},{k:"mode",l:"Mode",get:t=>t.mode},{k:"status",l:"Status",get:t=>t.status},{k:"detail",l:"Detail",get:t=>t.detail}];function Qo({w:t,aictl:e}){const s=j("settings.collectors",ge),a=t.q.trim().toLowerCase(),n=e.collectors.filter(i=>!a||[i.name,i.mode,i.status,i.detail].join(" ").toLowerCase().includes(a)),l=e.roots.filter(i=>!a||i.toLowerCase().includes(a));return o`<section class="st-main" aria-labelledby="st-main-title">
     <div class="st-bar">
       <${I} id="aictl" big/>
@@ -563,7 +563,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     <${jo} w=${t} mats=${l}/>
     ${a.length?o`<${sl} w=${t} tools=${s} rows=${a}/>
     <p class="st-hint">A cell is one setting in one tool. Click it for the file, the scope and the override chain.</p>`:o`<p class="st-empty">${s.length?"No setting matches the search or the toggles.":"No tool has settings in this section."}</p>`}
-  </section>`}const al=8,Ps=86400,_t=8;function Xt(t){const e=t.cell?t.cell.split(":"):null;return{loc:K(t.sec),tools:K(t.tool),purpose:K(t.purpose),scope:K(t.fscope),git:K(t.git),recent:!!t.recent,cell:e&&e.length===2?e:null}}function ol(t,e,s,a){return!(s!=="loc"&&e.loc.length&&!e.loc.includes(t.location)||s!=="tools"&&e.tools.length&&!t.tools.some(n=>e.tools.includes(n))||s!=="purpose"&&e.purpose.length&&!e.purpose.includes(q(t))||s!=="scope"&&e.scope.length&&!e.scope.includes(t.scope)||s!=="git"&&e.git.length&&!e.git.includes(Gt(t))||s!=="recent"&&e.recent&&!(t.mtime&&t.mtime>=a-Ps)||s!=="cell"&&e.cell&&(q(t)!==e.cell[0]||t.location!==e.cell[1]))}function Ot(t,e=null,s=Date.now()/1e3){const a=Xt(t.st);return t.files.filter(n=>Cn(n,t.q)&&ol(n,a,e,s))}function Z(t,e,s){const a=K(t.st[e]);t.set({[e]:An(a.includes(s)?a.filter(n=>n!==s):[...a,s]),row:""})}function dt({w:t,title:e,fkey:s,skip:a,options:n,valueOf:l,attr:i,swatch:c}){const p=Ot(t,a),h=K(t.st[s]),u=n.map(r=>({...r,n:p.filter(d=>l(d).includes(r.id)).length})).filter(r=>r.n||h.includes(r.id)||r.always);return u.length?o`<${N}>${e}</${N}>
+  </section>`}const al=8,Ps=86400,_t=8;function Yt(t){const e=t.cell?t.cell.split(":"):null;return{loc:K(t.sec),tools:K(t.tool),purpose:K(t.purpose),scope:K(t.fscope),git:K(t.git),recent:!!t.recent,cell:e&&e.length===2?e:null}}function ol(t,e,s,a){return!(s!=="loc"&&e.loc.length&&!e.loc.includes(t.location)||s!=="tools"&&e.tools.length&&!t.tools.some(n=>e.tools.includes(n))||s!=="purpose"&&e.purpose.length&&!e.purpose.includes(q(t))||s!=="scope"&&e.scope.length&&!e.scope.includes(t.scope)||s!=="git"&&e.git.length&&!e.git.includes(Gt(t))||s!=="recent"&&e.recent&&!(t.mtime&&t.mtime>=a-Ps)||s!=="cell"&&e.cell&&(q(t)!==e.cell[0]||t.location!==e.cell[1]))}function Ot(t,e=null,s=Date.now()/1e3){const a=Yt(t.st);return t.files.filter(n=>Cn(n,t.q)&&ol(n,a,e,s))}function Z(t,e,s){const a=K(t.st[e]);t.set({[e]:An(a.includes(s)?a.filter(n=>n!==s):[...a,s]),row:""})}function dt({w:t,title:e,fkey:s,skip:a,options:n,valueOf:l,attr:i,swatch:c}){const p=Ot(t,a),h=K(t.st[s]),u=n.map(r=>({...r,n:p.filter(d=>l(d).includes(r.id)).length})).filter(r=>r.n||h.includes(r.id)||r.always);return u.length?o`<${N}>${e}</${N}>
     <ul class="st-nav__list" aria-label=${e}>
       ${u.map(r=>{const d=h.includes(r.id);return o`<li key=${r.id}><button type="button" class=${"st-nav__item"+(d?" is-on":"")+(r.n?"":" is-empty")}
           aria-pressed=${d?"true":"false"} ...${{[i]:r.id}} onClick=${()=>Z(t,s,r.id)}>
@@ -582,7 +582,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
         data-recent="1" onClick=${()=>t.set({recent:!t.st.recent,row:""})}>
         <span class="st-nav__label">Changed in the last 24 h</span><span class="st-nav__n">${a}</span></button></li>
     </ul>
-  </nav>`}function il({w:t}){const e=Xt(t.st),s=[...e.loc.map(a=>({k:"sec:"+a,label:"Location: "+(pe[a]||a),drop:()=>Z(t,"sec",a)})),...e.purpose.map(a=>({k:"purpose:"+a,label:"Purpose: "+(et[a]||a),drop:()=>Z(t,"purpose",a)})),...e.tools.map(a=>({k:"tool:"+a,label:"Read by: "+t.labelOf(a),drop:()=>Z(t,"tool",a)})),...e.scope.map(a=>({k:"fscope:"+a,label:"Scope: "+(Ae[a]||a),drop:()=>Z(t,"fscope",a)})),...e.git.map(a=>{var n;return{k:"git:"+a,label:"Git: "+(((n=Oe.find(l=>l.id===a))==null?void 0:n.label)||a),drop:()=>Z(t,"git",a)}}),...e.recent?[{k:"recent",label:"Changed in the last 24 h",drop:()=>t.set({recent:!1,row:""})}]:[],...e.cell?[{k:"cell",label:(et[e.cell[0]]||e.cell[0])+" in "+(pe[e.cell[1]]||e.cell[1]),drop:()=>t.set({cell:"",row:""})}]:[]];return s.length?o`<div class="st-fchips" data-testid="st-file-chips">
+  </nav>`}function il({w:t}){const e=Yt(t.st),s=[...e.loc.map(a=>({k:"sec:"+a,label:"Location: "+(pe[a]||a),drop:()=>Z(t,"sec",a)})),...e.purpose.map(a=>({k:"purpose:"+a,label:"Purpose: "+(et[a]||a),drop:()=>Z(t,"purpose",a)})),...e.tools.map(a=>({k:"tool:"+a,label:"Read by: "+t.labelOf(a),drop:()=>Z(t,"tool",a)})),...e.scope.map(a=>({k:"fscope:"+a,label:"Scope: "+(Ae[a]||a),drop:()=>Z(t,"fscope",a)})),...e.git.map(a=>{var n;return{k:"git:"+a,label:"Git: "+(((n=Oe.find(l=>l.id===a))==null?void 0:n.label)||a),drop:()=>Z(t,"git",a)}}),...e.recent?[{k:"recent",label:"Changed in the last 24 h",drop:()=>t.set({recent:!1,row:""})}]:[],...e.cell?[{k:"cell",label:(et[e.cell[0]]||e.cell[0])+" in "+(pe[e.cell[1]]||e.cell[1]),drop:()=>t.set({cell:"",row:""})}]:[]];return s.length?o`<div class="st-fchips" data-testid="st-file-chips">
     ${s.map(a=>o`<button key=${a.k} type="button" class="st-chip st-chip--btn" data-chip=${a.k}
       aria-label=${"Remove the filter "+a.label} onClick=${a.drop}>${a.label} <span aria-hidden="true">×</span></button>`)}
     <button type="button" class="st-link" onClick=${()=>t.set({sec:"",tool:"",purpose:"",fscope:"",git:"",recent:!1,cell:"",row:""})}>Clear filters</button>
@@ -605,14 +605,14 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
       ${t.exists===!1&&o`<span class="st-hint"> missing</span>`}
     </td>
     <td><span class="st-chip" data-kind=${q(t)}>${t.is_dir?"Folder":et[q(t)]}</span></td>
-    <td><${X} scope=${t.scope}/></td>
+    <td><${Y} scope=${t.scope}/></td>
     <td><span class="st-tools">${t.tools.map(l=>o`<${B} key=${l} id=${l} label=${e.labelOf(l)}/>`)}</span></td>
     <td class="st-mono st-num">${t.settings?t.settings:"—"}</td>
     <td class="st-mono st-num">${!t.is_dir&&t.bytes!=null?Vt(t.bytes):"—"}</td>
     <td class=${n?"st-warn":"st-dim"} data-git=${Gt(t)||void 0}
       title=${n?"A tool always loads this file, and git does not track it":void 0}>${t.git_state||"—"}</td>
     <td class="st-dim">${t.mtime?ut(t.mtime):"—"}</td>
-  </tr>`}function dl(t){const e=Xt(t.st);if(e.loc.length||e.purpose.length||e.scope.length||e.git.length||e.recent||e.cell)return[];const s=t.q.trim().toLowerCase();return(t.managedAbsent||[]).filter(a=>(!s||[a.path,a.label,a.note].join(`
+  </tr>`}function dl(t){const e=Yt(t.st);if(e.loc.length||e.purpose.length||e.scope.length||e.git.length||e.recent||e.cell)return[];const s=t.q.trim().toLowerCase();return(t.managedAbsent||[]).filter(a=>(!s||[a.path,a.label,a.note].join(`
 `).toLowerCase().includes(s))&&(!e.tools.length||a.tools.some(n=>e.tools.includes(n))))}function pl({w:t,items:e}){const[s,a]=C(!1);return o`<tbody class="st-absent" data-root="managed-absent">
     <tr class="st-group"><th scope="colgroup" colspan=${_t}>
       <button type="button" class="st-fold" aria-expanded=${s?"true":"false"} onClick=${()=>a(!s)}>
@@ -624,7 +624,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
 `+n.note:"")}>${V(n.path)}</span>
         <span class="st-hint"> not present</span></td>
       <td class="st-dim">—</td>
-      <td><span class="st-scopewrap"><${gt} label="Cannot be changed from this machine"/><${X} scope=${n.scope}/></span></td>
+      <td><span class="st-scopewrap"><${gt} label="Cannot be changed from this machine"/><${Y} scope=${n.scope}/></span></td>
       <td><span class="st-tools">${n.tools.map(l=>o`<${B} key=${l} id=${l} label=${t.labelOf(l)}/>`)}</span></td>
       <td class="st-mono st-num">—</td><td class="st-mono st-num">—</td><td class="st-dim">—</td><td class="st-dim">—</td>
     </tr>`)}
@@ -752,14 +752,14 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
       <button type="button" class="st-btn st-btn--primary" onClick=${At} disabled=${p||u||!n||!L}>${u?"Saving…":"Save"}</button>
       <button type="button" class="st-btn" onClick=${a}>Cancel</button>
     </div>
-  </section>`}function g({title:t,children:e}){return o`<section class="st-insp__sec"><h4 class="st-insp__h">${t}</h4>${e}</section>`}function Yt(t,e){return"Open "+J(t)+(e>0?" at line "+e:"")}function Zt(t,e){return e?t.findings.filter(s=>ft(s.path,e)):[]}function Qt(t,e){t.set({view:"findings",sec:e.rule||"",row:e.id,tool:""})}function js({w:t,path:e}){const s=e&&t.recentFiles&&typeof t.recentFiles.get=="function"?t.recentFiles.get(e):null,a=e?t.mtimeOf(e):null,n=[];return s?n.push(`File changed ${ut(s.ts)}${s.tool?" by "+t.labelOf(s.tool):""} (file history)`):a&&n.push(`File last changed ${ut(a)} (file history)`),o`<div class="st-hint" data-testid="st-history">${n.length?n.join(" · ")+" · no aictl change recorded":"No aictl change recorded"}</div>`}function wl(t,e){var a;const s=(a=t.chain)==null?void 0:a[t.wins];return t.locked||Bt(s,e)?"Locked by "+O(t.locked?t.scope:s.scope,e):Ts}function Cl(t,e){const s=Nn(e);return`Not set in any file. Default: ${xt(t.value)}.`+(s?` Set it in ${V(s.path)} (${s.label}).`:"")}function Sl({w:t,row:e}){const s=t.scopesOf(e.tool),a=t.entries.filter(r=>r.id!==e.tool&&e.source&&r.files.some(d=>ft(d,e.source))).map(r=>r.label),n=e.source?t.files.find(r=>ft(r.path,e.source)):null;for(const r of(n==null?void 0:n.tools)||[]){const d=t.labelOf(r);r!==e.tool&&!a.includes(d)&&a.push(d)}const l=Zt(t,e.source),{chain:i,wins:c}=e,p=Eo(e,s),[h,u]=C(!1);return o`<div class="st-insp__body" data-testid="st-inspector-row">
+  </section>`}function g({title:t,children:e}){return o`<section class="st-insp__sec"><h4 class="st-insp__h">${t}</h4>${e}</section>`}function Xt(t,e){return"Open "+J(t)+(e>0?" at line "+e:"")}function Zt(t,e){return e?t.findings.filter(s=>ft(s.path,e)):[]}function Qt(t,e){t.set({view:"findings",sec:e.rule||"",row:e.id,tool:""})}function js({w:t,path:e}){const s=e&&t.recentFiles&&typeof t.recentFiles.get=="function"?t.recentFiles.get(e):null,a=e?t.mtimeOf(e):null,n=[];return s?n.push(`File changed ${ut(s.ts)}${s.tool?" by "+t.labelOf(s.tool):""} (file history)`):a&&n.push(`File last changed ${ut(a)} (file history)`),o`<div class="st-hint" data-testid="st-history">${n.length?n.join(" · ")+" · no aictl change recorded":"No aictl change recorded"}</div>`}function wl(t,e){var a;const s=(a=t.chain)==null?void 0:a[t.wins];return t.locked||Bt(s,e)?"Locked by "+O(t.locked?t.scope:s.scope,e):Ts}function Cl(t,e){const s=Nn(e);return`Not set in any file. Default: ${xt(t.value)}.`+(s?` Set it in ${V(s.path)} (${s.label}).`:"")}function Sl({w:t,row:e}){const s=t.scopesOf(e.tool),a=t.entries.filter(r=>r.id!==e.tool&&e.source&&r.files.some(d=>ft(d,e.source))).map(r=>r.label),n=e.source?t.files.find(r=>ft(r.path,e.source)):null;for(const r of(n==null?void 0:n.tools)||[]){const d=t.labelOf(r);r!==e.tool&&!a.includes(d)&&a.push(d)}const l=Zt(t,e.source),{chain:i,wins:c}=e,p=Eo(e,s),[h,u]=C(!1);return o`<div class="st-insp__body" data-testid="st-inspector-row">
     <h3 class="st-insp__title">${e.label}</h3>
     <div class="st-insp__key st-mono">${e.key}</div>
     ${e.tip&&o`<p class="st-insp__tip">${e.tip}</p>`}
     <div class="st-insp__chips">
       ${e.risky&&o`<span class="st-chip st-chip--risky">risky</span>`}
       <${B} id=${e.tool} label=${t.labelOf(e.tool)}/>
-      <${X} scope=${e.scope} locked=${e.locked} label=${O(e.scope,s)}/>
+      <${Y} scope=${e.scope} locked=${e.locked} label=${O(e.scope,s)}/>
       ${e.undocumented&&o`<${Mt}/>`}
       ${a.length>0&&o`<span class="st-chip">also read by ${a.join(", ")}</span>`}
     </div>
@@ -779,7 +779,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     ${!tt(e.source)&&o`<${g} title="History"><${js} w=${t} path=${e.source}/></${g}>`}
     <${g} title="Actions">
       <div class="st-actions">
-        ${e.source&&(tt(e.source)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(W(e.source),e.tool)}>Show ${W(e.source)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(e.source,e.line)}>${Yt(e.source,e.line)}</button>`)}
+        ${e.source&&(tt(e.source)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(W(e.source),e.tool)}>Show ${W(e.source)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(e.source,e.line)}>${Xt(e.source,e.line)}</button>`)}
         ${l.length>0&&o`<button type="button" class="st-btn" onClick=${()=>Qt(t,l[0])}>Show finding</button>`}
       </div>
       <div class="st-actions">
@@ -797,7 +797,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     ${s.description&&o`<p class="st-insp__tip">${s.description}</p>`}
     <div class="st-insp__chips">
       <${B} id=${e.tool} label=${t.labelOf(e.tool)}/>
-      <${X} scope=${e.scope} locked=${e.locked} label=${O(e.scope,a)}/>
+      <${Y} scope=${e.scope} locked=${e.locked} label=${O(e.scope,a)}/>
     </div>
     <div class="st-insp__value"><${xs} row=${e} w=${t}/></div>
     <${g} title="Model · what decides it">
@@ -826,7 +826,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
           ${u.path?o`<span class="st-mono" title=${u.path+(u.line?":"+u.line:"")}>${J(u.path)}${u.line?":"+u.line:""}</span>
             ${u.scope&&o` <span class="st-dim">· ${O(u.scope,a)}</span>`}
             <button type="button" class="st-link" onClick=${()=>t.openAt(u.path,u.line)}
-              aria-label=${Yt(u.path,u.line)}>Open</button>`:o`<span class="st-dim">—</span>`}
+              aria-label=${Xt(u.path,u.line)}>Open</button>`:o`<span class="st-dim">—</span>`}
         </dd>`)}
       </dl>
     </${g}>
@@ -842,7 +842,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     <div class="st-insp__key st-mono">${e.path}</div>
     <div class="st-insp__chips">
       <span class="st-chip">${e.is_dir?"Watched folder":et[q(e)]}</span>
-      <${X} scope=${e.scope}/>
+      <${Y} scope=${e.scope}/>
       <span class="st-chip">${ze[e.location]||"Other"}</span>
       ${e.tools.map(n=>o`<${B} key=${n} id=${n} label=${t.labelOf(n)}/>`)}
     </div>
@@ -878,7 +878,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     ${e.description&&o`<p class="st-insp__tip">${e.description}</p>`}
     <div class="st-insp__chips">
       <${B} id=${e.tool} label=${t.labelOf(e.tool)}/>
-      <${X} scope="env" label=${O("env",t.scopesOf(e.tool))}/>
+      <${Y} scope="env" label=${O("env",t.scopesOf(e.tool))}/>
       ${e.masked&&o`<span class="st-chip st-chip--muted">value hidden</span>`}
       ${!e.documented&&o`<${Mt}/>`}
     </div>
@@ -919,7 +919,7 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
     ${e.action&&o`<${g} title="What to do"><p class="st-insp__tip">${e.action}</p></${g}>`}
     <${g} title="Actions">
       <div class="st-actions">
-        ${e.path&&(tt(e.path)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(W(e.path),$t(e)[0]||"")}>Show ${W(e.path)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(e.path,e.line)}>${e.line>0?Yt(e.path,e.line):"Show the line"}</button>`)}
+        ${e.path&&(tt(e.path)?o`<button type="button" class="st-btn" onClick=${()=>t.openEnv(W(e.path),$t(e)[0]||"")}>Show ${W(e.path)||"the variable"}</button>`:o`<button type="button" class="st-btn" onClick=${()=>t.openAt(e.path,e.line)}>${e.line>0?Xt(e.path,e.line):"Show the line"}</button>`)}
       </div>
     </${g}>
   </div>`}function zl({w:t}){const{view:e}=t.st;let s=null;return(e==="tool"||e==="topic")&&t.selectedEnv?s=o`<${Ol} key=${t.selectedEnv.uid} w=${t} v=${t.selectedEnv}/>`:(e==="tool"||e==="topic")&&t.selected?s=Me(t.selected)?o`<${xl} key=${t.selected.uid} w=${t} row=${t.selected}/>`:o`<${Sl} key=${t.selected.uid} w=${t} row=${t.selected}/>`:e==="files"&&t.selectedFile?s=o`<${Ml} w=${t} file=${t.selectedFile}/>`:e==="findings"&&t.selectedFinding&&(s=o`<${Al} w=${t} f=${t.selectedFinding}/>`),o`<aside class=${"st-insp"+(t.drawer?" is-open":"")} aria-label="Inspector">
@@ -931,9 +931,9 @@ import{X as sn,Y as nn,Z as jt,$ as an,m as o,J as xe,a0 as on,a1 as ln,d as C,a
   </aside>`}const Tl=[{value:"tool",label:"By tool"},{value:"topic",label:"By topic"},{value:"files",label:"Files"},{value:"findings",label:"Findings"}],Wt=new Set(["tool","topic"]);function Se(){return typeof window<"u"?window.location.search:""}function El(){const[t,e]=C(()=>$e(Se())),s=R(a=>e(n=>{const l={...n,...a};if(a.view&&a.view!==n.view&&!(Wt.has(n.view)&&Wt.has(a.view)))for(const i of["tool","sec","row"])i in a||(l[i]="");if(a.view&&a.view!==n.view&&!("scope"in a)&&(l.scope=""),a.view&&a.view!==n.view)for(const i of Un)i in a||(l[i]=i==="recent"?!1:"");return l}),[]);return ht(()=>{de(Gn(t))},[t]),ht(()=>{const a=()=>e($e(Se()));return window.addEventListener("popstate",a),()=>{window.removeEventListener("popstate",a),de(Kn)}},[]),[t,s]}function Ll(){const[t,e]=C({status:"loading",files:null});return ht(()=>{let s=!0;return hn().then(a=>{s&&e(Array.isArray(a==null?void 0:a.files)?{status:"ready",files:a.files}:{status:"unavailable",files:null})},()=>{s&&e({status:"unavailable",files:null})}),()=>{s=!1}},[]),t}function Dl(t){const e=t||{},s=e.audit||null;return{status:e.loading?"loading":e.error?"error":s||e.loading===!1?"ready":"loading",audit:s,scan:e.scan||null,error:e.error?String(e.error):null}}function Pl({records:t=[]}){return o`<section class="st-wsnote" aria-label="Loaded configuration evidence">
     <h3>Configured on disk is not effective runtime configuration</h3>
     <${$n} records=${t}/>
-  </section>`}function ql({source:t={},note:e=""}){var ie;const{toolConfigs:s,tools:a,monitor:n,root:l,enabledTools:i=null,recentFiles:c,toolName:p,openFile:h,findings:u,refresh:r,hooks:d,configuredOnly:k,runtimeConfiguration:y}=t,_=P(()=>jn({toolConfigs:s,tools:a,monitor:n,root:l,enabledTools:i}),[s,a,n,l,i]),[$,S]=El(),[A,st]=C(""),[L,nt]=C(!1),[T,At]=C(!1),[zt,b]=C(!1),E=xe(null),Tt=Ll(),H=Dl(u),Fs=u==null?void 0:u.rescan;ht(()=>{const m=v=>{var M;v.key==="/"&&!pn(v.target)&&!v.metaKey&&!v.ctrlKey&&!v.altKey?(v.preventDefault(),(M=E.current)==null||M.focus()):v.key==="Escape"&&b(!1)};return window.addEventListener("keydown",m),()=>window.removeEventListener("keydown",m)},[]);const x=P(()=>Fn(_),[_]),Y=P(()=>Rn(_),[_]),te=P(()=>qn(_),[_]),Et=P(()=>ue({q:A,nonDefault:L,risky:T,unset:$.unset}),[A,L,T,$.unset]),Rs=P(()=>ue({q:A,nonDefault:L,risky:T,unset:!0}),[A,L,T]),qs=R(m=>Et(m)&&(!$.scope||m.scope===$.scope),[Et,$.scope]),Is=P(()=>In(x),[x]),at=P(()=>Wn(Tt.files,x,te,i),[Tt.files,x,te,i]),ot=P(()=>un(H.audit,i),[H.audit,i]),Lt=P(()=>Vn((ot==null?void 0:ot.findings)||[]),[ot]),Ws=R((m,v=0)=>{!m||!h||h(m,v>0?v:0)},[h]),ee=R(m=>{S(m),b(!0)},[S]),Vs=R(()=>b(!1),[]),Bs=R(m=>{const v=Bn(m,_);return v===m&&p?p(m):v},[_,p]),Hs=R(m=>{var v;return((v=x.find(M=>M.id===m))==null?void 0:v.scopes)||[]},[x]),Us=R(m=>{const v=at.find(M=>ft(M.path,m));if(v!=null&&v.mtime)return v.mtime;for(const M of(_==null?void 0:_.tools)||[])for(const z of M.files||[])if(ft(z.path,m)&&z.mtime)return z.mtime;return null},[at,_]);if(!_)return o`<p class="loading-state">Loading...</p>`;if(!x.length&&!Y&&!re(i))return o`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;const Dt=x.some(m=>m.id===$.tool)||$.tool==="aictl"&&Y?$.tool:((ie=x[0])==null?void 0:ie.id)||(Y?"aictl":""),F=x.find(m=>m.id===Dt)||null,se=(m,v)=>{var M;return v&&((M=x.find(z=>z.id===m))==null?void 0:M.rows.find(z=>z.key===v))||null},Gs=$.view==="tool"?F?se(F.id,$.row):null:$.view==="topic"?se($.tool,$.row):null,Ks=$.view==="files"&&$.row&&at.find(m=>m.path===$.row)||null,ne=(m,v)=>{if(!String(v).startsWith(he))return null;const M=x.find(ct=>ct.id===m);if(!M)return null;const z=W(v);return M.envVars.find(ct=>ct.name===z)||{name:z,tool:M.id,uid:M.id+""+v,source:v,set:!1,value:"",masked:!1,in_process:!1,persisted:[],drives:[],label:z,description:"",section:"",documented:!1}},Js=$.view==="tool"?F?ne(F.id,$.row):null:$.view==="topic"?ne($.tool,$.row):null,ae=(m,v="")=>{var z;const M=x.some(ct=>ct.id===v)?v:(F==null?void 0:F.id)||((z=x[0])==null?void 0:z.id)||"";ee({view:Wt.has($.view)?$.view:"tool",tool:M,row:he+m})},Xs=(m,v=0)=>tt(m)?ae(W(m)):Ws(m,v),Ys=$.view==="findings"&&$.row&&Lt.find(m=>m.id===$.row)||null,D={st:$,set:S,select:ee,q:A,pass:Et,passAll:Rs,passTool:qs,showUnset:$.unset,scopesOf:Hs,managedAbsent:Is,entries:x,aictl:Y,toolId:Dt,files:at,filesStatus:Tt.status,findings:Lt,audit:ot,auditStatus:H.status,auditError:H.error,scan:H.scan,rescan:Fs,selected:Gs,selectedFile:Ks,selectedFinding:Ys,selectedEnv:Js,openAt:Xs,openEnv:ae,labelOf:Bs,mtimeOf:Us,recentFiles:c,drawer:zt,closeDrawer:Vs,refresh:r,hooks:d},{set:Zs,agents:Qs,knowsSet:oe,unset:tn,risky:le}=Hn(x),en=re(i)&&!x.some(m=>m.id!=="vscode");let lt,it;return $.view==="topic"?(lt=o`<${tl} w=${D}/>`,it=o`<${nl} w=${D}/>`):$.view==="files"?(lt=o`<${ll} w=${D}/>`,it=o`<${ml} w=${D}/>`):$.view==="findings"?(lt=o`<${yl} w=${D}/>`,it=o`<${gl} w=${D}/>`):(lt=o`<${Ho} w=${D}/>`,it=F?o`<${Zo} w=${D} entry=${F}/>`:Dt==="aictl"&&Y?o`<${Qo} w=${D} aictl=${Y}/>`:o`<section class="st-main"><p class="st-empty">No tool settings to show.</p></section>`),o`<div class="st-ws" data-view=${$.view}>
+  </section>`}function ql({source:t={},note:e=""}){var ie;const{toolConfigs:s,tools:a,monitor:n,root:l,enabledTools:i=null,recentFiles:c,toolName:p,openFile:h,findings:u,refresh:r,hooks:d,configuredOnly:k,runtimeConfiguration:y}=t,_=P(()=>jn({toolConfigs:s,tools:a,monitor:n,root:l,enabledTools:i}),[s,a,n,l,i]),[$,S]=El(),[A,st]=C(""),[L,nt]=C(!1),[T,At]=C(!1),[zt,b]=C(!1),E=xe(null),Tt=Ll(),H=Dl(u),Fs=u==null?void 0:u.rescan;ht(()=>{const m=v=>{var M;v.key==="/"&&!pn(v.target)&&!v.metaKey&&!v.ctrlKey&&!v.altKey?(v.preventDefault(),(M=E.current)==null||M.focus()):v.key==="Escape"&&b(!1)};return window.addEventListener("keydown",m),()=>window.removeEventListener("keydown",m)},[]);const x=P(()=>Fn(_),[_]),X=P(()=>Rn(_),[_]),te=P(()=>qn(_),[_]),Et=P(()=>ue({q:A,nonDefault:L,risky:T,unset:$.unset}),[A,L,T,$.unset]),Rs=P(()=>ue({q:A,nonDefault:L,risky:T,unset:!0}),[A,L,T]),qs=R(m=>Et(m)&&(!$.scope||m.scope===$.scope),[Et,$.scope]),Is=P(()=>In(x),[x]),at=P(()=>Wn(Tt.files,x,te,i),[Tt.files,x,te,i]),ot=P(()=>un(H.audit,i),[H.audit,i]),Lt=P(()=>Vn((ot==null?void 0:ot.findings)||[]),[ot]),Ws=R((m,v=0)=>{!m||!h||h(m,v>0?v:0)},[h]),ee=R(m=>{S(m),b(!0)},[S]),Vs=R(()=>b(!1),[]),Bs=R(m=>{const v=Bn(m,_);return v===m&&p?p(m):v},[_,p]),Hs=R(m=>{var v;return((v=x.find(M=>M.id===m))==null?void 0:v.scopes)||[]},[x]),Us=R(m=>{const v=at.find(M=>ft(M.path,m));if(v!=null&&v.mtime)return v.mtime;for(const M of(_==null?void 0:_.tools)||[])for(const z of M.files||[])if(ft(z.path,m)&&z.mtime)return z.mtime;return null},[at,_]);if(!_)return o`<p class="loading-state">Loading...</p>`;if(!x.length&&!X&&!re(i))return o`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;const Dt=x.some(m=>m.id===$.tool)||$.tool==="aictl"&&X?$.tool:((ie=x[0])==null?void 0:ie.id)||(X?"aictl":""),F=x.find(m=>m.id===Dt)||null,se=(m,v)=>{var M;return v&&((M=x.find(z=>z.id===m))==null?void 0:M.rows.find(z=>z.key===v))||null},Gs=$.view==="tool"?F?se(F.id,$.row):null:$.view==="topic"?se($.tool,$.row):null,Ks=$.view==="files"&&$.row&&at.find(m=>m.path===$.row)||null,ne=(m,v)=>{if(!String(v).startsWith(he))return null;const M=x.find(ct=>ct.id===m);if(!M)return null;const z=W(v);return M.envVars.find(ct=>ct.name===z)||{name:z,tool:M.id,uid:M.id+""+v,source:v,set:!1,value:"",masked:!1,in_process:!1,persisted:[],drives:[],label:z,description:"",section:"",documented:!1}},Js=$.view==="tool"?F?ne(F.id,$.row):null:$.view==="topic"?ne($.tool,$.row):null,ae=(m,v="")=>{var z;const M=x.some(ct=>ct.id===v)?v:(F==null?void 0:F.id)||((z=x[0])==null?void 0:z.id)||"";ee({view:Wt.has($.view)?$.view:"tool",tool:M,row:he+m})},Ys=(m,v=0)=>tt(m)?ae(W(m)):Ws(m,v),Xs=$.view==="findings"&&$.row&&Lt.find(m=>m.id===$.row)||null,D={st:$,set:S,select:ee,q:A,pass:Et,passAll:Rs,passTool:qs,showUnset:$.unset,scopesOf:Hs,managedAbsent:Is,entries:x,aictl:X,toolId:Dt,files:at,filesStatus:Tt.status,findings:Lt,audit:ot,auditStatus:H.status,auditError:H.error,scan:H.scan,rescan:Fs,selected:Gs,selectedFile:Ks,selectedFinding:Xs,selectedEnv:Js,openAt:Ys,openEnv:ae,labelOf:Bs,mtimeOf:Us,recentFiles:c,drawer:zt,closeDrawer:Vs,refresh:r,hooks:d},{set:Zs,agents:Qs,knowsSet:oe,unset:tn,risky:le}=Hn(x),en=re(i)&&!x.some(m=>m.id!=="vscode");let lt,it;return $.view==="topic"?(lt=o`<${tl} w=${D}/>`,it=o`<${nl} w=${D}/>`):$.view==="files"?(lt=o`<${ll} w=${D}/>`,it=o`<${ml} w=${D}/>`):$.view==="findings"?(lt=o`<${yl} w=${D}/>`,it=o`<${gl} w=${D}/>`):(lt=o`<${Ho} w=${D}/>`,it=F?o`<${Zo} w=${D} entry=${F}/>`:Dt==="aictl"&&X?o`<${Qo} w=${D} aictl=${X}/>`:o`<section class="st-main"><p class="st-empty">No tool settings to show.</p></section>`),o`<div class="st-ws" data-view=${$.view}>
     <div class="st-head">
-      <${Ya} class="st-pivot" options=${Tl} value=${$.view} ariaLabel="Settings view"
+      <${Xa} class="st-pivot" options=${Tl} value=${$.view} ariaLabel="Settings view"
         onChange=${m=>S({view:m})}/>
       <label class="st-searchbox">
         <${mt} name="search" size="14"/>

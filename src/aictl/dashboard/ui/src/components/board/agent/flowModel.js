@@ -28,6 +28,9 @@ export const LANE = {
   session_start: { lane: 'session', kind: 'marker' },
   session_end: { lane: 'session', kind: 'marker' },
   compaction: { lane: 'compact', kind: 'marker' },
+  context_update: { lane: 'compact', kind: 'marker' },
+  session_command: { lane: 'session', kind: 'marker' },
+  skill_event: { lane: 'tool', kind: 'marker' },
 };
 
 export const LANE_COLOR = {
@@ -117,6 +120,27 @@ export function flowModel(turns, toolLabel, given) {
   return { events, participants: [...seen.values()], summary };
 }
 
+/** A crowded diagram shares lanes, not events. The original endpoints and labels stay on every event. */
+export function swimLayout(events, participants, filtered) {
+  const used = new Set();
+  for (const e of events) { used.add(e._from); used.add(e._to); }
+  const visible = participants.filter(p => !filtered || used.has(p.id));
+  const crowded = visible.length > 8;
+  const lanes = [];
+  const indexes = new Map();
+  const columns = new Map();
+  for (const p of visible) {
+    const group = crowded && (p.id.startsWith('skill:') ? 'tools' : p.id.startsWith('subagent:') ? 'agents' : null);
+    const id = group ? 'group:' + group : p.id;
+    if (!indexes.has(id)) {
+      indexes.set(id, lanes.length);
+      lanes.push(group ? { id, label: group === 'tools' ? 'Tools' : 'Subagents', color: LANE_COLOR[group === 'tools' ? 'tool' : 'agent'] } : p);
+    }
+    columns.set(p.id, indexes.get(id));
+  }
+  return { lanes, columns, grouped: lanes.length < visible.length };
+}
+
 /** Label, detail line and size of one event. */
 export function describe(ev) {
   const tok = ev.tokens || {};
@@ -150,6 +174,12 @@ export function describe(ev) {
   if (ev.type === 'hook') return { label: 'Hook ' + (ev.hook_name || ''), meta: '' };
   if (ev.type === 'session_start') return { label: 'Session started', meta: ev.cwd || '' };
   if (ev.type === 'session_end') return { label: 'Session ended', meta: '' };
+  if (['context_update', 'session_command', 'skill_event'].includes(ev.type)) {
+    const type = { context_update: 'Context', session_command: 'Session command', skill_event: 'Skill' }[ev.type];
+    return { label: [type, ev.name || ev.phase].filter(Boolean).join(': '),
+      meta: [ev.name && ev.phase, ev.context_tokens != null && `${fmtN(ev.context_tokens)} context tokens`,
+        ev.source].filter(Boolean).join(' · ') };
+  }
   if (ev.type === 'compaction') {
     const freed = ev.before_tokens != null && ev.after_tokens != null ? fmtN(ev.before_tokens) + ' to ' + fmtN(ev.after_tokens) + ' tokens' : '';
     return { label: 'Compaction' + (ev.compaction_count ? ' ' + ev.compaction_count : ''), meta: [freed, ev.duration_ms > 0 ? fmtMs(ev.duration_ms) : ''].filter(Boolean).join(', ') };

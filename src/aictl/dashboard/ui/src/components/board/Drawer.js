@@ -19,6 +19,7 @@ import { normalizeAgentDetail } from './useBoardData.js';
 import { useLiveState } from '../../live/context.js';
 import { liveProcessTree, mergeRuntimeAgents } from '../../live/model.js';
 import NativeOutput from './agent/NativeOutput.js';
+import ContextHistory from './agent/ContextHistory.js';
 import LoadedConfiguration from '../../live/LoadedConfiguration.js';
 
 // A new `tick` fetches again at most once per DETAIL_REFRESH_MS.
@@ -204,12 +205,11 @@ function AgentDrawer({ d, ctx, frame, act }) {
   const pending = a.pending && st === 'waiting' ? a.pending : null;
   // Three groups: what the agent did, what it changed, how it ran. A count on a tab is the rows it holds.
   const tabs = [
-    ['overview', 'Overview'],
+    ['flow', 'Flow'],
     ['context', 'Context'],
+    ['overview', 'Overview'],
     ['instructions', 'Instructions', data?.context_files ? new Set((data.context_files.loaded || []).map(x => x.path)).size || null : null],
     ['transcript', 'Transcript'],
-    ['flow', 'Flow'],
-    ['evidence', 'Evidence'],
     ['timeline', 'Timeline'],
     ['turns', 'Turns', data ? (data.turns || []).length : null],
     ['tools', 'Tool calls', a.tool_calls != null ? a.tool_calls : data ? (data.tool_calls || []).length : null],
@@ -223,7 +223,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
     ['team', 'Team'],
     ['procs', 'Processes'],
     ['integrations', 'Integrations'],
-  ].map(([id, label, count]) => (label ? { id, label, count, on: d.tab === id, pick: () => act.setDrawerTab(id) } : { id, sep: true }));
+  ].map(([id, label, count]) => (label ? { id, label, count, on: (d.tab === 'evidence' ? 'flow' : d.tab || 'flow') === id, pick: () => act.setDrawerTab(id) } : { id, sep: true }));
   const models = (a.models || []).join(', ');
   const processOnly = a.running === true && st === 'unknown';
   const sm = statusMeta(processOnly ? 'running' : st);
@@ -243,9 +243,10 @@ function AgentDrawer({ d, ctx, frame, act }) {
     <${Part} key=${'evidence:' + contextOnly} part="evidence" a=${a} sid=${sid} data=${data} act=${act} flowRef=${flowRef}
       captureMode=${subscription.capabilities?.capture_mode ?? ctx.data.capture_mode} contextOnly=${contextOnly}/>`;
   const body = () => {
-    if (d.tab === 'evidence') return evidence(false);
-    if (d.tab === 'flow') return html`${d.flowRef && evidence(false, d.flowRef)}
-      <${Part} key="flow" part="flow" a=${a} st=${st} ctx=${ctx} act=${act} flowRef=${d.flowRef}/>`;
+    if (!d.tab || d.tab === 'flow' || d.tab === 'evidence') return html`${d.flowRef && evidence(false, d.flowRef)}
+      <${Part} key="flow" part="flow" a=${a} st=${st} ctx=${ctx} act=${act} flowRef=${d.flowRef}
+        sid=${sid} agentData=${data} captureMode=${subscription.capabilities?.capture_mode ?? ctx.data.capture_mode}
+        initialEvidence=${d.initialEvidence || d.tab === 'evidence'} initialPrompts=${d.initialPrompts}/>`;
     if (incremental && d.tab === 'transcript') return html`<${Part} key="transcript" part="transcript" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
     if (incremental && !data) return html`
       <${FixedPanel} id="ag-runtime" title="Live runtime">
@@ -269,7 +270,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
   return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} meta=${meta} head=${head} tabs=${tabs} actions=${actions}>
     <${LoadedConfiguration} sessionId=${a.session_id || a.native_session_id || a.parent_id || a.id}/>
     ${body()}
-    ${d.tab === 'context' && evidence(true)}
+    ${d.tab === 'context' && html`<${ContextHistory} key=${sid} sid=${sid} agent=${a.parent_id ? a.id : ''}>${evidence(true)}</${ContextHistory}>`}
   </${Frame}>`;
 }
 

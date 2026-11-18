@@ -134,14 +134,16 @@ function Browser({ sid, a, turns, contextOnly, flowRef, act, hidden }) {
     </div>`}`;
 }
 
-export default function EvidenceTab({ a, sid, data, act, captureMode, contextOnly = false, flowRef }) {
+export default function EvidenceTab({ a, sid, data, act, captureMode, contextOnly = false, flowRef, inline = false }) {
   const hidden = captureMode != null && captureMode !== 'full';
+  const browser = sid ? html`<${Browser} key=${JSON.stringify([sid, contextOnly, hidden, flowRef])} sid=${sid} a=${a} act=${act} flowRef=${flowRef}
+    turns=${data?.turns || []} contextOnly=${contextOnly} hidden=${hidden}/>`
+    : html`<div class="bd-empty" role="status">No session ID is available for this record.</div>`;
+  if (inline) return html`<div role="region" aria-label="Source steps">${browser}</div>`;
   return html`<${SessionNote} a=${a}/>
     <${FixedPanel} id="agevidence" title=${flowRef ? 'Linked source steps' : contextOnly ? 'Recorded context steps' : 'Execution evidence'}
       sub=${flowRef ? `${flowRef.label} ID: ${flowRef.id}` : contextOnly ? 'Context measurements and compactions reported by the source' : 'Source records for this session'}
       go=${contextOnly || flowRef ? { label: 'All evidence', pick: () => act.setDrawerTab('evidence') } : null}>
-      ${sid ? html`<${Browser} key=${JSON.stringify([sid, contextOnly, hidden, flowRef])} sid=${sid} a=${a} act=${act} flowRef=${flowRef}
-        turns=${data?.turns || []} contextOnly=${contextOnly} hidden=${hidden}/>`
-        : html`<div class="bd-empty" role="status">No session ID is available for this record.</div>`}
+      ${browser}
     </${FixedPanel}>`;
 }

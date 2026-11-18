@@ -36,7 +36,7 @@ const copyAction = (ctx, command) => () => ctx.actions.copy?.(command, 'Copied: 
 /** A model name without its vendor prefix; the full name stays in the hover text. */
 export const shortModel = m => String(m || '').replace(/^claude-/, '');
 
-export const openAgent = (ctx, id, tab = 'overview', reset = true) => () => ctx.actions.openDrawer({ type: 'agent', id, tab }, reset);
+export const openAgent = (ctx, id, tab = 'flow', reset = true) => () => ctx.actions.openDrawer({ type: 'agent', id, tab }, reset);
 
 function agentCell(ctx, a, level, foldOn, foldOpen, onFold) {
   return {
