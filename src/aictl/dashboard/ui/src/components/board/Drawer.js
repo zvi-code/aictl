@@ -170,6 +170,15 @@ export const Pending = ({ error }) => html`<div class="bd-empty" role="status">$
 const titleOf = a => (a.parent_id ? (a.role || a.title) + ' (subagent)' : a.title);
 const toolListText = t => (Array.isArray(t) ? t.join(', ') : (t == null ? '' : String(t)));
 
+// On older SQLite records the root's board ID is its session ID. In the live
+// projection a process group can have an ID without identifying a native session.
+function evidenceSessionId(a, data, listed) {
+  const explicit = data?.session_id || a.native_session_id || listed?.native_session_id;
+  if (explicit) return explicit;
+  if (a.placeholder || String(a.id).startsWith('live:') || (!data?.agent && a.runtime_present && a.native_session_id === null)) return null;
+  return a.session_id || listed?.session_id || a.parent_id || data?.agent?.id;
+}
+
 function AgentDrawer({ d, ctx, frame, act }) {
   const { state: subscription } = useLiveState();
   const incremental = subscription.mode === 'incremental';
@@ -200,6 +209,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
     ['instructions', 'Instructions', data?.context_files ? new Set((data.context_files.loaded || []).map(x => x.path)).size || null : null],
     ['transcript', 'Transcript'],
     ['flow', 'Flow'],
+    ['evidence', 'Evidence'],
     ['timeline', 'Timeline'],
     ['turns', 'Turns', data ? (data.turns || []).length : null],
     ['tools', 'Tool calls', a.tool_calls != null ? a.tool_calls : data ? (data.tool_calls || []).length : null],
@@ -228,7 +238,14 @@ function AgentDrawer({ d, ctx, frame, act }) {
   ].filter(Boolean);
   // Only a main agent owns a process tree; a subagent stops with its parent.
   const actions = (isLive(st) || a.running === true) && !a.parent_id ? [{ label: 'Stop', go: () => act.stopAgent(a) }] : [];
+  const sid = d.sessionId || evidenceSessionId(a, data, listed);
+  const evidence = (contextOnly, flowRef) => !sid && !data && !error ? html`<${Pending}/>` : html`
+    <${Part} key=${'evidence:' + contextOnly} part="evidence" a=${a} sid=${sid} data=${data} act=${act} flowRef=${flowRef}
+      captureMode=${subscription.capabilities?.capture_mode ?? ctx.data.capture_mode} contextOnly=${contextOnly}/>`;
   const body = () => {
+    if (d.tab === 'evidence') return evidence(false);
+    if (d.tab === 'flow') return html`${d.flowRef && evidence(false, d.flowRef)}
+      <${Part} key="flow" part="flow" a=${a} st=${st} ctx=${ctx} act=${act} flowRef=${d.flowRef}/>`;
     if (incremental && d.tab === 'transcript') return html`<${Part} key="transcript" part="transcript" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
     if (incremental && !data) return html`
       <${FixedPanel} id="ag-runtime" title="Live runtime">
@@ -238,7 +255,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
       <${NativeOutput} a=${a} captureMode=${ctx.data.capture_mode}/>
       <${Pending} error=${error}/>`;
     if (!data) return html`<${Pending} error=${error}/>`;
-    if (d.tab === 'turns') return html`<${TurnsTab} data=${data}/>`;
+    if (d.tab === 'turns') return html`<${TurnsTab} data=${data} turnId=${d.turnId} act=${act}/>`;
     if (d.tab === 'tools') return html`<${ToolsTab} data=${data} pending=${pending}/>`;
     if (d.tab === 'changes') return html`<${ChangesTab} data=${data} act=${act}/>`;
     if (d.tab === 'errors') return html`<${ErrorsTab} data=${data}/>`;
@@ -252,6 +269,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
   return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} meta=${meta} head=${head} tabs=${tabs} actions=${actions}>
     <${LoadedConfiguration} sessionId=${a.session_id || a.native_session_id || a.parent_id || a.id}/>
     ${body()}
+    ${d.tab === 'context' && evidence(true)}
   </${Frame}>`;
 }
 
@@ -260,6 +278,7 @@ const AGENT_PARTS = {
   overview: () => import('./agent/OverviewExtras.js'),
   transcript: () => import('./agent/TranscriptTab.js'),
   flow: () => import('./agent/FlowTab.js'),
+  evidence: () => import('./agent/EvidenceTab.js'),
   timeline: () => import('./agent/TimelineTab.js'),
   artifacts: () => import('./agent/ArtifactsTab.js'),
   commits: () => import('./agent/CommitsTab.js'),
@@ -684,7 +703,7 @@ function LargestAdds({ data, act, span }) {
 }
 
 function ContextTab({ a, data, act }) {
-  if (!data.context) return html`<div class="bd-empty">No model call of this agent is stored, so its context size is not known.</div>`;
+  if (!data.context) return html`<div class="bd-note bd-ag-top">No context size is available from this agent's model calls.</div>`;
   return html`${data.context.breakdown ? html`<${ContextBreakdown} b=${data.context.breakdown} act=${act} go=${false}/>` : null}
     <${ContextPanel} a=${a} context=${data.context} copilot=${(a.tool || '').startsWith('copilot')} subagents=${data.subagents} act=${act} otel=${a.parent_id ? null : data.otel}/>`;
 }
@@ -760,6 +779,8 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
   return html`
     ${pending ? html`<${FixedPanel} id="ap" title="Waiting for your confirmation"><div class="bd-ptext">${pending.name + ': ' + pending.target + '\nWaiting for ' + fmtDur(Date.now() / 1000 - pending.since_ts) + '. Answer in the tool that asks.'}</div></${FixedPanel}>` : null}
     <div class="bd-kpis bd-drkpis" role="group" aria-label="Totals">${kpis.map(k => html`<div key=${k.label} class="bd-kpi" title=${k.title || k.label}><span class="bd-l">${k.label}</span><span class="bd-v">${k.value}</span><span class=${'bd-d' + (k.cls ? ' bd-' + k.cls : '')}>${k.sub || ''}</span></div>`)}<${Anomalies} data=${data} act=${act}/></div>
+    <div class="bd-ag-bar bd-ag-top"><button type="button" class="bd-btn" onClick=${() => act.setDrawerTab('evidence')}>Search execution evidence</button>
+      <span class="bd-ag-dim">Messages, commands and source records for this session.</span></div>
     ${main && data.sources ? html`<${Part} part="overview" name="OtelSources" a=${a} data=${data}/>` : null}
     ${breakdown ? html`<${ContextBreakdown} b=${breakdown} act=${act} span=${6}/>` : context ? html`<${ContextPanel} a=${a} context=${context} copilot=${copilot} subagents=${data.subagents} act=${act} compact=${true} span=${6} otel=${a.parent_id ? null : data.otel}/>` : null}
     <${LargestAdds} data=${data} act=${act} span=${context ? 6 : 12}/>
@@ -780,16 +801,17 @@ function OverviewTab({ a, data, st, ctx, act, pending }) {
     ${(data.subagents || []).length ? html`<${FixedPanel} id="ak" title="Subagents" go=${{ label: 'Team', pick: () => act.setDrawerTab('team') }}><${Table} def=${kids} label="Subagents"/></${FixedPanel}>` : null}`;
 }
 
-function TurnsTab({ data }) {
+function TurnsTab({ data, turnId, act }) {
   const def = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '58px' }, { k: 'text', l: 'Prompt or tools' }, { k: 'm', l: 'Model', w: '62px' }, { k: 'i', l: 'In', n: true, w: '50px' }, { k: 'o', l: 'Out', n: true, w: '50px' }, { k: 'c', l: 'Cached', n: true, w: '54px' }, { k: 'l', l: 'Reply', n: true, w: '56px' }],
-    rows: (data.turns || []).map((t, i) => {
+    rows: (data.turns || []).filter(t => turnId == null || t.turn_id === turnId).map((t, i) => {
       const tools = t.tools ? toolListText(t.tools) + ' tool calls' : '';
       return { id: i, sort: { at: t.ts, i: t.input, o: t.output, c: t.cache_read, l: t.reply_ms }, cells: { at: { v: stamp(t.ts), cls: 'dim' }, text: { v: t.text || tools || 'Reply only', cls: t.text ? '' : 'dim' }, m: { v: t.model || NA, cls: 'dim' }, i: { v: fmtN(t.input) }, o: { v: fmtN(t.output) }, c: { v: fmtN(t.cache_read) }, l: { v: fmtMs(t.reply_ms) } } };
     }),
-    sort: { k: 'at', dir: 'asc' }, limit: 120, none: 'No turns recorded.',
-  }), [data]);
-  return html`<${FixedPanel} id="at" title="Turns, oldest first"><${Table} def=${def} label="Turns"/></${FixedPanel}>`;
+    sort: { k: 'at', dir: 'asc' }, limit: 120, none: turnId == null ? 'No turns recorded.' : 'No recorded turn has this ID.',
+  }), [data, turnId]);
+  return html`<${FixedPanel} id="at" title="Turns, oldest first" sub=${turnId == null ? '' : 'Turn ID: ' + turnId}
+    go=${turnId == null ? null : { label: 'All turns', pick: () => act.setDrawerTab('turns') }}><${Table} def=${def} label="Turns"/></${FixedPanel}>`;
 }
 
 const sizeTip = 'Size of the arguments sent to the tool and of the result it returned, as text. Calls read before aictl recorded sizes have none.';

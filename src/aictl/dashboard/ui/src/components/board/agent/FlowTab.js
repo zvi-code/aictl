@@ -107,7 +107,7 @@ export const FLOW_EVENTS = 500;
 export const FLOW_EVENTS_STEP = 1000;
 export const FLOW_EVENTS_MAX = 5000;
 
-export default function FlowTab({ a, st, ctx }) {
+export default function FlowTab({ a, st, ctx, act, flowRef }) {
   const tick = isActive(st) ? ctx.refreshKey : 0;
   const [limit, setLimit] = useState(FLOW_EVENTS);
   const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, 'limit=' + limit, o), 'flow:' + a.id + ':' + limit, tick);
@@ -115,8 +115,11 @@ export default function FlowTab({ a, st, ctx }) {
   const [sel, setSel] = useState(null);
   const toolLabel = ctx.toolName ? ctx.toolName(a.tool) : a.tool;
   const m = useMemo(() => flowModel(data?.turns || [], toolLabel, data?.summary), [data, toolLabel]);
+  // Filter after computing totals: the flow summary and cumulative counts are still session-wide.
+  const events = flowRef ? m.events.filter(e => e[flowRef.field] === flowRef.id && (!flowRef.traceId || e.trace_id === flowRef.traceId)) : m.events;
   const pick = (v) => { setSel(null); setMode(v); };
-  if (!data) return html`<${Wait} error=${error} what="the session flow"/>`;
+  const evidence = { label: 'Search execution evidence', pick: () => act.setDrawerTab('evidence') };
+  if (!data) return html`<${FixedPanel} id="agfl" title="Flow" go=${evidence}><${Wait} error=${error} what="the session flow"/></${FixedPanel}>`;
   const s = m.summary;
   const stats = [
     { label: 'Turns', value: fmtN(s.turns), title: 'Prompts in the session' },
@@ -131,13 +134,14 @@ export default function FlowTab({ a, st, ctx }) {
   ];
   return html`<${SessionNote} a=${a}/>
     <${FixedPanel} id="agfs" title="Summary" sub=${eventsText(data)}><${Stats} stats=${stats}/></${FixedPanel}>
-    <${FixedPanel} id="agfl" title="Flow" sub=${omitted(data) ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them. Select an event to read it.' : 'Oldest first. Select an event to read it.'}>
+    <${FixedPanel} id="agfl" title="Flow" go=${evidence} sub=${omitted(data) ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them. Select an event to read it.' : 'Oldest first. Select an event to read it.'}>
       <div class="bd-ag-bar"><${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane']]}/>
+        ${flowRef && html`<span>${flowRef.label} ID: ${flowRef.id}</span><button type="button" class="bd-btn" onClick=${() => { setSel(null); act.setDrawerTab('flow'); }}>Show full flow</button>`}
         ${omitted(data) && limit < FLOW_EVENTS_MAX ? html`<button type="button" class="bd-btn" onClick=${() => setLimit(l => Math.min(FLOW_EVENTS_MAX, l + FLOW_EVENTS_STEP))}>${'Show ' + Math.min(omitted(data), FLOW_EVENTS_STEP).toLocaleString('en-US') + ' older events'}</button>` : null}
         ${omitted(data) && limit >= FLOW_EVENTS_MAX ? html`<span class="bd-ag-dim">${'The ' + fmtN(omitted(data)) + ' oldest events stay out; the summary counts them.'}</span>` : null}
       </div>
-      ${!m.events.length ? html`<div class="bd-empty">No flow data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.</div>`
-        : mode === 'swimlane' ? html`<${SwimLanes} events=${m.events} participants=${m.participants} sel=${sel} onSel=${setSel}/>`
-          : html`<${TimelineList} events=${m.events} sel=${sel} onSel=${setSel}/>`}
+      ${!events.length ? html`<div class="bd-empty">${flowRef ? 'No event in the loaded flow reports this source ID.' : 'No flow data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.'}</div>`
+        : mode === 'swimlane' ? html`<${SwimLanes} events=${events} participants=${m.participants} sel=${sel} onSel=${setSel}/>`
+          : html`<${TimelineList} events=${events} sel=${sel} onSel=${setSel}/>`}
     </${FixedPanel}>`;
 }

@@ -637,7 +637,7 @@ function BoardContent() {
         try { window.dispatchEvent(new PopStateEvent('popstate')); } catch { /* no PopStateEvent: the pivot applies on the next visit */ }
       },
       openDrawer: (d, reset) => { setDrawer(s => (reset ? [d] : [...s, d])); closeMenu(); },
-      setDrawerTab: tab => setDrawer(s => s.map((d, i) => (i === s.length - 1 ? { ...d, tab } : d))),
+      setDrawerTab: tab => setDrawer(s => s.map((d, i) => (i === s.length - 1 ? { ...d, tab, turnId: undefined, flowRef: undefined } : d))),
       drawerBack: () => setDrawer(s => s.slice(0, -1)),
       drawerClose: () => { setDrawer([]); writeUrl({ agent: null, tab: null }); },
       rescan: () => loadFindings(true),

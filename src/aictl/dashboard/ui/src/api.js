@@ -59,6 +59,22 @@ export async function getEventsCount(opts = {}) {
 
 // ─── Sessions ──────────────────────────────────────────────────
 
+/** A page of source steps, or one step's retained text. Never issue an unscoped search. */
+export async function getSessionEvidence(sessionId, { q, kind, stepKey, flowRef, offset = 0 } = {}, opts) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) throw new Error('A session ID is required.');
+  const params = new URLSearchParams({ session_id: sessionId, limit: '100', offset: String(offset) });
+  if (q) params.set('q', q);
+  if (kind) params.set('kind', kind);
+  if (stepKey) params.set('step_key', stepKey);
+  if (['turn_id', 'round_id', 'agent_id', 'tool_call_id', 'request_id'].includes(flowRef?.field)) params.set(flowRef.field, flowRef.id);
+  const page = await fetchJson('/api/session-evidence?' + params, opts);
+  if (!Array.isArray(page?.rows) || (page.session_id && page.session_id !== sessionId)
+      || page.rows.some(row => !row || (row.session_id && row.session_id !== sessionId))) {
+    throw new Error('Invalid evidence page for this session.');
+  }
+  return page;
+}
+
 export async function getSessionEvents(sessionId, opts = {}) {
   let path = '/api/events?session_id=' + encodeURIComponent(sessionId);
   if (opts.since != null) path += '&since=' + opts.since;

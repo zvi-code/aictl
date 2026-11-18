@@ -8,6 +8,7 @@ import '../src/components/board/Drawer.js';
 import '../src/components/board/agent/OverviewExtras.js';
 import '../src/components/board/agent/TranscriptTab.js';
 import '../src/components/board/agent/FlowTab.js';
+import '../src/components/board/agent/EvidenceTab.js';
 import '../src/components/board/agent/TimelineTab.js';
 import '../src/components/board/agent/ArtifactsTab.js';
 import '../src/components/board/agent/CommitsTab.js';
