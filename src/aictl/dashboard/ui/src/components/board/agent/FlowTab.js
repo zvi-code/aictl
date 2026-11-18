@@ -176,9 +176,8 @@ function TimelineList({ events, sel, onSel }) {
   })}</ul>`;
 }
 
-function SwimLanes({ events, participants: all, filtered, sel, onSel, toolLabel }) {
+function SwimLanes({ events, participants: all, filtered, groupLanes, sel, onSel, toolLabel }) {
   const [streamMode, setStreamMode] = useState(false);
-  const [laneMode, setLaneMode] = usePref('aictl-pref-flow-lanes', 'individual', ['individual', 'grouped']);
   const agentStreams = useMemo(() => {
     const ids = ['main'];
     for (const ev of events) {
@@ -186,7 +185,7 @@ function SwimLanes({ events, participants: all, filtered, sel, onSel, toolLabel 
     }
     return ids;
   }, [events]);
-  const { lanes: participants, columns } = useMemo(() => swimLayout(events, all, filtered, laneMode === 'grouped'), [events, all, filtered, laneMode]);
+  const { lanes: participants, columns } = useMemo(() => swimLayout(events, all, filtered, groupLanes), [events, all, filtered, groupLanes]);
   const n = participants.length || 1;
   const col = id => columns.get(id) ?? -1;
   const x = i => ((i + 0.5) / n) * 100;
@@ -229,12 +228,10 @@ function SwimLanes({ events, participants: all, filtered, sel, onSel, toolLabel 
     </div>`;
   }
 
-  return html`<div class="bd-ag-bar bd-flow-slmode">
-    ${agentStreams.length > 1 && html`<${Seg} label="Swim-lane layout" value="participants" onPick=${v => setStreamMode(v === 'streams')}
-      items=${[['participants', 'Participant arrows'], ['streams', 'Session & Subagent streams (' + agentStreams.length + ')']]}/>`}
-    <${Seg} label="Participant lanes" value=${laneMode} onPick=${setLaneMode}
-      items=${[['individual', 'Individual lanes'], ['grouped', 'Group lanes']]}/>
-  </div>
+  return html`${agentStreams.length > 1 && html`<div class="bd-ag-bar bd-flow-slmode">
+    <${Seg} label="Swim-lane layout" value="participants" onPick=${v => setStreamMode(v === 'streams')}
+      items=${[['participants', 'Participant arrows'], ['streams', 'Session & Subagent streams (' + agentStreams.length + ')']]}/>
+  </div>`}
   <div class="bd-ag-sl" style=${{ '--flow-diagram-width': (158 + n * 96) + 'px', '--flow-lane-pitch': (100 / n) + '%' }} tabindex="0" role="list" aria-label="Events between participants, oldest first">
     <div class="bd-ag-slhead" aria-hidden="true"><span>Total</span><span>Turn</span><span>Time</span>
       <span class="bd-ag-slarea">${participants.map((p, i) => html`<b key=${p.id} style=${{ left: x(i) + '%', color: p.color, borderColor: p.color }} title=${p.label}>${p.label}</b>`)}</span>
@@ -384,6 +381,7 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
   const query = 'limit=' + limit + (filters ? '&' + filters : '');
   const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, query, o), JSON.stringify(['flow', a.id, query]), tick);
   const [diagram, setDiagram] = usePref(FLOW_MODE_KEY, 'timeline', ['timeline', 'swimlane']);
+  const [laneMode, setLaneMode] = usePref('aictl-pref-flow-lanes', 'individual', ['individual', 'grouped']);
   const [source, setSource] = useState(initialEvidence);
   const [visited, setVisited] = useState(initialEvidence);
   const [activeTurn, setActiveTurn] = useState(null);
@@ -431,6 +429,8 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
     <${FixedPanel} key="flow" id="agfl" title="Flow" sub=${source ? 'Search retained source records separately from flow events.' : omitted(data) && !filters ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them.' : 'Oldest first. Select an event to read it.'}>
       <div class="bd-ag-bar bd-flow-toolbar">
         <${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane'], ['source', 'Source steps']]}/>
+        ${mode === 'swimlane' && html`<${Seg} label="Participant lanes" value=${laneMode} onPick=${setLaneMode}
+          items=${[['individual', 'Individual lanes'], ['grouped', 'Group lanes']]}/>`}
         ${data && !source && html`<span class="bd-flow-status" role="status">${scope && scope.matched != null && scope.total != null
           ? `Showing ${events.length.toLocaleString()} · ${scope.matched.toLocaleString()} matched of ${scope.total.toLocaleString()} events in range`
           : eventsText(data)}</span>`}
@@ -452,7 +452,7 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
           : !source && html`<div class=${'bd-flow-workspace' + (selectedEvent ? ' bd-has-insp' : '')}>
             <div class="bd-flow-main">
               ${diagram === 'swimlane'
-                ? html`<${SwimLanes} events=${events} participants=${m.participants} filtered=${!!(filters || flowRef)} sel=${sel} onSel=${setSel} toolLabel=${toolLabel}/>`
+                ? html`<${SwimLanes} events=${events} participants=${m.participants} filtered=${!!(filters || flowRef)} groupLanes=${laneMode === 'grouped'} sel=${sel} onSel=${setSel} toolLabel=${toolLabel}/>`
                 : html`<${TimelineList} events=${events} sel=${sel} onSel=${setSel}/>`}
             </div>
             ${selectedEvent && html`<${Inspector} ev=${selectedEvent} sessionId=${sessionId} onClose=${() => setSel(null)}/>`}
