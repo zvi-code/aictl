@@ -9,7 +9,7 @@ import pytest
 
 from aictl.ingesters.call_facts import CopilotFacts, FactBuffer
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.storage import STEP_TEXT_LIMIT, HistoryDB, SessionStepRow
+from aictl.storage import STEP_TEXT_LIMIT, HistoryDB, SessionStepRow, TurnRequestLink
 
 
 def event(kind, data, **envelope):
@@ -238,7 +238,107 @@ def test_step_only_batch_retry_surface_and_legacy_exclusion(monkeypatch):
     store.streams_observations = True
     legacy = FactBuffer(store)
     legacy.add_step(step("ignored", 6))
+    legacy.add_cost_link(TurnRequestLink("ignored", 6, "s"))
     CopilotFacts("s", legacy).feed(event("user.message", {"content": "not for legacy steps"}))
     assert len(legacy) == 1  # legacy prompt observation, no new fact family
     legacy.flush()
-    assert batches[-1].prompts and not batches[-1].steps
+    assert batches[-1].prompts and not batches[-1].steps and not batches[-1].cost_links
+
+
+def test_link_only_write_retries_with_latest_attribution():
+    batches = []
+    def write(facts):
+        batches.append(facts)
+        if len(batches) == 1:
+            raise sqlite3.OperationalError("locked")
+        return len(facts)
+
+    buf = FactBuffer(SimpleNamespace(write_call_facts=write))
+    buf.add_cost_link(TurnRequestLink("k", 5, "s", basis="unattributed"))
+    buf.flush()
+    buf.add_cost_link(TurnRequestLink("k", 5, "s", turn_id="1", basis="api_call_id"))
+    assert len(buf) == 1
+    buf.flush()
+    assert len(buf) == 0 and buf.written == 1
+    assert [(b.cost_links[0].request_key, b.cost_links[0].basis) for b in batches] == [("k", "unattributed"), ("k", "api_call_id")]
+
+
+def test_cost_links_join_canonical_requests_across_polls_and_nested_agents(tmp_path):
+    ts = time.time() - 3
+    usage = {"model": "gpt-4o", "inputTokens": 1000, "outputTokens": 100}
+    before = [
+        event("assistant.turn_start", {"turnId": "spawn"}),
+        event("assistant.message", {"turnId": "spawn", "toolRequests": [{"name": "task", "toolCallId": "outer"}]}),
+        event("subagent.started", {"toolCallId": "outer"}, agentId="child"),
+        event("assistant.turn_end", {"turnId": "spawn"}),
+        event("assistant.turn_start", {"turnId": "1"}),
+        event("assistant.turn_start", {"turnId": "1", "parentToolCallId": "outer"}, agentId="child"),
+        event("session.usage_record", {"usage": usage | {"apiCallId": "child-api", "parentToolCallId": "outer"}}, agentId="child"),
+        event("session.usage_record", {"usage": usage | {"apiCallId": "root-api"}}),
+    ]
+    after = [
+        event("assistant.message", {"apiCallId": "child-api", "turnId": "1", "phase": "commentary",
+                                    "content": "work", "reasoningText": "HIDDEN"}, agentId="child"),
+        event("assistant.message", {"apiCallId": "root-api", "turnId": "1", "phase": "final_answer", "content": "done"}),
+        event("tool.execution_start", {"toolName": "task", "toolCallId": "inner", "parentToolCallId": "outer"}),
+        event("subagent.started", {"toolCallId": "inner"}, agentId="grandchild"),
+        event("assistant.turn_start", {"turnId": "1", "parentToolCallId": "inner"}),
+        # Only the parentToolCallId identifies this agent.
+        event("session.usage_record", {"usage": usage | {"parentToolCallId": "inner"}}),
+        event("assistant.turn_end", {"turnId": "1"}),
+        event("session.usage_record", {"usage": usage}),  # closed root turn
+        # Explicit local turn with no evidence of any parent, even though its ID matches.
+        event("session.usage_record", {"usage": usage | {"turnId": "1"}}, agentId="orphan"),
+    ]
+    db = HistoryDB(tmp_path / "turns.db", flush_interval=0)
+    try:
+        buf = FactBuffer(db)
+        buf.surface = lambda _: "copilot-desktop"
+        cop = CopilotFacts("sid", buf)
+        conn = db._conn()
+        for _ in range(2):
+            cop.reset()  # repeat the entire file: same canonical request keys, no second cost
+            for batch in (before, after):
+                for obj in batch:
+                    cop.feed(obj | {"timestamp": ts})
+                buf.flush()
+        joined = list(conn.execute(
+            "SELECT l.agent_id,l.turn_id,l.root_session_id,l.root_turn_id,l.basis,l.tool,r.cost_usd "
+            "FROM requests r JOIN turn_request_links l ON l.request_key=r.dedup_key ORDER BY r.id"
+        ))
+        assert [tuple(row[:5]) for row in joined] == [
+            ("child", "1", "sid", "spawn", "api_call_id"), ("", "1", "sid", "1", "api_call_id"),
+            ("grandchild", "1", "sid", "spawn", "open_turn"), ("", "", "", "", "unattributed"),
+            ("orphan", "1", "", "", "explicit_turn"),
+        ]
+        assert all(row[5] == "copilot-desktop" and row[6] > 0 for row in joined)
+        assert conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == len(joined)
+        assert conn.execute("SELECT COUNT(*) FROM turn_request_links").fetchone()[0] == len(joined)
+        assert {r[0] for r in conn.execute("SELECT phase FROM session_steps WHERE role='assistant' AND phase!=''")} == {"commentary", "final_answer"}
+        assert not conn.execute("SELECT 1 FROM session_step_text WHERE text LIKE '%HIDDEN%'").fetchone()
+    finally:
+        db.close()
+
+
+def test_ambiguous_usage_stays_unattributed_until_same_agent_api_id_arrives():
+    buf = FactBuffer(SimpleNamespace(_keeps_text=lambda: False))
+    cop = CopilotFacts("s", buf)
+    for tid in ("a", "b"):
+        cop.feed(event("assistant.turn_start", {"turnId": tid}, id=tid))
+    opaque = "provider/" + "x" * 415
+    cop.feed(event("session.usage_record", {"usage": {"apiCallId": opaque}}, parentId="a"))
+    key, = buf.requests
+    assert buf.cost_links[key].basis == "unattributed"  # preceding envelope event is not a causal edge
+    cop.feed(event("assistant.message", {"turnId": "other", "apiCallId": opaque}, agentId="sibling"))
+    assert not buf.cost_links[key].turn_id
+    cop.feed(event("assistant.message", {"turnId": "b", "apiCallId": opaque}))
+    assert (buf.cost_links[key].turn_id, buf.cost_links[key].basis) == ("b", "api_call_id")
+    assert opaque not in repr(buf.steps)
+    cop.feed(event("session.usage_record", {"usage": {"parentToolCallId": "unknown-spawn", "turnId": "a"}}))
+    assert any(r.basis == "unknown_agent" and not r.root_turn_id for r in buf.cost_links.values())
+    cop.feed(event("session.compaction_complete", {"requestId": "comp", "compactionTokensUsed": {"inputTokens": 123}}))
+    cop.feed(event("assistant.turn_end", {"turnId": "b"}))
+    cop.finish_poll(time.time(), 1)
+    comp, = (r for r in buf.requests.values() if r.input_tokens == 123)
+    assert buf.cost_links[comp.dedup_key].basis == "unattributed"
+    assert set(buf.cost_links) == set(buf.requests)

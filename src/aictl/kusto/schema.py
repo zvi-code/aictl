@@ -288,6 +288,7 @@ TABLE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "session_prompts",
             "session_steps",
             "session_step_text",
+            "turn_request_links",
             "skill_uses",
             "file_write_events",
             "context_events",

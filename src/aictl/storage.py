@@ -258,6 +258,11 @@ CREATE TABLE IF NOT EXISTS session_step_text (
     step_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts REAL NOT NULL, text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_session_step_text_session ON session_step_text(session_id, ts);
+CREATE TABLE IF NOT EXISTS turn_request_links (
+    request_key TEXT PRIMARY KEY, ts REAL NOT NULL, session_id TEXT NOT NULL, agent_id TEXT,
+    turn_id TEXT, root_session_id TEXT, root_turn_id TEXT, basis TEXT, tool TEXT, project_path TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_turn_request_scope ON turn_request_links(session_id, turn_id);
 CREATE TABLE IF NOT EXISTS skill_uses (
     id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '', ts REAL, session_id TEXT,
     agent_id TEXT DEFAULT '', tool TEXT, project_path TEXT, name TEXT, trigger TEXT DEFAULT ''
@@ -1286,6 +1291,22 @@ STEP_TEXT_LIMIT = 32768
 
 
 @dataclass(slots=True)
+class TurnRequestLink:
+    """Source attribution of an existing request. Never a second cost observation."""
+
+    request_key: str
+    ts: float
+    session_id: str
+    agent_id: str = ""
+    turn_id: str = ""
+    root_session_id: str = ""
+    root_turn_id: str = ""
+    basis: str = ""
+    tool: str = "copilot-cli"
+    project_path: str = ""
+
+
+@dataclass(slots=True)
 class CallFacts:
     """Rows read from a tool's own session files, written in one transaction."""
 
@@ -1299,10 +1320,11 @@ class CallFacts:
     loaded_files: list[LoadedFileRow] = field(default_factory=list)
     context_items: list[ContextItemRow] = field(default_factory=list)
     steps: list[SessionStepRow] = field(default_factory=list)
+    cost_links: list[TurnRequestLink] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.steps) + len(self.context_items)
+            len(self.steps) + len(self.cost_links) + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)
             + len(self.requests)
@@ -2381,6 +2403,7 @@ _EVICTION_ORDER = (
     "copilot_session_messages",
     "session_step_text",
     "session_steps",
+    "turn_request_links",
     "metrics",
     "events",
     "hook_calls",
@@ -2558,6 +2581,7 @@ _RETENTION_TABLES = (
     "session_prompts",
     "session_steps",
     "session_step_text",
+    "turn_request_links",
     "skill_uses",
     "context_events",
 )
@@ -5942,6 +5966,13 @@ class HistoryDB:
             conn.executemany(_LOADED_FILE_UPSERT, [_loaded_file_params(r) for r in facts.loaded_files])
             conn.executemany(_CONTEXT_ITEM_UPSERT, [_context_item_params(r) for r in facts.context_items])
             self._write_session_steps(conn, facts.steps)
+            if facts.cost_links:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO turn_request_links(request_key,ts,session_id,agent_id,turn_id,"
+                    "root_session_id,root_turn_id,basis,tool,project_path) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    [(r.request_key, r.ts, r.session_id, r.agent_id, r.turn_id, r.root_session_id, r.root_turn_id,
+                      r.basis, r.tool, r.project_path) for r in facts.cost_links],
+                )
             self._write_transcript_file_edits(conn, facts.file_writes)
             self._drop_superseded_rows(conn, facts)
             conn.commit()
@@ -7191,7 +7222,7 @@ class HistoryDB:
         result["requests_deleted_30d"] = self._delete_range(conn, "requests", floor, cutoff_retention)
         result["tool_invocations_deleted_30d"] = self._delete_range(conn, "tool_invocations", floor, cutoff_retention)
         result["session_prompts_deleted_30d"] = self._delete_range(conn, "session_prompts", floor, cutoff_retention)
-        for table in ("session_steps", "session_step_text"):
+        for table in ("session_steps", "session_step_text", "turn_request_links"):
             result[f"{table}_deleted_30d"] = self._delete_range(conn, table, floor, cutoff_retention)
         result["skill_uses_deleted_30d"] = self._delete_range(conn, "skill_uses", floor, cutoff_retention)
         result["context_events_deleted_30d"] = self._delete_range(conn, "context_events", floor, cutoff_retention)

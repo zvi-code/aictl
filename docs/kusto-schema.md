@@ -341,6 +341,26 @@ Key: step_key. Scope: was per project in SQLite. 4 columns.
 | _v | datetime | system | | |
 | _deleted | bool | system | | |
 
+### `turn_request_links`
+
+Key: request_key. Scope: was per project in SQLite. 10 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| request_key | string | TEXT |  |  |
+| ts | real | REAL |  | yes |
+| session_id | string | TEXT |  | yes |
+| agent_id | string | TEXT |  |  |
+| turn_id | string | TEXT |  |  |
+| root_session_id | string | TEXT |  |  |
+| root_turn_id | string | TEXT |  |  |
+| basis | string | TEXT |  |  |
+| tool | string | TEXT |  |  |
+| project_path | string | TEXT |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
 ### `skill_uses`
 
 Key: rowid; unique: (dedup_key). Scope: was per project in SQLite. 9 columns.

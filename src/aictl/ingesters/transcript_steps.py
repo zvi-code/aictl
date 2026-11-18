@@ -6,12 +6,15 @@ identify different, sometimes shared entities. None is a trace or span ID.
 
 from __future__ import annotations
 
+import hashlib
 import re
+from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from ..context_audit import _redact
-from ..storage import SessionStepRow, _dedup_key
+from ..storage import SessionStepRow, TurnRequestLink, _dedup_key
 
 _LABEL = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,255}\Z")
 _CREDENTIAL = re.compile(
@@ -46,6 +49,13 @@ def _label(value: Any) -> str:
 
 def _dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _api_id(value: Any) -> str:
+    """Some provider completion IDs are long opaque strings with slashes, not display labels."""
+    if not isinstance(value, str) or not value:
+        return ""
+    return _label(value) or "opaque:" + hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _tool_name(data: dict, field: str) -> str:
@@ -100,18 +110,86 @@ def _session_command(text: Any, *, dispatch: bool = False) -> str:
 class CopilotSteps:
     """One reader per file; reset with CopilotFacts when replay starts from the beginning."""
 
-    def __init__(self, sid: str, add: Callable[[SessionStepRow], None]) -> None:
+    def __init__(self, sid: str, add: Callable[[SessionStepRow], None], add_link: Callable[[TurnRequestLink], None]) -> None:
         self.sid = sid
         self.add = add
+        self.add_link = add_link
         self.record = 0
         self.order = 0
         # Only exact call IDs carry attribution across records. Never retain arguments or output.
         self.calls: dict[str, dict[str, str]] = {}
         self.children: dict[str, str] = {}
+        self.open_turns: dict[str, set[str]] = {}
+        self.spawn_roots: dict[str, str] = {}
+        self.api_turns: dict[tuple[str, str], str] = {}
+        self.waiting: dict[tuple[str, str], deque[TurnRequestLink]] = {}
+
+    def _only_open(self, agent: str) -> str:
+        turns = self.open_turns.get(agent)
+        return next(iter(turns)) if turns and len(turns) == 1 else ""
+
+    def _root(self, agent: str, turn: str) -> str:
+        return self.spawn_roots.get(agent, "") if agent else turn
+
+    def usage_link(self, obj: dict, data: dict, usage: dict, ts: float, cwd: str, *, allow_open: bool = True) -> TurnRequestLink:
+        """Snapshot at the usage record, not at flush. Envelope parentId is chronology, not causality."""
+        parent = data.get("parentToolCallId") or usage.get("parentToolCallId")
+        raw_agent = obj.get("agentId") or data.get("agentId")
+        agent = _label(raw_agent) or self.children.get(_label(parent), "")
+        local = ""
+        if obj.get("checkpoint") is True:
+            return TurnRequestLink(request_key="", ts=ts, session_id=self.sid, agent_id=agent, basis="checkpoint", project_path=cwd)
+        if not agent and (raw_agent or parent):
+            basis = "unknown_agent"
+        elif local := _label(data.get("turnId") or usage.get("turnId")):
+            basis = "explicit_turn"
+        elif local := self.api_turns.get((agent, _api_id(usage.get("apiCallId"))), ""):
+            basis = "api_call_id"
+        elif allow_open and (local := self._only_open(agent)):
+            basis = "open_turn"
+        else:
+            basis = "unattributed"
+        root = self._root(agent, local)
+        return TurnRequestLink(
+            request_key="", ts=ts, session_id=self.sid, agent_id=agent, turn_id=local,
+            root_session_id=self.sid if root else "", root_turn_id=root,
+            basis="spawn_tool" if root and not local else basis, project_path=cwd,
+        )
+
+    def link_request(self, link: TurnRequestLink, request_key: str, api_id: Any) -> None:
+        link = replace(link, request_key=request_key)
+        api = _api_id(api_id)
+        if api and link.basis not in ("explicit_turn", "api_call_id", "unknown_agent", "checkpoint"):
+            # Usage often precedes the message carrying the definitive (apiCallId, turnId).
+            # Unmatched requests already have a durable link, possibly explicitly unattributed.
+            key = (link.agent_id, api)
+            if turn := self.api_turns.get(key):
+                link = self._from_api(link, turn)
+            else:
+                self.waiting.setdefault(key, deque(maxlen=16)).append(link)
+                if len(self.waiting) > 1024:
+                    del self.waiting[next(iter(self.waiting))]
+        self.add_link(link)
+
+    def _from_api(self, link: TurnRequestLink, turn: str) -> TurnRequestLink:
+        root = link.root_turn_id if link.agent_id else turn
+        return replace(link, turn_id=turn, root_turn_id=root, root_session_id=self.sid if root else "", basis="api_call_id")
+
+    def _message_turn(self, agent: str, api: str, turn: str) -> None:
+        if not api or not turn:
+            return
+        key = (agent, api)
+        self.api_turns[key] = turn
+        if len(self.api_turns) > 1024:
+            del self.api_turns[next(iter(self.api_turns))]
+        for link in self.waiting.pop(key, ()):
+            self.add_link(self._from_api(link, turn))
 
     def feed(self, obj: dict, data: dict, ts: float, cwd: str) -> None:
         self.record += 1
         source = obj.get("type")
+        if source in ("session.start", "session.resume", "session.shutdown") and not obj.get("checkpoint"):
+            self.open_turns.clear()
         if not isinstance(source, str) or source not in _SOURCES or obj.get("checkpoint") is True:
             return
         agent = _label(obj.get("agentId")) or _label(data.get("agentId"))
@@ -122,9 +200,10 @@ class CopilotSteps:
         links = {
             "agent_id": agent, "turn_id": _label(data.get("turnId")),
             "message_id": _label(data.get("messageId")), "request_id": _label(data.get("requestId")),
-            "round_id": _label(data.get("apiCallId")), "tool_call_id": _label(data.get("toolCallId")),
+            "round_id": _api_id(data.get("apiCallId")), "tool_call_id": _label(data.get("toolCallId")),
         }
         call = links["tool_call_id"]
+        known_agent = bool(agent) or not (obj.get("agentId") or data.get("agentId") or data.get("parentToolCallId"))
 
         def emit(kind: str, phase: str = "", *, slot: str = "", body: Any = None, **fields: Any) -> None:
             # Key by the envelope, not the entity whose lifecycle this record describes. The
@@ -166,12 +245,17 @@ class CopilotSteps:
             emit("session_command", "applied", name="model_change", body=transition)
         elif source == "session.context_cleared":
             # The RPC or runtime can clear history. No command, token count or actor is implied.
+            if known_agent:
+                self.open_turns.pop(agent, None)
             emit("context", "applied", name="reset", text_status="omitted" if data.get("initialMessage") else "")
         elif source == "session.snapshot_rewind":
             emit("session_command", "applied", name="rewind")
         elif source == "assistant.message":
-            public = data.get("phase") in (None, "", "commentary", "response", "final", "final_answer")
-            emit("message", role="assistant", body=data.get("content") if public else None,
+            if known_agent:
+                self._message_turn(agent, links["round_id"], links["turn_id"])
+            phase = data.get("phase")
+            public = phase in (None, "", "commentary", "response", "final", "final_answer")
+            emit("message", (phase or "") if public else "", role="assistant", body=data.get("content") if public else None,
                  text_status="" if public else "omitted")
             requests = data.get("toolRequests")
             for i, req in enumerate(requests if isinstance(requests, list) else ()):
@@ -181,21 +265,30 @@ class CopilotSteps:
                 name = _tool_name(req, "name")
                 request = links | {"tool_call_id": tool_id, "name": name}
                 if tool_id:
-                    self.calls[tool_id] = request
+                    self.calls[tool_id] = request | {"turn_id": (links["turn_id"] or self._only_open(agent)) if known_agent else ""}
                 args = req.get("arguments")
                 body = _dict(args).get("command") if name in _SHELLS else _dict(args).get("prompt") if name == "task" else None
                 emit("tool_call", "requested", slot=str(i), body=body,
                      text_status="omitted" if args and not body else "", **request)
         elif source in ("assistant.turn_start", "assistant.turn_end"):
+            if known_agent and links["turn_id"]:
+                turns = self.open_turns.setdefault(agent, set())
+                if source == "assistant.turn_start":
+                    turns.add(links["turn_id"])
+                else:
+                    turns.discard(links["turn_id"])
+            elif known_agent and source == "assistant.turn_end":
+                self.open_turns.pop(agent, None)
             emit("turn", "started" if source.endswith("_start") else "ended", name=_label(data.get("model")))
         elif source in ("session.usage_record", "assistant.usage"):
             usage = _dict(data.get("usage")) if source == "session.usage_record" else data
             if usage:
+                attribution = self.usage_link(obj, data, usage, ts, cwd)
                 # Input includes cached tokens here: this is reported model input, not a
                 # measurement of the session's current context (nor an extra charge).
-                emit("round", "usage", name=_label(usage.get("model")),
+                emit("round", "usage", name=_label(usage.get("model")), turn_id=attribution.turn_id, agent_id=attribution.agent_id,
                      request_id=_label(usage.get("requestId") or usage.get("providerCallId")),
-                     round_id=_label(usage.get("apiCallId")), input_tokens=_count(usage.get("inputTokens")),
+                     round_id=_api_id(usage.get("apiCallId")), input_tokens=_count(usage.get("inputTokens")),
                      output_tokens=_count(usage.get("outputTokens")),
                      tool_tokens=_count(usage.get("toolTokenCount")), estimated=0)
         elif source in ("tool.execution_start", "tool.execution_complete"):
@@ -205,7 +298,7 @@ class CopilotSteps:
             links["name"] = name
             if source == "tool.execution_start":
                 if call:
-                    self.calls[call] = links
+                    self.calls[call] = links | {"turn_id": (links.get("turn_id") or self._only_open(links.get("agent_id", ""))) if known_agent else ""}
                 args = _dict(data.get("arguments"))
                 emit("tool_call", "started", text_status="omitted" if data.get("arguments") else "")
                 if name in _SHELLS and isinstance(args.get("command"), str):
@@ -233,6 +326,13 @@ class CopilotSteps:
             owner = _label(data.get("parentId")) or self.children.get(parent_call, "") or self.calls.get(call, {}).get("agent_id", "")
             if source == "subagent.started" and call and agent:
                 self.children[call] = agent
+                spawning = self.calls.get(call, {})
+                # The originating call belongs to the sender; this lifecycle record belongs
+                # to the child. Never interpret the child's local turn ID in the root agent.
+                sender = spawning.get("agent_id", "")
+                self.spawn_roots[agent] = self._root(sender, spawning["turn_id"]) if spawning.get("turn_id") and owner == sender else ""
+            if source != "subagent.started" and (ended := agent or self.children.get(call, "")):
+                self.open_turns.pop(ended, None)
             emit("agent", source.split(".")[1], agent_id=agent or self.children.get(call, ""),
                  parent_agent_id=owner, name=_label(data.get("agentName")))
         elif source == "skill.invoked":

@@ -49,7 +49,7 @@ AUTO_STREAMING_TABLES = frozenset(
 )
 
 # Mutable SQL writers still resolve the source key, but publish the new timeline synchronously.
-AUTO_STREAMING_STATE_TABLES = frozenset({"session_steps", "session_step_text"})
+AUTO_STREAMING_STATE_TABLES = frozenset({"session_steps", "session_step_text", "turn_request_links"})
 
 # These tables hold state, unique-key upserts, or bootstrap data used immediately.
 AUTO_INLINE_TABLES = frozenset(

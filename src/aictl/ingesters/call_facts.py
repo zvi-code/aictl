@@ -45,6 +45,7 @@ from ..storage import (
     SessionStepRow,
     SkillUseRow,
     ToolInvocationRow,
+    TurnRequestLink,
     _dedup_key,
 )
 from ..utils import estimate_tokens_from_size
@@ -285,6 +286,7 @@ class FactBuffer:
         self.file_writes: dict[str, FileWriteRow] = {}
         self.context_events: dict[str, ContextEventRow] = {}
         self.steps: dict[str, SessionStepRow] = {}
+        self.cost_links: dict[str, TurnRequestLink] = {}
         self.loaded_files: dict[tuple[str, str, str], LoadedFileRow] = {}
         self.context_items: dict[tuple[str, str, str, str], ContextItemRow] = {}
         self.surface: Callable[[str], str] | None = None
@@ -377,6 +379,11 @@ class FactBuffer:
         self.steps[row.step_key] = row
         self._maybe_flush()
 
+    def add_cost_link(self, row: TurnRequestLink) -> None:
+        if not retains_unresolved_facts(self.store) and self._in_window(row.ts):
+            self.cost_links[row.request_key] = row
+            self._maybe_flush()
+
     def add_loaded_file(self, row: LoadedFileRow) -> None:
         if self._capture("loaded_files", row):
             return
@@ -401,6 +408,7 @@ class FactBuffer:
         return (
             sum(map(len, self._versions.values()))
             + len(self.steps)
+            + len(self.cost_links)
             + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)
@@ -439,7 +447,7 @@ class FactBuffer:
             return
         rows = [*self.requests.values(), *self.tools.values(), *self.prompts.values(), *self.skills.values()]
         rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values(), *self.loaded_files.values()]
-        rows += [*self.context_items.values(), *self.steps.values()]
+        rows += [*self.context_items.values(), *self.steps.values(), *self.cost_links.values()]
         if self.surface is not None:
             for row in rows:
                 if row.tool == "copilot-cli":
@@ -455,6 +463,7 @@ class FactBuffer:
             loaded_files=list(self.loaded_files.values()),
             context_items=list(self.context_items.values()),
             steps=list(self.steps.values()),
+            cost_links=list(self.cost_links.values()),
         )
         try:
             self.written += writer(facts)
@@ -474,6 +483,7 @@ class FactBuffer:
         self.skills, self.agents, self.file_writes = {}, {}, {}
         self.context_events = {}
         self.steps = {}
+        self.cost_links = {}
         self.loaded_files = {}
         self.context_items = {}
 
@@ -997,14 +1007,14 @@ class CopilotFacts:
     def __init__(self, session_id: str, buffer: FactBuffer) -> None:
         self.sid = session_id
         self.buffer = buffer
-        self.steps = None if retains_unresolved_facts(buffer.store) else CopilotSteps(session_id, buffer.add_step)
+        self.steps = None if retains_unresolved_facts(buffer.store) else CopilotSteps(session_id, buffer.add_step, buffer.add_cost_link)
         self.keep_text = _keep_text(buffer.store)
         self.cwd = ""
         self.git_root = ""
         self.model = ""
         self._occurrence: Counter[tuple[int, int, int, int]] = Counter()
         self._record_ids: set[str] = set()
-        self._compactions: list[tuple[dict, float, str]] = []
+        self._compactions: list[tuple[dict, float, str, str, TurnRequestLink | None]] = []
         self._running: dict[str, ToolInvocationRow] = {}
         # A completion needs counts per file, never the patch body.
         self._patches: dict[str, dict[str, tuple[int, int]]] = {}
@@ -1040,11 +1050,14 @@ class CopilotFacts:
             for key in ("requestId", "apiCallId"):
                 if usage.get(key):
                     self._record_ids.add(str(usage[key]))
-            self._call(usage, ts, agent_id)
+            link = self.steps.usage_link(obj, data, usage, ts, self.cwd) if self.steps else None
+            self._call(usage, ts, agent_id, link)
         elif kind == "session.compaction_complete":
             used = data.get("compactionTokensUsed")
             if isinstance(used, dict):
-                self._compactions.append((used, ts, str(data.get("requestId") or "")))
+                # Background compaction may overlap an unrelated open turn.
+                link = self.steps.usage_link(obj, data, used, ts, self.cwd, allow_open=False) if self.steps else None
+                self._compactions.append((used, ts, str(data.get("requestId") or ""), agent_id, link))
             self._compaction(data, ts, agent_id, event_id)
         elif kind == "session.shutdown":
             self._split(data, ts, agent_id, event_id)
@@ -1069,15 +1082,15 @@ class CopilotFacts:
 
     def finish_poll(self, now: float, pending_window_s: float) -> None:
         """Write what only the end of a read can settle: compactions and prompts still open."""
-        for used, ts, request_id in self._compactions:
+        for used, ts, request_id, agent_id, link in self._compactions:
             if request_id not in self._record_ids:
-                self._call(used, ts, "")
+                self._call(used, ts, agent_id, link)
         self._compactions.clear()
         for request_id, (ts, name, target, tool_call_id, agent_id) in self._permissions.items():
             if now - ts <= pending_window_s:
                 self._write_confirm(request_id, ts, name, target, tool_call_id, agent_id, "pending", 0.0)
 
-    def _call(self, usage: dict, ts: float, agent_id: str) -> None:
+    def _call(self, usage: dict, ts: float, agent_id: str, link: TurnRequestLink | None) -> None:
         raw = to_int(usage.get("inputTokens"))
         read, write = to_int(usage.get("cacheReadTokens")), to_int(usage.get("cacheWriteTokens"))
         out = to_int(usage.get("outputTokens"))
@@ -1086,9 +1099,10 @@ class CopilotFacts:
         self._occurrence[tokens] += 1
         model = str(usage.get("model") or self.model)
         billable = max(0, raw - read - write)
+        key = copilot_call_key(self.sid, tokens, n)
         self.buffer.add_request(
             RequestRow(
-                dedup_key=copilot_call_key(self.sid, tokens, n),
+                dedup_key=key,
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1109,6 +1123,8 @@ class CopilotFacts:
                 available_tools=to_count(usage.get("availableToolCount")),
             )
         )
+        if self.steps and link is not None:
+            self.steps.link_request(link, key, usage.get("apiCallId"))
 
     def _compaction(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
         if data.get("success") is False:

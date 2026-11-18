@@ -1,6 +1,6 @@
 import time
 
-from aictl.storage import STEP_TEXT_LIMIT, CallFacts, HistoryDB, SessionStepRow
+from aictl.storage import STEP_TEXT_LIMIT, CallFacts, HistoryDB, RequestRow, SessionStepRow, TurnRequestLink
 
 
 def test_steps_replay_without_duplicating_searchable_text(tmp_path):
@@ -32,3 +32,18 @@ def test_metadata_capture_never_writes_session_step_text(tmp_path):
         assert db._conn().execute("SELECT COUNT(*) FROM session_step_text").fetchone()[0] == 0
     finally:
         db.close()
+
+
+def test_cost_link_replay_joins_one_canonical_request_without_charging_twice(tmp_path):
+    with HistoryDB(tmp_path / "cost.db", flush_interval=0) as db:
+        ts = time.time()
+        request = RequestRow(ts, session_id="s", agent_id="a", dedup_key="r", cost_usd=0.25)
+        link = TurnRequestLink("r", ts, "s", agent_id="a", turn_id="child-turn",
+                               root_session_id="s", root_turn_id="parent-turn", basis="source")
+        for _ in range(2):
+            db.write_call_facts(CallFacts(requests=[request], cost_links=[link]))
+        row = db._conn().execute(
+            "SELECT l.root_turn_id,count(*),sum(r.cost_usd) FROM requests r JOIN turn_request_links l "
+            "ON r.session_id=l.session_id AND r.dedup_key=l.request_key GROUP BY l.root_turn_id"
+        ).fetchone()
+        assert tuple(row) == ("parent-turn", 1, 0.25)
