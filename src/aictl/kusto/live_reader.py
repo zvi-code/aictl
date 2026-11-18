@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import threading
 import time
@@ -28,7 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from . import KustoSettings, engine_url
-from .connection import KustoClientFactory, Result
+from .connection import KustoClientFactory, Result, kql_literal
 from .schema import DELETED, NODE, ROWID, VERSION, Table, node_predicate, quote, store_schema
 
 
@@ -103,6 +104,7 @@ class _Spec:
     name: str
     key: tuple[str, ...] = ()
     metadata: tuple[str, ...] = ()
+    first_key_type: str = "long"
 
     @property
     def versioned(self) -> bool:
@@ -122,6 +124,10 @@ class _Scan:
     after: str = ""
     anchor: str = ""
     partition: int = 0
+    page_size: int | None = None
+    # One page of (encoded key, native first column) awaiting its winner lookup.
+    pending: tuple[tuple[str, Any], ...] = ()
+    lookahead: bool = False
 
 
 class ReaderQueryError(RuntimeError):
@@ -222,7 +228,8 @@ def _specs(tables: Mapping[str, Table]) -> dict[str, _Spec]:
         metadata = tuple(
             dict.fromkeys((*table.key, ROWID, *(n for n in ("session_id", "project_path") if n in table.column_names)))
         )
-        result[name] = _Spec(name, table.key, metadata)
+        first = table.column(table.key[0]) if table.key else None
+        result[name] = _Spec(name, table.key, metadata, first.kusto_type if first else "long")
     return result
 
 
@@ -463,6 +470,8 @@ class SharedKustoReader:
             raise
         if getattr(response, "errors_count", 0):
             raise ReaderQueryError("Kusto returned an incomplete result")
+        if not response.primary_results:
+            raise ReaderQueryError("Kusto returned no primary result")
         result = Result.from_response(response)
         if len(result.rows) > (20_000 if management else max(2 + len(self._known), self.config.page_size + 1)):
             raise ReaderQueryError("Kusto result exceeded the row budget")
@@ -616,7 +625,7 @@ class SharedKustoReader:
         elif recovered or not all(changed.values()):
             self._publish("status")
 
-    def _page_query(self, spec: _Spec, scan: _Scan) -> str:
+    def _key_page_query(self, spec: _Spec, scan: _Scan, limit: int) -> str:
         if scan.kind == "cursor":
             predicate = f"cursor_after({_text(scan.lower)}) and cursor_before_or_at({_text(scan.upper)})"
         elif scan.kind == "preview":
@@ -628,21 +637,36 @@ class SharedKustoReader:
             if scan.kind == "reconcile"
             else ""
         )
-        metadata = ", ".join(quote(n) for n in spec.metadata)
-        source = f"{quote(spec.name)} | where {node_predicate(self.settings.node_id)}"
         return (
-            f"let aictl_live_changed = materialize({source} | where {predicate}"
-            f" | extend aictl_live_key={spec.key_expression}{partition}"
-            f" | where strcmp(aictl_live_key, {_text(scan.after)}) > 0 | summarize by aictl_live_key"
-            f" | order by aictl_live_key asc | take {self.config.page_size + 1});\n"
-            "aictl_live_changed | join kind=leftouter ("
-            f"{source} | extend aictl_live_key={spec.key_expression}"
-            " | where aictl_live_key in (aictl_live_changed)"
+            f"{quote(spec.name)} | where {predicate} | where {node_predicate(self.settings.node_id)}"
+            f" | project aictl_live_key={spec.key_expression}, aictl_live_first={quote(spec.key[0])}{partition}"
+            f" | where strcmp(aictl_live_key, {_text(scan.after)}) > 0"
+            f" | top {limit + 1} by aictl_live_key asc"
+        )
+
+    def _winner_query(self, spec: _Spec, scan: _Scan) -> str:
+        # Filter the native column first (e.g. ts on metrics/events), then match the
+        # exact composite identity. Neither filter evaluates a tabular IN subquery.
+        first = quote(spec.key[0])
+        values = {value for _, value in scan.pending}
+        terms = []
+        if None in values:
+            terms.append(f"isnull({first})")
+            values.remove(None)
+        if any(isinstance(v, float) and math.isnan(v) for v in values):
+            terms.append(f"isnan({first})")
+            values = {v for v in values if not isinstance(v, float) or not math.isnan(v)}
+        if values:
+            literals = sorted(kql_literal(value, spec.first_key_type) for value in values)
+            terms.append(f"{first} in ({', '.join(literals)})")
+        tokens = ", ".join(_text(token) for token, _ in scan.pending)
+        metadata = ", ".join(quote(n) for n in spec.metadata)
+        return (
+            f"{quote(spec.name)} | where {node_predicate(self.settings.node_id)} | where {' or '.join(terms)}"
+            f" | extend aictl_live_key={spec.key_expression} | where aictl_live_key in ({tokens})"
             f" | summarize arg_max({quote(VERSION)}, {quote(DELETED)}, {metadata}) by aictl_live_key"
-            ") on aictl_live_key"
             f" | project aictl_live_key, aictl_live_version=tostring({quote(VERSION)}),"
             f" aictl_live_deleted=coalesce({quote(DELETED)}, true), {metadata}"
-            " | order by aictl_live_key asc"
         )
 
     def _remember(self, row: KustoRow, token: str) -> bool:
@@ -665,51 +689,72 @@ class SharedKustoReader:
     def _page(self, scan: _Scan) -> bool:
         assert self._available is not None
         spec = self._available[scan.table]
-        raw = self._execute(self._page_query(spec, scan))
-        if len(raw) > self.config.page_size + 1:
-            raise ReaderQueryError("Kusto page exceeded the row budget")
+        if not scan.pending:
+            limit = scan.page_size or self.config.page_size
+            raw = self._execute(self._key_page_query(spec, scan, limit))
+            if len(raw) > limit + 1:
+                raise ReaderQueryError("Kusto page exceeded the row budget")
+            keys = {}
+            for value in raw:
+                token = value.get("aictl_live_key")
+                if not isinstance(token, str) or token <= scan.after or "aictl_live_first" not in value:
+                    raise ReaderQueryError("Invalid or non-advancing Kusto key page")
+                keys[token] = value["aictl_live_first"]
+            if keys:
+                scan.pending = tuple(sorted(keys.items())[:limit])
+                # top operates on versions, not distinct keys. Even a single repeated
+                # key can fill the page while more identities remain beyond it.
+                scan.lookahead = len(raw) == limit + 1
+                return True
+
         keyed = {}
-        for value in raw:
-            token = value.get("aictl_live_key")
-            if not isinstance(token, str):
-                raise ReaderQueryError("Missing stable row identity")
-            if token > scan.after:
+        if scan.pending:
+            for value in self._execute(self._winner_query(spec, scan)):
+                token = value.get("aictl_live_key")
+                if not isinstance(token, str) or token in keyed:
+                    raise ReaderQueryError("Invalid or repeated Kusto winner identity")
                 keyed[token] = value
-        tokens = sorted(keyed)
-        if raw and not tokens:
-            raise ReaderQueryError("Kusto page did not advance")
-        more = len(tokens) > self.config.page_size or len(raw) >= self.config.page_size + 1
+            if keyed.keys() - {token for token, _ in scan.pending}:
+                raise ReaderQueryError("Unexpected Kusto winner identity")
         parsed = []
-        for token in tokens[: self.config.page_size]:
-            value = keyed[token]
+        for token, _ in scan.pending:
+            value = keyed.get(token)
+            native_key = json.loads(base64.b64decode(token, validate=True).decode("utf-8"))
+            if not isinstance(native_key, list) or len(native_key) != len(spec.key):
+                raise ReaderQueryError("Invalid native row identity")
+            if value is None:
+                continue  # Retention between requests requires a table refresh, not an invented tombstone.
             if (
                 "aictl_live_version" not in value
                 or not isinstance(value.get("aictl_live_deleted"), bool)
                 or any(name not in value for name in spec.metadata)
             ):
                 raise ReaderQueryError("Missing or invalid row metadata")
-            native_key = json.loads(base64.b64decode(token, validate=True).decode("utf-8"))
-            if not isinstance(native_key, list) or len(native_key) != len(spec.key):
-                raise ReaderQueryError("Invalid native row identity")
             parsed.append(
                 (
                     token,
                     KustoRow(
                         spec.name,
                         tuple(native_key),
-                        value.get("aictl_live_version") or None,
-                        bool(value.get("aictl_live_deleted", True)),
+                        value["aictl_live_version"] or None,
+                        value["aictl_live_deleted"],
                         {name: value.get(name) for name in spec.metadata},
                     ),
                 )
             )
-        hints = tuple(row for token, row in parsed if self._remember(row, token))
-        if tokens:
-            scan.after = tokens[min(len(tokens), self.config.page_size) - 1]
+        more = scan.lookahead
+        disappeared = len(parsed) != len(scan.pending)
+        hints = () if disappeared else tuple(row for token, row in parsed if self._remember(row, token))
+        if scan.pending:
+            scan.after = scan.pending[-1][0]
+            scan.pending = ()
+            scan.lookahead = False
         if scan.kind == "cursor" and not more:
             with self._lock:
                 self._frontier[scan.table] = scan.upper
-        if hints:
+        if disappeared:
+            self._publish("resync", tables=(spec.name,), reason="key_disappeared")
+        elif hints:
             self._publish("changes", rows=hints, tables=(spec.name,))
         elif scan.kind == "cursor" and not more:
             self._publish("status")
@@ -719,8 +764,14 @@ class SharedKustoReader:
         try:
             more = self._page(scan)
         except _QueryMemoryError:
+            scan.page_size = max(1, (scan.page_size or self.config.page_size) // 2)
+            if len(scan.pending) > scan.page_size:
+                scan.pending = scan.pending[: scan.page_size]
+                scan.lookahead = True
             self._defer_cursor([scan])
             return False
+        if scan.pending:
+            return True  # Discovery succeeded; a deferred page is not recovered until its lookup succeeds.
         with self._lock:
             recovered = self._cursor_retries.pop(scan.table, None) is not None
         if recovered:
@@ -734,7 +785,7 @@ class SharedKustoReader:
                 scan = retry.scan
                 if scan.kind == "probe":
                     self._detect([scan.table], scan.upper)
-                elif self._cursor_page(scan):
+                elif self._cursor_page(scan) and not scan.pending:
                     self._ranges.append(scan)
                 return True
         return False

@@ -89,9 +89,18 @@ examine streaming RowStore rows even when no column-store extents are scanned.
 A time or hot-cache filter could miss a valid cursor change and is not a safe
 substitute for the cursor predicates.
 
-Each page first finds changed native keys, then queries the **currently visible
-winner** for those keys using the store's `arg_max(_v, ...)` semantics, including
-tombstones. A late older version consequently cannot resurrect a key whose
+Each nonempty page uses two requests. The first selects up to `page_size + 1`
+ordered key tokens from the relevant rows. Multiple versions of one key can fill
+that limit, so a full result always requires another page even if it contains
+only one distinct key. The second filters the same node by the first native key
+column and the exact list of selected key tokens. It returns the **currently
+visible winner** for each key using `arg_max(_v, ...)`, including tombstones.
+There is no materialized key set, tabular `in` subquery or join. Both requests
+count toward the per-poll budget; discovery alone does not commit the page.
+If a selected key disappears between successful requests, the reader invalidates
+the table instead of reporting an unobserved deletion.
+
+A late older version consequently cannot resurrect a key whose
 visible winner is already a newer tombstone. A source `_v` is never an arrival
 watermark: clocks on other machines and delayed queued ingestion do not define
 cursor order. Equal versions retain the existing store's `arg_max` tie semantics;
@@ -162,8 +171,11 @@ that an administrator cannot change the policy immediately afterward.
 
 An ADX `E_LOW_MEMORY_CONDITION` on a cursor probe splits that batch into
 independent table probes. A table that still fails, or a cursor page that hits
-the same error, retains its original cursor bounds and page token and retries
-with exponential backoff up to `max_error_s`. Other tables can process newer
+the same error, retains its original cursor bounds and last committed page token
+and retries with exponential backoff up to `max_error_s`. A failed page halves its
+key limit down to one for that range. A failed winner lookup retries the leading
+keys already discovered; later keys remain eligible after that page commits.
+Other tables can process newer
 cursors. Status remains stale while `cursor_memory_retry_tables` is nonempty;
 no full bootstrap is required for this error.
 

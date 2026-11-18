@@ -70,6 +70,7 @@ class FakeSDK:
         self.properties = []
         self.commands = []
         self.after_seed = None
+        self.key_page_hook = None
         self.page_hook = None
         self.probe_hook = None
         self.seeded = threading.Event()
@@ -178,8 +179,27 @@ class FakeSDK:
                     }
                 ]
             )
-        assert "aictl_live_changed" in query
-        candidates = self.rows
+        candidates = [r for r in self.rows if r.get("node_id", SETTINGS.node_id) == SETTINGS.node_id]
+        assert f"['node_id'] == {json.dumps(SETTINGS.node_id)}" in query
+        if " | summarize arg_max(" in query:
+            literal_keys = re.search(r"where aictl_live_key in \(([^)]+)\)", query).group(1)
+            keys = json.loads(f"[{literal_keys}]")
+            first = re.search(r"where \['session_id'\] in \((.*?)\) \|", query).group(1)
+            ids = json.loads(f"[{first}]")
+            result = []
+            for key in keys:
+                matching = [r for r in candidates if r["session_id"] in ids and token(r["session_id"]) == key]
+                if matching:
+                    current = max(matching, key=lambda row: row["_v"])
+                    result.append(
+                        dict(
+                            aictl_live_key=key,
+                            aictl_live_version=current["_v"],
+                            aictl_live_deleted=current["_deleted"],
+                            **{name: current[name] for name in ("session_id", "project_path", "rowid")},
+                        )
+                    )
+            return self.page_hook(query, result) if self.page_hook is not None else response(result)
         if "cursor_after(" in query:
             lower, upper = re.search(
                 r"cursor_after\((\"(?:\\.|[^\"\\])*\")\) and cursor_before_or_at\((\"(?:\\.|[^\"\\])*\")\)",
@@ -199,22 +219,10 @@ class FakeSDK:
                 row for row in candidates if sum(token(row["session_id"]).encode("utf-8")) % count == partition
             ]
         after = json.loads(re.search(r"strcmp\(aictl_live_key, (\"(?:\\.|[^\"\\])*\")\) > 0", query).group(1))
-        limit = int(re.search(r"take (\d+)", query).group(1))
-        keys = sorted({token(row["session_id"]) for row in candidates if token(row["session_id"]) > after})[:limit]
-        result = []
-        for key in keys:
-            current = max((row for row in self.rows if token(row["session_id"]) == key), key=lambda row: row["_v"])
-            result.append(
-                dict(
-                    aictl_live_key=key,
-                    aictl_live_version=current["_v"],
-                    aictl_live_deleted=current["_deleted"],
-                    **{name: current[name] for name in ("session_id", "project_path", "rowid")},
-                )
-            )
-        if self.page_hook is not None:
-            return self.page_hook(query, result)
-        return response(result)
+        limit = int(re.search(r"top (\d+) by aictl_live_key asc", query).group(1))
+        pairs = sorted((token(row["session_id"]), row["session_id"]) for row in candidates)
+        result = [dict(aictl_live_key=k, aictl_live_first=sid) for k, sid in pairs if k > after][:limit]
+        return self.key_page_hook(query, result) if self.key_page_hook is not None else response(result)
 
 
 def make_reader(sdk=None, **limits):
@@ -251,9 +259,11 @@ def detect(reader):
 
 def drain_range(reader):
     batches = []
-    while reader.latest_status().details["catching_up"]:
+    for _ in range(300):
+        if not reader.latest_status().details["catching_up"]:
+            return batches
         batches.extend(reader.poll_once())
-    return batches
+    pytest.fail(f"Cursor did not drain: {reader.latest_status().reason}")
 
 
 def row_hints(batches):
@@ -300,7 +310,7 @@ def test_scalar_probe_ignores_other_nodes_and_advances_empty_range():
     assert not row_hints(events)
     assert not any(batch.changed_tables for batch in events)
     assert reader.latest_status().frontier == {"sessions": "opaque-1"}
-    assert not any("aictl_live_changed" in query for query in sdk.queries)
+    assert not any("aictl_live_key" in query for query in sdk.queries)
 
     sdk.add("local", "v2", node_id=SETTINGS.node_id)
     events = [*detect(reader), *drain_range(reader)]
@@ -411,8 +421,10 @@ def test_memory_failure_mid_page_preserves_the_page_token_and_retry_upper(monkey
     sdk.add("a", "v1")
     sdk.add("b", "v1")
     detect(reader)
+    reader.poll_once()  # key page
     assert [row.key for row in row_hints(reader.poll_once())] == [("a",)]
     sdk.page_hook = lambda query, rows: fail_low_memory()
+    reader.poll_once()  # next key page
     reader.poll_once()
     failed = sdk.queries[-1]
     assert reader.latest_status().stale and reader.latest_status().frontier == {"sessions": "opaque-0"}
@@ -423,6 +435,65 @@ def test_memory_failure_mid_page_preserves_the_page_token_and_retry_upper(monkey
     assert sdk.queries[-1] == failed
     assert [row.key for row in row_hints(recovered)] == [("b",)]
     assert reader.latest_status().frontier == {"sessions": "opaque-2"} and not reader.latest_status().stale
+
+
+@pytest.mark.parametrize("stage", ["keys", "winners"])
+def test_cursor_memory_retry_reduces_the_page_until_it_can_drain_without_skips(monkeypatch, stage):
+    clock = [1000.0]
+    monkeypatch.setattr("aictl.kusto.live_reader.time.monotonic", lambda: clock[0])
+    sdk = FakeSDK()
+    reader = make_reader(sdk, page_size=4)
+    initialize(reader)
+    for sid in ("a", "b", "c", "d", "e"):
+        sdk.add(sid, "v1")
+    detect(reader)
+    reader._capture_next = float("inf")
+    if stage == "keys":
+        sdk.key_page_hook = lambda q, rows: fail_low_memory() if len(rows) > 2 else response(rows)
+    else:
+        sdk.page_hook = lambda q, rows: fail_low_memory() if len(rows) > 1 else response(rows)
+
+    hints = []
+    for _ in range(40):
+        before = len(sdk.queries)
+        hints.extend(row_hints(reader.poll_once()))
+        assert len(sdk.queries) - before <= 1  # queries_per_poll includes both stages and retries
+        if reader.latest_status().stale:
+            assert reader.latest_status().frontier["sessions"] == "opaque-0"
+        if not reader.latest_status().details["catching_up"]:
+            break
+        clock[0] += 60
+    assert [row.key for row in hints] == [(s,) for s in "abcde"]
+    assert not reader.latest_status().stale and reader.latest_status().frontier == {"sessions": "opaque-5"}
+
+
+def test_duplicate_versions_can_fill_key_page_without_hiding_next_key():
+    sdk = FakeSDK()
+    reader = make_reader(sdk, page_size=2)
+    initialize(reader)
+    for v in range(5):
+        sdk.add("a", f"v{v}")
+    sdk.add("b", "v1")
+    sdk.add("b", "v9", deleted=True, node_id=SETTINGS.node_id + "-other")
+    detect(reader)
+    hints = row_hints(drain_range(reader))
+    assert [(r.key, r.version, r.deleted) for r in hints] == [(("a",), "v4", False), (("b",), "v1", False)]
+    assert reader.latest_status().frontier == {"sessions": "opaque-7"}
+
+
+def test_key_removed_between_queries_invalidates_table_without_fabricating_a_deletion():
+    sdk = FakeSDK()
+    reader = make_reader(sdk)
+    initialize(reader)
+    sdk.add("gone", "v1")
+    remaining = sdk.add("still-visible", "v1")
+    detect(reader)
+    reader.poll_once()
+    sdk.rows[:] = [remaining]
+    result = reader.poll_once()
+    assert not row_hints(result) and not reader._dedup
+    assert any(b.kind == "resync" and b.changed_tables == ("sessions",) for b in result)
+    assert reader.latest_status().frontier == {"sessions": "opaque-2"}
 
 
 def test_bootstrap_checkpoint_precedes_concurrent_other_machine_writes():
@@ -448,7 +519,7 @@ def test_fixed_cursor_range_pages_do_not_skip_late_low_key_or_old_version():
     for sid in ("a", "b", "c"):
         sdk.add(sid, "2030-01-01T00:00:00Z")
     detect(reader)
-    first = reader.poll_once()
+    first = (*reader.poll_once(), *reader.poll_once())
     assert [row.key for row in row_hints(first)] == [("a",)]
     assert reader.latest_status().frontier["sessions"] == "opaque-0"
     sdk.add("0-late", "2000-01-01T00:00:00Z")
@@ -478,8 +549,9 @@ def test_late_older_version_cannot_resurrect_tombstone_and_newer_update_can():
     assert current[0].key == deleted[0].key and not current[0].deleted
     assert set(current[0].data) == {"session_id", "rowid", "project_path"}
     assert not any("private" in str(batch) for batch in (*deleted, *current))
-    page_queries = [query for query in sdk.queries if "aictl_live_changed" in query]
-    assert all("join kind=leftouter" in query and "arg_max(['_v']" in query for query in page_queries)
+    page_queries = [query for query in sdk.queries if "aictl_live_key" in query]
+    assert all("materialize(" not in query and " join " not in query for query in page_queries)
+    assert any("arg_max(['_v']" in query and "cursor_after" not in query for query in page_queries)
     assert not any("content" in query or "command" in query for query in page_queries)
 
 
@@ -492,7 +564,7 @@ def test_queryable_streaming_rows_are_previewed_before_cursor_assignment():
     assert not reader._ranges
     reader._preview_next = 0
     reader._capture_next = float("inf")
-    preview = reader.poll_once()
+    preview = (*reader.poll_once(), *reader.poll_once())
     assert [row.key for row in row_hints(preview)] == [("streaming",)]
     assert reader.latest_status().frontier["sessions"] == "opaque-0"
     sdk.assign(pending)
@@ -556,7 +628,7 @@ def test_disabled_policy_uses_explicit_reconciliation_without_cursor_claims():
     assert status.details["reconciliation_only_tables"] == ["sessions"]
     reader._reconcile_next = 0
     reader._capture_next = float("inf")
-    batches = reader.poll_once()
+    batches = (*reader.poll_once(), *reader.poll_once())
     assert [row.key for row in row_hints(batches)] == [("legacy",)]
     assert any(batch.kind == "resync" and batch.reason == "reconcile" for batch in batches)
     assert not any("['sessions'] | where cursor_after" in query for query in sdk.queries)
@@ -621,22 +693,18 @@ def test_duplicate_entries_are_idempotent_and_a_replayed_page_cannot_advance():
     for sid in ("a", "b"):
         sdk.add(sid, "2026-01-01T00:00:00Z")
     detect(reader)
-    sdk.page_hook = lambda query, rows: response([rows[0], rows[0], rows[1]])
-    first = reader.poll_once()
+    sdk.key_page_hook = lambda query, rows: response([rows[0], rows[0], rows[1]])
+    first = (*reader.poll_once(), *reader.poll_once())
     assert [row.key for row in row_hints(first)] == [("a",), ("b",)]
     assert reader.latest_status().frontier["sessions"] == "opaque-0"
     replay = dict(
         aictl_live_key=token("a"),
-        aictl_live_version="2026-01-01T00:00:00Z",
-        aictl_live_deleted=False,
-        session_id="a",
-        project_path="C:\\repo",
-        rowid=100,
+        aictl_live_first="a",
     )
-    sdk.page_hook = lambda query, rows: response([replay])
+    sdk.key_page_hook = lambda query, rows: response([replay])
     failed = reader.poll_once()
     assert failed[-1].stale and reader.latest_status().frontier["sessions"] == "opaque-0"
-    sdk.page_hook = None
+    sdk.key_page_hook = None
     assert row_hints(drain_range(reader)) == []
     assert reader.latest_status().frontier["sessions"] == "opaque-2"
 
@@ -660,6 +728,7 @@ def test_failed_pages_preserve_checkpoint_and_do_not_consume_unpublished_hints(f
         return response([rows[0], {**rows[1], "aictl_live_key": "not-json"}])
 
     sdk.page_hook = fail
+    reader.poll_once()  # key discovery succeeds, winner lookup must not consume the page on failure
     failed_query = len(sdk.queries)
     failed = reader.poll_once()
     assert failed[-1].stale
@@ -680,6 +749,7 @@ def test_repeated_query_failure_requires_resync_and_new_bootstrap_not_silent_ski
     sdk.add("a", "2026-01-01T00:00:00Z")
     detect(reader)
     sdk.page_hook = lambda query, rows: response(rows, errors=1)
+    reader.poll_once()
     reader.poll_once()
     events = reader.poll_once()
     assert events[-1].kind == "resync" and events[-1].reason == "reader_recovery"
