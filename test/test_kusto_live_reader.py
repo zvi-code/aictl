@@ -62,6 +62,7 @@ class FakeSDK:
         self.rows = []
         self.raw_rows = []
         self.raw_enabled = False
+        self.empty_tables = ()
         self.present = True
         self.policy = policy
         self.position = 0
@@ -70,6 +71,7 @@ class FakeSDK:
         self.commands = []
         self.after_seed = None
         self.page_hook = None
+        self.probe_hook = None
         self.seeded = threading.Event()
 
     @property
@@ -121,10 +123,10 @@ class FakeSDK:
             )
             if self.raw_enabled:
                 rows.append({"TableName": "OTELLogs", "ColumnName": "RowKey"})
+            rows.extend({"TableName": name, "ColumnName": "RowKey"} for name in self.empty_tables)
             return response(rows)
         assert command in {
-            ".show table ['sessions'] policy ingestiontime",
-            ".show table ['OTELLogs'] policy ingestiontime",
+            f".show table ['{n}'] policy ingestiontime" for n in ("sessions", "OTELLogs", *self.empty_tables)
         }
         return response([{"Policy": json.dumps({"IsEnabled": self.policy})}])
 
@@ -138,13 +140,20 @@ class FakeSDK:
                 self.after_seed = None
             self.seeded.set()
             return result
-        if query.startswith("let aictl_live_upper"):
-            rows = [{"aictl_live_table": "", "aictl_live_cursor": self.cursor, "aictl_live_now": NOW.isoformat()}]
-            for name, lower in re.findall(r"\(\['([^']+)'\] \| where cursor_after\((\"(?:\\.|[^\"\\])*\")\)", query):
-                low = self._position(json.loads(lower))
-                source = self.rows if name == "sessions" else self.raw_rows
-                if any(row["_cursor"] is not None and low < row["_cursor"] <= self.position for row in source):
-                    rows.append({"aictl_live_table": name, "aictl_live_cursor": "", "aictl_live_now": ""})
+        if query.startswith("union "):
+            rows = []
+            arms = re.findall(
+                r"\(\['([^']+)'\] \| where cursor_after\((\"(?:\\.|[^\"\\])*\")\) and cursor_before_or_at\((\"(?:\\.|[^\"\\])*\")\)",
+                query,
+            )
+            assert arms and len(arms) == query.count(" | take 1 | summarize aictl_live_count=count()")
+            for name, lower, upper in arms:
+                low, high = map(self._position, (json.loads(lower), json.loads(upper)))
+                source = self.rows if name == "sessions" else self.raw_rows if name == "OTELLogs" else []
+                changed = any(row["_cursor"] is not None and low < row["_cursor"] <= high for row in source)
+                rows.append({"aictl_live_table": name, "aictl_live_count": int(changed)})
+            if self.probe_hook is not None:
+                return self.probe_hook(rows)
             return response(rows)
         if "summarize aictl_live_count" in query:
             assert query.startswith("['OTELLogs']")
@@ -217,7 +226,7 @@ def make_reader(sdk=None, **limits):
 
 def initialize(reader):
     events = []
-    for _ in range(10):
+    for _ in range(len(reader.table_names) + 5):
         events.extend(reader.poll_once())
         if reader.latest_status().ready:
             break
@@ -229,18 +238,78 @@ def initialize(reader):
 
 def detect(reader):
     reader._capture_next = 0
-    return reader.poll_once()
+    events = reader.poll_once()
+    if reader.latest_status().details["catching_up"]:
+        events += reader.poll_once()
+    return events
 
 
 def drain_range(reader):
     batches = []
-    while reader._ranges:
+    while reader.latest_status().details["catching_up"]:
         batches.extend(reader.poll_once())
     return batches
 
 
 def row_hints(batches):
     return [row for batch in batches for row in batch.rows]
+
+
+def test_idle_cursor_poll_skips_all_tables_and_active_probes_share_one_fixed_upper():
+    sdk = FakeSDK()
+    sdk.empty_tables = tuple(f"quiet_{i}" for i in range(54))
+    reader = SharedKustoReader(
+        SETTINGS,
+        client=sdk,
+        tables={"sessions": TABLE, **{name: Table(name, key=()) for name in sdk.empty_tables}},
+        config=ReaderConfig(queries_per_poll=1),
+    )
+    initialize(reader)
+    sdk.queries.clear()
+    detect(reader)
+    assert len(sdk.queries) == 1 and sdk.queries[0].startswith("print aictl_live_cursor=cursor_current()")
+
+    sdk.add("first", "v1")
+    reader._capture_next = 0
+    reader.poll_once()
+    sdk.add("after-capture", "v2")
+    events = drain_range(reader)
+    probes = [q for q in sdk.queries if q.startswith("union ")]
+    sizes = [q.count("cursor_after(") for q in probes]
+    assert sum(sizes) == 55 and max(sizes) <= 4
+    assert all(q.count('cursor_before_or_at("opaque-1")') == size for q, size in zip(probes, sizes, strict=True))
+    assert [row.key for row in row_hints(events)] == [("first",)]
+    assert set(reader.latest_status().frontier.values()) == {"opaque-1"}
+    reader._capture_next = 0
+    reader.poll_once()
+    assert [row.key for row in row_hints(drain_range(reader))] == [("after-capture",)]
+
+
+@pytest.mark.parametrize("failure", ["partial", "missing_arm"])
+def test_failed_probe_retries_its_exact_range_without_advancing_or_reprobing_completed_tables(failure):
+    sdk = FakeSDK()
+    sdk.raw_enabled = True
+    reader = SharedKustoReader(
+        SETTINGS,
+        client=sdk,
+        table_names=("OTELLogs", "sessions"),
+        config=ReaderConfig(queries_per_poll=1, tables_per_probe=1),
+    )
+    initialize(reader)
+    sdk.add("pending", "v1")
+    detect(reader)
+    expected = {"OTELLogs": "opaque-1", "sessions": "opaque-0"}
+    assert reader.latest_status().frontier == expected
+    sdk.probe_hook = lambda rows: response(rows, errors=1) if failure == "partial" else response([])
+    failed = reader.poll_once()
+    assert failed[-1].stale and failed[-1].frontier == expected
+    failed_query = sdk.queries[-1]
+    sdk.probe_hook = None
+    reader.poll_once()
+    assert sdk.queries[-1] == failed_query and "OTELLogs" not in failed_query
+    assert reader.latest_status().frontier == expected
+    assert [row.key for row in row_hints(drain_range(reader))] == [("pending",)]
+    assert set(reader.latest_status().frontier.values()) == {"opaque-1"}
 
 
 def test_bootstrap_checkpoint_precedes_concurrent_other_machine_writes():

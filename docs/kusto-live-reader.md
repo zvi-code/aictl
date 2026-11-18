@@ -69,10 +69,15 @@ or an HTTP request thread.
 4. Read-only per-table ingestion-time policy checks establish which tables can
    use cursor processing. Policy-less tables are explicitly reported as
    reconciliation-only and have no cursor frontier.
-5. A bounded union query captures one upper cursor and detects tables with rows
-   in `(completed_frontier, captured_upper]`. Dirty versioned tables are drained
-   in fixed-bound keyset pages. An empty table range can advance immediately;
-   a dirty range advances only after its final complete page.
+5. A standalone `cursor_current()` query captures the upper cursor without
+   reading any table. If all cursor-enabled tables are caught up, detection
+   stops there; preview and reconciliation still run on their own schedules.
+   Otherwise the worker probes up to four lagging tables per request, keeping
+   the same upper cursor until every range is complete. Each table must return
+   an explicit count (zero or one) for `(completed_frontier, captured_upper]`.
+   A failed or incomplete probe advances none of its tables. Empty ranges can
+   advance immediately; changed versioned tables advance only after their final
+   complete keyset page.
 
 Each page first finds changed native keys, then queries the **currently visible
 winner** for those keys using the store's `arg_max(_v, ...)` semantics, including
@@ -175,6 +180,7 @@ Default limits are configurable through `ReaderConfig`:
 
 - 250 row hints per page, with one lookahead row.
 - Four SDK requests per worker poll, including discovery/policy work.
+- Four tables per cursor detection query (`tables_per_probe`).
 - 15-second server timeout, bounded result rows and 4 MB result bytes.
 - 128 MiB memory per query iterator and per query per node, plus a 25% query
   thread fan-out setting.
