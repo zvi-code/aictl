@@ -55,9 +55,44 @@ export function toolArgs(params) {
 
 const tokTotal = t => ((t.tokens || {}).input || 0) + ((t.tokens || {}).output || 0);
 
-/** Events with their lanes and token running totals, the swim-lane columns, and the summary. */
+/** Merge split user_message rows emitted for the same step_key (captured text + OTel turn metrics). */
+function mergeSplitPrompts(rawTurns) {
+  const list = rawTurns || [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const cur = list[i];
+    const next = list[i + 1];
+    if (
+      cur && next &&
+      cur.type === 'user_message' && next.type === 'user_message' &&
+      cur.step_key && cur.step_key === next.step_key &&
+      Boolean(cur.redacted) !== Boolean(next.redacted)
+    ) {
+      const textRow = cur.redacted ? next : cur;
+      const metricRow = cur.redacted ? cur : next;
+      out.push({
+        ...metricRow,
+        ...textRow,
+        redacted: false,
+        tokens: tokTotal(metricRow) >= tokTotal(textRow) ? metricRow.tokens : textRow.tokens,
+        api_calls: metricRow.api_calls || textRow.api_calls || 0,
+        duration_ms: metricRow.duration_ms || textRow.duration_ms || 0,
+        wall_ms: metricRow.wall_ms || textRow.wall_ms || 0,
+        end_ts: metricRow.end_ts || textRow.end_ts,
+        model: metricRow.model || textRow.model || '',
+      });
+      i += 1;
+    } else {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+/** Events with their lanes and token running totals, the swim-lane columns, turn groups, and the summary. */
 export function flowModel(turns, toolLabel, given) {
-  const events = (turns || []).map((t) => {
+  const mergedTurns = mergeSplitPrompts(turns);
+  const events = mergedTurns.map((t) => {
     const route = ROUTE[t.type];
     const [from, to] = route ? route(t) : [null, null];
     return { ...t, _from: from, _to: to };
@@ -65,15 +100,110 @@ export function flowModel(turns, toolLabel, given) {
   let cum = 0;
   let rt = 0;
   let maxRt = 0;
+  const promptCount = events.filter(e => e.type === 'user_message').length;
+  const totalTurns = given?.total_turns || promptCount;
+  const hasLeadingMidTurn = events.length > 0 && events[0].type !== 'user_message' &&
+    Boolean(given?.omitted_events > 0 || events[0].rt_tokens > 0);
+  const firstPromptTurn = totalTurns > promptCount && promptCount > 0 ? totalTurns - promptCount + 1 : 1;
+  let turnIndex = hasLeadingMidTurn ? Math.max(1, firstPromptTurn - 1) : firstPromptTurn - 1;
+  const turnGroups = [];
+  let currentGroup = null;
+
+  if (hasLeadingMidTurn) {
+    const firstEv = events[0];
+    firstEv._isTurnStart = true;
+    currentGroup = {
+      turnIndex,
+      isPartialStart: true,
+      startTs: firstEv.ts,
+      endTs: firstEv.ts,
+      promptEv: firstEv,
+      promptText: 'Continued from earlier in turn (load older events for prompt)',
+      tokens: firstEv.rt_tokens || 0,
+      cacheTokens: 0,
+      apiCalls: 0,
+      toolCalls: 0,
+      subagents: 0,
+      skills: [],
+      errors: 0,
+      durationMs: 0,
+      events: [],
+    };
+    turnGroups.push(currentGroup);
+  }
+
   for (const ev of events) {
-    if (ev.type === 'user_message') rt = 0;
-    if (ev.type === 'api_call') {
-      cum += tokTotal(ev);
-      rt += tokTotal(ev);
-      maxRt = Math.max(maxRt, rt);
+    if (ev.type === 'user_message') {
+      rt = 0;
+      turnIndex += 1;
+      ev._isTurnStart = true;
+      currentGroup = {
+        turnIndex,
+        startTs: ev.ts,
+        endTs: ev.end_ts || ev.ts,
+        promptEv: ev,
+        promptText: ev.preview || ev.message || (ev.redacted ? 'Prompt (text not retained)' : 'Prompt'),
+        tokens: tokTotal(ev),
+        cacheTokens: (ev.tokens || {}).cache_read || 0,
+        apiCalls: ev.api_calls || 0,
+        toolCalls: 0,
+        subagents: 0,
+        skills: [],
+        errors: 0,
+        durationMs: ev.duration_ms || ev.wall_ms || 0,
+        events: [ev],
+      };
+      turnGroups.push(currentGroup);
+    } else if (currentGroup) {
+      currentGroup.events.push(ev);
+      if (ev.ts > currentGroup.endTs) currentGroup.endTs = ev.ts;
+      if (currentGroup.isPartialStart && currentGroup.endTs > currentGroup.startTs) {
+        currentGroup.durationMs = (currentGroup.endTs - currentGroup.startTs) * 1000;
+      }
     }
+    if (ev.type === 'api_call') {
+      const t = tokTotal(ev);
+      cum += t;
+      rt += t;
+      maxRt = Math.max(maxRt, rt);
+      if (currentGroup) {
+        currentGroup.tokens = Math.max(currentGroup.tokens, ev.rt_tokens ?? rt);
+        currentGroup.cacheTokens += (ev.tokens || {}).cache_read || 0;
+        currentGroup.apiCalls = Math.max(currentGroup.apiCalls, currentGroup.events.filter(x => x.type === 'api_call').length);
+      }
+    }
+    if (currentGroup) {
+      if (ev.rt_tokens > currentGroup.tokens) currentGroup.tokens = ev.rt_tokens;
+      if (ev.type === 'tool_use') currentGroup.toolCalls += 1;
+      if (ev.type === 'subagent') currentGroup.subagents += 1;
+      if (ev.type === 'skill_event' && ev.name && !currentGroup.skills.includes(ev.name)) currentGroup.skills.push(ev.name);
+      if (ev.type === 'error' || ev.is_error || (ev.type === 'tool_use' && ev.success === false)) currentGroup.errors += 1;
+    }
+    ev._turnIndex = turnIndex;
     ev._cum = ev.cum_tokens ?? cum;
     ev._rt = ev.rt_tokens ?? rt;
+  }
+
+  // Compute per-turn waterfall bar offsets and widths for Option 1 Turn Waterfall
+  for (const g of turnGroups) {
+    const stepEvs = g.events;
+    const maxDur = Math.max(1000, ...stepEvs.map(e => e.duration_ms || 0));
+    const n = stepEvs.length || 1;
+    stepEvs.forEach((ev, idx) => {
+      ev._turnGroup = g;
+      const dur = ev.duration_ms || 0;
+      const widthPct = dur > 0 ? Math.max(6, Math.min(72, Math.round((dur / maxDur) * 68))) : 6;
+      const offsetPct = n > 1 ? Math.min(100 - widthPct, Math.round((idx / (n - 1)) * (92 - widthPct))) : 0;
+      ev._wfOffsetPct = offsetPct;
+      ev._wfWidthPct = widthPct;
+    });
+  }
+  // Events before the first user_message also get default waterfall metrics
+  for (const ev of events) {
+    if (ev._wfWidthPct == null) {
+      ev._wfOffsetPct = 0;
+      ev._wfWidthPct = ev.duration_ms > 0 ? Math.min(80, Math.max(8, Math.round(ev.duration_ms / 250))) : 8;
+    }
   }
   const seen = new Map();
   let slot = 0;
@@ -117,7 +247,7 @@ export function flowModel(turns, toolLabel, given) {
     ttft: median,
     ttftCalls: ttfts.length,
   };
-  return { events, participants: [...seen.values()], summary };
+  return { events, participants: [...seen.values()], turnGroups, summary };
 }
 
 /** A crowded diagram shares lanes, not events. The original endpoints and labels stay on every event. */

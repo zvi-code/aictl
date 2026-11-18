@@ -182,3 +182,33 @@ it('groups crowded lanes without dropping events, uses only visible lanes for ma
   expect([...visible.querySelectorAll('.bd-ag-slhead b')].map(e => e.textContent)).toEqual(['copilot', 'Selected tool']);
   expect(ui.queryByRole('region', { name: 'Selected event' })).toBeNull();
 });
+
+it('merges split user_message prompt rows, renders the turn scrubber, and supports session-stream swimlanes', async () => {
+  const turns = [
+    { type: 'user_message', ts: end - 300, step_key: 'turn-a', message: 'First prompt text', preview: 'First prompt text', redacted: false, tokens: { input: 0, output: 0 } },
+    { type: 'user_message', ts: end - 300, step_key: 'turn-a', message: '', preview: '', redacted: true, tokens: { input: 12000, output: 400 }, api_calls: 2, duration_ms: 8500 },
+    { type: 'tool_use', ts: end - 290, to: 'Bash', target: 'git status', success: true, duration_ms: 1200, agent_id: 'sub-a' },
+    { type: 'user_message', ts: end - 100, step_key: 'turn-b', message: 'Second prompt text', preview: 'Second prompt text', redacted: false, tokens: { input: 24000, output: 800 }, api_calls: 4, duration_ms: 14000 },
+    { type: 'tool_use', ts: end - 90, to: 'Edit', target: 'src/app.js', success: false, duration_ms: 950, agent_id: 'sub-b' },
+  ];
+  const ui = mount(() => payload(turns, { scope }));
+  const scrubber = await ui.findByRole('region', { name: 'Session turn scrubber' });
+  expect(scrubber).toHaveTextContent('Turn Scrubber (2 turns)');
+  expect(scrubber).toHaveTextContent('Peak: Turn #2 (25 k tok)');
+  // Merged prompt row shows both the prompt text and the OTel token total on Turn #1
+  expect(ui.getByText('Turn #1')).toBeVisible();
+  expect(ui.getByText('12 k tok')).toBeVisible();
+  // Clicking Turn 1 on the scrubber filters the visible events to Turn 1
+  fireEvent.click(within(scrubber).getByRole('button', { name: 'Turn 1' }));
+  expect(ui.getByText('Bash: git status')).toBeVisible();
+  expect(ui.queryByText('Edit: src/app.js')).toBeNull();
+  fireEvent.click(within(scrubber).getByRole('button', { name: /Turn #1 selected/ }));
+  expect(ui.getByText('Edit: src/app.js')).toBeVisible();
+  // Switch to Swim-lane and toggle Session & Subagent streams
+  fireEvent.click(ui.getByRole('button', { name: 'Swim-lane' }));
+  fireEvent.click(await ui.findByRole('button', { name: /Session & Subagent streams/ }));
+  expect(ui.getByText(/Main Session/)).toBeVisible();
+  expect(ui.getByText('Subagent sub-a')).toBeVisible();
+  expect(ui.getByText('Subagent sub-b')).toBeVisible();
+});
+

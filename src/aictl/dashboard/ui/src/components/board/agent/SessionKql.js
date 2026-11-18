@@ -404,7 +404,27 @@ function Editor({ id, generated, url }) {
     <p>${href ? 'Opens in Azure Data Explorer without running the query.' : query.trim() ? 'No Kusto database link is available. You can still copy the query.' : 'Enter a query to copy or open it.'}</p>`;
 }
 
-function Builder({ base, url, sessionId, sessions, models, tools, since, until }) {
+const SHORT_LABELS = {
+  steps: 'Steps',
+  requests: 'Requests & USD',
+  tools: 'Tool activity',
+  failures: 'Failed tools',
+  context: 'Context & reset',
+  spans: 'OTel spans',
+  prompts: 'User prompts',
+  assistant: 'Assistant text',
+  commands: 'Commands',
+  longest: 'Longest turn',
+  subagents: 'Subagents',
+  sizes: 'Response bytes',
+  mcp: 'MCP calls',
+  reasoning: 'Reasoning tok',
+  costMain: 'Turn cost (main)',
+  costTree: 'Turn cost (tree)',
+  costAll: 'Turn cost (all)',
+};
+
+function Builder({ base, url, sessionId, sessions, models, tools, since, until, flowFilters }) {
   const [id, setId] = useState('steps');
   const [sid, setSid] = useState(text(sessionId));
   const [model, setModel] = useState('');
@@ -417,7 +437,36 @@ function Builder({ base, url, sessionId, sessions, models, tools, since, until }
   const windowKey = JSON.stringify([since, until]);
   const includeAllSessions = global && allowedWindow === windowKey;
   const generated = buildQuery(example, { sessionId: sid, model, tool, keyword, since, until, includeAllSessions });
+  const hasFlowSync = Boolean(flowFilters && (flowFilters.tool_name || flowFilters.category || flowFilters.failed || flowFilters.q));
+  const syncFromFlow = () => {
+    if (!flowFilters) return;
+    let nextId = id;
+    if (flowFilters.failed) nextId = 'failures';
+    else if (flowFilters.category === 'tools' || flowFilters.tool_name) nextId = 'tools';
+    else if (flowFilters.category === 'prompts') nextId = 'prompts';
+    else if (flowFilters.category === 'models') nextId = 'requests';
+    else if (flowFilters.category === 'agents') nextId = 'subagents';
+    else if (flowFilters.category === 'context') nextId = 'context';
+    setId(nextId);
+    setAllowedWindow(null);
+    if (flowFilters.tool_name) setTool(flowFilters.tool_name);
+    if (flowFilters.q && (nextId === 'prompts' || nextId === 'assistant')) setKeyword(flowFilters.q);
+  };
   return html`<div class="bd-kql-body">
+    ${hasFlowSync && html`<div class="bd-kql-sync">
+      <span>Active Flow filters detected (${[
+        flowFilters.category && `category=${flowFilters.category}`,
+        flowFilters.tool_name && `tool=${flowFilters.tool_name}`,
+        flowFilters.failed && 'failures only',
+        flowFilters.q && `q="${flowFilters.q}"`,
+      ].filter(Boolean).join(' · ')})</span>
+      <button type="button" class="bd-btn bd-kql-syncbtn" onClick=${syncFromFlow}>Sync with Flow filters</button>
+    </div>`}
+    <div class="bd-kql-pills" role="group" aria-label="KQL preset shortcuts">
+      ${Object.entries(examples).map(([key, ex]) => html`<button type="button" key=${key}
+        class=${'bd-kql-pill' + (id === key ? ' bd-on' : '')} title=${ex.label}
+        onClick=${() => { setId(key); setAllowedWindow(null); setKeyword(''); }}>${SHORT_LABELS[key] || key}</button>`)}
+    </div>
     <label class="bd-kql-field">Example<select value=${id} onChange=${e => { setId(e.currentTarget.value); setAllowedWindow(null); setKeyword(''); }}>
       ${Object.entries(examples).map(([key, ex]) => html`<option value=${key} key=${key}>${ex.label}</option>`)}
     </select></label>
@@ -440,11 +489,11 @@ function Builder({ base, url, sessionId, sessions, models, tools, since, until }
   </div>`;
 }
 
-export default function SessionKql({ url, sessionId, sessions, models, tools, since, until }) {
+export default function SessionKql({ url, sessionId, sessions, models, tools, since, until, flowFilters }) {
   const [visited, setVisited] = useState(false);
   const base = 'session-kql-' + useId();
   return html`<details class="bd-kql" onToggle=${e => { if (e.currentTarget.open) setVisited(true); }}>
     <summary>Query in Kusto</summary>
-    ${visited && html`<${Builder} key=${sessionId} ...${{ base, url, sessionId, sessions, models, tools, since, until }}/>`}
+    ${visited && html`<${Builder} key=${sessionId} ...${{ base, url, sessionId, sessions, models, tools, since, until, flowFilters }}/>`}
   </details>`;
 }

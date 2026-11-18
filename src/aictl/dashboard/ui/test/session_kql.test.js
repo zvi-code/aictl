@@ -285,3 +285,16 @@ it('keeps the editor usable without a safe HTTPS database link or clipboard perm
   type(area, ' ');
   expect(ui.getByRole('button', { name: 'Copy query' })).toBeDisabled();
 });
+
+it('syncs active Flow filters into the KQL preset and parameters on request', async () => {
+  const ui = await open({
+    flowFilters: { category: 'tools', tool_name: 'Shell / local', failed: '1' },
+  });
+  expect(ui.getByText(/Active Flow filters detected/)).toHaveTextContent('tool=Shell / local');
+  fireEvent.click(ui.getByRole('button', { name: 'Sync with Flow filters' }));
+  const query = ui.getByLabelText('KQL query').value;
+  expect(query).toContain('tool_invocations');
+  expect(query).toContain('| where tool_name == "Shell / local"');
+  expect(query).toContain('| where is_error == 1');
+});
+
