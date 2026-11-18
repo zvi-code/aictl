@@ -218,7 +218,9 @@ class CursorConversationsIngester:
         The window is left open-ended on the future side because live
         sessions have ``ended_at = NULL``.
         """
-        if project_path and getattr(self.store, "streams_observations", False) is not True:
+        from ..kusto.observations import retains_unresolved_facts
+
+        if project_path and not retains_unresolved_facts(self.store):
             where = "tool = 'cursor' AND project_path = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)"
             find = getattr(self.store, "sessions_where", None)
             if find is not None:
@@ -279,7 +281,7 @@ def start_background_poller(
         while True:
             try:
                 ingester.poll()
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:  # noqa: BLE001 - isolate poll failures from the daemon
                 log.debug("cursor ingester poll error: %s", exc)
             time.sleep(interval)
 

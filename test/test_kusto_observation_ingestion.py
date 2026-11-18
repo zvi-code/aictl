@@ -360,8 +360,7 @@ def test_report_completeness_fails_closed_when_cutover_state_is_missing():
     assert "cutover state is unavailable" in result.error
     assert result.tables == []
     assert len(client.queries) == 1
-    assert "maintenance_state" in client.queries[0]
-    assert "isfuzzy" not in client.queries[0]
+    assert ".show tables" in client.queries[0]
 
 
 def test_cutover_control_metadata_precedes_queued_evidence(monkeypatch):
@@ -380,6 +379,62 @@ def test_cutover_control_metadata_precedes_queued_evidence(monkeypatch):
     assert "observation_cutover:requests" in client.commands[0]
     assert "retain_unresolved" in client.commands[0]
     assert not client.queries
+
+
+@pytest.mark.parametrize(
+    ("existing", "current"),
+    [
+        ([], True),
+        (["aictl_current_store_v1", "sessions"], True),
+        (["sessions"], False),
+        (["aictl_current_store_v1", "requests_observations"], False),
+    ],
+)
+def test_history_layout_revives_only_fresh_stores(monkeypatch, existing, current):
+    from test_kusto_connection import FakeClient, response
+
+    from aictl.kusto.connection import connect
+
+    client = FakeClient(on_mgmt=lambda _: response([("TableName", "string")], [[n] for n in existing]))
+    monkeypatch.setattr(KustoConnection, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(KustoConnection, "_cutover_done", set())
+    conn = connect(KustoSettings("https://example.kusto.windows.net"), client=client,
+                   ingester=RecordingIngester(), history_store=True)
+    assert conn.observation_writes is not current
+    assert ("requests_observations" not in conn.tables) is current
+    assert any("create-merge" in cmd for cmd in client.commands) == (not existing)
+    assert any("retain_unresolved" in cmd for cmd in client.commands) is not current
+
+
+def test_current_report_runs_analytical_query_and_returns_its_data():
+    from test_kusto_connection import FakeClient, response
+
+    from aictl.kusto.report import SECTIONS, run_section
+
+    def query(kql):
+        if kql.startswith(".show"):
+            return response([("TableName", "string")], [[t] for t in ("aictl_current_store_v1", "requests", "tool_invocations")])
+        return response([("n", "long")], [[7]])
+
+    client = FakeClient(on_query=query)
+    result = run_section(client, "test", SECTIONS[0], 7)
+    assert result.error is None and result.tables == [[{"n": 7}]]
+    assert client.queries[-1] == result.kql
+
+
+def test_current_upserts_with_a_repeated_key_do_not_read_the_same_baseline(monkeypatch):
+    import threading
+
+    from test_kusto_connection import FakeClient
+
+    from aictl.storage import _REQUEST_UPSERT, _request_params
+
+    conn = KustoConnection(KustoSettings("https://example.kusto.windows.net"), FakeClient(), RecordingIngester())
+    conn._history_writer = threading.Lock()
+    batches = []
+    monkeypatch.setattr(conn, "_mutate_many", lambda group, _: batches.append([s.upsert_key for s in group]) or len(group))
+    conn.executemany(_REQUEST_UPSERT, [_request_params(RequestRow(ts=1, dedup_key=k)) for k in ("a", "b", "a")])
+    assert batches == [[("a",), ("b",)], [("a",)]]
 
 
 def test_fact_privacy_is_applied_before_a_failed_handoff_is_buffered(observation_store):

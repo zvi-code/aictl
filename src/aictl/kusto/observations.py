@@ -22,6 +22,19 @@ FAMILIES = (
 )
 PRODUCER_ID = uuid.uuid4().hex
 
+# An empty table is the layout marker: unlike a maintenance row it cannot expire.
+CURRENT_STORE = "aictl_current_store_v1"
+COMPANIONS = frozenset(family + "_observations" for family in FAMILIES)
+LAYOUT_QUERY = ".show tables | project TableName"
+
+
+def has_current_store(names: set[str]) -> bool:
+    return CURRENT_STORE in names and not names.intersection(COMPANIONS)
+
+
+def retains_unresolved_facts(store: Any) -> bool:
+    return getattr(store, "streams_observations", False) is True and getattr(store, "current_history", False) is not True
+
 
 def table_name(family: str) -> str:
     if family not in FAMILIES:

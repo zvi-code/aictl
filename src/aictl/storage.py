@@ -26,7 +26,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -2558,6 +2558,7 @@ class HistoryDB:
         # no memory fallback (a cluster that cannot be reached is an error to see,
         # not a history to lose quietly). ``_path`` is the store's kusto:// name.
         self._kusto = kusto
+        self.current_history: bool | None = None
         if kusto is not None:
             db_path = kusto.uri
             memory_fallback = False
@@ -2643,7 +2644,8 @@ class HistoryDB:
             if self._kusto is not None:
                 from .kusto.connection import connect as kusto_connect
 
-                conn = kusto_connect(self._kusto, observation_writes=True)
+                conn = kusto_connect(self._kusto, history_store=True, current_history=self.current_history)
+                self.current_history = not conn.observation_writes
                 self._local.conn = conn
                 return conn
             conn = connect_file(path) if isinstance(self._path, Path) else sqlite3.connect(path, timeout=BUSY_TIMEOUT_S)
@@ -3303,6 +3305,12 @@ class HistoryDB:
         """Kusto observations bypass SQLite's buffering and suppression rules."""
         return self._kusto is not None and self._shared_conn is None
 
+    @property
+    def _unresolved_facts(self) -> bool:
+        from .kusto.observations import retains_unresolved_facts
+
+        return retains_unresolved_facts(self)
+
     def _ingest_observations(self, table: str, rows: list[dict[str, Any]]) -> None:
         """Send a producer batch directly; failure remains the caller's responsibility."""
         self._conn().ingest_observations(table, rows)
@@ -3518,7 +3526,7 @@ class HistoryDB:
 
     def append_request(self, row: RequestRow) -> None:
         """Buffer an LLM request for batch insert."""
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._observe_fact("requests", asdict(row), identity=row)
             return
         with self._lock:
@@ -3528,9 +3536,11 @@ class HistoryDB:
 
     def append_tool_invocation(self, row: ToolInvocationRow) -> None:
         """Buffer a tool invocation for batch insert."""
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._observe_fact("tool_invocations", asdict(row), identity=row)
             return
+        if self.current_history and not self._keeps_text():
+            row = replace(row, dedup_key=_tool_invocation_row_tuple(row)[0], input={}, result_summary="", target="")
         with self._lock:
             self._tool_invocations_buf.append(row)
         if self._flush_interval <= 0:
@@ -4404,7 +4414,7 @@ class HistoryDB:
         """``upsert_session`` for many rows: one statement and one commit, in the order given."""
         if not rows:
             return
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._ingest_observations(
                 "sessions_observations", [self._fact_observation("sessions", asdict(row)) for row in rows]
             )
@@ -4454,7 +4464,7 @@ class HistoryDB:
         rows = [(sid, pid, tool, now, role) for sid, pid, tool, role in links if sid and pid]
         if not rows:
             return
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._ingest_observations("session_processes_observations", [
                 self._fact_observation(
                     "session_processes", dict(zip(("session_id", "pid", "tool", "joined_at", "role"), row, strict=True))
@@ -4519,7 +4529,7 @@ class HistoryDB:
         """
         if not entries:
             return
-        if self.streams_observations:
+        if self._unresolved_facts:
             self.upsert_sessions([
                 SessionRow(session_id=sid, tool=tool, pid=pid, started_at=started, source=source)
                 for sid, tool, pid, started, source in entries
@@ -4555,7 +4565,7 @@ class HistoryDB:
         """
         if not session_id:
             return
-        if self.streams_observations:
+        if self._unresolved_facts:
             values = dict(kwargs)
             values.update(session_id=session_id, ended_at=None)
             self._observe_fact("sessions", values, operation="patch")
@@ -4614,7 +4624,7 @@ class HistoryDB:
         """Update session end time and optional fields."""
         if not session_id:
             return
-        if self.streams_observations:
+        if self._unresolved_facts:
             values = dict(kwargs)
             values.update(session_id=session_id, ended_at=ended_at)
             self._observe_fact("sessions", values, operation="patch")
@@ -4785,7 +4795,7 @@ class HistoryDB:
         *rows* holds (session id, dedup key, input bytes, output bytes). A size that is
         already set stays. Each chunk is one short transaction. Returns the rows changed.
         """
-        if self.streams_observations:
+        if self._unresolved_facts:
             records = [
                 self._fact_observation(
                     "tool_invocations",
@@ -4849,7 +4859,7 @@ class HistoryDB:
         """
         if not traces:
             return 0
-        if self.streams_observations:
+        if self._unresolved_facts:
             for trace_id, sid in traces:
                 self._observe_fact(
                     "session_processes", {"session_id": sid, "trace_id": trace_id},
@@ -4905,7 +4915,7 @@ class HistoryDB:
         Returns True if a row was updated, False if not found.
         Used by PostToolUse hooks to complete the record started by PreToolUse.
         """
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._observe_fact(
                 "tool_invocations",
                 {"dedup_key": dedup_key, "duration_ms": duration_ms, "is_error": is_error, "result_summary": result_summary},
@@ -4973,7 +4983,7 @@ class HistoryDB:
 
     def upsert_session_usage(self, row: dict) -> None:
         """Replace one session's transcript-derived usage. Totals are absolute."""
-        if self.streams_observations:
+        if self._unresolved_facts:
             values = dict(row)
             values["models_json"] = values.pop("models", {})
             values["daily_json"] = values.pop("daily", {})
@@ -5216,7 +5226,7 @@ class HistoryDB:
         """Persist a write-like file event. Returns True if inserted."""
         if not row.path:
             return False
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._observe_fact("file_write_events", asdict(row), identity=row)
             return True
         conn = self._conn()
@@ -5730,7 +5740,7 @@ class HistoryDB:
         """``upsert_agent`` for many rows: one statement and one commit, in the order given."""
         if not rows:
             return
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._ingest_observations("agents_observations", [
                 self._fact_observation("agents", asdict(row), identity=row) for row in rows
             ])
@@ -5776,7 +5786,7 @@ class HistoryDB:
         """
         if not len(facts):
             return 0
-        if self.streams_observations:
+        if self._unresolved_facts:
             groups = {
                 "requests": facts.requests, "tool_invocations": facts.tools,
                 "session_prompts": facts.prompts, "skill_uses": facts.skills,
@@ -5794,6 +5804,12 @@ class HistoryDB:
             }
             self._ingest_observations_many(batches)
             return len(facts)
+        if self.current_history and not self._keeps_text():
+            facts = replace(
+                facts,
+                tools=[replace(r, input={}, result_summary="") for r in facts.tools],
+                prompts=[replace(r, text="") for r in facts.prompts],
+            )
         conn = self._conn()
         try:
             self._promote_hook_tool_rows(conn, facts.tools)
@@ -5925,7 +5941,7 @@ class HistoryDB:
 
     def set_sessions_tool(self, session_ids: list[str], tool: str) -> None:
         """Re-attribute sessions' fact rows, when their surface becomes known after they were written."""
-        if self.streams_observations:
+        if self._unresolved_facts:
             for sid in session_ids:
                 self._observe_fact("sessions", {"session_id": sid, "tool": tool}, operation="attribution")
             return
@@ -5942,7 +5958,7 @@ class HistoryDB:
 
     def clear_stale_pending_confirms(self, before: float) -> int:
         """A prompt left open this long belongs to a session that is gone, not one still waiting."""
-        if self.streams_observations:
+        if self._unresolved_facts:
             self._observe_fact("tool_invocations", {"ts": before}, operation="expire_pending_before")
             return 0
         conn = self._conn()
@@ -7195,7 +7211,7 @@ class HistoryDB:
         before = time.time() if before is None else before
         conn = self._conn()
         scope = getattr(conn, "maintenance_scope", contextlib.nullcontext)
-        tables = (*_TEXT_COLUMNS, *_OBSERVATION_TEXT_COLUMNS) if self.streams_observations else _TEXT_COLUMNS
+        tables = (*_TEXT_COLUMNS, *_OBSERVATION_TEXT_COLUMNS) if self._unresolved_facts else _TEXT_COLUMNS
         with scope():
             total = sum(self._trim_table_text(t, c, cols, since, before) for t, c, cols in tables)
             total += sum(self._trim_event_text(since, before, table) for table in _JSON_TEXT_COLUMNS)
@@ -7251,7 +7267,7 @@ class HistoryDB:
         """Rows and characters of text ``trim_text`` would remove, per table."""
         conn = self._conn()
         scope = getattr(conn, "maintenance_scope", contextlib.nullcontext)
-        tables = (*_TEXT_COLUMNS, *_OBSERVATION_TEXT_COLUMNS) if self.streams_observations else _TEXT_COLUMNS
+        tables = (*_TEXT_COLUMNS, *_OBSERVATION_TEXT_COLUMNS) if self._unresolved_facts else _TEXT_COLUMNS
         out: dict[str, int] = {}
         with scope():
             for table, _ts, columns in tables:

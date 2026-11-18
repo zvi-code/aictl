@@ -727,7 +727,8 @@ class CollectionService:
         except Exception as exc:
             _say(f"  warning: datapoint logger unavailable ({exc})")
 
-        # SQLite persistence
+        # History persistence
+        kusto = None
         try:
             from .kusto import kusto_settings
             from .platforms import load_config as _load_config
@@ -763,6 +764,8 @@ class CollectionService:
             else:
                 _say(f"  project stores: {self.db.projects_dir}")
         except Exception as exc:
+            if kusto is not None:
+                raise
             _say(f"  warning: history db unavailable ({exc})")
 
         # Metric sink

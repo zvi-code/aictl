@@ -260,17 +260,18 @@ def run_section(
     started = time.perf_counter()
     try:
         from ..connection import Result
-        from ..observations import UnresolvedObservationsError, unresolved_query
+        from ..observations import LAYOUT_QUERY, UnresolvedObservationsError, has_current_store
 
-        unresolved = Result.from_response(
-            _execute(client, database, unresolved_query(("requests", "tool_invocations")), props, _throttled)
-        )
-        # Missing cutover metadata is unknown, never proof that frozen counts
-        # are complete. No request/tool projection is currently marked resolved.
+        layout = Result.from_response(_execute(client, database, LAYOUT_QUERY, props, _throttled))
+        names = {str(r["TableName"]) for r in layout.dicts() if "TableName" in r}
         families = ("requests", "tool_invocations")
-        known = {row.get("family") for row in unresolved.dicts() if row.get("policy") == "retain_unresolved"}
-        reason = "source identity/revision is unresolved" if set(families) <= known else "cutover state is unavailable"
-        raise UnresolvedObservationsError(families, reason=reason)
+        if not has_current_store(names) or not set(families) <= names:
+            reason = "legacy observation store" if names else "cutover state is unavailable"
+            raise UnresolvedObservationsError(families, reason=reason)
+        response = _execute(client, database, kql, props, _throttled)
+        for table in response.primary_results:
+            columns = [c.column_name for c in table.columns]
+            result.tables.append([{c: _jsonable(v) for c, v in zip(columns, r, strict=True)} for r in table])
     except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is shown in the section
         result.tables = []
         result.error = _server_message(exc).strip() or type(exc).__name__

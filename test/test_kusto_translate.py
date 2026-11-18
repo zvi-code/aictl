@@ -326,6 +326,8 @@ def _hole(expr: ast.expr, before: str, after: str, module) -> str:
         return "main"
     if source == "names":
         return "session_id, rank, text"
+    if source == "identity_column":
+        return "id, "
     if before.endswith("."):
         if "sid" in source:
             return "session_id IN (?)"
@@ -386,7 +388,7 @@ def corpus() -> list[tuple[str, int, str]]:
     for path in sorted(SRC.rglob("*.py")):
         if "kusto" in path.parts:
             continue
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings = {
             id(n.body[0].value)
             for n in ast.walk(tree)
@@ -419,7 +421,7 @@ def corpus() -> list[tuple[str, int, str]]:
                 continue
             sql = sql.strip()
             if SQL_HEAD.match(sql):
-                out.append((str(path.relative_to(SRC.parent)), node.lineno, _fill(sql, tables)))
+                out.append((path.relative_to(SRC.parent).as_posix(), node.lineno, _fill(sql, tables)))
     return out
 
 

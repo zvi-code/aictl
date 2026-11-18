@@ -31,6 +31,7 @@ from typing import Any
 
 from ..context_audit import _redact
 from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
+from ..kusto.observations import retains_unresolved_facts
 from ..storage import (
     AgentRow,
     CallFacts,
@@ -288,7 +289,7 @@ class FactBuffer:
         self.write_error: sqlite3.Error | None = None
 
     def _capture(self, family: str, row: Any) -> bool:
-        if getattr(self.store, "streams_observations", False) is not True:
+        if not retains_unresolved_facts(self.store):
             return False
         saved = copy.deepcopy(row)
         if not _keep_text(self.store):
@@ -437,6 +438,10 @@ class FactBuffer:
         try:
             self.written += writer(facts)
         except sqlite3.Error as exc:
+            if getattr(self.store, "current_history", False) is True:
+                self.write_error = exc
+                log.warning("Kusto current-history batch failed; retaining facts for retry", exc_info=True)
+                return
             log.debug("call facts: write failed, retrying next poll: %s", exc)
             return
         self._clear()

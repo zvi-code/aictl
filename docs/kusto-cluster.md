@@ -56,7 +56,7 @@ The last command creates the database; run it again with another `--database-nam
 
 ## 2. Access to a remote cluster: identities, roles and endpoints
 
-aictl creates the tables and sets policies, so the identity it runs as needs the **Database Admin** role on that database; Ingestor plus Viewer is enough once the tables exist. Grant a role with a management command on the database, for example from the Kusto web UI or `aictl`'s own connection:
+aictl creates tables and sets policies on startup, even when the tables already exist. Use **Database Admin** on the target database for the daemon; **Database Viewer** is sufficient for a report. Grant a role with a management command on the database, for example from the Kusto web UI:
 
 ```
 .add database ['aictl'] admins ('aaduser=someone@contoso.com')
@@ -92,7 +92,9 @@ or pass it on the command line, which also works for a one-off run:
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. The first start creates the store and companion observation tables, enables streaming ingestion on the database if any table uses it, writes `aictl_information_schema`, which describes every column, and clears the streaming-ingestion schema cache when streaming tables change; `aictl db schema` prints the schema documentation. Observation-mode setup also records the synchronous cutover markers described below. The streaming policy is set on the database and every table inherits it, so `.show table T policy streamingingestion` can show null for a table that streams. Later starts compare the database's schema with the code's and change only what differs.
+The start prints `history store: kusto://<host>/aictl (Kusto, azcli auth; no SQLite file)`. On an **empty database**, aictl creates the `aictl_current_store_v1` marker table before the store tables. The daemon applies the normal session, usage, request and tool-call updates to versioned history tables. Dashboard queries, the live reader and `aictl db report` read these tables; telemetry still streams independently. Startup also refreshes `aictl_information_schema` and the database streaming policy when applicable.
+
+Use **one daemon writer per database**, and stop it before changing versions. A nonempty database without the marker, or a database containing any legacy `*_observations` family, retains the observation-only behavior below. Do not add the marker manually or remove companion tables to enable reads. To switch, start this version with `--kusto-database` pointing to a **new empty database**. The ingesters can re-read the machine's retained sources; data present only as unresolved observations is not imported. Use the same database for reports. To roll back, stop the daemon and use the old binary with its original database, not the new one.
 
 ### Global ingestion mode and per-table overrides
 
@@ -129,9 +131,9 @@ In Kusto mode, collected sample values bypass change/sensitivity/flood suppressi
 
 The HTTP OTLP path converts and hands off each received export without the local OTel queue or linger timer. It returns an error when conversion or ingestion fails, so a failed handoff is not reported as success. Streaming handoff confirms completion; queued handoff confirms submission only. Retried OTLP rows retain their `RowKey`. An ambiguous delivery can create physical duplicates: use that identity when counting logical OTLP records. In-memory acceptance is not a crash-durability guarantee.
 
-### Mutable observations: retain unresolved, do not guess canonical totals
+### Legacy observation databases: retain unresolved, do not guess canonical totals
 
-The Kusto store now writes request, tool-call, session, agent, session-usage, session/process-link, prompt, skill, file-write, context-event, loaded-file and context-item observations to typed `*_observations` companion tables. Their typed writer paths do not look up existing rows, merge partial facts, or delete another source's observations. The original canonical tables remain the legacy baseline; SQL writes to those families through an observation-mode connection are rejected. SQLite retains its previous behavior.
+In this layout, the store writes request, tool-call, session, agent, session-usage, session/process-link, prompt, skill, file-write, context-event, loaded-file and context-item observations to typed `*_observations` companion tables. Their typed writer paths do not look up existing rows, merge partial facts, or delete another source's observations. The original canonical tables remain the legacy baseline; SQL writes to those families through an observation-mode connection are rejected. SQLite retains its previous behavior.
 
 Each companion has typed fact columns plus `observation_id`, `observation_source`, `source_entity_id`, `producer_id`, nullable `source_revision`, native datetime `event_time`/`received_time`, `observation_operation`, `source_presence_known`, `presence`, and `serialized_fields`. An upstream revision is **not** inferred from the call-start or ingestion timestamp. Until an adapter supplies source presence, `source_presence_known` is false and `presence` is empty: `serialized_fields` describes the emitted row, including possible dataclass defaults, not which source fields were supplied. Missing identity/order is retained as uncertainty.
 
@@ -233,7 +235,7 @@ Windows starts a child process with `aictl daemon serve`, not the removed top-le
 
 Open the dashboard as usual (`aictl daemon serve` prints the URL). The Settings screen's "Data sources" shows the cluster. `aictl_information_schema | summarize count() by ['scope']` lists the schema, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
 
-Kusto history tables contain multiple versions and deletion markers. A raw `sessions | count` is not the number of indexed sessions. To count current session rows:
+On a **current store**, history tables contain multiple versions and deletion markers. A raw `sessions | count` is not the number of indexed sessions. To count current session rows:
 
 ```kql
 sessions

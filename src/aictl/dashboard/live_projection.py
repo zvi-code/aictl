@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any
 
-from ..kusto.observations import FAMILIES, UnresolvedObservationsError
+from ..kusto.observations import FAMILIES, UnresolvedObservationsError, retains_unresolved_facts
 from .live_hub import LiveCapacityError, LiveHub
 from .live_protocol import canonical_scope, stable_id
 from .live_queries import ProjectionConnection, ProjectionQueries
@@ -238,7 +238,7 @@ class LiveDashboard:
                     entry.dirty = True
                 entry.refs += 1
                 entry.last_used = time.monotonic()
-                if getattr(self.db, "streams_observations", False) is True and not entry.blocked:
+                if retains_unresolved_facts(self.db) and not entry.blocked:
                     self._block_history(entry, UnresolvedObservationsError(FAMILIES))
                 read_history = not entry.blocked
         with self._lock:

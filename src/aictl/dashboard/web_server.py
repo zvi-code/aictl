@@ -805,7 +805,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
                 # Best-effort git commit attribution in a background
                 # thread — never block the hook response.
-                if event_name == "SessionEnd" and session_id and cwd and getattr(db, "streams_observations", False) is not True:
+                from ..kusto.observations import retains_unresolved_facts
+
+                if event_name == "SessionEnd" and session_id and cwd and not retains_unresolved_facts(db):
                     _started_at = 0.0
                     try:
                         _sess_row = db.get_session(session_id)

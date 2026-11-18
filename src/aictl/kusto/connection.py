@@ -725,8 +725,9 @@ class KustoConnection:
     """
 
     _schema_lock = threading.Lock()
-    _schema_done: set[tuple[str, str, bool]] = set()
+    _schema_done: set[tuple[str, str, bool, frozenset[str]]] = set()
     _cutover_done: set[tuple[str, str]] = set()
+    _history_writers: dict[tuple[str, str], threading.Lock] = {}
 
     def __init__(
         self,
@@ -744,6 +745,7 @@ class KustoConnection:
         self.tables = tables if tables is not None else _default_tables()
         self._translator = translator
         self.observation_writes = observation_writes
+        self._history_writer: threading.Lock | None = None
         self._in_maintenance = False
         self.row_factory: Any = None
         self.isolation_level: str | None = ""
@@ -769,10 +771,21 @@ class KustoConnection:
     def in_transaction(self) -> bool:
         return any(self._pending.values())
 
+    def select_history_layout(self) -> bool:
+        """Only an empty database can start a current store. Never promote old observations."""
+        from .observations import CURRENT_STORE, LAYOUT_QUERY, has_current_store
+
+        with self._schema_lock:
+            names = {str(row[0]) for row in self._mgmt(LAYOUT_QUERY).rows}
+            if not names:
+                self._mgmt(f".create-merge table {quote(CURRENT_STORE)} (version:long)")
+                names.add(CURRENT_STORE)
+            return has_current_store(names)
+
     def ensure_schema(self) -> None:
         """Create or widen tables and enable streaming if any table uses it."""
         streaming = any(self.settings.ingestion_mode(name) == "streaming" for name in self.tables)
-        key = (self.settings.cluster, self.database, streaming)
+        key = (self.settings.cluster, self.database, streaming, frozenset(self.tables))
         with KustoConnection._schema_lock:
             if key in KustoConnection._schema_done:
                 return
@@ -1003,7 +1016,22 @@ class KustoConnection:
         self._check_open()
         if self._trace is not None:
             self._trace(sql)
-        self._run(cursor, self._translate(sql, params), sql)
+        stmt = self._translate(sql, params)
+        with self._fact_write(stmt):
+            self._run(cursor, stmt, sql)
+
+    @contextlib.contextmanager
+    def _fact_write(self, stmt: Statement) -> Iterator[None]:
+        from .observations import FAMILIES
+
+        if self._history_writer is None or not isinstance(stmt, (Insert, Mutation)) or stmt.table not in FAMILIES:
+            yield
+            return
+        # A Kusto upsert is a read followed by an append. Don't let another daemon
+        # thread resolve the same key against the old version between them.
+        with self._history_writer:
+            yield
+            self._flush()
 
     def _executemany(self, cursor: KustoCursor, sql: str, seq_of_params: Iterable[Any]) -> None:
         """Every Insert of the batch becomes one buffered write; other statements run in order."""
@@ -1015,18 +1043,22 @@ class KustoConnection:
         def run_group() -> None:
             nonlocal group, total, last_rowid
             if group is not None:
-                n, rid = self._insert(group)
+                with self._fact_write(group):
+                    n, rid = self._insert(group)
                 total += n
                 last_rowid = rid if rid is not None else last_rowid
                 group = None
 
         mutations: list[Mutation] = []
+        keys: set[tuple[object, ...]] = set()
 
         def run_mutations() -> None:
             nonlocal total
             if mutations:
-                total += self._mutate_many(mutations, sql)
+                with self._fact_write(mutations[0]):
+                    total += self._mutate_many(mutations, sql)
                 mutations.clear()
+                keys.clear()
 
         for params in seq_of_params:
             if self._trace is not None:
@@ -1049,9 +1081,14 @@ class KustoConnection:
             run_group()
             if isinstance(stmt, Mutation):
                 # Consecutive mutations of one table go to the cluster as one query.
-                if mutations and (mutations[0].table, mutations[0].kind) != (stmt.table, stmt.kind):
+                if mutations and (
+                    (mutations[0].table, mutations[0].kind) != (stmt.table, stmt.kind)
+                    or (self._history_writer is not None and stmt.upsert_key in keys)
+                ):
                     run_mutations()
                 mutations.append(stmt)
+                if stmt.upsert_key is not None:
+                    keys.add(stmt.upsert_key)
                 if len(mutations) >= MUTATIONS_PER_QUERY:
                     run_mutations()
                 continue
@@ -1549,6 +1586,8 @@ def connect(
     client: Any = None,
     ingester: RowIngester | None = None,
     observation_writes: bool = False,
+    history_store: bool = False,
+    current_history: bool | None = None,
 ) -> KustoConnection:
     """A connection to the settings' database, its tables created on the first call of the process.
 
@@ -1572,8 +1611,18 @@ def connect(
     conn = KustoConnection(
         settings, client, ingester, translator=translator, tables=tables, observation_writes=observation_writes
     )
+    if history_store:
+        from .observations import COMPANIONS
+
+        if current_history is None:
+            current_history = conn.select_history_layout()
+        conn.observation_writes = not current_history
+        if current_history:
+            conn.tables = {name: table for name, table in conn.tables.items() if name not in COMPANIONS}
+            with conn._schema_lock:
+                conn._history_writer = conn._history_writers.setdefault((settings.cluster, settings.database), threading.Lock())
     conn.ensure_schema()
-    if observation_writes:
+    if conn.observation_writes:
         conn.ensure_observation_cutover()
     return conn
 

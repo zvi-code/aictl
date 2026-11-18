@@ -935,11 +935,17 @@ class _Build:
         if ex.pre:
             raise Unsupported("correlated subquery in ON CONFLICT DO UPDATE")
         body += self.rowid_stage()
+        key = None
+        if len(rows) == 1 and all(k in names for k in target):
+            literals = self.constants([[rows[0][names.index(k)] for k in target]])
+            if literals is not None:
+                key = tuple(_affinity(v, table.column(k).kusto_type) for k, v in zip(target, literals[0], strict=True))
         return Mutation(
             table=table.name,
             kql=self.finish(body + self.output(table, values)),
             kind="insert",
             read_tables=tuple(sorted(self.read_tables)),
+            upsert_key=key,
         )
 
     # Queries.

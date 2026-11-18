@@ -61,6 +61,8 @@ class Mutation:
     kind: str = "update"  # update | delete | insert
     # Queued writes to these tables must be visible. None preserves legacy waiting.
     read_tables: tuple[str, ...] | None = None
+    # A single VALUES row with a known ON CONFLICT target, for ordered executemany.
+    upsert_key: tuple[object, ...] | None = None
 
 
 @dataclass

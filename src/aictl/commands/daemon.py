@@ -168,33 +168,28 @@ def serve(
     own_pid_file = os.environ.pop(DAEMON_PID_ENV, "")
     if own_pid_file:
         Path(own_pid_file).write_text(str(os.getpid()), encoding="utf-8")
-    try:
-        if headless:
-            from ..orchestrator import start_collector
+    if headless:
+        from ..orchestrator import start_collector
 
-            start_collector(
-                root,
-                interval=interval,
-                include_live_monitor=include_live_monitor,
-                db_path=db_path,
-            )
-        else:
-            start_server(
-                root,
-                host=host,
-                port=port,
-                interval=interval,
-                open_browser=open_browser,
-                include_live_monitor=include_live_monitor,
-                db_path=db_path,
-            )
-    finally:
-        # start_server/start_collector have already flushed/closed the DB and
-        # sink. The live monitor's asyncio.to_thread workers are non-daemon
-        # threads that the interpreter would join at exit, stalling Ctrl+C if
-        # one is mid-scan. Force-exit so shutdown is immediate (standard
-        # pattern for servers with background worker pools).
-        os._exit(0)
+        start_collector(
+            root,
+            interval=interval,
+            include_live_monitor=include_live_monitor,
+            db_path=db_path,
+        )
+    else:
+        start_server(
+            root,
+            host=host,
+            port=port,
+            interval=interval,
+            open_browser=open_browser,
+            include_live_monitor=include_live_monitor,
+            db_path=db_path,
+        )
+    # Don't join live monitor workers after a clean shutdown. Startup failures
+    # must propagate to the caller, not exit successfully from a finally block.
+    os._exit(0)
 
 
 def _env_port() -> int | None:
