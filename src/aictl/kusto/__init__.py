@@ -48,6 +48,9 @@ AUTO_STREAMING_TABLES = frozenset(
      "OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"}
 )
 
+# Mutable SQL writers still resolve the source key, but publish the new timeline synchronously.
+AUTO_STREAMING_STATE_TABLES = frozenset({"session_steps", "session_step_text"})
+
 # These tables hold state, unique-key upserts, or bootstrap data used immediately.
 AUTO_INLINE_TABLES = frozenset(
     {
@@ -171,7 +174,7 @@ class KustoSettings:
         if table in self.table_ingestion:
             return self.table_ingestion[table]
         if self.ingestion == "auto" and not self.is_local and (
-            table in AUTO_STREAMING_TABLES or table.endswith("_observations")
+            table in AUTO_STREAMING_TABLES or table in AUTO_STREAMING_STATE_TABLES or table.endswith("_observations")
         ):
             return "streaming"
         if self.ingestion == "auto" and table in AUTO_INLINE_TABLES:

@@ -70,6 +70,8 @@ PROJECT_TABLES = (
     "requests",
     "tool_invocations",
     "session_prompts",
+    "session_steps",
+    "session_step_text",
     "session_usage",
     "skill_uses",
     "file_write_events",
@@ -115,7 +117,7 @@ _TIMED_TABLES = frozenset(
 # Tables read for one session only, in a session scope, where its store is attached: a
 # copy would carry every row of the store beyond the attach room for nothing. Here that
 # was 257k context items, 65-125 MB of memory per read connection.
-_SESSION_ONLY_TABLES = frozenset({"session_context_items", "session_loaded_files"})
+_SESSION_ONLY_TABLES = frozenset({"session_context_items", "session_loaded_files", "session_steps", "session_step_text"})
 # A session or subagent id the router does not know, looked up in a store.
 _FIND_SESSION_SQL = (
     "SELECT 1 FROM sessions WHERE session_id = ?",
@@ -1176,7 +1178,7 @@ class ProjectStores:
             return 0
         parts: dict[str, CallFacts] = {}
         # Rows that name a folder go first, so that their session is placed before the rest.
-        attrs = ("requests", "tools", "prompts", "skills", "file_writes", "agents", "context_events", "loaded_files", "context_items")
+        attrs = ("requests", "tools", "prompts", "skills", "file_writes", "agents", "context_events", "loaded_files", "context_items", "steps")
         for attr in attrs:
             for r in getattr(facts, attr):
                 if getattr(r, "project_path", ""):
@@ -1192,7 +1194,7 @@ class ProjectStores:
             self._touch(
                 key,
                 [*part.requests, *part.tools, *part.prompts, *part.skills, *part.file_writes, *part.context_events, *part.loaded_files,
-                 *part.context_items],
+                 *part.context_items, *part.steps],
             )
         return written
 

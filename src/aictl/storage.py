@@ -244,6 +244,20 @@ CREATE TABLE IF NOT EXISTS session_prompts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_session_prompts_dedup ON session_prompts(dedup_key) WHERE dedup_key != '';
 CREATE INDEX IF NOT EXISTS idx_session_prompts_ts ON session_prompts(ts);
 CREATE INDEX IF NOT EXISTS idx_session_prompts_session ON session_prompts(session_id, ts);
+CREATE TABLE IF NOT EXISTS session_steps (
+    step_key TEXT PRIMARY KEY, ts REAL NOT NULL, session_id TEXT NOT NULL, kind TEXT NOT NULL,
+    tool TEXT, project_path TEXT, agent_id TEXT, parent_agent_id TEXT, turn_id TEXT, round_id TEXT,
+    message_id TEXT, request_id TEXT, tool_call_id TEXT, trace_id TEXT, span_id TEXT, parent_span_id TEXT,
+    source TEXT, source_order INTEGER, role TEXT, name TEXT, phase TEXT, text_status TEXT,
+    context_tokens INTEGER, context_limit INTEGER, before_tokens INTEGER, after_tokens INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, estimated INTEGER, exit_code INTEGER,
+    system_tokens INTEGER, conversation_tokens INTEGER, tool_tokens INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_session_steps_session ON session_steps(session_id, ts, step_key);
+CREATE TABLE IF NOT EXISTS session_step_text (
+    step_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts REAL NOT NULL, text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_step_text_session ON session_step_text(session_id, ts);
 CREATE TABLE IF NOT EXISTS skill_uses (
     id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT DEFAULT '', ts REAL, session_id TEXT,
     agent_id TEXT DEFAULT '', tool TEXT, project_path TEXT, name TEXT, trigger TEXT DEFAULT ''
@@ -1227,6 +1241,51 @@ class ContextEventRow(_ObservationIdentity):
 
 
 @dataclass(slots=True)
+class SessionStepRow:
+    """Source event, not an additional billable call. Only explicit relationships are populated."""
+
+    step_key: str
+    ts: float
+    session_id: str
+    kind: str
+    tool: str = ""
+    project_path: str = ""
+    agent_id: str = ""
+    parent_agent_id: str = ""
+    turn_id: str = ""
+    round_id: str = ""
+    message_id: str = ""
+    request_id: str = ""
+    tool_call_id: str = ""
+    trace_id: str = ""
+    span_id: str = ""
+    parent_span_id: str = ""
+    source: str = ""
+    source_order: int | None = None
+    role: str = ""
+    name: str = ""
+    phase: str = ""
+    text: str = ""
+    text_status: str = ""
+    context_tokens: int | None = None
+    context_limit: int | None = None
+    before_tokens: int | None = None
+    after_tokens: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated: int | None = None
+    exit_code: int | None = None
+    system_tokens: int | None = None
+    conversation_tokens: int | None = None
+    tool_tokens: int | None = None
+
+
+_STEP_FIELDS = tuple(k for k in SessionStepRow.__dataclass_fields__ if k != "text")
+_STEP_INSERT = f"INSERT OR IGNORE INTO session_steps({','.join(_STEP_FIELDS)}) VALUES({','.join('?' for _ in _STEP_FIELDS)})"
+STEP_TEXT_LIMIT = 32768
+
+
+@dataclass(slots=True)
 class CallFacts:
     """Rows read from a tool's own session files, written in one transaction."""
 
@@ -1239,10 +1298,11 @@ class CallFacts:
     context_events: list[ContextEventRow] = field(default_factory=list)
     loaded_files: list[LoadedFileRow] = field(default_factory=list)
     context_items: list[ContextItemRow] = field(default_factory=list)
+    steps: list[SessionStepRow] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.context_items)
+            len(self.steps) + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)
             + len(self.requests)
@@ -2245,6 +2305,7 @@ _TEXT_COLUMNS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("cursor_session_messages", "ts", {"content": ""}),
     ("copilot_session_messages", "ts", {"content": ""}),
     ("session_prompts", "ts", {"text": ""}),
+    ("session_step_text", "ts", {"text": ""}),
     ("tool_invocations", "ts", {"input": "{}", "result_summary": "", "target": ""}),
     ("file_history", "ts", {"content": ""}),
     ("agents", "started_at", {"task": ""}),
@@ -2318,6 +2379,8 @@ _EVICTION_ORDER = (
     "vscode_chat_messages",
     "cursor_session_messages",
     "copilot_session_messages",
+    "session_step_text",
+    "session_steps",
     "metrics",
     "events",
     "hook_calls",
@@ -2493,6 +2556,8 @@ _RETENTION_TABLES = (
     "requests",
     "tool_invocations",
     "session_prompts",
+    "session_steps",
+    "session_step_text",
     "skill_uses",
     "context_events",
 )
@@ -5774,6 +5839,36 @@ class HistoryDB:
 
     # ── Per-call facts read from session files ────────────────────
 
+    def _write_session_steps(self, conn: sqlite3.Connection, rows: list[SessionStepRow]) -> None:
+        if not rows:
+            return
+        from .context_audit import _redact
+
+        keep = self._keeps_text()
+        floor = time.time() - self._content_retention_days * _24H
+        if keep:
+            mark = conn.execute("SELECT value FROM maintenance_state WHERE key='content_trimmed_before'").fetchone()
+            if mark:
+                floor = max(floor, float(mark[0]))
+        steps, texts = [], []
+        for r in rows:
+            if not r.step_key or not r.session_id:
+                raise ValueError("A session step requires a stable key and session ID")
+            status = r.text_status or "not_reported"
+            if r.text:
+                if not keep:
+                    status = "withheld"
+                elif r.ts < floor:
+                    status = "expired"
+                else:
+                    text = _redact(r.text)
+                    status = "truncated" if len(text) > STEP_TEXT_LIMIT or status == "truncated" else "captured"
+                    texts.append((r.step_key, r.session_id, r.ts, text[:STEP_TEXT_LIMIT]))
+            steps.append(tuple(status if k == "text_status" else getattr(r, k) for k in _STEP_FIELDS))
+        conn.executemany(_STEP_INSERT, steps)
+        if texts:
+            conn.executemany("INSERT OR IGNORE INTO session_step_text(step_key,session_id,ts,text) VALUES(?,?,?,?)", texts)
+
     @_named_write("write_call_facts")
     def write_call_facts(self, facts: CallFacts) -> int:
         """Write rows read from tools' session files, in one transaction.
@@ -5846,6 +5941,7 @@ class HistoryDB:
             conn.executemany(_SUBAGENT_UPSERT, [_subagent_params(r) for r in facts.agents])
             conn.executemany(_LOADED_FILE_UPSERT, [_loaded_file_params(r) for r in facts.loaded_files])
             conn.executemany(_CONTEXT_ITEM_UPSERT, [_context_item_params(r) for r in facts.context_items])
+            self._write_session_steps(conn, facts.steps)
             self._write_transcript_file_edits(conn, facts.file_writes)
             self._drop_superseded_rows(conn, facts)
             conn.commit()
@@ -7095,6 +7191,8 @@ class HistoryDB:
         result["requests_deleted_30d"] = self._delete_range(conn, "requests", floor, cutoff_retention)
         result["tool_invocations_deleted_30d"] = self._delete_range(conn, "tool_invocations", floor, cutoff_retention)
         result["session_prompts_deleted_30d"] = self._delete_range(conn, "session_prompts", floor, cutoff_retention)
+        for table in ("session_steps", "session_step_text"):
+            result[f"{table}_deleted_30d"] = self._delete_range(conn, table, floor, cutoff_retention)
         result["skill_uses_deleted_30d"] = self._delete_range(conn, "skill_uses", floor, cutoff_retention)
         result["context_events_deleted_30d"] = self._delete_range(conn, "context_events", floor, cutoff_retention)
 
@@ -7213,6 +7311,13 @@ class HistoryDB:
 
     def _trim_table_text(self, table: str, ts_col: str, columns: dict[str, str], since: float, before: float) -> int:
         conn = self._conn()
+        if table == "session_step_text" and self.streams_observations:
+            # A normal translated UPDATE appends a blank version, leaving the old
+            # string searchable in the physical table. Remove those records instead.
+            n = conn.execute("SELECT COUNT(*) FROM session_step_text WHERE ts >= ? AND ts < ?", (since, before)).fetchone()[0]
+            if n:
+                conn.command(f".delete table session_step_text records <| session_step_text | where ts >= {float(since)!r} and ts < {float(before)!r}")
+            return n
         total = 0
         sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())
         has_text = " OR ".join(f"{c}!='{b}'" for c, b in columns.items())
