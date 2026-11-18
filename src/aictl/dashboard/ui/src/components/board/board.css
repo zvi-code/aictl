@@ -99,25 +99,55 @@ body.bd-resizing{cursor:col-resize;user-select:none}
 .bd-stats .bd-d{display:block;color:var(--ink3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bd-healtharea{padding-bottom:12px}
 .bd-healthoverview{display:grid;gap:8px;min-width:0}
-.bd-healtharea .bd-healthoverview{max-width:1540px;margin-inline:auto}
+.bd-healtharea .bd-healthoverview{margin:0;width:100%;gap:14px}
 .bd-healthview{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:8px 0 2px}
 .bd-healthview p{margin:3px 0 0;color:var(--ink3);font-size:12px}
 .bd-healthview label{display:inline-flex;align-items:center;gap:6px;min-height:32px;cursor:pointer;white-space:nowrap}
-.bd-healthhighlights{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:10px}
-.bd-healthhighlights:empty{display:none}
-.bd-healthpriority{display:grid;grid-template-columns:minmax(230px,1fr) minmax(0,2fr);gap:10px;align-items:start}
+.bd-healthsignals{min-width:0;background:var(--surface);border:1px solid var(--line2);border-radius:5px;padding:14px 16px}
+.bd-healthsignals dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(175px,100%),1fr));margin:0;gap:14px}
+.bd-healthsignals dl>div{padding-top:8px;min-width:0;border-top:1px solid var(--line)}
+.bd-healthsignals dt{font-size:14px;font-weight:600;color:var(--ink2)}
+.bd-healthsignals dd{margin:4px 0 0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.bd-healthsignals dd:nth-child(2){font-size:clamp(22px,1.6vw,32px);line-height:1.2;font-weight:650}
+.bd-healthsignals dd:last-child{font-size:13px;color:var(--ink2)}
+.bd-healthpriority{display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:14px;align-items:start}
 .bd-healthpriority:has(>:only-child){grid-template-columns:minmax(0,1fr)}
+.bd-healthcolumn{min-width:0;display:grid;gap:12px;align-content:start}
+.bd-healthcolumn:empty{display:none}
+.bd-healthpriority:not(:has(.bd-healthactive-traffic)){grid-template-columns:repeat(auto-fit,minmax(min(290px,100%),1fr))}
+.bd-healthledger dl,.bd-healthwork ul{margin:8px 0 0;padding:0;list-style:none}
+.bd-healthledger dl>div,.bd-healthwork li{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid var(--line)}
+.bd-healthledger dt,.bd-healthwork li>span{font-size:14px;color:var(--ink2);overflow-wrap:anywhere}
+.bd-healthledger dd,.bd-healthwork li>b{margin:0;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:600;font-size:15px}
+.bd-healthinventory .bd-healthstatuslist{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;border:0;margin:0}
+.bd-healthinventory .bd-healthstatus summary{display:flex;flex-direction:column;align-items:flex-start;gap:4px;position:relative;padding-left:17px;font-size:15px;font-weight:600}
+.bd-healthinventory .bd-healthstatus summary::before{content:'▸';position:absolute;left:1px}
+.bd-healthinventory .bd-healthstatus[open] summary::before{content:'▾'}
+.bd-healthinventory .bd-healthstatus summary>span{float:none;color:var(--ink2)}
+.bd-healthinventory .bd-healthstatus li{padding:5px 0;font-size:14px}
+.bd-healthinventory .bd-healthstatus small{font-size:13px;color:var(--ink2)}
+.bd-healthoverview .bd-healthdiagnostics-compact{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px 20px;background:var(--raise)}
+.bd-healthdiagnostics-compact h2{justify-content:flex-start;gap:10px}
+.bd-healthdiagnostics-compact .bd-healthissues{font-size:14px;margin:6px 0 0;line-height:1.45;overflow-wrap:anywhere}
+.bd-healthissuebody{min-width:0;flex:1 1 330px}
+.bd-healthpending{flex:1 1 240px;min-width:0;color:var(--ink2);font-size:13px}
+.bd-healthpending ul{margin:5px 0 0;list-style:none;padding:0;display:flex;gap:5px 14px;flex-wrap:wrap}
+.bd-healthpending li{overflow-wrap:anywhere}
+.bd-healthpending time{font-weight:600;color:var(--ink)}
+.bd-healthmode{display:inline-block;background:var(--raise);border:1px solid var(--line2);border-radius:4px;padding:1px 5px}
+.bd-healthbar{display:block;width:min(78px,100%);height:3px;margin:3px 0 0 auto;background:var(--line)}
+.bd-healthbar i{display:block;height:100%;background:var(--focus)}
 .bd-healthtable-wrap{overflow-x:auto}
-.bd-healthactive-traffic table{width:100%;border-collapse:collapse;font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
-.bd-healthactive-traffic th,.bd-healthactive-traffic td{padding:7px 5px;border-bottom:1px solid var(--line);white-space:nowrap}
+.bd-healthactive-traffic table{width:100%;border-collapse:collapse;font-size:14px;text-align:right;font-variant-numeric:tabular-nums}
+.bd-healthactive-traffic th,.bd-healthactive-traffic td{padding:9px 7px;border-bottom:1px solid var(--line2);white-space:nowrap}
 .bd-healthactive-traffic th{font-weight:500}
 .bd-healthactive-traffic th:first-child,.bd-healthactive-traffic td:nth-child(2),.bd-healthactive-traffic th:nth-child(2){text-align:left}
-@container (max-width:780px){.bd-healthpriority{grid-template-columns:minmax(0,1fr)}}
+@container (max-width:900px){.bd-healthpriority{grid-template-columns:minmax(0,1fr)}.bd-healthinventory .bd-healthstatuslist{grid-template-columns:minmax(0,1fr);gap:2px}}
 .bd-healthoverview .bd-warn{color:var(--warnink)}
 .bd-healthoverview .bd-crit{color:var(--crit)}
 .bd-healthoverview .bd-good{color:var(--good)}
-.bd-healthoverview h1{margin:0;font-size:18px;font-weight:600}
-.bd-healthoverview h2{margin:0;font-size:14px;font-weight:600}
+.bd-healthoverview h1{margin:0;font-size:24px;font-weight:650;line-height:1.2}
+.bd-healthoverview h2{margin:0;font-size:16px;font-weight:600}
 .bd-healthheader{display:grid;gap:5px;padding:4px 0}
 .bd-healthheader>div:first-child{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .bd-healthheader>div:first-child>span{color:var(--ink3)}
@@ -125,7 +155,7 @@ body.bd-resizing{cursor:col-resize;user-select:none}
 .bd-healthdestination>span{overflow-wrap:anywhere;min-width:0}
 .bd-healthdestination nav{display:flex;flex-wrap:wrap;gap:6px 14px}
 .bd-healthstages{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-.bd-healthcard{min-width:0;border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:10px}
+.bd-healthcard{min-width:0;border:1px solid var(--line2);border-radius:5px;background:var(--surface);padding:12px 14px}
 .bd-healthcard h2>span:not(.bd-healthcount){color:var(--ink3);margin-right:5px;font-weight:400}
 .bd-healthcard p{margin:7px 0 0;color:var(--ink3);font-size:12px;line-height:1.4}
 .bd-healthcard p.bd-warn{color:var(--warnink)}

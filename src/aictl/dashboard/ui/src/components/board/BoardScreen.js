@@ -102,7 +102,7 @@ const Rail = memo(({ ui, data, series, loaded, findingsCount, attention, screen,
   const mini = ui.railMini;
   const railLabel = mini ? 'Show section names' : 'Hide section names';
   const items = [{ id: 'top', label: 'Overview', anchor: 'sec-top', sum: rangeSum, icon: PATHS.top }].concat(ui.layout.filter(sec => sec.id !== 'health').map(sec => ({
-    id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: screen === 'health' && !loaded && sec.id !== 'sessions' ? 'Not loaded' : sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
+    id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: screen === 'health' && !loaded && sec.id !== 'sessions' ? '' : sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
   })));
   return html`<aside class=${'bd-rail' + (mini ? ' bd-mini' : '')} aria-label="Sections">
     <div class="bd-brandrow">
@@ -114,8 +114,8 @@ const Rail = memo(({ ui, data, series, loaded, findingsCount, attention, screen,
         title="Live collection, ingestion, store capacity and requests" onClick=${e => { e.preventDefault(); act.setScreen('health'); }}>
         <${Ico} d=${PATHS.health}/><span class="bd-rl"><b>aictl Health</b><span>${healthSum}</span></span>
       </a>
-      ${items.map(it => html`<a key=${it.id} class=${'bd-navi' + (it.id === 'agents' && attention ? ' bd-alert' : '')} href=${'#' + it.anchor} title=${it.label + ': ' + it.sum} onClick=${e => act.openSection(it.id, e, it.anchor)}>
-        <${Ico} d=${it.icon}/><span class="bd-rl"><b>${it.label}</b><span>${it.sum}</span></span>
+      ${items.map(it => html`<a key=${it.id} class=${'bd-navi' + (it.id === 'agents' && attention ? ' bd-alert' : '')} href=${'#' + it.anchor} title=${it.sum ? it.label + ': ' + it.sum : it.label} onClick=${e => act.openSection(it.id, e, it.anchor)}>
+        <${Ico} d=${it.icon}/><span class="bd-rl"><b>${it.label}</b>${it.sum && html`<span>${it.sum}</span>`}</span>
       </a>`)}
       <a key="settings" class="bd-navi" href="?screen=settings" aria-current=${screen === 'settings' ? 'page' : undefined}
         title=${'Settings: ' + settingsSum} onClick=${(e) => { e.preventDefault(); act.setScreen('settings'); }}>

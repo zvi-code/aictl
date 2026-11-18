@@ -264,6 +264,11 @@ screen uses `/api/board/health` independently of the historical board and reuses
 the existing source, collector, ingester, sink, OTel and data-quality monitors.
 The default **At a glance** view shows active measurements, pending work, failures
 and traffic by destination, without rows for routine zeros or unavailable values.
+Current rates and read latency appear separately from lifetime totals and stored
+volume. Traffic bars compare bytes per second with the busiest displayed destination.
+Collection status lists observed sources and exceptions by default; expanding it
+does not move the traffic table. A collector and its matching quality record
+count as one issue.
 No free cluster ingestion slots is still shown as a warning when measured.
 Select **Show all metrics** to inspect zeros, unavailable values, policies and table membership.
 It separates the stages rather than presenting submitted data as stored data:

@@ -57,7 +57,7 @@ describe('live Health screen', () => {
     for (const id of ['self', 'sources', 'collectors', 'quality']) expect(container.querySelector('#p-' + id)).toBeTruthy();
     for (const id of ['cpu', 'procs', 'daemon', 'agentsT']) expect(container.querySelector('#p-' + id)).toBeNull();
     expect(container.querySelector('a[href="?screen=health"]').getAttribute('aria-current')).toBe('page');
-    expect(container.querySelector('.bd-rail').textContent).toContain('Not loaded');
+    expect(container.querySelector('.bd-rail').textContent).not.toContain('Not loaded');
     expect(container.querySelector('.bd-rail').textContent).not.toContain('0 prompts, 0 skills');
     expect(container.querySelector('[aria-label="Filters"]')).toBeNull();
     expect(container.querySelector('#health-stages').textContent).toContain('0.25/s');
@@ -173,7 +173,7 @@ describe('live Health screen', () => {
   it('passes the non-visual accessibility rules with closed and expanded details', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(fixture())));
     const { container } = render(html`<${BoardScreen}/>`);
-    await waitFor(() => expect(container.querySelector('#health-stages')?.textContent).toContain('90'));
+    await waitFor(() => expect(container.querySelector('.bd-healthledger')?.textContent).toContain('90'));
     const rules = { 'color-contrast': { enabled: false }, region: { enabled: false }, 'landmark-unique': { enabled: false }, 'scrollable-region-focusable': { enabled: false } };
     expect((await axe.run(container, { rules })).violations.map(item => item.id)).toEqual([]);
     fireEvent.click(within(container).getByRole('checkbox', { name: 'Show all metrics' }));
@@ -286,18 +286,19 @@ describe('health data and status', () => {
     const status = healthStatus(health, null, NOW);
     const { container, getByRole } = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
     const diagnostics = getByRole('complementary', { name: 'Collection health and issues' });
-    expect(diagnostics.querySelectorAll(':scope > .bd-healthissues > li')).toHaveLength(3);
-    expect(diagnostics.textContent).toContain('Sources');
-    expect(diagnostics.textContent).toContain('Collectors');
-    expect(diagnostics.textContent).toContain('Ingesters');
+    expect(diagnostics.querySelectorAll('.bd-healthissuebody > .bd-healthissues > li')).toHaveLength(3);
+    const inventory = getByRole('region', { name: 'Collection status' });
+    expect(inventory.textContent).toContain('Sources');
+    expect(inventory.textContent).toContain('Collectors');
+    expect(inventory.textContent).toContain('Ingesters');
     const issues = container.querySelector('#health-all-issues');
     expect(issues.open).toBe(false);
     fireEvent.click(issues.querySelector('summary'));
     expect(issues.open).toBe(true);
-    expect(issues.querySelectorAll('li')).toHaveLength(status.issues.length);
-    fireEvent.click(diagnostics.querySelector('.bd-healthstatus summary'));
-    expect(diagnostics.querySelector('.bd-healthstatus').open).toBe(true);
-    expect(diagnostics.textContent).toContain('overloaded');
+    expect(issues.querySelectorAll('li')).toHaveLength(status.issues.length - 3);
+    fireEvent.click(inventory.querySelector('.bd-healthstatus summary'));
+    expect(inventory.querySelector('.bd-healthstatus').open).toBe(true);
+    expect(inventory.textContent).toContain('overloaded');
   });
 
   it('shows configured batching, streaming, client routing and actual acknowledged batch sizes', () => {
@@ -391,10 +392,10 @@ describe('health data and status', () => {
     expect(status.issues).toEqual([]);
     expect(status.label).not.toBe('OK');
     const view = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
-    const diagnostics = view.getByRole('complementary').textContent;
-    expect(diagnostics).toContain('1 off');
-    expect(diagnostics).toContain('1 running');
-    expect(diagnostics).toContain('No successful poll yet');
+    const inventory = view.getByRole('region', { name: 'Collection status' }).textContent;
+    expect(inventory).toContain('1 off');
+    expect(inventory).toContain('1 running');
+    expect(view.getByRole('complementary').textContent).toContain('First poll in progress');
     poll.last_ok = NOW - 60;
     expect(healthStatus(health, null, NOW).label).toBe('OK');
     health.monitor.collectors[0] = { name: 'network', status: 'degraded', detail: 'ETW unavailable; polling' };
@@ -421,7 +422,7 @@ describe('health data and status', () => {
     const status = healthStatus(health, null, NOW);
     expect(status.label).toBe('OK');
     const view = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
-    const sources = view.getByRole('complementary').querySelector('.bd-healthstatus').textContent;
+    const sources = view.getByRole('region', { name: 'Collection status' }).querySelector('.bd-healthstatus').textContent;
     expect(sources).toContain('Local OTel config: missing');
     expect(sources).toContain('receiver saw this tool');
     expect(sources).toContain('Tool/session errors: 1 — Slow powershell');
@@ -445,6 +446,34 @@ describe('health data and status', () => {
     expect(healthStatus(health, null, NOW)).toMatchObject({ label: 'Degraded', issues: ['Write requests: write denied'] });
     health.pipeline.sink.flood = true;
     expect(healthStatus(health, null, NOW).issues.join(' ')).toContain('dropping collector samples');
+  });
+
+  it('deduplicates the live collector warning without hiding an independent or more severe quality failure', () => {
+    const h = normalizeHealth(fixture());
+    const detail = 'Using weighted fallback sampling';
+    h.monitor.collectors = [{ name: 'network:windows-etw', status: 'degraded', detail }];
+    const q = { component: 'collector:network:windows-etw', status: 'degraded', severity: 'warning', text: detail };
+    h.pipeline.data_quality = [q];
+    expect(healthStatus(h, null, NOW).issues.filter(s => s.includes(detail))).toEqual([`network:windows-etw: degraded — ${detail}`]);
+    h.pipeline.data_quality = [{ ...q, severity: 'error' }];
+    expect(healthStatus(h, null, NOW).cls).toBe('crit');
+    h.pipeline.data_quality = [{ ...q, text: 'Separate collection problem' }];
+    expect(healthStatus(h, null, NOW).issues).toContain('collector:network:windows-etw: Separate collection problem');
+  });
+
+  it('keeps active sources in the overview and reveals never-observed sources in full diagnostics', () => {
+    const h = normalizeHealth(fixture());
+    h.monitor.per_tool = [];
+    h.pipeline.freshness = [{ tool: 'using', last_seen: NOW }, { tool: 'unused', last_seen: null }];
+    const view = render(html`<${HealthOverview} health=${h} status=${healthStatus(h, null, NOW)} nowS=${NOW}/>`);
+    const inventory = view.getByRole('region', { name: 'Collection status' });
+    fireEvent.click(inventory.querySelector('summary'));
+    expect(within(inventory).getByText('using', { exact: true })).toBeVisible();
+    expect(within(inventory).queryByText('unused', { exact: true })).toBeNull();
+    expect(inventory.textContent).toContain('1 inactive or unobserved');
+    fireEvent.click(view.getByRole('checkbox', { name: 'Show all metrics' }));
+    fireEvent.click(view.getByRole('complementary').querySelector('summary.bd-healthstatus, .bd-healthstatus summary'));
+    expect(within(view.getByRole('complementary')).getByText('unused', { exact: true })).toBeVisible();
   });
 
   it('retains the successful scan interval on error and distinguishes unknown cluster slots from zero', () => {

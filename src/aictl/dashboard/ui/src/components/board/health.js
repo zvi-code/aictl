@@ -1,6 +1,6 @@
 import { html } from 'htm/preact';
 import { useState } from 'preact/hooks';
-import { ago, fmtBps, fmtBytes, fmtMs, fmtN, NA, stamp } from './format.js';
+import { ago, fmtAge, fmtBps, fmtBytes, fmtMs, fmtN, NA, stamp } from './format.js';
 import { STALE_AFTER_S } from './summary.js';
 import { clientState, ingesterState, measuredValue, measurementState, operationFailing, otelConfig, pollSuccess, qualityContext, writeWarning } from './healthModel.js';
 import Table from './Table.js';
@@ -50,6 +50,9 @@ export function healthStatus(data, error, nowS = Date.now() / 1000) {
   if (otel?.active === false) add('OTel receiver has no traffic in the last 5 min.');
   for (const q of pipe.data_quality) {
     if (!['warning', 'error'].includes(q.severity) || qualityContext(q, pipe.ingesters)) continue;
+    if (data.monitor.collectors.some(c => q.component === `collector:${c.name}` && q.status === c.status
+      && q.text === c.detail && (!q.error || q.error === c.detail)
+      && (q.severity === 'warning' || ['failed', 'error'].includes(c.status)))) continue;
     if (pipe.ingesters.some(i => q.component === `ingester:${i.name}` && q.status === i.status && i.error && i.error === (q.error || q.text)
       && (q.severity === 'warning' || ingesterState(i).cls === 'crit'))) continue;
     add(`${q.component || 'Data quality'}: ${q.text || q.error || q.status || q.severity}`, q.severity === 'error');
@@ -344,11 +347,11 @@ const smallRate = n => n < 0.01 ? '<0.01/s' : perSecond(n);
 const smallBps = n => n < 1 ? '<1 B/s' : fmtBps(n);
 const smallMs = n => n < 1 ? '<1 ms' : fmtMs(n);
 
-function ActiveCard({ title, items, note }) {
+function MetricList({ title, items, note }) {
   const shown = items.filter(([, n]) => positive(n));
   if (!shown.length) return null;
-  return html`<section class="bd-healthcard" aria-label=${title}><h2>${title}</h2>
-    <${Metrics} items=${shown.map(([label, n, format, hint]) => [label, format(n), hint])}/>
+  return html`<section class="bd-healthcard bd-healthledger" aria-label=${title}><h2>${title}</h2>
+    <dl>${shown.map(([label, n, format, hint]) => html`<div key=${label} title=${hint}><dt>${label}</dt><dd>${format(n)}</dd></div>`)}</dl>
     <p>${note}</p></section>`;
 }
 
@@ -366,13 +369,14 @@ function ActiveTraffic({ store }) {
     .sort((a, b) => (b.m.bytes_per_s || 0) - (a.m.bytes_per_s || 0) || (b.m.rows_per_s || 0) - (a.m.rows_per_s || 0));
   const reported = rows.some(({ m }) => TRAFFIC_FIELDS.some(([k]) => Number.isFinite(m[k])));
   return html`<section class="bd-healthcard bd-healthactive-traffic" aria-label="Destination activity">
-    <div class="bd-healthsectionhead"><h2>Destination activity</h2><span>By ingestion mode · highest bytes/s first</span></div>
+    <div class="bd-healthsectionhead"><h2>Traffic by destination</h2><span>Highest bytes/s first</span></div>
     ${showing.length ? html`<div class="bd-healthtable-wrap"><table aria-label="Active destination metrics">
       <thead><tr><th scope="col">Table group</th><th scope="col">Mode</th>
         ${columns.map(([key, label]) => html`<th key=${key} scope="col">${label}</th>`)}</tr></thead>
       <tbody>${showing.map(({ id, name, mode, m }) => html`<tr key=${id}>
-        <th scope="row">${name}</th><td>${MODE_NAME[mode]}</td>
-        ${columns.map(([k, , format]) => html`<td key=${k} title=${m[k] == null ? 'Not reported' : String(m[k])}>${positive(m[k]) ? format(m[k]) : ''}</td>`)}</tr>`)}</tbody>
+        <th scope="row">${name}</th><td><span class="bd-healthmode">${MODE_NAME[mode]}</span></td>
+        ${columns.map(([k, , format]) => html`<td key=${k} title=${m[k] == null ? 'Not reported' : String(m[k])}>${positive(m[k]) && html`
+          ${format(m[k])}${k === 'bytes_per_s' && html`<span class="bd-healthbar" aria-hidden="true"><i style=${{ width: `${100 * m[k] / showing[0].m.bytes_per_s}%` }}/></span>`}`}</td>`)}</tr>`)}</tbody>
     </table></div>` : html`<p>${reported ? 'No nonzero traffic, pending rows or failures reported.' : 'No per-mode traffic measurements reported yet.'}</p>`}
     <p>Rates cover up to 60 seconds. Queued submissions are not confirmed stored rows.</p>
   </section>`;
@@ -383,30 +387,58 @@ function Highlights({ health, status, nowS }) {
   const modes = store.ingestion_traffic || {};
   const volume = store.volume, cap = store.ingestion_capacity;
   const op = store.reads;
-  return html`<div class="bd-healthhighlights" id="health-stages" aria-label="Health highlights">
-    <${ActiveCard} title="Collection" items=${[
-      ['Samples received', p.sink?.emitted, fmtN], ['Samples buffered', p.sink?.buffered, fmtN],
-      ['Samples dropped', p.sink?.dropped, fmtN], ['OTel metrics received', p.otel_receiver?.metrics_received, fmtN],
-      ['OTel events received', p.otel_receiver?.events_received, fmtN], ['OTel rows buffered', store.otel_sink?.pending_rows, fmtN],
-    ]} note="Received since daemon start; buffers are current."/>
-    <${ActiveCard} title="Ingestion" items=${MODES.flatMap(mode => [
-      [MODE_NAME[mode] + ' rows/s', modes[mode]?.rows_per_s, smallRate],
-      [MODE_NAME[mode] + ' bytes/s', modes[mode]?.bytes_per_s, smallBps],
-      [MODE_NAME[mode] + ' failures since start', modes[mode]?.failed, fmtN],
-    ]).concat([['Queued rows awaiting visibility', modes.queued?.pending_history_rows, fmtN]])}
-      note="Client traffic. Queued rows can already be visible."/>
-    <${ActiveCard} title="Queryable store" items=${[
-      ['Stored rows (cached)', measuredValue(volume, 'rows'), fmtN, volume?.scope],
-      ['Stored request rows', measuredValue(volume, 'tables')?.requests, fmtN],
-      [store.kind === 'kusto' ? 'Read requests/s' : 'HTTP GET/s', op?.rate_per_s, smallRate],
-      ['Average read latency', op?.avg_ms, smallMs], ['Reads in flight', op?.in_flight, fmtN],
-      ['Cluster slots in use', measuredValue(cap, 'in_use'), fmtN], ['Cluster slots available', measuredValue(cap, 'available'), fmtN],
-    ]} note=${volume?.checked_at ? `Selected history tables · measured ${stamp(volume.checked_at, true)}.` : 'Stored volume is shown only when measured.'}/>
-  </div>
-  <div class="bd-healthpriority">
-    <${Diagnostics} health=${health} status=${status} nowS=${nowS}/>
-    ${store.kind === 'kusto' && html`<${ActiveTraffic} store=${store}/>`}
-  </div>`;
+  const signals = [];
+  for (const mode of ['streaming', 'inline', 'queued']) {
+    const m = modes[mode];
+    if (positive(m?.rows_per_s) || positive(m?.bytes_per_s)) {
+      signals.push([MODE_NAME[mode] + ' ingestion', positive(m.rows_per_s) ? smallRate(m.rows_per_s).replace('/s', ' rows/s') : smallBps(m.bytes_per_s),
+        positive(m.rows_per_s) && positive(m.bytes_per_s) ? smallBps(m.bytes_per_s) : 'Acknowledged payload']);
+    }
+  }
+  if (positive(op?.avg_ms)) signals.push(['Average read latency', smallMs(op.avg_ms), positive(op.rate_per_s) ? `${smallRate(op.rate_per_s)} now · lifetime mean latency` : 'Since daemon start']);
+  else if (positive(op?.rate_per_s)) signals.push(['Read requests', smallRate(op.rate_per_s), 'Current request rate']);
+  if (positive(modes.queued?.pending_history_rows)) signals.push(['Awaiting confirmation', fmtN(modes.queued.pending_history_rows), 'Queued history rows']);
+  if (positive(measuredValue(cap, 'total'))) {
+    const available = measuredValue(cap, 'available');
+    signals.push([available == null ? 'Cluster capacity' : 'Free ingestion slots',
+      available == null ? fmtN(cap.total) : `${fmtN(available)} / ${fmtN(cap.total)}`,
+      cap.checked_at ? `Cluster · ${stamp(cap.checked_at, true)}` : measurementState(cap)]);
+  }
+  const activeWrites = [...(p.self.writes || [])].sort((a, b) => b.age_s - a.age_s);
+  return html`<${Diagnostics} health=${health} status=${status} nowS=${nowS} compact=${true}/>
+    <section class="bd-healthsignals" id="health-stages" aria-label="Current activity">
+      <div class="bd-healthsectionhead"><h2>Current activity</h2><span>Client rates · up to 60 seconds</span></div>
+      ${signals.length ? html`<dl>${signals.map(([label, value, sub]) => html`<div key=${label}><dt>${label}</dt><dd>${value}</dd><dd>${sub}</dd></div>`)}</dl>`
+        : html`<p>No positive rates or measured capacity to show.</p>`}
+    </section>
+    <div class="bd-healthpriority">
+      <div class="bd-healthcolumn">
+        ${store.kind === 'kusto' && html`<${ActiveTraffic} store=${store}/>`}
+        ${activeWrites.length > 0 && html`<section class="bd-healthcard bd-healthwork" aria-label="Work in progress">
+          <div class="bd-healthsectionhead"><h2>Work in progress</h2><span>Elapsed time, not blocked time</span></div>
+          <ul>${activeWrites.map((w, index) => html`<li key=${w.name + index}><span>${w.name}</span><b>${Number.isFinite(w.age_s) ? fmtAge(w.age_s) : 'Duration unknown'}</b></li>`)}</ul>
+        </section>`}
+      </div>
+      <div class="bd-healthcolumn">
+        <${MetricList} title="Stored history" items=${[
+          ['Stored rows (cached)', measuredValue(volume, 'rows'), fmtN, volume?.scope],
+          ['Request rows', measuredValue(volume, 'tables')?.requests, fmtN],
+          ['Stored bytes', measuredValue(volume, 'bytes'), fmtBytes],
+        ]} note=${volume?.checked_at ? `Selected tables · ${stamp(volume.checked_at, true)} · ${measurementState(volume)}` : 'Selected history tables'}/>
+        <${MetricList} title="Since daemon start" items=${[
+          ['Collector samples received', p.sink?.emitted, fmtN], ['Samples dropped', p.sink?.dropped, fmtN],
+          ['OTel metrics received', p.otel_receiver?.metrics_received, fmtN], ['OTel events received', p.otel_receiver?.events_received, fmtN],
+          ['Read requests', op?.total, fmtN], ...MODES.map(m => [`${MODE_NAME[m]} failures`, modes[m]?.failed, fmtN]),
+        ]} note=${positive(p.self.uptime_s) ? `Daemon uptime: ${fmtAge(p.self.uptime_s)}` : 'Process lifetime counters'}/>
+        <${MetricList} title="Local buffers" items=${[
+          ['Collector samples', p.sink?.buffered, fmtN], ['OTel rows', store.otel_sink?.pending_rows, fmtN], ['OTel bytes', store.otel_sink?.pending_bytes, fmtBytes],
+        ]} note="Before submission to the store"/>
+      </div>
+    </div>
+    <section class="bd-healthcard bd-healthinventory" aria-label="Collection status">
+      <div class="bd-healthsectionhead"><h2>Collection status</h2><span>Expand a group for details</span></div>
+      <${SourceGroups} health=${health} nowS=${nowS} compact=${true}/>
+    </section>`;
 }
 
 function StageCards({ store, pipeline, nowS }) {
@@ -481,7 +513,7 @@ function TrafficMatrix({ store }) {
   </section>`;
 }
 
-function Diagnostics({ health, status, nowS }) {
+function SourceGroups({ health, nowS, compact = false }) {
   const pipe = health?.pipeline;
   const collectors = (health?.monitor.collectors || []).map(c => ({ ...c, cls: ['failed', 'error'].includes(c.status) ? 'crit' : ['active', 'ok'].includes(c.status) ? null : 'warn' }));
   const ingesters = (pipe?.ingesters || []).map(i => ({ name: i.name, ...ingesterState(i), detail: [i.status === 'off' ? null : pollSuccess(i, nowS), i.error].filter(Boolean).join('. ') }));
@@ -490,24 +522,36 @@ function Diagnostics({ health, status, nowS }) {
     const config = otelConfig(pipe, source.tool, nowS);
     const activity = source.last_data_ts ? (nowS - source.last_data_ts > 3600 ? 'no recent activity' : 'active') : 'not observed';
     const toolErrors = fresh?.errors || fresh?.last_error ? `Tool/session errors: ${fmtN(fresh.errors)}` + (fresh.last_error ? ` — ${fresh.last_error}` : '') : null;
-    return { name: source.label || source.tool, status: activity, cls: activity === 'no recent activity' ? 'warn' : null, detail: [config?.detail, toolErrors].filter(Boolean).join(' ') };
+    return { name: source.label || source.tool, status: activity, cls: activity === 'no recent activity' || config?.warning ? 'warn' : null, detail: [config?.detail, toolErrors].filter(Boolean).join(' ') };
   }) : [];
   const lists = [['Sources', sources], ['Collectors', collectors], ['Ingesters', ingesters]];
-  return html`<aside class="bd-healthcard bd-healthdiagnostics" aria-label="Collection health and issues" id="health-diagnostics">
-    <h2>${status.issues.length ? html`Needs attention <span class="bd-healthcount">${status.issues.length}</span>`
-      : status.pending?.length ? 'Awaiting measurements' : 'Source status'}</h2>
-    ${status.issues.length ? html`<ul class="bd-healthissues">${status.issues.slice(0, 3).map(issue => html`<li key=${issue}>${issue}</li>`)}</ul>` : !status.pending?.length ? html`<p>No current health issues reported.</p>` : null}
-    ${status.issues.length > 3 ? html`<details id="health-all-issues"><summary>All ${status.issues.length} issues</summary><ul class="bd-healthissues">${status.issues.map(issue => html`<li key=${issue}>${issue}</li>`)}</ul></details>` : null}
-    ${status.pending?.length ? html`<p>${status.pending.join(' ')}</p>` : null}
-    <div class="bd-healthstatuslist">${lists.map(([label, list]) => {
+  return html`<div class="bd-healthstatuslist">${lists.map(([label, list]) => {
       const sorted = [...list].sort((a, b) => Number(!!b.cls) - Number(!!a.cls));
       const counts = new Map();
       for (const item of sorted) counts.set(item.status || 'unknown', (counts.get(item.status || 'unknown') || 0) + 1);
+      const visible = compact ? sorted.filter(i => !['off', 'not observed'].includes(i.status) || i.cls || i.detail) : sorted;
       return html`<details key=${label} class="bd-healthstatus">
         <summary>${label}<span>${Array.from(counts, ([state, count]) => `${count} ${state}`).join(' · ') || 'Not reported'}</span></summary>
-        <ul>${sorted.map(item => html`<li key=${item.name}><b>${item.name}</b> <span class=${item.cls ? 'bd-' + item.cls : undefined}>${item.status || 'unknown'}</span>${item.detail ? html`<small>${item.detail}</small>` : null}</li>`)}</ul>
+        <ul>${visible.map(item => html`<li key=${item.name}><b>${item.name}</b> <span class=${item.cls ? 'bd-' + item.cls : undefined}>${item.status || 'unknown'}</span>${item.detail ? html`<small>${item.detail}</small>` : null}</li>`)}</ul>
+        ${visible.length < sorted.length && html`<p>${sorted.length - visible.length} inactive or unobserved · available in Show all metrics.</p>`}
       </details>`;
-    })}</div>
+    })}</div>`;
+}
+
+function Diagnostics({ health, status, nowS, compact = false }) {
+  const firstPolls = (health?.pipeline?.ingesters || []).filter(i => i.status === 'running' && !i.last_ok);
+  const otherPending = (status.pending || []).filter(text => !compact || !firstPolls.some(i => text === `${i.name}: ${pollSuccess(i, nowS)}.`));
+  return html`<aside class=${'bd-healthcard bd-healthdiagnostics' + (compact ? ' bd-healthdiagnostics-compact' : '')} aria-label="Collection health and issues" id="health-diagnostics">
+    <div class="bd-healthissuebody"><h2>${status.issues.length ? html`Needs attention <span class="bd-healthcount">${status.issues.length}</span>`
+      : status.pending?.length ? 'Awaiting measurements' : 'No current health issues reported'}</h2>
+    ${status.issues.length ? html`<ul class="bd-healthissues">${status.issues.slice(0, 3).map(issue => html`<li key=${issue}>${issue}</li>`)}</ul>` : null}
+    ${status.issues.length > 3 ? html`<details id="health-all-issues"><summary>${status.issues.length - 3} more issues</summary><ul class="bd-healthissues">${status.issues.slice(3).map(issue => html`<li key=${issue}>${issue}</li>`)}</ul></details>` : null}
+    </div>
+    ${(otherPending.length > 0 || compact && firstPolls.length > 0) && html`<div class="bd-healthpending">
+      ${compact && firstPolls.length > 0 && html`<b>First poll in progress</b>
+        <ul>${firstPolls.map(i => html`<li key=${i.name}><span>${i.name}</span> ${i.last_poll && html`<time>${fmtAge(Math.max(0, nowS - i.last_poll))}</time>`}</li>`)}</ul>`}
+      ${otherPending.length > 0 && html`<p>${otherPending.join(' ')}</p>`}</div>`}
+    ${!compact && html`<${SourceGroups} health=${health} nowS=${nowS}/>`}
   </aside>`;
 }
 
