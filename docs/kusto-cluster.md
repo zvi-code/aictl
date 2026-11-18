@@ -394,6 +394,9 @@ are replay-stable, and transcript and span evidence is not added to billing tota
 
 Open a session to see **Flow** first. Its search, category, tool, agent, failures and time
 filters apply before the newest-events limit. Source steps are available inside Flow.
+In **Swim-lane**, **Individual lanes** is the default even for large sessions.
+Scroll the diagram horizontally to see more named tools and subagents, or select
+**Group lanes** for a compact view. The browser remembers the choice; it does not filter events.
 Choose **User prompts** to see what the user wrote, search the retained wording and
 select a row to read it. A link ending in `?agent=<session-id>&show=prompts` opens
 this filter directly. Native Copilot user messages take precedence over prompt

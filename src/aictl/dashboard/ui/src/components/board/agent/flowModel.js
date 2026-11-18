@@ -120,17 +120,16 @@ export function flowModel(turns, toolLabel, given) {
   return { events, participants: [...seen.values()], summary };
 }
 
-/** A crowded diagram shares lanes, not events. The original endpoints and labels stay on every event. */
-export function swimLayout(events, participants, filtered) {
+/** Only combine participant lanes when the viewer explicitly chooses grouping. */
+export function swimLayout(events, participants, filtered, groupLanes = false) {
   const used = new Set();
   for (const e of events) { used.add(e._from); used.add(e._to); }
   const visible = participants.filter(p => !filtered || used.has(p.id));
-  const crowded = visible.length > 8;
   const lanes = [];
   const indexes = new Map();
   const columns = new Map();
   for (const p of visible) {
-    const group = crowded && (p.id.startsWith('skill:') ? 'tools' : p.id.startsWith('subagent:') ? 'agents' : null);
+    const group = groupLanes && (p.id.startsWith('skill:') ? 'tools' : p.id.startsWith('subagent:') ? 'agents' : null);
     const id = group ? 'group:' + group : p.id;
     if (!indexes.has(id)) {
       indexes.set(id, lanes.length);

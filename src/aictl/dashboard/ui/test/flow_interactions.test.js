@@ -162,16 +162,27 @@ it('keeps source search and detail mounted across modes, independently of flow r
   ]);
 });
 
-it('groups crowded lanes without dropping events, uses only visible lanes for matches and does not drift to an older event', async () => {
+it('keeps individual lanes by default and groups only on request, without losing events or selection', async () => {
   const crowded = Array.from({ length: 22 }, (_, i) => ({ ...ev, to: 'Tool' + i }));
   const selected = { ...ev, event_id: 'chosen', to: 'Selected tool', target: 'original' };
-  const ui = mount(p => payload(p.has('tool_name') ? [selected] : p.get('limit') === '500' ? [selected, ...crowded]
-    : [{ ...ev, to: 'Prepended' }, selected, ...crowded], { summary: { omitted_events: 1 } }));
+  const agents = ['Review', 'Explore'].map(to => ({ type: 'subagent', to, ts: end }));
+  const all = [selected, ...crowded, ...agents];
+  const ui = mount(p => payload(p.has('tool_name') ? [selected] : p.get('limit') === '500' ? all
+    : [{ ...ev, to: 'Prepended' }, ...all], { summary: { omitted_events: 1 } }));
   fireEvent.click(await ui.findByRole('button', { name: 'Swim-lane' }));
   const list = await ui.findByRole('list', { name: 'Events between participants, oldest first' });
-  expect(within(list).getAllByRole('listitem')).toHaveLength(23);
-  expect(list.querySelectorAll('.bd-ag-slhead b')).toHaveLength(3);
+  const names = () => [...list.querySelectorAll('.bd-ag-slhead b')].map(e => e.textContent);
+  const individual = ui.getByRole('button', { name: 'Individual lanes' });
+  expect(individual).toHaveAttribute('aria-pressed', 'true');
+  expect(names()).toEqual(['User', 'copilot', 'Selected tool', ...crowded.map(e => e.to), 'Review', 'Explore']);
   fireEvent.click(within(list).getByRole('button', { name: /Selected tool/ }));
+  fireEvent.click(ui.getByRole('button', { name: 'Group lanes' }));
+  expect(names()).toEqual(['User', 'copilot', 'Tools', 'Subagents']);
+  expect(within(list).getAllByRole('listitem')).toHaveLength(all.length);
+  expect(ui.getByRole('region', { name: 'Selected event' })).toHaveTextContent('Selected tool: original');
+  fireEvent.click(individual);
+  expect(names()).toContain('Tool21');
+  expect(ui.calls).toHaveLength(1);
   fireEvent.click(ui.getByRole('button', { name: 'Show 1 older events' }));
   await ui.findByRole('button', { name: /Prepended/ });
   expect(ui.getByRole('region', { name: 'Selected event' })).toHaveTextContent('Selected tool: original');
