@@ -253,6 +253,34 @@ functions keep one live version per node and local key. On an unresolved store,
 use `aictl_requests_observations()` to inspect evidence instead; it does not
 turn observations into billable requests.
 
+**Overview, Health and Settings** default to **This node**. Select **All nodes**
+or a named node for read-only reported data. Overview counts sessions **started**
+in the selected window (seven days by default); its counts, tokens and cost are
+the current session records' counters, not a reconstruction of requests in the
+window. The breakdown and totals are not limited to the displayed session list.
+Session detail uses both the reporting node and the session ID.
+
+Health separates host samples from shared Kusto ingestion capacity. A sample older
+than five minutes is marked stale; a node without a sample is unknown, not down.
+Settings shows the effective node ID and its source. Remote settings show the
+reported capture, ingestion and retention configuration and its capture time;
+they never open another machine's files or expose environment variable values.
+These fields appear after an upgraded daemon publishes a system snapshot.
+
+The CLI uses the same local daemon endpoint as the dashboard:
+
+```powershell
+aictl board nodes
+aictl board overview --all-nodes
+aictl board session "<session-id>" --node build-07
+aictl board health --node build-07 --json
+aictl board settings --all-nodes
+```
+
+Use `aictl board identity` for the serving node. `--port` or `AICTL_PORT` selects
+the daemon port (default `8484`). Without a shared Kusto store, use the local
+views. `aictl db report` remains available for direct Kusto analysis without a daemon.
+
 **Upgrade before adding other writers.** Stop or upgrade old daemons first:
 they do not tag rows or restrict their mutations to one node. The new daemon
 widens history tables on startup and OTel tables on export, without rewriting old

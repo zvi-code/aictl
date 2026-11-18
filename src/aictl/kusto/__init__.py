@@ -169,10 +169,13 @@ class KustoSettings:
     streaming: bool | None = None
     table_ingestion: Mapping[str, str] = field(default_factory=dict, hash=False)
     ingestion: str = "auto"
-    node_id: str = field(default_factory=local_node_id)
+    node_id: str = ""
+    node_id_source: str = field(default="", compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "node_id", normalize_node_id(self.node_id))
+        source = self.node_id_source or ("explicit" if self.node_id else NODE_ENV if NODE_ENV in os.environ else "hostname")
+        object.__setattr__(self, "node_id", normalize_node_id(self.node_id or local_node_id()))
+        object.__setattr__(self, "node_id_source", source)
         mode = validate_ingestion_mode(self.ingestion, allow_auto=True)
         if self.streaming is not None:
             legacy = "streaming" if self.streaming else "inline"

@@ -12,7 +12,7 @@ import { html } from 'htm/preact';
 import { getSettingsFiles } from '../../api.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { isFiltered } from '../../utils/toolScope.js';
-import { writeUrl } from '../../hooks/urlState.js';
+import { boardNodeScope, writeUrl } from '../../hooks/urlState.js';
 import { isTypingTarget } from '../../utils/a11y.js';
 import { ConfigurationEvidence } from '../../live/LoadedConfiguration.js';
 import Icon from '../ui/Icon.js';
@@ -55,13 +55,15 @@ function useSettingsState() {
     }
     return next;
   }), []);
-  useEffect(() => { writeUrl(settingsParams(st)); }, [st]);
+  useEffect(() => {
+    if (boardNodeScope(currentSearch()) === 'local') writeUrl(settingsParams(st));
+  }, [st]);
   useEffect(() => {
     const onPop = () => setSt(readSettingsUrl(currentSearch()));
     window.addEventListener('popstate', onPop);
     return () => {
       window.removeEventListener('popstate', onPop);
-      writeUrl(CLEAR_PARAMS);
+      if (boardNodeScope(currentSearch()) === 'local') writeUrl(CLEAR_PARAMS);
     };
   }, []);
   return [st, set];
@@ -70,12 +72,12 @@ function useSettingsState() {
 function useFiles() {
   const [res, setRes] = useState({ status: 'loading', files: null });
   useEffect(() => {
-    let live = true;
-    getSettingsFiles().then(
-      r => { if (live) setRes(Array.isArray(r?.files) ? { status: 'ready', files: r.files } : { status: 'unavailable', files: null }); },
-      () => { if (live) setRes({ status: 'unavailable', files: null }); },
+    const ctrl = new AbortController();
+    getSettingsFiles({ signal: ctrl.signal }).then(
+      r => { if (!ctrl.signal.aborted) setRes(Array.isArray(r?.files) ? { status: 'ready', files: r.files } : { status: 'unavailable', files: null }); },
+      () => { if (!ctrl.signal.aborted) setRes({ status: 'unavailable', files: null }); },
     );
-    return () => { live = false; };
+    return () => ctrl.abort();
   }, []);
   return res;
 }

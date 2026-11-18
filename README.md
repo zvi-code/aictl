@@ -310,6 +310,12 @@ aictl status --json               # full JSON with enriched metadata
 aictl status --backtrace 12345    # sample a process stack trace
 ```
 
+Use `aictl board` to inspect the running daemon's Overview, Health and Settings
+from the CLI. `aictl board nodes` lists reporting nodes; `aictl board overview
+--all-nodes` compares their sessions; `aictl board health --node build-07` and
+`aictl board settings --node build-07` read that node's last report. Add `--json`
+for scripts. See [multiple reporting nodes](docs/kusto-cluster.md#multiple-reporting-nodes).
+
 ### Monitor: live AI-tool observability
 
 Run a passive, best-effort live monitor for active AI sessions:

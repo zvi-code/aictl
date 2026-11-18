@@ -11,6 +11,17 @@ from functools import lru_cache
 from typing import Any
 
 
+def host_memory() -> dict:
+    """Whole-host physical memory; tool process RSS is not a fallback for this measurement."""
+    try:
+        import psutil
+
+        m = psutil.virtual_memory()
+        return {"memory_total_bytes": m.total, "memory_available_bytes": m.available, "memory_used_bytes": m.total - m.available}
+    except (ImportError, OSError, AttributeError, NotImplementedError):
+        return {"memory_total_bytes": None, "memory_available_bytes": None, "memory_used_bytes": None}
+
+
 class OperationStats:
     """Request totals and a rolling one-minute rate, with successful payload volume."""
 

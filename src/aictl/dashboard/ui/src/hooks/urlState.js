@@ -36,6 +36,20 @@ export function mergeSearch(search, patch) {
   return s ? '?' + s : '';
 }
 
+// Other values of `scope` (e.g. `project-local`) belong to the Settings workspace.
+export function boardNodeScope(search) {
+  const q = new URLSearchParams(search);
+  const scope = q.get('scope');
+  if (scope === 'fleet') return 'fleet';
+  return scope === 'node' || (!scope && q.has('node_id')) ? 'node' : 'local';
+}
+
+// Do not carry a local settings row (which can be an absolute file path) into a report link.
+export const CLEAR_SETTINGS_PARAMS = {
+  pivot: null, tool: null, sec: null, row: null, scope: null, unset: null,
+  group: null, purpose: null, fscope: null, git: null, recent: null, cell: null,
+};
+
 export function rangeToParams(range) {
   if (!range || range.id === 'live') return { range: null, since: null, until: null };
   if (range.id === 'custom') {

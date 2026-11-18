@@ -990,7 +990,7 @@ export function readSettingsUrl(search) {
     tool: q.get('tool') || '',
     sec: q.get('sec') || '',
     row: q.get('row') || '',
-    scope: q.get('scope') || '',
+    scope: q.get('scope') === 'local' ? '' : q.get('scope') || '',
     unset: q.get('unset') === '1',
     group: q.get('group') === 'purpose' ? 'purpose' : 'location',
     purpose: q.get('purpose') || '',
@@ -1022,7 +1022,4 @@ export function settingsParams(st) {
 export const listOf = s => (s ? String(s).split(',').filter(Boolean) : []);
 export const listParam = a => a.join(',');
 
-export const CLEAR_PARAMS = {
-  pivot: null, tool: null, sec: null, row: null, scope: null, unset: null,
-  group: null, purpose: null, fscope: null, git: null, recent: null, cell: null,
-};
+export { CLEAR_SETTINGS_PARAMS as CLEAR_PARAMS } from '../../hooks/urlState.js';

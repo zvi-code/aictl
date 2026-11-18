@@ -9,9 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import * as api from '../../api.js';
 import { useTheme } from '../../hooks/useTheme.js';
 import { nextTools, useBoardFilters } from '../../hooks/useBoardFilters.js';
-import { writeUrl } from '../../hooks/urlState.js';
+import { boardNodeScope, CLEAR_SETTINGS_PARAMS, mergeSearch, writeUrl } from '../../hooks/urlState.js';
 import { focusTrap } from '../../utils/a11y.js';
-import { parseCustomRange, toLocalISOString } from '../../utils/customRange.js';
 import { listedTools, toolFilterLabel, canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
 import { buildFindings, buildSettings } from './findings.js';
 import CommandPalette, { ShortcutsDialog, boardCommands, loadRecent, pushRecent, saveRecent } from './CommandPalette.js';
@@ -28,6 +27,9 @@ import { bindTip } from './tip.js';
 import { useBoardData } from './useBoardData.js';
 import { useBoardHealth } from './useBoardHealth.js';
 import { HealthOverview, healthSources, healthStatus } from './health.js';
+import BoardRange from './BoardRange.js';
+import { NodeScopePicker, LocalNodeIdentity } from './NodeScope.js';
+import ReportedBoard from './ReportedBoard.js';
 import { LiveProvider } from '../../live/context.js';
 import LiveStatus from '../../live/Status.js';
 import { historyFailure, historyReady, topicData } from '../../live/model.js';
@@ -43,9 +45,6 @@ export function readScreen(search) {
   const v = new URLSearchParams(search || '').get('screen');
   return SCREENS.has(v) ? v : 'board';
 }
-const currentScreen = () => {
-  try { return readScreen(window.location.search); } catch { return 'board'; }
-};
 // The settings are read again once the board's data is this much newer.
 // The settings are read again when the board says they changed (settings_at); without that word, this often.
 const SETTINGS_REFRESH_S = 300;
@@ -127,40 +126,16 @@ const Rail = memo(({ ui, data, series, loaded, findingsCount, attention, screen,
   </aside>`;
 });
 
-function CustomRange({ range, onApply, onClose }) {
-  const win = windowOf(range);
-  const [start, setStart] = useState(toLocalISOString(win.since));
-  const [end, setEnd] = useState(toLocalISOString(win.until));
-  const [err, setErr] = useState('');
-  const apply = (e) => {
-    e.preventDefault();
-    const r = parseCustomRange(start, end);
-    if (r.error) { setErr(r.error); return; }
-    onApply(r.since, r.until);
-    onClose();
-  };
-  return html`<form class="bd-menu bd-crange" style="left:0;top:32px" onSubmit=${apply}>
-    <label>From <input type="datetime-local" value=${start} onInput=${e => setStart(e.target.value)}/></label>
-    <label>To <input type="datetime-local" value=${end} onInput=${e => setEnd(e.target.value)}/></label>
-    <div class="bd-crange-err" aria-live="polite">${err}</div>
-    <button type="submit" class="bd-btn bd-p">Apply</button>
-  </form>`;
-}
-
-const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act, screen }) => {
+const TopBar = memo(({ f, board, menu, ui, resolvedTheme, setTheme, live, act, screen, picker }) => {
   const { filters } = board;
   const hiddenPanels = ui.hidden;
   const changed = !isDefaultLayout(ui);
   const customOpen = menu === 'custom';
   const liveTitle = live ? 'Updates every 5 s. Click to pause.' : 'Click to resume live updates';
   return html`<div class="bd-bar" role="region" aria-label=${screen === 'health' ? 'Health controls' : 'Time and layout'}>
-    ${screen !== 'health' ? html`<div class="bd-anch">
-      <div class="bd-seg" role="group" aria-label="Time range">
-        ${RANGES.map(r => html`<button key=${r.id} type="button" aria-pressed=${filters.range.id === r.id ? 'true' : 'false'} onClick=${() => act.setRange(r.id)}>${r.label}</button>`)}
-        <button type="button" aria-pressed=${filters.range.id === 'custom' ? 'true' : 'false'} aria-expanded=${customOpen ? 'true' : 'false'} onClick=${() => act.toggleMenu('custom')}>Custom</button>
-      </div>
-      ${customOpen ? html`<${CustomRange} range=${filters.range} onApply=${act.setCustom} onClose=${act.closeMenu}/>` : null}
-    </div>` : null}
+    ${picker}
+    ${screen !== 'health' && html`<${BoardRange} range=${filters.range} open=${customOpen} onToggle=${() => act.toggleMenu('custom')}
+      onRange=${act.setRange} onCustom=${act.setCustom} onClose=${act.closeMenu}/>`}
     <button type="button" class="bd-ctl" aria-pressed=${live ? 'true' : 'false'} onClick=${act.toggleLive} title=${liveTitle}><i class=${'bd-live' + (live ? '' : ' bd-off')}></i>${live ? 'Live' : 'Paused'}</button>
     ${screen !== 'health' ? html`<label class="bd-srch"><${Ico} d=${PATHS.search}/><input id="bd-find" aria-label="Find agents, prompts, files and tools" placeholder="Find agent, prompt, file, tool" value=${f.q} onInput=${e => act.setFind(e.target.value)}/></label>` : null}
     <button type="button" class="bd-ctl" aria-label="Open the command palette" title="Command palette (Cmd/Ctrl+K). Press ? for the keyboard shortcuts." onClick=${act.openPalette}><${Ico} d=${PATHS.command}/>Commands</button>
@@ -292,15 +267,39 @@ export function staleCode(data) {
 }
 
 export default function BoardScreen({ liveController }) {
-  return html`<${LiveProvider} controller=${liveController}><${BoardContent}/><//>`;
-}
-
-function BoardContent() {
-  const board = useBoardFilters();
-  const { filters, applied, tools, update, setFind } = board;
+  const [search, setSearch] = useState(() => window.location.search);
   const { theme, setTheme } = useTheme();
   const resolvedTheme = useResolvedTheme(theme);
-  const [screen, setScreen] = useState(currentScreen);
+  useEffect(() => {
+    const onPop = () => setSearch(window.location.search);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const navigate = useCallback(patch => {
+    const next = mergeSearch(window.location.search, patch);
+    writeUrl(patch, { push: true });
+    setSearch(next);
+  }, []);
+  const scope = boardNodeScope(search);
+  const screen = readScreen(search);
+  const nodeId = scope === 'node' ? (new URLSearchParams(search).get('node_id') || '').trim().toLowerCase() : null;
+  const [visited, setVisited] = useState([]);
+  useEffect(() => {
+    if (nodeId) setVisited(ids => ids.includes(nodeId) ? ids : [nodeId, ...ids].slice(0, 20));
+  }, [nodeId]);
+  const picker = html`<${NodeScopePicker} scope=${scope} nodeId=${nodeId} visited=${visited} onSelect=${(s, id) => navigate({
+    ...CLEAR_SETTINGS_PARAMS,
+    scope: s === 'local' ? null : s, node_id: s === 'node' ? id : null,
+    session_id: null, agent: null, tab: null, session: null, show: null,
+  })}/>`;
+  // Neither the live controller nor any local read, shortcut or action owner mounts outside This node.
+  if (scope !== 'local') return html`<${ReportedBoard} ...${{ search, screen, scope, nodeId, picker, navigate, resolvedTheme }}/>`;
+  return html`<${LiveProvider} controller=${liveController}><${BoardContent} ...${{ screen, picker, navigate, resolvedTheme, setTheme }}/><//>`;
+}
+
+function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme }) {
+  const board = useBoardFilters();
+  const { filters, applied, tools, update, setFind } = board;
   const [ui, setUi] = useState(() => loadUi());
   const [live, setLive] = useState(true);
   const [menu, setMenu] = useState(null);
@@ -371,27 +370,34 @@ function BoardContent() {
 
   // Hidden findings: the existing audit routes, after the first paint of the board.
   const [settingsRaw, setSettingsRaw] = useState({ loading: true });
+  const lifetime = useMemo(() => new AbortController(), []);
+  useEffect(() => () => lifetime.abort(), [lifetime]);
   // The scan follows the Project filter. A later scan replaces an answer still on its way.
   const scanProject = applied.project === 'all' ? null : applied.project;
-  const scanGeneration = useRef(0);
+  const scanController = useRef(null);
+  useEffect(() => () => scanController.current?.abort(), []);
   const loadFindings = useCallback((fresh) => {
+    if (lifetime.signal.aborted) return;
+    scanController.current?.abort();
     if (incremental && !fresh) { setSettingsRaw(s => ({ ...s, loading: false })); return; }
-    const generation = ++scanGeneration.current;
-    const current = () => generation === scanGeneration.current;
+    const ctrl = new AbortController();
+    scanController.current = ctrl;
+    const current = () => !ctrl.signal.aborted;
+    const opts = { signal: ctrl.signal };
     // Each answer shows when it arrives, so a slow scan holds up nothing else.
     const put = (key, promise) => promise.then(
-      value => setSettingsRaw(s => ({ ...s, [key]: value })),
-      () => setSettingsRaw(s => ({ ...s, [key]: null })),
+      value => { if (current()) setSettingsRaw(s => ({ ...s, [key]: value })); },
+      () => { if (current()) setSettingsRaw(s => ({ ...s, [key]: null })); },
     );
     setSettingsRaw(s => ({ ...s, loading: true, error: null }));
-    if (!incremental) put('effective', api.getEffectiveModels());
-    put('hooks', api.getHooksStatus());
-    put('otel', api.getOtelStatus());
-    api.getContextAudit(fresh, scan => { if (current()) setSettingsRaw(s => ({ ...s, scan })); }, { project: scanProject }).then(
+    if (!incremental) put('effective', api.getEffectiveModels(opts));
+    put('hooks', api.getHooksStatus(opts));
+    put('otel', api.getOtelStatus(opts));
+    api.getContextAudit(fresh, scan => { if (current()) setSettingsRaw(s => ({ ...s, scan })); }, { project: scanProject, ...opts }).then(
       audit => { if (current()) setSettingsRaw(s => ({ ...s, audit, scan: null, loading: false })); },
       e => { if (current()) setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })); },
     );
-  }, [scanProject, incremental]);
+  }, [scanProject, incremental, lifetime]);
   // The findings and the settings wait for an idle moment after the board's first data.
   const [idle, setIdle] = useState(false);
   useEffect(() => {
@@ -412,18 +418,17 @@ function BoardContent() {
   const [settingsRes, setSettingsRes] = useState({ data: null, model: null, error: null });
   const settingsAt = useRef(undefined);
   const settingsVersion = useRef(undefined);
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
   const settingsWanted = idle || screen === 'settings';
   const boardAt = data.generated_at || 0;
   const changedAt = data.settings_at || 0;
   const loadSettings = useCallback(() => {
     if (incremental && !configured) return Promise.resolve();
-    return Promise.all([incremental ? Promise.resolve(configured) : api.getSettingsTools(), loadChunk(() => import('../settings/model.js'))]).then(
-    ([d, model]) => { if (mounted.current) setSettingsRes({ data: d || {}, model, error: null }); },
-    (e) => { if (mounted.current) setSettingsRes(s => ({ ...s, error: e })); },
+    if (lifetime.signal.aborted) return Promise.resolve();
+    return Promise.all([incremental ? Promise.resolve(configured) : api.getSettingsTools({ signal: lifetime.signal }), loadChunk(() => import('../settings/model.js'))]).then(
+    ([d, model]) => { if (!lifetime.signal.aborted) setSettingsRes({ data: d || {}, model, error: null }); },
+    (e) => { if (!lifetime.signal.aborted) setSettingsRes(s => ({ ...s, error: e })); },
     );
-  }, [incremental, configured]);
+  }, [incremental, configured, lifetime]);
   useEffect(() => {
     if (incremental && settingsWanted && configured) loadSettings();
   }, [incremental, settingsWanted, configured, loadSettings]);
@@ -446,11 +451,11 @@ function BoardContent() {
   useEffect(() => {
     if (screen !== 'settings' || hooksAsked.current || subscription.mode === 'pending') return;
     hooksAsked.current = true;
-    api.getHooksStatus().then(
-      (h) => { if (mounted.current && h && typeof h === 'object') setHooksStatus(h); },
+    api.getHooksStatus({ signal: lifetime.signal }).then(
+      (h) => { if (!lifetime.signal.aborted && h && typeof h === 'object') setHooksStatus(h); },
       () => {},
     );
-  }, [screen, subscription.mode]);
+  }, [screen, subscription.mode, lifetime]);
 
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
   // Settings apply whether or not a tool ran in this time, so its data sources count too.
@@ -508,8 +513,7 @@ function BoardContent() {
         closeMenu();
         if (L.current.screen === next) return;
         L.current.screen = next;
-        setScreen(next);
-        writeUrl({ screen: next === 'board' ? null : next }, { push: true });
+        navigate({ screen: next === 'board' ? null : next });
         document.getElementById('main-area')?.scrollTo?.(0, 0);
       },
       openSection: (id, e, anchor) => {
@@ -662,6 +666,7 @@ function BoardContent() {
         apply: async () => {
           try {
             await api.boardAction(spec.action, spec.args || {});
+            if (lifetime.signal.aborted) return;
             setModal(null);
             notice(spec.done);
             loadFindings(true);
@@ -684,6 +689,7 @@ function BoardContent() {
         apply: async () => {
           try {
             const r = await api.killSession(ag.id);
+            if (lifetime.signal.aborted) return;
             setModal(null);
             setStopped(s => ({ ...s, [ag.id]: 1 }));
             const failed = (r.failed || []).length;
@@ -717,17 +723,6 @@ function BoardContent() {
     if (screen !== 'settings' || SettingsC) return;
     loadChunk(() => import('../settings/SettingsWorkspace.js')).then(m => setSettingsC(() => m.default));
   }, [screen, SettingsC]);
-
-  // Back and Forward move between the board and its Settings screen.
-  useEffect(() => {
-    const onPop = () => {
-      const next = currentScreen();
-      latest.current.screen = next;
-      setScreen(next);
-    };
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
 
   useEffect(() => {
     // Cmd/Ctrl+K and Esc work everywhere. The other keys do nothing while typing,
@@ -809,13 +804,13 @@ function BoardContent() {
   return html`<div class="bd-app" tabindex="-1" data-theme=${resolvedTheme} data-density=${ui.density} aria-busy=${(screen === 'health' ? health.busy : busy) ? 'true' : 'false'}>
     <${Rail} ui=${ui} data=${data} series=${chartSeries} loaded=${loaded} findingsCount=${findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} healthSum=${health.data ? healthState.label : 'Collection, ingestion and store'} rangeSum=${act.rangeSummary()} act=${act}/>
     <div class="bd-main">
-      <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act} screen=${screen}/>
+      <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act} screen=${screen} picker=${picker}/>
       ${screen !== 'health' ? html`<${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act} subscription=${subscription}/>` : null}
       <div class="bd-body">
         <main class=${'bd-area' + (screen === 'health' ? ' bd-healtharea' : '')} id="main-area" aria-label=${screen === 'settings' ? 'Settings' : screen === 'health' ? 'aictl Health' : undefined}>
           ${screen !== 'health' && html`<${LiveStatus} state=${subscription} history=${screen === 'board'}/>`}
           ${screen === 'board' && analyticsError ? html`<div class="bd-banner" role="alert">Could not read on-demand historical data: ${analyticsError.message}. Runtime fields update independently.</div>` : null}
-          ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
+          ${screen === 'settings' ? html`<${LocalNodeIdentity}/><${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
           ${screen === 'health' ? html`<${HealthOverview} health=${health.data} status=${healthState} error=${health.error} nowS=${nowS}>
             <${HealthCollectionDetails} ctx=${ctx}/>
             <${LiveStatus} state=${subscription} history=${false}/>

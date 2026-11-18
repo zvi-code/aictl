@@ -1221,6 +1221,8 @@ class SnapshotPersistence:
                     files=snap.total_files,
                     tokens=snap.total_tokens,
                     cpu=snap.total_cpu,
+                    cpu_per_core=snap.cpu_per_core,
+                    active_processes=snap.total_processes,
                     mem_mb=snap.total_mem_mb,
                     mcp=snap.total_mcp_servers,
                     mem_tokens=snap.total_memory_tokens,

@@ -607,9 +607,10 @@ export function HealthOverview({ health, status, error, nowS, children }) {
       <div><h1>aictl Health</h1><strong class=${'bd-' + status.cls} role="status">${status.label}</strong>
         <span title=${stamp(health?.generated_at, true)}>${health?.generated_at ? 'Updated ' + ago(health.generated_at, nowS) : 'No health timestamp'}</span>
       </div>
-      <div class="bd-healthdestination"><span>${[store.kind, store.cluster_url || store.destination, store.database, store.ingestion_mode].filter(Boolean).join(' · ') || 'Store not reported'}</span>
+      <div class="bd-healthdestination"><span>${store.kind === 'kusto' ? 'Shared Kusto store: ' : ''}${[store.kind, store.cluster_url || store.destination, store.database, store.ingestion_mode].filter(Boolean).join(' · ') || 'Store not reported'}</span>
         <nav aria-label="Store links">${links.map(link => html`<a key=${link.label} class="bd-link" href=${link.href}>${link.label}</a>`)}</nav>
       </div>
+      <div class="bd-healthdestination">Runtime, collection and client counters are from this node.${store.kind === 'kusto' && ' Kusto database and cluster measurements are shared across nodes.'}</div>
     </header>
     ${error ? html`<div class="bd-banner" role="alert">Could not read live health: ${error.status === 404 ? 'this daemon does not provide /api/board/health.' : error.message} ${health ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
     ${!health && !error && status.label !== 'Unavailable' ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}

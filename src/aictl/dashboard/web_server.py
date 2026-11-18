@@ -602,6 +602,21 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             except sqlite3.Error:
                 logger.exception("Could not read session execution evidence")
                 self._json_response({"error": "Session evidence query failed"}, status=503)
+        elif path == "/api/board/nodes":
+            from .board_api import _cached_health_data
+            from .node_views import NodeViewError, node_view
+
+            try:
+                body = node_view(self._db, parse_qs(urlparse(self.path).query, keep_blank_values=True),
+                                 local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time()))
+            except NodeViewError as exc:
+                self._json_response({"error": str(exc)}, status=exc.status)
+                return
+            except Exception:
+                logger.exception("Could not read the node board")
+                self._json_response({"error": "Could not read node data from the configured store"}, status=503)
+                return
+            self._send_body(json.dumps(body).encode("utf-8"), "application/json", cache_control="no-store", cors=False)
         elif path == "/api/board/machine":
             self._serve_board_machine()
         elif path == "/api/board/health":
@@ -657,6 +672,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if self._reject_cross_origin():
             return
         path = urlparse(self.path).path
+        if self._reject_scoped_action():
+            return
         if path.startswith("/api/tool-config/"):
             self._serve_tool_config_put()
         elif path == "/api/settings/file":
@@ -674,6 +691,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if self._reject_cross_origin():
             return
         path = urlparse(self.path).path
+        if path in ("/api/board/action", "/api/session-kill", "/api/board/nodes") and self._reject_scoped_action():
+            return
         # Hooks and telemetry need only the stores and are taken at once; the rest waits.
         if path not in _TAKEN_WHILE_STARTING and not self._wait_ready():
             return
@@ -691,6 +710,14 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._receive_otel_traces()
         else:
             self.send_error(404)
+
+    def _reject_scoped_action(self, data=None) -> bool:
+        params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+        body_scope = isinstance(data, dict) and ("node_id" in data or data.get("scope") in ("node", "fleet"))
+        if body_scope or "node_id" in params or any(v in ("node", "fleet") for v in params.get("scope", ())):
+            self._json_response({"error": "Fleet and named-node views are read-only"}, status=403)
+            return True
+        return False
 
     def _receive_hook(self) -> None:
         """Receive Claude Code hook events via HTTP POST.
@@ -1533,9 +1560,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self._json_response_raw(body)
 
     def _serve_board_health(self) -> None:
+        self._json_response(self._board_health())
+
+    def _board_health(self) -> dict:
         from .board_api import compute_health
 
-        payload = compute_health(
+        return compute_health(
             self._db,
             self.server.store,
             otel=getattr(self.server, "otel_receiver", None),
@@ -1545,7 +1575,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             http_reads=self.server.health_reads,
             http_writes=self.server.health_writes,
         )
-        self._json_response(payload)
 
     def _serve_board_context(self) -> None:
         """Context-window budget, files, memory and lifetime telemetry for the board."""
@@ -1580,6 +1609,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(content_length) or b"{}")
         except (json.JSONDecodeError, OSError):
             self._json_response({"error": "Invalid JSON"}, status=400)
+            return
+        if self._reject_scoped_action(data):
             return
         status, payload = run_action(self._db, self.server.root, data, self.server.server_address[1])
         self._json_response(payload, status=status)

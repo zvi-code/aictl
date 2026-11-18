@@ -144,16 +144,16 @@ export async function getFile(path, headers = {}) {
 
 // ─── Health ────────────────────────────────────────────────────
 
-export async function getOtelStatus() {
-  return fetchJson('/api/otel-status');
+export async function getOtelStatus(opts) {
+  return fetchJson('/api/otel-status', opts);
 }
 
-export async function getEffectiveModels() {
-  return fetchJson('/api/effective-models');
+export async function getEffectiveModels(opts) {
+  return fetchJson('/api/effective-models', opts);
 }
 
-export async function getHooksStatus() {
-  return fetchJson('/api/hooks-status');
+export async function getHooksStatus(opts) {
+  return fetchJson('/api/hooks-status', opts);
 }
 
 /** The editable settings file of a tool; `scope` picks it (project by default, or project-local). */
@@ -197,6 +197,38 @@ export function liveStreamUrl(query = '', { history = true, cursor = null } = {}
 }
 
 // ─── Board ─────────────────────────────────────────────────────
+
+export function boardNodePath({ view, scope, nodeId, sessionId, since, until }) {
+  const p = new URLSearchParams({ view, scope });
+  if (scope === 'node') {
+    if (!nodeId) throw new Error('Choose a node ID to read its reports.');
+    p.set('node_id', nodeId);
+  }
+  if (view === 'session') {
+    if (scope !== 'node' || !sessionId) throw new Error('Session detail requires a node ID and a session ID.');
+    p.set('session_id', sessionId);
+  }
+  if (view === 'overview') {
+    if (since != null) p.set('since', since);
+    if (until != null) p.set('until', until);
+  }
+  return '/api/board/nodes?' + p;
+}
+
+/** Only accept the requested projection, never a broader scope or another session's rows. */
+export async function getBoardNodeView(request, opts) {
+  const { view, scope, nodeId, sessionId } = request;
+  const d = await fetchJson(boardNodePath(request), opts);
+  const inScope = r => typeof r?.node_id === 'string' && r.node_id.length > 0
+    && (scope !== 'node' || r.node_id === nodeId);
+  if (d?.view !== view || d.scope !== scope || !Array.isArray(d.rows) || !d.rows.every(inScope)
+      || (view === 'session' && !d.rows.every(r => r.session_id === sessionId))
+      || (view === 'overview' && (!Array.isArray(d.sessions)
+        || !d.sessions.every(r => inScope(r) && typeof r.session_id === 'string' && r.session_id)))) {
+    throw new Error('The server did not return the requested node view.');
+  }
+  return d;
+}
 
 /** GET /api/board. Returns {status: 304} when the etag still matches. */
 export async function getBoard(query, { signal, etag } = {}) {
@@ -256,25 +288,27 @@ export async function saveSettingsFile(path, text, expectedMtime) {
 }
 
 /** Every file the settings come from, with where it lives and which tools read it. */
-export async function getSettingsFiles() {
-  return fetchJson('/api/settings/files');
+export async function getSettingsFiles(opts) {
+  return fetchJson('/api/settings/files', opts);
 }
 
 /** Every tool's settings record, the tool names and aictl's own collectors, for the Settings screen. */
-export async function getSettingsTools() {
-  return fetchJson('/api/settings/tools');
+export async function getSettingsTools(opts) {
+  return fetchJson('/api/settings/tools', opts);
 }
 
 /** The hidden-context scan. It runs on the server's own thread, so this asks how far it is. */
-export async function getContextAudit(refresh = false, onProgress = null, { pollMs = 2000, maxMs = 600000, project = null } = {}) {
+export async function getContextAudit(refresh = false, onProgress = null, { pollMs = 2000, maxMs = 600000, project = null, signal } = {}) {
   const started = Date.now();
   const base = '/api/context-audit?nowait=1' + (project ? '&project=' + encodeURIComponent(project) : '');
-  let r = await fetchJson(base + (refresh ? '&refresh=1' : ''));
+  const opts = signal ? { signal } : undefined;
+  let r = await fetchJson(base + (refresh ? '&refresh=1' : ''), opts);
   while (r?.status === 'scanning') {
     onProgress?.(r);
     if (Date.now() - started > maxMs) throw new Error('The scan has not finished. It is at: ' + r.step);
     await new Promise(done => setTimeout(done, pollMs));
-    r = await fetchJson(base);
+    signal?.throwIfAborted();
+    r = await fetchJson(base, opts);
   }
   if (r?.error) throw new Error(r.error);
   return r;

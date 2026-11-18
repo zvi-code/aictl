@@ -86,7 +86,7 @@ class ServerClient:
 
     # ── One-shot queries ──────────────────────────────────────────
 
-    def _get_json(self, path: str, params: dict[str, str] | None = None) -> Any:
+    def _get_json(self, path: str, params: dict[str, str] | None = None, *, timeout: float = 10.0) -> Any:
         """GET a JSON endpoint."""
         url = self.base_url + path
         if params:
@@ -94,8 +94,13 @@ class ServerClient:
             if qs:
                 url += "?" + qs
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        resp = urllib.request.urlopen(req, timeout=10.0)
-        return json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def get_board_view(self, params: dict[str, str]) -> dict:
+        from urllib.parse import urlencode
+
+        return self._get_json("/api/board/nodes?" + urlencode(params), timeout=25.0)
 
     def get_snapshot(self) -> dict:
         """GET /api/snapshot → full dashboard snapshot dict."""

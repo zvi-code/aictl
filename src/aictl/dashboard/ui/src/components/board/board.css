@@ -33,6 +33,22 @@ html,body{margin:0;height:100%}
 .bd-ctl{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 9px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);white-space:nowrap}
 .bd-ctl:hover{background:var(--hover)}
 .bd-ctl .bd-k{color:var(--ink3)}
+.bd-nodepicker{max-width:100%}
+.bd-nodepicker>.bd-ctl{max-width:100%;overflow:hidden}
+.bd-nodemenu{top:100%;left:0}
+.bd-nodemenu form{display:flex;align-items:end;gap:6px;padding:8px;border-block:1px solid var(--line2)}
+.bd-nodemenu label{display:grid;gap:3px;color:var(--ink2);min-width:0}
+.bd-nodemenu input{width:100%;border:1px solid var(--line2);border-radius:3px;background:var(--surface);padding:4px}
+.bd-nodemenu p{margin:4px 8px;color:var(--ink2)}
+.bd-nodemenu .bd-mi[aria-pressed=true]{background:var(--sel);font-weight:600}
+.bd-identity{padding:7px 10px;background:var(--surface);border:1px solid var(--line2);border-radius:4px;overflow-wrap:anywhere}
+.bd-reporttable table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.bd-reporttable th,.bd-reporttable td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+.bd-reporttable th{font-weight:500}
+.bd-reporttable thead{color:var(--ink2)}
+.bd-reportfields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:10px;margin:10px 0}
+.bd-reportfields dt{color:var(--ink3)}
+.bd-reportfields dd{margin:3px 0 0;overflow-wrap:anywhere;font-weight:600}
 .bd-ctl.bd-on{border-color:var(--ink2)}
 .bd-seg{display:inline-flex;flex:none;border:1px solid var(--line2);border-radius:4px;overflow:hidden}
 .bd-seg button{height:26px;padding:0 9px;color:var(--ink2);border-right:1px solid var(--line2);white-space:nowrap}

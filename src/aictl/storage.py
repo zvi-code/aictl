@@ -3460,6 +3460,19 @@ class HistoryDB:
         if self.streams_observations:
             values = {name: getattr(row, name) for name in SYSTEM_SNAPSHOT_KEYS}
             values["cpu_per_core"] = json.dumps(row.cpu_per_core)
+            import os
+
+            from .health import host_memory
+
+            settings = self._kusto
+            memory = host_memory()
+            used, total = memory["memory_used_bytes"], memory["memory_total_bytes"]
+            values.update(daemon_pid=os.getpid(), node_source=settings.node_id_source, capture_mode=self.capture,
+                          ingestion_mode=settings.ingestion, retention_days=self._retention_days,
+                          content_retention_days=self._content_retention_days, settings_captured_at=time.time(),
+                          host_cpu_percent=sum(row.cpu_per_core) / len(row.cpu_per_core) if row.cpu_per_core else None,
+                          host_memory_used_mb=used / (1024 ** 2) if used is not None else None,
+                          host_memory_total_mb=total / (1024 ** 2) if total is not None else None)
             self._ingest_observations("system_snapshots", [values])
             return
         with self._lock:

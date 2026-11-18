@@ -492,6 +492,8 @@ class _APIHandlersMixin:
         if not isinstance(data, dict):
             self._json_response({"error": "Request body must be a JSON object"}, status=400)
             return
+        if self._reject_scoped_action(data):
+            return
         try:
             payload = save_editable_tool_config(self.server.root, self._tool_name_from_config_path(), data)
         except ToolConfigEditError as exc:
@@ -525,6 +527,8 @@ class _APIHandlersMixin:
             return
         if not isinstance(data, dict):
             self._json_response({"error": "Request body must be a JSON object"}, status=400)
+            return
+        if self._reject_scoped_action(data):
             return
         try:
             self._json_response(save_settings_file(data.get("path"), data, self.server.allowed.is_allowed))
@@ -1036,6 +1040,8 @@ class _APIHandlersMixin:
             self._json_response({"error": "Request body must be a JSON object"}, status=400)
             return
 
+        if self._reject_scoped_action(data):
+            return
         session_id = str(data.get("session_id", "") or "")
         if not session_id:
             self._json_response({"error": "Missing session_id"}, status=400)

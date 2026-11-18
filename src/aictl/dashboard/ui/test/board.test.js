@@ -574,7 +574,7 @@ describe('board screen', () => {
     expect(container.querySelector('#p-skills')).toBeTruthy();
     fireEvent.click(getByRole('button', { name: 'Options for Skills used' }));
     fireEvent.click(getByText('Move earlier'));
-    expect(container.querySelector('.bd-ctl[aria-expanded]').textContent).toContain('Layout');
+    expect(getByRole('button', { name: /Layout.*Changed/ })).toHaveAttribute('aria-expanded', 'false');
     expect(getByText('Changed')).toBeTruthy();
     fireEvent.click(getByText('Changed').closest('button'));
     fireEvent.click(getByText('Reset to the default layout'));

@@ -71,6 +71,7 @@ main = LazyGroup(
         "memory": ".commands.status:memory",
         "import": ".commands.import_plugin:import_cmd",
         "status": ".commands.status:status",
+        "board": ".commands.board:board",
         "ps": ".commands.observe:ps",
         "top": ".commands.observe:top",
         "plugin": ".commands.import_plugin:plugin",

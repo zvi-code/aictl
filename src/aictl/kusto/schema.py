@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import functools
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import sqlglot
 from sqlglot import exp
@@ -207,6 +207,17 @@ def store_schema() -> dict[str, Table]:
     from .observations import tables_for
 
     tables = dict(_parse_schema_cached(_SCHEMA_SQL))
+    # Attach the daemon's report to its existing sample rather than issuing an extra
+    # write per tick. The SQLite schema and SystemSnapshotRow stay unchanged.
+    sample = tables["system_snapshots"]
+    tables[sample.name] = replace(sample, columns=[*sample.columns,
+        Column("daemon_pid", "", "long"), Column("node_source", "", "string"),
+        Column("capture_mode", "", "string"), Column("ingestion_mode", "", "string"),
+        Column("retention_days", "", "long"), Column("content_retention_days", "", "long"),
+        Column("settings_captured_at", "", "real"),
+        Column("host_cpu_percent", "", "real"), Column("host_memory_used_mb", "", "real"),
+        Column("host_memory_total_mb", "", "real"),
+    ])
     return tables | tables_for(tables)
 
 

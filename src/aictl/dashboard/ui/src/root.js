@@ -6,7 +6,7 @@
 // does not return to the old link.
 import { html } from 'htm/preact';
 import { useEffect } from 'preact/hooks';
-import { mergeSearch } from './hooks/urlState.js';
+import { boardNodeScope, mergeSearch } from './hooks/urlState.js';
 import BoardScreen from './components/board/BoardScreen.js';
 
 /** Old screens that became a screen of the board, by the board's `screen` value. */
@@ -19,7 +19,11 @@ const KEPT_TABS = new Set(['hidden']);
 const tabOf = search => new URLSearchParams(search || '').get('tab');
 
 /** The board query that opens one agent in the drawer, from any current query. */
-export function agentLinkOf(search, sessionId) {
+export function agentLinkOf(search, sessionId, nodeId = null) {
+  if (nodeId || boardNodeScope(search) !== 'local') {
+    return mergeSearch(search, { tab: null, session: null, screen: null, agent: null, session_id: sessionId,
+      ...(nodeId ? { scope: 'node', node_id: nodeId } : {}) });
+  }
   return mergeSearch(search, { tab: null, session: null, screen: null, agent: sessionId });
 }
 
@@ -42,9 +46,12 @@ export function listenSelectSession(go = url => window.location.assign(url)) {
   const onSelect = (e) => {
     const sid = e?.detail?.sessionId;
     if (!sid) return;
+    const nodeId = e.detail.nodeId || e.detail.node_id;
     setTimeout(() => {
       const loc = window.location;
-      go(loc.pathname + agentLinkOf(loc.search, sid) + loc.hash);
+      // Old local emitters only know a session ID. It is not a fleet-wide identifier.
+      if (!nodeId && boardNodeScope(loc.search) !== 'local') return;
+      go(loc.pathname + agentLinkOf(loc.search, sid, nodeId) + loc.hash);
     }, 0);
   };
   document.addEventListener('aictl:select-session', onSelect);
@@ -64,8 +71,8 @@ export default function Root() {
   applyRedirect();
   useEffect(() => listenSelectSession(), []);
   useEffect(() => {
-    window.addEventListener('popstate', applyRedirect);
-    return () => window.removeEventListener('popstate', applyRedirect);
+    window.addEventListener('popstate', applyRedirect, true);
+    return () => window.removeEventListener('popstate', applyRedirect, true);
   }, []);
   return html`<${BoardScreen}/>`;
 }

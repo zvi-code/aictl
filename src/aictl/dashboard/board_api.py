@@ -45,6 +45,7 @@ from urllib.parse import parse_qs
 
 from ..context_audit import _git_states, _path_key, _redact, skill_description, skill_field, skill_locations
 from ..data.model_pricing import request_cost_usd, resolve_pricing
+from ..health import host_memory as _host_memory
 from ..ingesters._common import project_key, project_root
 from ..storage import EventRow, _session_uuid
 from ..tool_scope import is_unattributed, normalize_selection, stored_ids_for
@@ -6400,7 +6401,7 @@ _health_cache: dict[tuple, dict] = {}
 def _health_store_key(db: Any) -> tuple:
     settings = getattr(db, "_kusto", None)
     if settings is not None:
-        return (settings.cluster, settings.database, settings.auth_mode)
+        return (settings.cluster, settings.database, settings.auth_mode, settings.node_id)
     return (id(db), str(getattr(db, "_path", "")))
 
 
@@ -6890,18 +6891,6 @@ def _own_process() -> dict:
         return {"threads": proc.num_threads(), "uptime_s": round(time.time() - proc.create_time(), 1)}
     except Exception:  # noqa: BLE001 - psutil is optional on some platforms
         return {"threads": None, "uptime_s": None}
-
-
-def _host_memory() -> dict:
-    """Whole-machine physical memory; total minus available excludes reclaimable memory."""
-    try:
-        import psutil
-
-        memory = psutil.virtual_memory()
-        return {"memory_total_bytes": memory.total, "memory_available_bytes": memory.available,
-                "memory_used_bytes": memory.total - memory.available}
-    except Exception:  # noqa: BLE001 - totals for monitored tools are not a host-memory fallback
-        return {"memory_total_bytes": None, "memory_available_bytes": None, "memory_used_bytes": None}
 
 
 def _health_resources(snapshot: Any, usage: dict, cluster: dict | None) -> dict:

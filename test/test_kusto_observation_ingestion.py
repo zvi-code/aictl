@@ -59,6 +59,8 @@ def observation_store():
     db._kusto = settings
     db._shared_conn = None
     db.capture = "full"
+    db._retention_days = 30
+    db._content_retention_days = 14
     db._datapoint_logger = None
     db._event_listeners = []
     db._writers = {}
@@ -109,9 +111,13 @@ def test_all_process_snapshots_and_system_snapshots_are_ingested(observation_sto
         ProcessSnapshotRow(100, pid=42, threads=2),
         ProcessSnapshotRow(101, pid=42, threads=3),
     ])
-    db.append_metrics(SystemSnapshotRow(100, cpu_percent=1.23456789))
+    db.append_metrics(SystemSnapshotRow(100, cpu_percent=1.23456789, cpu_per_core=[20, 40]))
     assert [r["threads"] for r in ingester.batches[0][1]] == [2, 3]
     assert ingester.batches[1][1][0]["cpu_percent"] == 1.23456789
+    snapshot = ingester.batches[1][1][0]
+    assert snapshot["node_id"] == db._kusto.node_id and snapshot["host_cpu_percent"] == 30
+    assert snapshot["capture_mode"] == "full" and snapshot["content_retention_days"] == 14
+    assert snapshot["settings_captured_at"] >= snapshot["ts"]
 
 
 def test_sample_filters_do_not_reduce_kusto_observations(observation_store):

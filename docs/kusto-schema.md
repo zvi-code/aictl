@@ -528,7 +528,7 @@ Key: node_id, ts, metric, seq. Scope: machine-wide. 8 columns.
 
 ### `system_snapshots`
 
-Key: node_id, ts. Scope: machine-wide. 17 columns.
+Key: node_id, ts. Scope: machine-wide. 27 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -549,6 +549,16 @@ Key: node_id, ts. Scope: machine-wide. 17 columns.
 | live_tokens | long | INTEGER | 0 |  |
 | live_in_rate | real | REAL | 0 |  |
 | live_out_rate | real | REAL | 0 |  |
+| daemon_pid | long |  |  |  |
+| node_source | string |  |  |  |
+| capture_mode | string |  |  |  |
+| ingestion_mode | string |  |  |  |
+| retention_days | long |  |  |  |
+| content_retention_days | long |  |  |  |
+| settings_captured_at | real |  |  |  |
+| host_cpu_percent | real |  |  |  |
+| host_memory_used_mb | real |  |  |  |
+| host_memory_total_mb | real |  |  |  |
 | rowid | long | system | | |
 | _v | datetime | system | | |
 | _deleted | bool | system | | |
