@@ -4465,8 +4465,9 @@ def _flow_session_known(conn: sqlite3.Connection, sid: str) -> bool:
     )
 
 
-def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: float) -> tuple[list[dict], str]:
-    """The session's events from the store's own rows, and the tool that wrote them."""
+def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: float, *, keep_text: bool = True,
+                       text_floor: float = 0.0) -> tuple[list[dict], bool]:
+    """Stored events and whether the native transcript supplied message authorship in this range."""
     from .session_flow import _input_preview
 
     session = conn.execute("SELECT tool, project_path, started_at, ended_at FROM sessions WHERE session_id = ?", (sid,)).fetchone()
@@ -4495,7 +4496,35 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
             prompts.append((ts, mask_secrets(text)))
     if not prompts:
         prompts = [(ts, mask_secrets(text)) for ts, text, _model in _messages(conn, sid, "user", since, until)]
-    for ts, text in prompts:
+    prompt_info: list[dict] = [{} for _ in prompts]
+    native_authorship = False
+    if _table_exists(conn, "session_steps"):
+        # Native author evidence distinguishes user input from delegated/autopilot messages.
+        # Don't union this with the prompt index: those can be two observations of the same turn.
+        retained = "COALESCE(t.text,'')" if keep_text else "''"
+        join = ("LEFT JOIN session_step_text t ON s.step_key=t.step_key AND s.session_id=t.session_id AND t.ts>=?"
+                if keep_text else "")
+        args = (text_floor, sid, since, until) if keep_text else (sid, since, until)
+        native = conn.execute(
+            f"SELECT s.ts,s.kind,s.role,s.step_key,s.turn_id,s.text_status,{retained} AS retained "
+            f"FROM session_steps s {join} WHERE s.session_id=? AND s.ts>=? AND s.ts<? AND s.source='user.message' "
+            "AND s.kind IN ('message','agent_prompt') ORDER BY s.ts,s.source_order", args,
+        ).fetchall()
+        if native:
+            native_authorship = True
+            prompts, prompt_info = [], []
+            for ts, kind, role, key, turn, status, text in native:
+                if kind != "message" or role != "user":
+                    continue
+                prompts.append((ts, text or ""))
+                if not keep_text:
+                    status = "withheld"
+                elif not text and status in ("captured", "truncated"):
+                    status = "expired"
+                prompt_info.append({"step_key": key, "turn_id": turn, "text_status": status, "source": "user.message"})
+    for (ts, text), info in zip(prompts, prompt_info, strict=True):
+        if not keep_text or ts < text_floor:
+            text = ""
         message = {
             "ts": ts,
             "type": "user_message",
@@ -4510,6 +4539,7 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
             "duration_ms": 0,
             "end_ts": ts,
             "source": "store",
+            **info,
         }
         if text:
             message["prompt_length"] = len(text)
@@ -4626,7 +4656,7 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
                 "source": "store",
             }
         )
-    return events, tool
+    return events, native_authorship
 
 
 def _legacy_flow_events(legacy: dict) -> tuple[list[dict], str]:
@@ -4801,7 +4831,7 @@ def _session_flow(db: Any, agent_id: str, since: float, until: float, legacy_flo
     if cached:
         memo = db.__dict__.setdefault("_flow_memo", {})
         # An open-ended range ends at "now plus a minute", which differs on every call.
-        key = (sid, since, None if until >= time.time() else until, _flow_stamp(conn, sid))
+        key = (sid, since, None if until >= time.time() else until, getattr(db, "capture", "full"), _flow_stamp(conn, sid))
         hit = memo.get(key)
         if hit and 0 <= time.time() - hit[0] < FLOW_MEMO_S:
             return hit[1]
@@ -4819,12 +4849,21 @@ def _session_flow_build(db: Any, conn: sqlite3.Connection, sid: str, since: floa
         def legacy_flow(session_id: str, lo: float, hi: float) -> dict:
             return build_session_flow(db, session_id, lo, hi)
 
-    store, _tool = _store_flow_events(conn, sid, since, until)
+    keep = getattr(db, "capture", "full") == "full"
+    days = getattr(db, "_content_retention_days", None)
+    floor = time.time() - days * 86400 if days is not None else 0
+    store, native_authorship = _store_flow_events(conn, sid, since, until, keep_text=keep, text_floor=floor)
     legacy, legacy_source = _legacy_flow_events(legacy_flow(sid, since, until) or {})
+    if native_authorship:
+        legacy = [event for event in legacy if event["type"] != "user_message"]
     if not store and not legacy and not _flow_session_known(conn, sid):
         return None
     source = ("store+" + legacy_source if legacy else "store") if store else (legacy_source if legacy else "store")
-    return sid, _merge_flow(store, legacy), source
+    merged = _merge_flow(store, legacy)
+    for ev in merged:
+        if ev["type"] == "user_message" and (not keep or ev["ts"] < floor):
+            ev.update(message="", preview="", redacted=True, text_status="expired" if keep else "withheld")
+    return sid, merged, source
 
 
 @_in_session_scope("agent_id")

@@ -3675,6 +3675,22 @@ def _no_legacy(sid, since, until):
 
 
 class TestAgentFlow:
+    def test_user_prompt_filter_prefers_authored_messages_and_never_uses_delegation_text(self, db):
+        from aictl.storage import CallFacts, SessionStepRow
+
+        t = NOW - 10
+        _seed_flow(db, NOW - DAY)
+        db.write_call_facts(CallFacts(steps=[
+            SessionStepRow("p", t, "flow-s", "message", source="user.message", role="user", text="Actual question about Kusto"),
+            SessionStepRow("a", t+1, "flow-s", "message", source="assistant.message", role="assistant", text="Assistant output"),
+            SessionStepRow("d", t+2, "flow-s", "agent_prompt", source="user.message", role="user", text="Internal assignment"),
+        ]))
+        _, result = board_api.agent_flow(db, "flow-s", now=NOW, category="prompts", legacy_flow=_no_legacy)
+        assert [(r["step_key"], r["message"]) for r in result["turns"]] == [("p", "Actual question about Kusto")]
+        db.capture = "metadata"
+        _, result = board_api.agent_flow(db, "flow-s", now=NOW, category="prompts", q="Kusto", legacy_flow=_no_legacy)
+        assert result["turns"] == []
+
     def test_combined_filters_precede_event_limit_but_do_not_shrink_totals(self, db):
         _seed_flow(db, NOW - DAY)
         _, flow = board_api.agent_flow(db, "flow-s", now=NOW, category="tools", q="parser", limit=1)

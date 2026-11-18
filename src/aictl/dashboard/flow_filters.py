@@ -19,7 +19,7 @@ _TEXT = ("message", "preview", "prompt", "response", "response_preview", "target
 
 
 def select_events(events, *, q="", category="", tool_name="", flow_agent="", failed=False, allow_text=True):
-    if category and category not in _CATEGORY.values():
+    if category and category != "prompts" and category not in _CATEGORY.values():
         raise ValueError("Unknown Flow event category")
     if any(len(s) > maximum or any(ord(c) < 32 for c in s)
            for s, maximum in ((q, 160), (tool_name, 256), (flow_agent, 384))):
@@ -37,13 +37,15 @@ def select_events(events, *, q="", category="", tool_name="", flow_agent="", fai
             agents.add(agent)
         if event.get("model"):
             models.add(event["model"])
-        if (category and _CATEGORY.get(kind) != category) or (tool_name and tool != tool_name) or (flow_agent and agent != flow_agent):
+        category_match = kind == "user_message" if category == "prompts" else not category or _CATEGORY.get(kind) == category
+        if not category_match or (tool_name and tool != tool_name) or (flow_agent and agent != flow_agent):
             continue
         if failed and not (kind == "error" or event.get("is_error") in (True, "true")
                            or event.get("success") in (False, "false")):
             continue
         if terms:
-            values = " ".join(str(event[k]) for k in (*_META, *(_TEXT if allow_text else ())) if event.get(k) is not None).casefold()
+            keys = ("message",) if category == "prompts" and allow_text else () if category == "prompts" else (*_META, *(_TEXT if allow_text else ()))
+            values = " ".join(str(event[k]) for k in keys if event.get(k) is not None).casefold()
             if not all(term in values for term in terms):
                 continue
         visible.append(event)
