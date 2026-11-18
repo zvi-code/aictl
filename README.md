@@ -12,8 +12,6 @@ files, MCP servers, hooks, memory, background processes, and token bills.
 **aictl** gives you a single place to *define* what they should know and to
 *see* what they are actually doing.
 
-<img src="docs/screenshots/board.png" width="100%" alt="aictl board: KPI strip, the running agents and their subagents with status, model, tokens, cost and CPU, usage by model and by kind of agent">
-
 *The board (`aictl daemon serve`): one screen across 14 supported tools.
 Sections for agents, usage and cost, prompts and skills, tools and failures,
 changes and testing, the machine, settings in effect, data sources and
@@ -97,11 +95,9 @@ Or for the current shell only: `eval $(aictl otel enable --print)`. In PowerShel
 
 To undo all of it: `aictl disable --dry-run`, then `aictl disable`.
 
-## Screenshots
+## Dashboard views
 
 ### Settings in effect
-
-<img src="docs/screenshots/settings.png" width="100%" alt="Settings screen: tools on the left with risky counts, the scope strip from managed to environment, every setting with its value, scope, file and line, and the per-agent model table">
 
 *Every knob of every tool, set or unset, with the file and line it comes from
 and the scope that wins (managed, user, project, project-local, environment).
@@ -109,8 +105,6 @@ Per-agent models, efforts and context tiers are read from the agent files and
 the tool settings. Risky values are marked; unset knobs show on request.*
 
 ### Context
-
-<img src="docs/screenshots/context.png" width="100%" alt="Context section: context window budget per tool, tokens by category, the context window map, agent memory and daily usage by model">
 
 *What is in the context window: the budget each tool spends before the first
 prompt, tokens by category and by scope, the memory files that load, and the
@@ -475,7 +469,7 @@ All tools export using OpenTelemetry semantic conventions:
 - Full trace hierarchy: spans with parent-child relationships
 - Error tracking: rate limits, timeouts, API errors
 
-See [docs/vscode-otel-raw-output.md](docs/vscode-otel-raw-output.md) for a complete example of raw OTel data from VS Code Copilot.
+See [docs/otel-examples.md](docs/otel-examples.md) for synthetic OTel examples and publication guidance.
 
 #### Verify
 

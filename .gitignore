@@ -68,8 +68,8 @@ logs/
 _temp/
 .DS_Store
 *.png
-!docs/screenshots/*.png
-!docs/screenshots/changes/*.png
+docs/screenshots/
+docs/*-otel-raw-output.md
 session-investigation.md
 
 # scratch / temp files

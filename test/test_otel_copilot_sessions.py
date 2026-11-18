@@ -25,7 +25,7 @@ from aictl.ingesters.call_facts import copilot_call_key
 from aictl.monitoring.tool_config import copilot_cli_otel_endpoint
 from aictl.storage import EventRow, HistoryDB
 
-FIXTURE = Path(__file__).parent / "fixtures" / "otel" / "copilot_cli_1.0.108_session.jsonl"
+FIXTURE = Path(__file__).parent / "fixtures" / "otel" / "copilot_cli_synthetic_session.jsonl"
 SID = "00000000-0000-4000-8000-000000000001"
 TRACE = "11111111111111111111111111111111"
 

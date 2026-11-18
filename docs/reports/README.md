@@ -72,23 +72,23 @@ PYTHONPATH=src python -c "import sys; from aictl.cli import main; sys.argv=['aic
 
 ```
 Running 10 queries on kusto://<cluster>.<region>.kusto.windows.net/aictl, all data
-  dna          2.30 s  ok
-  relay        3.34 s  ok
-  cost         2.15 s  ok
-  slow         1.68 s  ok
-  context      1.24 s  ok
-  returns      0.87 s  ok
-  stuck        1.36 s  ok
-  models       0.70 s  ok
-  skills       0.60 s  ok
-  mcp          0.58 s  ok
+  dna          1.00 s  ok
+  relay        2.00 s  ok
+  cost         1.00 s  ok
+  slow         2.00 s  ok
+  context      1.00 s  ok
+  returns      2.00 s  ok
+  stuck        1.00 s  ok
+  models       2.00 s  ok
+  skills       1.00 s  ok
+  mcp          2.00 s  ok
 Wrote /path/to/kusto-report-all-sections.html
 ```
 
-These times are from a dev-tier Azure Data Explorer cluster with about 31,000 requests of six days. The command only reads. It runs the queries in `src/aictl/kusto/report/queries/`, puts the result rows into `src/aictl/kusto/report/template.html` and writes the page. Each section of the page shows the KQL that produced it.
+The times above are illustrative, not performance measurements. The command only reads. It runs the queries in `src/aictl/kusto/report/queries/`, puts the result rows into `src/aictl/kusto/report/template.html` and writes the page. Each section of the page shows the KQL that produced it.
 
 ## What a page holds
 
-Aggregates, 8-character session id prefixes, the names of tools, models, MCP servers and skills, file base names, and the host name of the cluster. No prompt text, no full paths and no user names. Check a page before you share it.
+Aggregates, 8-character session id prefixes, the names of tools, models, MCP servers and skills, file base names, and the host name of the cluster. These can identify people, projects and infrastructure even without full prompts or paths. Inspect the embedded data as well as the rendered page before sharing it. Use synthetic data for public examples.
 
 The sections, the options and how to read the page are in the [README](../../README.md#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress) and in [docs/kusto-cluster.md](../kusto-cluster.md#report).

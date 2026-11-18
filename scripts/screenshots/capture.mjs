@@ -7,11 +7,12 @@
 //        cd scripts/screenshots && npm install && npx playwright install chromium
 //        BASE_URL=http://127.0.0.1:8599 node capture.mjs
 //
-// Output PNGs land in docs/screenshots/ (override with OUT_DIR).
+// Output PNGs land in ignored wip/screenshots/ (override with OUT_DIR).
+// Captures contain local activity. Do not commit them or publish them without review.
 //
 // Env vars:
 //   BASE_URL   dashboard origin            (default http://127.0.0.1:8599)
-//   OUT_DIR    output directory            (default ../../docs/screenshots)
+//   OUT_DIR    output directory            (default ../../wip/screenshots)
 //   THEME      light | dark                (default light)
 //   RANGE      live | 1h | 6h | 24h | 7d   (default 7d)
 //   WIDTH      viewport width px           (default 1440)
@@ -25,7 +26,7 @@ import { mkdir } from 'node:fs/promises';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8599';
-const OUT_DIR = process.env.OUT_DIR || resolve(__dirname, '../../docs/screenshots');
+const OUT_DIR = process.env.OUT_DIR || resolve(__dirname, '../../wip/screenshots');
 const THEME = process.env.THEME || 'light';
 const RANGE = process.env.RANGE || '7d';
 const WIDTH = Number(process.env.WIDTH || 1440);
