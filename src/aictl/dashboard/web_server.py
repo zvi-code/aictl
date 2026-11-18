@@ -25,6 +25,7 @@ import logging
 import math
 import queue
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -156,7 +157,7 @@ _GZIP_MEMO = _GzipMemo()
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
-_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/context-audit", "/api/effective-models", "/api/board", "/api/live", "/api/settings/file", "/api/settings/tools")
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/session-evidence", "/api/context-audit", "/api/effective-models", "/api/board", "/api/live", "/api/settings/file", "/api/settings/tools")
 
 
 def _local_request(client_host: str, host_header: str | None) -> bool:
@@ -587,6 +588,20 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response(payload, status=status)
         elif path == "/api/effective-models":
             self._serve_effective_models()
+        elif path == "/api/session-evidence":
+            from .session_evidence import EvidenceInputError, session_evidence
+
+            if self._db is None:
+                self._json_response({"error": "History store unavailable"}, status=503)
+                return
+            try:
+                body = json.dumps(session_evidence(self._db, self._qs)).encode("utf-8")
+                self._send_body(body, "application/json", cache_control="no-store", cors=False)
+            except EvidenceInputError as exc:
+                self._json_response({"error": str(exc)}, status=400)
+            except sqlite3.Error:
+                logger.exception("Could not read session execution evidence")
+                self._json_response({"error": "Session evidence query failed"}, status=503)
         elif path == "/api/board/machine":
             self._serve_board_machine()
         elif path == "/api/board/health":
@@ -1624,6 +1639,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         gz = len(body) > _GZIP_MIN_BYTES and self._wants_gzip()
         if (
             etag is None
+            and cache_control != "no-store"
             and status == 200
             and content_type == "application/json"
             and len(body) > _GZIP_MIN_BYTES

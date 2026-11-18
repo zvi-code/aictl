@@ -351,6 +351,15 @@ New spans expose the reported turn, operation, agent, tool and token usage as ph
 columns. `Tool` identifies the exporter; `ToolName` identifies the invoked tool.
 Absent token counts are null, not zero. `InputTokens` is request usage, not a context-window limit.
 
+The session breakdown reads execution evidence from `session_steps`, with captured
+transcript text in `session_step_text.text` (a Kusto `string`, not JSON).
+The local `/api/session-evidence?session_id=...` endpoint also includes matching
+OTel spans. `q` searches a session, `kind=context` selects reported context
+observations, and `step_key` opens the text of one event. List results use short
+previews; detail returns up to 32,768 redacted characters with an explicit
+truncation state. Metadata capture never writes or returns this text. Step IDs
+are replay-stable, and transcript and span evidence is not added to billing totals.
+
 The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and put on a local queue without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are submitted in parallel and a slow cluster never holds up the tool that is exporting. In remote `auto` mode, these sends upload and enqueue DM sources; DM's batching policy controls ingestion time. Rows refused synchronously for now stay on the local queue and are sent again. The `kusto` block of `/api/otel-status` shows rows queued locally, sent, waiting, rejected and dropped, per table, with the last local/submission error. For queued mode, `rows_sent`, `last_sent_at` and a successful sink `flush()` mean **submitted**, not ingested; these counters do not report downstream DM failures.
 
 **Times.** A record sent without a time is stored with the time it was received, never in 1970.
