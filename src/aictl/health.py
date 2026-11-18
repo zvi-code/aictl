@@ -33,7 +33,7 @@ class OperationStats:
     def _bucket(self) -> list[float]:
         second = int(time.monotonic())
         if not self._buckets or self._buckets[-1][0] != second:
-            self._buckets.append([second, 0, 0, 0])
+            self._buckets.append([second, 0, 0, 0, 0, 0, 0])
         return self._buckets[-1]
 
     def begin(self) -> float:
@@ -47,8 +47,13 @@ class OperationStats:
         with self._lock:
             self._in_flight -= 1
             self._completed += 1
-            self._duration_ms += max(0.0, time.monotonic() - started) * 1000
+            elapsed = max(0.0, time.monotonic() - started) * 1000
+            self._duration_ms += elapsed
+            bucket = self._bucket()
+            bucket[4] += 1
+            bucket[5] += elapsed
             if error is not None:
+                bucket[6] += 1
                 self._failed += 1
                 self._last_error = error[:1000]
                 self._last_error_at = time.time()
@@ -57,7 +62,6 @@ class OperationStats:
                 self._rows += rows
                 self._bytes += bytes_
                 self._last_rows, self._last_bytes = rows, bytes_
-                bucket = self._bucket()
                 bucket[2] += rows
                 bucket[3] += bytes_
 
@@ -107,12 +111,15 @@ class OperationStats:
             now = time.monotonic()
             window = min(60.0, max(0.001, now - self._started))
             recent = [b for b in self._buckets if b[0] > now - 60]
+            completed = sum(b[4] for b in recent)
             return {
                 "total": self._total,
                 "rate_per_s": sum(b[1] for b in recent) / window,
                 "in_flight": self._in_flight,
                 "failed": self._failed,
                 "avg_ms": self._duration_ms / self._completed if self._completed else None,
+                "recent_avg_ms": sum(b[5] for b in recent) / completed if completed else None,
+                "recent_failures": int(sum(b[6] for b in recent)),
                 "rows": self._rows if self._volume else None,
                 "rows_per_s": sum(b[2] for b in recent) / window if self._volume else None,
                 "bytes": self._bytes if self._volume else None,

@@ -3441,17 +3441,28 @@ def _count_agents(board: _Board, sids: Iterable[str]) -> int:
 
 
 _self_memo: list = [0.0, None]
+_self_lock = threading.Lock()
 
 
 def _self_usage() -> dict:
-    """CPU and memory of aictl and its helpers, measured at most every SELF_TTL_S."""
-    if _self_memo[1] is None or time.monotonic() - _self_memo[0] >= SELF_TTL_S:
+    """One local resource sample shared by board, Machine, and Health readers."""
+    with _self_lock:
+        if _self_memo[1] is not None and time.monotonic() - _self_memo[0] < SELF_TTL_S:
+            return _self_memo[1]
         try:
-            _self_memo[1] = self_usage()
-            _self_memo[0] = time.monotonic()
+            usage = self_usage()
         except Exception:  # noqa: BLE001 - a psutil failure must not take the board down
-            _self_memo[1] = None
-    return _self_memo[1] or {"cpu_percent": None, "memory_rss_bytes": None, "children": []}
+            usage = {}
+        if usage.get("daemon_cpu_percent") == 0:
+            if usage.get("daemon_memory_rss_bytes") == 0:
+                # self_usage returns this sentinel pair if it could not read the parent.
+                usage = {**usage, "daemon_cpu_percent": None, "daemon_memory_rss_bytes": None}
+            elif (_self_memo[1] or {}).get("daemon_memory_rss_bytes") is None:
+                # psutil's first nonblocking CPU read establishes a baseline, not a measured zero.
+                usage = {**usage, "daemon_cpu_percent": None}
+        sample = {**usage, **_own_process(), "host_memory": _host_memory(), "checked_at": time.time()}
+        _self_memo[:] = [time.monotonic(), sample]
+        return sample
 
 
 def _self_section(db: Any) -> dict:
@@ -6349,6 +6360,13 @@ SUBAGENT_RAM_ALERT_MB = 2048.0
 MANY_ANOMALIES = 5
 MACHINE_QUALITY_ROWS = 50
 DB_STATS_TTL_S = 60.0
+KUSTO_VOLUME_TTL_S = 300.0  # Logical counts resolve row versions; don't pay for that every minute.
+TABLE_INVENTORY_TTL_S = 300.0
+TABLE_INVENTORY_LIMIT = 512
+_TABLE_DETAILS = (
+    ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
+    f"TotalOriginalSize, HotExtentSize | top {TABLE_INVENTORY_LIMIT + 1} by TableName asc"
+)
 _SUBAGENT_TYPES = frozenset({"subagent", "agent"})
 _ORPHAN_PARENTS = (0, 1)
 _NO_FRESHNESS_TOOLS = frozenset({"aictl", "any"})
@@ -6360,18 +6378,30 @@ _ANOMALY_KINDS = {
     "high_file_count": ("High file count", "info"),
     "long_running": ("Long running", "info"),
 }
-_db_stats_memo: dict[tuple[int, str], tuple[float, dict]] = {}
+_db_stats_memo: dict[tuple, tuple[float, dict]] = {}
+_db_stats_inflight: set[tuple] = set()
 _health_cache_lock = threading.Lock()
-_health_cache: dict[tuple[int, str], dict] = {}
+_health_cache: dict[tuple, dict] = {}
+
+
+def _health_store_key(db: Any) -> tuple:
+    settings = getattr(db, "_kusto", None)
+    if settings is not None:
+        return (settings.cluster, settings.database, settings.auth_mode)
+    return (id(db), str(getattr(db, "_path", "")))
+
+
+def _volume_interval(db: Any) -> float:
+    return KUSTO_VOLUME_TTL_S if getattr(db, "_kusto", None) is not None else DB_STATS_TTL_S
 
 
 def _cached_health_data(db: Any, now: float) -> dict:
     """Refresh costly store reads off the HTTP thread, with one refresh per store."""
     if db is None:
         return {}
-    key = (id(db), str(getattr(db, "_path", "")))
+    key = _health_store_key(db)
     with _health_cache_lock:
-        entry = _health_cache.setdefault(key, {"data": {}, "at": 0.0, "refreshing": False})
+        entry = _health_cache.setdefault(key, {"data": {}, "at": -math.inf, "refreshing": False})
         if not entry["refreshing"] and time.monotonic() - entry["at"] >= HOOKS_TTL_S:
             entry["refreshing"] = True
 
@@ -6380,17 +6410,27 @@ def _cached_health_data(db: Any, now: float) -> dict:
                     prev = entry["data"]
                     policies = _health_kusto_policies(db, prev.get("policies"))
                     capacity = _health_kusto_capacity(db, prev.get("capacity"))
+                    inventory = _health_table_inventory(db, prev.get("table_inventory"))
                     with _health_cache_lock:
-                        entry["data"] = {**prev, "policies": policies, "capacity": capacity}
-                    data = {
-                        "policies": policies,
-                        "capacity": capacity,
-                        "volume": _db_stats_sample(db),
-                        "quality": _quality_rows(db),
-                        "hooks": _hooks_by_tool(db, now),
-                    }
+                        entry["data"] = {**prev, "policies": policies, "capacity": capacity, "table_inventory": inventory}
+                    cluster = prev.get("cluster_resources")
+                    if getattr(db, "_kusto", None) is not None:
+                        try:
+                            from ..kusto.health_metrics import read_cluster_metrics
+
+                            cluster = read_cluster_metrics(db, cluster)
+                        except Exception:  # noqa: BLE001 - optional telemetry must not block other measurements
+                            logger.debug("Cluster resource metrics unavailable")
+                            if cluster is not None:
+                                cluster = {**cluster, "status": "stale" if cluster.get("checked_at") is not None else "error",
+                                           "attempted_at": time.time(), "last_error": "Cluster resource metrics unavailable"}
                     with _health_cache_lock:
-                        entry["data"] = data
+                        entry["data"] = {**entry["data"], "cluster_resources": cluster}
+                    volume = _db_stats_sample(db)
+                    quality = _quality_rows(db)
+                    hooks = _hooks_by_tool(db, now)
+                    with _health_cache_lock:
+                        entry["data"] = {**entry["data"], "volume": volume, "quality": quality, "hooks": hooks}
                 finally:
                     with _health_cache_lock:
                         entry["at"] = time.monotonic()
@@ -6398,6 +6438,69 @@ def _cached_health_data(db: Any, now: float) -> dict:
 
             threading.Thread(target=refresh, name="aictl-health-stats", daemon=True).start()
         return dict(entry["data"])
+
+
+def _empty_table_inventory(db: Any) -> dict:
+    kusto = getattr(db, "_kusto", None) is not None
+    return {
+        "status": "pending" if kusto else "unsupported",
+        "checked_at": None, "attempted_at": None, "last_error": None,
+        "scope": (
+            "Physical tables in the configured ADX database. Rows are from a cached summary of sealed extents "
+            "(up to 15 minutes old at read time). They include stored versions and tombstones, not just current "
+            "logical rows. Unsealed streaming rows and queued submissions are not measured."
+            if kusto else "Native ADX table metadata is not available for this store."
+        ),
+        "size_scope": (
+            "extent_bytes and hot_bytes include compressed data and indexes, for all extents and hot extents "
+            "respectively. original_bytes is pre-compression size; compressed data alone is not reported."
+        ) if kusto else None,
+        "refresh_interval_s": TABLE_INVENTORY_TTL_S if kusto else None,
+        "limit": TABLE_INVENTORY_LIMIT if kusto else None, "truncated": None, "tables": [],
+    }
+
+
+def _health_table_inventory(db: Any, previous: dict | None = None) -> dict:
+    """Read one bounded native metadata projection; never enumerate or count table contents."""
+    result = previous if previous is not None else _empty_table_inventory(db)
+    settings = getattr(db, "_kusto", None)
+    if settings is None:
+        return result
+    attempted = result["attempted_at"]
+    if attempted is not None and time.time() - attempted < TABLE_INVENTORY_TTL_S:
+        return result
+    from azure.kusto.data import ClientRequestProperties
+
+    from ..kusto.connection import KustoClientFactory, Result
+
+    client, _ = KustoClientFactory.health_objects(settings)
+    if client is None:
+        if result["status"] == "cached":
+            return {**result, "status": "stale", "last_error": "No initialized Kusto client available"}
+        return result
+    props = ClientRequestProperties()
+    props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=5))
+    attempted = time.time()
+    try:
+        details = Result.from_response(client.execute_mgmt(settings.database, _TABLE_DETAILS, props))
+        if "TableName" not in details.names:
+            raise ValueError("TableName missing from ADX table metadata")
+        rows = details.dicts()
+        tables = []
+        for row in rows[:TABLE_INVENTORY_LIMIT]:
+            if not row.get("TableName"):
+                raise ValueError("Unnamed table in ADX table metadata")
+            tables.append({
+                "name": row["TableName"], "rows": _as_int(row.get("TotalRowCount")),
+                "extent_count": _as_int(row.get("TotalExtents")), "extent_bytes": _as_int(row.get("TotalExtentSize")),
+                "original_bytes": _as_int(row.get("TotalOriginalSize")), "hot_bytes": _as_int(row.get("HotExtentSize")),
+                "compressed_bytes": None,
+            })
+        return {**result, "tables": tables, "truncated": len(rows) > TABLE_INVENTORY_LIMIT,
+                "status": "cached", "checked_at": time.time(), "attempted_at": attempted, "last_error": None}
+    except Exception as exc:  # noqa: BLE001 - permissions and metadata availability vary by cluster
+        return {**result, "status": "stale" if result["checked_at"] is not None else "error",
+                "attempted_at": attempted, "last_error": _one_line(str(exc), 300) or "Table metadata read failed"}
 
 
 def _health_kusto_capacity(db: Any, previous: dict | None = None) -> dict | None:
@@ -6739,10 +6842,14 @@ def _db_stats_sample(db: Any) -> dict:
     """Keep the original scan interval with the counts, including after a failed refresh."""
     if db is None:
         return {}
-    key = (id(db), str(getattr(db, "_path", "memory")))
-    cached = _db_stats_memo.get(key)
-    if cached and time.monotonic() - cached[0] < DB_STATS_TTL_S:
-        return cached[1]
+    key = _health_store_key(db)
+    with _health_cache_lock:
+        cached = _db_stats_memo.get(key)
+        if cached and time.monotonic() - cached[0] < _volume_interval(db):
+            return cached[1]
+        if key in _db_stats_inflight:
+            return cached[1] if cached else {}
+        _db_stats_inflight.add(key)
     started = time.time()
     try:
         stats = db.stats()
@@ -6756,7 +6863,9 @@ def _db_stats_sample(db: Any) -> dict:
     else:
         sample = {"stats": stats, "started_at": started, "checked_at": time.time(), "attempted_at": started,
                   "last_error": None, "status": "cached"}
-    _db_stats_memo[key] = (time.monotonic(), sample)
+    with _health_cache_lock:
+        _db_stats_memo[key] = (time.monotonic(), sample)
+        _db_stats_inflight.discard(key)
     return sample
 
 
@@ -6768,6 +6877,41 @@ def _own_process() -> dict:
         return {"threads": proc.num_threads(), "uptime_s": round(time.time() - proc.create_time(), 1)}
     except Exception:  # noqa: BLE001 - psutil is optional on some platforms
         return {"threads": None, "uptime_s": None}
+
+
+def _host_memory() -> dict:
+    """Whole-machine physical memory; total minus available excludes reclaimable memory."""
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        return {"memory_total_bytes": memory.total, "memory_available_bytes": memory.available,
+                "memory_used_bytes": memory.total - memory.available}
+    except Exception:  # noqa: BLE001 - totals for monitored tools are not a host-memory fallback
+        return {"memory_total_bytes": None, "memory_available_bytes": None, "memory_used_bytes": None}
+
+
+def _health_resources(snapshot: Any, usage: dict, cluster: dict | None) -> dict:
+    cores = getattr(snapshot, "cpu_per_core", None) or []
+    host_cpu = round(sum(cores) / len(cores), 1) if cores else None
+    cpu_at = getattr(snapshot, "timestamp", None) if cores else None
+    memory = usage["host_memory"]
+    memory_at = usage["checked_at"] if memory["memory_total_bytes"] is not None else None
+    daemon = {"cpu_percent": usage.get("daemon_cpu_percent"), "rss_bytes": usage.get("daemon_memory_rss_bytes"),
+              "threads": usage.get("threads")}
+    return {
+        "daemon": {
+            **daemon, "checked_at": usage["checked_at"] if any(v is not None for v in daemon.values()) else None,
+            "scope": "aictl daemon process only, excluding children; 100% CPU is one logical core",
+        },
+        "host": {
+            "cpu_percent": host_cpu, **memory, "cpu_checked_at": cpu_at, "memory_checked_at": memory_at,
+            "checked_at": max((t for t in (cpu_at, memory_at) if t is not None), default=None),
+            "scope": "Whole daemon host. CPU is the mean across logical cores in the monitor snapshot; "
+                     "memory used is total minus available. checked_at is the latest component sample.",
+        },
+        "cluster": cluster,
+    }
 
 
 def _sink_section(store: Any) -> dict | None:
@@ -6947,6 +7091,7 @@ def _collection_health(
     port: int | None = None,
     *,
     cached: dict | None = None,
+    include_resources: bool = False,
 ) -> dict:
     """The shared collection-health projection used by Machine and Health."""
     now = time.time() if now is None else now
@@ -6962,7 +7107,7 @@ def _collection_health(
     except Exception:  # noqa: BLE001 - the receiver is optional
         otel_status = None
     snap_ts = _as_number(getattr(snapshot, "timestamp", None)) if snapshot is not None else None
-    return {
+    payload = {
         "generated_at": now,
         "monitor": _monitor_section(snapshot, selected),
         "pipeline": {
@@ -6970,7 +7115,8 @@ def _collection_health(
                 "pid": os.getpid(),
                 "cpu": usage.get("cpu_percent"),
                 "rss": usage.get("memory_rss_bytes"),
-                **_own_process(),
+                "threads": usage["threads"],
+                "uptime_s": usage["uptime_s"],
                 "db_bytes": stats.get("file_size_bytes") if isinstance(getattr(db, "_path", None), Path) else None,
                 "db_rows": sum(counts.values()) if counts else None,
                 "db_tables": counts,
@@ -6993,6 +7139,9 @@ def _collection_health(
             },
         },
     }
+    if include_resources:
+        payload["resources"] = _health_resources(snapshot, usage, cached.get("cluster_resources") if cached else None)
+    return payload
 
 
 def compute_machine(
@@ -7006,7 +7155,10 @@ def compute_machine(
     port: int | None = None,
 ) -> dict:
     """Everything ``GET /api/board/machine`` returns, with the original tool filter."""
-    payload = _collection_health(db, store, tools, otel, ingesters, stream_clients, now, port)
+    now = time.time() if now is None else now
+    # Machine and Health can be open together. Neither should start or await its own ADX scan.
+    cached = _cached_health_data(db, now) if getattr(db, "_kusto", None) is not None else None
+    payload = _collection_health(db, store, tools, otel, ingesters, stream_clients, now, port, cached=cached)
     snapshot = getattr(store, "snapshot", None)
     selected = set(stored_ids_for(tools)) if tools is not None else None
     processes = machine_processes(snapshot, selected)
@@ -7038,7 +7190,7 @@ def compute_health(
     cached = _cached_health_data(db, now)
     payload = _collection_health(
         db, store, otel=otel, ingesters=ingesters, stream_clients=stream_clients,
-        now=now, port=port, cached=cached,
+        now=now, port=port, cached=cached, include_resources=True,
     )
     settings = getattr(db, "_kusto", None)
     path = str(getattr(db, "_path", ":memory:"))
@@ -7150,6 +7302,7 @@ def compute_health(
         "measurement_scope": scope,
         "ingestion_capacity": capacity,
         "capacity_scope": "cluster-wide ingestion slots at the last successful .show capacity ingestions read",
+        "table_inventory": cached.get("table_inventory") or _empty_table_inventory(db),
         "queued_history_rows_unconfirmed": pending,
         "otel_sink": otel_sink,
         "volume": {
@@ -7157,9 +7310,10 @@ def compute_health(
             "bytes": payload["pipeline"]["self"]["db_bytes"],
             "tables": payload["pipeline"]["self"]["db_tables"],
             **{k: cached.get("volume", {}).get(k) for k in ("started_at", "checked_at", "attempted_at", "last_error")},
-            "scope": "cached selected history tables; excludes raw OTel export tables; not submitted rows or a cluster-wide total",
+            "scope": "Current logical rows of selected history tables (store stats names); excludes raw OTel export "
+                     "tables. Not physical extent rows, submitted rows, or a cluster-wide total.",
             "status": cached.get("volume", {}).get("status", "pending"),
-            "refresh_interval_s": DB_STATS_TTL_S,
+            "refresh_interval_s": _volume_interval(db),
         },
         "storage_budget_bytes": getattr(db, "_budget_bytes", None) if kind != "kusto" else None,
         "counter_scope": "process lifetime; reset on daemon restart; rates use up to the last 60 seconds",

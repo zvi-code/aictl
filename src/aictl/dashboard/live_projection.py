@@ -510,6 +510,7 @@ class LiveDashboard:
 
     def _health_loop(self) -> None:
         ready = False
+        inventory_version = None
         while not self._stop.is_set():
             with self._lock:
                 watched = bool(self._clients)
@@ -518,9 +519,21 @@ class LiveDashboard:
                     health, machine = self._health_provider()
                     if self._stop.is_set():
                         return
+                    # Inventory changes minutes apart. Don't encode and transmit all
+                    # table rows with each one-second operational heartbeat.
+                    store = health.get("store", {})
+                    inventory = store.get("table_inventory")
+                    separate = []
+                    version = None
+                    if inventory is not None:
+                        version = (store.get("destination"), inventory.get("status"), inventory.get("checked_at"), inventory.get("attempted_at"))
+                        health = {**health, "store": {k: v for k, v in store.items() if k != "table_inventory"}}
+                        if version != inventory_version:
+                            separate.append(("runtime.health", "table_inventory", inventory, "runtime.operational"))
                     self.hub.commit(
                         [
                             ("runtime.health", "local", health, "runtime.operational"),
+                            *separate,
                             ("runtime.machine", "local", machine, "runtime.collector"),
                             (
                                 "source.status",
@@ -538,8 +551,9 @@ class LiveDashboard:
                                 },
                                 "runtime.operational",
                             ),
-                        ]
+                        ], removals=[("runtime.health", "table_inventory")] if inventory_version and version is None else None,
                     )
+                    inventory_version = version
                     ready = True
             except Exception as exc:  # noqa: BLE001 - optional diagnostics must not terminate the live worker
                 error = self._safe_reason(exc) or type(exc).__name__

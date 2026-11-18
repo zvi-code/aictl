@@ -1,6 +1,7 @@
 """Offline health projections and real local HTTP routing."""
 
 import json
+import sys
 import threading
 import time
 import urllib.error
@@ -45,6 +46,25 @@ def test_operation_counts_errors_inflight_and_successful_volume():
     assert len(stats._buckets) <= 61
 
 
+def test_recent_latency_excludes_old_completions(monkeypatch):
+    from aictl import health
+
+    clock = [0.0]
+    monkeypatch.setattr(health, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0]))
+    stats = OperationStats()
+    start = stats.begin()
+    clock[0] = 2.0
+    stats.finish(start, error="old error")
+    clock[0] = 70.0
+    assert stats.snapshot()["recent_avg_ms"] is None
+    start = stats.begin()
+    clock[0] = 70.25
+    stats.finish(start)
+    current = stats.snapshot()
+    assert current["recent_avg_ms"] == 250 and current["avg_ms"] == 1125
+    assert current["recent_failures"] == 0 and current["failed"] == 1
+
+
 def test_health_reports_sqlite_http_not_sql_and_unknown_volume(cached_health):
     reads = OperationStats()
     reads.call(lambda: None)
@@ -56,6 +76,8 @@ def test_health_reports_sqlite_http_not_sql_and_unknown_volume(cached_health):
     assert health["store"]["reads"]["total"] == 1
     assert health["store"]["writes"] is None
     assert health["store"]["ingestion_capacity"] is None
+    assert health["store"]["table_inventory"]["status"] == "unsupported"
+    assert health["resources"]["cluster"] is None
     assert "not SQL" in health["store"]["measurement_scope"]
     assert health["store"]["health"]["state"] == "ok"
     cached_health.clear()
@@ -177,6 +199,184 @@ def test_cluster_capacity_preserves_zero_and_does_not_retimestamp_on_probe_failu
     assert stale["status"] == "stale" and stale["checked_at"] == sample["checked_at"] and stale["last_error"]
 
 
+_TABLE_DETAILS_COLUMNS = [
+    ("TableName", "string"), ("TotalRowCount", "long"), ("TotalExtents", "long"),
+    ("TotalExtentSize", "real"), ("TotalOriginalSize", "real"), ("HotExtentSize", "real"),
+]
+
+
+def test_native_inventory_distinguishes_empty_zero_unknown_stale_and_recovery(monkeypatch):
+    from test_kusto_connection import FakeClient, response
+
+    clock = [1000.0]
+    monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0]))
+    db = SimpleNamespace(_kusto=KustoSettings("https://cluster.kusto.windows.net"))
+    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (None, None))
+    sample = board_api._health_table_inventory(db)
+    assert sample["status"] == "pending" and sample["attempted_at"] is None
+
+    client = FakeClient(on_mgmt=lambda _: SimpleNamespace(primary_results=[]))
+    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
+    error = board_api._health_table_inventory(db, sample)
+    assert error["status"] == "error" and error["checked_at"] is None and error["last_error"]
+    assert error["attempted_at"] == clock[0] and error["tables"] == []
+    assert board_api._health_table_inventory(db, error) == error and len(client.commands) == 1
+    clock[0] += error["refresh_interval_s"]
+    client.on_mgmt = lambda _: response(_TABLE_DETAILS_COLUMNS, [["OTELLogs", 0, 0, 0.0, None, 0.0]])
+    sample = board_api._health_table_inventory(db, error)
+    assert sample["tables"] == [{
+        "name": "OTELLogs", "rows": 0, "extent_count": 0, "extent_bytes": 0, "original_bytes": None,
+        "hot_bytes": 0, "compressed_bytes": None,
+    }]
+    assert sample["status"] == "cached" and sample["last_error"] is None and sample["truncated"] is False
+    clock[0] += sample["refresh_interval_s"]
+    client.on_mgmt = lambda _: (_ for _ in ()).throw(RuntimeError("permission denied"))
+    stale = board_api._health_table_inventory(db, sample)
+    assert stale["status"] == "stale" and stale["tables"] == sample["tables"] and stale["last_error"]
+    assert stale["checked_at"] == sample["checked_at"] < stale["attempted_at"] == clock[0]
+    assert board_api._health_table_inventory(db, stale) == stale and len(client.commands) == 3
+    clock[0] += stale["refresh_interval_s"]
+    client.on_mgmt = lambda _: response(_TABLE_DETAILS_COLUMNS, [])
+    empty = board_api._health_table_inventory(db, stale)
+    assert (empty["status"], empty["tables"], empty["last_error"], empty["checked_at"]) == ("cached", [], None, clock[0])
+
+
+def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeypatch):
+    from test_kusto_connection import response
+
+    from aictl.kusto import health_metrics
+
+    clock = [1000.0]
+    monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
+    monkeypatch.setattr(board_api, "_health_cache", {})
+    monkeypatch.setattr(board_api, "_db_stats_memo", {})
+    entered, release = threading.Event(), threading.Event()
+    caller = threading.current_thread()
+    calls = []
+
+    def record(name):
+        calls.append((name, threading.current_thread()))
+
+    def stats():
+        record("logical")
+        entered.set()
+        assert release.wait(3)
+        return {"sessions_count": 7}
+
+    settings = KustoSettings("https://cluster.kusto.windows.net", database="selected_db")
+    db = SimpleNamespace(_kusto=settings, _path=settings.uri, stats=stats)
+    machine_db = SimpleNamespace(**vars(db))  # Different view, same database.
+    store = SimpleNamespace(snapshot=None)
+    inv = ".show tables details"
+    cap = ".show capacity ingestions"
+    inventory_calls = []
+
+    def execute(database, command, props):
+        record(command)
+        if command.startswith(inv):
+            inventory_calls.append((database, command, props.get_option("servertimeout", None)))
+            return response(_TABLE_DETAILS_COLUMNS, [
+                ["sessions", 3, 1, 21.0, 38.0, 12.0],
+                *[[f"t{i:04}", 0, 0, 0, 0, 0] for i in range(board_api.TABLE_INVENTORY_LIMIT)],
+            ])
+        if command == cap:
+            return response([("Resource", "string"), ("Total", "long")], [["Ingestions", 12]])
+        return response([("Policy", "string")], [])
+
+    client = SimpleNamespace(execute_mgmt=execute)
+    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
+    cluster = {"status": "cached", "samples": {"cpu_percent": {"value": 21.0, "at": clock[0]}}}
+    previous = []
+
+    def read_metrics(db, sample):
+        record("metrics hook")
+        previous.append(sample)
+        return cluster
+
+    monkeypatch.setattr(health_metrics, "read_cluster_metrics", read_metrics)
+    monkeypatch.setattr(board_api, "_hooks_by_tool", lambda *_: record("hooks") or {})
+    monkeypatch.setattr(board_api, "_quality_rows", lambda *_: record("quality") or [])
+
+    def wait_refresh():
+        deadline = time.monotonic() + 2
+        while board_api._health_cache[board_api._health_store_key(db)]["refreshing"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+
+    try:
+        first = board_api.compute_health(db, store)
+        assert first["store"]["table_inventory"]["status"] == "pending" and entered.wait(2)
+        machine = board_api.compute_machine(machine_db, store)
+        assert machine["pipeline"]["self"]["db_rows"] is None
+        again = board_api.compute_health(db, store)
+        assert again["resources"]["cluster"] == cluster and again["store"]["volume"]["rows"] is None
+        inv_sample = again["store"]["table_inventory"]
+        assert inv_sample["tables"][0] == {
+            "name": "sessions", "rows": 3, "extent_count": 1, "extent_bytes": 21,
+            "hot_bytes": 12, "original_bytes": 38, "compressed_bytes": None,
+        }
+        assert inv_sample["truncated"] and len(inv_sample["tables"]) == inv_sample["limit"]
+        assert "sealed extents" in inv_sample["scope"]
+    finally:
+        release.set()
+        wait_refresh()
+    volume = board_api.compute_health(db, store)["store"]["volume"]
+    assert volume["tables"] == {"sessions": 7} and volume["rows"] == 7 and volume["bytes"] is None
+    assert volume["refresh_interval_s"] >= 300 and inv_sample["refresh_interval_s"] >= 300
+    clock[0] += 65
+    board_api.compute_machine(machine_db, store)
+    wait_refresh()
+    assert [name for name, _ in calls].count("logical") == 1
+    assert [name for name, _ in calls].count(cap) == 2  # independent 60-second slot probe
+    assert previous == [None, cluster] and all(thread is not caller for _, thread in calls)
+    (database, command, timeout), = inventory_calls
+    assert database == settings.database and timeout.total_seconds() == 5
+    assert command == (
+        ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
+        f"TotalOriginalSize, HotExtentSize | top {inv_sample['limit'] + 1} by TableName asc"
+    )
+
+
+def test_health_resources_keep_process_host_and_component_sample_times_distinct(cached_health, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
+    monkeypatch.setattr(board_api, "_self_memo", [0.0, None])
+    samplers = []
+    monkeypatch.setattr(board_api, "self_usage", lambda: samplers.append("self") or {
+        "cpu_percent": 75.0, "memory_rss_bytes": 1500, "daemon_cpu_percent": 2.5, "daemon_memory_rss_bytes": 600,
+    })
+    monkeypatch.setattr(board_api, "_own_process", lambda: samplers.append("threads") or {"threads": 9, "uptime_s": 12})
+    vm = SimpleNamespace(total=5000, available=2000)
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(virtual_memory=lambda: samplers.append("host") or vm))
+    snapshot = SimpleNamespace(timestamp=990.0, cpu_per_core=[0.0, 40.0], tools=[], total_cpu=110.0, total_mem_mb=50)
+    store = SimpleNamespace(snapshot=snapshot)
+    data = board_api.compute_health(None, store)
+    daemon, host = data["resources"]["daemon"], data["resources"]["host"]
+    assert (daemon["cpu_percent"], daemon["rss_bytes"], daemon["threads"], daemon["checked_at"]) == (2.5, 600, 9, 1000)
+    assert data["pipeline"]["self"]["cpu"] == 75.0 and data["pipeline"]["self"]["rss"] == 1500
+    assert (host["cpu_percent"], host["memory_total_bytes"], host["memory_used_bytes"], host["memory_available_bytes"]) == (
+        20.0, 5000, 3000, 2000,
+    )
+    assert (host["cpu_checked_at"], host["memory_checked_at"], host["checked_at"]) == (990.0, 1000.0, 1000.0)
+    clock[0] += 5
+    snapshot.timestamp, snapshot.cpu_per_core = clock[0], [0.0, 0.0]
+    host = board_api.compute_health(None, store)["resources"]["host"]
+    assert (host["cpu_percent"], host["cpu_checked_at"], host["memory_checked_at"]) == (0.0, 1005.0, 1000.0)
+    assert samplers == ["self", "threads", "host"]
+    clock[0] += board_api.SELF_TTL_S
+    store.snapshot = None
+    monkeypatch.setattr(board_api, "self_usage", lambda: {"daemon_cpu_percent": 0.0, "daemon_memory_rss_bytes": 600})
+    assert board_api.compute_health(None, store)["resources"]["daemon"]["cpu_percent"] == 0.0
+    clock[0] += board_api.SELF_TTL_S
+    # The existing process sampler returns this pair when it couldn't read the daemon.
+    monkeypatch.setattr(board_api, "self_usage", lambda: {"daemon_cpu_percent": 0.0, "daemon_memory_rss_bytes": 0})
+    monkeypatch.setattr(board_api, "_own_process", lambda: {"threads": None, "uptime_s": None})
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    resources = board_api.compute_health(None, store)["resources"]
+    for level in ("host", "daemon"):
+        assert all(v is None for k, v in resources[level].items() if k != "scope")
+
+
 def test_health_does_not_wait_for_uncached_database_queries(monkeypatch):
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
@@ -225,7 +425,7 @@ def test_health_route_is_local_and_works_before_first_snapshot(tmp_path, cached_
     try:
         with urllib.request.urlopen(url, timeout=3) as response:
             data = json.loads(response.read())
-        assert set(data) == {"generated_at", "pipeline", "monitor", "store"}
+        assert set(data) == {"generated_at", "pipeline", "resources", "monitor", "store"}
         assert data["store"]["reads"]["in_flight"] == 1
         request = urllib.request.Request(url, headers={"Host": "attacker.example"})
         with pytest.raises(urllib.error.HTTPError) as error:

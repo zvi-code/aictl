@@ -961,13 +961,15 @@ class TestRunningWrites:
 
 
 class TestSelfMemo:
-    def test_a_failure_is_not_remembered(self, db, monkeypatch):
+    def test_a_failed_sample_is_retried_after_the_sampling_interval(self, db, monkeypatch):
         def broken():
             raise OSError("no process table")
 
         monkeypatch.setattr(board_api, "self_usage", broken)
         assert _board(db)["self"]["memory_rss_bytes"] is None
         monkeypatch.undo()
+        assert _board(db)["self"]["memory_rss_bytes"] is None
+        board_api._self_memo[0] -= board_api.SELF_TTL_S
         assert _board(db)["self"]["memory_rss_bytes"] > 0
 
 
