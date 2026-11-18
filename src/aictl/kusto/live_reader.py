@@ -52,6 +52,7 @@ class ReaderConfig:
     result_bytes: int = 4_000_000
     query_memory_bytes: int = 134_217_728
     failures_before_resync: int = 3
+    tables_per_probe: int = 4
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
@@ -297,10 +298,11 @@ class SharedKustoReader:
                 "schema_refresh_target_s": self.config.schema_refresh_s,
                 "reconciliation_completed_at": dict(self._last_reconcile_at),
                 "last_query_completed_at": self._last_query_at,
-                "catching_up": bool(self._ranges),
+                "catching_up": self._catching_up(),
                 "limits": {
                     "page_rows": self.config.page_size,
                     "queries_per_poll": self.config.queries_per_poll,
+                    "tables_per_probe": self.config.tables_per_probe,
                     "subscriber_batches": self.config.subscriber_batches,
                     "dedup_entities": self.config.dedup_entities,
                     "dedup_bytes": self.config.dedup_bytes,
@@ -470,8 +472,7 @@ class SharedKustoReader:
             self._publish("resync", tables=tuple(sorted(added | removed)), reason="schema_changed")
 
     def _seed(self) -> None:
-        rows = self._execute("print aictl_live_cursor=cursor_current(), aictl_live_now=tostring(now())")
-        cursor, anchor = self._header(rows)
+        cursor, anchor = self._read_cursor()
         with self._lock:
             self._frontier = {name: cursor for name in self.table_names}
             self._server_now = anchor
@@ -482,17 +483,12 @@ class SharedKustoReader:
             self._reason = "policy_check"
         self._publish("bootstrap", tables=self.table_names)
 
-    @staticmethod
-    def _header(rows: list[dict[str, Any]]) -> tuple[str, str]:
-        headers = [
-            r
-            for r in rows
-            if not r.get("aictl_live_table") and "aictl_live_cursor" in r and r.get("aictl_live_cursor") is not None
-        ]
-        if len(headers) != 1:
+    def _read_cursor(self) -> tuple[str, str]:
+        rows = self._execute("print aictl_live_cursor=cursor_current(), aictl_live_now=tostring(now())")
+        if len(rows) != 1 or rows[0].get("aictl_live_cursor") is None:
             raise ReaderQueryError("Missing or repeated cursor header")
-        cursor = str(headers[0]["aictl_live_cursor"])
-        anchor = datetime.fromisoformat(str(headers[0]["aictl_live_now"]).replace("Z", "+00:00")).isoformat()
+        cursor = str(rows[0]["aictl_live_cursor"])
+        anchor = datetime.fromisoformat(str(rows[0]["aictl_live_now"]).replace("Z", "+00:00")).isoformat()
         return cursor, anchor
 
     def _policy(self) -> None:
@@ -520,39 +516,35 @@ class SharedKustoReader:
             self._reconciled_partitions.pop(name, None)
             self._publish("resync", tables=(name,), reason="policy_changed")
 
-    def _detect(self) -> None:
-        arms = ["(print aictl_live_table='', aictl_live_cursor=aictl_live_upper, aictl_live_now=tostring(now()))"]
-        for name in sorted(self._cursor_tables):
-            low = _text(self._frontier[name])
-            arms.append(
-                f"({quote(name)} | where cursor_after({low}) and cursor_before_or_at(aictl_live_upper)"
-                f" | take 1 | project aictl_live_table={_text(name)})"
-            )
-        query = "let aictl_live_upper = toscalar(print cursor_current());\nunion " + ",\n".join(arms)
-        rows = self._execute(query)
-        upper, anchor = self._header(rows)
-        if not upper and any(self._frontier.values()):
-            raise ReaderQueryError("The database cursor was reset")
-        changed = {str(r["aictl_live_table"]) for r in rows if r.get("aictl_live_table")}
-        if not changed <= self._cursor_tables:
-            raise ReaderQueryError("Unexpected table in cursor result")
+    def _catching_up(self) -> bool:
+        return any(self._frontier[name] != self._last_cursor for name in self._cursor_tables)
+
+    def _detect(self, names: list[str]) -> None:
+        upper = self._last_cursor
+        arms = [
+            f"({quote(name)} | where cursor_after({_text(self._frontier[name])}) and cursor_before_or_at({_text(upper)})"
+            f" | take 1 | summarize aictl_live_count=count() | project aictl_live_table={_text(name)}, aictl_live_count)"
+            for name in names
+        ]
+        rows = self._execute("union " + ",\n".join(arms))
+        # An empty range must return an explicit zero; a missing arm is not a checkpoint.
+        counts = {row["aictl_live_table"]: row["aictl_live_count"] for row in rows}
+        if len(rows) != len(names) or counts.keys() != set(names) or any(n not in (0, 1) for n in counts.values()):
+            raise ReaderQueryError("Incomplete or unexpected cursor probe result")
         raw_changed = []
         with self._lock:
-            previous_frontier = dict(self._frontier)
-            self._server_now = anchor
-            self._last_cursor = upper
-            for name in sorted(self._cursor_tables):
-                if name in changed and self._available is not None and self._available[name].versioned:
+            assert self._available is not None
+            for name in names:
+                if counts[name] and self._available[name].versioned:
                     self._ranges.append(_Scan(name, "cursor", self._frontier[name], upper))
                 else:
                     self._frontier[name] = upper
-                    if name in changed:
+                    if counts[name]:
                         raw_changed.append(name)
         if raw_changed:
             self._publish("changes", tables=tuple(raw_changed))
-        elif self._frontier != previous_frontier:
+        elif 0 in counts.values():
             self._publish("status")
-        self._capture_next = time.monotonic() + self._idle_delay
 
     def _page_query(self, spec: _Spec, scan: _Scan) -> str:
         if scan.kind == "cursor":
@@ -653,6 +645,12 @@ class SharedKustoReader:
         return more
 
     def _cursor_step(self) -> bool:
+        # Hold the captured upper until every lagging table has been probed and drained.
+        scheduled = {scan.table for scan in self._ranges}
+        pending = sorted(name for name in self._cursor_tables - scheduled if self._frontier[name] != self._last_cursor)
+        if pending:
+            self._detect(pending[: self.config.tables_per_probe])
+            return True
         if self._ranges:
             scan = self._ranges[0]
             more = self._page(scan)
@@ -662,7 +660,12 @@ class SharedKustoReader:
             return True
         if time.monotonic() < self._capture_next:
             return False
-        self._detect()
+        upper, anchor = self._read_cursor()
+        if not upper and any(self._frontier.values()):
+            raise ReaderQueryError("The database cursor was reset")
+        with self._lock:
+            self._last_cursor, self._server_now = upper, anchor
+        self._capture_next = time.monotonic() + self._idle_delay
         return True
 
     def _preview_step(self) -> bool:
@@ -808,7 +811,7 @@ class SharedKustoReader:
                     self._publish("status")
                 if successful_query:
                     self._failures = 0
-                active = bool(self._ranges) or any(b.kind == "changes" for b in self._emitted)
+                active = self._catching_up() or any(b.kind == "changes" for b in self._emitted)
                 if not self._stale:
                     self._idle_delay = (
                         self.config.min_poll_s
