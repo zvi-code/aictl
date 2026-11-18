@@ -33,6 +33,7 @@ from ..context_audit import _redact
 from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
 from ..kusto.observations import retains_unresolved_facts
 from ..storage import (
+    STEP_TEXT_LIMIT,
     AgentRow,
     CallFacts,
     ContextEventRow,
@@ -41,6 +42,7 @@ from ..storage import (
     LoadedFileRow,
     RequestRow,
     SessionPromptRow,
+    SessionStepRow,
     SkillUseRow,
     ToolInvocationRow,
     _dedup_key,
@@ -48,6 +50,7 @@ from ..storage import (
 from ..utils import estimate_tokens_from_size
 from . import context_items, loaded_files
 from ._common import coerce_ts, decode_file_uri
+from .transcript_steps import CopilotSteps, redact_step_text
 
 log = logging.getLogger(__name__)
 
@@ -215,10 +218,10 @@ _PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$")
 _PATCH_MOVE = re.compile(r"^\*\*\* Move to: (.+)$")
 
 
-def _patch_counts(stored_input: str, cwd: str) -> dict[str, tuple[int, int]]:
-    """Lines per file of a stored apply_patch call, or nothing when the text is not there."""
+def _patch_counts(stored_input: str | dict, cwd: str) -> dict[str, tuple[int, int]]:
+    """Lines per file in live apply_patch arguments or their stored JSON form."""
     try:
-        data = json.loads(stored_input or "{}")
+        data = json.loads(stored_input or "{}") if isinstance(stored_input, str) else stored_input
     except ValueError:
         return {}
     patch = next((v for v in (data.get("input"), data.get("patch")) if isinstance(v, str)), "") if isinstance(data, dict) else ""
@@ -281,6 +284,7 @@ class FactBuffer:
         self.agents: dict[str, AgentRow] = {}
         self.file_writes: dict[str, FileWriteRow] = {}
         self.context_events: dict[str, ContextEventRow] = {}
+        self.steps: dict[str, SessionStepRow] = {}
         self.loaded_files: dict[tuple[str, str, str], LoadedFileRow] = {}
         self.context_items: dict[tuple[str, str, str, str], ContextItemRow] = {}
         self.surface: Callable[[str], str] | None = None
@@ -357,6 +361,22 @@ class FactBuffer:
             # Files are read oldest first, so the first line of a replayed event is the original.
             self.context_events.setdefault(row.dedup_key, row)
 
+    def add_step(self, row: SessionStepRow) -> None:
+        if retains_unresolved_facts(self.store) or not self._in_window(row.ts) or row.step_key in self.steps:
+            return
+        if row.text:
+            keeps_text = getattr(self.store, "_keeps_text", None)
+            if not callable(keeps_text) or keeps_text() is not True:
+                row.text, row.text_status = "", "withheld"
+            else:
+                text = redact_step_text(row.text)
+                row.text = text[:STEP_TEXT_LIMIT]
+                row.text_status = "truncated" if len(text) > STEP_TEXT_LIMIT or row.text_status == "truncated" else "captured"
+        elif not row.text_status:
+            row.text_status = "not_reported"
+        self.steps[row.step_key] = row
+        self._maybe_flush()
+
     def add_loaded_file(self, row: LoadedFileRow) -> None:
         if self._capture("loaded_files", row):
             return
@@ -380,8 +400,8 @@ class FactBuffer:
     def __len__(self) -> int:
         return (
             sum(map(len, self._versions.values()))
-            +
-            len(self.context_items)
+            + len(self.steps)
+            + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)
             + len(self.requests)
@@ -419,7 +439,7 @@ class FactBuffer:
             return
         rows = [*self.requests.values(), *self.tools.values(), *self.prompts.values(), *self.skills.values()]
         rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values(), *self.loaded_files.values()]
-        rows += [*self.context_items.values()]
+        rows += [*self.context_items.values(), *self.steps.values()]
         if self.surface is not None:
             for row in rows:
                 if row.tool == "copilot-cli":
@@ -434,6 +454,7 @@ class FactBuffer:
             context_events=list(self.context_events.values()),
             loaded_files=list(self.loaded_files.values()),
             context_items=list(self.context_items.values()),
+            steps=list(self.steps.values()),
         )
         try:
             self.written += writer(facts)
@@ -452,6 +473,7 @@ class FactBuffer:
         self.requests, self.tools, self.prompts = {}, {}, {}
         self.skills, self.agents, self.file_writes = {}, {}, {}
         self.context_events = {}
+        self.steps = {}
         self.loaded_files = {}
         self.context_items = {}
 
@@ -975,6 +997,7 @@ class CopilotFacts:
     def __init__(self, session_id: str, buffer: FactBuffer) -> None:
         self.sid = session_id
         self.buffer = buffer
+        self.steps = None if retains_unresolved_facts(buffer.store) else CopilotSteps(session_id, buffer.add_step)
         self.keep_text = _keep_text(buffer.store)
         self.cwd = ""
         self.git_root = ""
@@ -983,8 +1006,8 @@ class CopilotFacts:
         self._record_ids: set[str] = set()
         self._compactions: list[tuple[dict, float, str]] = []
         self._running: dict[str, ToolInvocationRow] = {}
-        # The whole text of an apply_patch call until it completes. The stored input is cut short.
-        self._patches: dict[str, str] = {}
+        # A completion needs counts per file, never the patch body.
+        self._patches: dict[str, dict[str, tuple[int, int]]] = {}
         self._confirms: dict[str, tuple[str, float]] = {}
         self._permissions: dict[str, tuple[float, str, str, str, str]] = {}
 
@@ -998,6 +1021,8 @@ class CopilotFacts:
         ts = coerce_ts(obj.get("timestamp"))
         agent_id = str(obj.get("agentId") or "")
         event_id = str(obj.get("id") or "")
+        if self.steps is not None:
+            self.steps.feed(obj, data, ts, self.cwd)
         if kind in ("session.start", "session.resume"):
             ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
             self.cwd = str(ctx.get("cwd") or self.cwd)
@@ -1258,7 +1283,8 @@ class CopilotFacts:
         raw_args = data.get("arguments")
         if name == "apply_patch" and isinstance(raw_args, str) and raw_args.lstrip().startswith("*** Begin Patch"):
             args = {"input": raw_args}
-            self._patches[call_id] = raw_args
+        if name == "apply_patch":
+            self._patches[call_id] = _patch_counts(args, self.cwd)
         row = ToolInvocationRow(
             dedup_key=self._tool_key(call_id),
             ts=ts,
@@ -1280,7 +1306,7 @@ class CopilotFacts:
         if not call_id:
             return
         row = self._running.pop(call_id, None)
-        patch = self._patches.pop(call_id, "")
+        patch_counts = self._patches.pop(call_id, {})
         if row is None:
             row = ToolInvocationRow(
                 dedup_key=self._tool_key(call_id),
@@ -1311,16 +1337,16 @@ class CopilotFacts:
         if row.tool_name in _PERSON_TOOLS:
             row.duration_ms = 0.0
         self.buffer.add_tool(row)
-        self._file_edits(row, data, patch)
+        self._file_edits(row, data, patch_counts)
 
-    def _file_edits(self, row: ToolInvocationRow, data: dict, patch: str = "") -> None:
+    def _file_edits(self, row: ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]]) -> None:
         edits = data.get("fileEdits")
         if row.is_error or not isinstance(edits, list):
             return
         paths = [e for e in edits if isinstance(e, dict) and e.get("path")]
         telemetry = data.get("toolTelemetry") if isinstance(data.get("toolTelemetry"), dict) else {}
         metrics = telemetry.get("metrics") if isinstance(telemetry.get("metrics"), dict) else {}
-        path_counts = _patch_counts(json.dumps({"input": patch}) if patch else row.input, self.cwd) if len(paths) > 1 else {}
+        path_counts = patch_counts if len(paths) > 1 else {}
         for edit in paths:
             detail: dict[str, Any] = {}
             # The tool reports one total per call, so a patch of many files is counted from its text.
