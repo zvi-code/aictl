@@ -112,6 +112,7 @@ _AICTL_TAIL = (
     ("MachineId", "string", "aictl: resource host.id, else host.name, else the receiving host"),
     ("RowKey", "string", "aictl: SHA-256 of the row identity; equal for a retried export"),
 )
+_NODE_COLUMN = ("node_id", "string", "aictl: reporting daemon node, independent of the OTLP resource host")
 _SPAN_DIMENSIONS = {
     "TurnId": "github.copilot.turn_id",
     "OperationName": "gen_ai.operation.name",
@@ -157,6 +158,7 @@ TABLES: tuple[Table, ...] = (
             *_AICTL_IDENTITY,
             *_AICTL_MODEL,
             *_AICTL_TAIL,
+            _NODE_COLUMN,
         ),
         9,
         "OpenTelemetry log records",
@@ -179,6 +181,7 @@ TABLES: tuple[Table, ...] = (
             *_AICTL_IDENTITY,
             *_AICTL_MODEL,
             *_AICTL_TAIL,
+            _NODE_COLUMN,
         ),
         9,
         "OpenTelemetry metric data points",
@@ -206,6 +209,8 @@ TABLES: tuple[Table, ...] = (
             *((name, "string", f"aictl: span attribute {key}") for name, key in _SPAN_DIMENSIONS.items()),
             *((name, "long", f"aictl: reported {key}; null when unknown") for name, key in _SPAN_TOKEN_COUNTS.items()),
             *((name, "string", f"aictl: newline-separated names from {key}") for name, key in _SPAN_INPUT_NAMES.items()),
+            ("ReportedContext", "dynamic", "aictl: normalized arrays of reported skill and MCP server names"),
+            _NODE_COLUMN,
         ),
         13,
         "OpenTelemetry spans",
@@ -226,6 +231,7 @@ TABLES: tuple[Table, ...] = (
             ("Tool", "string", "Tool of the source row"),
             ("MachineId", "string", "Machine of the source row"),
             ("Text", "string", "This chunk of the text"),
+            _NODE_COLUMN,
         ),
         0,
         "aictl: text of values too large for their row, in chunks; concatenate by ChunkNo",
@@ -742,9 +748,10 @@ class _Source:
 class _Spiller:
     """Moves large values of one conversion call to ``OTELPayloads`` rows."""
 
-    def __init__(self, out: Converted, keep_text: bool) -> None:
+    def __init__(self, out: Converted, keep_text: bool, node_id: str) -> None:
         self.out = out
         self.keep_text = keep_text
+        self.node_id = node_id
         self.seen: set[str] = set()
 
     def spill(self, text: str, kind: str, src: _Source, fld: str, preview: bool = True) -> dict:
@@ -776,6 +783,7 @@ class _Spiller:
                         "Tool": src.tool,
                         "MachineId": src.machine_id,
                         "Text": chunk,
+                        "node_id": self.node_id,
                     }
                 )
             stats["payload_rows"] += len(chunks)
@@ -883,10 +891,10 @@ def _drop_text(row: dict, bags: tuple[str, ...], lists: dict[str, str]) -> None:
 # ── Logs ──────────────────────────────────────────────────────────────
 
 
-def convert_logs(body: dict, *, received_ns: int, host: str, keep_text: bool = True) -> Converted:
+def convert_logs(body: dict, *, received_ns: int, host: str, keep_text: bool = True, node_id: str | None = None) -> Converted:
     """An OTLP logs export request as ``OTELLogs`` rows (and ``OTELPayloads`` rows for large text)."""
     out = Converted()
-    sp = _Spiller(out, keep_text)
+    sp = _Spiller(out, keep_text, host if node_id is None else node_id)
     if not isinstance(body, dict):
         out.stats["bad_records"] += 1
         return out
@@ -938,6 +946,7 @@ def _log_row(rec: dict, resource: dict, scope: dict, tool: str, machine: str, re
     # From the times as sent: a record without one keeps its key when it is sent again.
     sent = (format_time(t or observed), format_time(observed)) if t or observed else ("", "")
     row["RowKey"] = _row_key(tool, *sent, row["TraceID"], row["SpanID"], event_name, body, attrs)
+    row["node_id"] = sp.node_id
     src = _Source(LOGS, row["RowKey"], ts, row["SessionId"], tool, machine)
     if sp.keep_text:
         if len(body) * 4 > SPILL_BYTES and len(_utf8(body)) > SPILL_BYTES:
@@ -956,13 +965,13 @@ def _log_row(rec: dict, resource: dict, scope: dict, tool: str, machine: str, re
 # ── Traces ────────────────────────────────────────────────────────────
 
 
-def convert_traces(body: dict, *, received_ns: int, host: str, keep_text: bool = True) -> Converted:
+def convert_traces(body: dict, *, received_ns: int, host: str, keep_text: bool = True, node_id: str | None = None) -> Converted:
     """An OTLP traces export request as ``OTELTraces`` rows (and ``OTELPayloads`` rows for large text).
 
     A span without a start time takes its end time, or *received_ns* when it has neither.
     """
     out = Converted()
-    sp = _Spiller(out, keep_text)
+    sp = _Spiller(out, keep_text, host if node_id is None else node_id)
     if not isinstance(body, dict):
         out.stats["bad_records"] += 1
         return out
@@ -1045,8 +1054,11 @@ def _span_row(span: dict, resource: dict, scope: dict, tool: str, machine: str, 
     for column, key in _SPAN_TOKEN_COUNTS.items():
         value = attrs.get(key)
         row[column] = value if type(value) is int and 0 <= value < 2**63 else None
-    for column, key in _SPAN_INPUT_NAMES.items():
-        row[column] = "\n".join(context_names(attrs.get(key)))
+    inventories = {column: context_names(attrs.get(key)) for column, key in _SPAN_INPUT_NAMES.items()}
+    for column, names in inventories.items():
+        row[column] = "\n".join(names)
+    row["ReportedContext"] = {"skills": inventories["ReportedSkillNames"], "mcp_servers": inventories["ReportedMcpServers"]}
+    row["node_id"] = sp.node_id
     _make_safe(row, bags, lists, sp, src)
     return row
 
@@ -1066,13 +1078,13 @@ _MIN_DESC = "(Min of samples)"
 _MAX_DESC = "(Max of samples)"
 
 
-def convert_metrics(body: dict, *, received_ns: int, host: str, keep_text: bool = True) -> Converted:
+def convert_metrics(body: dict, *, received_ns: int, host: str, keep_text: bool = True, node_id: str | None = None) -> Converted:
     """An OTLP metrics export request as ``OTELMetrics`` rows, one or more per data point.
 
     A data point without a time takes *received_ns*.
     """
     out = Converted()
-    sp = _Spiller(out, keep_text)
+    sp = _Spiller(out, keep_text, host if node_id is None else node_id)
     if not isinstance(body, dict):
         out.stats["bad_records"] += 1
         return out
@@ -1158,6 +1170,7 @@ def _metric_rows(metric: dict, mtype: str, data: dict, dp: dict, scope: dict, ct
             "MachineId": machine,
         }
         row["RowKey"] = _row_key(row_name, mtype, format_time(t), start, attrs, row["ResourceAttributes"])
+        row["node_id"] = sp.node_id
         src = _Source(METRICS, row["RowKey"], ts, session, tool, machine)
         if not sp.keep_text:
             _drop_text(row, ("MetricAttributes", "ResourceAttributes"), {})

@@ -1,12 +1,13 @@
 """The store's tables as Kusto tables: parsed from the SQLite schema, never kept apart.
 
-Every SQLite table becomes one Kusto table of the same name and columns plus three
+Every SQLite table becomes one Kusto table of the same name and columns plus four
 system columns. Kusto is append-only, so a row's changes are new versions of it:
 
 - ``rowid``: the SQLite rowid, assigned by the connection (``next_rowid``), and the
   value of an ``INTEGER PRIMARY KEY`` column.
 - ``_v``: when this version was written. A read keeps the newest version of each key.
 - ``_deleted``: a DELETE writes one more version with this set; reads leave it out.
+- ``node_id``: the reporting daemon; local keys and tombstones are scoped to this node.
 
 The key of a table is its PRIMARY KEY, else its UNIQUE constraint, else ``rowid``.
 :func:`current` is the KQL that reads a table as SQLite would: one row per key.
@@ -15,6 +16,7 @@ The key of a table is its PRIMARY KEY, else its UNIQUE constraint, else ``rowid`
 from __future__ import annotations
 
 import functools
+import json
 from dataclasses import dataclass, field
 
 import sqlglot
@@ -23,7 +25,8 @@ from sqlglot import exp
 ROWID = "rowid"
 VERSION = "_v"
 DELETED = "_deleted"
-SYSTEM_COLUMNS: tuple[tuple[str, str], ...] = ((ROWID, "long"), (VERSION, "datetime"), (DELETED, "bool"))
+NODE = "node_id"
+SYSTEM_COLUMNS: tuple[tuple[str, str], ...] = ((ROWID, "long"), (VERSION, "datetime"), (DELETED, "bool"), (NODE, "string"))
 
 _KUSTO_TYPES = {
     "TEXT": "string",
@@ -223,23 +226,30 @@ def create_commands(tables: dict[str, Table] | list[Table], streaming: bool = Tr
     return out
 
 
-def current(table: Table, alias: str | None = None) -> str:
+def node_predicate(node_id: str) -> str:
+    return f"{quote(NODE)} == {json.dumps(node_id, ensure_ascii=True)}"
+
+
+def current(table: Table, alias: str | None = None, *, node_id: str | None = None) -> str:
     """KQL for the rows of *table* as SQLite would read them: the newest version per key, no deleted rows.
 
     ``rowid`` stays a column; the version columns are left out, so ``SELECT *``
     returns the SQLite column set.
     """
-    key = ", ".join(quote(k) for k in table.key)
     name = quote(alias or table.name)
+    if node_id is not None:
+        name += f" | where {node_predicate(node_id)}"
+    key = ", ".join(quote(k) for k in table.key)
+    node_key = f", {quote(NODE)}" if node_id is None else ""
     if table.name == "hook_calls":
         return (
             f"{name} | extend __aictl_call = iff(isempty(['call_id']), strcat('row:', tostring(['rowid'])), strcat('call:', ['call_id']))"
-            f" | summarize arg_max({quote(VERSION)}, *) by __aictl_call"
+            f" | summarize arg_max({quote(VERSION)}, *) by __aictl_call{node_key}"
             f" | where {quote(DELETED)} == false"
             f" | project-away __aictl_call, {quote(VERSION)}, {quote(DELETED)}"
         )
     return (
-        f"{name} | summarize arg_max({quote(VERSION)}, *) by {key}"
+        f"{name} | summarize arg_max({quote(VERSION)}, *) by {key}{node_key}"
         f" | where {quote(DELETED)} == false | project-away {quote(VERSION)}, {quote(DELETED)}"
     )
 
@@ -359,12 +369,14 @@ def table_scope(name: str) -> str:
 
 def information_rows(tables: dict[str, Table] | None = None) -> list[dict[str, object]]:
     """One row per column of every table, in INFORMATION_COLUMNS order, system columns included."""
+    from .otel import TABLES as otel_tables
+
     tables = store_schema() if tables is None else tables
     out: list[dict[str, object]] = []
     for name, table in tables.items():
         group = table_group(name)
         scope = table_scope(name)
-        key = ",".join(table.key)
+        key = ",".join((NODE, *table.key))
         ordinal = 0
         for c in table.columns:
             ordinal += 1
@@ -378,9 +390,9 @@ def information_rows(tables: dict[str, Table] | None = None) -> list[dict[str, o
                     "default_value": "" if c.default is None else str(c.default),
                     "not_null": c.not_null,
                     # An INTEGER PRIMARY KEY column is the rowid, so it is the key when the key is rowid.
-                    "key_position": table.key.index(c.name) + 1
+                    "key_position": table.key.index(c.name) + 2
                     if c.name in table.key
-                    else (1 if c.rowid_alias and table.key == (ROWID,) else 0),
+                    else (2 if c.rowid_alias and table.key == (ROWID,) else 0),
                     "unique_sets": ";".join(",".join(u) for u in table.unique_sets if c.name in u),
                     "system_column": False,
                     "scope": scope,
@@ -401,7 +413,7 @@ def information_rows(tables: dict[str, Table] | None = None) -> list[dict[str, o
                     "sqlite_type": "",
                     "default_value": "",
                     "not_null": True,
-                    "key_position": table.key.index(sys_name) + 1 if sys_name in table.key else 0,
+                    "key_position": 1 if sys_name == NODE else table.key.index(sys_name) + 2 if sys_name in table.key else 0,
                     "unique_sets": "",
                     "system_column": True,
                     "scope": scope,
@@ -409,6 +421,13 @@ def information_rows(tables: dict[str, Table] | None = None) -> list[dict[str, o
                     "table_key": key,
                 }
             )
+    for raw in otel_tables:
+        for i, col in enumerate(raw.columns, 1):
+            out.append({
+                "table_name": raw.name, "column_name": col.name, "ordinal": i, "kusto_type": col.kusto_type,
+                "sqlite_type": "", "default_value": "", "not_null": False, "key_position": 0, "unique_sets": "",
+                "system_column": col.name == NODE, "scope": "telemetry", "table_group": "OpenTelemetry", "table_key": "",
+            })
     return out
 
 
@@ -434,17 +453,20 @@ def information_commands(tables: dict[str, Table] | None = None) -> list[str]:
 
 def render_markdown(tables: dict[str, Table] | None = None) -> str:
     """The schema as the reference document ``docs/kusto-schema.md`` (a test keeps the file current)."""
+    from .otel import TABLES as otel_tables
+
     tables = store_schema() if tables is None else tables
     lines = [
         "# Kusto schema",
         "",
-        "Generated by `aictl.kusto.schema.render_markdown()` from `storage._SCHEMA_SQL`; do not edit by hand"
+        "Generated by `aictl.kusto.schema.render_markdown()` from the store and OTLP ingestion schemas; do not edit by hand"
         " (`aictl db schema --markdown` prints it, and a test compares this file to it).",
         "",
         "One Kusto database (`kusto_database`, default `aictl`) holds every table. Each table keeps its SQLite"
         " name and columns and gains the system columns `rowid:long` (assigned by the connection; the value of an"
-        " `INTEGER PRIMARY KEY` column), `_v:datetime` (when this version was written) and `_deleted:bool`. Rows"
-        " are versions: a read keeps the newest `_v` per key and drops deleted rows. The key is the PRIMARY KEY,"
+        " `INTEGER PRIMARY KEY` column), `_v:datetime` (when this version was written), `_deleted:bool` and"
+        " `node_id:string` (the reporting daemon). A read keeps the newest `_v` per node and local key, then drops"
+        " deleted rows. The local key is the PRIMARY KEY,"
         " else a UNIQUE constraint, else `rowid`; unique indexes are the extra conflict sets SQLite's"
         " `OR IGNORE` and `ON CONFLICT` honour.",
         "",
@@ -460,7 +482,7 @@ def render_markdown(tables: dict[str, Table] | None = None) -> str:
             table = tables.get(name)
             if table is None:
                 continue
-            key = ", ".join(table.key)
+            key = ", ".join((NODE, *table.key))
             unique = (
                 "; unique: " + ", ".join("(" + ",".join(u) + ")" for u in table.unique_sets)
                 if table.unique_sets
@@ -485,4 +507,11 @@ def render_markdown(tables: dict[str, Table] | None = None) -> str:
                 if sys_name != ROWID or not table.rowid_column:
                     lines.append(f"| {sys_name} | {sys_type} | system | | |")
             lines.append("")
+    lines += ["## OpenTelemetry", "", "These append-only tables are created or widened when the daemon receives an OTLP export."
+              " `node_id` identifies the receiving daemon; `MachineId` identifies the source resource when available."
+              " Neither the native collector columns nor existing attribute bags are replaced.", ""]
+    for raw in otel_tables:
+        lines += [f"### `{raw.name}`", "", raw.doc, "", "| Column | Kusto type | Meaning |", "|---|---|---|"]
+        lines.extend(f"| {col.name} | {col.kusto_type} | {col.doc} |" for col in raw.columns)
+        lines.append("")
     return "\n".join(lines)

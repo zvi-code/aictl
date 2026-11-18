@@ -116,14 +116,14 @@ class FakeSDK:
             rows = (
                 [
                     {"TableName": "sessions", "ColumnName": name}
-                    for name in ("session_id", "project_path", "rowid", "_v", "_deleted")
+                    for name in ("session_id", "project_path", "rowid", "_v", "_deleted", "node_id")
                 ]
                 if self.present
                 else []
             )
             if self.raw_enabled:
-                rows.append({"TableName": "OTELLogs", "ColumnName": "RowKey"})
-            rows.extend({"TableName": name, "ColumnName": "RowKey"} for name in self.empty_tables)
+                rows.append({"TableName": "OTELLogs", "ColumnName": "node_id"})
+            rows.extend({"TableName": name, "ColumnName": "node_id"} for name in self.empty_tables)
             return response(rows)
         assert command in {
             f".show table ['{n}'] policy ingestiontime" for n in ("sessions", "OTELLogs", *self.empty_tables)
@@ -143,14 +143,19 @@ class FakeSDK:
         if query.startswith("print ["):
             flags = {}
             arms = re.findall(
-                r"\['([^']+)'\]=isnotnull\(toscalar\(\['\1'\] \| where cursor_after\((\"(?:\\.|[^\"\\])*\")\) and cursor_before_or_at\((\"(?:\\.|[^\"\\])*\")\) \| project hit=1 \| take 1\)\)",
+                r"\['([^']+)'\]=isnotnull\(toscalar\(\['\1'\] \| where cursor_after\((\"(?:\\.|[^\"\\])*\")\) and cursor_before_or_at\((\"(?:\\.|[^\"\\])*\")\) \| where \['node_id'\] == (\"(?:\\.|[^\"\\])*\") \| project hit=1 \| take 1\)\)",
                 query,
             )
             assert arms and len(arms) == query.count("cursor_after(")
-            for name, lower, upper in arms:
+            for name, lower, upper, node in arms:
                 low, high = map(self._position, (json.loads(lower), json.loads(upper)))
                 source = self.rows if name == "sessions" else self.raw_rows if name == "OTELLogs" else []
-                changed = any(row["_cursor"] is not None and low < row["_cursor"] <= high for row in source)
+                changed = any(
+                    row["_cursor"] is not None
+                    and low < row["_cursor"] <= high
+                    and row.get("node_id", SETTINGS.node_id) == json.loads(node)
+                    for row in source
+                )
                 flags[name] = changed
             if self.probe_hook is not None:
                 return self.probe_hook([flags])
@@ -283,6 +288,24 @@ def test_idle_cursor_poll_skips_all_tables_and_active_probes_share_one_fixed_upp
     reader._capture_next = 0
     reader.poll_once()
     assert [row.key for row in row_hints(drain_range(reader))] == [("after-capture",)]
+
+
+def test_scalar_probe_ignores_other_nodes_and_advances_empty_range():
+    sdk = FakeSDK()
+    reader = make_reader(sdk)
+    initialize(reader)
+    sdk.queries.clear()
+    sdk.add("foreign", "v1", node_id=SETTINGS.node_id + "-other")
+    events = [*detect(reader), *drain_range(reader)]
+    assert not row_hints(events)
+    assert not any(batch.changed_tables for batch in events)
+    assert reader.latest_status().frontier == {"sessions": "opaque-1"}
+    assert not any("aictl_live_changed" in query for query in sdk.queries)
+
+    sdk.add("local", "v2", node_id=SETTINGS.node_id)
+    events = [*detect(reader), *drain_range(reader)]
+    assert [row.key for row in row_hints(events)] == [("local",)]
+    assert reader.latest_status().frontier == {"sessions": "opaque-2"}
 
 
 @pytest.mark.parametrize("failure", ["partial", "missing_arm", "invalid_flag"])

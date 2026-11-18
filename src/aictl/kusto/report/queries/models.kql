@@ -5,7 +5,7 @@ let CM = TC | join kind = inner (RQ | project stream, seq, model) on stream, seq
 let Ed = CM | where is_edit and isnotempty(file) | order by stream asc, file asc, ts asc
   | extend re = stream == prev(stream) and file == prev(file) and seq - prev(seq) <= RepeatWindow;
 let A = CM | summarize calls = count(), failed = countif(failed), repeats = countif(rep), edits = countif(is_edit), reads = countif(is_read),
-                       files = dcountif(strcat(stream, "|", file), is_edit and isnotempty(file)) by tool, model;
+                       files = dcountif(tostring(pack_array(stream, file)), is_edit and isnotempty(file)) by tool, model;
 let B = RQ | summarize requests = count(), usd = sum(cost_usd), out_tok = sum(output_tokens), ctx_p50 = percentile(ctx, 50) by tool, model;
 let X = Ed | summarize re_edits = countif(re) by tool, model;
 B | join kind = leftouter A on tool, model | join kind = leftouter X on tool, model | where requests >= MinRequests

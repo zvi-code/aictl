@@ -199,8 +199,8 @@ def stats(ctx):
 def schema(markdown, as_json):
     """The store's information schema: every table, its key, scope and columns.
 
-    The same tables exist on SQLite and on a Kusto cluster; the types shown are
-    the Kusto ones. On a cluster the table aictl_information_schema holds these rows.
+    Includes the Kusto-only OpenTelemetry tables. On a cluster the table
+    aictl_information_schema describes these columns.
     """
     import json as _json
 
@@ -221,8 +221,13 @@ def schema(markdown, as_json):
             if table is None:
                 continue
             unique = "; unique " + ", ".join("(" + ",".join(u) + ")" for u in table.unique_sets) if table.unique_sets else ""
-            click.echo(f"  {name}  [key: {', '.join(table.key)}{unique}]")
+            click.echo(f"  {name}  [key: {', '.join((kusto_schema.NODE, *table.key))}{unique}]")
             click.echo("    " + ", ".join(f"{c.name}:{c.kusto_type}" for c in table.columns))
+    from ..kusto.otel import TABLES
+
+    click.echo("\nOpenTelemetry")
+    for raw in TABLES:
+        click.echo(f"  {raw.name}\n    " + ", ".join(f"{c.name}:{c.kusto_type}" for c in raw.columns))
 
 
 def _report_settings(cluster: str | None, database: str | None):
@@ -259,6 +264,7 @@ def _report_settings(cluster: str | None, database: str | None):
 @click.option("--kusto-database", default=None, help="The Kusto database (default: the configured one, else aictl)")
 @click.option("--from", "start", default=None, metavar="TIME", help="Only rows from this time on, UTC: 2026-11-01 or 2026-11-01T14:30")
 @click.option("--to", "end", default=None, metavar="TIME", help="Only rows up to this time, UTC; a date alone includes that day")
+@click.option("--node", "nodes", multiple=True, help="Only rows from this node ID (default: all nodes; legacy: untagged rows)")
 @click.option("--project", "projects", multiple=True, help="Only rows of this project: its folder name or its full path")
 @click.option("--tool", "tools", multiple=True, help="Only rows of this tool, for example copilot-cli")
 @click.option("--model", "models", multiple=True, help="Only requests of this model, and the tool calls they issued")
@@ -274,7 +280,7 @@ def _report_settings(cluster: str | None, database: str | None):
     help="Also write the results as JSON: per section the KQL as it ran and its rows",
 )
 def report(
-    out_path, days, names, kusto_cluster, kusto_database, start, end, projects, tools, models, mcps, skills, agents, list_values, json_path
+    out_path, days, names, kusto_cluster, kusto_database, start, end, nodes, projects, tools, models, mcps, skills, agents, list_values, json_path
 ):
     """Write an HTML report of what the Kusto store knows about coding agents.
 
@@ -284,6 +290,8 @@ def report(
 
     The filter options narrow what every section reads. Repeat an option or separate
     values with commas to name alternatives; different options must all hold.
+    By default the report covers all nodes. --sections nodes compares their activity;
+    --node legacy selects history without a recorded node ID.
     --mcp, --skill and --agent keep whole sessions: every row of a session in which
     the MCP server, skill or agent type was used. --values lists what can be named.
     """
@@ -300,6 +308,7 @@ def report(
     only = kusto_report.ReportFilter(
         start=_report_time(start, "--from", end_of_day=False) if start else None,
         end=_report_time(end, "--to", end_of_day=True) if end else None,
+        nodes=values(nodes),
         projects=values(projects),
         tools=values(tools),
         models=values(models),

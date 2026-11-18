@@ -17,7 +17,11 @@ const promptFields = `step_key:string ${session} ['kind']:string role:string ['s
 const textFields = `step_key:string session_id:string ['text']:string ${version}`;
 const costFields = `rowid:long dedup_key:string ${session} agent_id:string cost_usd:real ${version}`;
 const columns = fields => fields.split(' ').map(field => field.split(':')[0]);
-const tableSource = (table, fields) => `union isfuzzy=true (datatable(${fields.split(' ').join(', ')})[]), ${table}`;
+const source = (table, fields) => `union isfuzzy=true (datatable(node_id:string, ${fields.split(' ').join(', ')})[]), ${table}`;
+const tableSource = (table, fields, params) => {
+  const node = text(params.nodeId).trim().toLowerCase();
+  return source(table, fields) + `\n| where node_id == ${literal(node === 'legacy' ? '' : node)}`;
+};
 const recentSteps = '| top 500 by ts desc\n| order by ts asc, step_key asc';
 const timeColumn = 'event_time=unixtime_seconds_todatetime(ts)';
 const reportedSum = (col, type) =>
@@ -28,6 +32,10 @@ const examples = {
     label: 'Session steps timeline', table: 'session_steps',
     description: 'The latest 500 recorded steps, oldest first. No prompt or command text.',
     body: `${recentSteps}\n| project ${timeColumn}, step_key, ['kind'], phase, name, agent_id, turn_id`,
+  },
+  nodes: {
+    label: 'Sessions by reporting node', table: 'sessions', fleet: true,
+    description: 'Compare nodes with sessions started in the time range. Legacy means the reporting node was not recorded.',
   },
   requests: {
     label: 'Requests and tokens by model', table: 'requests', model: 'model',
@@ -153,7 +161,7 @@ ${predicate}
 | project session_id, step_key, ts, turn_id, text_status${fields});
 selected_steps
 | join kind=${command ? 'leftouter' : 'inner'} (
-    ${tableSource('session_step_text', textFields)}
+    ${tableSource('session_step_text', textFields, params)}
     | where step_key in (selected_steps | where text_status in ("captured", "truncated") | project step_key)
     | project session_id, step_key, _v, _deleted, text_preview=substring(trim(@"\\s+", ['text']), 0, 240)${command ? '' : ", matched=isempty(needle) or ['text'] contains needle"}
     | summarize arg_max(_v, *) by step_key
@@ -197,9 +205,9 @@ function costQuery(scope, params) {
   // Find candidate identities in range, then read their current versions. A moved,
   // deleted or repriced request must not revive an older in-window version.
   return `${all ? globalBounds(params) : `let sid = ${literal(params.sessionId)};`}
-let link_versions = ${tableSource('turn_request_links', schema.turn_request_links)}
+let link_versions = ${tableSource('turn_request_links', schema.turn_request_links, params)}
 | project request_key, _v, _deleted, session_id, agent_id, turn_id, root_session_id, root_turn_id, basis;
-${tree ? 'let possible_descendants = link_versions | where root_session_id == sid and isnotempty(request_key) | distinct request_key;\n' : ''}let request_versions = ${tableSource('requests', costFields)}
+${tree ? 'let possible_descendants = link_versions | where root_session_id == sid and isnotempty(request_key) | distinct request_key;\n' : ''}let request_versions = ${tableSource('requests', costFields, params)}
 | project rowid, _v, _deleted, ts, session_id, agent_id, dedup_key, cost_usd;
 let candidate_ids = request_versions${filter}
 | distinct rowid;
@@ -242,11 +250,20 @@ union coverage, winner
 }
 
 function buildQuery({ table, fields = schema[table], project, key = table === 'session_steps' ? 'step_key' : 'rowid',
-  clock = table === 'OTELTraces' ? 'StartTime' : 'ts', model, tool, body, cost }, params) {
+  clock = table === 'OTELTraces' ? 'StartTime' : 'ts', model, tool, body, cost, fleet }, params) {
+  if (fleet) return `${globalBounds(params)}
+${source('sessions', `session_id:string started_at:real ${version}`)}
+| project node_id, session_id, started_at, _v, _deleted
+| summarize arg_max(_v, *) by node_id, session_id
+| where not(coalesce(_deleted, false))
+| extend started=unixtime_seconds_todatetime(started_at)
+| where started >= window_start and started < window_end
+| summarize sessions=count(), last_session_start=max(started) by reporting_node=iff(isempty(node_id), "legacy", node_id)
+| order by sessions desc, reporting_node asc`;
   if (cost) return costQuery(cost, params);
   const spans = table === 'OTELTraces';
   const sid = spans ? 'SessionId' : 'session_id';
-  let query = tableSource(table, fields);
+  let query = tableSource(table, fields, params);
   // Don't pull payload columns into arg_max. Pick the current row *before* filtering
   // mutable fields: an older version could match even though its replacement does not.
   query += `\n| project ${project || columns(fields).join(', ')}`;
@@ -405,6 +422,7 @@ function Editor({ id, generated, url }) {
 }
 
 const SHORT_LABELS = {
+  nodes: 'Fleet nodes',
   steps: 'Steps',
   requests: 'Requests & USD',
   tools: 'Tool activity',
@@ -424,9 +442,10 @@ const SHORT_LABELS = {
   costAll: 'Turn cost (all)',
 };
 
-function Builder({ base, url, sessionId, sessions, models, tools, since, until, flowFilters }) {
+function Builder({ base, url, sessionId, nodeId, sessions, models, tools, since, until, flowFilters }) {
   const [id, setId] = useState('steps');
   const [sid, setSid] = useState(text(sessionId));
+  const [node, setNode] = useState(text(nodeId) || 'legacy');
   const [model, setModel] = useState('');
   const [tool, setTool] = useState('');
   const [keyword, setKeyword] = useState('');
@@ -434,9 +453,9 @@ function Builder({ base, url, sessionId, sessions, models, tools, since, until, 
   const hint = base + '-hint';
   const example = examples[id];
   const global = example.cost === 'all';
-  const windowKey = JSON.stringify([since, until]);
+  const windowKey = JSON.stringify([since, until, node]);
   const includeAllSessions = global && allowedWindow === windowKey;
-  const generated = buildQuery(example, { sessionId: sid, model, tool, keyword, since, until, includeAllSessions });
+  const generated = (example.fleet || node.trim()) && buildQuery(example, { sessionId: sid, nodeId: node, model, tool, keyword, since, until, includeAllSessions });
   const hasFlowSync = Boolean(flowFilters && (flowFilters.tool_name || flowFilters.category || flowFilters.failed || flowFilters.q));
   const syncFromFlow = () => {
     if (!flowFilters) return;
@@ -472,16 +491,18 @@ function Builder({ base, url, sessionId, sessions, models, tools, since, until, 
     </select></label>
     <p><code>${example.table}</code> · ${example.description}</p>
     <div class="bd-kql-filters">
+      ${!example.fleet && html`<${Complete} id=${base + '-node'} label="Reporting node" value=${node} options=${choices([nodeId, 'legacy'])} onChange=${setNode} hint=${hint} placeholder="Enter a node ID"/>`}
       ${global ? html`<label><input type="checkbox" checked=${includeAllSessions}
         onChange=${e => setAllowedWindow(e.currentTarget.checked ? windowKey : null)}/> Include all sessions in this date range</label>`
-        : html`<${Complete} id=${base + '-sid'} label="Session ID" value=${sid} options=${choices([sessionId, ...observed(sessions)])} onChange=${setSid} hint=${hint} placeholder="Enter a session ID"/>`}
+        : !example.fleet && html`<${Complete} id=${base + '-sid'} label="Session ID" value=${sid} options=${choices([sessionId, ...observed(sessions)])} onChange=${setSid} hint=${hint} placeholder="Enter a session ID"/>`}
       ${example.model && html`<${Complete} id=${base + '-model'} key="model" label="Model (optional)" value=${model} options=${choices(observed(models))} onChange=${setModel} hint=${hint} placeholder="Any model"/>`}
       ${example.tool && html`<${Complete} id=${base + '-tool'} key="tool" label="Tool name (optional)" value=${tool} options=${choices(observed(tools))} onChange=${setTool} hint=${hint} placeholder="Any tool"/>`}
       ${example.keyword && html`<label class="bd-kql-field">Keyword or phrase (optional)
         <input type="text" value=${keyword} onInput=${e => setKeyword(e.currentTarget.value)} autocomplete="off" placeholder="Search retained text"/>
       </label>`}
     </div>
-    ${!sid && !global && html`<p>Enter a session ID. An empty ID matches no rows.</p>`}
+    ${!example.fleet && !node.trim() && html`<p>Enter a reporting node, or select Fleet nodes to compare nodes.</p>`}
+    ${!sid && !global && !example.fleet && html`<p>Enter a session ID. An empty ID matches no rows.</p>`}
     ${example.keyword && html`<p>The search term is included in the Kusto link. Matching text is returned only when you run the query in Kusto.</p>`}
     <p id=${hint}>Type a prefix for suggestions. Use ↑ or ↓ and Enter to choose, or Esc to dismiss.
       Examples use Flow’s time range, not its event-list filters.</p>
@@ -489,11 +510,11 @@ function Builder({ base, url, sessionId, sessions, models, tools, since, until, 
   </div>`;
 }
 
-export default function SessionKql({ url, sessionId, sessions, models, tools, since, until, flowFilters }) {
+export default function SessionKql({ url, sessionId, nodeId, sessions, models, tools, since, until, flowFilters }) {
   const [visited, setVisited] = useState(false);
   const base = 'session-kql-' + useId();
   return html`<details class="bd-kql" onToggle=${e => { if (e.currentTarget.open) setVisited(true); }}>
     <summary>Query in Kusto</summary>
-    ${visited && html`<${Builder} key=${sessionId} ...${{ base, url, sessionId, sessions, models, tools, since, until, flowFilters }}/>`}
+    ${visited && html`<${Builder} key=${JSON.stringify([nodeId, sessionId])} ...${{ base, url, sessionId, nodeId, sessions, models, tools, since, until, flowFilters }}/>`}
   </details>`;
 }

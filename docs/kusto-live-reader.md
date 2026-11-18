@@ -2,7 +2,8 @@
 
 The Kusto live dashboard uses one process-local
 [`SharedKustoReader`](../src/aictl/kusto/live_reader.py) per normalized engine
-endpoint, case-insensitive database name and authentication mode. Ingestion
+endpoint, case-insensitive database name, authentication mode and reporting
+`node_id`. Data queries filter to that node. Ingestion
 settings do not create additional readers. Browser connections subscribe to
 the live hub, not to independent Kusto pollers.
 
@@ -74,9 +75,10 @@ or an HTTP request thread.
    stops there; preview and reconciliation still run on their own schedules.
    Otherwise the worker probes up to four lagging tables per request. A single
    `print` returns one Boolean per table for `(completed_frontier, captured_upper]`.
-   Each table appears in one scalar subquery: filter by cursor, project a constant
-   integer, then `take 1`. An empty result gives `toscalar` a null integer, so
-   `isnotnull` returns false. There is no union, count, or second scan for details.
+   Each table appears in one scalar subquery: filter by cursor and `node_id`,
+   project a constant integer, then `take 1`. An empty result gives `toscalar` a
+   null integer, so `isnotnull` returns false. There is no union, count, or second
+   scan for details.
    The reader requires every expected Boolean in one complete result.
    A failed or incomplete probe advances none of its tables. Empty ranges can
    advance immediately; changed versioned tables advance only after their final

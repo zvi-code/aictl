@@ -74,7 +74,7 @@ def body(kql: str) -> str:
 def test_select_where_order_limit(tr):
     q = tr.translate("SELECT ts, kind FROM events WHERE session_id = ? ORDER BY ts DESC LIMIT 5", ["s'1"])
     assert isinstance(q, Query)
-    assert q.kql.startswith("let ['events'] = ['events'] | summarize arg_max(['_v'], *) by ['ts'], ['tool'], ['kind'],")
+    assert q.kql.startswith(f"""let ['events'] = ['events'] | where ['node_id'] == "{tr.node_id}" | summarize arg_max(['_v'], *) by ['ts'], ['tool'], ['kind'],""")
     assert body(q.kql) == (
         "['events'] | where (['session_id'] == 's\\'1') | project ['ts'] = ['ts'], ['kind'] = ['kind']"
         " | sort by ['ts'] desc nulls last | take 5"

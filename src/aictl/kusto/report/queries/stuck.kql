@@ -35,9 +35,9 @@ TC | join kind = inner (RS | where stuck | project stream, seq) on stream, seq
   | as calls_inside;
 // the contexts with the most stuck requests, each with the place and length of its stretches
 Runs | summarize stuck_requests = sum(run_len), stuck_usd = round(sum(run_usd), 2), runs = tostring(make_list(bag_pack("a", first_seq, "n", run_len, "why", why))) by stream
-  | join kind = inner (Q | summarize requests = count(), model = take_any(model) by stream, tool, session_id, agent_id) on stream
+  | join kind = inner (Q | summarize requests = count(), model = take_any(model) by stream, tool, node_id, session_id, agent_id) on stream
   | top 12 by stuck_requests
-  | project tool, model, session = substring(session_id, 0, 8), agent = iff(isempty(agent_id), "main agent", "sub-agent"), requests, stuck_requests, stuck_usd, runs
+  | project node_id, tool, model, session = substring(session_id, 0, 8), agent = iff(isempty(agent_id), "main agent", "sub-agent"), requests, stuck_requests, stuck_usd, runs
   | as tracks;
 let NR = toscalar(Runs | count);
 print applies = NR >= 10, samples = NR, min_run = MinRun, window = RepeatWindow, note = "stuck stretches"

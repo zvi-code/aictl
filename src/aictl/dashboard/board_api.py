@@ -4925,8 +4925,10 @@ def agent_flow(
     shown = matches[-keep:]
     summary["shown_events"] = len(shown)
     summary["omitted_events"] = len(matches) - len(shown)
+    settings = getattr(db, "_kusto", None)
     return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "capture_mode": capture,
-                 "session_kql_url": session_kql_url(getattr(db, "_kusto", None), sid, since, until)}
+                 "node_id": settings.node_id if settings else None,
+                 "session_kql_url": session_kql_url(settings, sid, since, until)}
 
 
 def _clip(text: Any, limit: int = ACTION_SUMMARY_CHARS) -> str:

@@ -55,7 +55,7 @@ def session_evidence(db: Any, params: dict[str, list[str]]) -> dict:
     with scope(session=sid) if scope else contextlib.nullcontext():
         conn = db._conn()
         if getattr(db, "streams_observations", False) is True:
-            rows = conn._query(_evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group)).dicts()
+            rows = conn._query(_evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group, node_id=conn.settings.node_id)).dicts()
         else:
             rows = _sqlite_rows(conn, sid, filters, terms, limit, offset, keep, floor, detail, group)
     for r in rows:
@@ -105,7 +105,7 @@ def _sqlite_rows(conn, sid, filters, terms, limit, offset, keep, floor, detail, 
     return out
 
 
-def _evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group=""):
+def _evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group="", *, node_id):
     from ..kusto.connection import kql_literal
     from ..kusto.schema import quote
 
@@ -113,9 +113,10 @@ def _evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group
         return kql_literal(v, "string")
 
     session = lit(sid)
-    steps = f"session_steps | where session_id == {session} | summarize arg_max(_v, *) by step_key | where not(_deleted)"
+    node = lit(node_id)
+    steps = f"session_steps | where node_id == {node} and session_id == {session} | summarize arg_max(_v, *) by step_key | where not(_deleted)"
     if keep:
-        texts = (f"session_step_text | where session_id == {session} and ts >= {floor!r} "
+        texts = (f"session_step_text | where node_id == {node} and session_id == {session} and ts >= {floor!r} "
                  "| summarize arg_max(_v, *) by step_key | where not(_deleted) | project step_key, content=['text']")
         steps += f" | join kind=leftouter ({texts}) on step_key"
     else:
@@ -124,13 +125,13 @@ def _evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group
     steps += f" | project {fields}, content"
     if filters.get("kind") not in ("context", "message", "user_message", "assistant_message", "command", "skill", "turn", "round"):
         # A fresh database may not yet have received an OTLP export.
-        empty = ("datatable(SessionId:string,TraceID:string,SpanID:string,ParentID:string,RowKey:string,StartTime:datetime,"
+        empty = ("datatable(node_id:string,SessionId:string,TraceID:string,SpanID:string,ParentID:string,RowKey:string,StartTime:datetime,"
                  "EndTime:datetime,Tool:string,ToolName:string,TurnId:string,ToolCallId:string,OperationName:string,"
                  "InputTokens:long,OutputTokens:long,AgentName:string,Model:string,DurationMs:long,TraceAttributes:dynamic,"
                  "CacheReadInputTokens:long,CacheWriteInputTokens:long,ReasoningOutputTokens:long,"
-                 "ReportedSkillNames:string,ReportedMcpServers:string)[]")
+                 "ReportedSkillNames:string,ReportedMcpServers:string,ReportedContext:dynamic)[]")
         spans = (
-            f"union isfuzzy=true ({empty}), OTELTraces | where SessionId == {session} and isnotempty(TraceID) and isnotempty(SpanID) "
+            f"union isfuzzy=true ({empty}), OTELTraces | where node_id == {node} and SessionId == {session} and isnotempty(TraceID) and isnotempty(SpanID) "
             "| summarize arg_max(EndTime, *) by TraceID,SpanID "
             "| project step_key=strcat('otel:',TraceID,':',SpanID), ts=(StartTime-datetime(1970-01-01))/1s, "
             "session_id=SessionId, ['kind']=case(isnotempty(ToolCallId),'tool_call',"
@@ -140,8 +141,8 @@ def _evidence_kql(sid, filters, terms, limit, offset, keep, floor, detail, group
             "cache_read_tokens=coalesce(CacheReadInputTokens,tolong(TraceAttributes['gen_ai.usage.cache_read.input_tokens'])), "
             "cache_write_tokens=coalesce(CacheWriteInputTokens,tolong(TraceAttributes['gen_ai.usage.cache_write.input_tokens'])), "
             "reasoning_tokens=coalesce(ReasoningOutputTokens,tolong(TraceAttributes['gen_ai.usage.reasoning.output_tokens'])), "
-            "reported_skills=iff(isnotempty(ReportedSkillNames),split(ReportedSkillNames,'\\n'),parse_json(tostring(TraceAttributes['github.copilot.context.skills']))), "
-            "reported_mcp_servers=iff(isnotempty(ReportedMcpServers),split(ReportedMcpServers,'\\n'),parse_json(tostring(TraceAttributes['github.copilot.context.mcp_server_names']))), "
+            "reported_skills=coalesce(ReportedContext.skills,iff(isnotempty(ReportedSkillNames),split(ReportedSkillNames,'\\n'),parse_json(tostring(TraceAttributes['github.copilot.context.skills'])))), "
+            "reported_mcp_servers=coalesce(ReportedContext.mcp_servers,iff(isnotempty(ReportedMcpServers),split(ReportedMcpServers,'\\n'),parse_json(tostring(TraceAttributes['github.copilot.context.mcp_server_names'])))), "
             "['source']='otel', ['name']=coalesce(ToolName,OperationName), phase=iff(isnull(EndTime),'started','ended'), "
             "input_tokens=InputTokens, output_tokens=OutputTokens, text_status='not_reported', content=''"
         )

@@ -47,17 +47,17 @@ def hour(i: int) -> str:
 def synthetic() -> dict[str, list[list[dict]]]:
     dna = "BRRBEBbbbBRAMMOW"
     sessions = [
-        {"session_id": "aaaaaaaa", "calls": 16, "errors": 3, "longest_error_streak": 3, "deepest_fix_loop": 0,
+        {"node_id": "alpha", "session_id": "aaaaaaaa", "session_key": "key-a", "calls": 16, "errors": 3, "longest_error_streak": 3, "deepest_fix_loop": 0,
          "t_start": T0, "t_end": T0 + 900, "tool": "tool-a", "dna": dna},
-        {"session_id": "bbbbbbbb", "calls": 12, "errors": 0, "longest_error_streak": 0, "deepest_fix_loop": 0,
+        {"node_id": "", "session_id": "aaaaaaaa", "session_key": "key-b", "calls": 12, "errors": 0, "longest_error_streak": 0, "deepest_fix_loop": 0,
          "t_start": T0, "t_end": T0 + 600, "tool": "tool-b", "dna": "OROROROROROR"},
     ]
-    edge = lambda actor, file, op, n, t: {"session": "aaaaaaaa", "actor": actor, "file": file, "op": op, "n": n, "t_first": T0 + t, "t_last": T0 + t}  # noqa: E731
+    edge = lambda actor, file, op, n, t: {"node_id": "alpha", "session_key": "key-a", "session": "aaaaaaaa", "actor": actor, "file": file, "op": op, "n": n, "t_first": T0 + t, "t_last": T0 + t}  # noqa: E731
     relay = [
-        [{"session": "aaaaaaaa", "chains": 1, "agents": 1}],
+        [{"node_id": "alpha", "session_key": "key-a", "session": "aaaaaaaa", "chains": 1, "agents": 1}],
         [{"kind_of": "handoff", "tool": "tool-a", "pairs": 3, "files": 2}, {"kind_of": "collision", "tool": "tool-a", "pairs": 1, "files": 1}],
         [{"work_item": 1, "actors": 4, "files": 2}, {"work_item": 2, "actors": 2, "files": 1}],
-        [{"a1": "main:aaaaaa", "a2": "agent:bbbbbb", "a3": "agent:cccccc", "f1": "one.md", "f2": "two.md",
+        [{"node_id": "alpha", "session_key": "key-a", "a1": "main:aaaaaa", "a2": "agent:bbbbbb", "a3": "agent:cccccc", "f1": "one.md", "f2": "two.md",
           "w1_t": T0, "r1_t": T0 + 120, "w2_t": T0 + 180, "r2_t": T0 + 400}],
         [{"file": "one.md", "writers": 1, "readers": 1, "pairs": 1}, {"file": "two.md", "writers": 1, "readers": 1, "pairs": 1}],
         [edge("main:aaaaaa", "one.md", "write", 1, 0), edge("agent:bbbbbb", "one.md", "read", 1, 120),
@@ -66,7 +66,7 @@ def synthetic() -> dict[str, list[list[dict]]]:
     cost = [
         [{"tool": "tool-a", "t": hour(i), "cost": 50.0 if i == 30 else 1.0, "baseline": 1.0, "score": 9.0 if i == 30 else 0.1,
           "flag": 1 if i == 30 else 0, "reqs": 10, "out_tokens": 1000} for i in range(HOURS)],
-        [{"tool": "tool-a", "t": hour(30), "cost": 50.0, "session_id": "aaaaaaaa", "model": "model-x", "session_cost": 40.0,
+        [{"tool": "tool-a", "t": hour(30), "cost": 50.0, "node_id": "alpha", "session_id": "aaaaaaaa", "model": "model-x", "session_cost": 40.0,
           "session_reqs": 77, "share": 0.8}],
         [{"tool": "tool-a", "period_hours": 24.0, "score": 0.7}],
     ]
@@ -89,7 +89,12 @@ def synthetic() -> dict[str, list[list[dict]]]:
         [{"session_id": "aaaaaaaa", "seg": 1, "n": 10, "last_ctx": 110000, "slope": 5000.0, "requests_left": 18.0, "rate_per_min": 1.0,
           "minutes_left": 18.0, "ceiling": 200000}],
     ]
-    return {"dna": [sessions, [{"session_id": "aaaaaaaa", "pos": 9, "streak": 3}],
+    for table in context:
+        for row in table:
+            row.update(node_id="alpha", session_key="key-a")
+    nodes = [[{"node_id": "alpha", "sessions": 2, "requests": 30, "tool_calls": 16, "usd": 0.6},
+              {"node_id": "", "sessions": 1, "requests": 0, "tool_calls": 12, "usd": 0.0}]]
+    return {"nodes": nodes, "dna": [sessions, [{"node_id": "alpha", "session_key": "key-a", "session_id": "aaaaaaaa", "pos": 9, "streak": 3}],
                     [{"motif": "BRR", "tool": "tool-a", "sessions": 1}, {"motif": "ORO", "tool": "tool-b", "sessions": 1}]],
             "relay": relay, "cost": cost, "slow": slow, "context": context, **synthetic_convergence()}
 
@@ -222,6 +227,21 @@ def test_cells_cannot_close_the_script_and_uuids_are_cut():
     assert parameterized("T | count", None).startswith("let report_days = 0;")
 
 
+def test_uuid_node_ids_round_trip_from_results_to_filters():
+    from test_kusto_connection import FakeClient, response
+
+    node = "c47d53d7-509d-4863-9a86-cbae5919c5de"
+
+    def query(kql):
+        if kql.startswith(".show"):
+            return response([("node_id", "string"), ("TableName", "string")],
+                            [[node, t] for t in ("aictl_current_store_v1", "requests", "tool_invocations")])
+        return response([("node_id", "string"), ("value", "string")], [[node, node]])
+
+    result = R.run_section(FakeClient(on_query=query), "test", R.VALUES, None, ReportFilter(nodes=(node,)))
+    assert result.tables == [[{"node_id": node, "value": node}]] and json.dumps(node) in result.kql
+
+
 # ---- queries ----
 
 def test_queries_hold_no_ids_dates_or_cluster_names():
@@ -251,29 +271,33 @@ def test_without_a_filter_the_sources_are_the_current_rows_of_the_window():
     assert kql.startswith("let report_days = 7;\n")
     assert "let report_requests = report_request_rows;" in kql and "let report_tool_calls = report_tool_rows;" in kql
     assert "in~" not in kql and "session_id in" not in kql
-    assert kql.count("summarize arg_max(_v, *) by id | where _deleted == false and ts >= report_since;") == 2
+    assert kql.count("summarize arg_max(_v, *) by node_id, id | where _deleted == false and ts >= report_since") == 2
+    assert kql.count('node_id = column_ifexists("node_id", "")') == 2 and "MachineId" not in kql
+    assert kql.count("report_session = tostring(pack_array(node_id, session_id))") == 2
+    assert kql.count("report_stream = tostring(pack_array(node_id, session_id, agent_id))") == 2
     assert filter_prelude(None).startswith("let report_days = 0;\n")
 
 
 def test_time_range_tool_and_project_choose_rows_of_both_sources():
     start, end = datetime(2026, 1, 2, tzinfo=timezone.utc), datetime(2026, 1, 3, 12, tzinfo=timezone.utc)
-    kql = filter_prelude(None, ReportFilter(start=start, end=end, tools=("tool-a", "tool-b"), projects=("proj",)))
+    kql = filter_prelude(None, ReportFilter(start=start, end=end, tools=("tool-a", "tool-b"), projects=("proj",), nodes=("ALPHA", "legacy")))
     assert f"let report_since = {start.timestamp()!r};" in kql
     rows = [line for line in kql.splitlines() if line.startswith(("let report_request_rows", "let report_tool_rows"))]
     assert len(rows) == 2
     for line in rows:
         assert f"ts >= report_since and ts < {end.timestamp()!r}" in line
+        assert 'node_id in ("alpha", "")' in line
         assert 'tool in~ ("tool-a", "tool-b")' in line
         assert '"/")[-1]) in~ ("proj") or project_path in~ ("proj")' in line and r'replace_string(project_path, "\\", "/")' in line
 
 
 def test_mcp_skill_and_agent_keep_whole_sessions():
     kql = filter_prelude(None, ReportFilter(mcps=("srv-a",), skills=("skill-a",), agents=("type-a",)))
-    assert 'startswith "mcp:" and tostring(split(report_norm, ":")[1]) in~ ("srv-a") | distinct session_id;' in kql
-    assert 'tolower(tool_name) == "skill" and target in~ ("skill-a") | distinct session_id;' in kql
-    assert 'coalesce(tostring(report_input.subagent_type), tostring(report_input.agent_type)) in~ ("type-a") | distinct session_id;' in kql
-    chosen = (" | where session_id in (report_mcp_sessions) | where session_id in (report_skill_sessions)"
-              " | where session_id in (report_agent_sessions);")
+    assert 'startswith "mcp:" and tostring(split(report_norm, ":")[1]) in~ ("srv-a") | distinct report_session;' in kql
+    assert 'tolower(tool_name) == "skill" and target in~ ("skill-a") | distinct report_session;' in kql
+    assert 'coalesce(tostring(report_input.subagent_type), tostring(report_input.agent_type)) in~ ("type-a") | distinct report_session;' in kql
+    chosen = (" | where report_session in (report_mcp_sessions) | where report_session in (report_skill_sessions)"
+              " | where report_session in (report_agent_sessions);")
     assert "let report_requests = report_request_rows" + chosen in kql
     assert "let report_tool_calls = report_tool_rows" + chosen in kql
 
@@ -283,26 +307,27 @@ def test_model_keeps_its_requests_and_the_tool_calls_after_them():
     assert 'let report_requests = report_request_rows | where model in~ ("model-a");' in kql
     # the time line is built from all requests, so a call after another model's request is not given to model-a
     assert "union (report_request_rows | project report_stream" in kql
-    assert 'where report_model in~ ("model-a") | project report_call;' in kql
-    assert "let report_tool_calls = report_tool_rows | join kind = inner report_model_calls on $left.id == $right.report_call" in kql
+    assert 'where report_model in~ ("model-a") | project report_stream, id;' in kql
+    assert "let report_tool_calls = report_tool_rows | join kind = leftsemi report_model_calls on report_stream, id" in kql
 
 
 def test_filter_values_cannot_leave_their_string():
     hostile = 'x") | take 1 // \\'
-    kql = filter_prelude(None, ReportFilter(tools=(hostile,)))
+    kql = filter_prelude(None, ReportFilter(tools=(hostile,), nodes=(hostile,)))
     assert "tool in~ (" + json.dumps(hostile) + ")" in kql
+    assert "node_id in (" + json.dumps(hostile) + ")" in kql
     with pytest.raises(ValueError):
         filter_prelude(None, ReportFilter(models=("a\nb",)))
 
 
 def test_page_header_states_the_filter(tmp_path):
-    only = ReportFilter(start=datetime(2026, 1, 2, tzinfo=timezone.utc), tools=("tool-a",), mcps=("srv-a", "srv-b"))
+    only = ReportFilter(start=datetime(2026, 1, 2, tzinfo=timezone.utc), tools=("tool-a",), mcps=("srv-a", "srv-b"), nodes=("legacy",))
     html = build_page(results(), cluster="c", database="d", days=None, only=only)
-    assert '"filter":[["from","2026-01-02 00:00 UTC"],["tool","tool-a"],["sessions that used the MCP server","srv-a, srv-b"]]' in html
+    assert '"filter":[["from","2026-01-02 00:00 UTC"],["node","legacy"],["tool","tool-a"],["sessions that used the MCP server","srv-a, srv-b"]]' in html
     assert '"filter":[]' in page()
     text = render(tmp_path, html)["window"]
     assert "Window: rows from 2026-01-02 00:00 UTC." in text and "no query filters by time" not in text
-    assert "Filter: tool tool-a; sessions that used the MCP server srv-a, srv-b." in text
+    assert "Filter: node legacy; tool tool-a; sessions that used the MCP server srv-a, srv-b." in text and "Nodes: all" not in text
 
 
 # ---- rendering ----
@@ -316,6 +341,26 @@ def test_all_sections_render_from_synthetic_results(tmp_path):
         assert sec["findings"] and sec["drawn"] > 0, name
     assert "myhost.example.kusto.windows.net" in out["lede"] and "mydb" in out["lede"]
     assert "all data" in out["window"]
+    assert "Nodes: all" in out["window"]
+
+
+def test_fleet_page_keeps_sessions_with_the_same_label_separate(tmp_path):
+    t = synthetic()
+    # Put the untagged DNA row first; matching the streak by its short label picks the wrong row.
+    t["dna"][0].reverse()
+    # Three streams share the printed ID (two are on the same node); each needs a separate chart.
+    for table in t["context"]:
+        table.extend([dict(row, node_id=node, session_key=key) for row in table for node, key in (("", "key-b"), ("alpha", "key-c"))])
+    out = render(tmp_path, page(tables=t))
+    assert not out["problems"]
+    secs = out["sections"]
+    assert secs["nodes"]["headline"] == "1 identified node plus untagged history"
+    assert secs["nodes"]["tableRows"] == [["alpha", "2", "30", "16", "$0.60"], ["legacy", "1", "0", "12", "$0.00"]]
+    assert sorted(secs["context"]["chartLabels"]) == ["alpha / aaaaaaaa", "alpha / aaaaaaaa", "legacy / aaaaaaaa"]
+    assert any("3 compactions in 3 of the 3 sessions" in f for f in secs["context"]["findings"])
+    assert any("3 Shell calls in a row in alpha / aaaaaaaa" in f for f in secs["dna"]["findings"])
+    for name in ("cost", "relay"):
+        assert "alpha / aaaaaaaa" in secs[name]["text"]
 
 
 def test_empty_result_and_failed_query_give_notices_and_the_rest_renders(tmp_path):
@@ -488,14 +533,16 @@ def test_command_passes_the_filter_to_every_query(monkeypatch, tmp_path):
     args = ["db", "report", "--out", str(out)]
     res = CliRunner().invoke(main, [*args, "--from", "2026-01-02", "--to", "2026-01-03", "--tool", "tool-a,tool-b", "--tool", "tool-c",
                                     "--project", "proj", "--model", "model-a", "--mcp", "srv-a", "--skill", "skill-a",
-                                    "--agent", "type-a", "--json", str(data)])
+                                    "--agent", "type-a", "--node", "alpha, beta", "--node", "legacy", "--json", str(data)])
     assert res.exit_code == 0, res.output
     assert seen == [(None, ReportFilter(
         start=datetime(2026, 1, 2, tzinfo=timezone.utc), end=datetime(2026, 1, 4, tzinfo=timezone.utc),  # --to includes its day
-        projects=("proj",), tools=("tool-a", "tool-b", "tool-c"), models=("model-a",), mcps=("srv-a",), skills=("skill-a",), agents=("type-a",)))]
+        projects=("proj",), tools=("tool-a", "tool-b", "tool-c"), models=("model-a",), mcps=("srv-a",), skills=("skill-a",), agents=("type-a",),
+        nodes=("alpha", "beta", "legacy")))]
     assert "only sessions that used the MCP server: srv-a" in res.output and "only tool: tool-a, tool-b, tool-c" in res.output
     assert '["sessions that used the skill","skill-a"]' in out.read_text(encoding="utf-8")
     saved = json.loads(data.read_text(encoding="utf-8"))
+    assert ["node", "alpha, beta, legacy"] in saved["filter"] and "only node: alpha, beta, legacy" in res.output
     assert saved["filter"][0] == ["from", "2026-01-02 00:00 UTC"] and [s["name"] for s in saved["sections"]] == [s.name for s in SECTIONS]
     res = CliRunner().invoke(main, [*args, "--to", "2026-01-03T06:30"])
     assert seen[-1][1].end == datetime(2026, 1, 3, 6, 30, tzinfo=timezone.utc)
@@ -527,16 +574,18 @@ def test_command_lists_the_values_a_filter_can_name(monkeypatch, tmp_path):
         return SectionResult("values", "", tables=[
             [{"source": "requests", "rows": 1200, "sessions": 30, "first_row": "2026-01-02T03:04:00Z", "last_row": "2026-01-09T03:04:00Z"},
              {"source": "tool calls", "rows": 0, "sessions": 0, "first_row": None, "last_row": None}],
-            [{"field": "mcp", "value": "srv-a", "sessions": 12}, {"field": "tool", "value": "tool-a", "sessions": 30}],
+            [{"field": "mcp", "value": "srv-a", "sessions": 12}, {"field": "node", "value": "legacy", "sessions": 30},
+             {"field": "tool", "value": "tool-a", "sessions": 30}],
         ])
 
     monkeypatch.setattr(R, "run_values", fake)
     monkeypatch.setattr(R, "run_report", lambda *a, **k: pytest.fail("--values runs no section"))
     monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("http://localhost:8080", "d", streaming=False))
     out = tmp_path / "r.html"
-    res = CliRunner().invoke(main, ["db", "report", "--out", str(out), "--values", "--days", "7", "--tool", "tool-a"])
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(out), "--values", "--days", "7", "--tool", "tool-a", "--node", "legacy"])
     assert res.exit_code == 0, res.output
-    assert seen == [(7, ReportFilter(tools=("tool-a",)))] and not out.exists()
+    assert seen == [(7, ReportFilter(tools=("tool-a",), nodes=("legacy",)))] and not out.exists()
+    assert "--node  (sessions)\n      30  legacy" in res.output
     assert "requests: 1,200 rows in 30 sessions, 2026-01-02T03:04:00Z to 2026-01-09T03:04:00Z" in res.output
     assert "tool calls: no rows" in res.output
     assert "--mcp  (sessions)\n      12  srv-a" in res.output and "--tool  (sessions)\n      30  tool-a" in res.output
@@ -596,6 +645,42 @@ def _emulator_up() -> bool:
 
 
 emulator = pytest.mark.skipif(not _emulator_up(), reason="Kusto emulator not running on localhost:8080")
+
+
+@emulator
+def test_emulator_node_scoping_with_overlapping_ids():
+    """Run the actual filters and discovery against literals only; no table reads or writes."""
+    from aictl.kusto.connection import KustoClientFactory
+
+    client = KustoClientFactory.client(EMULATOR)
+    fixture = """
+let events = datatable(node_id:string, id:long, _v:long, _deleted:bool, req:bool, ts:real, model:string, tool_name:string) [
+    "a", 1, 1, false, true, 1, "old", "", "a", 1, 2, false, true, 1, "ma", "",
+    "b", 1, 1, false, true, 1, "mb", "", "", 1, 1, false, true, 1, "old", "",
+    "a", 2, 1, false, true, 1, "old", "", "a", 2, 2, true, true, 1, "old", "", "b", 2, 1, false, true, 1, "mb", "",
+    "a", 1, 1, false, false, 2, "", "mcp__mail__send", "b", 1, 1, false, false, 2, "", "Read",
+    "", 1, 1, false, false, 2, "", "Read", "call-only", 1, 1, false, false, 2, "", "Read"
+] | extend session_id = "shared", agent_id = "", tool = iff(node_id == "call-only", "other", "demo"), cost_usd = 1.0,
+           project_path = iff(node_id == "call-only", "/tmp/other", ""), target = "", input = "";
+let requests = events | where req;
+let tool_invocations = events | where not(req);
+"""
+    nodes = next(s for s in SECTIONS if s.name == "nodes")
+
+    def query(section, only=None):
+        return client.execute(EMULATOR.database, fixture + parameterized(read_query(section), None, only)).primary_results
+
+    def counts(only=None):
+        return {r["node_id"]: (r["sessions"], r["requests"], r["tool_calls"]) for r in query(nodes, only)[0]}
+
+    assert counts() == {"a": (1, 1, 1), "b": (1, 2, 1), "": (1, 1, 1), "call-only": (1, 0, 1)}
+    assert counts(ReportFilter(models=("ma",))) == counts(ReportFilter(mcps=("mail",))) == {"a": (1, 1, 1)}
+    assert counts(ReportFilter(nodes=("b", "legacy"))) == {"b": (1, 2, 1), "": (1, 1, 1)}
+    assert counts(ReportFilter(nodes=("b",), mcps=("mail",))) == {}
+    totals, values = query(R.VALUES)
+    assert {r["source"]: r["sessions"] for r in totals} == {"requests": 3, "tool calls": 4}
+    assert {r["value"]: r["sessions"] for r in values if r["field"] == "node"} == {"a": 1, "b": 1, "legacy": 1, "call-only": 1}
+    assert {r["field"] for r in values if r["value"] == "other"} == {"project", "tool"}
 
 
 @emulator

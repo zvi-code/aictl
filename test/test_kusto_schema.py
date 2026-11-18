@@ -22,13 +22,17 @@ def test_information_rows_cover_every_column_and_system_column():
         by_table.setdefault(str(r["table_name"]), []).append(r)
     for name, table in tables.items():
         own = by_table[name]
-        system = 2 if table.rowid_column else 3  # rowid is the INTEGER PRIMARY KEY column when there is one
+        system = len(S.SYSTEM_COLUMNS) - bool(table.rowid_column)
         assert len(own) == len(table.columns) + system, name
         assert [r["ordinal"] for r in own] == list(range(1, len(own) + 1))
         keyed = [r["column_name"] for r in sorted(own, key=lambda r: r["key_position"]) if r["key_position"]]
         expected = (table.rowid_column,) if table.rowid_column and table.key == (S.ROWID,) else table.key
-        assert tuple(keyed) == expected, name
-    assert {r["scope"] for r in rows} == {"session", "machine"}
+        assert tuple(keyed) == (S.NODE, *expected), name
+    assert {r["scope"] for r in rows} == {"session", "machine", "telemetry"}
+    from aictl.kusto.otel import TABLES
+
+    for raw in TABLES:
+        assert [(r["column_name"], r["kusto_type"]) for r in by_table[raw.name]] == [(c.name, c.kusto_type) for c in raw.columns]
     assert all(r["table_group"] for r in rows)
 
 

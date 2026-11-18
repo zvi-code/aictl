@@ -23,12 +23,12 @@ def _otel(conn, sid, lo, hi):
 
     session = kql_literal(sid, "string")
     # One row per named skill, not one load per span that repeats its inventory.
-    q = f"""union isfuzzy=true (datatable(SessionId:string,TraceID:string,SpanID:string,StartTime:datetime,
-    EndTime:datetime,ReportedSkillNames:string,TraceAttributes:dynamic)[]), OTELTraces
-| where SessionId == {session} and StartTime >= unixtime_seconds_todatetime({lo!r}) and StartTime < unixtime_seconds_todatetime({hi!r})
+    q = f"""union isfuzzy=true (datatable(node_id:string,SessionId:string,TraceID:string,SpanID:string,StartTime:datetime,
+    EndTime:datetime,ReportedSkillNames:string,ReportedContext:dynamic,TraceAttributes:dynamic)[]), OTELTraces
+| where node_id == {kql_literal(conn.settings.node_id, "string")} and SessionId == {session} and StartTime >= unixtime_seconds_todatetime({lo!r}) and StartTime < unixtime_seconds_todatetime({hi!r})
 | where isnotempty(TraceID) and isnotempty(SpanID)
-| project TraceID, SpanID, StartTime, EndTime, names=iff(isnotempty(ReportedSkillNames),split(ReportedSkillNames,'\\n'),
-    parse_json(tostring(TraceAttributes['github.copilot.context.skills'])))
+| project TraceID, SpanID, StartTime, EndTime, names=coalesce(ReportedContext.skills,iff(isnotempty(ReportedSkillNames),split(ReportedSkillNames,'\\n'),
+    parse_json(tostring(TraceAttributes['github.copilot.context.skills']))))
 | summarize arg_max(EndTime, StartTime, names) by TraceID, SpanID
 | where array_length(names)>0
 | mv-expand skill=set_union(array_slice(names,0,255),dynamic([])) to typeof(string)

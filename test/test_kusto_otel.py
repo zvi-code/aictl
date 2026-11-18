@@ -147,6 +147,16 @@ def _log_body():
     }
 
 
+def test_daemon_id_is_never_taken_from_the_otlp_resource_even_for_spilled_chunks():
+    body = _log_body()
+    body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["body"] = s("z" * (otel.SPILL_BYTES + 1))
+    for node in ("build-a", "build-b"):
+        out = convert_logs(body, received_ns=RECV, host=HOST, node_id=node)
+        assert out.rows[PAYLOADS]
+        for r in [*out.rows["OTELLogs"], *out.rows[PAYLOADS]]:
+            assert (r["MachineId"], r["node_id"]) == ("box1", node)
+
+
 def test_log_exact_row_from_both_shapes():
     out = both(convert_logs, _log_body(), logs_service.ExportLogsServiceRequest)
     [row] = out.rows["OTELLogs"]
@@ -178,6 +188,7 @@ def test_log_exact_row_from_both_shapes():
         "Tool": "codex-cli",
         "Model": "gpt-5",
         "MachineId": "box1",
+        "node_id": HOST,
         "RowKey": otel._row_key("codex-cli", T1_TEXT, T0_TEXT, TRACE, SPAN, "codex.api_request", "hello", attrs),
     }
     assert row == expected
@@ -364,7 +375,7 @@ def test_trace_exact_rows_from_both_shapes():
         "TurnId": "", "OperationName": "", "AgentName": "", "ToolName": "", "ToolCallId": "",
         "InputTokens": None, "OutputTokens": None,
         "CacheReadInputTokens": None, "CacheWriteInputTokens": None, "ReasoningOutputTokens": None,
-        "ReportedSkillNames": "", "ReportedMcpServers": "",
+        "ReportedSkillNames": "", "ReportedMcpServers": "", "ReportedContext": {"skills": [], "mcp_servers": []}, "node_id": HOST,
     }
     assert child == {
         "TraceID": TRACE,
@@ -391,7 +402,7 @@ def test_trace_exact_rows_from_both_shapes():
         "TurnId": "", "OperationName": "", "AgentName": "", "ToolName": "", "ToolCallId": "",
         "InputTokens": None, "OutputTokens": None,
         "CacheReadInputTokens": None, "CacheWriteInputTokens": None, "ReasoningOutputTokens": None,
-        "ReportedSkillNames": "", "ReportedMcpServers": "",
+        "ReportedSkillNames": "", "ReportedMcpServers": "", "ReportedContext": {"skills": [], "mcp_servers": []}, "node_id": HOST,
     }
     assert list(child) == list(TABLES_BY_NAME["OTELTraces"].column_names)
     assert json.loads(json_line(child))["Events"][0]["EventAttributes"] == {"n": 1}
@@ -414,6 +425,7 @@ def test_span_flow_columns_preserve_reported_values_without_inferring_usage_or_i
     )
     assert (child["InputTokens"], child["OutputTokens"]) == (0, 21)
     assert child["CacheReadInputTokens"] == 0 and child["ReportedSkillNames"] == "testing\nreview"
+    assert child["ReportedContext"]["skills"] == ["testing", "review"]
     attrs.extend([kv("gen_ai.tool.call.id", s("x" * 1000)), kv("gen_ai.usage.input_tokens", {"boolValue": True})])
     child = convert_traces(body, received_ns=RECV, host=HOST, keep_text=False).rows["OTELTraces"][1]
     assert child["ToolCallId"] == "" and child["InputTokens"] is None
@@ -494,6 +506,7 @@ def _mrow(name, mtype, value, desc="d", attrs=None, temporality="", monotonic=No
         "Tool": "claude-code",
         "Model": "opus",
         "MachineId": "hid",
+        "node_id": HOST,
         "RowKey": otel._row_key(name, mtype, T1_TEXT, T0_TEXT, attrs, RES_M),
     }
 

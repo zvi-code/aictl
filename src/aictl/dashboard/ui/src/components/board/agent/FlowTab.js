@@ -438,7 +438,7 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
         ${data && !source && omitted(data) && limit >= FLOW_EVENTS_MAX ? html`<span class="bd-ag-dim">${fmtN(omitted(data))} older matching events remain outside the display limit.</span>` : null}
         ${kusto && html`<a class="bd-btn bd-flow-kusto" href=${kusto} target="_blank" rel="noopener noreferrer">Open session in Kusto</a>`}
       </div>
-      ${kusto && html`<${SessionKql} url=${data.session_kql_url} sessionId=${sessionId} sessions=${sessions}
+      ${kusto && html`<${SessionKql} url=${data.session_kql_url} sessionId=${sessionId} nodeId=${data.node_id} sessions=${sessions}
         models=${scope?.models?.length ? scope.models : a.models || []} tools=${scope?.tools || []} since=${since} until=${until}
         flowFilters=${Object.fromEntries(applied)}/>`}
       <div hidden=${source}>

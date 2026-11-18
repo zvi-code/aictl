@@ -1,7 +1,7 @@
 // Session DNA: every tool call of a session as one letter, in order, plus error streaks and opening motifs.
 // The scan operator inside partition hint.strategy=native carries state row to row per session.
 let T = report_tool_calls;
-let top_s = T | summarize calls = count() by session_id | top 24 by calls | project session_id;
+let top_s = T | summarize calls = count() by report_session | order by calls desc, report_session asc | take 24 | project report_session;
 let Cls = T
 | extend cls = case(
     tool_name in~ ("Bash", "shell", "powershell", "run_in_terminal"), "B",
@@ -11,10 +11,10 @@ let Cls = T
     tool_name in~ ("WebFetch", "WebSearch", "web_fetch") or tool_name has "browser", "W",
     tool_name startswith "mcp__", "M",
     "O")
-| project session_id, tool, ts, id, cls, failed = is_error == 1;
+| project report_session, node_id, session_id, tool, ts, id, cls, failed = is_error == 1;
 let Walk = Cls
-| where session_id in (top_s)
-| partition hint.strategy = native by session_id (
+| where report_session in (top_s)
+| partition hint.strategy = native by report_session (
     order by ts asc, id asc
     | scan declare (streak: long = 0, cyc: long = 0, phase: long = 0, pos: long = 0) with (
         step s: true =>
@@ -27,25 +27,26 @@ let Walk = Cls
   );
 // 1. one row per session
 Walk
-| order by session_id asc, pos asc
+| order by report_session asc, pos asc
 | summarize calls = count(), errors = countif(failed), longest_error_streak = max(streak), deepest_fix_loop = max(cyc),
             t_start = min(ts), t_end = max(ts), tool = take_any(tool),
             dna = strcat_array(make_list(iff(failed, tolower(cls), cls)), "")
-        by session_id
-| order by calls desc, session_id asc
-| extend session_id = substring(session_id, 0, 8);
+        by report_session, node_id, session_id
+| order by calls desc, report_session asc
+| extend session_id = substring(session_id, 0, 8), session_key = hash_sha256(report_session)
+| project-away report_session;
 // 2. error streak ends: the last call of every run of 3 or more failed calls
 Walk
-| order by session_id asc, pos asc
-| extend next_streak = next(streak), next_session = next(session_id)
-| where streak >= 3 and (next_session != session_id or next_streak == 0)
-| project session_id = substring(session_id, 0, 8), pos, streak
-| order by streak desc, session_id asc, pos asc;
+| order by report_session asc, pos asc
+| extend next_streak = next(streak), next_session = next(report_session)
+| where streak >= 3 and (next_session != report_session or next_streak == 0)
+| project node_id, session_id = substring(session_id, 0, 8), session_key = hash_sha256(report_session), pos, streak
+| order by streak desc, node_id asc, session_key asc, pos asc;
 // 3. opening motifs: first 3 call classes of every session with 10 or more calls
 Cls
-| order by session_id asc, ts asc, id asc
-| extend rn = row_number(1, session_id != prev(session_id))
-| summarize calls = max(rn), motif = strcat_array(make_list(cls, 3), ""), tool = take_any(tool) by session_id
+| order by report_session asc, ts asc, id asc
+| extend rn = row_number(1, report_session != prev(report_session))
+| summarize calls = max(rn), motif = strcat_array(make_list(cls, 3), ""), tool = take_any(tool) by report_session
 | where calls >= 10
 | summarize sessions = count() by motif, tool
 | order by sessions desc, motif asc, tool asc
