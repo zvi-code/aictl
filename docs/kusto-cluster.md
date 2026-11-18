@@ -378,6 +378,18 @@ Autocomplete uses observed session IDs, models and tools. Opening in Kusto uses 
 configured database and `autorun=false`: the user reviews and runs KQL in ADX, not
 through a management endpoint on the daemon.
 
+The query examples include completed turn duration, subagents, command execution,
+MCP calls, failed calls, response-size percentiles, and keyword search over retained
+user prompts or visible assistant messages. Matching words is not semantic topic
+search. Private model reasoning is not a transcript source; reported reasoning-token
+counts are a separate measurement.
+
+`turn_request_links.request_key` refers to `requests.dedup_key`; the link contains
+no cost. Turn rankings read each current request once and group its recorded cost
+only when there is source evidence linking it to a turn. The session-tree scope
+needs an identified root session and turn, not simply overlapping timestamps.
+Missing links and unknown prices limit coverage; an empty ranking is not a zero bill.
+
 The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and put on a local queue without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are submitted in parallel and a slow cluster never holds up the tool that is exporting. In remote `auto` mode, these sends upload and enqueue DM sources; DM's batching policy controls ingestion time. Rows refused synchronously for now stay on the local queue and are sent again. The `kusto` block of `/api/otel-status` shows rows queued locally, sent, waiting, rejected and dropped, per table, with the last local/submission error. For queued mode, `rows_sent`, `last_sent_at` and a successful sink `flush()` mean **submitted**, not ingested; these counters do not report downstream DM failures.
 
 **Times.** A record sent without a time is stored with the time it was received, never in 1970.

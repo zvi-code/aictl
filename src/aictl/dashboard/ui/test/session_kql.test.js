@@ -28,25 +28,28 @@ it('uses only fields and filters from the example source and never aggregates su
   for (const [id, q] of Object.entries(queries)) {
     expect(q.split('\n')[0]).toBe('let sid = "\\" \\\\ ;\\r\\n| take 7\\u2028";');
     expect(q).toContain('union isfuzzy=true (datatable(');
-    if (id === 'spans') {
+    if (id.startsWith('cost')) continue; // Cost attribution has separate multi-table scope tests.
+    if (id === 'spans' || id === 'reasoning') {
       expect(q).toContain('SessionId == sid');
       expect(q).toContain('| where StartTime >= unixtime_seconds_todatetime(0)');
       expect(q).toContain('| where StartTime < unixtime_seconds_todatetime(17.25)');
       expect(q).toContain('by TraceID, SpanID');
-      expect(q).toContain('| where Model == "\\"M"\n| where ToolName == "T\\\\"');
+      expect(q).toContain('| where Model == "\\"M"');
+      if (id === 'spans') expect(q).toContain('| where ToolName == "T\\\\"');
       expect(q).not.toContain('_v');
     } else {
-      const step = ['steps', 'context', 'prompts'].includes(id);
-      expect(q).toContain(`by ${step ? 'step_key' : 'rowid'}\n| where not(coalesce(_deleted, false))`);
+      const step = ['steps', 'context', 'prompts', 'assistant', 'commands', 'longest'].includes(id);
+      const clock = id === 'subagents' ? 'started_at' : 'ts';
+      expect(q).toContain(`by ${step ? 'step_key' : id === 'subagents' ? 'agent_id' : 'rowid'}\n| where not(coalesce(_deleted, false))`);
       expect(q).toContain('session_id == sid');
-      expect(q).toContain('| where ts >= 0\n| where ts < 17.25');
+      expect(q).toContain(`| where ${clock} >= 0\n| where ${clock} < 17.25`);
       const current = q.indexOf('arg_max(_v, *)');
       expect(current).toBeGreaterThan(0);
-      expect(current).toBeLessThan(q.indexOf('| where ts'));
+      expect(current).toBeLessThan(q.indexOf(`| where ${clock}`));
       if (step) expect(q).not.toMatch(/\b(model|tool_name):string|\| where (model|tool_name) ==/i);
-      else if (id === 'requests') {
+      else if (id === 'requests' || id === 'subagents') {
         expect(q).toContain('| where model == "\\"M"');
-        expect(q.indexOf('sum(input_tokens)')).toBeGreaterThan(current);
+        if (id === 'requests') expect(q.indexOf('sum(input_tokens)')).toBeGreaterThan(current);
         expect(q).not.toContain('tool_name');
       } else {
         expect(q).toContain('| where tool_name == "T\\\\"');
@@ -69,8 +72,7 @@ it('offers retained prompt previews only by explicit selection, without sending 
   vi.stubGlobal('fetch', fetch);
   const ui = await open({ url: 'https://adx.example/db?query=private-server-seed&autorun=true' });
   const examples = sessionKqlExamples(props);
-  expect(examples).toHaveLength(7);
-  for (const { id, query } of examples.filter(e => e.id !== 'prompts')) {
+  for (const { id, query } of examples.filter(e => !['prompts', 'assistant', 'commands'].includes(e.id))) {
     expect(query, id).not.toMatch(/session_step_text|prompt_preview|\['text'\]/);
   }
   const original = ui.getByLabelText('KQL query').value;
@@ -85,11 +87,11 @@ it('offers retained prompt previews only by explicit selection, without sending 
   expect(steps).toContain('text_status in ("captured", "truncated")');
   expect(query).not.toMatch(/gen_ai|agent_prompt|OTELTraces|assistant/);
   expect(texts).toContain('), session_step_text');
-  expect(texts).toContain('where step_key in (prompt_steps | project step_key)');
+  expect(texts).toContain('where step_key in (selected_steps | where text_status in ("captured", "truncated") | project step_key)');
   expect(texts).toContain(`substring(trim(@"\\s+", ['text']), 0, 240)`);
-  expect(texts).toMatch(/arg_max\(_v, \*\) by step_key\s*\| where not\(coalesce\(_deleted, false\)\) and session_id == sid and isnotempty\(prompt_preview\)/);
+  expect(texts).toMatch(/arg_max\(_v, \*\) by step_key\s*\| where not\(coalesce\(_deleted, false\)\) and session_id == sid and isnotempty\(text_preview\) and matched/);
   expect(texts).toContain(') on session_id, step_key');
-  expect(texts.split('| project ').at(-1)).toMatch(/text_status, prompt_preview$/);
+  expect(texts.split('| project ').at(-1)).toMatch(/text_status, prompt_preview=text_preview$/);
   const link = new URL(ui.getByRole('link').href);
   expect(link.searchParams.get('query')).toBe(query);
   expect(link.searchParams.get('autorun')).toBe('false');
@@ -97,6 +99,87 @@ it('offers retained prompt previews only by explicit selection, without sending 
   expect(fetch).not.toHaveBeenCalled();
   select(ui, 'steps');
   expect(ui.getByLabelText('KQL query')).toHaveValue(original);
+});
+
+it('searches retained messages, not preview prefixes or hidden fields, and separates command evidence from messages', async () => {
+  const ui = await open();
+  const query = () => ui.getByLabelText('KQL query').value;
+  for (const [id, role] of [['prompts', 'user'], ['assistant', 'assistant']]) {
+    select(ui, id);
+    type(ui.getByLabelText('Keyword or phrase (optional)'), 'cost "spike" | count');
+    expect(query()).toContain(`let needle = "cost \\"spike\\" | count";`);
+    expect(query()).toContain(`role == "${role}" and ['source'] == "${role}.message"`);
+    expect(query()).toContain("['text'] contains needle");
+    expect(query()).not.toContain('text_preview contains needle');
+    if (id === 'assistant') expect(query()).toContain('| where phase in ("", "commentary", "response", "final", "final_answer")');
+    expect(query()).not.toMatch(/TraceAttributes|gen_ai\.|reasoning/i);
+  }
+  select(ui, 'commands');
+  expect(ui.queryByLabelText(/Keyword or phrase/)).toBeNull();
+  expect(query()).toContain(`['kind'] == "tool_call" and phase == "requested"`);
+  expect(query()).toContain(`['kind'] == "command" and phase == "started"`);
+  expect(query()).toContain(`['kind'] == "tool_result" and phase in ("completed", "failed")`);
+  expect(query()).toContain('join kind=leftouter'); // Missing retained text must not erase a lifecycle event.
+  select(ui, 'reasoning');
+  expect(query()).toContain('tolong(TraceAttributes["gen_ai.usage.reasoning.output_tokens"])');
+  expect(query().match(/TraceAttributes\[/g)).toHaveLength(1);
+  expect(query()).not.toMatch(/session_step_text|project.*,\s*TraceAttributes(?:,|\n)/);
+});
+
+it('limits duration to complete native pairs and distinguishes unmeasured tool bytes from measured zero', () => {
+  const q = Object.fromEntries(sessionKqlExamples(props).map(e => [e.id, e.query]));
+  expect(q.longest).toMatch(/assistant\.turn_start.*phase == "started".*assistant\.turn_end.*phase == "ended"/);
+  expect(q.longest).toContain('by session_id, agent_id, turn_id');
+  expect(q.longest).toContain('starts == 1 and ends == 1 and end_ts >= start_ts');
+  expect(q.subagents).not.toMatch(/\btask\b|\btop\b|\btake\b/);
+  expect(q.subagents).toContain('agent_id != session_id');
+  expect(q.sizes).toContain('iff(output_bytes >= 0, output_bytes, long(null))');
+  expect(q.sizes).toMatch(/known=countif\(isnotnull\(bytes\)\), unknown=countif\(isnull\(bytes\)\)/);
+  for (const p of [50, 95, 99]) expect(q.sizes).toContain(`percentile(bytes, ${p})`);
+  expect(q.mcp).toContain('tool_name matches regex');
+  expect(q.mcp).toMatch(/project event_time=.*source_event_id/);
+});
+
+it('requires explicit global opt-in and never generates an unbounded global query', async () => {
+  const ui = await open({ since: null, until: null });
+  select(ui, 'costAll');
+  expect(ui.queryByRole('link')).toBeNull();
+  expect(ui.queryByLabelText('KQL query')).toBeNull();
+  fireEvent.click(ui.getByRole('checkbox', { name: /Include all sessions/ }));
+  const all = ui.getByLabelText('KQL query').value;
+  expect(all).toContain('window_end = now();\nlet window_start = window_end - 7d');
+  expect(all).not.toContain(props.sessionId);
+  expect(new URL(ui.getByRole('link').href).searchParams.get('autorun')).toBe('false');
+  ui.rerender(html`<${SessionKql} ...${props}/>`);
+  expect(ui.queryByRole('link')).toBeNull(); // Previously confirmed dates no longer match.
+  expect(sessionKqlExamples(props).some(e => e.id === 'costAll')).toBe(false);
+  const global = bounds => sessionKqlExamples({ ...bounds, includeAllSessions: true }).find(e => e.id === 'costAll').query;
+  expect(global({ since: 0 })).toContain('window_end = window_start + 7d');
+  expect(global({ until: 50 })).toContain('unixtime_seconds_todatetime(50);\nlet window_start = window_end - 7d');
+  expect(global({ until: 'bad' })).toContain('window_end = datetime(null)');
+  expect(global(props)).toContain('ts < (window_end - datetime(1970-01-01)) / 1s');
+});
+
+it('ranks recorded cost only for exact, current links and returns scope coverage independently of any winner', () => {
+  const q = Object.fromEntries(sessionKqlExamples({ ...props, includeAllSessions: true }).map(e => [e.id, e.query]));
+  for (const cost of [q.costMain, q.costTree, q.costAll]) {
+    expect(cost).toContain('join kind=leftouter (links) on session_id, $left.dedup_key == $right.request_key');
+    expect(cost).toContain('link_version=max(_v) by request_key');
+    expect(cost).toMatch(/variants == 1 and not\(coalesce\(_deleted, false\)\)/);
+    expect(cost).toContain('isnull(physical_rows)');
+    expect(cost).toContain('cost_usd > 0');
+    expect(cost).toContain('eligible_requests=count(), attributed_requests=countif(attributed), unpriced_requests=countif(not(priced))');
+    expect(cost).toContain('where turn_requests > turn_unpriced_requests');
+    expect(cost).toContain('union coverage, winner');
+  }
+  expect(q.costMain).toContain('session_id == sid and isempty(agent_id)');
+  expect(q.costMain).toContain('| where isempty(link_agent)');
+  expect(q.costMain).toContain('and isnotempty(turn_id)');
+  expect(q.costTree).toContain('session_id == sid or root_session_id == sid');
+  for (const cost of [q.costTree, q.costAll]) {
+    expect(cost).toContain('by root_session_id, root_turn_id');
+    expect(cost).not.toContain('and isnotempty(turn_id)'); // A known spawn root need not have a child-local turn.
+  }
 });
 
 it('filters observed choices by prefix, supports keyboard and pointer selection, and retains unlisted values', async () => {
