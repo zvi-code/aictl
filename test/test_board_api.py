@@ -3675,6 +3675,18 @@ def _no_legacy(sid, since, until):
 
 
 class TestAgentFlow:
+    def test_combined_filters_precede_event_limit_but_do_not_shrink_totals(self, db):
+        _seed_flow(db, NOW - DAY)
+        _, flow = board_api.agent_flow(db, "flow-s", now=NOW, category="tools", q="parser", limit=1)
+        assert flow["scope"]["matched"] == 0 and flow["summary"]["total_tool_uses"] == 2
+        _, flow = board_api.agent_flow(db, "flow-s", now=NOW, q="ls src", tool_name="Bash", limit=1)
+        assert [e["to"] for e in flow["turns"]] == ["Bash"]
+        assert flow["scope"]["matched"] == 1 and flow["scope"]["total"] == 12
+        assert flow["scope"]["agents"] == ["sub-f"] and flow["scope"]["tools"] == ["Bash", "Read"]
+        _, flow = board_api.agent_flow(db, "flow-s", now=NOW, failed=True, limit=1)
+        assert flow["scope"]["matched"] == 2 and flow["summary"]["omitted_events"] == 1
+        assert flow["session_kql_url"] is None
+
     def test_the_store_alone_gives_the_turns_and_the_summary(self, db):
         t = NOW - DAY
         _seed_flow(db, t)

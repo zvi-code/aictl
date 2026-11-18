@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -548,12 +549,21 @@ class _APIHandlersMixin:
             return
         try:
             since, until = self._qs_float_opt("since"), self._qs_float_opt("until")
-            limit = self._qs_float_opt("limit")
-        except ValueError:
-            self._json_response({"error": "since, until and limit must be numbers"}, status=400)
+            limit = int(self._qs_get("limit")) if self._qs_get("limit") else None
+            if any(not math.isfinite(x) or x < 0 for x in (since, until) if x is not None):
+                raise ValueError("Time bounds must be finite Unix timestamps")
+            if since is not None and until is not None and since >= until:
+                raise ValueError("The end must be after the start")
+            failed = self._qs_get("failed", "0")
+            if failed not in ("0", "1"):
+                raise ValueError("failed must be 0 or 1")
+            status, payload = agent_flow(
+                self._db, agent_id, since, until, limit=limit, failed=failed == "1",
+                **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent")},
+            )
+        except ValueError as exc:
+            self._json_response({"error": str(exc)}, status=400)
             return
-        try:
-            status, payload = agent_flow(self._db, agent_id, since, until, limit=int(limit) if limit else None)
         except Exception as exc:  # any failure must reach the tab's error state
             logging.getLogger(__name__).exception("Board agent flow failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)

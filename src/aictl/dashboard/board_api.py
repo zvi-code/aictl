@@ -4598,6 +4598,20 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
                     compaction[key] = value
             events.append(compaction)
 
+    if _table_exists(conn, "session_steps"):
+        for ts, kind, name, phase, aid, turn_id, used, capacity, before, after, estimated, source in conn.execute(
+            "SELECT ts, kind, name, phase, agent_id, turn_id, context_tokens, context_limit, "
+            "before_tokens, after_tokens, estimated, source FROM session_steps "
+            "WHERE session_id = ? AND ts >= ? AND ts < ? AND kind IN ('session_command','context','skill') "
+            "AND NOT (kind='context' AND source='session.compaction_complete' AND phase='compaction_complete') "
+            "ORDER BY ts, source_order", (sid, since, until),
+        ):
+            event = {"ts": ts, "type": {"context": "context_update", "skill": "skill_event"}.get(kind, kind),
+                     "name": name, "phase": phase, "source": source, "agent_id": aid, "turn_id": turn_id}
+            event.update({k: v for k, v in (("context_tokens", used), ("context_limit", capacity),
+                                            ("before_tokens", before), ("after_tokens", after), ("estimated", estimated)) if v is not None})
+            events.append(event)
+
     for ts, text, model in _messages(conn, sid, "assistant", since, until):
         reply = mask_secrets(text)
         events.append(
@@ -4764,7 +4778,7 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
 
 
 FLOW_MEMO_S = 120.0
-_FLOW_STAMP_TABLES = ("requests", "tool_invocations", "session_prompts", "events")
+_FLOW_STAMP_TABLES = ("requests", "tool_invocations", "session_prompts", "events", "session_steps")
 
 
 def _flow_stamp(conn: sqlite3.Connection, sid: str) -> tuple:
@@ -4822,6 +4836,8 @@ def agent_flow(
     now: float | None = None,
     legacy_flow: Callable[[str, float, float], dict] | None = None,
     limit: int | None = None,
+    *,
+    q: str = "", category: str = "", tool_name: str = "", flow_agent: str = "", failed: bool = False,
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
@@ -4835,14 +4851,21 @@ def agent_flow(
     found = _session_flow(db, agent_id, lo, hi, legacy_flow)
     if found is None:
         return 404, {"error": "No such agent"}
-    sid, events, source = found
+    from .flow_filters import select_events, session_kql_url
+
+    sid, records, source = found
+    events = [dict(e) for e in records]  # aggregation annotates events; don't mutate another reader's cached flow
     cumulative, largest = _aggregate_flow(events)
     summary = _flow_summary(events, source, cumulative, largest)
     keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
-    shown = events[-keep:]
+    capture = getattr(db, "capture", "full")
+    matches, scope = select_events(events, q=q, category=category, tool_name=tool_name, flow_agent=flow_agent,
+                                   failed=failed, allow_text=capture == "full")
+    shown = matches[-keep:]
     summary["shown_events"] = len(shown)
-    summary["omitted_events"] = len(events) - len(shown)
-    return 200, {"session_id": sid, "turns": shown, "summary": summary, "capture_mode": getattr(db, "capture", "full")}
+    summary["omitted_events"] = len(matches) - len(shown)
+    return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "capture_mode": capture,
+                 "session_kql_url": session_kql_url(getattr(db, "_kusto", None), sid, since, until)}
 
 
 def _clip(text: Any, limit: int = ACTION_SUMMARY_CHARS) -> str:
