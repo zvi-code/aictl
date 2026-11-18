@@ -1717,6 +1717,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 _TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
 _SERVED_WHILE_STARTING = frozenset({
     "/", "/index.html", "/favicon.ico", "/api/board/health", "/api/live/capabilities", "/api/live/stream",
+    "/api/board/agent/flow", "/api/session-evidence",
 })
 # Under the handler's 30 s socket timeout, so the client gets the answer.
 READY_WAIT_S = 20.0

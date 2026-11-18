@@ -78,6 +78,16 @@ def test_the_wait_stays_under_the_socket_timeout():
     assert web_server.READY_WAIT_S < _DashboardHandler.timeout
 
 
+def test_session_history_does_not_wait_for_machine_snapshot(starting, monkeypatch):
+    base, _, _store = starting
+    monkeypatch.setattr(web_server, "READY_WAIT_S", 0)
+    with urllib.request.urlopen(base + "/api/session-evidence?session_id=absent", timeout=5) as resp:
+        assert json.load(resp)["rows"] == []
+    with pytest.raises(urllib.error.HTTPError) as err:
+        urllib.request.urlopen(base + "/api/board/agent/flow?id=absent&category=prompts", timeout=5)
+    assert err.value.code == 404  # the store answered; not a starting/503 placeholder
+
+
 def test_start_server_opens_the_port_before_it_collects(tmp_path, monkeypatch):
     """The slow part of the start runs with the port already open."""
     from aictl import orchestrator
