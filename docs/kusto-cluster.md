@@ -265,12 +265,35 @@ the existing source, collector, ingester, sink, OTel and data-quality monitors.
 The default **At a glance** view shows active measurements, pending work, failures
 and traffic by destination, without rows for routine zeros or unavailable values.
 Current rates and read latency appear separately from lifetime totals and stored
-volume. Traffic bars compare bytes per second with the busiest displayed destination.
+volume. Live sparklines use observations received while Health is visible (at
+most one per ten seconds, for 15 minutes). Gaps are not extrapolated. Read
+latency is the mean duration of requests completed in the last minute.
+Traffic bars compare bytes per second with the busiest displayed destination.
+The default destination order stays fixed; sorting by rate is optional.
+**Hide problems** remembers its state in the browser while keeping the status
+visible. **Work in progress** stays in place, even when idle; expanding it
+opens a bounded scrolling list rather than moving the panels below it.
 Collection status lists observed sources and exceptions by default; expanding it
 does not move the traffic table. A collector and its matching quality record
 count as one issue.
 No free cluster ingestion slots is still shown as a warning when measured.
 Select **Show all metrics** to inspect zeros, unavailable values, policies and table membership.
+**Tables and storage** searches and sorts a cached `.show tables details`
+result locally. Extent metadata can lag and excludes unsealed streaming rows.
+Physical counts include versions and tombstones; they are not current request
+counts. The inventory and selected logical counts refresh at most once per
+five minutes on ADX, shared across viewers. Unchanged inventories are not
+retransmitted with every live update.
+
+**Resource usage** distinguishes this daemon's CPU, resident memory and
+threads from the host CPU and memory snapshot. ADX cluster node counts, hot
+extent storage and active operations come from a cached `.show diagnostics`;
+the separately timestamped slot count comes from `.show capacity ingestions`.
+For Azure CLI authentication, optionally set `AICTL_KUSTO_ARM_RESOURCE_ID` to
+the ARM ID of the matching ADX cluster to request CPU, cache and ingestion
+utilization from Azure Monitor. All four metrics share one background request
+per five minutes; only reported one-minute averages are displayed. A missing
+or denied metric is not a zero and no host value is substituted for it.
 It separates the stages rather than presenting submitted data as stored data:
 
 - **Queued ingestion / DM:** submission rates and volume, pending work, client

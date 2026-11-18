@@ -813,11 +813,12 @@ function BoardContent() {
       ${screen !== 'health' ? html`<${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act} subscription=${subscription}/>` : null}
       <div class="bd-body">
         <main class=${'bd-area' + (screen === 'health' ? ' bd-healtharea' : '')} id="main-area" aria-label=${screen === 'settings' ? 'Settings' : screen === 'health' ? 'aictl Health' : undefined}>
-          <${LiveStatus} state=${subscription} history=${screen === 'board'}/>
+          ${screen !== 'health' && html`<${LiveStatus} state=${subscription} history=${screen === 'board'}/>`}
           ${screen === 'board' && analyticsError ? html`<div class="bd-banner" role="alert">Could not read on-demand historical data: ${analyticsError.message}. Runtime fields update independently.</div>` : null}
           ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${settingsRes} source=${settingsSource}/>` : html`
-          ${screen === 'health' ? html`<${HealthOverview} health=${health.data} status=${healthState} error=${incremental ? null : health.error} nowS=${nowS}>
+          ${screen === 'health' ? html`<${HealthOverview} health=${health.data} status=${healthState} error=${health.error} nowS=${nowS}>
             <${HealthCollectionDetails} ctx=${ctx}/>
+            <${LiveStatus} state=${subscription} history=${false}/>
           <//>
           ` : html`
           ${error && subscription.mode === 'legacy' ? html`<div class="bd-banner" role=${error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + '. Showing the last data.'}</div>` : null}

@@ -6,6 +6,7 @@ import BoardScreen, { readScreen } from '../src/components/board/BoardScreen.js'
 import { HealthOverview, healthSources, healthStatus, healthTrafficGroups, ingestionDetailsTable, modeGroupTable, modeTrafficTable, panelStoreHealth, trafficGroupTable } from '../src/components/board/health.js';
 import { stamp } from '../src/components/board/format.js';
 import { normalizeHealth, useBoardHealth } from '../src/components/board/useBoardHealth.js';
+import { updateTrend } from '../src/components/board/HealthMeasurements.js';
 import { freshUi, LS_KEY, sanitizeLayout } from '../src/components/board/layout.js';
 import { boardFixture, machineFixture, NOW } from './fixtures/board.fixture.js';
 
@@ -184,6 +185,53 @@ describe('live Health screen', () => {
 });
 
 describe('health data and status', () => {
+  it('keeps the problem fold and active-writes disclosure stable across live updates', () => {
+    const prefs = new Map();
+    vi.stubGlobal('localStorage', { getItem: k => prefs.get(k), setItem: (k, v) => prefs.set(k, v) });
+    const health = normalizeHealth(fixture());
+    const project = () => html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`;
+    const view = render(project());
+    fireEvent.click(view.getByRole('button', { name: 'Hide problems' }));
+    const work = view.container.querySelector('.bd-healthwork');
+    fireEvent.click(work.querySelector('summary'));
+    health.pipeline.self.writes = [{ name: 'Import', age_s: 30 }, { name: 'Flush', age_s: 3 }];
+    view.rerender(project());
+    expect(view.getByRole('button', { name: 'Show problems' })).toHaveAttribute('aria-expanded', 'false');
+    expect(view.container.querySelector('#health-problem-body')).not.toBeVisible();
+    expect(work.open).toBe(true);
+    expect(work).toHaveTextContent('2 running');
+    health.pipeline.self.writes = [];
+    view.rerender(project());
+    expect(view.container.querySelector('.bd-healthwork')).toBe(work);
+    expect(work).toHaveTextContent('No writes in progress');
+    view.unmount();
+    const next = render(project());
+    expect(next.getByRole('button', { name: 'Show problems' })).toBeVisible();
+  });
+
+  it('bounds measured trend history and resets it for a new process', () => {
+    const h = normalizeHealth(fixture());
+    let history = { id: null, points: [] };
+    for (let t = 0; t < 1800; t++) history = updateTrend(history, { ...h, generated_at: t });
+    expect(history.points).toHaveLength(90);
+    expect(history.points.at(-1).streaming).toBeUndefined();
+    h.pipeline.self.pid = 9999;
+    expect(updateTrend(history, { ...h, generated_at: 1800 }).points).toHaveLength(1);
+  });
+
+  it('searches and sorts actual table metadata locally, including a deliberately searched empty table', () => {
+    const h = normalizeHealth(fixture());
+    h.store.table_inventory = { status: 'cached', checked_at: NOW, tables: [
+      { name: 'trace_data', rows: 71, extent_bytes: 100 }, { name: 'sample_data', rows: 2, extent_bytes: 800 }, { name: 'empty_table', rows: 0 },
+    ], scope: 'Physical extent summary' };
+    const view = render(html`<${HealthOverview} health=${h} status=${healthStatus(h, null, NOW)} nowS=${NOW}/>`);
+    const table = view.getByRole('table', { name: 'Measured tables' });
+    expect(table.querySelector('tbody th').textContent).toBe('trace_data');
+    fireEvent.change(view.getByLabelText('Order by'), { target: { value: 'extent_bytes' } });
+    expect(table.querySelector('tbody th').textContent).toBe('sample_data');
+    fireEvent.input(view.getByLabelText('Find a table'), { target: { value: 'empty_' } });
+    expect(table.querySelector('tbody th').textContent).toBe('empty_table');
+  });
   it('shows only nonzero measurements by default, ordered by bytes, and restores all raw counters on demand', () => {
     const health = normalizeHealth(fixture());
     health.store.ingestion_traffic = {
@@ -198,7 +246,7 @@ describe('health data and status', () => {
     const table = view.getByRole('table', { name: 'Active destination metrics' });
     expect([...table.querySelectorAll('tbody th')].map(e => e.textContent)).toEqual(['OTel', 'Monitoring', 'Files / configuration']);
     expect(table.textContent).toContain('<0.01/s');
-    expect(table.textContent).toContain('Pending rows');
+    expect(table.textContent).toContain('9 pending');
     expect(table.textContent).not.toContain('Failures since start');
     expect(table.textContent).not.toContain('n/a');
     const toggle = view.getByRole('checkbox', { name: 'Show all metrics' });

@@ -233,7 +233,7 @@ export function liveBoardData(subscription, filters, tools, context = EMPTY_CONT
   const board = normalizeBoard(raw);
   const agents = mergeRuntimeAgents(board.agents, subscription, filters, tools);
   const runtimeMachine = topicData(subscription, 'runtime.machine');
-  const operational = topicData(subscription, 'runtime.health');
+  const operational = topicData(subscription, 'runtime.health', 'local');
   const machine = normalizeMachine({
     ...runtimeMachine,
     pipeline: {

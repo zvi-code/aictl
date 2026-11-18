@@ -230,6 +230,8 @@ describe('Kusto incremental board integration', () => {
         volume: { rows: 7, checked_at: NOW },
       },
     })]);
+    const allMetrics = await view.findByRole('checkbox', { name: 'Show all metrics' });
+    fireEvent.click(allMetrics);
     const dm = await view.findByRole('region', { name: 'Queued ingestion / DM — not confirmed queryable' });
     expect(dm.textContent).toContain('8');
     const queryable = view.getByRole('region', { name: 'Queryable store / reads' });
