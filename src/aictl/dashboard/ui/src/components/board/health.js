@@ -1,51 +1,64 @@
 import { html } from 'htm/preact';
 import { ago, fmtBps, fmtBytes, fmtMs, fmtN, NA, stamp } from './format.js';
 import { STALE_AFTER_S } from './summary.js';
+import { clientState, ingesterState, measuredValue, measurementState, operationFailing, otelConfig, pollSuccess, qualityContext, writeWarning } from './healthModel.js';
 import Table from './Table.js';
 
 export function healthStatus(data, error, nowS = Date.now() / 1000) {
-  if (!data) return { label: error ? 'Unavailable' : 'Unknown', cls: error ? 'crit' : 'warn', issues: [error ? 'Could not read live health.' : 'Waiting for live health.'] };
+  if (!data) return error ? { label: 'Unavailable', cls: 'crit', issues: ['Could not read live health.'] }
+    : { label: 'Unknown', cls: 'warn', issues: [], pending: ['Waiting for live health.'] };
   const pipe = data.pipeline;
   const store = data.store;
-  const issues = [];
-  let critical = false;
-  const add = (text, severe = false) => { issues.push(text); critical ||= severe; };
+  const severe = [], warnings = [], pending = [];
+  const add = (text, critical = false) => (critical ? severe : warnings).push(text);
   if (error) add('Could not update health; showing the last response.', true);
   if (!data.generated_at) add('The server does not report a health timestamp.');
   else if (nowS - data.generated_at > STALE_AFTER_S) add('Health response is stale.');
   if (pipe.stream.snapshot_age_s > STALE_AFTER_S) add('Collector snapshot is stale.');
-  if ((pipe.self.writes || []).some(w => w.age_s >= 60)) add('A history write has run for over a minute.');
-  if (pipe.sink?.flood || pipe.sink?.dropped > 0) add('Collector samples were dropped.', true);
-  if (store.health.state === 'degraded' || store.health.last_error) add('Store client reports an error.', true);
-  if (store.health.state !== 'ok' && store.health.state !== 'degraded') add('Store client health is not reported.');
-  for (const [label, metrics] of [['Read', store.reads], ['Write', store.writes], ['Management', store.commands]]) {
-    if (metrics?.last_error || metrics?.failed > 0) add(label + ' requests report failures.', true);
+  const write = writeWarning(pipe.self.writes, store.kind);
+  if (write) add(write);
+  if (pipe.sink?.flood) add('Flood protection is dropping collector samples.', true);
+  const state = clientState(store);
+  const failures = storeOperations(store).filter(([, op]) => operationFailing(op));
+  for (const [label, op] of failures) add(`${label}: ${op.last_error || 'last request failed'}`, true);
+  if (state === 'degraded' && (!failures.length || store.health.last_error && !failures.some(([, op]) => op.last_error === store.health.last_error))) {
+    add('Store client: ' + (store.health.last_error || 'degraded'), true);
+  } else if (state !== 'degraded' && state !== 'ok') pending.push('Store client: ' + state + '.');
+  for (const [label, metric] of [['Stored volume', store.volume], ['Cluster ingestion capacity', store.ingestion_capacity], ['Kusto ingestion policies', store.ingestion_details?.policies]]) {
+    if (metric?.last_error || ['stale', 'error'].includes(metric?.status)) add(`${label}: ${metric.last_error || metric.status}.`);
+    else if (metric?.status === 'pending') pending.push(`${label}: measurement pending.`);
+    else if (store.kind === 'kusto' && measurementState(metric) === 'not reported') pending.push(`${label}: measurement status not reported.`);
   }
-  if (store.ingestion_details?.policies?.last_error) add('Kusto ingestion policies could not be read.');
   for (const collector of data.monitor.collectors) {
-    if (!['active', 'ok'].includes(collector.status)) add(collector.name + ': ' + (collector.status || 'unknown'), ['failed', 'error'].includes(collector.status));
+    if (!['active', 'ok'].includes(collector.status)) add(`${collector.name}: ${collector.status || 'unknown'}` + (collector.detail ? ` — ${collector.detail}` : ''), ['failed', 'error'].includes(collector.status));
   }
   for (const ingester of pipe.ingesters) {
-    if (ingester.status !== 'ok') add(ingester.name + ': ' + (ingester.status || 'unknown'), ['failed', 'error'].includes(ingester.status));
+    const { status, cls } = ingesterState(ingester);
+    if (cls) add(`${ingester.name}: ${status}` + (ingester.error ? ` — ${ingester.error}` : ''), cls === 'crit');
+    else if (status !== 'off' && !ingester.last_ok) pending.push(`${ingester.name}: ${pollSuccess(ingester, nowS)}.`);
   }
-  for (const [tool, setup] of Object.entries(pipe.otel_setup || {})) {
-    if (setup?.status !== 'ok') add(tool + ': OTel ' + (setup?.status || 'unknown'));
+  for (const tool of Object.keys(pipe.otel_setup || {})) {
+    const config = otelConfig(pipe, tool, nowS);
+    if (config?.warning) add(`${tool}: ${config.detail}`);
   }
   const otel = pipe.otel_receiver;
-  if (otel && !otel.active) add('OTel receiver is inactive or has no recent data.');
-  if (otel?.errors > 0 || otel?.dropped > 0 || otel?.api_errors_total > 0) add('OTel reports rejected data or model API errors.');
-  if (pipe.data_quality.some(q => q.severity === 'error' || q.severity === 'warning')) add('Data-quality events need attention.');
-  if (pipe.freshness.some(f => f.errors > 0 || f.last_error)) add('A source reports errors.');
-  if (pipe.freshness.some(f => f.last_seen && nowS - f.last_seen > 3600)) add('A source has not been seen for over an hour.');
-  if (!data.monitor.collectors.length && !pipe.ingesters.length && !otel) add('No collection health is reported.');
-  return { label: critical ? 'Degraded' : issues.length ? 'Needs attention' : 'OK', cls: critical ? 'crit' : issues.length ? 'warn' : 'good', issues };
+  if (otel?.active === false) add('OTel receiver has no traffic in the last 5 min.');
+  for (const q of pipe.data_quality) {
+    if (!['warning', 'error'].includes(q.severity) || qualityContext(q, pipe.ingesters)) continue;
+    if (pipe.ingesters.some(i => q.component === `ingester:${i.name}` && q.status === i.status && i.error && i.error === (q.error || q.text)
+      && (q.severity === 'warning' || ingesterState(i).cls === 'crit'))) continue;
+    add(`${q.component || 'Data quality'}: ${q.text || q.error || q.status || q.severity}`, q.severity === 'error');
+  }
+  if (!data.monitor.collectors.length && !pipe.ingesters.some(i => i.status !== 'off') && otel?.active == null) pending.push('No active collection health is reported.');
+  const issues = [...new Set([...severe, ...warnings])];
+  return { label: severe.length ? 'Degraded' : issues.length ? 'Needs attention' : pending.length ? 'Not ready' : 'OK', cls: severe.length ? 'crit' : issues.length || pending.length ? 'warn' : 'good', issues, pending };
 }
 
 /** Source names come from live health; querying session history is not required. */
 export function healthSources(health) {
   const pipe = health.pipeline;
   const byTool = new Map(health.monitor.per_tool.map(t => [t.tool, t]));
-  for (const f of pipe.freshness) byTool.set(f.tool, { ...byTool.get(f.tool), ...f });
+  for (const f of pipe.freshness) byTool.set(f.tool, { ...byTool.get(f.tool), ...f, last_seen: Math.max(f.last_seen || 0, byTool.get(f.tool)?.last_seen || 0) });
   for (const tool of [...Object.keys(pipe.hooks), ...Object.keys(pipe.otel_receiver?.by_tool || {}), ...Object.keys(pipe.otel_setup || {})]) {
     if (!byTool.has(tool)) byTool.set(tool, { tool });
   }
@@ -66,7 +79,7 @@ export function trafficGroupTable(store) {
       { k: 'group', l: 'Table group', w: '190px' }, { k: 'modes', l: 'Mode(s)', w: '130px' },
       { k: 'requestRate', l: 'Requests/s', n: true }, { k: 'rowRate', l: 'Rows/s', n: true }, { k: 'byteRate', l: 'Bytes/s', n: true },
       { k: 'requests', l: 'Requests', n: true }, { k: 'rows', l: 'Rows', n: true }, { k: 'bytes', l: 'Bytes', n: true },
-      { k: 'failed', l: 'Failed', n: true }, { k: 'pending', l: 'Pending rows', n: true },
+      { k: 'failed', l: 'Failures (total)', n: true }, { k: 'pending', l: 'Pending rows', n: true },
     ],
     rows: groups.map((group, index) => {
       const tables = Array.isArray(group.tables) ? group.tables : [];
@@ -79,7 +92,7 @@ export function trafficGroupTable(store) {
           modes: { v: modes.length ? modes.join(', ') : NA },
           requestRate: { v: perSecond(group.rate_per_s) }, rowRate: { v: perSecond(group.rows_per_s) }, byteRate: { v: fmtBps(group.bytes_per_s) },
           requests: { v: fmtN(group.requests) }, rows: { v: fmtN(group.rows) }, bytes: { v: fmtBytes(group.bytes) },
-          failed: { v: fmtN(group.failed), cls: group.failed ? 'crit' : 'dim' },
+          failed: { v: fmtN(group.failed) },
           pending: { v: fmtN(group.pending), title: 'Pending rows reported for this group; not a queryability check' },
         },
       };
@@ -192,20 +205,25 @@ function PolicyStatus({ policy, nowS, showError = false }) {
   ${showError && policy?.last_error ? html`<div class="bd-pbanner" role="alert">Could not read ingestion policies: ${policy.last_error}. ${policy.checked_at ? 'Showing cached policy values.' : 'No policy values are available.'}</div>` : null}`;
 }
 
-function readRequestTable(store, nowS) {
-  const reads = store.reads;
+function storeOperations(store) {
+  const http = ['sqlite', 'memory'].includes(store.kind);
+  return [[http ? 'Daemon HTTP GET' : 'Read requests', store.reads], [http ? 'Daemon HTTP POST' : 'Write requests', store.writes],
+    ...(store.kind === 'kusto' || store.commands ? [['Management requests', store.commands]] : [])];
+}
+
+function requestTable(store, nowS) {
   return {
-    key: 'health-read-requests',
-    cols: [{ k: 'kind', l: 'Client operation' }, { k: 'total', l: 'Requests', n: true }, { k: 'rate', l: 'Requests/s', n: true }, { k: 'active', l: 'In flight', n: true }, { k: 'failed', l: 'Failed', n: true }, { k: 'latency', l: 'Average', n: true }, { k: 'success', l: 'Last success' }, { k: 'error', l: 'Last error' }],
-    rows: [{
-      id: 'reads', sort: {},
+    key: 'health-client-requests',
+    cols: [{ k: 'kind', l: 'Client operation' }, { k: 'total', l: 'Requests', n: true }, { k: 'rate', l: 'Requests/s', n: true }, { k: 'active', l: 'In flight', n: true }, { k: 'failed', l: 'Failures (total)', n: true }, { k: 'latency', l: 'Average', n: true }, { k: 'success', l: 'Last success' }, { k: 'error', l: 'Last error' }],
+    rows: storeOperations(store).map(([label, op]) => ({
+      id: label, sort: {},
       cells: {
-        kind: { v: 'Read queries' }, total: { v: fmtN(reads?.total) }, rate: { v: perSecond(reads?.rate_per_s) },
-        active: { v: fmtN(reads?.in_flight) }, failed: { v: fmtN(reads?.failed), cls: reads?.failed ? 'crit' : 'dim' },
-        latency: { v: fmtMs(reads?.avg_ms) }, success: { v: ago(reads?.last_success_at, nowS), title: stamp(reads?.last_success_at, true) },
-        error: { v: reads?.last_error || (reads ? 'None reported' : NA), cls: reads?.last_error ? 'crit' : 'dim' },
+        kind: { v: label }, total: { v: fmtN(op?.total) }, rate: { v: perSecond(op?.rate_per_s) },
+        active: { v: fmtN(op?.in_flight) }, failed: { v: fmtN(op?.failed) },
+        latency: { v: fmtMs(op?.avg_ms) }, success: { v: op?.last_success_at === null ? 'No success yet' : op?.last_success_at ? ago(op.last_success_at, nowS) : NA, title: stamp(op?.last_success_at, true) },
+        error: { v: op?.last_error || (op?.last_error === null ? 'None reported' : NA), sub: op?.last_error_at ? ago(op.last_error_at, nowS) : null, cls: operationFailing(op) ? 'crit' : 'dim' },
       },
-    }],
+    })),
   };
 }
 
@@ -216,7 +234,7 @@ function storeLinks(store) {
     { label: 'Open Kusto cluster', href: cluster },
     ...(explorer ? [
       { label: 'Open Kusto Explorer', href: explorer },
-      { label: 'Cluster capacity query', href: explorer + '&query=' + encodeURIComponent('.show capacity') + '&autorun=false' },
+      { label: 'Cluster capacity query', href: explorer + '&query=' + encodeURIComponent('.show capacity ingestions') + '&autorun=false' },
     ] : []),
   ] : [];
 }
@@ -227,6 +245,8 @@ function StoreDetails({ store, pipeline, nowS, links }) {
   const showPolicies = store.kind === 'kusto' || store.ingestion_details;
   const clientHealth = store.health || {};
   const capacity = store.ingestion_capacity;
+  const volume = store.volume;
+  const state = clientState(store);
   const input = metricTable('health-collection-input', [
     ['Collector samples received', fmtN(pipeline?.sink?.emitted), 'Received by this daemon; not rows stored'],
     ['Collector samples buffered', fmtN(pipeline?.sink?.buffered)],
@@ -235,12 +255,18 @@ function StoreDetails({ store, pipeline, nowS, links }) {
   ]);
   const queried = metricTable('health-queryable-store', [
     ['Destination', store.destination],
-    ['Client health', clientHealth.state || 'unknown', 'aictl client health, not whole-cluster health', clientHealth.state === 'degraded' ? 'crit' : clientHealth.state === 'ok' ? '' : 'warn'],
-    ['Client checked', ago(clientHealth.checked_at, nowS), stamp(clientHealth.checked_at, true)],
-    ['Client last success', ago(clientHealth.last_success_at, nowS), stamp(clientHealth.last_success_at, true)],
-    ['Stored rows (cached)', fmtN(store.volume?.rows), store.volume?.scope || 'Cached stored-history count, not a current queryability check'],
-    ['Stored bytes (cached)', fmtBytes(store.volume?.bytes)],
-    ['Stored volume last checked', ago(store.volume?.checked_at, nowS), stamp(store.volume?.checked_at, true)],
+    ['Client health', state, clientHealth.scope, state === 'degraded' ? 'crit' : state === 'ok' ? '' : 'warn'],
+    ['Client checked', stamp(clientHealth.checked_at, true)],
+    ['Client last success', clientHealth.last_success_at === null ? 'No success yet' : stamp(clientHealth.last_success_at, true)],
+    ['Stored rows (cached)', fmtN(measuredValue(volume, 'rows'))],
+    ['Stored request rows (cached)', fmtN(measuredValue(volume, 'tables')?.requests), 'Rows in the requests history table, not events counted by the OTel receiver'],
+    ['Stored bytes (cached)', fmtBytes(measuredValue(volume, 'bytes'))],
+    ['Volume scope', volume?.scope],
+    ['Volume status', measurementState(volume)],
+    ['Last successful scan started', stamp(volume?.started_at, true)],
+    ['Last successful scan finished', stamp(volume?.checked_at, true)],
+    ['Last scan attempted', stamp(volume?.attempted_at, true)],
+    ...(volume?.last_error ? [['Volume read error', volume.last_error, null, 'warn']] : []),
   ]);
   return html`<section aria-label="Collection / input details">
     <h2 class="bd-note">1. Collection / input — received and local buffers</h2>
@@ -253,8 +279,11 @@ function StoreDetails({ store, pipeline, nowS, links }) {
     <${Table} def=${modeTrafficTable(store, ['queued'])} label="Queued / DM client traffic — not confirmed queryable"/>
     <${Table} def=${metricTable('health-dm-pending', [
       ['Tracked history receipt rows awaiting visibility confirmation', fmtN(queued?.pending_history_rows), queued?.pending_scope || 'Only tracked history receipts; raw OTel post-submission visibility is not tracked'],
-      ['Ingestion slots (capacity, not throughput)', fmtN(capacity?.total)],
-      ['Slots in use', fmtN(capacity?.in_use)], ['Slots available', fmtN(capacity?.available)],
+      ['Cluster ingestion slots', fmtN(measuredValue(capacity, 'total'))],
+      ['Slots in use', fmtN(measuredValue(capacity, 'in_use'))], ['Slots available', fmtN(measuredValue(capacity, 'available'))],
+      ['Capacity scope', capacity?.scope || store.capacity_scope],
+      ['Capacity status', measurementState(capacity)], ['Capacity last measured', stamp(capacity?.checked_at, true)],
+      ...(capacity?.last_error ? [['Capacity read error', capacity.last_error, null, 'warn']] : []),
     ])} label="Queued history receipts and ingestion capacity"/>
     <div class="bd-note">${queued?.pending_scope || 'Pending history receipts exclude untracked raw OTel visibility. Raw OTel local input queues are shown in Collection / input.'}</div>
     <${Table} def=${batchTable(store, ['queued'])} label="Queued acknowledged client uploads — not server-merged batches"/>
@@ -274,7 +303,8 @@ function StoreDetails({ store, pipeline, nowS, links }) {
   <section aria-label="Queryable store / reads details">
     <h2 class="bd-note">4. Queryable store / reads</h2>
     <${Table} def=${queried} label="Queryable store — cached stored volume and client health"/>
-    <${Table} def=${readRequestTable(store, nowS)} label="Store read queries"/>
+    <${Table} def=${requestTable(store, nowS)} label="Client requests since daemon start"/>
+    <div class="bd-note">${store.measurement_scope || ''} ${store.commands_scope || ''}</div>
     <div class="bd-note">Stored volume is a cached observation at its check time. It does not confirm the visibility of every acknowledged ingestion request.</div>
     ${links.length ? html`<div class="bd-acts">${links.map(link => html`<a key=${link.label} class="bd-btn" href=${link.href}>${link.label}</a>`)}</div>` : null}
   </section>`;
@@ -308,12 +338,15 @@ function StageCards({ store, pipeline, nowS }) {
   const queued = store.ingestion_traffic?.queued;
   const streaming = store.ingestion_traffic?.streaming;
   const inline = store.ingestion_traffic?.inline;
+  const state = clientState(store);
+  const volume = store.volume;
+  const capacity = store.ingestion_capacity;
   return html`<div class="bd-healthstages" id="health-stages">
     <section class="bd-healthcard" aria-label="Collection / input" data-stage="collection">
       <h2><span>1</span> Collection / input</h2>
       <${Metrics} items=${[
         ['Samples buffered', fmtN(pipeline?.sink?.buffered)],
-        ['Samples dropped', fmtN(pipeline?.sink?.dropped), null, pipeline?.sink?.dropped ? 'crit' : null],
+        ['Drops since start', fmtN(pipeline?.sink?.dropped), null, pipeline?.sink?.flood ? 'crit' : null],
         ['OTel rows buffered', fmtN(store.otel_sink?.pending_rows), 'Local input queue; not DM pending data'],
         ['OTel bytes buffered', fmtBytes(store.otel_sink?.pending_bytes)],
       ]}/>
@@ -325,29 +358,30 @@ function StageCards({ store, pipeline, nowS }) {
         ['Rows/s submitted', perSecond(queued?.rows_per_s)],
         ['Bytes/s submitted', fmtBps(queued?.bytes_per_s)],
         ['History pending rows', fmtN(queued?.pending_history_rows), queued?.pending_scope],
-        ['Failed requests', fmtN(queued?.failed), queued?.last_error, queued?.failed ? 'crit' : null],
+        ['Failures since start', fmtN(queued?.failed), queued?.last_error, operationFailing(queued) ? 'crit' : null],
       ]}/>
-      <p class="bd-warn">Not confirmed queryable. Some may already be queryable.</p>
+      <p>Not confirmed queryable. Some may already be queryable.</p>
+      ${capacity ? html`<p>Cluster slots (${measurementState(capacity)}): ${fmtN(measuredValue(capacity, 'in_use'))} in use · ${fmtN(measuredValue(capacity, 'available'))} available · ${fmtN(measuredValue(capacity, 'total'))} total.</p>` : null}
     </section>
     <section class="bd-healthcard" aria-label="Engine ingestion" data-stage="engine">
       <h2><span>3</span> Engine ingestion</h2>
       <${Metrics} items=${[
         ['Streaming rows/s', perSecond(streaming?.rows_per_s)],
         ['Inline rows/s', perSecond(inline?.rows_per_s)],
-        ['Streaming failures', fmtN(streaming?.failed), streaming?.last_error, streaming?.failed ? 'crit' : null],
-        ['Inline failures', fmtN(inline?.failed), inline?.last_error, inline?.failed ? 'crit' : null],
+        ['Streaming failures (total)', fmtN(streaming?.failed), streaming?.last_error, operationFailing(streaming) ? 'crit' : null],
+        ['Inline failures (total)', fmtN(inline?.failed), inline?.last_error, operationFailing(inline) ? 'crit' : null],
       ]}/>
       <p>Streaming + inline client traffic · not stored rows.</p>
     </section>
     <section class="bd-healthcard" aria-label="Queryable store / reads" data-stage="store">
       <h2><span>4</span> Queryable store / reads</h2>
       <${Metrics} items=${[
-        ['Client availability', store.health?.state || 'unknown', 'aictl client, not whole-cluster health', store.health?.state === 'degraded' ? 'crit' : store.health?.state === 'ok' ? null : 'warn'],
-        ['Read requests/s', perSecond(store.reads?.rate_per_s)],
-        ['Stored rows (cached)', fmtN(store.volume?.rows), store.volume?.scope],
-        ['Failed reads', fmtN(store.reads?.failed), store.reads?.last_error, store.reads?.failed ? 'crit' : null],
+        ['Client availability', state, store.health?.scope || 'aictl client, not whole-cluster health', state === 'degraded' ? 'crit' : state === 'ok' ? null : 'warn'],
+        [['sqlite', 'memory'].includes(store.kind) ? 'HTTP GET/s' : 'Read requests/s', perSecond(store.reads?.rate_per_s)],
+        ['Stored rows (cached)', fmtN(measuredValue(volume, 'rows')), volume?.scope],
+        ['Failed reads (total)', fmtN(store.reads?.failed), store.reads?.last_error, operationFailing(store.reads) ? 'crit' : null],
       ]}/>
-      <p title=${stamp(store.volume?.checked_at, true)}>Volume checked ${ago(store.volume?.checked_at, nowS)} · read latency ${fmtMs(store.reads?.avg_ms)}.</p>
+      <p title=${stamp(volume?.checked_at, true)}>Volume: ${measurementState(volume)}${volume?.checked_at ? ' · measured ' + ago(volume.checked_at, nowS) : ''}. Read latency: ${fmtMs(store.reads?.avg_ms)}.</p>
     </section>
   </div>`;
 }
@@ -360,12 +394,12 @@ function TrafficMatrix({ store }) {
   return html`<section class="bd-healthcard bd-healthtraffic" aria-label="Destination traffic" id="health-traffic">
     <div class="bd-healthsectionhead"><h2>Destination traffic</h2><span>Client rows/s · bytes/s</span></div>
     <table class="bd-healthmatrix" aria-label="Destination traffic by physical ingestion mode">
-      <thead><tr><th scope="col">Table group</th><th scope="col">Queued DM</th><th scope="col">Engine<br/>Streaming</th><th scope="col">Engine<br/>Inline</th><th scope="col">Pending rows<br/>DM / S / I</th><th scope="col">Failed requests<br/>DM / S / I</th></tr></thead>
+      <thead><tr><th scope="col">Table group</th><th scope="col">Queued DM</th><th scope="col">Engine<br/>Streaming</th><th scope="col">Engine<br/>Inline</th><th scope="col">Pending rows<br/>DM / S / I</th><th scope="col">Failures since start<br/>DM / S / I</th></tr></thead>
       <tbody>${healthTrafficGroups(store).map(group => html`<tr key=${group.id} data-group=${group.id}>
         <th scope="row">${group.label}</th>
         ${MODES.map(mode => html`<td key=${mode} data-mode=${mode} data-label=${mode === 'queued' ? 'Queued DM' : 'Engine ' + mode}><${TrafficCell} metrics=${group.modes[mode]}/></td>`)}
         <td data-label="Pending rows (DM / S / I)">${MODES.map(mode => fmtN(group.modes[mode]?.pending)).join(' / ')}</td>
-        <td data-label="Failed requests (DM / S / I)" class=${MODES.some(mode => group.modes[mode]?.failed > 0) ? 'bd-crit' : undefined}>${MODES.map(mode => fmtN(group.modes[mode]?.failed)).join(' / ')}</td>
+        <td data-label="Failures since start (DM / S / I)">${MODES.map(mode => fmtN(group.modes[mode]?.failed)).join(' / ')}</td>
       </tr>`)}</tbody>
     </table>
     <p>DM ≠ queryable storage. Pending covers local queues and tracked history receipts, not the DM service backlog. S = streaming; I = inline. n/a = not reported.</p>
@@ -374,35 +408,32 @@ function TrafficMatrix({ store }) {
 
 function Diagnostics({ health, status, nowS }) {
   const pipe = health?.pipeline;
-  const collectors = health?.monitor.collectors || [];
-  const ingesters = pipe?.ingesters || [];
+  const collectors = (health?.monitor.collectors || []).map(c => ({ ...c, cls: ['failed', 'error'].includes(c.status) ? 'crit' : ['active', 'ok'].includes(c.status) ? null : 'warn' }));
+  const ingesters = (pipe?.ingesters || []).map(i => ({ name: i.name, ...ingesterState(i), detail: [i.status === 'off' ? null : pollSuccess(i, nowS), i.error].filter(Boolean).join('. ') }));
   const sources = pipe ? healthSources(health).map(source => {
     const fresh = pipe.freshness.find(item => item.tool === source.tool);
-    const setup = pipe.otel_setup?.[source.tool];
-    const sourceStatus = fresh?.last_error || fresh?.errors > 0 ? 'errors'
-      : setup?.status && setup.status !== 'ok' ? setup.status
-        : source.last_data_ts ? (nowS - source.last_data_ts > 3600 ? 'stale' : 'active') : 'unknown';
-    return { name: source.label || source.tool, status: sourceStatus, detail: fresh?.last_error };
+    const config = otelConfig(pipe, source.tool, nowS);
+    const activity = source.last_data_ts ? (nowS - source.last_data_ts > 3600 ? 'no recent activity' : 'active') : 'not observed';
+    const toolErrors = fresh?.errors || fresh?.last_error ? `Tool/session errors: ${fmtN(fresh.errors)}` + (fresh.last_error ? ` — ${fresh.last_error}` : '') : null;
+    return { name: source.label || source.tool, status: activity, cls: activity === 'no recent activity' ? 'warn' : null, detail: [config?.detail, toolErrors].filter(Boolean).join(' ') };
   }) : [];
-  const good = item => ['ok', 'active'].includes(item.status);
   const lists = [['Sources', sources], ['Collectors', collectors], ['Ingesters', ingesters]];
   return html`<aside class="bd-healthcard bd-healthdiagnostics" aria-label="Collection health and issues" id="health-diagnostics">
     <h2>Needs attention <span class="bd-healthcount">${status.issues.length}</span></h2>
-    ${status.issues.length ? html`<ul class="bd-healthissues">${status.issues.slice(0, 3).map(issue => html`<li key=${issue}>${issue}</li>`)}</ul>` : html`<p>No health issues reported.</p>`}
+    ${status.issues.length ? html`<ul class="bd-healthissues">${status.issues.slice(0, 3).map(issue => html`<li key=${issue}>${issue}</li>`)}</ul>` : !status.pending?.length ? html`<p>No current health issues reported.</p>` : null}
     ${status.issues.length > 3 ? html`<details id="health-all-issues"><summary>All ${status.issues.length} issues</summary><ul class="bd-healthissues">${status.issues.map(issue => html`<li key=${issue}>${issue}</li>`)}</ul></details>` : null}
+    ${status.pending?.length ? html`<p>${status.pending.join(' ')}</p>` : null}
     <div class="bd-healthstatuslist">${lists.map(([label, list]) => {
-      const sorted = [...list].sort((a, b) => Number(good(a)) - Number(good(b)));
-      const affected = list.filter(item => !good(item)).length;
+      const sorted = [...list].sort((a, b) => Number(!!b.cls) - Number(!!a.cls));
+      const counts = new Map();
+      for (const item of sorted) counts.set(item.status || 'unknown', (counts.get(item.status || 'unknown') || 0) + 1);
       return html`<details key=${label} class="bd-healthstatus">
-        <summary>${label}<span class=${affected ? 'bd-warn' : list.length ? '' : 'bd-muted'}>${list.length ? `${list.length - affected}/${list.length} active / OK` : 'Not reported'}</span></summary>
-        <ul>${sorted.map(item => html`<li key=${item.name}><b>${item.name}</b> <span class=${good(item) ? '' : 'bd-warn'}>${item.status || 'unknown'}</span>${item.detail || item.error ? html`<small>${item.detail || item.error}</small>` : null}</li>`)}</ul>
+        <summary>${label}<span>${Array.from(counts, ([state, count]) => `${count} ${state}`).join(' · ') || 'Not reported'}</span></summary>
+        <ul>${sorted.map(item => html`<li key=${item.name}><b>${item.name}</b> <span class=${item.cls ? 'bd-' + item.cls : undefined}>${item.status || 'unknown'}</span>${item.detail ? html`<small>${item.detail}</small>` : null}</li>`)}</ul>
       </details>`;
     })}</div>
-    ${storeError(health?.store) ? html`<p class="bd-crit">${storeError(health.store)}</p>` : null}
   </aside>`;
 }
-
-const storeError = store => store?.health?.last_error || store?.reads?.last_error || store?.ingestion_traffic?.queued?.last_error || store?.ingestion_traffic?.streaming?.last_error || store?.ingestion_traffic?.inline?.last_error;
 
 function StoreStages({ store, pipeline, nowS, links, health, status }) {
   return html`<${StageCards} store=${store} pipeline=${pipeline} nowS=${nowS}/>
@@ -433,10 +464,10 @@ export function HealthOverview({ health, status, error, nowS, children }) {
       </div>
     </header>
     ${error ? html`<div class="bd-banner" role="alert">Could not read live health: ${error.status === 404 ? 'this daemon does not provide /api/board/health.' : error.message} ${health ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
-    ${!health && !error ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
+    ${!health && !error && status.label !== 'Unavailable' ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
     <${StoreStages} store=${store} pipeline=${health?.pipeline} nowS=${nowS} links=${links} health=${health} status=${status}/>
-    ${children}
-    <p class="bd-healthscope">This daemon only · rates use the reported rolling window (up to 60 s); totals reset with the daemon. Board filters do not apply.</p>
+    ${health ? children : null}
+    <p class="bd-healthscope">Client counters reset with this daemon; rates cover up to 60 s. Stored volume covers the selected history tables. Ingestion capacity is cluster-wide. Board filters do not apply.</p>
   </section>`;
 }
 

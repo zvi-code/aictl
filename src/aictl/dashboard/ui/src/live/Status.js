@@ -16,7 +16,7 @@ export default function LiveStatus({ state, history = false }) {
     ${state.orderedGap ? html`<div class="bd-banner" role="status">Native output was resynchronized from a bounded tail. Earlier output may be missing; this is not a continuous transcript.</div>` : null}
     <details class="bd-note">
       <summary>Source freshness${!state.connected ? ' · disconnected' : ''}</summary>
-      <p>CPU, memory and presence come from runtime collectors. Native output and configured-on-disk settings are separate from queryable history. Hooks, OpenTelemetry, usage, cost and activity totals come only from Kusto.</p>
+      <p>CPU, memory and presence come from runtime collectors. Native output and local configuration are separate from queryable history. Historical hook, OpenTelemetry and usage totals come from Kusto. Health also shows this daemon’s OTel receiver counters.</p>
       ${statuses.length ? html`<ul>${statuses.map(source => html`<li key=${source.id}>
         ${label(source)}: ${source.incomplete && source.retryable === false ? 'unavailable' : source.stale ? 'stale' : source.ready === true ? 'ready' : source.ready === false ? 'pending' : 'unknown'}.
         ${source.reason || ''}

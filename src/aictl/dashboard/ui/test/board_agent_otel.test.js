@@ -127,15 +127,23 @@ describe('Copilot CLI endpoint in the Sources panel', () => {
   };
   const withSetup = setup => { const m = machineFixture(); m.pipeline.otel_setup = { 'copilot-cli': setup }; return m; };
 
-  it('says Not set, with the reason, when the variable is missing', () => {
-    const row = sources(withSetup({ status: 'missing', text: 'Copilot CLI sends no OTel to aictl: OTEL_EXPORTER_OTLP_ENDPOINT is not set.' }));
-    expect([row.cells.o.v, row.cells.o.cls]).toEqual(['Not set', 'warn']);
-    expect(row.cells.o.title).toContain('OTEL_EXPORTER_OTLP_ENDPOINT is not set');
+  it('keeps a local config warning separate from receiver traffic for this tool', () => {
+    const machine = withSetup({ status: 'missing', variable: 'OTEL_EXPORTER_OTLP_ENDPOINT', text: 'Copilot CLI sends no OTel to aictl.' });
+    let row = sources(machine);
+    expect(row.cells.config).toMatchObject({ v: 'missing', cls: 'warn' });
+    expect(row.cells.config.title).toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
+    expect(row.cells.o.v).toBe('None');
+    machine.pipeline.otel_receiver.by_tool['copilot-cli'] = { events: 0, metrics: 30, last_at: NOW - 10 };
+    row = sources(machine);
+    expect(row.cells.config).toMatchObject({ v: 'missing', cls: 'dim' });
+    expect(row.cells.config.title).not.toContain('sends no OTel');
+    expect(row.cells.o).toMatchObject({ v: '30', sub: '10 s ago' });
   });
 
   it('says Elsewhere when it points to another address', () => {
     const row = sources(withSetup({ status: 'elsewhere', text: 'Copilot CLI sends its OTel to http://localhost:4318, not to aictl' }));
-    expect(row.cells.o.v).toBe('Elsewhere');
+    expect(row.cells.config.v).toBe('elsewhere');
+    expect(row.cells.o.v).toBe('None');
   });
 
   it('keeps None when the variable is right and nothing came yet', () => {

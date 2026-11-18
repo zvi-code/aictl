@@ -692,6 +692,11 @@ class CollectionService:
         """Build and start the collection engine. Non-blocking."""
         self.open_stores(quiet=quiet)
         self.run(quiet=quiet)
+        # The HTTP server starts the supervised ingester instead.
+        if self.db is not None:
+            from .ingesters.cursor_conversations import start_background_poller
+
+            start_background_poller(self.db)
 
     def open_stores(self, *, quiet: bool = False) -> None:
         """The fast part of the start: the stores, the sink and an empty snapshot store.
@@ -830,16 +835,6 @@ class CollectionService:
         if self.db is not None:
             self._maintenance = MaintenanceLoop(self.db)
             self._maintenance.start()
-
-        # Optional per-tool ingesters (self-contained background threads;
-        # no-op when their source files are absent).
-        if self.db is not None:
-            try:
-                from .ingesters.cursor_conversations import start_background_poller as _start_cursor_ingester
-
-                _start_cursor_ingester(self.db)
-            except Exception as exc:  # pragma: no cover - defensive
-                _say(f"  warning: cursor ingester unavailable ({exc})")
 
     def stop(self) -> None:
         """Stop background collection. Best-effort; safe to call once."""

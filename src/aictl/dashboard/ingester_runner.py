@@ -32,7 +32,7 @@ from ..ingesters.cursor_conversations import (
 from ..ingesters.cursor_conversations import (
     POLL_INTERVAL_S as CURSOR_POLL_INTERVAL_S,
 )
-from ..ingesters.cursor_conversations import CursorConversationsIngester
+from ..ingesters.cursor_conversations import CursorConversationsIngester, cursor_ingester_enabled
 from ..ingesters.session_artifacts import (
     POLL_INTERVAL_S as SESSION_ARTIFACTS_POLL_INTERVAL_S,
 )
@@ -116,12 +116,13 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── Cursor conversations DB ─────────────────────────────────
     cursor_path = CURSOR_DEFAULT_DB_PATH
-    cursor_enabled = cursor_path.exists()
+    cursor_enabled = cursor_ingester_enabled()
+    cursor_exists = cursor_path.is_file()
     c_handle = IngesterHandle(
         name="cursor-conversations",
-        enabled=cursor_enabled,
+        enabled=cursor_enabled and cursor_exists,
         source_path=cursor_path,
-        source_exists=cursor_enabled,
+        source_exists=cursor_exists,
     )
     if cursor_enabled:
         c_ing = CursorConversationsIngester(cursor_path, db)
@@ -129,6 +130,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         c_thread = threading.Thread(
             target=_poll_loop,
             args=(c_ing, c_handle.stop_event, CURSOR_POLL_INTERVAL_S, c_handle.name),
+            kwargs={"watch_source": c_handle},
             daemon=True,
             name="ingester-cursor-conversations",
         )
@@ -256,6 +258,8 @@ def _poll_loop(
     stop: threading.Event,
     interval: float,
     name: str,
+    *,
+    watch_source: IngesterHandle | None = None,
 ) -> None:
     """Call ``ingester.poll()`` every *interval* seconds until *stop* is set."""
     locked_since: float | None = None  # a busy store skips the round: logged once, until a poll succeeds
@@ -263,6 +267,12 @@ def _poll_loop(
     first = True  # initial poll immediately so the first data point is available
     while first or not stop.wait(timeout=interval):
         first = False
+        if watch_source is not None:
+            watch_source.source_exists = watch_source.source_path.is_file()
+            if not watch_source.source_exists:
+                # Never installed: optional/off. Disappeared after use: enabled with no source.
+                continue
+            watch_source.enabled = True
         started = time.perf_counter()
         poll = dict(getattr(ingester, "_aictl_poll_status", {}))
         poll.update(last_poll_ts=time.time(), poll_in_flight=True)
@@ -271,6 +281,7 @@ def _poll_loop(
             inserted = ingester.poll()
             poll.update(
                 last_success_at=time.time(),
+                last_success_started_at=poll["last_poll_ts"],
                 last_error=None,
                 last_poll_inserted=inserted,
                 rows_ingested_total=poll.get("rows_ingested_total", 0) + (inserted or 0),
@@ -351,8 +362,8 @@ def ingester_status_for_doctor(db_path: Path | str | None = None) -> list[dict]:
                     last_row_count = int(row[0])
             finally:
                 conn.close()
-        except Exception:
-            pass
+        except (sqlite3.Error, OSError) as exc:
+            log.debug("Could not read persisted ingester status: %s", exc)
     out.append(
         {
             "name": "copilot-session-store",

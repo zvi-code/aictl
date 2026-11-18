@@ -255,6 +255,10 @@ __all__ = ["CursorConversationsIngester", "POLL_INTERVAL_S", "start_background_p
 DEFAULT_DB_PATH = cursor_home_dir() / "conversations.db"
 
 
+def cursor_ingester_enabled() -> bool:
+    return os.environ.get("AICTL_CURSOR_INGESTER", "").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def start_background_poller(
     our_store: HistoryDB,
     db_path: Path | str = DEFAULT_DB_PATH,
@@ -271,16 +275,18 @@ def start_background_poller(
 
     Returns the running thread, or ``None`` if disabled.
     """
-    flag = os.environ.get("AICTL_CURSOR_INGESTER", "").strip().lower()
-    if flag in {"0", "false", "no", "off"}:
+    if not cursor_ingester_enabled():
         return None
 
     ingester = CursorConversationsIngester(db_path, our_store)
 
     def _loop() -> None:
+        seen_source = False
         while True:
             try:
-                ingester.poll()
+                seen_source = seen_source or ingester.db_path.is_file()
+                if seen_source:
+                    ingester.poll()
             except Exception as exc:  # noqa: BLE001 - isolate poll failures from the daemon
                 log.debug("cursor ingester poll error: %s", exc)
             time.sleep(interval)

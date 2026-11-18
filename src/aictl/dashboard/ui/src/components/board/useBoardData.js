@@ -22,6 +22,7 @@ export const CONTEXT_REFRESH_MS = 30000;
 
 export const EMPTY_MACHINE = {
   generated_at: null,
+  reported: { hooks: false },
   monitor: { collectors: [], roots: [], per_tool: [] },
   processes: [], cpu_per_core: [], alerts: [],
   pipeline: { self: {}, sink: null, otel_receiver: null, hooks: {}, ingesters: [], data_quality: [], freshness: [], stream: {} },
@@ -84,6 +85,7 @@ export function normalizeMachine(raw) {
   return {
     ...EMPTY_MACHINE,
     ...raw,
+    reported: { hooks: pipe.hooks != null },
     monitor: { collectors: list(mon.collectors), roots: list(mon.roots), per_tool: list(mon.per_tool) },
     processes: list(raw.processes),
     cpu_per_core: list(raw.cpu_per_core),

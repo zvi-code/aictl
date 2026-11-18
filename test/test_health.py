@@ -20,10 +20,9 @@ from aictl.kusto.ingest import InlineIngester
 @pytest.fixture
 def cached_health(monkeypatch):
     data = {
-        "stats": {"events_count": 4, "file_size_bytes": 8192},
+        "volume": {"stats": {"events_count": 4, "file_size_bytes": 8192}, "checked_at": 1000.0, "status": "cached"},
         "quality": [],
         "hooks": {},
-        "checked_at": 1000.0,
     }
     monkeypatch.setattr(board_api, "_cached_health_data", lambda *_: data)
     return data
@@ -86,7 +85,8 @@ def test_kusto_health_uses_existing_clients_without_discovery(cached_health, mon
     assert store["cluster_url"] == "https://cluster.kusto.windows.net"
     assert store["reads"]["total"] == 1
     assert store["writes"]["rows"] == 2 and store["writes"]["bytes"] == 15
-    assert store["ingestion_capacity"] == {"total": 2, "in_use": None, "available": None}
+    # Inline client's concurrency limit is not a measurement of current cluster slots.
+    assert store["ingestion_capacity"]["status"] == "pending" and store["ingestion_capacity"]["total"] is None
     assert store["volume"]["bytes"] is None
     assert "not cluster-wide" in store["health"]["scope"]
 
@@ -108,7 +108,73 @@ def test_latest_client_failure_is_degraded_and_recovery_is_ok(cached_health, mon
     health = board_api.compute_health(db, store)["store"]["health"]
     assert health["state"] == "degraded" and health["last_error"] == "permission denied"
     client.reads.call(lambda: None)
-    assert board_api.compute_health(db, store)["store"]["health"]["state"] == "ok"
+    recovered = board_api.compute_health(db, store)["store"]
+    assert recovered["health"]["state"] == "ok" and recovered["health"]["last_error"] is None
+    assert recovered["reads"]["failed"] == 1
+
+
+def test_ingester_start_does_not_invent_a_success(monkeypatch):
+    from aictl.dashboard import ingester_runner
+
+    handle = {"name": "transcript-usage", "enabled": True, "source_exists": True,
+              "last_poll_ts": 100.0, "poll_in_flight": True, "last_poll_inserted": 0}
+    monkeypatch.setattr(ingester_runner, "collect_status", lambda _: [handle])
+    first, = board_api._ingester_rows(None, [])
+    assert (first["status"], first["last_ok"], first["rows"]) == ("running", None, None)
+    handle.update(poll_in_flight=False, last_success_at=120.0)
+    completed, = board_api._ingester_rows(None, [])
+    assert (completed["status"], completed["last_ok"], completed["rows"]) == ("ok", 120.0, 0)
+    handle.update(poll_in_flight=True, last_poll_ts=140.0)
+    later, = board_api._ingester_rows(None, [])
+    assert (later["status"], later["last_ok"], later["last_poll"]) == ("running", 120.0, 140.0)
+    handle.update(poll_in_flight=False, last_success_started_at=140.0, last_success_at=149.0)
+    warning = {"component": "transcript-usage", "status": "query_failed", "severity": "warning", "ts": 148.0}
+    failed, = board_api._ingester_rows(None, [warning])
+    assert (failed["status"], failed["last_ok"]) == ("query_failed", None)
+    handle.update(last_success_started_at=160.0, last_success_at=163.0)
+    recovered, = board_api._ingester_rows(None, [warning])
+    assert (recovered["status"], recovered["last_ok"]) == ("ok", 163.0)
+
+
+def test_stats_cache_preserves_measurement_time_and_last_good_counts_on_failure(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
+    monkeypatch.setattr(board_api, "_db_stats_memo", {})
+
+    def scan():
+        clock[0] += 3
+        return {"requests_count": 0}
+
+    db = SimpleNamespace(_path="counts", stats=scan)
+    first = board_api._db_stats_sample(db)
+    assert (first["started_at"], first["checked_at"], first["stats"]["requests_count"]) == (1000.0, 1003.0, 0)
+    clock[0] += 20
+    assert board_api._db_stats_sample(db) == first
+    clock[0] += 60
+    db.stats = lambda: (_ for _ in ()).throw(RuntimeError("temporarily unavailable"))
+    stale = board_api._db_stats_sample(db)
+    assert stale["status"] == "stale" and stale["last_error"]
+    assert (stale["checked_at"], stale["attempted_at"], stale["stats"]) == (1003.0, 1083.0, first["stats"])
+    db._path = "unmeasured"
+    missing = board_api._db_stats_sample(db)
+    assert missing["status"] == "error" and missing.get("checked_at") is None
+
+
+def test_cluster_capacity_preserves_zero_and_does_not_retimestamp_on_probe_failure(monkeypatch):
+    from test_kusto_connection import FakeClient, response
+
+    db = SimpleNamespace(_kusto=KustoSettings("https://cluster.kusto.windows.net"))
+    client = FakeClient(on_mgmt=lambda _: response(
+        [("Resource", "string"), ("Total", "long"), ("Consumed", "long"), ("Remaining", "long")],
+        [["Ingestions", 12, 12, 0]],
+    ))
+    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
+    sample = board_api._health_kusto_capacity(db)
+    assert (sample["total"], sample["in_use"], sample["available"]) == (12, 12, 0)
+    assert board_api._health_kusto_capacity(db, sample) == sample and len(client.commands) == 1
+    client.on_mgmt = lambda _: (_ for _ in ()).throw(RuntimeError("denied"))
+    stale = board_api._health_kusto_capacity(db, {**sample, "attempted_at": 0})
+    assert stale["status"] == "stale" and stale["checked_at"] == sample["checked_at"] and stale["last_error"]
 
 
 def test_health_does_not_wait_for_uncached_database_queries(monkeypatch):

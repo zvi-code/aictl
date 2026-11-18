@@ -1,6 +1,7 @@
 // ─── Board summary — the KPI strip and the one line per section in the rail ─
 import { fmtAge, fmtCpu, fmtMem, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, fmtLines, sparkPath } from './format.js';
 import { contextSummary } from './contextPanels.js';
+import { qualityContext } from './healthModel.js';
 
 const delta = (a, b) => {
   if (a === null || a === undefined || !b) return 'No earlier data';
@@ -81,7 +82,7 @@ export function sectionSummary(id, data, series, findingsCount) {
       const all = data.sources.length;
       const live = data.sources.filter(s => s.last_data_ts != null).length;
       const pipe = data.machine?.pipeline || {};
-      const bad = (pipe.data_quality || []).filter(q => q.severity === 'error' || q.severity === 'warning').length;
+      const bad = (pipe.data_quality || []).filter(q => ['error', 'warning'].includes(q.severity) && !qualityContext(q, pipe.ingesters || [])).length;
       return live + ' of ' + all + ' tools report data' + (pipe.sink?.flood ? ', data loss' : '') + (bad ? ', ' + bad + ' data problems' : '');
     }
     default: return '';

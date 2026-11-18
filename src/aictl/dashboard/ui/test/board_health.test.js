@@ -4,6 +4,7 @@ import { html } from 'htm/preact';
 import axe from 'axe-core';
 import BoardScreen, { readScreen } from '../src/components/board/BoardScreen.js';
 import { HealthOverview, healthSources, healthStatus, healthTrafficGroups, ingestionDetailsTable, modeGroupTable, modeTrafficTable, panelStoreHealth, trafficGroupTable } from '../src/components/board/health.js';
+import { stamp } from '../src/components/board/format.js';
 import { normalizeHealth, useBoardHealth } from '../src/components/board/useBoardHealth.js';
 import { freshUi, LS_KEY, sanitizeLayout } from '../src/components/board/layout.js';
 import { boardFixture, machineFixture, NOW } from './fixtures/board.fixture.js';
@@ -19,8 +20,9 @@ function fixture() {
       health: { state: 'ok', checked_at: NOW, last_success_at: NOW },
       reads: { total: 25, rate_per_s: 0.25, in_flight: 1, failed: 0, avg_ms: 20, last_success_at: NOW },
       writes: { total: 4, rows: 300, bytes: 2048, rate_per_s: 0.5, rows_per_s: 3, bytes_per_s: 20, in_flight: 0, failed: 0 },
-      volume: { rows: 90, bytes: 1000, checked_at: NOW },
-      ingestion_capacity: { total: 8, in_use: null, available: null },
+      volume: { rows: 90, bytes: 1000, checked_at: NOW, status: 'cached' },
+      ingestion_capacity: { total: 8, in_use: null, available: null, checked_at: NOW, status: 'cached' },
+      ingestion_details: { policies: { status: 'cached', checked_at: NOW } },
     },
   };
 }
@@ -146,7 +148,7 @@ describe('live Health screen', () => {
       return json({});
     }));
     const { container } = render(html`<${BoardScreen}/>`);
-    await waitFor(() => expect(container.querySelector('#health-stages')).toBeTruthy());
+    await waitFor(() => expect(container.querySelector('#p-collectors')).toBeTruthy());
     expect(container.querySelector('.bd-app').dataset.density).toBe('comfortable');
     expect(container.querySelector('.bd-rail.bd-mini')).toBeNull();
     expect(container.querySelectorAll('#health-stages > section')).toHaveLength(4);
@@ -234,6 +236,8 @@ describe('health data and status', () => {
 
   it('shows top issues and source, collector and ingester summaries beside traffic with complete disclosures', () => {
     const health = normalizeHealth(fixture());
+    health.store.volume.last_error = 'Count refresh failed';
+    health.pipeline.sink.flood = true;
     const status = healthStatus(health, null, NOW);
     const { container, getByRole } = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
     const diagnostics = getByRole('complementary', { name: 'Collection health and issues' });
@@ -313,7 +317,7 @@ describe('health data and status', () => {
     expect(empty.store.ingestion_capacity).toBeNull();
     const panel = panelStoreHealth({ data: { health: empty }, nowS: NOW });
     const { getByRole } = render(html`<${panel.view.C} ...${panel.view.props}/>`);
-    expect(getByRole('table', { name: 'Store read queries' }).textContent).toContain('n/a');
+    expect(getByRole('table', { name: 'Client requests since daemon start' }).textContent).toContain('n/a');
     expect(getByRole('table', { name: 'Queued history receipts and ingestion capacity' }).textContent).toContain('Slots available');
     expect(getByRole('table', { name: 'Queued history receipts and ingestion capacity' }).textContent).toContain('n/a');
   });
@@ -327,6 +331,97 @@ describe('health data and status', () => {
     current.store.writes = { failed: 1, last_error: 'Timeout' };
     expect(healthStatus(current, null, NOW).label).toBe('Degraded');
     expect(healthStatus(normalizeHealth({}), null, NOW).cls).not.toBe('good');
+  });
+
+  it('distinguishes a first poll, a routine poll, and an optional missing source from current failures', () => {
+    const health = normalizeHealth(fixture());
+    health.generated_at = NOW;
+    health.monitor.collectors = [{ name: 'files', status: 'active' }];
+    const cursor = { name: 'cursor-conversations', status: 'off', last_ok: null };
+    const poll = { name: 'transcript-usage', status: 'running', poll_in_flight: true, last_poll: NOW, last_ok: null };
+    health.pipeline.ingesters = [cursor, poll];
+    health.pipeline.data_quality = [{ component: 'ingester:cursor-conversations', status: 'source_missing', severity: 'warning' }];
+    health.pipeline.self.writes = [{ name: 'transcript-backfill', age_s: 7200 }];
+    let status = healthStatus(health, null, NOW);
+    expect(status.issues).toEqual([]);
+    expect(status.label).not.toBe('OK');
+    const view = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
+    const diagnostics = view.getByRole('complementary').textContent;
+    expect(diagnostics).toContain('1 off');
+    expect(diagnostics).toContain('1 running');
+    expect(diagnostics).toContain('No successful poll yet');
+    poll.last_ok = NOW - 60;
+    expect(healthStatus(health, null, NOW).label).toBe('OK');
+    health.monitor.collectors[0] = { name: 'network', status: 'degraded', detail: 'ETW unavailable; polling' };
+    status = healthStatus(health, null, NOW);
+    expect(status.issues).toEqual(['network: degraded — ETW unavailable; polling']);
+    cursor.status = 'failed';
+    cursor.error = 'permission denied';
+    expect(healthStatus(health, null, NOW).issues[0]).toContain('permission denied');
+    cursor.status = 'off';
+    health.pipeline.data_quality[0] = { component: 'ingester:cursor-conversations', status: 'query_failed', severity: 'error', text: 'Read failed' };
+    expect(healthStatus(health, null, NOW).issues).toContain('ingester:cursor-conversations: Read failed');
+  });
+
+  it('keeps receiver evidence separate from local config, tool errors and transcript requests', () => {
+    const health = normalizeHealth(fixture());
+    health.generated_at = NOW;
+    health.monitor.collectors = [{ name: 'network', status: 'active' }];
+    health.pipeline.ingesters = [];
+    health.pipeline.data_quality = [];
+    const id = 'copilot-cli';
+    health.pipeline.otel_setup = { [id]: { status: 'missing', text: 'Copilot CLI sends no OTel to aictl.' } };
+    health.pipeline.otel_receiver = { active: true, errors: 4, dropped: 2, api_errors_total: 5, api_calls_total: 0, by_tool: { [id]: { last_at: NOW - 10, metrics: 30, events: 0 } } };
+    health.pipeline.freshness = [{ tool: id, last_seen: NOW - 7200, errors: 1, last_error: 'Slow powershell' }];
+    const status = healthStatus(health, null, NOW);
+    expect(status.label).toBe('OK');
+    const view = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
+    const sources = view.getByRole('complementary').querySelector('.bd-healthstatus').textContent;
+    expect(sources).toContain('Local OTel config: missing');
+    expect(sources).toContain('receiver saw this tool');
+    expect(sources).toContain('Tool/session errors: 1 — Slow powershell');
+    expect(sources).not.toContain('sends no OTel');
+    health.pipeline.otel_receiver.by_tool[id].last_at = NOW - 301;
+    expect(healthStatus(health, null, NOW).issues).toEqual([expect.stringContaining('Local OTel config: missing')]);
+  });
+
+  it('keeps lifetime counters after recovery without clearing a different operation’s current error', () => {
+    const health = normalizeHealth({ generated_at: NOW, pipeline: { sink: { flood: false, dropped: 250 } },
+      monitor: { collectors: [{ name: 'files', status: 'active' }] },
+      store: { health: { state: 'ok', last_success_at: NOW }, reads: { failed: 3, last_error: 'read timeout', last_error_at: NOW - 30, last_success_at: NOW } } });
+    const status = healthStatus(health, null, NOW);
+    expect(status.label).toBe('OK');
+    const view = render(html`<${HealthOverview} health=${health} status=${status} nowS=${NOW}/>`);
+    expect(view.container.querySelector('.bd-crit')).toBeNull();
+    expect(view.getByRole('table', { name: 'Client requests since daemon start' }).textContent).toContain('read timeout');
+    expect(view.container.querySelector('[data-stage="collection"]').textContent).toContain('Drops since start250');
+    health.store.writes = { failed: 1, last_success_at: NOW - 50, last_error_at: NOW - 20, last_error: 'write denied' };
+    expect(healthStatus(health, null, NOW)).toMatchObject({ label: 'Degraded', issues: ['Write requests: write denied'] });
+    health.pipeline.sink.flood = true;
+    expect(healthStatus(health, null, NOW).issues.join(' ')).toContain('dropping collector samples');
+  });
+
+  it('retains the successful scan interval on error and distinguishes unknown cluster slots from zero', () => {
+    const health = normalizeHealth(fixture());
+    const started = NOW - 3700, checked = NOW - 3600, attempted = NOW - 60;
+    health.store.volume = { status: 'stale', rows: 8242, tables: { requests: 8200 }, bytes: null, started_at: started, checked_at: checked, attempted_at: attempted, last_error: 'Scan failed' };
+    health.store.ingestion_capacity = { status: 'cached', total: 8, in_use: 0, available: null, checked_at: checked, scope: 'cluster' };
+    const project = () => html`<${HealthOverview} health=${health} status=${healthStatus(health, null, NOW)} nowS=${NOW}/>`;
+    const view = render(project());
+    const volumeText = () => view.getByRole('table', { name: 'Queryable store — cached stored volume and client health' }).textContent;
+    expect(volumeText()).toContain('Last successful scan started' + stamp(started, true));
+    expect(volumeText()).toContain('Last successful scan finished' + stamp(checked, true));
+    expect(volumeText()).toContain('Last scan attempted' + stamp(attempted, true));
+    expect(volumeText()).toContain('Volume read errorScan failed');
+    expect(volumeText()).toContain('Stored request rows (cached)8.2 k');
+    expect(view.container.querySelector('[data-stage="store"]').textContent).toContain('Stored rows (cached)8.2 k');
+    expect(view.container.querySelector('[data-stage="queued"]').textContent).toContain('0 in use · n/a available · 8 total');
+    health.store.volume = { status: 'pending', rows: 0, checked_at: null };
+    health.store.ingestion_capacity = { status: 'error', total: null, checked_at: null, last_error: 'Capacity permission denied' };
+    view.rerender(project());
+    expect(volumeText()).toContain('Stored rows (cached)n/a');
+    expect(volumeText()).toContain('Volume statuspending');
+    expect(healthStatus(health, null, NOW).issues.join(' ')).toContain('Capacity permission denied');
   });
 
   it('moves stored health panels out of Machine while preserving their widths', () => {

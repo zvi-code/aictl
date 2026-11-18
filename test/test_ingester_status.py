@@ -75,6 +75,28 @@ def test_collect_status_empty():
     assert collect_status({}) == []
 
 
+def test_optional_source_is_not_polled_until_it_appears(tmp_path):
+    from types import SimpleNamespace
+
+    from aictl.dashboard.ingester_runner import _poll_loop
+
+    path = tmp_path / "conversations.db"
+    handle = IngesterHandle("cursor-conversations", False, path, False)
+    polls = []
+    ingester = SimpleNamespace(poll=lambda: polls.append(path.exists()) or 0)
+    # First iteration: missing. Next: present. Third: removed after use.
+    steps = iter([path.touch, path.unlink, None])
+
+    def wait(timeout):
+        action = next(steps)
+        if action:
+            action()
+        return action is None
+
+    _poll_loop(ingester, SimpleNamespace(wait=wait), 0.0, handle.name, watch_source=handle)
+    assert polls == [True] and handle.enabled and not handle.source_exists
+
+
 # ── VS Code ingester: quality + retry-on-parse-failure ────────────
 
 

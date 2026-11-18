@@ -241,6 +241,23 @@ describe('Kusto incremental board integration', () => {
     expect(ControlledEventSource.instances).toHaveLength(1);
   });
 
+  it('does not present a retained Health snapshot as current while its producer is pending or unavailable', async () => {
+    window.history.replaceState(null, '', '/?screen=health');
+    const view = render(html`<${BoardScreen} liveController=${controller()}/>`);
+    const source = await sourceOf();
+    const producer = (revision, state) => liveEntity('source.status', 'health', { component: 'health', topic: 'runtime.health', ...state }, revision);
+    await bootstrap(source, [liveEntity('runtime.health', 'local', {
+      generated_at: Date.now() / 1000, store: { health: { state: 'ok', last_success_at: NOW } }, monitor: { collectors: [{ name: 'files', status: 'active' }] },
+    }), producer(1, { ready: false, pending: true })]);
+    const headline = () => view.container.querySelector('.bd-healthheader [role="status"]').textContent;
+    expect(headline()).not.toBe('OK');
+    await act(async () => source.emit('change', liveEnvelope(2, { upserts: [producer(2, { ready: true, pending: false })] }, queryOf(source))));
+    await waitFor(() => expect(headline()).toBe('OK'));
+    await act(async () => source.emit('change', liveEnvelope(3, { upserts: [producer(3, { ready: true, stale: true, error: 'Health read failed' })] }, queryOf(source))));
+    await waitFor(() => expect(headline()).toBe('Degraded'));
+    expect(view.getByRole('alert').textContent).toContain('Health read failed');
+  });
+
   it('streams current file configuration and displays loaded evidence without equating them', async () => {
     window.history.replaceState(null, '', '/?screen=settings');
     const calls = [];

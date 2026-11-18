@@ -3321,7 +3321,8 @@ class TestMachine:
         assert pipe["sink"] == {"emitted": 120, "flushed": 100, "dropped": 20, "flood": True, "flood_drops": 3, "buffered": 0, "tracked": 9}
         assert pipe["otel_receiver"]["api_calls_total"] == 7 and pipe["otel_receiver"]["active"] is True
         by_name = {i["name"]: i for i in pipe["ingesters"]}
-        assert (by_name["cursor"]["status"], by_name["cursor"]["error"], by_name["cursor"]["rows"]) == ("failed", "disk gone", 4)
+        assert (by_name["cursor"]["status"], by_name["cursor"]["error"], by_name["cursor"]["last_ok"]) == ("failed", "disk gone", None)
+        assert by_name["cursor"]["rows"] is None  # no confirmed completed poll
         assert by_name["copilot"]["status"] == "off" and by_name["copilot"]["error"] is None
         assert [q["component"] for q in pipe["data_quality"]] == ["sink", "ingester:cursor"]  # newest first
         assert pipe["data_quality"][1]["severity"] == "error" and pipe["data_quality"][1]["text"] == "poll raised"

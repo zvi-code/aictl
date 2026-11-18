@@ -11,7 +11,6 @@ export function normalizeHealth(raw) {
   const store = object(data.store);
   return {
     ...normalizeMachine(data),
-    reported: { hooks: data.pipeline?.hooks != null, otel_receiver: data.pipeline?.otel_receiver != null },
     store: {
       ...store,
       kind: store.kind ?? null,
@@ -76,11 +75,12 @@ export function useBoardHealth({ enabled, live }) {
     const timer = setInterval(() => { if (!document.hidden) setState(s => ({ ...s, nowS: Date.now() / 1000 })); }, TICK_MS);
     return () => clearInterval(timer);
   }, [enabled, live, subscription.mode]);
-  const streamed = topicData(subscription, 'runtime.health', 'local');
-  if (subscription.mode === 'incremental') return {
-    data: streamed ? normalizeHealth(streamed) : null,
-    error: subscription.error, busy: !streamed && !subscription.error, nowS: state.nowS,
-  };
+  if (subscription.mode === 'incremental') {
+    const source = topicData(subscription, 'source.status', 'health');
+    const error = subscription.error || (source?.error || source?.stale ? new Error(source.error || source.reason || 'Health source is stale.') : null);
+    const streamed = !error && (!subscription.ready || source?.pending || source?.ready === false) ? null : topicData(subscription, 'runtime.health', 'local');
+    return { data: streamed ? normalizeHealth(streamed) : null, error, busy: !streamed && !error, nowS: state.nowS };
+  }
   if (subscription.mode === 'unavailable') return { ...state, error: subscription.error, busy: false };
   return state;
 }

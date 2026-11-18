@@ -6315,15 +6315,17 @@ def _cached_health_data(db: Any, now: float) -> dict:
 
             def refresh() -> None:
                 try:
-                    policies = _health_kusto_policies(db, entry["data"].get("policies"))
+                    prev = entry["data"]
+                    policies = _health_kusto_policies(db, prev.get("policies"))
+                    capacity = _health_kusto_capacity(db, prev.get("capacity"))
                     with _health_cache_lock:
-                        entry["data"] = {**entry["data"], "policies": policies}
+                        entry["data"] = {**prev, "policies": policies, "capacity": capacity}
                     data = {
                         "policies": policies,
-                        "stats": _db_stats(db),
+                        "capacity": capacity,
+                        "volume": _db_stats_sample(db),
                         "quality": _quality_rows(db),
                         "hooks": _hooks_by_tool(db, now),
-                        "checked_at": time.time(),
                     }
                     with _health_cache_lock:
                         entry["data"] = data
@@ -6334,6 +6336,37 @@ def _cached_health_data(db: Any, now: float) -> dict:
 
             threading.Thread(target=refresh, name="aictl-health-stats", daemon=True).start()
         return dict(entry["data"])
+
+
+def _health_kusto_capacity(db: Any, previous: dict | None = None) -> dict | None:
+    settings = getattr(db, "_kusto", None)
+    if settings is None:
+        return None
+    result = dict(previous or {})
+    if time.time() - result.get("attempted_at", 0) < DB_STATS_TTL_S:
+        return result
+    from azure.kusto.data import ClientRequestProperties
+
+    from ..kusto.connection import KustoClientFactory, Result
+
+    client, _ = KustoClientFactory.health_objects(settings)
+    if client is None:
+        return result or None
+    props = ClientRequestProperties()
+    props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=5))
+    result["attempted_at"] = time.time()
+    try:
+        response = client.execute_mgmt(settings.database, ".show capacity ingestions", props)
+        row = next((r for r in Result.from_response(response).dicts() if str(r.get("Resource")).lower() == "ingestions"), {})
+        if row.get("Total") is None:
+            raise ValueError("Ingestion capacity was not reported by the cluster")
+        result.update(
+            total=int(row["Total"]), in_use=_as_int(row.get("Consumed")), available=_as_int(row.get("Remaining")),
+            checked_at=time.time(), status="cached", last_error=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - optional management read; keep its last successful sample
+        result.update(status="stale" if result.get("checked_at") else "error", last_error=mask_secrets(str(exc)))
+    return result
 
 
 def _health_kusto_policies(db: Any, previous: dict | None = None) -> dict | None:
@@ -6640,21 +6673,29 @@ def _monitor_section(snapshot: Any, selected: set[str] | None) -> dict:
     return {"collectors": collectors, "roots": roots, "per_tool": per_tool}
 
 
-def _db_stats(db: Any) -> dict:
-    """Size and row counts of the history, read at most every DB_STATS_TTL_S: each count scans a table."""
+def _db_stats_sample(db: Any) -> dict:
+    """Keep the original scan interval with the counts, including after a failed refresh."""
     if db is None:
         return {}
     key = (id(db), str(getattr(db, "_path", "memory")))
     cached = _db_stats_memo.get(key)
     if cached and time.monotonic() - cached[0] < DB_STATS_TTL_S:
         return cached[1]
+    started = time.time()
     try:
         stats = db.stats()
+        if not any(k.endswith("_count") and isinstance(v, int) for k, v in stats.items()):
+            raise ValueError("Store statistics did not return row counts")
     except Exception:  # noqa: BLE001 - a busy or damaged store still answers the rest
         logger.debug("History stats failed", exc_info=True)
-        stats = {}
-    _db_stats_memo[key] = (time.monotonic(), stats)
-    return stats
+        sample = dict(cached[1]) if cached else {}
+        sample.update(attempted_at=started, last_error="Could not read history counts",
+                      status="stale" if sample.get("checked_at") else "error")
+    else:
+        sample = {"stats": stats, "started_at": started, "checked_at": time.time(), "attempted_at": started,
+                  "last_error": None, "status": "cached"}
+    _db_stats_memo[key] = (time.monotonic(), sample)
+    return sample
 
 
 def _own_process() -> dict:
@@ -6717,12 +6758,13 @@ def _quality_rows(db: Any) -> list[dict]:
 def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
     from .ingester_runner import collect_status
 
-    by_component = {q["component"]: q for q in quality}
+    by_component = {q["component"]: q for q in reversed(quality)}  # newest quality row first
     out = []
     for h in collect_status(handles):
         name = h.get("name") or ""
         q = by_component.get(f"ingester:{name}") or by_component.get(name)
         polled = h.get("last_poll_ts") or None
+        last_ok = h.get("last_success_at")
         if not h.get("enabled"):
             status = "off"
         elif not h.get("source_exists"):
@@ -6731,22 +6773,28 @@ def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
             status = "failed"
         elif (
             q and q["status"] not in ("ok", "") and q["severity"] in ("error", "warning")
-            and not (h.get("last_success_at") and h["last_success_at"] > (q.get("ts") or 0))
+            and not (h.get("last_success_started_at") and h["last_success_started_at"] > (q.get("ts") or 0))
         ):
+            # Some adapters return zero after recording a read error. A normal
+            # return from that same poll is not evidence that the source recovered.
             status = q["status"]
-        elif not polled:
-            status = "waiting"
-        else:
+            if last_ok and last_ok >= (q.get("ts") or 0):
+                last_ok = None
+        elif h.get("poll_in_flight"):
+            status = "running"
+        elif h.get("last_success_at"):
             status = "ok"
-        failing = status not in ("ok", "off", "waiting")
+        else:
+            status = "waiting"
+        failing = status not in ("ok", "off", "waiting", "running")
         out.append(
             {
                 "name": name,
                 "status": status,
-                "last_ok": h.get("last_success_at") or (q or {}).get("last_ok") or (polled if status == "ok" else None),
+                "last_ok": last_ok,
                 "last_poll": polled,
                 "error": mask_secrets(str(h.get("last_error") or (q or {}).get("error") or (q or {}).get("text") or "")) if failing else None,
-                "rows": h.get("last_poll_inserted"),
+                "rows": h.get("last_poll_inserted") if last_ok else None,
                 "rows_total": h.get("rows_ingested_total"),
                 "source": _display_folder(Path(h["source_path"])) if h.get("source_path") else None,
                 "source_path": h.get("source_path"),
@@ -6836,17 +6884,17 @@ def _collection_health(
     now: float | None = None,
     port: int | None = None,
     *,
-    cached_only: bool = False,
+    cached: dict | None = None,
 ) -> dict:
     """The shared collection-health projection used by Machine and Health."""
     now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
     selected = set(stored_ids_for(tools)) if tools is not None else None
     usage = _self_usage()
-    cached = _cached_health_data(db, now) if cached_only else {}
-    stats = cached.get("stats", {}) if cached_only else _db_stats(db)
+    sample = cached.get("volume", {}) if cached is not None else _db_stats_sample(db)
+    stats = sample.get("stats", {})
     counts = {k[: -len("_count")]: v for k, v in stats.items() if k.endswith("_count") and isinstance(v, int)}
-    quality = cached.get("quality", []) if cached_only else _quality_rows(db)
+    quality = cached.get("quality", []) if cached is not None else _quality_rows(db)
     try:
         otel_status = otel.status() if otel is not None else None
     except Exception:  # noqa: BLE001 - the receiver is optional
@@ -6872,7 +6920,7 @@ def _collection_health(
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
             "otel_setup": _otel_setup(port),
-            "hooks": cached.get("hooks", {}) if cached_only else _hooks_by_tool(db, now),
+            "hooks": cached.get("hooks", {}) if cached is not None else _hooks_by_tool(db, now),
             "ingesters": _ingester_rows(ingesters, quality),
             "data_quality": quality,
             "freshness": _freshness(snapshot, selected),
@@ -6925,9 +6973,10 @@ def compute_health(
     from urllib.parse import urlsplit, urlunsplit
 
     now = time.time() if now is None else now
+    cached = _cached_health_data(db, now)
     payload = _collection_health(
         db, store, otel=otel, ingesters=ingesters, stream_clients=stream_clients,
-        now=now, port=port, cached_only=True,
+        now=now, port=port, cached=cached,
     )
     settings = getattr(db, "_kusto", None)
     path = str(getattr(db, "_path", ":memory:"))
@@ -6956,10 +7005,8 @@ def compute_health(
         operations = getattr(ingester, "operations", None)
         writes = operations.snapshot() if operations is not None else None
         children = getattr(ingester, "ingesters", {})
-        inline = children.get("inline") if children else ingester
-        total = getattr(inline, "capacity_total", None)
-        if total is not None:
-            capacity = {"total": total, "in_use": None, "available": None}
+        capacity = {"total": None, "in_use": None, "available": None, "checked_at": None,
+                    "status": "pending", "last_error": None, **(cached.get("capacity") or {})}
         queued = children.get("queued") if children else ingester
         lock = getattr(queued, "_lock", None)
         if lock is not None and hasattr(queued, "_pending_rows"):
@@ -6995,10 +7042,10 @@ def compute_health(
         if operation.get("last_error"):
             operation["last_error"] = mask_secrets(operation["last_error"])
     success = max((v.get("last_success_at") or 0 for v in operation_snapshots), default=0) or None
-    failure = max(operation_snapshots, key=lambda v: v.get("last_error_at") or 0, default={})
     degraded = getattr(db, "degraded_reason", "") if db is not None else ""
-    failing = any((v.get("last_error_at") or 0) > (v.get("last_success_at") or 0) for v in operation_snapshots)
-    state = "degraded" if degraded or failing else "ok" if success else "unknown"
+    failures = [v for v in operation_snapshots if (v.get("last_error_at") or 0) > (v.get("last_success_at") or 0)]
+    failure = max(failures, key=lambda v: v["last_error_at"], default={})
+    state = "degraded" if degraded or failures else "ok" if success else "unknown"
     sink = getattr(db, "otel_sink", None)
     try:
         otel_sink = sink.stats() if sink is not None else None
@@ -7008,7 +7055,6 @@ def compute_health(
         otel_sink["last_error"] = mask_secrets(str(otel_sink["last_error"]))
     if otel_sink is not None and otel_sink.get("pending_rows") is not None:
         pending_groups["otel"] = pending_groups.get("otel", 0) + otel_sink["pending_rows"]
-    cached = _cached_health_data(db, now)
     if ingestion_details is not None:
         policies = dict(cached.get("policies") or {"status": "pending", "batching": None, "streaming": None})
         policies["age_s"] = max(0.0, now - policies["checked_at"]) if policies.get("checked_at") else None
@@ -7041,16 +7087,16 @@ def compute_health(
         "commands_scope": "management requests include inline ingestion; do not add them to writes",
         "measurement_scope": scope,
         "ingestion_capacity": capacity,
-        "capacity_scope": "cached cluster ingestion total; cluster usage is not reported",
+        "capacity_scope": "cluster-wide ingestion slots at the last successful .show capacity ingestions read",
         "queued_history_rows_unconfirmed": pending,
         "otel_sink": otel_sink,
         "volume": {
             "rows": payload["pipeline"]["self"]["db_rows"],
             "bytes": payload["pipeline"]["self"]["db_bytes"],
             "tables": payload["pipeline"]["self"]["db_tables"],
-            "checked_at": cached.get("checked_at"),
+            **{k: cached.get("volume", {}).get(k) for k in ("started_at", "checked_at", "attempted_at", "last_error")},
             "scope": "cached selected history tables; excludes raw OTel export tables; not submitted rows or a cluster-wide total",
-            "status": "cached" if cached.get("checked_at") else "pending",
+            "status": cached.get("volume", {}).get("status", "pending"),
             "refresh_interval_s": DB_STATS_TTL_S,
         },
         "storage_budget_bytes": getattr(db, "_budget_bytes", None) if kind != "kusto" else None,

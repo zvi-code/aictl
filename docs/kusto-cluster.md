@@ -281,6 +281,14 @@ Kusto mode includes links to the configured cluster, database and capacity
 query. Counters reset with the daemon; rates cover up to the last 60 seconds.
 Submitted rows are not necessarily queryable rows. Stored-volume and capacity
 readings are cached and explicitly scoped; unknown values are shown as `n/a`.
+Row counts cover selected history tables. Their start and completion times
+describe the actual read, not the most recent HTTP refresh. All table counts
+for one store are collected in one query. Cluster slot totals, consumed slots and remaining slots
+come from `.show capacity ingestions`; these are not throughput measurements.
+If a refresh fails, the last successful measurement retains its timestamp.
+An ingester's last success is the completion of a poll, not its start. A long
+backfill can run while other writes succeed. OTel receiver counters are scoped
+to this daemon and are separate from model calls indexed from transcripts.
 Backend health describes operations observed by this client, not cluster-wide
 Azure Resource Health. Local storage uses the same screen without Kusto-only
 statistics.

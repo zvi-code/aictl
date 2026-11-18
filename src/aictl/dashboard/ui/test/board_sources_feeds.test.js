@@ -15,7 +15,7 @@ const build = machine => {
 describe('hooks and OTel per tool', () => {
   it('shows the count and age of what each tool sent', () => {
     const t = build(machineFixture());
-    expect(t.cols.map(c => c.l)).toEqual(expect.arrayContaining(['Hooks', 'OTel']));
+    expect(t.cols.map(c => c.l)).toEqual(expect.arrayContaining(['Hooks', 'OTel received']));
     const a = t.rows.find(r => r.id === 'tool-a');
     expect(a.cells.h.v).toBe('7');
     expect(a.cells.h.sub).toBe('60 s ago');
@@ -36,6 +36,6 @@ describe('hooks and OTel per tool', () => {
     delete m.pipeline.hooks;
     delete m.pipeline.otel_receiver.by_tool;
     const a = build(m).rows.find(r => r.id === 'tool-a');
-    expect([a.cells.h.v, a.cells.o.v]).toEqual(['None', 'None']);
+    expect([a.cells.h.v, a.cells.o.v]).toEqual(['n/a', 'n/a']);
   });
 });

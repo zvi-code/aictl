@@ -13,6 +13,7 @@ import { CONTEXT_BUILDERS } from './contextPanels.js';
 import { EMPTY_MACHINE } from './useBoardData.js';
 import { panelSessions } from './sessionsPanel.js';
 import { panelStoreHealth } from './health.js';
+import { ingesterState, measuredValue, otelConfig, pollSuccess, qualityContext, writeWarning } from './healthModel.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
@@ -821,25 +822,25 @@ function panelSettings(ctx) {
 
 /** Hooks and OTel cells of one tool: what reached aictl, and when. */
 function feedCells(ctx, tool) {
-  const pipe = machineOf(ctx).pipeline;
-  const h = (pipe.hooks || {})[tool];
-  const o = (pipe.otel_receiver?.by_tool || {})[tool];
-  const hooks = ctx.data.health && (ctx.data.health.reported?.hooks === false || (h && h.count == null))
+  const machine = machineOf(ctx);
+  const pipe = machine.pipeline;
+  const h = pipe.hooks?.[tool];
+  const byTool = pipe.otel_receiver?.by_tool;
+  const o = byTool?.[tool];
+  const hookCount = !pipe.hooks || machine.reported?.hooks === false ? null : h ? h.count : 0;
+  const hooks = hookCount == null
     ? { v: NA, cls: 'dim', title: 'Hook counts are not reported by this daemon' }
-    : h && h.count
+    : hookCount
     ? { v: fmtN(h.count), sub: ago(h.last_fire_ts, ctx.nowS), title: fmtN(h.count) + ' hook events in the last 24 hours. Newest: ' + stamp(h.last_fire_ts, true) }
     : { v: 'None', cls: 'dim', title: 'No hook events from this tool in the last 24 hours. aictl hooks status shows whether its hooks are registered and why they may not run.' };
-  // The variable that sends the tool's OTel to aictl, when aictl checks it (Copilot CLI's endpoint).
-  const setup = (pipe.otel_setup || {})[tool];
-  const off = setup && setup.status !== 'ok' ? setup : null;
-  const otel = ctx.data.health && (ctx.data.health.reported?.otel_receiver === false || (o && o.metrics == null && o.events == null))
-    ? { v: NA, cls: 'dim', title: 'OTel counts are not reported by this daemon' }
-    : o && (o.metrics || o.events)
-    ? { v: fmtN((o.metrics || 0) + (o.events || 0)), sub: off ? (off.status === 'missing' ? 'Not set now' : 'Sent elsewhere now') : ago(o.last_at, ctx.nowS), cls: off ? 'warn' : '', title: fmtN(o.metrics || 0) + ' metric samples and ' + fmtN(o.events || 0) + ' log events since the daemon started. Newest: ' + stamp(o.last_at, true) + (off ? '\n' + off.text : '') }
-    : off
-      ? { v: off.status === 'missing' ? 'Not set' : 'Elsewhere', cls: 'warn', title: off.text }
-      : { v: 'None', cls: 'dim', title: 'No OTel data from this tool since the daemon started. aictl otel status shows what the tool is set to send.' };
-  return { hooks, otel, sort: { h: h?.count || 0, o: o ? (o.metrics || 0) + (o.events || 0) : 0 } };
+  const config = otelConfig(pipe, tool, ctx.nowS);
+  const count = !byTool ? null : !o ? 0 : o.metrics == null || o.events == null ? null : o.metrics + o.events;
+  const otel = {
+    v: count === 0 ? 'None' : fmtN(count), sub: o?.last_at ? ago(o.last_at, ctx.nowS) : null,
+    title: o ? `${fmtN(o.metrics)} metric samples and ${fmtN(o.events)} log events since daemon start. Newest: ${stamp(o.last_at, true)}`
+      : byTool ? 'No OTel data from this tool since daemon start. aictl otel status shows the local configuration.' : 'Per-tool receiver counts not reported',
+  };
+  return { hooks, otel, config: { v: config?.status || NA, cls: config?.warning ? 'warn' : 'dim', title: config?.detail || 'Not checked' }, sort: { h: hookCount, o: count, config: config?.status } };
 }
 
 function panelSources(ctx) {
@@ -852,24 +853,22 @@ function panelSources(ctx) {
       cells: {
         t: { v: s.label || ctx.toolName(s.tool), sw: colorFor('tool', s.tool) },
         s: { v: s.data_from || NA, cls: 'dim', sub: (s.locations || []).map(h => h.path + ' (' + h.found_by + ')').join(', '), title: (s.locations || []).map(h => h.path + ': ' + h.found_by).join('\n') },
-        l: { v: ago(s.last_data_ts, ctx.nowS), cls: 'dim', title: (ctx.data.health ? 'Last source activity: ' : 'Newest record in the history: ') + stamp(s.last_data_ts, true) },
+        l: { v: s.last_data_ts ? ago(s.last_data_ts, ctx.nowS) : NA, cls: 'dim', title: (ctx.data.health ? 'Last source activity: ' : 'Newest record in the history: ') + stamp(s.last_data_ts, true) },
         f: f
           ? { v: f.last_seen ? ago(f.last_seen, ctx.nowS) : 'Not live', sub: f.confidence == null ? null : pctOf(f.confidence), cls: f.last_seen && ctx.nowS - f.last_seen > 3600 ? 'warn' : 'dim', title: 'Live monitor: ' + (f.last_seen ? 'last saw this tool ' + stamp(f.last_seen, true) : 'not running now') + '. Telemetry from ' + (f.source || NA) + ', confidence ' + pctOf(f.confidence) + '.' }
           : { v: NA, cls: 'dim', title: 'The monitor does not report this tool' },
         h: feed.hooks,
         o: feed.otel,
-        e: f ? { v: fmtN(f.errors), cls: f.errors ? 'crit' : 'dim', title: f.last_error || 'No errors reported' } : { v: NA, cls: 'dim' },
+        config: feed.config,
+        e: f ? { v: fmtN(f.errors), cls: 'dim', title: f.last_error || (f.errors == null ? 'Not reported' : 'No error detail reported') } : { v: NA, cls: 'dim' },
       },
     };
   });
   return {
     sub: 'Where each tool leaves its data, and how fresh it is',
-    table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', n: true, w: '84px', t: 'Newest record in the history' }, { k: 'f', l: 'Freshness', n: true, w: '104px', t: 'When the live monitor last saw the tool, and how sure the telemetry is' }, { k: 'h', l: 'Hooks', n: true, w: '84px', t: 'Hook events from the tool in the last 24 hours' }, { k: 'o', l: 'OTel', n: true, w: '84px', t: 'OTel samples and events from the tool since the daemon started' }, { k: 'e', l: 'Errors', n: true, w: '56px', t: 'API errors the tool logged' }], rows },
+    table: { cols: [{ k: 't', l: 'Tool', w: '140px' }, { k: 's', l: 'Data from' }, { k: 'l', l: 'Last data', n: true, w: '84px', t: ctx.data.health ? 'Last observed source activity' : 'Newest record in the history' }, { k: 'f', l: 'Freshness', n: true, w: '104px', t: 'When the live monitor last saw the tool, and how sure the telemetry is' }, { k: 'h', l: 'Hooks', n: true, w: '84px', t: 'Hook events from the tool in the last 24 hours' }, { k: 'o', l: 'OTel received', n: true, w: '98px', t: 'OTel samples and events from the tool since the daemon started' }, { k: 'config', l: 'Local OTel config', w: '104px' }, { k: 'e', l: 'Tool/session errors', n: true, w: '110px', t: 'Errors in tool telemetry, not collector or store failures' }], rows },
   };
 }
-
-/** A write to the history that runs this long is shown as a warning. */
-export const LONG_WRITE_S = 60;
 
 function panelDaemon(ctx) {
   const s = ctx.data.self || {};
@@ -904,14 +903,16 @@ function panelSelf(ctx) {
   const sink = pipe.sink;
   const otel = pipe.otel_receiver;
   const stream = pipe.stream || {};
+  const store = ctx.data.health?.store;
+  const volume = store?.volume;
   const tables = Object.entries(me.db_tables || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ': ' + fmtN(v)).join('\n');
   const writes = me.writes || [];
-  const longest = writes.reduce((m, w) => Math.max(m, w.age_s || 0), 0);
+  const warning = writeWarning(writes, store?.kind || machineOf(ctx).store?.kind);
   const pipeline = [
     { label: 'Uptime', value: fmtDur(me.uptime_s), title: 'Since the aictl daemon started' + (me.pid ? ', PID ' + me.pid : '') },
-    { label: 'Writing', value: ctx.data.health && !Array.isArray(me.writes) ? NA : writes.length ? writes.map(w => w.name + ', ' + fmtAge(w.age_s)).join('; ') : 'Nothing', cls: longest >= LONG_WRITE_S ? 'warn' : null, title: writes.length ? 'Writes to the history that run now in the aictl daemon, with how long each has run. Another write waits for a running one; the board still reads.' : 'No active write reported' },
+    { label: 'Writing', value: !Array.isArray(me.writes) ? NA : writes.length ? writes.map(w => w.name + ', ' + fmtAge(w.age_s)).join('; ') : 'Nothing', cls: warning ? 'warn' : null, title: store?.kind === 'kusto' ? 'Running Kusto history work. Elapsed time includes backfill and does not establish that other writes are blocked.' : 'Active history writes in this daemon and their elapsed times' },
     { label: 'Threads', value: me.threads == null ? NA : String(me.threads) },
-    { label: 'Rows', value: fmtN(me.db_rows), title: tables ? 'Rows in each table, read once a minute:\n' + tables : 'Not read yet' },
+    { label: 'History rows (cached)', value: fmtN(store ? measuredValue(volume, 'rows') : me.db_rows), title: (volume?.scope || 'Selected history tables; not a count of received OTel events.') + (tables ? '\n' + tables : '') },
     { label: 'Viewers', value: stream.connected_clients == null ? NA : String(stream.connected_clients), title: 'Browser windows that follow the live stream' },
     { label: 'Snapshot', value: stream.snapshot_age_s == null ? NA : fmtAge(stream.snapshot_age_s), cls: stream.snapshot_age_s > STALE_AFTER_S ? 'warn' : null, title: 'Time since the collector published its last snapshot' },
   ];
@@ -920,21 +921,23 @@ function panelSelf(ctx) {
       { label: 'Samples received', value: fmtN(sink.emitted), title: 'Samples the collectors sent to the store' + (sink.tracked != null ? '. ' + fmtN(sink.tracked) + ' metrics tracked' : '') },
       { label: 'Samples submitted', value: fmtN(sink.flushed), title: 'Samples flushed by the sink; queued delivery does not prove queryability' },
       { label: 'Samples buffered', value: fmtN(sink.buffered) },
-      { label: 'Dropped', value: fmtN(sink.dropped), cls: sink.dropped ? 'crit' : null, title: sink.dropped ? 'Samples lost before they reached the history' : 'No samples lost' },
+      { label: 'Dropped (total)', value: fmtN(sink.dropped), cls: sink.flood ? 'crit' : null, title: 'Collector samples lost since daemon start' },
     );
   }
   if (otel) {
     pipeline.push(
-      { label: 'Metrics in', value: fmtN(otel.metrics_received), sub: otel.active ? 'Active' : 'No data for 5 min', title: 'OpenTelemetry metrics received' + (otel.last_receive_at ? ', last ' + stamp(otel.last_receive_at, true) : '') },
+      { label: 'Metrics in', value: fmtN(otel.metrics_received), sub: otel.active == null ? 'Activity not reported' : otel.active ? 'Active' : 'No data for 5 min', title: 'OpenTelemetry metrics received' + (otel.last_receive_at ? ', last ' + stamp(otel.last_receive_at, true) : '') },
       { label: 'Events in', value: fmtN(otel.events_received), title: 'OpenTelemetry log events received' },
-      { label: 'Model calls', value: fmtN(otel.api_calls_total), sub: otel.api_errors_total ? otel.api_errors_total + ' errors' : '', cls: otel.api_errors_total ? 'warn' : null, title: 'Model API calls the tools reported, and how many failed' },
-      { label: 'Rejected', value: fmtN(otel.errors == null && otel.dropped == null ? null : (otel.errors || 0) + (otel.dropped || 0)), cls: otel.errors || otel.dropped ? 'warn' : null, title: fmtN(otel.errors) + ' payloads that could not be read, ' + fmtN(otel.dropped) + ' bad attributes or data points skipped' },
+      { label: 'OTel model calls', value: fmtN(otel.api_calls_total), sub: 'Since daemon start', title: 'Model calls observed by this OTel receiver only. Requests from stored session transcripts are counted separately.' },
+      { label: 'OTel model errors', value: fmtN(otel.api_errors_total), title: 'Model API errors reported by tools since daemon start, not receiver failures' },
+      { label: 'Rejected payloads', value: fmtN(otel.errors), title: 'OTel payloads that could not be read since daemon start' },
+      { label: 'Skipped data items', value: fmtN(otel.dropped), title: 'Malformed OTel attributes or data points skipped since daemon start' },
     );
   }
   return {
     sub: 'Live collection, sink delivery and OTel reception',
     banner: sink?.flood ? 'Data loss: flood protection is on and drops samples. ' + fmtN(sink.dropped) + ' lost so far.'
-      : longest >= LONG_WRITE_S ? 'A write to the history (' + writes[0].name + ') has run for ' + fmtAge(longest) + '. New rows and health records wait for it; the board still reads. A slow disk, or a virus scanner reading the history file on every write, makes writes this slow.' : null,
+      : warning,
     stats: pipeline,
   };
 }
@@ -972,17 +975,16 @@ function panelCollectors(ctx, local) {
   };
 }
 
-// An ingester that is off or has no source on this machine is not a fault.
-const QUIET_INGESTER = new Set(['ok', 'off', 'waiting', 'no source']);
-
 function panelQuality(ctx) {
   const pipe = machineOf(ctx).pipeline;
   const now = ctx.nowS;
-  const stats = pipe.ingesters.map(i => ({
-    label: i.name, value: i.status, cls: QUIET_INGESTER.has(i.status) ? null : 'crit',
-    sub: i.last_ok ? 'OK ' + ago(i.last_ok, now) : (i.last_poll ? 'Read ' + ago(i.last_poll, now) : 'Never read'),
-    title: i.name + ': ' + i.status + (i.error ? '. ' + i.error : '') + (i.source ? '\nReads ' + i.source : '') + (i.rows != null ? '\n' + i.rows + ' rows on the last read' : '') + (i.rows_total != null ? ', ' + fmtN(i.rows_total) + ' in all' : ''),
-  }));
+  const stats = pipe.ingesters.map(i => {
+    const { status, cls } = ingesterState(i);
+    return {
+      label: i.name, value: status, cls, sub: pollSuccess(i, now),
+      title: i.name + ': ' + status + (i.error ? '. ' + i.error : '') + (i.source ? '\nSource: ' + i.source : '') + (i.last_poll ? '\nLast poll started ' + stamp(i.last_poll, true) : '') + (i.last_ok && i.rows != null ? '\n' + i.rows + ' rows on the last successful poll' : '') + (i.rows_total != null ? '\n' + fmtN(i.rows_total) + ' rows in all' : ''),
+    };
+  });
   const rows = pipe.data_quality.map((q, i) => {
     const sev = q.severity === 'error' ? SEVERITY.crit : q.severity === 'warning' ? SEVERITY.warn : SEVERITY.info;
     return {
@@ -992,16 +994,16 @@ function panelQuality(ctx) {
         ts: { v: ago(q.ts, now), cls: 'dim', title: stamp(q.ts, true) + (q.last_ok ? '. Last OK ' + stamp(q.last_ok, true) : '') },
         sev: { v: q.severity || q.status || 'info', dot: sev.dot },
         c: { v: q.component || NA, cls: 'm', sub: q.source ? baseName(q.source) : null, title: [q.component, q.source, q.kind ? 'kind ' + q.kind : ''].filter(Boolean).join('\n') },
-        st: { v: q.status || NA, cls: q.status === 'ok' ? 'dim' : '' },
+        st: { v: q.status || NA, sub: qualityContext(q, pipe.ingesters), cls: q.status === 'ok' ? 'dim' : '' },
         t: { v: q.text || NA, cls: 'dim', title: (q.text || '') + (q.error ? '\n' + q.error : '') },
         n: { v: q.count == null ? NA : String(q.count), cls: 'dim', title: 'Times seen' },
       },
     };
   });
-  const bad = pipe.data_quality.filter(q => q.severity === 'error' || q.severity === 'warning').length;
+  const bad = pipe.data_quality.filter(q => ['error', 'warning'].includes(q.severity) && !qualityContext(q, pipe.ingesters)).length;
   return {
     sub: pipe.ingesters.length + ' ingesters, ' + rows.length + ' data-quality events' + (bad ? ', ' + bad + ' need a look' : ''),
-    stats: stats.length ? stats : [{ label: 'Ingesters', value: 'None', title: 'No ingester runs in this daemon' }],
+    stats: stats.length ? stats : [{ label: 'Ingesters', value: 'Not reported' }],
     table: {
       cols: [{ k: 'ts', l: 'When', n: true, w: '76px' }, { k: 'sev', l: 'Severity', w: '84px' }, { k: 'c', l: 'Component', w: '190px' }, { k: 'st', l: 'Status', w: '96px' }, { k: 't', l: 'Message' }, { k: 'n', l: 'Seen', n: true, w: '48px' }],
       rows, sort: { k: 'ts', dir: 'desc' }, limit: 10, none: 'No data-quality events.',

@@ -190,10 +190,10 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
   });
   it('adds freshness and errors to the data sources', () => {
     const p = buildPanel('sources', ctxWith(), local(), { id: 'sources' });
-    expect(p.table.cols.map(c => c.l)).toEqual(['Tool', 'Data from', 'Last data', 'Freshness', 'Hooks', 'OTel', 'Errors']);
+    expect(p.table.cols.map(c => c.l)).toEqual(['Tool', 'Data from', 'Last data', 'Freshness', 'Hooks', 'OTel received', 'Local OTel config', 'Tool/session errors']);
     const a = p.table.rows.find(r => r.id === 'tool-a').cells;
     expect(a.f).toMatchObject({ v: '5 s ago', sub: '90%' });
-    expect(a.e).toMatchObject({ v: '2', cls: 'crit', title: 'overloaded' });
+    expect(a.e).toMatchObject({ v: '2', cls: 'dim', title: 'overloaded' });
     expect(p.table.rows.find(r => r.id === 'tool-b').cells.f.v).toBe('n/a');
   });
   it('shows the pipeline counters of aictl itself, and a data-loss warning on flood', () => {
@@ -201,9 +201,10 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
     const stat = label => p.stats.find(s => s.label === label);
     expect(stat('Uptime').value).toBe('2 h 0 min');
     expect(stat('Threads').value).toBe('14');
-    expect(stat('Rows').title).toContain('requests: 1.00 M');
-    expect(stat('Dropped')).toMatchObject({ value: '0', cls: null });
-    expect(stat('Model calls')).toMatchObject({ value: '30', sub: '1 errors' });
+    expect(stat('History rows (cached)').title).toContain('requests: 1.00 M');
+    expect(stat('Dropped (total)')).toMatchObject({ value: '0', cls: null });
+    expect(stat('OTel model calls')).toMatchObject({ value: '30', sub: 'Since daemon start' });
+    expect(stat('OTel model errors').value).toBe('1');
     expect(stat('Viewers').value).toBe('1');
     expect(stat('Snapshot').value).toBe('3 s');
     expect(p.banner).toBeNull();
@@ -211,7 +212,7 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
     flood.pipeline.sink = { ...flood.pipeline.sink, flood: true, dropped: 250 };
     const f = buildPanel('self', ctxWith(flood), local(), { id: 'self' });
     expect(f.banner).toContain('Data loss');
-    expect(f.stats.find(s => s.label === 'Dropped')).toMatchObject({ value: '250', cls: 'crit' });
+    expect(f.stats.find(s => s.label === 'Dropped (total)')).toMatchObject({ value: '250', cls: 'crit' });
   });
   it('names the writes that run now, and warns when one has run for a minute', () => {
     expect(buildPanel('self', ctxWith(), local(), { id: 'self' }).stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'Nothing', cls: null });
@@ -220,6 +221,16 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
     const p = buildPanel('self', ctxWith(busy), local(), { id: 'self' });
     expect(p.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 4 min; compact, 4 s', cls: 'warn' });
     expect(p.banner).toContain('(flush) has run for 4 min');
+    const ctx = ctxWith(busy);
+    ctx.data.health = { store: { kind: 'kusto', volume: { status: 'cached', checked_at: NOW, rows: 2400 } } };
+    ctx.data.machine.pipeline.otel_receiver.api_calls_total = 0;
+    const kusto = buildPanel('self', ctx, local(), { id: 'self' });
+    expect(kusto.banner).toBeNull();
+    expect(kusto.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 4 min; compact, 4 s', cls: null });
+    expect(kusto.stats.find(s => s.label === 'OTel model calls').value).toBe('0');
+    expect(kusto.stats.find(s => s.label === 'History rows (cached)').value).toBe('2.4 k');
+    ctx.data.health.store.kind = 'sqlite';
+    expect(buildPanel('self', ctx, local(), { id: 'self' }).banner).toContain('SQLite writers may be waiting');
     busy.pipeline.self.writes = [{ name: 'flush', age_s: 12 }];
     const short = buildPanel('self', ctxWith(busy), local(), { id: 'self' });
     expect(short.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 12 s', cls: null });

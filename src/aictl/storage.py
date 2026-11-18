@@ -7018,27 +7018,19 @@ class HistoryDB:
             "process_defs": "process_specs",  # old: process_specs_count
             "metrics": "samples",  # old: samples_count
         }
-        for real_table, compat_name in table_map.items():
-            cur = conn.execute(f"SELECT COUNT(*) FROM {real_table}")
-            result[f"{compat_name}_count"] = cur.fetchone()[0]
-
-        # Additional new table counts
         for table in ("sessions", "requests", "tool_invocations", "processes", "agents", "tool_stats"):
-            cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
-            result[f"{table}_count"] = cur.fetchone()[0]
-
-        # Time range (from system_snapshots)
-        cur = conn.execute("SELECT MIN(ts), MAX(ts) FROM system_snapshots")
-        row = cur.fetchone()
-        result["earliest_ts"] = row[0]
-        result["latest_ts"] = row[1]
-
-        # File store totals
-        cur = conn.execute("SELECT COUNT(*), SUM(size_bytes), SUM(tokens) FROM files")
-        row = cur.fetchone()
-        result["files_tracked"] = row[0] or 0
-        result["files_total_bytes"] = row[1] or 0
-        result["files_total_tokens"] = row[2] or 0
+            table_map[table] = table
+        # A single query observes the tables together; separate counts can span many writes.
+        fields = {f"{name}_count": f"(SELECT COUNT(*) FROM {table})" for table, name in table_map.items()}
+        fields.update(
+            earliest_ts="(SELECT MIN(ts) FROM system_snapshots)",
+            latest_ts="(SELECT MAX(ts) FROM system_snapshots)",
+            files_total_bytes="(SELECT COALESCE(SUM(size_bytes), 0) FROM files)",
+            files_total_tokens="(SELECT COALESCE(SUM(tokens), 0) FROM files)",
+        )
+        values = conn.execute("SELECT " + ", ".join(f"{expr} AS {name}" for name, expr in fields.items())).fetchone()
+        result.update(zip(fields, values, strict=True))
+        result["files_tracked"] = result["file_store_count"]
         return result
 
     # ── Compaction ─────────────────────────────────────────────────
