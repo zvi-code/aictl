@@ -25,7 +25,9 @@ setTimeout(() => {
       headline: s.querySelector("h2").textContent,
       notice: n ? (n.classList.contains("error") ? "error" : "empty") : null,
       noticeText: n ? n.textContent : "",
-      drawn: s.querySelectorAll("svg, canvas").length,
+      drawn: s.querySelectorAll("svg, canvas, table").length,
+      tableRows: [...s.querySelectorAll("tbody tr")].map(tr => [...tr.cells].map(cell => cell.textContent)),
+      chartLabels: [...s.querySelectorAll(".sm-id")].map(e => e.textContent),
       findings: [...s.querySelectorAll(".findings li")].map(li => li.textContent),
       text: s.textContent,
     };

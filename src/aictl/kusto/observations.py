@@ -111,13 +111,46 @@ def typed_identity(identity: int, values: dict[str, Any]) -> str:
     return hashlib.sha256(f"{PRODUCER_ID}:{identity}:{payload}".encode()).hexdigest()
 
 
-def unresolved_query(families: tuple[str, ...]) -> str:
-    keys = ", ".join(json.dumps("observation_cutover:" + family) for family in sorted(set(families)))
+def unresolved_query(families: tuple[str, ...], *, node_id: str | None = None) -> str:
+    """Cutover policies by node and family. None means every node; '' is the untagged node only."""
+    from .schema import NODE, node_predicate, quote
+
+    prefix = "observation_cutover:"
+    keys = ", ".join(json.dumps(prefix + family) for family in sorted(set(families)))
+    key_filter = f"['key'] in ({keys})" if keys else "false"
+    source = "['maintenance_state']"
+    if node_id is not None:
+        source += f" | where {node_predicate(node_id)}"
     return (
-        "['maintenance_state'] | summarize arg_max(['_v'], *) by ['key']"
-        f" | where ['_deleted'] == false and ['key'] in ({keys})"
-        " | project family=substring(['key'], 20), policy=['text']"
+        f"{source} | where {key_filter} | summarize arg_max(['_v'], *) by {quote(NODE)}, ['key']"
+        " | where ['_deleted'] == false"
+        f" | project {quote(NODE)}, family=substring(['key'], {len(prefix)}), policy=['text']"
     )
+
+
+def public_function_name(table: Table) -> str:
+    if table.name in COMPANIONS:
+        return "aictl_" + table.name
+    if table.name in FAMILIES:
+        return "aictl_resolved_" + table.name
+    raise ValueError(f"Not an observation family or companion: {table.name}")
+
+
+def public_function_commands(tables: dict[str, Table], layout: set[str]) -> list[str]:
+    """Stored functions for the physical layout returned by LAYOUT_QUERY, after schema setup.
+
+    A current store publishes versioned facts; an observation store publishes evidence,
+    not its incomplete baseline. There is no daemon-specific value in a function definition.
+    A caller can add ``| where node_id == "..."`` to the zero-argument function call.
+    """
+    from .schema import current
+
+    current_store = has_current_store(layout)
+    names = (family if current_store else table_name(family) for family in FAMILIES)
+    return [
+        f".create-or-alter function {public_function_name(tables[name])}() {{\n{current(tables[name])}\n}}"
+        for name in names if name in tables and name in layout
+    ]
 
 
 class UnresolvedObservationsError(RuntimeError):

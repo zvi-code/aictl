@@ -450,7 +450,10 @@ def _parse_sql_template(text: str) -> tuple[tuple[exp.Expression, ...], int]:
 class Translator:
     """Turns SQLite statements of aictl's store into :mod:`statements` for a Kusto cluster."""
 
-    def __init__(self, tables: dict[str, Table] | None = None) -> None:
+    def __init__(self, tables: dict[str, Table] | None = None, *, node_id: str | None = None) -> None:
+        from . import local_node_id, normalize_node_id
+
+        self.node_id = normalize_node_id(local_node_id() if node_id is None else node_id)
         self.tables: dict[str, Table] = dict(tables if tables is not None else store_schema())
         self._lower = {name.lower(): t for name, t in self.tables.items()}
 
@@ -612,7 +615,7 @@ class _Build:
         if table is None:
             raise Unsupported(f"no such table: {node.name}")
         self.read_tables.add(table.name)
-        self.let(quote(table.name), current(table))
+        self.let(quote(table.name), current(table, node_id=self.tr.node_id))
         return table
 
     def table_cols(self, table: Table, qual: str | None) -> list[_Col]:

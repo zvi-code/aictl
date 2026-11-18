@@ -116,14 +116,14 @@ class FakeSDK:
             rows = (
                 [
                     {"TableName": "sessions", "ColumnName": name}
-                    for name in ("session_id", "project_path", "rowid", "_v", "_deleted")
+                    for name in ("session_id", "project_path", "rowid", "_v", "_deleted", "node_id")
                 ]
                 if self.present
                 else []
             )
             if self.raw_enabled:
-                rows.append({"TableName": "OTELLogs", "ColumnName": "RowKey"})
-            rows.extend({"TableName": name, "ColumnName": "RowKey"} for name in self.empty_tables)
+                rows.append({"TableName": "OTELLogs", "ColumnName": "node_id"})
+            rows.extend({"TableName": name, "ColumnName": "node_id"} for name in self.empty_tables)
             return response(rows)
         assert command in {
             f".show table ['{n}'] policy ingestiontime" for n in ("sessions", "OTELLogs", *self.empty_tables)

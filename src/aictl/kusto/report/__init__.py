@@ -43,6 +43,7 @@ class Section:
 
 # The order here is the order on the page.
 SECTIONS: tuple[Section, ...] = (
+    Section("nodes", "nodes.kql"),
     Section("dna", "dna.kql"),
     Section("relay", "relay.kql"),
     Section("cost", "cost.kql"),
@@ -82,8 +83,8 @@ def read_template() -> str:
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
-def _jsonable(value: Any) -> Any:
-    """A cell as JSON holds it: datetimes in UTC to the second, UUIDs cut to 8 characters."""
+def _jsonable(value: Any, column: str = "") -> Any:
+    """Keep filter values and node identities exact; shorten other UUIDs for display."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
@@ -96,7 +97,7 @@ def _jsonable(value: Any) -> Any:
         return float(value)
     if isinstance(value, float) and value != value:
         return None
-    if isinstance(value, str) and _UUID.match(value):
+    if column not in ("node_id", "value") and isinstance(value, str) and _UUID.match(value):
         return value[:8]
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -107,7 +108,7 @@ def _jsonable(value: Any) -> Any:
 class ReportFilter:
     """Which rows a report reads. An empty field does not filter; values of one field are alternatives.
 
-    ``start``, ``end``, ``projects``, ``tools`` and ``models`` choose rows. ``mcps``, ``skills``
+    ``start``, ``end``, ``nodes``, ``projects``, ``tools`` and ``models`` choose rows. ``mcps``, ``skills``
     and ``agents`` choose sessions: every row of a session in which one of them was used
     inside the time range. Use is read from the tool calls, as the sections read it.
     """
@@ -120,6 +121,7 @@ class ReportFilter:
     mcps: tuple[str, ...] = ()  # MCP server names
     skills: tuple[str, ...] = ()
     agents: tuple[str, ...] = ()  # agent types
+    nodes: tuple[str, ...] = ()  # canonical IDs are lower-case; legacy selects untagged history
 
     def describe(self) -> list[list[str]]:
         """The active fields as (label, value) pairs for the page header and the command output."""
@@ -127,6 +129,7 @@ class ReportFilter:
         pairs = [
             ("from", self.start.astimezone(timezone.utc).strftime(stamp) if self.start else ""),
             ("before", self.end.astimezone(timezone.utc).strftime(stamp) if self.end else ""),
+            ("node", ", ".join(self.nodes)),
             ("project", ", ".join(self.projects)),
             ("tool", ", ".join(self.tools)),
             ("model", ", ".join(self.models)),
@@ -145,8 +148,18 @@ def _strings(values: tuple[str, ...]) -> str:
     return ", ".join(json.dumps(v, ensure_ascii=False) for v in values)
 
 
-def _current(table: str) -> str:
-    return f"{table} | summarize arg_max(_v, *) by id | where _deleted == false"
+def _source(table: str, where: str, nodes: tuple[str, ...]) -> str:
+    # Old current stores may not have the column yet. Never fill it from the report
+    # host or OTel attributes. Match the physical key (including empty for legacy)
+    # before reducing versions; a tombstone on one node cannot hide another's row.
+    ids = tuple("" if name.lower() == "legacy" else name.lower() for name in nodes)
+    by_node = f" | where node_id in ({_strings(ids)})" if ids else ""
+    return (
+        f'{table} | extend node_id = column_ifexists("node_id", ""){by_node}'
+        f" | summarize arg_max(_v, *) by node_id, id | where _deleted == false and {where}"
+        " | extend report_session = tostring(pack_array(node_id, session_id)),"
+        " report_stream = tostring(pack_array(node_id, session_id, agent_id))"
+    )
 
 
 def filter_prelude(days: int | None, only: ReportFilter | None = None) -> str:
@@ -175,8 +188,8 @@ def filter_prelude(days: int | None, only: ReportFilter | None = None) -> str:
     out = [
         f"let {DAYS_PARAMETER} = {int(days or 0)};",
         f"let report_since = {since};",
-        f"let report_request_rows = {_current('requests')} and {where};",
-        f"let report_tool_rows = {_current('tool_invocations')} and {where};",
+        f"let report_request_rows = {_source('requests', where, f.nodes)};",
+        f"let report_tool_rows = {_source('tool_invocations', where, f.nodes)};",
     ]
     sessions = []
     if f.mcps:
@@ -184,14 +197,14 @@ def filter_prelude(days: int | None, only: ReportFilter | None = None) -> str:
         out.append(
             'let report_mcp_sessions = report_tool_rows | extend report_norm = replace_string(tool_name, "__", ":")'
             f' | where report_norm startswith "mcp:" and tostring(split(report_norm, ":")[1]) in~ ({_strings(f.mcps)})'
-            " | distinct session_id;"
+            " | distinct report_session;"
         )
     if f.skills:
         names = _strings(f.skills)
         sessions.append("report_skill_sessions")
         out.append(
             f'let report_skill_sessions = report_tool_rows | where tolower(tool_name) == "skill" and target in~ ({names})'
-            " | distinct session_id;"
+            " | distinct report_session;"
         )
     if f.agents:
         names = _strings(f.agents)
@@ -200,9 +213,9 @@ def filter_prelude(days: int | None, only: ReportFilter | None = None) -> str:
             'let report_agent_sessions = report_tool_rows | where tool_name in ("Agent", "Task", "task")'
             " | extend report_input = parse_json(input)"
             f" | where coalesce(tostring(report_input.subagent_type), tostring(report_input.agent_type)) in~ ({names})"
-            " | distinct session_id;"
+            " | distinct report_session;"
         )
-    chosen = "".join(f" | where session_id in ({name})" for name in sessions)
+    chosen = "".join(f" | where report_session in ({name})" for name in sessions)
     if not f.models:
         out.append(f"let {REQUESTS_SOURCE} = report_request_rows{chosen};")
         out.append(f"let {TOOL_CALLS_SOURCE} = report_tool_rows{chosen};")
@@ -212,16 +225,15 @@ def filter_prelude(days: int | None, only: ReportFilter | None = None) -> str:
     models = _strings(f.models)
     out += [
         f"let {REQUESTS_SOURCE} = report_request_rows{chosen} | where model in~ ({models});",
-        'let report_line = union (report_request_rows | project report_stream = strcat(session_id, "|", agent_id), ts,'
-        ' report_is_request = 1, report_model = model), (report_tool_rows | project report_stream = strcat(session_id, "|", agent_id),'
-        " ts, report_is_request = 0, report_call = id)"
-        " | order by report_stream asc, ts asc, report_is_request desc"
+        "let report_line = union (report_request_rows | project report_stream, ts, id, report_is_request = 1, report_model = model),"
+        " (report_tool_rows | project report_stream, ts, id, report_is_request = 0)"
+        " | order by report_stream asc, ts asc, report_is_request desc, id asc"
         " | extend report_seq = row_cumsum(report_is_request, report_stream != prev(report_stream));",
-        "let report_model_calls = report_line | where report_is_request == 0 | project report_stream, report_seq, report_call"
+        "let report_model_calls = report_line | where report_is_request == 0 | project report_stream, report_seq, id"
         " | join kind = inner (report_line | where report_is_request == 1 | project report_stream, report_seq, report_model)"
-        f" on report_stream, report_seq | where report_model in~ ({models}) | project report_call;",
+        f" on report_stream, report_seq | where report_model in~ ({models}) | project report_stream, id;",
         f"let {TOOL_CALLS_SOURCE} = report_tool_rows{chosen}"
-        " | join kind = inner report_model_calls on $left.id == $right.report_call | project-away report_call;",
+        " | join kind = leftsemi report_model_calls on report_stream, id;",
     ]
     return "\n".join(out) + "\n"
 
@@ -271,7 +283,7 @@ def run_section(
         response = _execute(client, database, kql, props, _throttled)
         for table in response.primary_results:
             columns = [c.column_name for c in table.columns]
-            result.tables.append([{c: _jsonable(v) for c, v in zip(columns, r, strict=True)} for r in table])
+            result.tables.append([{c: _jsonable(v, c) for c, v in zip(columns, r, strict=True)} for r in table])
     except Exception as exc:  # noqa: BLE001 - every SDK and transport failure is shown in the section
         result.tables = []
         result.error = _server_message(exc).strip() or type(exc).__name__
@@ -304,7 +316,7 @@ VALUES = Section("values", "_values.kql")
 
 
 def run_values(settings: KustoSettings, days: int | None = None, only: ReportFilter | None = None) -> SectionResult:
-    """What the store holds inside the window and *only*: every tool, model, project, MCP server, skill and agent."""
+    """List the available filter values, including nodes with only tool calls."""
     from ..connection import KustoClientFactory
 
     return run_section(KustoClientFactory.client(settings), settings.database, VALUES, days, only)

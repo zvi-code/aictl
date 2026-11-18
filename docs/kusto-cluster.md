@@ -233,13 +233,42 @@ Windows starts a child process with `aictl daemon serve`, not the removed top-le
 
 ## 5. Check it
 
+### Multiple reporting nodes
+
+Give each aictl daemon that writes to the same database a stable, unique node ID.
+By default it uses the lowercase hostname. For cloned hosts or containers set
+`AICTL_NODE_ID` in the daemon's environment **before starting it**, for example
+`$env:AICTL_NODE_ID = "build-07"` in PowerShell. Use the same ID after restarts;
+changing it starts a different node's history. `legacy` is reserved.
+
+The daemon's history reads, updates, deletes, and live invalidations are local
+to its `node_id`. The database retention policy, schema and cluster health are
+shared; agree on those settings across daemons. For fleet investigations, use
+**Flow → Query in Kusto → Fleet nodes** to compare session counts, then enter a
+**Reporting node** to drill down. `aictl db report` reads across nodes by default;
+use `--node build-07` to restrict the report. In native KQL, include `node_id`
+in joins, deduplication and version keys for host-local identifiers.
+On a current store, `aictl_resolved_requests()` and the other resolved history
+functions keep one live version per node and local key. On an unresolved store,
+use `aictl_requests_observations()` to inspect evidence instead; it does not
+turn observations into billable requests.
+
+**Upgrade before adding other writers.** Stop or upgrade old daemons first:
+they do not tag rows or restrict their mutations to one node. The new daemon
+widens history tables on startup and OTel tables on export, without rewriting old
+rows. Old rows and exports from unmodified external collectors have an empty
+`node_id`; they are not silently assigned to the first upgraded host. Use
+`--node legacy` or `where isempty(node_id)` to investigate them. The local
+dashboard does not include that history by default. A host field in an OTLP
+resource identifies the producer, not necessarily the aictl daemon that received it.
+
 Open the dashboard as usual (`aictl daemon serve` prints the URL). The Settings screen's "Data sources" shows the cluster. `aictl_information_schema | summarize count() by ['scope']` lists the schema, and the size budget never evicts (retention is the database's retention policy, set from `retention_days`).
 
 On a **current store**, history tables contain multiple versions and deletion markers. A raw `sessions | count` is not the number of indexed sessions. To count current session rows:
 
 ```kql
 sessions
-| summarize arg_max(_v, *) by session_id
+| summarize arg_max(_v, *) by node_id, session_id
 | where _deleted == false
 | count
 ```
@@ -248,9 +277,9 @@ That count can still include lifecycle-only rows. Check the dashboard's session 
 
 ```kql
 union withsource=SourceTable session_prompts, skill_uses, file_write_events
-| summarize arg_max(_v, *) by SourceTable, rowid
+| summarize arg_max(_v, *) by node_id, SourceTable, rowid
 | where _deleted == false and unixtime_seconds_todatetime(ts) >= ago(1d)
-| summarize rows=count(), sessions=count_distinct(session_id) by SourceTable
+| summarize rows=count(), sessions=count_distinct(session_id) by node_id, SourceTable
 ```
 
 Use the same time range, tool and project filters when comparing these facts with the board. A responsive HTTP endpoint or a growing lifecycle-row count alone does not establish that prompts, skills and changes have been indexed. During the first transcript poll, the ingester's last-poll time can remain unset while completed Copilot sessions are already appearing. Check the Machine panel's ingester status and errors, and whether the session list and fact counts advance.
@@ -382,6 +411,10 @@ With a cluster configured, everything a tool exports to the daemon's OTLP endpoi
 New spans expose the reported turn, operation, agent, tool and token usage as physical
 columns. `Tool` identifies the exporter; `ToolName` identifies the invoked tool.
 Absent token counts are null, not zero. `InputTokens` is request usage, not a context-window limit.
+All four tables include `node_id`. Spans also expose `ReportedContext.skills` and
+`ReportedContext.mcp_servers` as arrays of normalized names. The original attribute
+bags and previously shipped columns remain available. See the [complete generated
+schema](kusto-schema.md#opentelemetry) for the actual column names and types.
 
 The session breakdown reads execution evidence from `session_steps`, with captured
 transcript text in `session_step_text.text` (a Kusto `string`, not JSON).
@@ -435,20 +468,21 @@ The tables are created with the first export, and `.show table OTELLogs schema a
 
 **Times.** A record sent without a time is stored with the time it was received, never in 1970.
 
-**Duplicates.** A request repeated after a timeout can store a row twice. `RowKey` is the same for both copies, so read through `summarize take_any(*) by RowKey`:
+**Duplicates.** A request repeated to the same daemon can store a row twice. Its `(node_id, RowKey)` is the same for both copies. Only apply this rule to rows with a `RowKey`: external exporters need not supply one.
 
 ```kusto
 OTELLogs
-| summarize take_any(*) by RowKey
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
 | where EventName == "user_prompt"
-| project Timestamp, SessionId, Tool, Model, LogsAttributes
+| project Timestamp, node_id, SessionId, Tool, Model, LogsAttributes
 ```
 
 **Prompts and payloads.** Kusto cuts a string over 1 MiB and makes a dynamic value over 1 MiB null without an error. A text value over 32 KiB is therefore moved to `OTELPayloads` in chunks of at most 256 KiB, and the row keeps a reference in its place: `{"payload_id": "<sha256 of the text>", "bytes": <n>, "preview": "<first 256 characters>"}`. The whole text of one payload:
 
 ```kusto
 OTELPayloads
-| where PayloadId == "<payload_id>"
+| where node_id == "<reporting node>" and PayloadId == "<payload_id>"
 | summarize take_any(Text) by ChunkNo
 | order by ChunkNo asc
 | summarize Text = strcat_array(make_list(Text), "")
@@ -459,7 +493,7 @@ OTELPayloads
 ```kusto
 OTELPayloads
 | where Text has "refactor"
-| distinct PayloadId, SourceTable, SourceRowKey, SessionId, Tool
+| distinct node_id, PayloadId, SourceTable, SourceRowKey, SessionId, Tool
 ```
 
 **Capture modes.** `capture = "full"` (the default) stores text as above. `capture = "metadata"` stores no text: prompts, messages, tool input and output and any string over 256 characters are dropped from the attributes and their length kept (`prompt_chars`, `aictl.body_chars`), a log's body is emptied, and nothing is written to `OTELPayloads`. `capture = "off"` writes none of the four tables.
@@ -468,15 +502,17 @@ Two more queries to start from:
 
 ```kusto
 OTELMetrics
-| summarize take_any(*) by RowKey
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
 | where MetricName has "token"
-| summarize sum(MetricValue) by MetricName, Tool, Model
+| summarize sum(MetricValue) by node_id, MetricName, Tool, Model
 ```
 
 ```kusto
 OTELTraces
-| summarize take_any(*) by RowKey
-| summarize spans = count(), p95_ms = percentile(DurationMs, 95) by SpanName, Tool
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
+| summarize spans = count(), p95_ms = percentile(DurationMs, 95) by node_id, SpanName, Tool
 ```
 
 ## What to expect

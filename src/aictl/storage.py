@@ -7347,7 +7347,10 @@ class HistoryDB:
             # string searchable in the physical table. Remove those records instead.
             n = conn.execute("SELECT COUNT(*) FROM session_step_text WHERE ts >= ? AND ts < ?", (since, before)).fetchone()[0]
             if n:
-                conn.command(f".delete table session_step_text records <| session_step_text | where ts >= {float(since)!r} and ts < {float(before)!r}")
+                from .kusto.schema import node_predicate
+
+                conn.command(f".delete table session_step_text records <| session_step_text | where "
+                             f"{node_predicate(conn.settings.node_id)} and ts >= {float(since)!r} and ts < {float(before)!r}")
             return n
         total = 0
         sets = ", ".join(f"{c}='{b}'" for c, b in columns.items())

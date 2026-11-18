@@ -28,7 +28,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from . import KustoSettings, engine_url
 from .connection import KustoClientFactory, Result
-from .schema import DELETED, ROWID, VERSION, Table, quote, store_schema
+from .schema import DELETED, NODE, ROWID, VERSION, Table, node_predicate, quote, store_schema
 
 
 @dataclass(frozen=True)
@@ -282,6 +282,7 @@ class SharedKustoReader:
         with self._lock:
             return {
                 "queryable_only": True,
+                "node_id": self.settings.node_id,
                 "available_tables": list(self.table_names),
                 "missing_tables": sorted(set(self._requested) - set(self.table_names)),
                 "cursor_tables": sorted(self._cursor_tables),
@@ -441,7 +442,7 @@ class SharedKustoReader:
         available = {}
         for name in self._requested:
             spec = self._known[name]
-            required = {*spec.metadata, VERSION, DELETED} if spec.versioned else set()
+            required = {*spec.metadata, NODE, VERSION, DELETED} if spec.versioned else {NODE}
             if name in columns and required <= columns[name]:
                 available[name] = spec
         with self._lock:
@@ -523,6 +524,7 @@ class SharedKustoReader:
         upper = self._last_cursor
         arms = [
             f"({quote(name)} | where cursor_after({_text(self._frontier[name])}) and cursor_before_or_at({_text(upper)})"
+            f" | where {node_predicate(self.settings.node_id)}"
             f" | take 1 | summarize aictl_live_count=count() | project aictl_live_table={_text(name)}, aictl_live_count)"
             for name in names
         ]
@@ -559,13 +561,14 @@ class SharedKustoReader:
             else ""
         )
         metadata = ", ".join(quote(n) for n in spec.metadata)
+        source = f"{quote(spec.name)} | where {node_predicate(self.settings.node_id)}"
         return (
-            f"let aictl_live_changed = materialize({quote(spec.name)} | where {predicate}"
+            f"let aictl_live_changed = materialize({source} | where {predicate}"
             f" | extend aictl_live_key={spec.key_expression}{partition}"
             f" | where strcmp(aictl_live_key, {_text(scan.after)}) > 0 | summarize by aictl_live_key"
             f" | order by aictl_live_key asc | take {self.config.page_size + 1});\n"
             "aictl_live_changed | join kind=leftouter ("
-            f"{quote(spec.name)} | extend aictl_live_key={spec.key_expression}"
+            f"{source} | extend aictl_live_key={spec.key_expression}"
             " | where aictl_live_key in (aictl_live_changed)"
             f" | summarize arg_max({quote(VERSION)}, {quote(DELETED)}, {metadata}) by aictl_live_key"
             ") on aictl_live_key"
@@ -683,7 +686,8 @@ class SharedKustoReader:
             more = self._page(scan)
         else:
             rows = self._execute(
-                f"{quote(spec.name)} | where isnull(ingestion_time()) or ingestion_time() >= "
+                f"{quote(spec.name)} | where {node_predicate(self.settings.node_id)}"
+                " | where isnull(ingestion_time()) or ingestion_time() >= "
                 f"ago({self.config.preview_lookback_s}s)"
                 " | summarize aictl_live_count=count(), aictl_live_latest=tostring(max(ingestion_time()))"
             )
@@ -717,7 +721,7 @@ class SharedKustoReader:
         if self._available[scan.table].versioned:
             more = self._page(scan)
         else:
-            rows = self._execute(f"{quote(scan.table)} | summarize aictl_live_count=count()")
+            rows = self._execute(f"{quote(scan.table)} | where {node_predicate(self.settings.node_id)} | summarize aictl_live_count=count()")
             if len(rows) != 1 or "aictl_live_count" not in rows[0]:
                 raise ReaderQueryError("Missing reconciliation result")
             more = False
@@ -835,13 +839,13 @@ class SharedKustoReader:
 
 
 _readers_lock = threading.Lock()
-_readers: dict[tuple[str, str, str], SharedKustoReader] = {}
+_readers: dict[tuple[str, str, str, str], SharedKustoReader] = {}
 
 
-def _destination(settings: KustoSettings) -> tuple[str, str, str]:
+def _destination(settings: KustoSettings) -> tuple[str, str, str, str]:
     parts = urlsplit(engine_url(settings.cluster).rstrip("/"))
     cluster = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "", ""))
-    return cluster, settings.database.casefold(), settings.auth_mode
+    return cluster, settings.database.casefold(), settings.auth_mode, settings.node_id
 
 
 def shared_reader(

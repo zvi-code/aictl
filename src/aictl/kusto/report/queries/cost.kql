@@ -22,12 +22,12 @@ S | mv-expand t to typeof(datetime), cost to typeof(double), baseline = baseline
 let Flagged = S | mv-expand t to typeof(datetime), cost to typeof(double), flag = flag_s to typeof(int)
   | where flag != 0 | project tool, t, cost;
 let PerSession = R4 | extend t = bin(t, 1h)
-  | summarize session_cost = sum(cost_usd), session_reqs = count(), model = arg_max(cost_usd, model) by tool, t, session_id
-  | project tool, t, session_id, model = model1, session_cost, session_reqs;
+  | summarize session_cost = sum(cost_usd), session_reqs = count(), arg_max(cost_usd, model) by tool, t, node_id, session_id
+  | project tool, t, node_id, session_id, model, session_cost, session_reqs;
 Flagged
 | join kind=inner PerSession on tool, t
-| summarize arg_max(session_cost, session_id, model, session_reqs) by tool, t, cost
-| project tool, t, cost = round(cost, 4), session_id = substring(session_id, 0, 8), model, session_cost = round(session_cost, 4), session_reqs, share = round(session_cost / cost, 3)
+| summarize arg_max(session_cost, node_id, session_id, model, session_reqs) by tool, t, cost
+| project tool, t, cost = round(cost, 4), node_id, session_id = substring(session_id, 0, 8), model, session_cost = round(session_cost, 4), session_reqs, share = round(session_cost / cost, 3)
 | top 12 by cost desc
 | order by t asc, tool asc;
 // 3. periodicity of the busiest tool's request series

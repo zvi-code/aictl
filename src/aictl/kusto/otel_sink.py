@@ -135,7 +135,7 @@ class OtelSink:
             self._stats["requests"] += 1
         try:
             converted = _CONVERTERS[signal](
-                body, received_ns=received_ns or time.time_ns(), host=self.host, keep_text=self.keep_text
+                body, received_ns=received_ns or time.time_ns(), host=self.host, keep_text=self.keep_text, node_id=self.settings.node_id
             )
             lines = {name: [otel.json_line(row) for row in rows] for name, rows in converted.rows.items() if rows}
         except Exception:
@@ -166,7 +166,7 @@ class OtelSink:
         """Queue one OTLP export request (``logs``, ``metrics`` or ``traces``). Never raises."""
         try:
             converted = _CONVERTERS[signal](
-                body, received_ns=received_ns or time.time_ns(), host=self.host, keep_text=self.keep_text
+                body, received_ns=received_ns or time.time_ns(), host=self.host, keep_text=self.keep_text, node_id=self.settings.node_id
             )
             lines = {name: [otel.json_line(r) for r in rows] for name, rows in converted.rows.items() if rows}
         except Exception:  # noqa: BLE001 - this path is extra; the receiver's own store must not see its faults

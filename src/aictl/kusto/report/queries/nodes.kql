@@ -1,0 +1,7 @@
+// One row per reporting node. A session with requests and tool calls counts once.
+union
+  (report_requests | project node_id, session_id, is_request = true, cost_usd),
+  (report_tool_calls | project node_id, session_id, is_request = false)
+| summarize sessions = count_distinct(session_id), requests = countif(is_request),
+            tool_calls = countif(not(is_request)), usd = round(sum(cost_usd), 2) by node_id
+| order by requests desc, tool_calls desc, node_id asc

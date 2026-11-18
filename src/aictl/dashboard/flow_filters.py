@@ -64,7 +64,7 @@ def select_events(events, *, q="", category="", tool_name="", flow_agent="", fai
 
 
 def session_kql_url(settings, sid: str, since: float | None, until: float | None) -> str | None:
-    """Only session identity and explicit time bounds leave the dashboard. No search terms or captured text."""
+    """Only node/session identity and explicit time bounds leave the dashboard."""
     if not settings:
         return None
     cluster = urlsplit(settings.cluster)
@@ -76,9 +76,9 @@ def session_kql_url(settings, sid: str, since: float | None, until: float | None
     query = (
         f"let sid = {json.dumps(sid)};\n"
         "// Recorded session steps (no prompt or command text). Times are UTC.\n"
-        f"session_steps\n| where session_id == sid{bounds}\n"
+        f"session_steps\n| where node_id == {json.dumps(settings.node_id)} and session_id == sid{bounds}\n"
         "| summarize arg_max(_v, *) by step_key\n| where not(_deleted)\n"
-        "| project event_time=unixtime_seconds_todatetime(ts), kind, phase, name, agent_id, turn_id, round_id, "
+        "| project event_time=unixtime_seconds_todatetime(ts), node_id, kind, phase, name, agent_id, turn_id, round_id, "
         "tool_call_id, trace_id, context_tokens, context_limit, input_tokens, output_tokens, source_order\n"
         "| top 500 by event_time desc"
     )

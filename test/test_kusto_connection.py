@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import urllib.request
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -149,6 +150,41 @@ def session_row(sid: str, **values: Any) -> dict[str, Any]:
     return row
 
 
+def test_two_reporting_nodes_can_insert_the_same_local_key_and_only_delete_their_own_version():
+    # The fake models Kusto's versioned rows; the real translator must supply a node
+    # predicate before arg_max, including for the native INSERT OR IGNORE lookup.
+    ingester = FakeIngester()
+    legacy = {"session_id": "shared", "node_id": "", ROWID: 1, DELETED: False}
+    columns = [("session_id", "string"), ("node_id", "string"), (ROWID, "long"), (DELETED, "bool")]
+
+    def query(kql):
+        source = kql.split("summarize", 1)[0]
+        node = next(n for n in ("build-a", "build-b") if f"""['node_id'] == "{n}" """ in source)
+        history = [legacy, *(r for _, batch in ingester.calls for r in batch)]
+        active = next((r for r in reversed(history) if r["node_id"] == node), None)
+        if not active or active[DELETED]:
+            return response(columns, [])
+        row = dict(active)
+        if "['_deleted'] = true" in kql:
+            row[DELETED] = True
+        return response(columns, [[row[k] for k, _ in columns]])
+
+    client = FakeClient(on_query=query)
+    a, b = [KustoConnection(replace(SETTINGS, node_id=n), client, ingester, tables=TABLES) for n in ("BUILD-A", "build-b")]
+    insert = "INSERT OR IGNORE INTO sessions (session_id) VALUES (?)"
+    for conn in (a, b):
+        assert conn.execute(insert, ("shared",)).rowcount == 1
+        conn.commit()
+        assert conn.execute(insert, ("shared",)).rowcount == 0
+    assert a.execute("DELETE FROM sessions WHERE session_id=?", ("shared",)).rowcount == 1
+    a.commit()
+    assert b.execute(insert, ("shared",)).rowcount == 0
+    assert a.execute(insert, ("shared",)).rowcount == 1
+    assert [(r["node_id"], r[DELETED]) for _, batch in ingester.calls for r in batch] == [
+        ("build-a", False), ("build-b", False), ("build-a", True)
+    ]
+
+
 def test_rowids_are_unique_and_increasing_across_threads():
     out: list[list[int]] = []
 
@@ -246,7 +282,7 @@ def test_reads_mutations_and_pragmas_flush_first():
     assert order == ["ingest", "query", "ingest", "query", "ingest"]
     assert not client.commands
     assert client.queries[1].startswith("T | project ['session_id']")
-    assert client.queries[1].endswith("['rowid'], ['_v'], ['_deleted']")
+    assert client.queries[1].endswith("['rowid'], ['_v'], ['_deleted'], ['node_id'] = " + json.dumps(SETTINGS.node_id))
 
 
 def test_rowid_fills_integer_primary_key_and_lastrowid():
@@ -275,7 +311,7 @@ def test_insert_or_ignore_skips_existing_buffered_and_duplicate_keys():
     conn.execute("p")
     cur = conn.execute("i")
     assert cur.rowcount == 1
-    assert len(client.queries) == 1 and current(TABLES["sessions"]) in client.queries[0]
+    assert len(client.queries) == 1 and current(TABLES["sessions"], node_id=SETTINGS.node_id) in client.queries[0]
     conn.commit()
     ids = [r["session_id"] for r in ing.calls[0][1]]
     assert ids == ["pending", "new"] and ing.calls[0][1][1]["tool"] == ""
@@ -446,7 +482,7 @@ def test_mutation_rows_become_buffered_versions():
         "long" if n == ROWID else "datetime" if n == VERSION else "bool" if n == DELETED else t
         for n, t in zip(names, types, strict=False)
     ]
-    base = row_defaults(table) | {"session_id": "a", ROWID: 5, VERSION: "2026-01-01T00:00:00Z", DELETED: True}
+    base = row_defaults(table) | {"session_id": "a", "node_id": SETTINGS.node_id, ROWID: 5, VERSION: "2026-01-01T00:00:00Z", DELETED: True}
     rows = iter([[tuple(base[n] for n in names), tuple((base | {"session_id": "b", ROWID: 6})[n] for n in names)], []])
     client = FakeClient(on_query=lambda k: response(list(zip(names, types, strict=False)), next(rows)))
     conn, _, ing = make({"m": Mutation("sessions", "X", "delete")}, client)
@@ -713,7 +749,7 @@ def _streaming_conn(client):
 
 
 def _complete_schema():
-    return [[name, col] for name, table in TABLES.items() for col in [c.name for c in table.columns] + [ROWID, VERSION, DELETED]]
+    return [[name, col] for name, table in TABLES.items() for col in mutation_columns(table)]
 
 
 def test_new_tables_clear_the_streaming_schema_cache_until_every_node_succeeds(monkeypatch):
@@ -1246,8 +1282,11 @@ def test_connect_runs_schema_creation_once(monkeypatch):
     client = FakeClient()
     connect(SETTINGS, translator=StubTranslator(), tables=TABLES, client=client)
     n = len(client.commands)
-    # One schema listing, a create per table (the fake database has none), the information schema's two.
-    assert n == len(TABLES) + 3
+    from aictl.kusto.observations import FAMILIES
+
+    functions = [c for c in client.commands if c.startswith(".create-or-alter function")]
+    assert len(functions) == len(FAMILIES)
+    assert n == len(TABLES) + 3 + len(functions)
     connect(SETTINGS, translator=StubTranslator(), tables=TABLES, client=client)
     assert len(client.commands) == n
 

@@ -26,6 +26,8 @@ TABLE=MODE`` for overrides. Their environment equivalents are
 from __future__ import annotations
 
 import os
+import re
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -36,6 +38,7 @@ DATABASE_ENV = "AICTL_KUSTO_DATABASE"
 AUTH_ENV = "AICTL_KUSTO_AUTH"
 INGESTION_ENV = "AICTL_KUSTO_INGESTION"
 TABLE_INGESTION_ENV = "AICTL_KUSTO_TABLE_INGESTION"
+NODE_ENV = "AICTL_NODE_ID"
 DEFAULT_DATABASE = "aictl"
 
 # How the client signs in. "auto": no authentication for a local emulator
@@ -146,6 +149,17 @@ def engine_url(cluster: str) -> str:
     return scheme + sep + host + slash + path
 
 
+def local_node_id() -> str:
+    return os.environ.get(NODE_ENV, socket.gethostname())
+
+
+def normalize_node_id(value: str) -> str:
+    name = value.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,254}", name) or name == "legacy":
+        raise ValueError(f"{NODE_ENV} must be a nonempty hostname or stable node ID (not 'legacy')")
+    return name
+
+
 @dataclass(frozen=True)
 class KustoSettings:
     cluster: str
@@ -155,8 +169,10 @@ class KustoSettings:
     streaming: bool | None = None
     table_ingestion: Mapping[str, str] = field(default_factory=dict, hash=False)
     ingestion: str = "auto"
+    node_id: str = field(default_factory=local_node_id)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "node_id", normalize_node_id(self.node_id))
         mode = validate_ingestion_mode(self.ingestion, allow_auto=True)
         if self.streaming is not None:
             legacy = "streaming" if self.streaming else "inline"

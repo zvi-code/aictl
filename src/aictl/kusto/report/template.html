@@ -189,7 +189,10 @@ svg text { font-family: var(--f-body); }
 @media (max-width: 760px) { .multi { grid-template-columns: minmax(0, 1fr); } }
 .sm { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px 8px; min-width: 0; }
 .sm-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-.sm-id { font-family: var(--f-mono); font-size: 13px; font-weight: 500; }
+.sm-id { font-family: var(--f-mono); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.node-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.node-table th, .node-table td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); }
+.node-table :is(th,td):first-child { text-align: left; overflow-wrap: anywhere; }
 .sm-sub { font-size: 12px; color: var(--muted); }
 .sm-run { text-align: right; }
 .sm-run .v { font-family: var(--f-display); font-size: 22px; font-weight: 600; line-height: 1.05; }
@@ -232,6 +235,16 @@ svg text { font-family: var(--f-body); }
 
 <!-- One <template> per section: data-section is the name in SECTIONS (src/aictl/kusto/report/__init__.py),
      data-title the section's name on the page, data-caps the KQL features it shows. Its draw function is RENDER.NAME below. -->
+<template data-section="nodes" data-title="Activity by node" data-caps="union,summarize">
+    <div class="panel" style="overflow-x:auto">
+      <table class="node-table" aria-label="Activity by node">
+        <thead><tr><th>Node</th><th>Sessions</th><th>Requests</th><th>Tool calls</th><th>Request cost (USD)</th></tr></thead>
+        <tbody id="nodes-rows"></tbody>
+      </table>
+    </div>
+    <ul class="findings" id="f-nodes"></ul>
+    <p class="caveat">To investigate one node, rerun the report with <code>--node ID</code>. Use <code>--node legacy</code> for untagged rows; their source node is unknown.</p>
+</template>
 <template data-section="dna" data-title="Session DNA" data-caps="scan,partition hint.strategy=native,row_number,prev">
     <div style="display:flex;flex-direction:column;gap:16px">
       <div class="panel">
@@ -452,11 +465,26 @@ function highlightKql(pre, src) {
    { headline, note, draw }, or NO_DATA when the tables hold nothing to show. A throw is shown as that section's error. */
 const NO_DATA = Symbol("no data");
 const RENDER = {};
+const nodeLabel = row => row.node_id || "legacy";
+const sessionLabel = row => nodeLabel(row) + " / " + (row.session_id ?? row.session);
 const plural = (n, one, many) => f0(n) + " " + (n === 1 ? one : many || one + "s");
 const sum = a => a.reduce((x, y) => x + y, 0);
 const medianOf = a => (a.length ? median(a) : 0);
 const fStamp = iso => { const d = new Date(iso); return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) + " " + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + " UTC"; };
 function niceStep(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; }
+
+RENDER.nodes = function ([rows]) {
+  const body = $("#nodes-rows");
+  rows.forEach(r => {
+    const tr = H("tr", null, null, body);
+    H("th", "mono", nodeLabel(r), tr).scope = "row";
+    [f0(r.sessions), f0(r.requests), f0(r.tool_calls), usd(r.usd)].forEach(v => H("td", null, v, tr));
+  });
+  const tagged = rows.filter(r => r.node_id).length;
+  const headline = plural(tagged, "identified node") + (rows.some(r => !r.node_id) ? " plus untagged history" : "");
+  findings("#f-nodes", [[plural(sum(rows.map(r => r.sessions)), "session") + " in scope. Requests and tool calls with the same session ID count as one session within a node, not across nodes."]]);
+  return { headline, note: "current requests and tool calls" };
+};
 
 /* =========================================================
    1. Session DNA
@@ -464,14 +492,14 @@ function niceStep(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); const 
 RENDER.dna = function (T) {
   const [tSessions, tStreaks, tMotifs] = T;
   if (!tSessions.length) return NO_DATA;
-  const ROWS = tSessions.map(r => [r.session_id, r.tool, r.calls, r.errors, r.longest_error_streak, r.deepest_fix_loop, Math.round(r.t_start), Math.round(r.t_end), r.dna]);
-  const STREAKS = tStreaks.map(r => [r.session_id, r.pos, r.streak]);
+  const ROWS = tSessions.map(r => [r.session_key, sessionLabel(r), r.tool, r.calls, r.errors, r.longest_error_streak, r.deepest_fix_loop, Math.round(r.t_start), Math.round(r.t_end), r.dna]);
+  const STREAKS = tStreaks.map(r => [r.session_key, r.pos, r.streak]);
   const MOTIFS = tMotifs.map(r => [r.motif, r.tool, r.sessions]);
 const CLS = "BERAWMO";
 const CLS_NAME = { B: "Shell", E: "Edit", R: "Read", A: "Agent or delegation", W: "Web", M: "MCP tool", O: "Other" };
 const CLS_VAR = { B: "--c-b", E: "--c-e", R: "--c-r", A: "--c-a", W: "--c-w", M: "--c-m", O: "--c-o" };
 const S1 = ROWS.map(r => {
-  const [id, tool, calls, errors, streak, loop, t0, t1, dna] = r;
+  const [key, id, tool, calls, errors, streak, loop, t0, t1, dna] = r;
   const n = dna.length, code = new Uint8Array(n), fail = new Uint8Array(n), counts = new Array(7).fill(0);
   let st = 0, cyc = 0, phase = 0, maxS = 0, maxC = 0, nFail = 0; const loopAt = [], streakEnds = [];
   for (let i = 0; i < n; i++) {
@@ -485,10 +513,10 @@ const S1 = ROWS.map(r => {
     const nextFail = i + 1 < n ? dna[i + 1] !== dna[i + 1].toUpperCase() : false;
     if (st >= 3 && !nextFail) streakEnds.push([i + 1, st]);
   }
-  return { id, tool, calls, errors, streak, loop, t0, t1, dna, code, fail, counts, rStreak: maxS, rLoop: maxC, nFail, loopAt, streakEnds };
+  return { key, id, tool, calls, errors, streak, loop, t0, t1, dna, code, fail, counts, rStreak: maxS, rLoop: maxC, nFail, loopAt, streakEnds };
 });
 const recomputeOK = S1.every(s => s.rStreak === s.streak && s.rLoop === s.loop && s.nFail === s.errors && s.dna.length === s.calls)
-  && STREAKS.every(([id, pos, st]) => { const s = S1.find(x => x.id === id); return s && s.streakEnds.some(e => e[0] === pos && e[1] === st); })
+  && STREAKS.every(([key, pos, st]) => { const s = S1.find(x => x.key === key); return s && s.streakEnds.some(e => e[0] === pos && e[1] === st); })
   && S1.reduce((a, s) => a + s.streakEnds.length, 0) === STREAKS.length;
 if (!recomputeOK) console.warn("DNA recompute does not match the query tables");
 const maxCalls = Math.max(...S1.map(s => s.calls));
@@ -519,10 +547,8 @@ function drawDNA() {
     ctx.textBaseline = "alphabetic";
     ctx.font = "500 12px " + css("--f-mono"); ctx.fillStyle = ink; ctx.textAlign = "left";
     const ly = narrow ? y0 + 11 : sy + 9;
-    ctx.fillText(s.id, 0, ly);
-    ctx.font = "11.5px " + css("--f-body"); ctx.fillStyle = ink2;
-    const idW = ctx.measureText("00000000").width + 8 + (narrow ? 0 : 0);
-    ctx.fillText(s.tool, 68, ly);
+    const label = s.id + " · " + s.tool;
+    ctx.fillText(label, 0, ly, Math.max(50, (narrow ? W : labelW) - 100));
     ctx.fillStyle = muted; ctx.font = "11px " + css("--f-mono");
     const right = f0(s.calls) + " · " + s.errors + " err";
     if (narrow) { ctx.textAlign = "right"; ctx.fillText(right, W, ly); }
@@ -550,7 +576,7 @@ function drawDNA() {
     // widen failure ticks a little so they read when the strip is dense: none needed, 1 device px is crisp
     ctx.restore();
     // streak markers
-    STREAKS.filter(r => r[0] === s.id).forEach(([, pos, len]) => {
+    STREAKS.filter(r => r[0] === s.key).forEach(([, pos, len]) => {
       const xa = labelW + ws * (pos - len) / s.calls, xb = labelW + ws * pos / s.calls; const xm = (xa + xb) / 2;
       ctx.fillStyle = crit; ctx.beginPath(); ctx.moveTo(xm, sy + stripH + 1.5); ctx.lineTo(xm - 4.5, sy + stripH + 8); ctx.lineTo(xm + 4.5, sy + stripH + 8); ctx.closePath(); ctx.fill();
       ctx.font = "500 10.5px " + css("--f-body"); ctx.fillStyle = ink;
@@ -654,9 +680,9 @@ function lensHover(ev) {
     ? "A fail-edit-fail loop (a failed command, an edit, a second failed command) closes in " + loopS.map(s => s.id + " (" + plural(s.loop, "time") + (s.loopAt.length ? ", first at call " + f0(s.loopAt[0]) : "") + ")").join(", ") + "."
     : "No fail-edit-fail loop (a failed command, an edit, a second failed command) closes in these sessions.";
   if (STREAKS.length) {
-    const [sid, spos, slen] = STREAKS[0]; const ss = S1.find(s => s.id === sid);
+    const [key, spos, slen] = STREAKS[0]; const ss = S1.find(s => s.key === key);
     const sCls = [...new Set(ss.dna.slice(spos - slen, spos).toUpperCase())].map(c => CLS_NAME[c]).join(", ");
-    F.push([B("Failures. "), "The longest run of failed calls is ", B(slen + " " + sCls + " calls in a row"), " in ", M(sid), " (calls " + (spos - slen + 1) + " to " + spos + "). " + (STREAKS.length === 1 ? "It is the only run of 3 or more." : plural(STREAKS.length, "run") + " of 3 or more failed calls in all.") + " " + loopTxt]);
+    F.push([B("Failures. "), "The longest run of failed calls is ", B(slen + " " + sCls + " calls in a row"), " in ", M(ss.id), " (calls " + (spos - slen + 1) + " to " + spos + "). " + (STREAKS.length === 1 ? "It is the only run of 3 or more." : plural(STREAKS.length, "run") + " of 3 or more failed calls in all.") + " " + loopTxt]);
     lens.s = ss; lens.center = spos - Math.floor(slen / 2);
   } else {
     F.push([B("Failures. "), "No run of 3 or more failed calls in these sessions. " + loopTxt]);
@@ -682,23 +708,25 @@ function lensHover(ev) {
 RENDER.relay = function (T) {
   const [tPer, tKinds, tComps, tChains, tHf, tEdges] = T;
   const G = {
-    per_session: tPer.map(r => [r.session, r.chains, r.agents]),
+    per_session: tPer.map(r => [r.session_key, r.chains, r.agents]),
     kinds: tKinds.map(r => [r.kind_of, r.tool, r.pairs, r.files]),
-    components: tComps.map(r => [r.work_item, r.actors, r.files]),
+    components: tComps.map(r => [nodeLabel(r) + " / " + r.work_item, r.actors, r.files]),
     chains: tChains.map(r => [r.a1, r.a2, r.a3, r.f1, r.f2, Math.round(r.w1_t), Math.round(r.r1_t), Math.round(r.w2_t), Math.round(r.r2_t)]),
-    hfiles: tHf.map(r => [r.file, r.writers, r.readers, r.pairs]),
+    hfiles: tHf.map(r => [nodeLabel(r) + " / " + r.file, r.writers, r.readers, r.pairs]),
     edges: tEdges.map(r => [r.actor, r.file, r.op === "write" ? 1 : 0, r.n, Math.round(r.t_first), Math.round(r.t_last)]),
   };
-  const SESSION = tEdges.length ? tEdges[0].session : null;
+  const SESSION = tEdges.length ? sessionLabel(tEdges[0]) : null;
+  const pickedKey = tEdges[0]?.session_key;
 const EDGES = G.edges.map(([actor, file, w, n, tf, tl]) => ({ actor, file, w: !!w, n, tf, tl }));
 const chainEdgeKeys = new Set(), chainActors = new Set(), chainFiles = new Set(), midActors = new Set();
-G.chains.forEach(([a1, a2, a3, f1, f2]) => {
+G.chains.forEach(([a1, a2, a3, f1, f2], i) => {
+  if (tChains[i].session_key !== pickedKey) return;
   chainEdgeKeys.add(a1 + "|" + f1 + "|1"); chainEdgeKeys.add(a2 + "|" + f1 + "|0"); chainEdgeKeys.add(a2 + "|" + f2 + "|1"); chainEdgeKeys.add(a3 + "|" + f2 + "|0");
   [a1, a2, a3].forEach(a => chainActors.add(a)); chainFiles.add(f1); chainFiles.add(f2); midActors.add(a2);
 });
 const handoffFiles = new Set();
 (function () {
-  const byFile = {}; EDGES.forEach(e => (byFile[e.file] = byFile[e.file] || []).push(e));
+  const byFile = Object.create(null); EDGES.forEach(e => (byFile[e.file] = byFile[e.file] || []).push(e));
   for (const f in byFile) { const es = byFile[f]; if (es.some(w => w.w && es.some(r => !r.w && r.actor !== w.actor && w.tf < r.tl))) handoffFiles.add(f); }
 })();
 let graphMode = "hand";
@@ -854,7 +882,7 @@ function drawGraph() {
     H("span", "idx", String(i + 1), row);
     const pill = (t, cls) => { const e = H("span", "pill " + cls, t, row); e.title = t; return e; };
     const arr = (verb, gap) => { const a = H("span", "arrow", null, row); H("span", null, verb, a); const l2 = H("span", null, null, a); if (gap != null) { const g = H("span", "gap" + (gap < 0 ? " neg" : ""), (gap < 0 ? "−" : "+") + fDur(gap), l2); g.title = gap < 0 ? "This agent's first write to the second file came before it read the first file; a later write came after the read, which is what the match requires." : ""; l2.append(" "); } l2.append("→"); };
-    pill(a1, ""); arr("writes", null); pill(f1, "file"); arr("read by", r1 - w1); pill(a2, "mid"); arr("writes", w2 - r1); pill(f2, "file"); arr("read by", r2 - w2); pill(a3, "");
+    pill(nodeLabel(tChains[i]) + " / " + a1, ""); arr("writes", null); pill(f1, "file"); arr("read by", r1 - w1); pill(a2, "mid"); arr("writes", w2 - r1); pill(f2, "file"); arr("read by", r2 - w2); pill(a3, "");
   });
   } else H("p", "panel-sub", "No relay chain found.", $("#chains"));
 
@@ -892,7 +920,7 @@ function drawGraph() {
     $("#g-sub").textContent = "No file was touched by two or more actors in the session the query picked.";
     $("#g-hand").parentElement.hidden = true; $("#g-legend").hidden = true;
   } else {
-    const bySess = G.per_session.length && G.per_session[0][0] === SESSION;
+    const bySess = G.per_session.length && G.per_session[0][0] === pickedKey;
     $("#g-title").textContent = "Session " + SESSION + " (" + (bySess ? "most relay chains" : "most handoffs") + "): who wrote and read which file";
   const lg = $("#g-legend");
   const k1 = H("span", "k", null, lg); k1.append(svgIcon("actor")); k1.append("agent");
@@ -946,7 +974,7 @@ RENDER.cost = function (T) {
   });
   const C3 = {
     tools,
-    flagged: tFlagged.map(r => [r.tool, r.t, r.cost, r.session_id, r.model, r.session_cost, r.session_reqs, r.share]),
+    flagged: tFlagged.map(r => [r.tool, r.t, r.cost, sessionLabel(r), r.model, r.session_cost, r.session_reqs, r.share]),
     periods: tPeriods.map(r => [r.period_hours, r.score, r.tool]),
   };
   const flagTotal = sum(tools.map(t => sum(t.flag.map(f => (f ? 1 : 0)))));
@@ -1112,13 +1140,13 @@ function drawSlow() {
 RENDER.context = function (T) {
   const [tPts, tSegs, tComp, tRun] = T;
   if (!tPts.length) return NO_DATA;
-  const points = {}; let MAXCTX = 0;
-  tPts.forEach(r => { const p = points[r.session_id] || (points[r.session_id] = { ctx: [], seg: [], ts: [] }); p.ctx.push(r.ctx); p.seg.push(r.seg); p.ts.push(Math.round(r.ts)); if (r.ctx > MAXCTX) MAXCTX = r.ctx; });
+  const points = Object.create(null); let MAXCTX = 0;
+  tPts.forEach(r => { const p = points[r.session_key] || (points[r.session_key] = { label: sessionLabel(r), ctx: [], seg: [], ts: [] }); p.ctx.push(r.ctx); p.seg.push(r.seg); p.ts.push(Math.round(r.ts)); if (r.ctx > MAXCTX) MAXCTX = r.ctx; });
   const C5 = { points };
   const CEIL = tRun.length && tRun[0].ceiling ? tRun[0].ceiling : null;
-  const SEGS = tSegs.map(r => ({ id: r.session_id, seg: r.seg, n: r.n, start: r.start_ctx, peak: r.peak_ctx, ts: r.t_start, te: r.t_end, slope: r.slope, r2: r.rsquare, tpm: r.tokens_per_min }));
-  const RUN = tRun.map(r => ({ id: r.session_id, seg: r.seg, n: r.n, last: r.last_ctx, slope: r.slope, left: r.requests_left, rate: r.rate_per_min, mins: r.minutes_left }));
-  const COMP = tComp.map(r => ({ id: r.session_id, pos: r.pos, ts: Math.round(r.ts), before: r.before, after: r.after, rec: r.reclaimed }));
+  const SEGS = tSegs.map(r => ({ id: r.session_key, seg: r.seg, n: r.n, start: r.start_ctx, peak: r.peak_ctx, ts: r.t_start, te: r.t_end, slope: r.slope, r2: r.rsquare, tpm: r.tokens_per_min }));
+  const RUN = tRun.map(r => ({ id: r.session_key, seg: r.seg, n: r.n, last: r.last_ctx, slope: r.slope, left: r.requests_left, rate: r.rate_per_min, mins: r.minutes_left }));
+  const COMP = tComp.map(r => ({ id: r.session_key, pos: r.pos, ts: Math.round(r.ts), before: r.before, after: r.after, rec: r.reclaimed }));
 // least-squares fit per segment from the points, the same fit series_fit_line does over index 0..n-1
 const FIT = {}; let fitMismatch = 0;
 for (const id in C5.points) {
@@ -1140,13 +1168,13 @@ function drawCtx() {
     const p = C5.points[id], run = RUN.find(r => r.id === id) || { id, left: null, mins: null, last: 0, slope: 0 }, comps = COMP.filter(c => c.id === id);
     const card = H("div", "sm", null, box);
     const hd = H("div", "sm-head", null, card);
-    const l = H("div", null, null, hd); H("div", "sm-id", id, l); H("div", "sm-sub", f0(p.ctx.length) + " requests · " + comps.length + " compaction" + (comps.length === 1 ? "" : "s"), l); H("div", "sm-sub", fD(p.ts[0]) + " to " + fD(p.ts[p.ts.length - 1]), l);
+    const l = H("div", null, null, hd); H("div", "sm-id", p.label, l); H("div", "sm-sub", f0(p.ctx.length) + " requests · " + comps.length + " compaction" + (comps.length === 1 ? "" : "s"), l); H("div", "sm-sub", fD(p.ts[0]) + " to " + fD(p.ts[p.ts.length - 1]), l);
     const r = H("div", "sm-run", null, hd); const v = H("div", "v", run.left == null ? "\u2013" : f0(run.left), r); v.append(" "); H("small", null, run.left == null ? "no runway estimate" : "requests left", v); H("div", "m", run.mins == null ? "" : "\u2248 " + f0(run.mins) + " min at average pace", r);
     const holder = H("div", null, null, card);
     const W = holder.clientWidth || card.clientWidth - 28; const Hh = 176, ml = 40, mr = 10, mt = 10, mb = 22; const ph = Hh - mt - mb;
     const n = p.ctx.length; const xmaxN = n + Math.max(0, run.left);
     const x = i => ml + (W - ml - mr) * (i - 1) / Math.max(1, xmaxN - 1); const y = vv => mt + ph - ph * vv / ymax;
-    const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Context size per request for session " + id }, holder);
+    const svg = S("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh, role: "img", "aria-label": "Context size per request for session " + p.label }, holder);
     const clipId = "clip-" + id; const defs = S("defs", null, svg); S("rect", { x: ml, y: mt, width: W - ml - mr, height: ph }, S("clipPath", { id: clipId }, defs));
     const ax = S("g", { class: "ax" }, svg);
     ticks.forEach(vv => { S("line", { x1: ml, x2: W - mr, y1: y(vv), y2: y(vv), stroke: vv ? "var(--grid)" : "var(--axis)" }, ax); const t = S("text", { x: ml - 5, y: y(vv) + 3.5, "text-anchor": "end" }, ax); t.textContent = vv ? fk(vv) : "0"; });
@@ -1173,10 +1201,10 @@ function drawCtx() {
     const mv = ev => {
       const rc = svg.getBoundingClientRect(); const fx = (ev.clientX - rc.left - ml) / (W - ml - mr) * (xmaxN - 1) + 1; const i = Math.round(fx);
       if (i > n) { const k = Math.min(run.left, i - n); cross.setAttribute("x1", x(n + k)); cross.setAttribute("x2", x(n + k)); cross.setAttribute("visibility", "visible"); dot.setAttribute("visibility", "hidden");
-        showTip(ev, [[id + " · projection", null, "h"], [f0(Math.min(CEIL, run.last + run.slope * k)), "projected context"], ["+" + k, "requests from now"], [f0(run.slope), "tokens per request (last segment)"]]); return; }
+        showTip(ev, [[p.label + " · projection", null, "h"], [f0(Math.min(CEIL, run.last + run.slope * k)), "projected context"], ["+" + k, "requests from now"], [f0(run.slope), "tokens per request (last segment)"]]); return; }
       const ii = Math.max(1, i); const sg = p.seg[ii - 1]; const seg = SEGS.find(s => s.id === id && s.seg === sg);
       cross.setAttribute("x1", x(ii)); cross.setAttribute("x2", x(ii)); cross.setAttribute("visibility", "visible"); dot.setAttribute("cx", x(ii)); dot.setAttribute("cy", y(p.ctx[ii - 1])); dot.setAttribute("visibility", "visible");
-      const rows = [[id + " · request " + f0(ii), null, "h"], [f0(p.ctx[ii - 1]), "tokens of context"], [fT(p.ts[ii - 1]), "UTC"], ["segment " + sg, seg ? seg.n + " requests" : ""]];
+      const rows = [[p.label + " · request " + f0(ii), null, "h"], [f0(p.ctx[ii - 1]), "tokens of context"], [fT(p.ts[ii - 1]), "UTC"], ["segment " + sg, seg ? seg.n + " requests" : ""]];
       if (seg && seg.slope != null) rows.push([f0(seg.slope) + " /req", "slope, r² " + seg.r2.toFixed(3)]);
       const cp = comps.find(c => c.pos === ii); if (cp) rows.push(["−" + fk(cp.rec), "dropped from " + fk(cp.before), "bad"]);
       showTip(ev, rows);
@@ -1206,7 +1234,7 @@ function drawCtx() {
   if (fitted.length) {
     const best = fitted.reduce((m, s) => (s.r2 > m.r2 ? s : m)); const steep = fitted.reduce((m, s) => (s.slope > m.slope ? s : m));
     const slopes = fitted.map(s => s.slope).sort((p, q) => p - q);
-    F.push([B(above + " of " + fitted.length), " segments fit a straight line with r² above 0.9 (best " + best.r2.toFixed(3) + "). Slopes run from " + fk(slopes[0]) + " to " + fk(slopes[slopes.length - 1]) + " tokens per request, median " + fk(median(slopes)) + "; the steepest is " + steep.id + " segment " + steep.seg + " at " + f0(steep.slope) + " over " + plural(steep.n, "request") + "."]);
+    F.push([B(above + " of " + fitted.length), " segments fit a straight line with r² above 0.9 (best " + best.r2.toFixed(3) + "). Slopes run from " + fk(slopes[0]) + " to " + fk(slopes[slopes.length - 1]) + " tokens per request, median " + fk(median(slopes)) + "; the steepest is " + points[steep.id].label + " segment " + steep.seg + " at " + f0(steep.slope) + " over " + plural(steep.n, "request") + "."]);
   } else F.push(["Every segment has fewer than 3 requests, so no line is fitted."]);
   if (COMP.length) {
     const sessWith = new Set(COMP.map(c => c.id)).size;
@@ -1215,7 +1243,7 @@ function drawCtx() {
   const withLeft = RUN.filter(r => r.left != null).sort((p, q) => p.left - q.left);
   if (withLeft.length) {
     const r0 = withLeft[0], r1 = withLeft[1];
-    F.push(["Runway to the ceiling at each session's current slope: ", B(r0.id + " has " + plural(r0.left, "request") + " left"), " (at " + f0(r0.last) + ")" + (r1 ? ", " + r1.id + " " + f0(r1.left) : "") + "."]);
+    F.push(["Runway to the ceiling at each session's current slope: ", B(points[r0.id].label + " has " + plural(r0.left, "request") + " left"), " (at " + f0(r0.last) + ")" + (r1 ? ", " + points[r1.id].label + " " + f0(r1.left) : "") + "."]);
   } else F.push(["No session has a rising slope below the ceiling, so there is no runway to report."]);
   findings("#f-ctx", F);
   $("#c-ctx").append(B("Caveats. "), "The ceiling is the median context size at which these sessions compacted, not a model limit. Runway leads with requests; the minute figures divide by wall-clock time including idle gaps of hours or days, so they are session averages, not working time. A drop below 0.6 times the previous request is the compaction rule, and it can also catch a model or cache change rather than a compaction.");
@@ -1363,7 +1391,7 @@ RENDER.returns = function (T) {
 RENDER.stuck = function (T) {
   const [tModel, tReason, tInside, tTracks, tV] = T; const V = tV[0] || {};
   if (!tModel.length) return NO_DATA;
-  const tracks = tTracks.map(t => ({ ...t, runs: typeof t.runs === "string" ? JSON.parse(t.runs) : t.runs || [] }));
+  const tracks = tTracks.map(t => ({ ...t, session: sessionLabel(t), runs: typeof t.runs === "string" ? JSON.parse(t.runs) : t.runs || [] }));
   const all = sum(tModel.map(m => m.usd)), stuckUsd = sum(tModel.map(m => m.stuck_usd)), stuckReq = sum(tModel.map(m => m.stuck_requests)), allReq = sum(tModel.map(m => m.requests));
   const stretches = sum(tReason.map(r => r.stretches)), longest = Math.max(0, ...tReason.map(r => r.len_max));
   const big = tModel.filter(m => m.stuck_usd > 0).sort((a, b) => b.stuck_usd - a.stuck_usd)[0];
@@ -1611,6 +1639,7 @@ function buildSection(sec, n, wrap) {
     ? "Window: the last " + plural(R.days, "day") + " before " + fStamp(R.generated) + ". Every query reads only rows of that window, so a session that began earlier shows from its first row inside it."
     : range.length ? "Window: rows " + range.map(f => f[0] + " " + f[1]).join(" and ") + ". Every query reads only rows of that window, so a session that began earlier shows from its first row inside it."
     : "Window: all data in the database; no query filters by time.")
+    + (only.some(f => f[0] === "node") ? "" : " Nodes: all, including untagged history.")
     + (rest.length ? " Filter: " + rest.map(f => f[0] + " " + f[1]).join("; ") + ". Every query reads only the rows that pass it, so every number on this page is about that part of the data." : "")
     + " All times are UTC.";
 })();

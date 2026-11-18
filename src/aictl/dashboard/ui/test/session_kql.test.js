@@ -5,7 +5,7 @@ import SessionKql, { sessionKqlExamples } from '../src/components/board/agent/Se
 
 const props = {
   url: 'https://adx.example:8443/My%20DB?web=1&query=old&autorun=true&autorun=true#old',
-  sessionId: 'native-1', sessions: ['native-1', null, 'other-A', 'other-B', 'other-A'],
+  sessionId: 'native-1', nodeId: 'server-a', sessions: ['native-1', null, 'other-A', 'other-B', 'other-A'],
   models: ['Model A', 'Model B'], tools: ['Shell / local', 'Search'], since: '0', until: 17.25,
 };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -26,6 +26,7 @@ it('uses only fields and filters from the example source and never aggregates su
   const queries = Object.fromEntries(sessionKqlExamples({ sessionId: sid, model: '"M', tool: 'T\\', since: '0', until: 17.25 })
     .map(({ id, query }) => [id, query]));
   for (const [id, q] of Object.entries(queries)) {
+    if (id === 'nodes') continue; // Fleet discovery has no local session scope.
     expect(q.split('\n')[0]).toBe('let sid = "\\" \\\\ ;\\r\\n| take 7\\u2028";');
     expect(q).toContain('union isfuzzy=true (datatable(');
     if (id.startsWith('cost')) continue; // Cost attribution has separate multi-table scope tests.
@@ -60,11 +61,27 @@ it('uses only fields and filters from the example source and never aggregates su
   expect(queries.context).toMatch(/where \['kind'\] == "context" or \(\['kind'\] == "session_command" and name in \([^)]*"model_change"[^)]*"reset"/);
   expect(queries.context.split('| project ').at(-1)).toContain("['kind'], name, phase");
   expect(queries.failures).toContain('| where is_error == 1');
-  for (const { query } of sessionKqlExamples({ until: 'not a time' })) {
+  for (const { id, query } of sessionKqlExamples({ until: 'not a time' })) {
+    if (id === 'nodes') continue;
     expect(query).toContain('where isnotempty(sid)');
     expect(query).toContain('| where false');
     expect(query).not.toContain('not a time');
   }
+});
+
+it('scopes every source in a session query to one node and keeps identical session IDs apart in the fleet view', async () => {
+  const ui = await open();
+  select(ui, 'prompts');
+  const node = ui.getByLabelText('Reporting node');
+  const query = () => ui.getByLabelText('KQL query').value;
+  expect(query().match(/where node_id == "server-a"/g)).toHaveLength(2); // steps and text
+  type(node, 'SERVER-B');
+  expect(query().match(/where node_id == "server-b"/g)).toHaveLength(2);
+  type(node, 'legacy');
+  expect(query().match(/where node_id == ""/g)).toHaveLength(2);
+  select(ui, 'nodes');
+  expect(query()).toContain('arg_max(_v, *) by node_id, session_id');
+  expect(query()).not.toContain('where node_id ==');
 });
 
 it('offers retained prompt previews only by explicit selection, without sending prompt content to the browser or URL', async () => {

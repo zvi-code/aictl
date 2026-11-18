@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from .ingest import RowIngester, ingestion_capacity, json_line, make_ingester, uses_inline
 from .schema import (
     DELETED,
+    NODE,
     ROWID,
     SYSTEM_COLUMNS,
     VERSION,
@@ -726,7 +727,7 @@ class KustoConnection:
 
     _schema_lock = threading.Lock()
     _schema_done: set[tuple[str, str, bool, frozenset[str]]] = set()
-    _cutover_done: set[tuple[str, str]] = set()
+    _cutover_done: set[tuple[str, str, str]] = set()
     _history_writers: dict[tuple[str, str], threading.Lock] = {}
 
     def __init__(
@@ -764,7 +765,7 @@ class KustoConnection:
         if self._translator is None:
             from .translate import Translator
 
-            self._translator = Translator(self.tables)
+            self._translator = Translator(self.tables, node_id=self.settings.node_id)
         return self._translator
 
     @property
@@ -784,6 +785,8 @@ class KustoConnection:
 
     def ensure_schema(self) -> None:
         """Create or widen tables and enable streaming if any table uses it."""
+        from .observations import public_function_commands
+
         streaming = any(self.settings.ingestion_mode(name) == "streaming" for name in self.tables)
         key = (self.settings.cluster, self.database, streaming, frozenset(self.tables))
         with KustoConnection._schema_lock:
@@ -808,6 +811,8 @@ class KustoConnection:
                 self._mgmt(f".alter database {quote(self.database)} policy streamingingestion enable")
             # The schema described as data, for anyone querying the database directly.
             for command in information_commands(self.tables):
+                self._mgmt(command)
+            for command in public_function_commands(self.tables, set(have) | self.tables.keys()):
                 self._mgmt(command)
             if changed and streaming:
                 self._clear_streaming_schema_cache()
@@ -845,13 +850,14 @@ class KustoConnection:
     def ensure_observation_cutover(self) -> None:
         from .observations import FAMILIES
 
-        key = (self.settings.cluster, self.database)
+        key = (self.settings.cluster, self.database, self.settings.node_id)
         with self._schema_lock:
             if key in self._cutover_done:
                 return
             rows = [
                 {"key": "observation_cutover:" + family, "value": time.time(),
-                 "text": "retain_unresolved", ROWID: next_rowid(), VERSION: next_version(), DELETED: False}
+                 "text": "retain_unresolved", NODE: self.settings.node_id,
+                 ROWID: next_rowid(), VERSION: next_version(), DELETED: False}
                 for family in FAMILIES
             ]
             # Setup control metadata must be visible before any queued evidence is accepted.
@@ -1203,7 +1209,10 @@ class KustoConnection:
         table = self.tables.get(stmt.table)
         if table is not None:
             # The rows carry every column, in the table's own order.
-            kql += " | project " + ", ".join(quote(n) for n in mutation_columns(table))
+            kql += " | project " + ", ".join(
+                f"{quote(NODE)} = {kql_literal(self.settings.node_id, 'string')}" if n == NODE else quote(n)
+                for n in mutation_columns(table)
+            )
         result = self._query(kql, sql)
         rows: list[dict[str, Any]] = []
         for values in result.rows:
@@ -1241,6 +1250,7 @@ class KustoConnection:
         out[ROWID] = rowid
         out[VERSION] = next_version()
         out[DELETED] = False
+        out[NODE] = self.settings.node_id
         return out, fresh
 
     def _set_key(
@@ -1306,7 +1316,7 @@ class KustoConnection:
                 keys = [k for j, k in part if j == i]
                 if keys:
                     filters.append(f"({self._set_filter(table, names, keys)})")
-            for row in self._query(f"{current(table)} | where {' or '.join(filters)}").dicts():
+            for row in self._query(f"{current(table, node_id=self.settings.node_id)} | where {' or '.join(filters)}").dicts():
                 for i, k in enumerate(self._keys(table, row)):
                     if k is not None:
                         found[i][k] = row
@@ -1335,7 +1345,7 @@ class KustoConnection:
                 values.append(f"long({n})")
             kql = (
                 f"let aictl_new = datatable({', '.join(schema)})[{', '.join(values)}];\n"
-                f"{current(table)} | lookup kind=inner (aictl_new) on {on}"
+                f"{current(table, node_id=self.settings.node_id)} | lookup kind=inner (aictl_new) on {on}"
                 f" | where ({update_kql}) | project aictl_i"
             )
             out.update(int(r[0]) for r in self._query(kql).rows)
