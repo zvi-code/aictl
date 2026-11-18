@@ -229,7 +229,10 @@ describe('Kusto incremental board integration', () => {
         ingestion_traffic: { queued: { rows: 900, pending_history_rows: 8, rows_per_s: 9 } },
         volume: { rows: 7, checked_at: NOW },
       },
-    })]);
+    }), liveEntity('runtime.health', 'table_inventory', { inventory: {
+      scope: 'Physical extent summary', status: 'cached', checked_at: NOW, tables: [{ name: 'sessions', rows: 73 }],
+    } })]);
+    expect(await view.findByRole('table', { name: 'Measured tables' })).toHaveTextContent('sessions73');
     const allMetrics = await view.findByRole('checkbox', { name: 'Show all metrics' });
     fireEvent.click(allMetrics);
     const dm = await view.findByRole('region', { name: 'Queued ingestion / DM — not confirmed queryable' });

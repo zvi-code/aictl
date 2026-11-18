@@ -529,7 +529,8 @@ class LiveDashboard:
                         version = (store.get("destination"), inventory.get("status"), inventory.get("checked_at"), inventory.get("attempted_at"))
                         health = {**health, "store": {k: v for k, v in store.items() if k != "table_inventory"}}
                         if version != inventory_version:
-                            separate.append(("runtime.health", "table_inventory", inventory, "runtime.operational"))
+                            # The inventory's human-readable scope is not a live subscription scope.
+                            separate.append(("runtime.health", "table_inventory", {"inventory": inventory}, "runtime.operational"))
                     self.hub.commit(
                         [
                             ("runtime.health", "local", health, "runtime.operational"),

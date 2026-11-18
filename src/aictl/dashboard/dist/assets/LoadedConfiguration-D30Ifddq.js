@@ -1,4 +1,4 @@
-import{u as p,T as d,m as t}from"./index-BzBbVf_f.js";function f({records:s=[]}){return t`<p>These are observed launch flags and native runtime reports, not the current file configuration. Launch flags describe the original arguments; they do not prove the currently applied value after runtime changes. Unreported current values remain unknown.</p>
+import{u as p,T as d,m as t}from"./index-g1b9hNAP.js";function f({records:s=[]}){return t`<p>These are observed launch flags and native runtime reports, not the current file configuration. Launch flags describe the original arguments; they do not prove the currently applied value after runtime changes. Unreported current values remain unknown.</p>
     ${s.length?t`<ul>${s.map(e=>{var a,o;return t`<li key=${e.id}>
       <b>${e.tool||"Agent"}${e.session_id?" · "+e.session_id:""}</b>
       ${e.effective_known&&((a=e.evidence)!=null&&a.length)?t`<ul>${e.evidence.map(n=>t`<li key=${n.key}>

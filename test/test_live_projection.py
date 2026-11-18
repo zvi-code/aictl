@@ -581,6 +581,39 @@ def test_health_bootstrap_is_pending_until_late_payload_and_ready_status_arrive_
         hub.close()
 
 
+def test_unscoped_health_subscriber_receives_table_inventory_once_not_each_tick():
+    hub = LiveHub()
+    inventory = {"scope": "Physical extent rows, not a subscription scope", "status": "cached",
+                 "checked_at": 42, "tables": [{"name": "sessions", "rows": 4}]}
+    def health():
+        return {"generated_at": time.time(), "store": {"table_inventory": inventory}}, {}
+
+    dashboard = LiveDashboard(hub, SimpleNamespace(), SimpleNamespace(), health_provider=health)
+    dashboard.HEALTH_INTERVAL_S = .03
+    subscription = dashboard.subscribe("", history=False)
+    seen_inventory = 0
+    ticks = 0
+    try:
+        deadline = time.monotonic() + 2
+        while ticks < 3 and time.monotonic() < deadline:
+            msg = subscription.next(0.5)
+            if not msg:
+                continue
+            _, payload = msg
+            for entity in payload.get("entities", []) + payload.get("upserts", []):
+                if entity["topic"] == "runtime.health" and entity["id"] == "table_inventory":
+                    assert entity["data"]["inventory"] == inventory
+                    seen_inventory += 1
+                if entity["topic"] == "runtime.health" and entity["id"] == "local":
+                    assert "table_inventory" not in entity["data"]["store"]
+                    ticks += 1
+        assert seen_inventory == 1 and ticks >= 3
+    finally:
+        subscription.close()
+        dashboard.close()
+        hub.close()
+
+
 def test_health_failures_are_explicit_and_keep_prior_success_for_paused_clients():
     hub = LiveHub()
     recover, fail_again = threading.Event(), threading.Event()

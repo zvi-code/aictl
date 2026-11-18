@@ -80,7 +80,7 @@ export function useBoardHealth({ enabled, live }) {
     const source = topicData(subscription, 'source.status', 'health');
     const error = subscription.error || (source?.error || source?.stale ? new Error(source.error || source.reason || 'Health source is stale.') : null);
     const streamed = !error && (!subscription.ready || source?.pending || source?.ready === false) ? null : topicData(subscription, 'runtime.health', 'local');
-    const inventory = topicData(subscription, 'runtime.health', 'table_inventory');
+    const inventory = topicData(subscription, 'runtime.health', 'table_inventory')?.inventory;
     const data = streamed ? normalizeHealth(streamed) : null;
     if (data && inventory) data.store.table_inventory = inventory;
     return { data, error, busy: !streamed && !error, nowS: state.nowS };
