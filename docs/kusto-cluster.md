@@ -399,6 +399,12 @@ select a row to read it. A link ending in `?agent=<session-id>&show=prompts` ope
 this filter directly. Native Copilot user messages take precedence over prompt
 indexes and hooks in their observed window. Delegate/autopilot messages and
 assistant replies are not substituted for user input.
+Choose **Skills** in Flow to filter by skill name and evidence phase. **Loaded**
+includes recorded skill-file loads; **Invoked** records uses; **Resolved** means
+the source resolved the name. **Reported in context** shows one row per skill
+listed by OTel in the selected session and time range, with its distinct span
+count and first/last observation. Repeated context lists are not repeated loads.
+Open this view directly with `?agent=<session-id>&show=skills`.
 **Context** remains a separate tab: Measurements shows reported sizes and compactions;
 Model input shows per-call usage, with OTel cache-read, cache-write and reasoning counts
 when reported. Skills and MCP lists names the exporter reports, not a token attribution.

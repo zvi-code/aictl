@@ -37,6 +37,26 @@ function mount(flow, extra = {}) {
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('shows skill names and filters loaded evidence without treating span reports as invocations', async () => {
+  const load = { type: 'skill_event', name: 'testing', phase: 'loaded', source: 'session_loaded_files', ts: end };
+  const observed = { ...load, phase: 'reported', source: 'otel', reported_spans: 7, last_ts: end };
+  const ui = mount(p => payload(p.get('skill_phase') === 'loaded' ? [load] : [load, observed], {
+    scope: { ...scope, skills: ['testing'] }, summary: { skill_evidence: true },
+  }));
+  fireEvent.click(await ui.findByRole('button', { name: 'Skills', exact: true }));
+  expect(ui.calls.at(-1).get('category')).toBe('skills');
+  await ui.findByText(/Reported in context.*7 distinct spans/);
+  const name = ui.getByLabelText('Skill name');
+  fireEvent.input(name, { target: { value: 'testing' } });
+  fireEvent.change(ui.getByLabelText('Skill evidence'), { target: { value: 'loaded' } });
+  fireEvent.submit(name.form);
+  await waitFor(() => expect(Object.fromEntries(ui.calls.at(-1))).toMatchObject({
+    category: 'skills', skill_name: 'testing', skill_phase: 'loaded',
+  }));
+  expect(await ui.findByText(/Loaded.*session_loaded_files/)).toBeVisible();
+  expect(ui.queryByText(/7 distinct spans/)).toBeNull();
+});
+
 it('opens user prompts with one click and searches only the retained prompt text', async () => {
   const ui = mount(() => payload([ev], { scope }));
   const pick = await ui.findByRole('button', { name: 'User prompts' });

@@ -246,7 +246,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
     if (!d.tab || d.tab === 'flow' || d.tab === 'evidence') return html`${d.flowRef && evidence(false, d.flowRef)}
       <${Part} key="flow" part="flow" a=${a} st=${st} ctx=${ctx} act=${act} flowRef=${d.flowRef}
         sid=${sid} agentData=${data} captureMode=${subscription.capabilities?.capture_mode ?? ctx.data.capture_mode}
-        initialEvidence=${d.initialEvidence || d.tab === 'evidence'} initialPrompts=${d.initialPrompts}/>`;
+        initialEvidence=${d.initialEvidence || d.tab === 'evidence'} initialPrompts=${d.initialPrompts} initialSkills=${d.initialSkills}/>`;
     if (incremental && d.tab === 'transcript') return html`<${Part} key="transcript" part="transcript" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
     if (incremental && !data) return html`
       <${FixedPanel} id="ag-runtime" title="Live runtime">

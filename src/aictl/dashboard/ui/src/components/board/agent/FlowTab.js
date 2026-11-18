@@ -10,7 +10,7 @@ import { NA, fmtMs, fmtN, stamp } from '../format.js';
 import { Stats } from '../Panel.js';
 import { hideTip, showTip } from '../tip.js';
 import { Wait, Seg, SessionNote, clock, isActive, pretty, usePref } from './common.js';
-import { LANE, LANE_COLOR, describe, flowModel, inputOf, outputOf, swimLayout, tipOf } from './flowModel.js';
+import { LANE, LANE_COLOR, describe, flowModel, inputOf, outputOf, skillPhase, swimLayout, tipOf } from './flowModel.js';
 import EvidenceTab from './EvidenceTab.js';
 import SessionKql from './SessionKql.js';
 import { parseCustomRange, toLocalISOString } from '../../../utils/customRange.js';
@@ -27,6 +27,12 @@ function Inspector({ ev, onClose }) {
         : ev.prompt_length ? ev.prompt_length + ' characters' : NA;
   const decision = ev.decision || (ev.success === false || ev.success === 'false' ? 'Failed' : ev.success === true || ev.success === 'true' ? 'OK' : NA);
   const meta = [['Type', ev.type === 'user_message' ? 'User input prompt' : ev.type || NA], ['Time', stamp(ev.ts, true)], ['Took', ev.duration_ms ? fmtMs(ev.duration_ms) : NA], ['Size', size], ['Model', ev.model || NA], ['Result', decision]];
+  if (ev.type === 'skill_event') {
+    meta.splice(0, meta.length, ['Skill', ev.name], ['Evidence', skillPhase(ev.phase)], ['Source', ev.source],
+      [ev.phase === 'reported' ? 'First reported in range' : 'Time', stamp(ev.ts, true)]);
+    if (ev.phase === 'reported') meta.push(['Last reported in range', stamp(ev.last_ts, true)], ['Distinct spans', fmtN(ev.reported_spans)]);
+    if (ev.agent_id) meta.push(['Agent ID', ev.agent_id]);
+  }
   if (ev.type === 'user_message') meta.push(['Source', ev.source || NA], ['Text', ev.text_status || (ev.redacted ? 'Not retained' : 'Recorded')]);
   const input = pretty(inputOf(ev));
   const output = pretty(outputOf(ev));
@@ -117,19 +123,20 @@ export const FLOW_EVENTS = 500;
 export const FLOW_EVENTS_STEP = 1000;
 export const FLOW_EVENTS_MAX = 5000;
 
-const EMPTY_FILTERS = { q: '', category: '', tool_name: '', flow_agent: '', failed: false, range: 'whole', start: '', end: '' };
-const CATEGORIES = ['prompts', 'messages', 'models', 'tools', 'agents', 'context', 'hooks', 'lifecycle'];
+const EMPTY_FILTERS = { q: '', category: '', tool_name: '', flow_agent: '', skill_name: '', skill_phase: '', failed: false, range: 'whole', start: '', end: '' };
+const CATEGORIES = ['prompts', 'messages', 'models', 'tools', 'skills', 'agents', 'context', 'hooks', 'lifecycle'];
 
-function FlowFilters({ apply, scope, bounds, initialPrompts, promptsActive }) {
-  const [f, set] = useState(() => initialPrompts ? { ...EMPTY_FILTERS, category: 'prompts' } : EMPTY_FILTERS);
+function FlowFilters({ apply, scope, bounds, initialCategory, activeCategory }) {
+  const [f, set] = useState(() => ({ ...EMPTY_FILTERS, category: initialCategory }));
   const [problem, setProblem] = useState('');
   const id = useId();
   const change = (key, value) => { set(prev => ({ ...prev, [key]: value })); setProblem(''); };
   const submit = e => {
     e.preventDefault();
     const p = new URLSearchParams();
-    for (const key of ['q', 'category', 'tool_name', 'flow_agent']) if (f[key].trim()) p.set(key, f[key].trim());
-    if (f.failed) p.set('failed', '1');
+    const keys = ['q', 'category', 'flow_agent', ...(f.category === 'skills' ? ['skill_name', 'skill_phase'] : ['tool_name'])];
+    for (const key of keys) if (f[key].trim()) p.set(key, f[key].trim());
+    if (f.failed && f.category !== 'skills') p.set('failed', '1');
     let times;
     if (f.range === 'custom') times = parseCustomRange(f.start, f.end);
     else if (f.range !== 'whole') {
@@ -148,16 +155,22 @@ function FlowFilters({ apply, scope, bounds, initialPrompts, promptsActive }) {
       end: prev.end || (Number.isFinite(bounds.end) ? toLocalISOString(Math.ceil(bounds.end / 60) * 60) : ''),
     }));
   };
+  const quick = category => {
+    const next = { ...EMPTY_FILTERS, category: activeCategory === category ? '' : category };
+    set(next); setProblem(''); apply(next.category ? 'category=' + category : '');
+  };
   return html`<form class="bd-flow-filters" role="search" aria-label="Flow filters" onSubmit=${submit}>
-    <button type="button" class="bd-btn" aria-pressed=${promptsActive} onClick=${() => {
-      const next = { ...EMPTY_FILTERS, category: promptsActive ? '' : 'prompts' };
-      set(next); setProblem(''); apply(next.category ? 'category=prompts' : '');
-    }}>User prompts</button>
+    <button type="button" class="bd-btn" aria-pressed=${activeCategory === 'prompts'} onClick=${() => quick('prompts')}>User prompts</button>
+    <button type="button" class="bd-btn" aria-pressed=${activeCategory === 'skills'} onClick=${() => quick('skills')}>Skills</button>
     <label class="bd-flow-search">${f.category === 'prompts' ? 'Search prompt text' : 'Search events'}<input type="search" placeholder=${f.category === 'prompts' ? 'Words you wrote in this session' : 'Search the session flow'} value=${f.q} onInput=${e => change('q', e.currentTarget.value)}/></label>
     <label>Category<select value=${f.category} onChange=${e => change('category', e.currentTarget.value)}>
       <option value="">All categories</option>${CATEGORIES.map(c => html`<option key=${c} value=${c}>${c === 'prompts' ? 'User prompts only' : c[0].toUpperCase() + c.slice(1)}</option>`)}
     </select></label>
-    <label>Tool name<input list=${id + '-tools'} placeholder="Any tool" value=${f.tool_name} onInput=${e => change('tool_name', e.currentTarget.value)}/></label>
+    ${f.category === 'skills' ? html`<label>Skill name<input list=${id + '-skills'} placeholder="Any skill" value=${f.skill_name} onInput=${e => change('skill_name', e.currentTarget.value)}/></label>
+      <datalist id=${id + '-skills'}>${scope?.skills?.map(s => html`<option value=${s} key=${s}/>` )}</datalist>
+      <label>Skill evidence<select value=${f.skill_phase} onChange=${e => change('skill_phase', e.currentTarget.value)}>
+        <option value="">All evidence</option>${['loaded', 'invoked', 'reported', 'resolved'].map(k => html`<option key=${k} value=${k}>${skillPhase(k)}</option>`)}
+      </select></label>` : html`<label>Tool name<input list=${id + '-tools'} placeholder="Any tool" value=${f.tool_name} onInput=${e => change('tool_name', e.currentTarget.value)}/></label>`}
     <datalist id=${id + '-tools'}>${scope?.tools?.map(t => html`<option key=${t} value=${t}/>`)}</datalist>
     <label>Agent ID<input list=${id + '-agents'} placeholder="Any agent" value=${f.flow_agent} onInput=${e => change('flow_agent', e.currentTarget.value)}/></label>
     <datalist id=${id + '-agents'}>${scope?.agents?.map(t => html`<option key=${t} value=${t}/>`)}</datalist>
@@ -167,7 +180,7 @@ function FlowFilters({ apply, scope, bounds, initialPrompts, promptsActive }) {
     </select></label>
     ${f.range === 'custom' && html`<label>From (local)<input type="datetime-local" value=${f.start} onInput=${e => change('start', e.currentTarget.value)}/></label>
       <label>To (local)<input type="datetime-local" value=${f.end} onInput=${e => change('end', e.currentTarget.value)}/></label>`}
-    <div class="bd-flow-actions"><label class="bd-ag-check"><input type="checkbox" checked=${f.failed} onChange=${e => change('failed', e.currentTarget.checked)}/>Failures only</label>
+    <div class="bd-flow-actions">${f.category !== 'skills' && html`<label class="bd-ag-check"><input type="checkbox" checked=${f.failed} onChange=${e => change('failed', e.currentTarget.checked)}/>Failures only</label>`}
       <button type="submit" class="bd-btn">Apply filters</button>
       <button type="button" class="bd-btn" onClick=${() => { set(EMPTY_FILTERS); setProblem(''); apply(''); }}>Reset filters</button>
     </div>
@@ -184,10 +197,11 @@ export default function FlowTab(props) {
   return html`<${SessionFlow} key=${props.a.id} ...${props}/>`;
 }
 
-function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEvidence = false, initialPrompts = false, agentData }) {
+function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEvidence = false, initialPrompts = false, initialSkills = false, agentData }) {
   const tick = isActive(st) ? ctx.refreshKey : 0;
   const [limit, setLimit] = useState(FLOW_EVENTS);
-  const [filters, setFilters] = useState(initialPrompts ? 'category=prompts' : '');
+  const initialCategory = initialPrompts ? 'prompts' : initialSkills ? 'skills' : '';
+  const [filters, setFilters] = useState(initialCategory ? 'category=' + initialCategory : '');
   const query = 'limit=' + limit + (filters ? '&' + filters : '');
   const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, query, o), JSON.stringify(['flow', a.id, query]), tick);
   const [diagram, setDiagram] = usePref(FLOW_MODE_KEY, 'timeline', ['timeline', 'swimlane']);
@@ -197,7 +211,7 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
   const mode = source ? 'source' : diagram;
   const [sel, setSel] = useState(null);
   const whole = useRef({});
-  if (data && !filters) whole.current = { start: data.scope?.start ?? a.started_at, end: data.scope?.end ?? a.ended_at ?? data.turns?.at(-1)?.ts };
+  if (data && !new URLSearchParams(filters).has('since') && !new URLSearchParams(filters).has('until') && (!filters || !whole.current.end)) whole.current = { start: data.scope?.start ?? a.started_at, end: data.scope?.end ?? a.ended_at ?? data.turns?.at(-1)?.ts };
   const bounds = { start: whole.current.start ?? a.started_at, end: whole.current.end ?? a.ended_at };
   const toolLabel = ctx.toolName ? ctx.toolName(a.tool) : a.tool;
   const m = useMemo(() => flowModel(data?.turns || [], toolLabel, data?.summary), [data, toolLabel]);
@@ -231,7 +245,7 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
     { label: 'First token', value: s.ttft == null ? NA : fmtMs(s.ttft), sub: s.ttftCalls ? 'median of ' + s.ttftCalls + ' calls' : '', title: 'Time to first token' },
   ];
   return html`<${SessionNote} a=${a}/>
-    ${data && html`<${FixedPanel} key="summary" id="agfs" title="Summary" sub=${sub}><${Stats} stats=${stats}/></${FixedPanel}>`}
+    ${data && !data.summary?.skill_evidence && html`<${FixedPanel} key="summary" id="agfs" title="Summary" sub=${sub}><${Stats} stats=${stats}/></${FixedPanel}>`}
     <${FixedPanel} key="flow" id="agfl" title="Flow" sub=${source ? 'Search retained source records separately from flow events.' : omitted(data) && !filters ? 'Oldest first. The ' + fmtN(omitted(data)) + ' oldest events are left out; the summary counts them.' : 'Oldest first. Select an event to read it.'}>
       <div class="bd-ag-bar"><${Seg} label="Flow view" value=${mode} onPick=${pick} items=${[['timeline', 'Timeline'], ['swimlane', 'Swim-lane'], ['source', 'Source steps']]}/>
         ${kusto && html`<a class="bd-btn bd-flow-kusto" href=${kusto} target="_blank" rel="noopener noreferrer">Open session in Kusto</a>`}
@@ -239,7 +253,8 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
       ${kusto && html`<${SessionKql} url=${data.session_kql_url} sessionId=${sessionId} sessions=${sessions}
         models=${scope?.models?.length ? scope.models : a.models || []} tools=${scope?.tools || []} since=${since} until=${until}/>`}
       <div hidden=${source}>
-        <${FlowFilters} scope=${scope} bounds=${bounds} apply=${apply} initialPrompts=${initialPrompts} promptsActive=${applied.get('category') === 'prompts'}/>
+        <${FlowFilters} scope=${scope} bounds=${bounds} apply=${apply} initialCategory=${initialCategory} activeCategory=${applied.get('category')}/>
+        ${applied.get('category') === 'skills' && html`<p class="bd-note">Loaded files and invocations are separate records. “Reported in context” groups OTel spans by skill; it does not count skill loads.</p>`}
         ${applied.get('category') === 'prompts' && html`<p class="bd-note">User input only. Select a row to read the retained prompt. Assistant replies and delegated instructions are not included.</p>`}
         ${flowRef && html`<div class="bd-ag-bar"><span>${flowRef.label} ID: ${flowRef.id}</span><button type="button" class="bd-btn" onClick=${() => { setSel(null); act.setDrawerTab('flow'); }}>Show full flow</button></div>`}
         ${!data ? html`<${Wait} error=${error} what="the session flow"/>` : html`

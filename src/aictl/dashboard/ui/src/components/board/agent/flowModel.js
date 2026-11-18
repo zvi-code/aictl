@@ -174,18 +174,25 @@ export function describe(ev) {
   if (ev.type === 'hook') return { label: 'Hook ' + (ev.hook_name || ''), meta: '' };
   if (ev.type === 'session_start') return { label: 'Session started', meta: ev.cwd || '' };
   if (ev.type === 'session_end') return { label: 'Session ended', meta: '' };
-  if (['context_update', 'session_command', 'skill_event'].includes(ev.type)) {
-    const type = { context_update: 'Context', session_command: 'Session command', skill_event: 'Skill' }[ev.type];
+  if (ev.type === 'skill_event') return {
+    label: `Skill: ${ev.name || 'Name not reported'}`,
+    meta: [skillPhase(ev.phase), ev.phase === 'reported' && Number.isFinite(ev.reported_spans) && `${ev.reported_spans} distinct spans`, ev.source].filter(Boolean).join(' · '),
+  };
+  if (['context_update', 'session_command'].includes(ev.type)) {
+    const type = { context_update: 'Context', session_command: 'Session command' }[ev.type];
     return { label: [type, ev.name || ev.phase].filter(Boolean).join(': '),
       meta: [ev.name && ev.phase, ev.context_tokens != null && `${fmtN(ev.context_tokens)} context tokens`,
         ev.source].filter(Boolean).join(' · ') };
   }
+
   if (ev.type === 'compaction') {
     const freed = ev.before_tokens != null && ev.after_tokens != null ? fmtN(ev.before_tokens) + ' to ' + fmtN(ev.after_tokens) + ' tokens' : '';
     return { label: 'Compaction' + (ev.compaction_count ? ' ' + ev.compaction_count : ''), meta: [freed, ev.duration_ms > 0 ? fmtMs(ev.duration_ms) : ''].filter(Boolean).join(', ') };
   }
   return { label: ev.type || 'Event', meta: '' };
 }
+
+export const skillPhase = phase => ({ loaded: 'Loaded', invoked: 'Invoked', reported: 'Reported in context', resolved: 'Resolved' }[phase] || phase || 'Not reported');
 
 export function inputOf(ev) {
   if (ev.type === 'user_message') return ev.message || ev.preview || '';

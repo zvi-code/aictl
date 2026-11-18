@@ -309,7 +309,7 @@ function BoardContent() {
       const q = new URLSearchParams(window.location.search);
       if (q.get('tab') === 'hidden') return [{ type: 'hidden' }];
       const id = q.get('agent');
-      return id ? [{ type: 'agent', id, tab: q.get('tab') === 'context' ? 'context' : 'flow', initialPrompts: q.get('show') === 'prompts' }] : [];
+      return id ? [{ type: 'agent', id, tab: q.get('tab') === 'context' ? 'context' : 'flow', initialPrompts: q.get('show') === 'prompts', initialSkills: q.get('show') === 'skills' }] : [];
     } catch { return []; }
   });
   const [DrawerC, setDrawerC] = useState(null);
