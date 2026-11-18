@@ -567,6 +567,8 @@ def test_trim_text_scrubs_baseline_and_companion_observation_tables():
 
     def on_query(kql: str):
         queried_kql.append(kql)
+        if "['session_step_text']" in kql and "count()" in kql:
+            return response([("n", "long")], [[0]])
         return response([], [])
 
     settings = KustoSettings("https://example.kusto.windows.net")

@@ -284,6 +284,63 @@ Key: rowid; unique: (dedup_key). Scope: was per project in SQLite. 9 columns.
 | _v | datetime | system | | |
 | _deleted | bool | system | | |
 
+### `session_steps`
+
+Key: step_key. Scope: was per project in SQLite. 33 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| step_key | string | TEXT |  |  |
+| ts | real | REAL |  | yes |
+| session_id | string | TEXT |  | yes |
+| kind | string | TEXT |  | yes |
+| tool | string | TEXT |  |  |
+| project_path | string | TEXT |  |  |
+| agent_id | string | TEXT |  |  |
+| parent_agent_id | string | TEXT |  |  |
+| turn_id | string | TEXT |  |  |
+| round_id | string | TEXT |  |  |
+| message_id | string | TEXT |  |  |
+| request_id | string | TEXT |  |  |
+| tool_call_id | string | TEXT |  |  |
+| trace_id | string | TEXT |  |  |
+| span_id | string | TEXT |  |  |
+| parent_span_id | string | TEXT |  |  |
+| source | string | TEXT |  |  |
+| source_order | long | INTEGER |  |  |
+| role | string | TEXT |  |  |
+| name | string | TEXT |  |  |
+| phase | string | TEXT |  |  |
+| text_status | string | TEXT |  |  |
+| context_tokens | long | INTEGER |  |  |
+| context_limit | long | INTEGER |  |  |
+| before_tokens | long | INTEGER |  |  |
+| after_tokens | long | INTEGER |  |  |
+| input_tokens | long | INTEGER |  |  |
+| output_tokens | long | INTEGER |  |  |
+| estimated | long | INTEGER |  |  |
+| exit_code | long | INTEGER |  |  |
+| system_tokens | long | INTEGER |  |  |
+| conversation_tokens | long | INTEGER |  |  |
+| tool_tokens | long | INTEGER |  |  |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
+### `session_step_text`
+
+Key: step_key. Scope: was per project in SQLite. 4 columns.
+
+| Column | Kusto type | SQLite type | Default | Not null |
+|---|---|---|---|---|
+| step_key | string | TEXT |  |  |
+| session_id | string | TEXT |  | yes |
+| ts | real | REAL |  | yes |
+| text | string | TEXT |  | yes |
+| rowid | long | system | | |
+| _v | datetime | system | | |
+| _deleted | bool | system | | |
+
 ### `skill_uses`
 
 Key: rowid; unique: (dedup_key). Scope: was per project in SQLite. 9 columns.
