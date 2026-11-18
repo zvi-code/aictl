@@ -519,7 +519,7 @@ html:has(.bd-app[data-theme=light]){background:#f4f4f1}
 .bd-ag-slrow>span{padding:0 4px;font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
 .bd-ag-slarea{position:relative;align-self:stretch;height:100%}
 .bd-ag-slhead .bd-ag-slarea b{position:absolute;top:5px;transform:translateX(-50%);max-width:90px;padding:1px 5px;border:1px solid;border-radius:3px;background:var(--surface);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bd-ag-lanel{position:absolute;top:0;bottom:0;width:1px;background:var(--line2)}
+.bd-ag-slrow .bd-ag-slarea{background-image:linear-gradient(to right,transparent calc(50% - .5px),var(--line2) calc(50% - .5px),var(--line2) calc(50% + .5px),transparent calc(50% + .5px));background-size:var(--flow-lane-pitch) 100%;background-repeat:repeat-x}
 .bd-ag-arrow{position:absolute;top:22px;height:0;border-top:1.5px solid}
 .bd-ag-head{position:absolute;top:-5px;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent}
 .bd-ag-head.bd-r{right:-1px;border-left:7px solid currentColor}
