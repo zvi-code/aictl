@@ -363,6 +363,8 @@ def test_trace_exact_rows_from_both_shapes():
         "RowKey": otel._row_key(TRACE, PARENT, T0_TEXT),
         "TurnId": "", "OperationName": "", "AgentName": "", "ToolName": "", "ToolCallId": "",
         "InputTokens": None, "OutputTokens": None,
+        "CacheReadInputTokens": None, "CacheWriteInputTokens": None, "ReasoningOutputTokens": None,
+        "ReportedSkillNames": "", "ReportedMcpServers": "",
     }
     assert child == {
         "TraceID": TRACE,
@@ -388,6 +390,8 @@ def test_trace_exact_rows_from_both_shapes():
         "RowKey": otel._row_key(TRACE, SPAN, "2023-11-14T22:13:20.0015Z"),
         "TurnId": "", "OperationName": "", "AgentName": "", "ToolName": "", "ToolCallId": "",
         "InputTokens": None, "OutputTokens": None,
+        "CacheReadInputTokens": None, "CacheWriteInputTokens": None, "ReasoningOutputTokens": None,
+        "ReportedSkillNames": "", "ReportedMcpServers": "",
     }
     assert list(child) == list(TABLES_BY_NAME["OTELTraces"].column_names)
     assert json.loads(json_line(child))["Events"][0]["EventAttributes"] == {"n": 1}
@@ -401,12 +405,15 @@ def test_span_flow_columns_preserve_reported_values_without_inferring_usage_or_i
         kv("gen_ai.tool.name", s("shell")), kv("gen_ai.tool.call.id", s("call-42")),
         kv("gen_ai.agent.name", s("reviewer")), kv("gen_ai.usage.input_tokens", {"intValue": "0"}),
         kv("gen_ai.usage.output_tokens", {"intValue": "21"}),
+        kv("gen_ai.usage.cache_read.input_tokens", {"intValue": "0"}),
+        kv("github.copilot.context.skills", s('["testing","testing","review","not a skill body"]')),
     ])
     _, child = both(convert_traces, body, trace_service.ExportTraceServiceRequest).rows["OTELTraces"]
     assert (child["TurnId"], child["OperationName"], child["AgentName"], child["ToolName"], child["ToolCallId"]) == (
         "turn-7", "execute_tool", "reviewer", "shell", "call-42",
     )
     assert (child["InputTokens"], child["OutputTokens"]) == (0, 21)
+    assert child["CacheReadInputTokens"] == 0 and child["ReportedSkillNames"] == "testing\nreview"
     attrs.extend([kv("gen_ai.tool.call.id", s("x" * 1000)), kv("gen_ai.usage.input_tokens", {"boolValue": True})])
     child = convert_traces(body, received_ns=RECV, host=HOST, keep_text=False).rows["OTELTraces"][1]
     assert child["ToolCallId"] == "" and child["InputTokens"] is None

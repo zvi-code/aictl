@@ -61,3 +61,22 @@ def test_local_evidence_http_returns_no_store_and_rejects_foreign_host(tmp_path)
         server.server_close()
         thread.join(2)
         db.close()
+
+
+def test_context_history_distinguishes_requests_transitions_and_actual_resets(tmp_path):
+    db = HistoryDB(tmp_path / "source.db", flush_interval=0)
+    ts = time.time() - 10
+    try:
+        db.write_call_facts(CallFacts(steps=[
+            SessionStepRow("request", ts, "s", "session_command", name="clear", phase="requested"),
+            SessionStepRow("reset", ts + 1, "s", "context", name="reset", phase="applied"),
+            SessionStepRow("usage", ts + 2, "s", "round", input_tokens=0, output_tokens=4),
+            SessionStepRow("skill", ts + 3, "s", "skill", name="testing", phase="invoked"),
+        ]))
+        def group(name):
+            return session_evidence(db, {"session_id": ["s"], "context_group": [name]})["rows"]
+        assert [(r["name"], r["phase"]) for r in group("changes")] == [("reset", "applied"), ("clear", "requested")]
+        assert group("usage")[0]["input_tokens"] == 0 and group("usage")[0]["context_tokens"] is None
+        assert [r["name"] for r in group("inputs")] == ["testing"]
+    finally:
+        db.close()

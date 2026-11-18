@@ -119,7 +119,26 @@ _SPAN_DIMENSIONS = {
     "ToolName": "gen_ai.tool.name",
     "ToolCallId": "gen_ai.tool.call.id",
 }
-_SPAN_TOKEN_COUNTS = {"InputTokens": "gen_ai.usage.input_tokens", "OutputTokens": "gen_ai.usage.output_tokens"}
+_SPAN_TOKEN_COUNTS = {
+    "InputTokens": "gen_ai.usage.input_tokens", "OutputTokens": "gen_ai.usage.output_tokens",
+    "CacheReadInputTokens": "gen_ai.usage.cache_read.input_tokens",
+    "CacheWriteInputTokens": "gen_ai.usage.cache_write.input_tokens",
+    "ReasoningOutputTokens": "gen_ai.usage.reasoning.output_tokens",
+}
+_SPAN_INPUT_NAMES = {"ReportedSkillNames": "github.copilot.context.skills",
+                     "ReportedMcpServers": "github.copilot.context.mcp_server_names"}
+
+
+def context_names(value: Any) -> list[str]:
+    """Only exporter-reported identifiers, not arbitrary serialized objects, paths or prompts."""
+    if isinstance(value, str) and len(value) <= 32768:
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(n for n in value[:256] if isinstance(n, str) and re.fullmatch(r"[\w][\w.:-]{0,127}", n)))
 
 TABLES: tuple[Table, ...] = (
     Table(
@@ -186,6 +205,7 @@ TABLES: tuple[Table, ...] = (
             *_AICTL_TAIL,
             *((name, "string", f"aictl: span attribute {key}") for name, key in _SPAN_DIMENSIONS.items()),
             *((name, "long", f"aictl: reported {key}; null when unknown") for name, key in _SPAN_TOKEN_COUNTS.items()),
+            *((name, "string", f"aictl: newline-separated names from {key}") for name, key in _SPAN_INPUT_NAMES.items()),
         ),
         13,
         "OpenTelemetry spans",
@@ -1025,6 +1045,8 @@ def _span_row(span: dict, resource: dict, scope: dict, tool: str, machine: str, 
     for column, key in _SPAN_TOKEN_COUNTS.items():
         value = attrs.get(key)
         row[column] = value if type(value) is int and 0 <= value < 2**63 else None
+    for column, key in _SPAN_INPUT_NAMES.items():
+        row[column] = "\n".join(context_names(attrs.get(key)))
     _make_safe(row, bags, lists, sp, src)
     return row
 

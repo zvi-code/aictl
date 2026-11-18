@@ -21,12 +21,15 @@ _CREDENTIAL = re.compile(
     r"|(--(?:api[-_]key|token|password|secret)(?:[ \t]+|=))(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s;&|]+)"
 )
 _SHELLS = {"bash", "powershell"}
+_LIFECYCLE_COMMANDS = {"/clear", "/new", "/reset", "/compact", "/model", "/models"}
+_MODEL_ARG = re.compile(r"(?:gpt-|claude-|gemini-|grok-|o[134](?:-|$))[a-z0-9._-]*", re.I)
 _SOURCES = frozenset({
     "user.message", "assistant.message", "assistant.turn_start", "assistant.turn_end",
     "session.usage_record", "assistant.usage", "tool.execution_start", "tool.execution_complete",
     "subagent.started", "subagent.completed", "subagent.failed", "skill.invoked", "session.skills_loaded",
     "session.usage_info", "session.shutdown", "session.compaction_start", "session.compaction_complete",
-    "session.truncation",
+    "session.truncation", "session.context_cleared", "session.model_change", "session.snapshot_rewind",
+    "command.queued", "command.execute",
 })
 
 
@@ -65,6 +68,33 @@ def _context(data: dict) -> dict:
         ("system_tokens", "systemTokens"), ("conversation_tokens", "conversationTokens"),
         ("tool_tokens", "toolDefinitionsTokens"),
     )}
+
+
+def _session_command(text: Any, *, dispatch: bool = False) -> str:
+    """A dispatch is explicit. In an ordinary message, accept only unambiguous CLI syntax."""
+    if not isinstance(text, str) or not text.startswith("/") or (not dispatch and len(text) > 256):
+        return ""
+    if len(text.splitlines()) != 1:
+        return ""
+    words = text.split()
+    if not words or words[0] not in _LIFECYCLE_COMMANDS:
+        return ""
+    cmd, args = words[0][1:], words[1:]
+    if cmd == "new" and args[:1] == ["worktree"]:
+        # Starts a different session; does not clear this one.
+        return "new_worktree" if dispatch or len(args) == 1 else ""
+    if dispatch or not args:
+        return cmd
+    if cmd == "model":
+        if args[0] in ("--session", "-s", "--global", "--repo", "--local"):
+            args = args[1:]
+        if not args or (len(args) == 1 and (args[0] == "auto" or _MODEL_ARG.fullmatch(args[0]))):
+            return cmd
+        if len(args) == 2 and args[0] == "auto" and args[1] in ("efficiency", "balance", "intelligence"):
+            return cmd
+    # /clear [PROMPT] and /compact [FOCUS] accept arbitrary prose. A user.message
+    # without explicit dispatch evidence cannot distinguish that prose from a mention.
+    return ""
 
 
 class CopilotSteps:
@@ -122,6 +152,23 @@ class CopilotSteps:
             if origin not in (None, "", "user", "autopilot") and not (isinstance(origin, str) and origin.startswith("agent-")):
                 return
             emit("agent_prompt" if from_agent else "message", role="user", body=data.get("content"))
+            if not from_agent and not agent and not parent_call and not data.get("parentAgentTaskId"):
+                if cmd := _session_command(data.get("content")):
+                    emit("session_command", "requested", name=cmd, role="user")
+        elif source in ("command.queued", "command.execute"):
+            # Even command.execute is a *dispatch request*, not proof of a state change.
+            if cmd := _session_command(data.get("command"), dispatch=True):
+                emit("session_command", "queued" if source == "command.queued" else "dispatched", name=cmd)
+        elif source == "session.model_change":
+            # A fallback or host selection can change models without a user command.
+            old, new = _label(data.get("previousModel")), _label(data.get("newModel"))
+            transition = "\n".join(f"{key}: {value}" for key, value in (("previousModel", old), ("newModel", new)) if value)
+            emit("session_command", "applied", name="model_change", body=transition)
+        elif source == "session.context_cleared":
+            # The RPC or runtime can clear history. No command, token count or actor is implied.
+            emit("context", "applied", name="reset", text_status="omitted" if data.get("initialMessage") else "")
+        elif source == "session.snapshot_rewind":
+            emit("session_command", "applied", name="rewind")
         elif source == "assistant.message":
             public = data.get("phase") in (None, "", "commentary", "response", "final", "final_answer")
             emit("message", role="assistant", body=data.get("content") if public else None,
@@ -198,18 +245,24 @@ class CopilotSteps:
                     emit("skill", "resolved", slot=str(i), name=name)
         elif source == "session.truncation":
             # These are message tokens only, not a full context snapshot.
-            emit("context", "truncation", before_tokens=_count(data.get("preTruncationTokensInMessages")),
+            emit("context", "truncation", name="truncation", before_tokens=_count(data.get("preTruncationTokensInMessages")),
                  after_tokens=_count(data.get("postTruncationTokensInMessages")),
                  context_limit=_count(data.get("tokenLimit")), estimated=0)
         elif source in ("session.usage_info", "session.shutdown", "session.compaction_start", "session.compaction_complete"):
             counts = _context(data)
+            estimated: int | None = 0
+            name = "snapshot"
             if source == "session.compaction_complete":
                 counts.update(before_tokens=_count(data.get("preCompactionTokens")), after_tokens=_count(data.get("postCompactionTokens")))
-                phase = "compaction_failed" if data.get("success") is False else "compaction_complete"
+                name = "compaction"
+                outcome = _label(data.get("outcome"))
+                phase = f"compaction_{outcome}" if outcome else ("compaction_failed" if data.get("success") is False else "compaction_complete")
+                estimated = 1 if data.get("tokenAccountingBasis") == "local_full_context_estimate" else None
             elif source == "session.compaction_start":
+                name = "compaction"
                 phase = "compaction_start"
             else:
                 if not any(n is not None for n in counts.values()):
                     return
                 phase = "shutdown" if source == "session.shutdown" else "snapshot"
-            emit("context", phase, estimated=0, text_status="omitted" if data.get("summaryContent") else "", **counts)
+            emit("context", phase, name=name, estimated=estimated, text_status="omitted" if data.get("summaryContent") else "", **counts)

@@ -155,6 +155,61 @@ def test_native_ids_survive_replay_at_different_positions():
     assert (original.before_tokens, original.after_tokens, original.context_tokens) == (62, 31, None)
 
 
+def test_command_requests_are_not_applied_changes():
+    buf = FactBuffer(SimpleNamespace(_keeps_text=lambda: False))
+    cop = CopilotFacts("s", buf)
+    for msg in ("/model gpt-5-mini", "/clear", "/new worktree", "/new", "/reset", "/compact", "/reset-allowed-tools",
+                "use /clear", "`/clear`", "/clear the buffer in my script", "/model is not working",
+                "/model\ngpt-5-mini", "/clearance", "/new-file"):
+        cop.feed(event("user.message", {"content": msg}))
+    for data in ({"source": "autopilot"}, {"source": "agent-1"}, {"isAutopilotContinuation": True},
+                 {"source": "skill-hidden"}, {"parentAgentTaskId": "p"}):
+        cop.feed(event("user.message", {"content": "/reset", **data}))
+    cop.feed(event("assistant.message", {"content": "/reset"}))
+    cop.feed(event("command.queued", {"requestId": "q", "command": "/clear PRIVATE-PROMPT"}))
+    cop.feed(event("command.execute", {"requestId": "q", "command": "/clear PRIVATE-PROMPT", "commandName": "clear"}))
+    cop.feed(event("command.completed", {"requestId": "q"}))  # dismisses a notification
+    cop.feed(event("session.usage_info", {"currentTokens": 21}))
+    cop.feed(event("session.usage_info", {"currentTokens": 0}))
+    rows = list(buf.steps.values())
+    assert [(r.name, r.phase) for r in rows if r.kind == "session_command"] == [
+        ("model", "requested"), ("clear", "requested"), ("new_worktree", "requested"),
+        ("new", "requested"), ("reset", "requested"), ("compact", "requested"),
+        ("clear", "queued"), ("clear", "dispatched"),
+    ]
+    assert not any(r.name == "reset" and r.kind == "context" for r in rows)
+    assert all(not r.text for r in rows) and "PRIVATE-PROMPT" not in repr(rows)
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_explicit_context_lifecycle_and_model_change(full):
+    buf = FactBuffer(SimpleNamespace(_keeps_text=lambda: full))
+    cop = CopilotFacts("s", buf)
+    events = [
+        event("session.model_change", {"previousModel": "gpt-6.1-terra", "newModel": "gpt-5-mini", "cause": "rate_limit_fallback"}),
+        event("session.context_cleared", {"messagesCleared": 12, "initialMessage": "PRIVATE-RESET"}, agentId="child"),
+        event("session.snapshot_rewind", {"eventsRemoved": 2, "upToEventId": "e"}),
+        event("session.compaction_start", {"currentTokens": 71, "tokenLimit": 128}),
+        event("session.compaction_complete", {"outcome": "cancelled", "success": False, "error": "PRIVATE-ERROR"}),
+        event("session.compaction_complete", {"success": True, "preCompactionTokens": 71, "postCompactionTokens": 15,
+                                              "tokenAccountingBasis": "local_full_context_estimate", "summaryContent": "PRIVATE-SUMMARY"}),
+        event("session.compaction_complete", {"success": False}),
+    ]
+    for _ in range(2):
+        cop.reset()
+        for i, obj in enumerate(events):
+            cop.feed({**obj, "id": f"e{i}"})
+    model, reset, rewind, start, cancelled, compacted, failed = buf.steps.values()
+    assert (model.kind, model.name, model.phase) == ("session_command", "model_change", "applied")
+    assert model.text == ("previousModel: gpt-6.1-terra\nnewModel: gpt-5-mini" if full else "")
+    assert (reset.kind, reset.name, reset.phase, reset.agent_id, reset.after_tokens) == ("context", "reset", "applied", "child", None)
+    assert (rewind.name, rewind.kind) == ("rewind", "session_command")
+    assert (start.phase, start.context_tokens, start.context_limit) == ("compaction_start", 71, 128)
+    assert (cancelled.name, cancelled.phase, failed.phase) == ("compaction", "compaction_cancelled", "compaction_failed")
+    assert (compacted.before_tokens, compacted.after_tokens, compacted.estimated) == (71, 15, 1)
+    assert not any(r.text for r in (reset, rewind, start, cancelled, compacted, failed)) and "PRIVATE-" not in repr(buf.steps)
+
+
 def test_step_only_batch_retry_surface_and_legacy_exclusion(monkeypatch):
     batches = []
     def write(facts):
