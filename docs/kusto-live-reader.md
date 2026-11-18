@@ -72,12 +72,20 @@ or an HTTP request thread.
 5. A standalone `cursor_current()` query captures the upper cursor without
    reading any table. If all cursor-enabled tables are caught up, detection
    stops there; preview and reconciliation still run on their own schedules.
-   Otherwise the worker probes up to four lagging tables per request, keeping
-   the same upper cursor until every range is complete. Each table must return
-   an explicit count (zero or one) for `(completed_frontier, captured_upper]`.
+   Otherwise the worker probes up to four lagging tables per request. A single
+   `print` returns one Boolean per table for `(completed_frontier, captured_upper]`.
+   Each table appears in one scalar subquery: filter by cursor, project a constant
+   integer, then `take 1`. An empty result gives `toscalar` a null integer, so
+   `isnotnull` returns false. There is no union, count, or second scan for details.
+   The reader requires every expected Boolean in one complete result.
    A failed or incomplete probe advances none of its tables. Empty ranges can
    advance immediately; changed versioned tables advance only after their final
    complete keyset page.
+
+The small **result** does not imply a small **scan**. For example, Kusto can
+examine streaming RowStore rows even when no column-store extents are scanned.
+A time or hot-cache filter could miss a valid cursor change and is not a safe
+substitute for the cursor predicates.
 
 Each page first finds changed native keys, then queries the **currently visible
 winner** for those keys using the store's `arg_max(_v, ...)` semantics, including
@@ -150,7 +158,14 @@ changes emit explicit affected-table resyncs. Policies are checked again
 periodically; the reported check time describes an observation, not a guarantee
 that an administrator cannot change the policy immediately afterward.
 
-Transport errors, truncation/partial query failures, malformed pages and
+An ADX `E_LOW_MEMORY_CONDITION` on a cursor probe splits that batch into
+independent table probes. A table that still fails, or a cursor page that hits
+the same error, retains its original cursor bounds and page token and retries
+with exponential backoff up to `max_error_s`. Other tables can process newer
+cursors. Status remains stale while `cursor_memory_retry_tables` is nonempty;
+no full bootstrap is required for this error.
+
+Transport errors, other truncation/partial query failures, malformed pages and
 non-progress leave the page and its checkpoint uncommitted. Last good consumer
 data must remain visibly stale. After repeated failures, an explicit recovery
 resync precedes a new bootstrap checkpoint and complete consumer baseline.
@@ -187,6 +202,13 @@ Default limits are configurable through `ReaderConfig`:
 - 8,192 duplicate-hint entries with a separate 4 MB byte limit.
 - Sixteen pending batches per subscriber, at most 64 subscribers.
 - Adaptive idle delay up to 15 seconds and bounded error backoff.
+
+To give **only cursor probes** more memory, set `AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB`
+before starting the daemon (for example, `$env:AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB = '256'`
+in PowerShell). An explicit `ReaderConfig` uses its `probe_memory_bytes` instead,
+defaulting to `query_memory_bytes`. This changes the two request memory limits
+for probes, not the cluster policy, paging, preview, or reconciliation limits.
+It does not reserve memory or guarantee that a request will succeed.
 
 Queries, Python result processing, mailboxes and callbacks run outside runtime
 worker and hub locks. One slow callback has its own bounded mailbox rather than

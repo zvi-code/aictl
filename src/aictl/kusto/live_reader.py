@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 import time
 from collections import OrderedDict, deque
@@ -53,13 +54,25 @@ class ReaderConfig:
     query_memory_bytes: int = 134_217_728
     failures_before_resync: int = 3
     tables_per_probe: int = 4
+    probe_memory_bytes: int | None = None
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
+            if name == "probe_memory_bytes" and value is None:
+                continue
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.max_idle_s < self.min_poll_s:
             raise ValueError("max_idle_s must be at least min_poll_s")
+
+    @classmethod
+    def from_env(cls) -> ReaderConfig:
+        value = os.getenv("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB")
+        if value is None:
+            return cls()
+        if not value.isascii() or not value.isdecimal() or int(value) == 0:
+            raise ValueError("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB must be a positive integer in MiB")
+        return cls(probe_memory_bytes=int(value) * 1024**2)
 
 
 @dataclass(frozen=True)
@@ -113,6 +126,17 @@ class _Scan:
 
 class ReaderQueryError(RuntimeError):
     """A failed or incomplete read. Its page and cursor must not be committed."""
+
+
+class _QueryMemoryError(ReaderQueryError):
+    """ADX could not allocate memory to complete this query."""
+
+
+@dataclass
+class _CursorRetry:
+    scan: _Scan
+    due: float
+    delay: float
 
 
 class ReaderSubscription:
@@ -225,7 +249,7 @@ class SharedKustoReader:
         table_names: Iterable[str] | None = None,
     ) -> None:
         self.settings = settings
-        self.config = config or ReaderConfig()
+        self.config = config or ReaderConfig.from_env()
         self._client = client
         self._known = _specs(_managed_tables() if tables is None else tables)
         if tables is None:
@@ -254,6 +278,7 @@ class SharedKustoReader:
         self._reconciled_partitions: dict[str, set[int]] = {}
         self._sequence = self._failures = 0
         self._ranges: deque[_Scan] = deque()
+        self._cursor_retries: dict[str, _CursorRetry] = {}
         self._preview: _Scan | None = None
         self._preview_index = 0
         self._preview_next = 0.0
@@ -299,10 +324,13 @@ class SharedKustoReader:
                 "reconciliation_completed_at": dict(self._last_reconcile_at),
                 "last_query_completed_at": self._last_query_at,
                 "catching_up": self._catching_up(),
+                "cursor_memory_retry_tables": sorted(self._cursor_retries),
                 "limits": {
                     "page_rows": self.config.page_size,
                     "queries_per_poll": self.config.queries_per_poll,
                     "tables_per_probe": self.config.tables_per_probe,
+                    "query_memory_bytes": self.config.query_memory_bytes,
+                    "probe_memory_bytes": self.config.probe_memory_bytes or self.config.query_memory_bytes,
                     "subscriber_batches": self.config.subscriber_batches,
                     "dedup_entities": self.config.dedup_entities,
                     "dedup_bytes": self.config.dedup_bytes,
@@ -317,8 +345,8 @@ class SharedKustoReader:
                 "status",
                 frontier=dict(self._frontier),
                 ready=self._ready,
-                stale=self._stale,
-                reason=self._reason,
+                stale=self._stale or bool(self._cursor_retries),
+                reason=self._reason or ("cursor_memory_retry" if self._cursor_retries else None),
                 sequence=self._sequence,
                 details=self.capabilities(),
             )
@@ -386,12 +414,13 @@ class SharedKustoReader:
     ) -> None:
         with self._lock:
             self._sequence += 1
+            status = self.latest_status()
             batch = replace(
-                self.latest_status(),
+                status,
                 kind=kind,
                 rows=rows,
                 changed_tables=tables,
-                reason=reason if reason is not None else self._reason,
+                reason=reason if reason is not None else status.reason,
                 sequence=self._sequence,
             )
             subscriptions = tuple(self._subscriptions)
@@ -400,8 +429,9 @@ class SharedKustoReader:
         for subscription in subscriptions:
             subscription._offer(batch)
 
-    def _execute(self, text: str, *, management: bool = False) -> list[dict[str, Any]]:
+    def _execute(self, text: str, *, management: bool = False, memory_bytes: int | None = None) -> list[dict[str, Any]]:
         from azure.kusto.data import ClientRequestProperties
+        from azure.kusto.data.exceptions import KustoApiError, KustoMultiApiError
 
         props = ClientRequestProperties()
         props.set_option("servertimeout", timedelta(seconds=self.config.query_timeout_s))
@@ -414,13 +444,22 @@ class SharedKustoReader:
         props.set_option(
             "truncationmaxrecords", 20_000 if management else max(2 + len(self._known), self.config.page_size + 1)
         )
-        props.set_option("maxmemoryconsumptionperiterator", self.config.query_memory_bytes)
-        props.set_option("max_memory_consumption_per_query_per_node", self.config.query_memory_bytes)
+        memory = memory_bytes or self.config.query_memory_bytes
+        props.set_option("maxmemoryconsumptionperiterator", memory)
+        props.set_option("max_memory_consumption_per_query_per_node", memory)
         props.set_option("query_fanout_threads_percent", 25)
         if self._client is None:
             self._client = KustoClientFactory.client(self.settings)
         call = self._client.execute_mgmt if management else self._client.execute
-        response = call(self.settings.database, text, props)
+        try:
+            response = call(self.settings.database, text, props)
+        except (KustoApiError, KustoMultiApiError) as exc:
+            errors = exc.get_api_errors() if isinstance(exc, KustoMultiApiError) else [exc.get_api_error()]
+            if errors and all(
+                e.code == "LowMemoryCondition" or "E_LOW_MEMORY_CONDITION" in (e.description or "") for e in errors
+            ):
+                raise _QueryMemoryError("Kusto reported E_LOW_MEMORY_CONDITION") from exc
+            raise
         if getattr(response, "errors_count", 0):
             raise ReaderQueryError("Kusto returned an incomplete result")
         result = Result.from_response(response)
@@ -454,6 +493,7 @@ class SharedKustoReader:
                     self._frontier[name] = self._last_cursor
                 for name in removed:
                     self._frontier.pop(name, None)
+                    self._cursor_retries.pop(name, None)
                     self._cursor_tables.discard(name)
                     self._policy_checked.pop(name, None)
                     self._policy_checked_at.pop(name, None)
@@ -505,6 +545,7 @@ class SharedKustoReader:
                 self._frontier.setdefault(name, self._last_cursor)
             else:
                 self._frontier.pop(name, None)
+                self._cursor_retries.pop(name, None)
                 self._cursor_tables.discard(name)
                 self._ranges = deque(scan for scan in self._ranges if scan.table != name)
                 if self._preview is not None and self._preview.table == name:
@@ -516,34 +557,60 @@ class SharedKustoReader:
             self._reconciled_partitions.pop(name, None)
             self._publish("resync", tables=(name,), reason="policy_changed")
 
-    def _catching_up(self) -> bool:
-        return any(self._frontier[name] != self._last_cursor for name in self._cursor_tables)
+    def _catching_up(self, *, runnable_only: bool = False) -> bool:
+        names = self._cursor_tables - self._cursor_retries.keys() if runnable_only else self._cursor_tables
+        return any(self._frontier[name] != self._last_cursor for name in names)
 
-    def _detect(self, names: list[str]) -> None:
-        upper = self._last_cursor
-        arms = [
-            f"({quote(name)} | where cursor_after({_text(self._frontier[name])}) and cursor_before_or_at({_text(upper)})"
-            f" | take 1 | summarize aictl_live_count=count() | project aictl_live_table={_text(name)}, aictl_live_count)"
+    def _defer_cursor(self, scans: list[_Scan]) -> None:
+        now = time.monotonic()
+        with self._lock:
+            for scan in scans:
+                previous = self._cursor_retries.pop(scan.table, None)
+                delay = (
+                    0.0
+                    if len(scans) > 1
+                    else min(
+                        self.config.max_error_s, max(self.config.min_poll_s, 2 * previous.delay if previous else 0)
+                    )
+                )
+                self._cursor_retries[scan.table] = _CursorRetry(scan, now + delay, delay)
+                if self._preview and self._preview.table == scan.table:
+                    self._preview = None
+                if self._reconcile and self._reconcile.table == scan.table:
+                    self._reconcile = None
+        self._publish("status")
+
+    def _detect(self, names: list[str], upper: str) -> None:
+        # A non-null constant for a hit; toscalar on an empty int column yields null.
+        flags = [
+            f"{quote(name)}=isnotnull(toscalar({quote(name)} | where cursor_after({_text(self._frontier[name])})"
+            f" and cursor_before_or_at({_text(upper)}) | project hit=1 | take 1))"
             for name in names
         ]
-        rows = self._execute("union " + ",\n".join(arms))
-        # An empty range must return an explicit zero; a missing arm is not a checkpoint.
-        counts = {row["aictl_live_table"]: row["aictl_live_count"] for row in rows}
-        if len(rows) != len(names) or counts.keys() != set(names) or any(n not in (0, 1) for n in counts.values()):
+        try:
+            rows = self._execute("print " + ",\n".join(flags), memory_bytes=self.config.probe_memory_bytes)
+        except _QueryMemoryError:
+            self._defer_cursor([_Scan(name, "probe", self._frontier[name], upper) for name in names])
+            return
+        if len(rows) != 1 or rows[0].keys() != set(names) or not all(isinstance(v, bool) for v in rows[0].values()):
             raise ReaderQueryError("Incomplete or unexpected cursor probe result")
+        changed = rows[0]
         raw_changed = []
+        recovered = False
         with self._lock:
             assert self._available is not None
             for name in names:
-                if counts[name] and self._available[name].versioned:
+                if self._cursor_retries.pop(name, None) is not None:
+                    recovered = True
+                if changed[name] and self._available[name].versioned:
                     self._ranges.append(_Scan(name, "cursor", self._frontier[name], upper))
                 else:
                     self._frontier[name] = upper
-                    if counts[name]:
+                    if changed[name]:
                         raw_changed.append(name)
         if raw_changed:
             self._publish("changes", tables=tuple(raw_changed))
-        elif 0 in counts.values():
+        elif recovered or not all(changed.values()):
             self._publish("status")
 
     def _page_query(self, spec: _Spec, scan: _Scan) -> str:
@@ -644,21 +711,46 @@ class SharedKustoReader:
             self._publish("status")
         return more
 
+    def _cursor_page(self, scan: _Scan) -> bool:
+        try:
+            more = self._page(scan)
+        except _QueryMemoryError:
+            self._defer_cursor([scan])
+            return False
+        with self._lock:
+            recovered = self._cursor_retries.pop(scan.table, None) is not None
+        if recovered:
+            self._publish("status")
+        return more
+
+    def _retry_cursor_step(self) -> bool:
+        now = time.monotonic()
+        for retry in self._cursor_retries.values():
+            if retry.due <= now:
+                scan = retry.scan
+                if scan.kind == "probe":
+                    self._detect([scan.table], scan.upper)
+                elif self._cursor_page(scan):
+                    self._ranges.append(scan)
+                return True
+        return False
+
     def _cursor_step(self) -> bool:
-        # Hold the captured upper until every lagging table has been probed and drained.
+        # A deferred table retains its own upper; do not hold healthy tables at that cursor.
+        eligible = self._cursor_tables - self._cursor_retries.keys()
         scheduled = {scan.table for scan in self._ranges}
-        pending = sorted(name for name in self._cursor_tables - scheduled if self._frontier[name] != self._last_cursor)
+        pending = sorted(name for name in eligible - scheduled if self._frontier[name] != self._last_cursor)
         if pending:
-            self._detect(pending[: self.config.tables_per_probe])
+            self._detect(pending[: self.config.tables_per_probe], self._last_cursor)
             return True
         if self._ranges:
             scan = self._ranges[0]
-            more = self._page(scan)
+            more = self._cursor_page(scan)
             self._ranges.popleft()
             if more:
                 self._ranges.append(scan)
             return True
-        if time.monotonic() < self._capture_next:
+        if (self._cursor_retries and not eligible) or time.monotonic() < self._capture_next:
             return False
         upper, anchor = self._read_cursor()
         if not upper and any(self._frontier.values()):
@@ -670,7 +762,7 @@ class SharedKustoReader:
 
     def _preview_step(self) -> bool:
         assert self._available is not None
-        names = sorted(self._cursor_tables)
+        names = sorted(self._cursor_tables - self._cursor_retries.keys())
         if not names or time.monotonic() < self._preview_next:
             return False
         if self._preview is None:
@@ -705,6 +797,7 @@ class SharedKustoReader:
         plan = [
             (name, part)
             for name, spec in self._available.items()
+            if name not in self._cursor_retries
             for part in range(self.config.reconcile_partitions if spec.versioned else 1)
         ]
         if not plan or time.monotonic() < self._reconcile_next:
@@ -758,6 +851,7 @@ class SharedKustoReader:
             self._policy_checked_at.clear()
             self._frontier.clear()
             self._ranges.clear()
+            self._cursor_retries.clear()
             self._preview = self._reconcile = None
             self._preview_stamps.clear()
             self._reconciled_partitions.clear()
@@ -792,6 +886,7 @@ class SharedKustoReader:
                         steps = (
                             self._cursor_step,
                             self._preview_step,
+                            self._retry_cursor_step,
                             self._cursor_step,
                             self._reconcile_step,
                             self._refresh_step,
@@ -811,7 +906,11 @@ class SharedKustoReader:
                     self._publish("status")
                 if successful_query:
                     self._failures = 0
-                active = self._catching_up() or any(b.kind == "changes" for b in self._emitted)
+                active = (
+                    self._catching_up(runnable_only=True)
+                    or any(retry.due <= time.monotonic() for retry in self._cursor_retries.values())
+                    or any(b.kind == "changes" for b in self._emitted)
+                )
                 if not self._stale:
                     self._idle_delay = (
                         self.config.min_poll_s

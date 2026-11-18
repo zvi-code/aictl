@@ -32,7 +32,7 @@ class _ResultTable:
             SimpleNamespace(
                 column_name=name,
                 column_type="bool"
-                if name == "aictl_live_deleted"
+                if name == "aictl_live_deleted" or any(isinstance(row.get(name), bool) for row in rows)
                 else "long"
                 if name in {"rowid", "aictl_live_count"}
                 else "string",
@@ -140,21 +140,21 @@ class FakeSDK:
                 self.after_seed = None
             self.seeded.set()
             return result
-        if query.startswith("union "):
-            rows = []
+        if query.startswith("print ["):
+            flags = {}
             arms = re.findall(
-                r"\(\['([^']+)'\] \| where cursor_after\((\"(?:\\.|[^\"\\])*\")\) and cursor_before_or_at\((\"(?:\\.|[^\"\\])*\")\)",
+                r"\['([^']+)'\]=isnotnull\(toscalar\(\['\1'\] \| where cursor_after\((\"(?:\\.|[^\"\\])*\")\) and cursor_before_or_at\((\"(?:\\.|[^\"\\])*\")\) \| project hit=1 \| take 1\)\)",
                 query,
             )
-            assert arms and len(arms) == query.count(" | take 1 | summarize aictl_live_count=count()")
+            assert arms and len(arms) == query.count("cursor_after(")
             for name, lower, upper in arms:
                 low, high = map(self._position, (json.loads(lower), json.loads(upper)))
                 source = self.rows if name == "sessions" else self.raw_rows if name == "OTELLogs" else []
                 changed = any(row["_cursor"] is not None and low < row["_cursor"] <= high for row in source)
-                rows.append({"aictl_live_table": name, "aictl_live_count": int(changed)})
+                flags[name] = changed
             if self.probe_hook is not None:
-                return self.probe_hook(rows)
-            return response(rows)
+                return self.probe_hook([flags])
+            return response([flags])
         if "summarize aictl_live_count" in query:
             assert query.startswith("['OTELLogs']")
             candidates = self.raw_rows
@@ -274,7 +274,7 @@ def test_idle_cursor_poll_skips_all_tables_and_active_probes_share_one_fixed_upp
     reader.poll_once()
     sdk.add("after-capture", "v2")
     events = drain_range(reader)
-    probes = [q for q in sdk.queries if q.startswith("union ")]
+    probes = [q for q in sdk.queries if q.startswith("print [")]
     sizes = [q.count("cursor_after(") for q in probes]
     assert sum(sizes) == 55 and max(sizes) <= 4
     assert all(q.count('cursor_before_or_at("opaque-1")') == size for q, size in zip(probes, sizes, strict=True))
@@ -285,7 +285,7 @@ def test_idle_cursor_poll_skips_all_tables_and_active_probes_share_one_fixed_upp
     assert [row.key for row in row_hints(drain_range(reader))] == [("after-capture",)]
 
 
-@pytest.mark.parametrize("failure", ["partial", "missing_arm"])
+@pytest.mark.parametrize("failure", ["partial", "missing_arm", "invalid_flag"])
 def test_failed_probe_retries_its_exact_range_without_advancing_or_reprobing_completed_tables(failure):
     sdk = FakeSDK()
     sdk.raw_enabled = True
@@ -300,7 +300,11 @@ def test_failed_probe_retries_its_exact_range_without_advancing_or_reprobing_com
     detect(reader)
     expected = {"OTELLogs": "opaque-1", "sessions": "opaque-0"}
     assert reader.latest_status().frontier == expected
-    sdk.probe_hook = lambda rows: response(rows, errors=1) if failure == "partial" else response([])
+    sdk.probe_hook = lambda rows: (
+        response(rows, errors=1)
+        if failure == "partial"
+        else response([{} if failure == "missing_arm" else {"sessions": None}])
+    )
     failed = reader.poll_once()
     assert failed[-1].stale and failed[-1].frontier == expected
     failed_query = sdk.queries[-1]
@@ -310,6 +314,92 @@ def test_failed_probe_retries_its_exact_range_without_advancing_or_reprobing_com
     assert reader.latest_status().frontier == expected
     assert [row.key for row in row_hints(drain_range(reader))] == [("pending",)]
     assert set(reader.latest_status().frontier.values()) == {"opaque-1"}
+
+
+def fail_low_memory():
+    from azure.kusto.data.exceptions import KustoMultiApiError
+
+    raise KustoMultiApiError(
+        [
+            {
+                "OneApiErrors": [
+                    {
+                        "error": {
+                            "code": "LowMemoryCondition",
+                            "message": "bad allocation",
+                            "@message": "E_LOW_MEMORY_CONDITION",
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+
+def test_memory_failure_splits_batch_backs_off_one_table_and_lets_others_pass_watermark(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("aictl.kusto.live_reader.time.monotonic", lambda: clock[0])
+    sdk = FakeSDK()
+    sdk.raw_enabled = True
+    reader = SharedKustoReader(
+        SETTINGS,
+        client=sdk,
+        table_names=("OTELLogs", "sessions"),
+        config=ReaderConfig(queries_per_poll=1, min_poll_s=2, max_error_s=4, failures_before_resync=1),
+    )
+    initialize(reader)
+    sdk.add_raw()
+    sdk.probe_hook = lambda rows: fail_low_memory() if "OTELLogs" in rows[0] else response(rows)
+    detect(reader)
+    reader._capture_next = float("inf")
+    assert reader.latest_status().stale and reader.latest_status().reason == "cursor_memory_retry"
+    for _ in range(5):
+        reader.poll_once()
+    assert reader.latest_status().frontier == {"OTELLogs": "opaque-0", "sessions": "opaque-1"}
+    assert reader.latest_status().details["cursor_memory_retry_tables"] == ["OTELLogs"]
+
+    sdk.add("newer", "v2")
+    reader._capture_next = 0
+    events = [b for _ in range(5) for b in reader.poll_once()]
+    assert [row.key for row in row_hints(events)] == [("newer",)]
+    assert reader.latest_status().frontier == {"OTELLogs": "opaque-0", "sessions": "opaque-2"}
+    assert reader.latest_status().stale
+    single = [q for q in sdk.queries if q.startswith("print ['OTELLogs']") and q.count("toscalar(") == 1]
+    assert len(single) == 1
+    for delay in (2, 4, 4):
+        clock[0] += delay
+        reader.poll_once()
+        reader.poll_once()
+    assert sdk.queries.count(single[0]) == 4
+    sdk.probe_hook = None
+    clock[0] += 4
+    recovered = [b for _ in range(6) for b in reader.poll_once()]
+    assert any(b.changed_tables == ("OTELLogs",) and b.frontier["OTELLogs"] == "opaque-1" for b in recovered)
+    assert not reader.latest_status().stale
+    assert set(reader.latest_status().frontier.values()) == {"opaque-2"}
+
+
+def test_memory_failure_mid_page_preserves_the_page_token_and_retry_upper(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("aictl.kusto.live_reader.time.monotonic", lambda: clock[0])
+    sdk = FakeSDK()
+    reader = make_reader(sdk, page_size=1, failures_before_resync=1)
+    initialize(reader)
+    sdk.add("a", "v1")
+    sdk.add("b", "v1")
+    detect(reader)
+    assert [row.key for row in row_hints(reader.poll_once())] == [("a",)]
+    sdk.page_hook = lambda query, rows: fail_low_memory()
+    reader.poll_once()
+    failed = sdk.queries[-1]
+    assert reader.latest_status().stale and reader.latest_status().frontier == {"sessions": "opaque-0"}
+    sdk.add("c", "v1")
+    sdk.page_hook = None
+    clock[0] += 1
+    recovered = reader.poll_once()
+    assert sdk.queries[-1] == failed
+    assert [row.key for row in row_hints(recovered)] == [("b",)]
+    assert reader.latest_status().frontier == {"sessions": "opaque-2"} and not reader.latest_status().stale
 
 
 def test_bootstrap_checkpoint_precedes_concurrent_other_machine_writes():
@@ -726,3 +816,21 @@ def test_query_properties_bound_work_and_disable_stale_result_caching():
     assert props.get_option("max_memory_consumption_per_query_per_node", None) == reader.config.query_memory_bytes
     assert props.get_option("query_fanout_threads_percent", None) == 25
     assert not props.get_option("deferpartialqueryfailures", None)
+
+
+def test_memory_override_is_applied_only_to_probes(monkeypatch):
+    monkeypatch.setenv("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB", "256")
+    sdk = FakeSDK()
+    reader = SharedKustoReader(SETTINGS, client=sdk, tables={"sessions": TABLE})
+    initialize(reader)
+    sdk.add("seen", "v2")
+    detect(reader)
+    drain_range(reader)
+    assert any(q.startswith("print [") for q in sdk.queries)
+    for query, props in zip(sdk.queries, sdk.properties, strict=True):
+        memory = 256 * 1024**2 if query.startswith("print [") else reader.config.query_memory_bytes
+        assert props.get_option("maxmemoryconsumptionperiterator", None) == memory
+        assert props.get_option("max_memory_consumption_per_query_per_node", None) == memory
+    monkeypatch.setenv("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB", "-1")
+    with pytest.raises(ValueError, match="AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB"):
+        SharedKustoReader(SETTINGS, client=sdk, tables={"sessions": TABLE})
