@@ -3677,6 +3677,42 @@ def _no_legacy(sid, since, until):
 
 
 class TestAgentFlow:
+    def test_skill_evidence_separates_file_load_invocation_and_reported_context(self, db, monkeypatch):
+        from aictl.dashboard import flow_skills
+        from aictl.storage import CallFacts, SessionStepRow
+
+        t = NOW - 60
+        _seed_flow(db, NOW - DAY)
+        db.write_call_facts(CallFacts(steps=[
+            SessionStepRow("inv", t, "flow-s", "skill", name="testing", phase="invoked", source="skill.invoked"),
+            SessionStepRow("res", t + 2, "flow-s", "skill", name="document", phase="resolved", source="session.skills_loaded"),
+        ]))
+        conn = db._conn()
+        _insert(conn, "skill_uses", dedup_key="old", ts=t, session_id="flow-s", name="testing", trigger="agent-invoked")
+        for sid in ("flow-s", "other"):
+            _insert(conn, "session_loaded_files", session_id=sid, path=r"C:\repo\testing\SKILL.md", how="skill", ts=t)
+        conn.commit()
+        _, page = board_api.agent_flow(db, "flow-s", now=NOW, category="skills")
+        assert [(r["name"], r["phase"]) for r in page["turns"]] == [
+            ("testing", "invoked"), ("testing", "loaded"), ("document", "resolved")]
+        assert page["scope"]["skills"] == ["document", "testing"]
+        _, filtered = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_name="TESTING", skill_phase="loaded", limit=1)
+        assert filtered["scope"]["matched"] == 1 and filtered["turns"][0]["source"] == "session_loaded_files"
+        _, later = board_api.agent_flow(db, "flow-s", since=t+1, until=NOW, category="skills")
+        assert [r["phase"] for r in later["turns"]] == ["resolved"]
+
+        monkeypatch.setattr(type(db), "streams_observations", property(lambda _: True))
+        otel_calls = []
+        def reported(_conn, sid, lo, hi):
+            otel_calls.append(sid)
+            return [{"type": "skill_event", "name": "testing", "ts": t, "phase": "reported", "source": "otel",
+                     "step_key": "span-skill:testing", "reported_spans": 8, "last_ts": t+3}]
+        monkeypatch.setattr(flow_skills, "_otel", reported)
+        _, spans = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="reported")
+        _, invoked = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="invoked")
+        assert len(spans["turns"]) == 1 and spans["turns"][0]["reported_spans"] == 8
+        assert len(invoked["turns"]) == 1 and otel_calls == ["flow-s"]
+
     def test_user_prompt_filter_prefers_authored_messages_and_never_uses_delegation_text(self, db):
         from aictl.storage import CallFacts, SessionStepRow
 

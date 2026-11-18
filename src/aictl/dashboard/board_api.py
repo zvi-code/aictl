@@ -4888,6 +4888,7 @@ def agent_flow(
     limit: int | None = None,
     *,
     q: str = "", category: str = "", tool_name: str = "", flow_agent: str = "", failed: bool = False,
+    skill_name: str = "", skill_phase: str = "",
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
@@ -4898,19 +4899,29 @@ def agent_flow(
     """
     now = time.time() if now is None else now
     lo, hi = since if since is not None else 0.0, until if until is not None else now + 60.0
-    found = _session_flow(db, agent_id, lo, hi, legacy_flow)
-    if found is None:
-        return 404, {"error": "No such agent"}
     from .flow_filters import select_events, session_kql_url
 
-    sid, records, source = found
-    events = [dict(e) for e in records]  # aggregation annotates events; don't mutate another reader's cached flow
-    cumulative, largest = _aggregate_flow(events)
-    summary = _flow_summary(events, source, cumulative, largest)
+    if category == "skills" or skill_name or skill_phase:
+        from .flow_skills import skill_events
+
+        conn = db._conn()
+        sid, _ = _resolve_agent(conn, agent_id)
+        events = skill_events(db, sid, lo, hi, live_end=until is None)
+        if not events and not _flow_session_known(conn, sid):
+            return 404, {"error": "No such agent"}
+        summary = {"skill_evidence": True, "event_count": len(events)}
+    else:
+        found = _session_flow(db, agent_id, lo, hi, legacy_flow)
+        if found is None:
+            return 404, {"error": "No such agent"}
+        sid, records, source = found
+        events = [dict(e) for e in records]  # aggregation annotates events; don't mutate another reader's cached flow
+        cumulative, largest = _aggregate_flow(events)
+        summary = _flow_summary(events, source, cumulative, largest)
     keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
     capture = getattr(db, "capture", "full")
     matches, scope = select_events(events, q=q, category=category, tool_name=tool_name, flow_agent=flow_agent,
-                                   failed=failed, allow_text=capture == "full")
+                                   failed=failed, allow_text=capture == "full", skill_name=skill_name, skill_phase=skill_phase)
     shown = matches[-keep:]
     summary["shown_events"] = len(shown)
     summary["omitted_events"] = len(matches) - len(shown)

@@ -559,7 +559,7 @@ class _APIHandlersMixin:
                 raise ValueError("failed must be 0 or 1")
             status, payload = agent_flow(
                 self._db, agent_id, since, until, limit=limit, failed=failed == "1",
-                **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent")},
+                **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
             )
         except ValueError as exc:
             self._json_response({"error": str(exc)}, status=400)

@@ -10,7 +10,7 @@ _CATEGORY = {
     "user_message": "messages", "api_response": "messages", "api_call": "models", "error": "models",
     "tool_use": "tools", "subagent": "agents", "subagent_end": "agents", "compaction": "context",
     "hook": "hooks", "session_start": "lifecycle", "session_end": "lifecycle",
-    "session_command": "lifecycle", "context_update": "context", "skill_event": "tools",
+    "session_command": "lifecycle", "context_update": "context", "skill_event": "skills",
 }
 _META = ("type", "subtype", "agent_id", "agent_name", "model", "from", "to", "hook_name", "source", "name", "phase",
          "error_type", "finish_reason", "decision", "turn_id", "tool_call_id", "exit_code")
@@ -18,19 +18,24 @@ _TEXT = ("message", "preview", "prompt", "response", "response_preview", "target
          "request_preview", "result_summary", "result_preview", "error_message", "hook_input", "hook_output")
 
 
-def select_events(events, *, q="", category="", tool_name="", flow_agent="", failed=False, allow_text=True):
+def select_events(events, *, q="", category="", tool_name="", flow_agent="", failed=False, allow_text=True, skill_name="", skill_phase=""):
     if category and category != "prompts" and category not in _CATEGORY.values():
         raise ValueError("Unknown Flow event category")
     if any(len(s) > maximum or any(ord(c) < 32 for c in s)
-           for s, maximum in ((q, 160), (tool_name, 256), (flow_agent, 384))):
+           for s, maximum in ((q, 160), (tool_name, 256), (flow_agent, 384), (skill_name, 256))):
         raise ValueError("Invalid Flow filter")
+    if skill_phase not in ("", "loaded", "invoked", "resolved", "reported"):
+        raise ValueError("Unknown skill evidence phase")
     terms = q.casefold().split()
     visible = []
-    tools, agents, models = set(), set(), set()
+    tools, agents, models, skills = set(), set(), set(), set()
     for event in events:
         kind = event["type"]
         tool = event.get("to") if kind == "tool_use" else None
         agent = event.get("agent_id")
+        skill = event.get("name") if kind == "skill_event" else None
+        if skill:
+            skills.add(skill)
         if tool:
             tools.add(tool)
         if agent:
@@ -38,7 +43,9 @@ def select_events(events, *, q="", category="", tool_name="", flow_agent="", fai
         if event.get("model"):
             models.add(event["model"])
         category_match = kind == "user_message" if category == "prompts" else not category or _CATEGORY.get(kind) == category
-        if not category_match or (tool_name and tool != tool_name) or (flow_agent and agent != flow_agent):
+        if (not category_match or (tool_name and tool != tool_name) or (flow_agent and agent != flow_agent)
+                or (skill_name and (skill or "").casefold() != skill_name.casefold())
+                or (skill_phase and (not skill or event.get("phase") != skill_phase))):
             continue
         if failed and not (kind == "error" or event.get("is_error") in (True, "true")
                            or event.get("success") in (False, "false")):
@@ -52,7 +59,8 @@ def select_events(events, *, q="", category="", tool_name="", flow_agent="", fai
     return visible, {"total": len(events), "matched": len(visible),
                      "start": events[0]["ts"] if events else None,
                      "end": max((e.get("end_ts") or e["ts"] for e in events), default=None),
-                     "tools": sorted(tools, key=str.casefold), "agents": sorted(agents), "models": sorted(models)}
+                     "tools": sorted(tools, key=str.casefold), "agents": sorted(agents), "models": sorted(models),
+                     "skills": sorted(skills, key=str.casefold)}
 
 
 def session_kql_url(settings, sid: str, since: float | None, until: float | None) -> str | None:
