@@ -112,6 +112,14 @@ _AICTL_TAIL = (
     ("MachineId", "string", "aictl: resource host.id, else host.name, else the receiving host"),
     ("RowKey", "string", "aictl: SHA-256 of the row identity; equal for a retried export"),
 )
+_SPAN_DIMENSIONS = {
+    "TurnId": "github.copilot.turn_id",
+    "OperationName": "gen_ai.operation.name",
+    "AgentName": "gen_ai.agent.name",
+    "ToolName": "gen_ai.tool.name",
+    "ToolCallId": "gen_ai.tool.call.id",
+}
+_SPAN_TOKEN_COUNTS = {"InputTokens": "gen_ai.usage.input_tokens", "OutputTokens": "gen_ai.usage.output_tokens"}
 
 TABLES: tuple[Table, ...] = (
     Table(
@@ -176,6 +184,8 @@ TABLES: tuple[Table, ...] = (
             *_AICTL_IDENTITY,
             *_AICTL_MODEL,
             *_AICTL_TAIL,
+            *((name, "string", f"aictl: span attribute {key}") for name, key in _SPAN_DIMENSIONS.items()),
+            *((name, "long", f"aictl: reported {key}; null when unknown") for name, key in _SPAN_TOKEN_COUNTS.items()),
         ),
         13,
         "OpenTelemetry spans",
@@ -1007,6 +1017,14 @@ def _span_row(span: dict, resource: dict, scope: dict, tool: str, machine: str, 
         if len(row["SpanStatusMessage"]) > PREVIEW_CHARS:
             row["TraceAttributes"]["aictl.status_message_chars"] = len(row["SpanStatusMessage"])
             row["SpanStatusMessage"] = ""
+    attrs = row["TraceAttributes"]
+    for column, key in _SPAN_DIMENSIONS.items():
+        value = attrs.get(key)
+        # Don't turn a long or structured payload into an identifier or truncate it into a different key.
+        row[column] = value if isinstance(value, str) and len(value) <= _EVENT_TEXT_MAX_CHARS else ""
+    for column, key in _SPAN_TOKEN_COUNTS.items():
+        value = attrs.get(key)
+        row[column] = value if type(value) is int and 0 <= value < 2**63 else None
     _make_safe(row, bags, lists, sp, src)
     return row
 

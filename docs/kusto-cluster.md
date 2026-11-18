@@ -344,8 +344,12 @@ With a cluster configured, everything a tool exports to the daemon's OTLP endpoi
 | --- | --- | --- |
 | `OTELLogs` | log record | `EventName`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
 | `OTELMetrics` | data point (a histogram is `_sum`, `_count`, `_bucket`, `_min`, `_max` rows) | `StartTime`, `Temporality`, `Monotonic`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
-| `OTELTraces` | span | `DurationMs`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
+| `OTELTraces` | span | `DurationMs`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey`, `TurnId`, `OperationName`, `AgentName`, `ToolName`, `ToolCallId`, `InputTokens`, `OutputTokens` |
 | `OTELPayloads` | chunk of a large text | aictl's own table |
+
+New spans expose the reported turn, operation, agent, tool and token usage as physical
+columns. `Tool` identifies the exporter; `ToolName` identifies the invoked tool.
+Absent token counts are null, not zero. `InputTokens` is request usage, not a context-window limit.
 
 The tables are created with the first export, and `.show table OTELLogs schema as json` carries a description of every column. A request is converted and put on a local queue without a call to the cluster; one thread per table sends what has gathered within 0.2 s, so the four tables are submitted in parallel and a slow cluster never holds up the tool that is exporting. In remote `auto` mode, these sends upload and enqueue DM sources; DM's batching policy controls ingestion time. Rows refused synchronously for now stay on the local queue and are sent again. The `kusto` block of `/api/otel-status` shows rows queued locally, sent, waiting, rejected and dropped, per table, with the last local/submission error. For queued mode, `rows_sent`, `last_sent_at` and a successful sink `flush()` mean **submitted**, not ingested; these counters do not report downstream DM failures.
 
