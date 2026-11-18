@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from functools import lru_cache
@@ -304,13 +305,30 @@ class ObservedKustoClient:
         if getattr(self._responses, "active", False):
             self._responses.value = response
 
+    @staticmethod
+    def _prepare_request_id(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+        properties = args[0] if args else kwargs.get("properties")
+        current = getattr(properties, "client_request_id", None)
+        if properties is None or (current is not None and not str(current).startswith("KPC.aictl;")):
+            return current
+        request_id = f"KPC.aictl;{uuid.uuid4()}"
+        properties.client_request_id = request_id
+        return request_id
+
     def _call(
-        self, call: Callable[[], Any], database: str, *, kql: str | None = None, request: str | None = None
+        self,
+        call: Callable[[], Any],
+        database: str,
+        *,
+        kql: str | None = None,
+        request: str | None = None,
+        client_request_id: str | None = None,
     ) -> Any:
         from .kusto.diagnostics import log_failure
 
         self._responses.active = True
         self._responses.value = None
+        started = time.monotonic()
         try:
             return call()
         except Exception as exc:  # noqa: BLE001 - diagnostics must preserve every SDK failure
@@ -322,6 +340,8 @@ class ObservedKustoClient:
                 kql=kql,
                 request=request,
                 response=self._responses.value,
+                client_request_id=client_request_id,
+                elapsed_s=time.monotonic() - started,
             )
             raise
         finally:
@@ -329,19 +349,35 @@ class ObservedKustoClient:
             self._responses.value = None
 
     def execute(self, database: str, query: str, *args: Any, **kwargs: Any) -> Any:
+        client_request_id = self._prepare_request_id(args, kwargs)
         return self.reads.call(
-            lambda: self._call(lambda: self.client.execute(database, query, *args, **kwargs), database, kql=query)
+            lambda: self._call(
+                lambda: self.client.execute(database, query, *args, **kwargs),
+                database,
+                kql=query,
+                client_request_id=client_request_id,
+            )
         )
 
     def execute_query(self, database: str, query: str, *args: Any, **kwargs: Any) -> Any:
+        client_request_id = self._prepare_request_id(args, kwargs)
         return self.reads.call(
-            lambda: self._call(lambda: self.client.execute_query(database, query, *args, **kwargs), database, kql=query)
+            lambda: self._call(
+                lambda: self.client.execute_query(database, query, *args, **kwargs),
+                database,
+                kql=query,
+                client_request_id=client_request_id,
+            )
         )
 
     def execute_mgmt(self, database: str, command: str, *args: Any, **kwargs: Any) -> Any:
+        client_request_id = self._prepare_request_id(args, kwargs)
         return self.commands.call(
             lambda: self._call(
-                lambda: self.client.execute_mgmt(database, command, *args, **kwargs), database, kql=command
+                lambda: self.client.execute_mgmt(database, command, *args, **kwargs),
+                database,
+                kql=command,
+                client_request_id=client_request_id,
             )
         )
 

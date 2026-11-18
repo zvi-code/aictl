@@ -6,7 +6,7 @@ from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
-from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+from azure.kusto.data import ClientRequestProperties, KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoMultiApiError, KustoServiceError
 from azure.kusto.ingest import QueuedIngestClient
 from requests import Response
@@ -36,16 +36,20 @@ def test_query_failures_log_full_kql_and_exact_body(method, caplog):
     kql = "events\n| where text == " + json.dumps("x" * 2500)
     body = ' {\r\n  "error": ' + json.dumps("detailed failure " * 300) + "\r\n}\n"
     error = KustoServiceError("shortened SDK error", http_response(body))
+    properties = ClientRequestProperties()
 
     def fail(*_args):
         raise error
 
     client = ObservedKustoClient(SimpleNamespace(**{method: fail}), cluster=CLUSTER)
     with pytest.raises(KustoServiceError) as raised:
-        getattr(client, method)("history", kql)
+        getattr(client, method)("history", kql, properties)
     assert raised.value is error
     (message,) = failures(caplog)
-    assert f"Cluster: {CLUSTER}\nDatabase: history\nKQL:\n{kql}\nHTTP status: 400\nResponse body:\n{body}" in message
+    assert f"Cluster: {CLUSTER}\nDatabase: history\nClient request ID: {properties.client_request_id}\n" in message
+    assert properties.client_request_id.startswith("KPC.aictl;")
+    assert f"KQL:\n{kql}\nHTTP status: 400\nResponse body:\n{body}" in message
+    assert "Elapsed: " in message
     counter = client.commands if method == "execute_mgmt" else client.reads
     assert counter.snapshot()["failed"] == 1
 
@@ -228,3 +232,19 @@ def test_last_retry_failure_is_logged_too(monkeypatch, caplog):
     with pytest.raises(KustoServiceError):
         retrying(lambda: client.execute("history", "events | count"), "query")
     assert len(attempts) == len(failures(caplog)) == 2
+
+
+def test_retry_attempts_use_distinct_correlatable_request_ids():
+    seen = []
+    properties = ClientRequestProperties()
+
+    def fail(_database, _query, request_properties):
+        seen.append(request_properties.client_request_id)
+        raise KustoServiceError("failed", http_response("full response", 429))
+
+    client = ObservedKustoClient(SimpleNamespace(execute=fail), cluster=CLUSTER)
+    for _ in range(2):
+        with pytest.raises(KustoServiceError):
+            client.execute("history", "events | count", properties)
+    assert len(set(seen)) == 2
+    assert all(request_id.startswith("KPC.aictl;") for request_id in seen)

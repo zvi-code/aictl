@@ -333,6 +333,63 @@ def test_executemany_batches_inserts_into_one_existence_query():
     assert [r["session_id"] for r in ing.calls[0][1]] == ["a", "b", "c"]
 
 
+def test_executemany_batches_vscode_upserts_into_two_lookup_queries():
+    table = TABLES["vscode_chat_messages"]
+
+    def message(source_row_id, content):
+        return row_defaults(table) | {
+            "session_id": "vscode-chat:session",
+            "source_file": "C:\\logs\\chat.jsonl",
+            "source_row_id": source_row_id,
+            "role": "assistant",
+            "content": content,
+        }
+
+    existing = [
+        message(i, "old")
+        | {
+            "rowid": 100 + i,
+            "_v": "2026-01-01T00:00:00Z",
+            "_deleted": False,
+            "node_id": SETTINGS.node_id,
+        }
+        for i in range(3)
+    ]
+    columns = [(name, table.column(name).kusto_type) for name in table.column_names]
+    columns += [("rowid", "long"), ("_v", "datetime"), ("_deleted", "bool"), ("node_id", "string")]
+
+    def on_query(kql):
+        if "let aictl_new = datatable" in kql:
+            return response([("aictl_i", "long")], [[0], [2]])
+        return response(columns, [[row.get(name) for name, _ in columns] for row in existing])
+
+    new_rows = [message(i, f"new-{i}") for i in range(3)]
+    client = FakeClient(on_query=on_query)
+    conn = KustoConnection(
+        SETTINGS,
+        client,
+        ingester := FakeIngester(),
+        translator=StubTranslator(
+            {
+                "upsert": lambda p: Insert(
+                    "vscode_chat_messages",
+                    [new_rows[p[0]]],
+                    "update",
+                    update_columns=("role", "content"),
+                    update_kql="(['content'] != ['__new_content'])",
+                )
+            }
+        ),
+        tables=TABLES,
+    )
+    cursor = conn.executemany("upsert", [(0,), (1,), (2,)])
+
+    assert cursor.rowcount == 2 and len(client.queries) == 2
+    assert sum("let aictl_new = datatable" in q for q in client.queries) == 1
+    conn.commit()
+    assert [row["content"] for row in ingester.calls[0][1]] == ["new-0", "new-2"]
+
+
 def test_on_conflict_do_update_merges_update_columns_into_the_current_row():
     cols = [
         ("session_id", "string"),

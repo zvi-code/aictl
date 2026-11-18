@@ -76,6 +76,16 @@ _MAX_CONTENT_CHARS = 20_000
 _HEAD_RE = re.compile(rb'^\{"kind":(\d),"k":\["requests"(?:,(\d+),"(\w+)")?\]')
 _HEAD_BYTES = 256
 _CHUNK_BYTES = 1 << 20
+_MESSAGE_BATCH_ROWS = 200
+_MESSAGE_UPSERT_SQL = (
+    "INSERT INTO vscode_chat_messages"
+    "(session_id, source_file, source_row_id, role, content, model, ts, ingested_at)"
+    " VALUES(?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(session_id, source_file, source_row_id) DO UPDATE SET"
+    " role = excluded.role, content = excluded.content, model = excluded.model,"
+    " ts = excluded.ts, ingested_at = excluded.ingested_at"
+    " WHERE content != excluded.content"
+)
 
 
 def default_log_dir() -> Path:
@@ -123,6 +133,7 @@ class VSCodeChatLogsIngester:
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
         self._provisioned: set[str] = set()
+        self._message_batch: _MessageBatch | None = None
         # Read position and unfinished requests per file.
         self._files: dict[str, _FileState] = {}
         if last_cursor is None:
@@ -222,38 +233,45 @@ class VSCodeChatLogsIngester:
             self.last_poll_inserted = 0
             return 0
 
-        for path, st in file_entries:
-            key = str(path)
-            prev = self.last_cursor.get(key)
-            if prev and prev == (st.st_mtime, st.st_size):
-                state = self._files.get(key)
-                if state is not None and state.pending and self.last_poll_ts - st.st_mtime > self.idle_after_s:
-                    # The file stopped changing: its last requests are done.
-                    inserted += self._settle(path, state, idle=True)
-                    writer_conn(self.store).commit()
+        if self._message_batch is not None:
+            raise RuntimeError("VS Code message batch is already active")
+        batch = self._message_batch = _MessageBatch()
+        try:
+            for path, st in file_entries:
+                key = str(path)
+                prev = self.last_cursor.get(key)
+                if prev and prev == (st.st_mtime, st.st_size):
+                    state = self._files.get(key)
+                    if state is not None and state.pending and self.last_poll_ts - st.st_mtime > self.idle_after_s:
+                        # The file stopped changing: its last requests are done.
+                        self._settle(path, state, idle=True)
+                        advanced = True
+                    continue
+                try:
+                    _, ok = self._ingest_file(path)
+                except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
+                    log.debug("vscode chat ingester: %s failed (%s)", path, exc)
+                    failed += 1
+                    continue
+                if not ok:
+                    # Parse failure — leave the per-file cursor unadvanced so the
+                    # broken file is retried on the next poll instead of being
+                    # skipped forever.
+                    failed += 1
+                    continue
+                # Refresh mtime/size after ingest — the file may have grown
+                # again in between, but we'll pick that up on the next poll.
+                try:
+                    st2 = path.stat()
+                    self.last_cursor[key] = (st2.st_mtime, st2.st_size)
                     advanced = True
-                continue
-            try:
-                n, ok = self._ingest_file(path)
-            except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
-                log.debug("vscode chat ingester: %s failed (%s)", path, exc)
-                failed += 1
-                continue
-            inserted += n
-            if not ok:
-                # Parse failure — leave the per-file cursor unadvanced so the
-                # broken file is retried on the next poll instead of being
-                # skipped forever.
-                failed += 1
-                continue
-            # Refresh mtime/size after ingest — the file may have grown
-            # again in between, but we'll pick that up on the next poll.
-            try:
-                st2 = path.stat()
-                self.last_cursor[key] = (st2.st_mtime, st2.st_size)
-                advanced = True
-            except OSError:
-                pass
+                except OSError:
+                    pass
+            self._flush_message_batch()
+            writer_conn(self.store).commit()
+            inserted = batch.written
+        finally:
+            self._message_batch = None
 
         self.last_poll_inserted = inserted
         if advanced:
@@ -287,7 +305,13 @@ class VSCodeChatLogsIngester:
         state = self._files.get(key)
         if state is None:
             state = self._files[key] = _FileState()
-        written = 0
+        owns_batch = self._message_batch is None
+        if owns_batch:
+            self._message_batch = _MessageBatch()
+        batch = self._message_batch
+        assert batch is not None
+        start_written = batch.written
+        ok = True
         try:
             with path.open("rb") as fh:
                 st = os.fstat(fh.fileno())
@@ -299,22 +323,26 @@ class VSCodeChatLogsIngester:
                         state.offset = end
                         continue
                     if event.start == 0:
-                        n, ok = self._apply_snapshot(path, state, end)
+                        _, ok = self._apply_snapshot(path, state, end)
                         if not ok:
-                            return written, False
-                        written += n
+                            break
                     else:
-                        written += self._apply(path, state, event)
+                        self._apply(path, state, event)
                     state.offset = end
                 mtime = os.fstat(fh.fileno()).st_mtime
-            written += self._settle(path, state, idle=time.time() - mtime > self.idle_after_s)
+            if ok:
+                self._settle(path, state, idle=time.time() - mtime > self.idle_after_s)
         except OSError as exc:
             log.debug("vscode chat ingester: read %s failed (%s)", path, exc)
-            return written, False
+            ok = False
         finally:
-            # One commit per file; on an error keep the rows already written.
-            writer_conn(self.store).commit()
-        return written, True
+            if owns_batch:
+                try:
+                    self._flush_message_batch()
+                    writer_conn(self.store).commit()
+                finally:
+                    self._message_batch = None
+        return batch.written - start_written, ok
 
     def _apply_snapshot(self, path: Path, state: _FileState, end: int) -> tuple[int, bool]:
         """Start the file's state from its first line, which ends at byte ``end``. Returns ``(written, ok)``.
@@ -400,6 +428,7 @@ class VSCodeChatLogsIngester:
         for idx in [i for i in state.pending if i >= cut]:
             del state.pending[idx]
         state.count = cut
+        self._flush_message_batch()
         writer_conn(self.store).execute(
             "DELETE FROM vscode_chat_messages WHERE source_file = ? AND source_row_id >= ?", (str(path), cut * 2)
         )
@@ -452,18 +481,32 @@ class VSCodeChatLogsIngester:
         ingested_at: float,
     ) -> bool:
         """Insert the row, or replace its content when the text changed. True when a row was written."""
-        conn = writer_conn(self.store)
-        cur = conn.execute(
-            "INSERT INTO vscode_chat_messages"
-            "(session_id, source_file, source_row_id, role, content, model, ts, ingested_at)"
-            " VALUES(?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(session_id, source_file, source_row_id) DO UPDATE SET"
-            " role = excluded.role, content = excluded.content, model = excluded.model,"
-            " ts = excluded.ts, ingested_at = excluded.ingested_at"
-            " WHERE content != excluded.content",
-            (session_id, source_file, source_row_id, role, content[:_MAX_CONTENT_CHARS], model, ts, ingested_at),
+        values = (
+            session_id,
+            source_file,
+            source_row_id,
+            role,
+            content[:_MAX_CONTENT_CHARS],
+            model,
+            ts,
+            ingested_at,
         )
+        if self._message_batch is not None:
+            self._message_batch.rows.append(values)
+            if len(self._message_batch.rows) >= _MESSAGE_BATCH_ROWS:
+                self._flush_message_batch()
+            return True
+        conn = writer_conn(self.store)
+        cur = conn.execute(_MESSAGE_UPSERT_SQL, values)
         return cur.rowcount > 0
+
+    def _flush_message_batch(self) -> None:
+        batch = self._message_batch
+        if batch is None or not batch.rows:
+            return
+        cur = writer_conn(self.store).executemany(_MESSAGE_UPSERT_SQL, batch.rows)
+        batch.written += max(cur.rowcount, 0)
+        batch.rows.clear()
 
     def _correlate(self, vscode_sid: str, ts: float) -> str:
         """Map VS Code's chat sessionId to one of our ``sessions`` rows.
@@ -490,6 +533,12 @@ class VSCodeChatLogsIngester:
 
 
 # ─── helpers ──────────────────────────────────────────────────────
+
+
+@dataclass
+class _MessageBatch:
+    rows: list[tuple[str, str, int, str, str, str, float, float]] = field(default_factory=list)
+    written: int = 0
 
 
 @dataclass

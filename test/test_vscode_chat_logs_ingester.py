@@ -136,6 +136,41 @@ def test_second_poll_unchanged_file_is_noop(tmp_path, our_db):
     assert ingester.poll() == 0
 
 
+def test_poll_uses_one_message_upsert_batch_across_files(monkeypatch, tmp_path, our_db):
+    log_dir = _build_log_tree(tmp_path)
+    first = log_dir / "abcd1234" / "chatSessions" / "session-aaa.jsonl"
+    second = log_dir / "efgh5678" / "chatSessions" / "session-bbb.jsonl"
+    second.parent.mkdir(parents=True)
+    second.write_bytes(first.read_bytes())
+    batches = []
+    singles = []
+
+    class Spy:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, params=()):
+            if sql.startswith("INSERT INTO vscode_chat_messages"):
+                singles.append(sql)
+            return self.conn.execute(sql, params)
+
+        def executemany(self, sql, rows):
+            values = list(rows)
+            if sql.startswith("INSERT INTO vscode_chat_messages"):
+                batches.append(values)
+            return self.conn.executemany(sql, values)
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+    monkeypatch.setattr("aictl.ingesters.vscode_chat_logs.writer_conn", lambda _store: Spy(our_db._conn()))
+    ingester = VSCodeChatLogsIngester(log_dir, our_db)
+
+    assert ingester.poll() == 8
+    assert len(batches) == 1 and len(batches[0]) == 8
+    assert not singles
+
+
 def test_missing_log_dir_returns_zero(tmp_path, our_db):
     ingester = VSCodeChatLogsIngester(tmp_path / "does-not-exist", our_db)
     assert ingester.poll() == 0

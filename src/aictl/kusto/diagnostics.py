@@ -26,6 +26,8 @@ def log_failure(
     kql: str | None = None,
     request: str | None = None,
     response: Any = None,
+    client_request_id: str | None = None,
+    elapsed_s: float | None = None,
 ) -> None:
     """Log the unabridged response body, not the SDK's shortened error message."""
     causes = list(_causes(error))
@@ -53,10 +55,13 @@ def log_failure(
             if partial is not None:
                 body += f"\nSDK partial response (not raw HTTP): {partial!r}"
     log.error(
-        "Kusto %s failed\nCluster: %s\nDatabase: %s\n%s\nHTTP status: %s\nResponse body:\n%s",
+        "Kusto %s failed\nCluster: %s\nDatabase: %s\nClient request ID: %s\nElapsed: %s\n%s\n"
+        "HTTP status: %s\nResponse body:\n%s",
         operation,
         cluster,
         database,
+        client_request_id or "unavailable",
+        f"{elapsed_s:.3f} s" if elapsed_s is not None else "unavailable",
         f"KQL:\n{kql}" if kql is not None else f"Request (no KQL):\n{request}",
         status if status is not None else "unavailable",
         body,
