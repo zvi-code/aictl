@@ -23,6 +23,23 @@ def _existing_paths(paths: list[Path]) -> tuple[Path, ...]:
     return tuple(result)
 
 
+def is_too_broad_for_workspace(path: Path) -> bool:
+    """True for a drive root, the home folder, or a folder that contains the home folder.
+
+    Every process and background service writes below these. Used as a project
+    workspace, such a folder is watched as a whole and its system file activity
+    is attributed to AI sessions.
+    """
+    resolved = path.expanduser().resolve()
+    if resolved == Path(resolved.anchor):
+        return True
+    try:
+        home = Path.home().resolve()
+    except (RuntimeError, OSError):
+        return False
+    return home.is_relative_to(resolved)
+
+
 def default_state_paths(root: Path) -> tuple[Path, ...]:
     """Global state roots relevant to live AI-tool monitoring."""
 
@@ -111,7 +128,7 @@ class MonitorConfig:
         resolved_root = root.expanduser().resolve()
         return cls(
             root=resolved_root,
-            workspace_paths=(resolved_root,),
+            workspace_paths=() if is_too_broad_for_workspace(resolved_root) else (resolved_root,),
             state_paths=default_state_paths(resolved_root),
             **kwargs,
         )

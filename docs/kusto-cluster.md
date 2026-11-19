@@ -214,7 +214,7 @@ The Windows dashboard also compares project paths without case or separator diff
 
 ### Starting a persistent daemon on Windows
 
-Run from the workspace you want to scan, or pass `--root`. To update an existing installation, stop the daemon and follow the reinstall steps in [HOWTO.md](../HOWTO.md) before starting it again:
+Run from the workspace you want to scan, or pass `--root`. Use a project folder: when the root is a drive root (for example `C:\`), the home folder, or a folder that contains the home folder, the daemon still discovers tool files and watches the tools' state folders, but it does not watch the root as a project. The daemon logs a warning at startup in this case. To update an existing installation, stop the daemon and follow the reinstall steps in [HOWTO.md](../HOWTO.md) before starting it again:
 
 ```powershell
 aictl daemon serve --stop

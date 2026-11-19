@@ -218,6 +218,29 @@ def test_correlator_resolves_network_via_parent_pid(tmp_path):
     assert session.tool == "claude-code"
 
 
+def test_drive_root_or_home_is_not_a_project_workspace(tmp_path):
+    from aictl.monitoring.runtime import DiscoveryCollector
+
+    drive = Path(tmp_path.anchor)
+    for broad in (drive, Path.home()):
+        config = MonitorConfig.for_root(broad)
+        assert config.workspace_paths == ()
+        assert DiscoveryCollector(config)._root == config.root
+    assert MonitorConfig.for_root(tmp_path).workspace_paths == (tmp_path.resolve(),)
+
+    # A drive-root daemon must not attribute unrelated system file writes to an AI session.
+    config = MonitorConfig.for_root(drive)
+    correlator = SessionCorrelator(config)
+    process = ProcessInfo(
+        pid=555, ppid=1, name="node", exe="/usr/local/bin/node", cmdline=("node", "/usr/local/bin/claude", "--print"), cwd=str(drive)
+    )
+    correlator.on_process(process, cpu_percent=1.0, memory_rss=0, child_count=0, is_new=True)
+    log_path = drive / "WindowsAzure" / "Logs" / "agent.log"
+    correlator.on_file(str(log_path), growth_bytes=100, workspace=config.workspace_for_path(log_path))
+
+    assert [(r.tool, r.files_touched) for r in correlator.tool_reports()] == [("claude-code", 0)]
+
+
 def test_correlator_builds_report(tmp_path):
     config = MonitorConfig.for_root(tmp_path)
     correlator = SessionCorrelator(config, workspace_sizes={str(tmp_path): 5 * 1024 * 1024})
