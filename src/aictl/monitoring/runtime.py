@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import logging
 import os
 import sys
 import time
@@ -27,10 +26,8 @@ from .collectors.network import (
     PsutilFallbackNetworkCollector,
     WindowsNetworkCollector,
 )
-from .config import MonitorConfig, is_too_broad_for_workspace
+from .config import MonitorConfig
 from .correlator import MonitorSnapshot, SessionCorrelator
-
-log = logging.getLogger(__name__)
 
 # ── Discovery collector ─────────────────────────────────────────────────────
 
@@ -118,12 +115,6 @@ class MonitorRuntime:
         self.config = config
         self.platform = CURRENT_PLATFORM
         self.sink = sink
-        if not config.workspace_paths and is_too_broad_for_workspace(config.root):
-            log.warning(
-                "Monitor root %s is a drive root or home folder; file activity below it is not watched as a project. "
-                "Start the daemon with --root <project folder> to watch a project.",
-                config.root,
-            )
         self.workspace_sizes = {str(path): _dir_size(path, config.ignored_dir_names) for path in config.workspace_paths}
         self.correlator = SessionCorrelator(config, workspace_sizes=self.workspace_sizes, sink=sink)
         self.collectors = self._build_collectors()

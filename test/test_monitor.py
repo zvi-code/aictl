@@ -218,27 +218,43 @@ def test_correlator_resolves_network_via_parent_pid(tmp_path):
     assert session.tool == "claude-code"
 
 
-def test_drive_root_or_home_is_not_a_project_workspace(tmp_path):
+def test_root_is_a_project_workspace_only_inside_a_git_work_tree(tmp_path):
     from aictl.monitoring.runtime import DiscoveryCollector
 
-    drive = Path(tmp_path.anchor)
-    for broad in (drive, Path.home()):
-        config = MonitorConfig.for_root(broad)
-        assert config.workspace_paths == ()
-        assert DiscoveryCollector(config)._root == config.root
-    assert MonitorConfig.for_root(tmp_path).workspace_paths == (tmp_path.resolve(),)
+    # A folder such as C:\ that holds many projects is not one project.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    config = MonitorConfig.for_root(plain)
+    assert config.workspace_paths == ()
+    assert DiscoveryCollector(config)._root == config.root
 
-    # A drive-root daemon must not attribute unrelated system file writes to an AI session.
-    config = MonitorConfig.for_root(drive)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src").mkdir()
+    assert MonitorConfig.for_root(repo).workspace_paths == (repo.resolve(),)
+    assert MonitorConfig.for_root(repo / "src").workspace_paths == ((repo / "src").resolve(),)
+
+    # A process outside any repository is not given unrelated file writes.
     correlator = SessionCorrelator(config)
     process = ProcessInfo(
-        pid=555, ppid=1, name="node", exe="/usr/local/bin/node", cmdline=("node", "/usr/local/bin/claude", "--print"), cwd=str(drive)
+        pid=555, ppid=1, name="node", exe="/usr/local/bin/node", cmdline=("node", "/usr/local/bin/claude", "--print"), cwd=str(plain)
     )
     correlator.on_process(process, cpu_percent=1.0, memory_rss=0, child_count=0, is_new=True)
-    log_path = drive / "WindowsAzure" / "Logs" / "agent.log"
-    correlator.on_file(str(log_path), growth_bytes=100, workspace=config.workspace_for_path(log_path))
+    correlator.on_file(str(plain / "WindowsAzure" / "Logs" / "agent.log"), growth_bytes=100)
 
     assert [(r.tool, r.files_touched) for r in correlator.tool_reports()] == [("claude-code", 0)]
+
+
+def test_tool_home_excludes_the_projects_own_tool_folders(tmp_path):
+    repo = tmp_path / "repo"
+    home_tool = tmp_path / "home" / ".claude"
+    for folder in (repo / ".git", repo / ".claude", home_tool):
+        folder.mkdir(parents=True)
+    config = MonitorConfig(root=repo, workspace_paths=(repo,), state_paths=(home_tool, repo / ".claude"))
+
+    assert config.tool_home_for_path(home_tool / "projects" / "a.jsonl") == str(home_tool.resolve())
+    assert config.tool_home_for_path(repo / ".claude" / "settings.json") is None
+    assert config.tool_home_for_path(repo / "src" / "a.py") is None
 
 
 def test_correlator_builds_report(tmp_path):
@@ -260,7 +276,6 @@ def test_correlator_builds_report(tmp_path):
         str(tmp_path / ".copilot" / "session-state" / "one.json"),
         growth_bytes=4096,
         tool_hint="copilot-cli",
-        workspace=str(tmp_path),
     )
     correlator.on_telemetry(input_tokens=1200, output_tokens=400, tool_hint="copilot-cli")
 
@@ -474,7 +489,6 @@ def test_session_files_loaded_from_on_file(tmp_path):
         str(tmp_path / "CLAUDE.md"),
         growth_bytes=0,
         tool_hint="copilot-cli",
-        workspace=str(tmp_path),
         sent_to_llm="yes",
     )
     # File with sent_to_llm=conditional → also in files_loaded
@@ -482,7 +496,6 @@ def test_session_files_loaded_from_on_file(tmp_path):
         str(tmp_path / ".copilot" / "rules" / "auth.md"),
         growth_bytes=0,
         tool_hint="copilot-cli",
-        workspace=str(tmp_path),
         sent_to_llm="conditional",
     )
     # File without sent_to_llm → NOT in files_loaded
@@ -490,7 +503,6 @@ def test_session_files_loaded_from_on_file(tmp_path):
         str(tmp_path / "output.log"),
         growth_bytes=100,
         tool_hint="copilot-cli",
-        workspace=str(tmp_path),
     )
 
     sessions = correlator.active_sessions()
@@ -555,9 +567,9 @@ def test_session_for_tool_prefers_workspace_match(tmp_path):
     root = tmp_path.resolve()
     ws_a = root / "proj-a"
     ws_b = root / "proj-b"
-    ws_a.mkdir()
-    ws_b.mkdir()
-    config = MonitorConfig(root=root, workspace_paths=(ws_a, ws_b), state_paths=())
+    (ws_a / ".git").mkdir(parents=True)
+    (ws_b / ".git").mkdir(parents=True)
+    config = MonitorConfig(root=root, workspace_paths=(), state_paths=())
     correlator = SessionCorrelator(config)
 
     now = _time.time()
@@ -1066,13 +1078,15 @@ def test_tail_reads_a_file_created_after_the_start_from_its_first_line(tmp_path)
     assert [s["input_tokens"] for s in collector._parse_file(log)] == [70]
 
 
-def test_a_file_event_carries_its_session_project(tmp_path):
-    (tmp_path / ".git").mkdir()
-    config = MonitorConfig.for_root(tmp_path)
+def test_a_tool_home_file_event_carries_its_session_project(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    config = MonitorConfig.for_root(repo)
     correlator = SessionCorrelator(config)
-    process = ProcessInfo(pid=101, ppid=1, name="copilot", exe="/usr/local/bin/copilot", cmdline=("copilot", "chat"), username="user", cwd=str(tmp_path))
+    process = ProcessInfo(pid=101, ppid=1, name="copilot", exe="/usr/local/bin/copilot", cmdline=("copilot", "chat"), username="user", cwd=str(repo))
     correlator.on_process(process, cpu_percent=1.0, memory_rss=0, child_count=0, is_new=True)
-    correlator.on_file(str(tmp_path / "src" / "a.py"), growth_bytes=10, tool_hint="copilot-cli", workspace=str(tmp_path))
+    transcript = tmp_path / "home" / ".copilot" / "session-state" / "s1" / "events.jsonl"
+    correlator.on_file(str(transcript), growth_bytes=10, tool_hint="copilot-cli")
     files = [e for e in correlator.pending_events if e["kind"] == "file_modified"]
-    assert files and files[0]["detail"]["project_path"] == str(tmp_path.resolve())
-    assert files[0]["detail"]["path"] == str(tmp_path / "src" / "a.py")
+    assert files and files[0]["detail"]["project_path"] == str(repo.resolve())
+    assert files[0]["detail"]["path"] == str(transcript)

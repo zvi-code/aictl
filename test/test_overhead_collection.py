@@ -153,11 +153,12 @@ def test_own_log_writes_are_not_file_activity():
     """Log line -> file event -> log line is a feedback loop."""
     from aictl.monitoring.collectors.process import _WatchHandler
     from aictl.monitoring.config import MonitorConfig
+    from aictl.monitoring.repo_changes import RepoChangeTracker
 
     put = []
     loop = SimpleNamespace(call_soon_threadsafe=lambda fn, item: put.append(item))
     cfg = MonitorConfig.for_root(Path.cwd(), ignored_paths=("/own/logs",))
-    handler = _WatchHandler(loop=loop, queue=SimpleNamespace(put_nowait=None), config=cfg)
+    handler = _WatchHandler(loop=loop, queue=SimpleNamespace(put_nowait=None), config=cfg, tracker=RepoChangeTracker(None))
     handler._emit("modified", SimpleNamespace(is_directory=False, src_path="/own/logs/samples.log"))
     assert put == []
     handler._emit("modified", SimpleNamespace(is_directory=False, src_path="/elsewhere/a.txt"))

@@ -18,6 +18,7 @@ from aictl import fsutil, tools
 from aictl.monitoring import runtime
 from aictl.monitoring.collectors import process
 from aictl.monitoring.config import MonitorConfig
+from aictl.monitoring.repo_changes import RepoChangeTracker
 from aictl.sink import SampleSink
 from aictl.tools import ResourceFile, ToolResources
 
@@ -153,10 +154,12 @@ def test_flood_message_is_readable_and_names_the_metric(caplog):
 
 
 def _handler(tmp_path):
+    # No repository is tracked, so every event takes the path of a file in a tool home.
     put = []
     loop = SimpleNamespace(call_soon_threadsafe=lambda fn, item: put.append(item))
     cfg = MonitorConfig.for_root(tmp_path)
-    return process._WatchHandler(loop=loop, queue=SimpleNamespace(put_nowait=None), config=cfg), put
+    tracker = RepoChangeTracker(None)
+    return process._WatchHandler(loop=loop, queue=SimpleNamespace(put_nowait=None), config=cfg, tracker=tracker), put
 
 
 @pytest.mark.parametrize("part", [".git", "node_modules", "target", "bin", "obj", "build"])

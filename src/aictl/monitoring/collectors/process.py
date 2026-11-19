@@ -12,18 +12,23 @@ no hardcoded tool names or regex patterns in Python code.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from ... import tree_walk
 from ...data.schema import metric_name as M
-from ...platforms import IS_WINDOWS
+from ...fsutil import warn_once
+from ...platforms import IS_WINDOWS, path_key
 from ..config import MonitorConfig
 from ..pace import PACE
+from ..repo_changes import FileChange, RepoChangeTracker
 from ..session import ProcessInfo
 from . import BaseCollector
 
@@ -469,6 +474,11 @@ MAX_TRACKED_FILE_SIZES = 50_000
 STATE_FILE_SUFFIXES = (".vscdb", ".vscdb-wal", ".vscdb-shm", ".vscdb-journal", "storage.json", ".db-wal", ".db-shm")
 # Dropped even under a tool's own folder: ~/.copilot/pkg holds whole node_modules trees.
 ALWAYS_IGNORED_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__"})
+# How often the repositories of new AI sessions, and the repositories under the root, are looked for.
+SESSION_REPOS_SCAN_S = 5.0
+ROOT_REPOS_SCAN_S = 30.0
+# Each watched folder costs an OS watch handle (and a thread on Windows).
+MAX_WATCHED_FOLDERS = 512
 
 
 def _outermost_paths(paths: list[Path]) -> list[Path]:
@@ -536,7 +546,15 @@ class _FileEventSampler:
 
 
 class WatchdogFileCollector(BaseCollector):
-    """Watch project and state directories for file activity."""
+    """Watch git repositories and AI tool folders for file activity.
+
+    Files in a git repository go to a :class:`RepoChangeTracker`, which reports what git
+    sees: a file whose status or content changed, and HEAD moves. The repositories are the
+    one that holds the root, those found under the root, and those of the AI sessions'
+    working folders. The tool homes (``~/.claude``, VS Code's user folder ...) are watched
+    as folders, and so are the root's own tool folders (``<root>/.claude`` ...) when the
+    root is in no repository.
+    """
 
     name = "filesystem:watchdog"
 
@@ -546,7 +564,6 @@ class WatchdogFileCollector(BaseCollector):
 
     async def run(self) -> None:
         try:
-            from watchdog.events import FileSystemEventHandler
             from watchdog.observers import Observer
         except ImportError:
             await self.report_status(
@@ -556,60 +573,142 @@ class WatchdogFileCollector(BaseCollector):
             )
             return
 
-        watch_paths = _outermost_paths(
-            [path for path in (*self.config.workspace_paths, *self.config.state_paths) if path.exists()]
-        )
-        if not watch_paths:
-            await self.report_status(
-                status="disabled",
-                mode="no-paths",
-                detail="No workspace or state paths exist on disk",
-            )
-            return
+        config = self.config
+        tracker = RepoChangeTracker(config.repo_state_path)
+        root_top = tree_walk.git_root(config.root)
+        if root_top is not None:
+            # Started in a subfolder of a repository: only that subfolder is watched.
+            tracker.add_repo(root_top, watch=None if path_key(str(root_top)) == path_key(str(config.root)) else config.root)
+        static = [path for path in config.state_paths if path.exists()]
+        primary: set[str] = {path_key(str(root_top))} if root_top is not None else set()
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict] = asyncio.Queue()
-        handler = _WatchHandler(loop=loop, queue=queue, config=self.config)
+        handler = _WatchHandler(loop=loop, queue=queue, config=config, tracker=tracker)
         observer = Observer()
-        for path in watch_paths:
-            observer.schedule(handler, str(path), recursive=True)
         observer.start()
+        watches: dict[str, object] = {}
+        last_status: list[tuple[str, str] | None] = [None]
 
-        await self.report_status(
-            status="active",
-            mode="native-fs-events",
-            detail=f"Watching {len(watch_paths)} paths for edits and growth",
-        )
+        async def rewatch() -> None:
+            repos = sorted((r for r in tracker.repos() if not r.failed), key=lambda r: r.key not in primary)
+            wanted = [p for p in _outermost_paths([*static, *(w for r in repos for w in r.watch)]) if p.exists()]
+            if len(wanted) > MAX_WATCHED_FOLDERS:
+                warn_once(
+                    log,
+                    "aictl watches at most %d folders; %d git repositories and tool folders were found. "
+                    "Start aictl in a smaller root to watch the rest.",
+                    MAX_WATCHED_FOLDERS,
+                    len(wanted),
+                )
+                wanted = wanted[:MAX_WATCHED_FOLDERS]
+            keep = {path_key(str(p)): p for p in wanted}
+            for key in [k for k in watches if k not in keep]:
+                with contextlib.suppress(Exception):
+                    observer.unschedule(watches.pop(key))
+            for key, path in keep.items():
+                if key not in watches:
+                    try:
+                        watches[key] = observer.schedule(handler, str(path), recursive=True)
+                    except Exception as exc:  # the folder is gone, or the OS refused one more watch
+                        log.debug("Cannot watch %s: %s", path, exc)
+            n_repos = sum(1 for r in repos if _covered(r.watch[0], watches))
+            if watches:
+                status = (
+                    "active",
+                    f"Watching {n_repos} git repositories and {len(watches)} folders for file changes",
+                )
+            else:
+                status = ("disabled", "No git repository or tool folder exists on disk yet")
+            if status != last_status[0]:
+                last_status[0] = status
+                await self.report_status(
+                    status=status[0], mode="native-fs-events" if watches else "no-paths", detail=status[1]
+                )
 
+        def discover(workspaces: list[str], scan_root: bool) -> None:
+            for workspace in workspaces:
+                top = tree_walk.git_root(workspace)
+                if top is not None:
+                    primary.add(path_key(str(top)))
+                    tracker.add_repo(top)
+            if scan_root:
+                for top in tree_walk.repositories(config.root):
+                    if not tree_walk._under(str(config.root), str(top)):  # a repository that holds the root is added above
+                        tracker.add_repo(top)
+
+        async def discover_loop() -> None:
+            next_scan = 0.0
+            while True:
+                workspaces = self.correlator.session_workspaces() if self.correlator else []
+                now = time.monotonic()
+                scan_root = now >= next_scan
+                if scan_root:
+                    next_scan = now + ROOT_REPOS_SCAN_S
+                await asyncio.to_thread(discover, workspaces, scan_root)
+                await rewatch()
+                await asyncio.sleep(SESSION_REPOS_SCAN_S)
+
+        def deliver(items: list) -> None:
+            with contextlib.suppress(RuntimeError):  # the event loop is closed
+                loop.call_soon_threadsafe(queue.put_nowait, {"repo_changes": items})
+
+        stop = threading.Event()
+        worker = threading.Thread(target=tracker.run, args=(deliver, stop), name="aictl-repo-changes", daemon=True)
+        discovery: asyncio.Task | None = None
         sampler = _FileEventSampler(self)
         try:
+            worker.start()
+            await rewatch()
+            discovery = asyncio.create_task(discover_loop())
             while True:
-                fe = await queue.get()  # dict with path, growth, size, tool_hint, workspace, event_type
-                path = fe.get("path", "")
-                growth = fe.get("growth_bytes", 0)
-                size = fe.get("size_bytes", 0)
-                tool_hint = fe.get("tool_hint")
-                workspace = fe.get("workspace")
-                event_type = fe.get("event_type", "modified")
+                fe = await queue.get()
+                changes = fe.get("repo_changes")
+                if changes is not None:
+                    for change in changes:
+                        if isinstance(change, FileChange):
+                            if self.correlator:
+                                self.correlator.on_repo_change(change)
+                            sampler.record(change.path, change.growth_bytes, change.size_bytes, change.tool_hint)
+                        elif self.correlator:
+                            self.correlator.on_head_move(change)
+                else:
+                    # A file in a tool home: dict with path, growth, size, tool_hint, event_type
+                    path = fe.get("path", "")
+                    growth = fe.get("growth_bytes", 0)
+                    size = fe.get("size_bytes", 0)
+                    tool_hint = fe.get("tool_hint")
+                    event_type = fe.get("event_type", "modified")
 
-                # Correlator: typed session tracking
-                if self.correlator and path:
-                    self.correlator.on_file(path, growth, event_type, tool_hint=tool_hint, workspace=workspace)
+                    # Correlator: typed session tracking
+                    if self.correlator and path:
+                        self.correlator.on_file(path, growth, event_type, tool_hint=tool_hint)
 
-                # Sink: per-file metrics
-                if path:
-                    sampler.record(path, growth, size, tool_hint)
+                    # Sink: per-file metrics
+                    if path:
+                        sampler.record(path, growth, size, tool_hint)
                 if self._pending_samples and (queue.empty() or len(self._pending_samples) >= 256):
                     await self.sink_flush_batch()
         except asyncio.CancelledError:
             raise
         finally:
+            if discovery is not None:
+                discovery.cancel()
+            stop.set()
             observer.stop()
             observer.join(timeout=2.0)
+            if worker.is_alive():
+                worker.join(timeout=2.0)
+
+
+def _covered(path: Path, watches: dict[str, object]) -> bool:
+    """True when *path* is one of the watched folders (keys of *watches*) or under one."""
+    key = path_key(str(path))
+    return key in watches or any(key.startswith(w.rstrip("\\/") + os.sep) for w in watches)
 
 
 class _WatchHandler:  # pragma: no cover - exercised through watchdog integration
-    def __init__(self, *, loop, queue: asyncio.Queue[dict], config: MonitorConfig) -> None:
+    def __init__(self, *, loop, queue: asyncio.Queue[dict], config: MonitorConfig, tracker: RepoChangeTracker) -> None:
         from watchdog.events import FileSystemEventHandler
 
         class Handler(FileSystemEventHandler):
@@ -629,23 +728,49 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
         self._loop = loop
         self._queue = queue
         self._config = config
+        self._tracker = tracker
         self._size_cache: dict[str, int] = {}
         self._last_change: dict[str, float] = {}
         self._ignored_names = frozenset(config.ignored_dir_names)
+        # Tool homes: a repository around one (a home folder kept in git) does not take its files.
+        self._tool_homes = tuple(
+            sorted({path_key(home) for home in map(config.tool_home_for_path, config.state_paths) if home}, key=len)
+        )
 
     def dispatch(self, event) -> None:
         self._delegate.dispatch(event)
 
+    def _tool_home(self, path: str) -> str | None:
+        key = path_key(path)
+        for home in self._tool_homes:
+            if key == home or key.startswith(home.rstrip("\\/") + os.sep):
+                return home
+        return None
+
+    def _to_tracker(self, event_type: str, event, path: str, tool_hint: str | None) -> bool:
+        """Give the event to the git change tracker. False when no tracked repository holds *path*."""
+        tracker = self._tracker
+        if event_type == "moved":
+            src = str(Path(event.src_path).expanduser())
+            if not _is_under(src, self._config.ignored_paths):
+                tracker.note(src, _tool_hint_for_path(src), self._tool_home(src), is_dir=event.is_directory)
+        verdict = tracker.note(
+            path, tool_hint, self._tool_home(path), created=event_type == "created", is_dir=event.is_directory
+        )
+        return verdict != "outside"
+
     def _emit(self, event_type: str, event, path_override: str | None = None) -> None:
-        if event.is_directory:
+        if event.is_directory and event_type == "modified":
             return
         path = str(Path(path_override or event.src_path).expanduser())
         if _is_under(path, self._config.ignored_paths):
             return
+        tool_hint = _tool_hint_for_path(path)
+        if self._to_tracker(event_type, event, path, tool_hint) or event.is_directory:
+            return
         parts = Path(path).parts
         if not ALWAYS_IGNORED_DIR_NAMES.isdisjoint(parts):
             return
-        tool_hint = _tool_hint_for_path(path)
         # Build output says nothing about AI tools. A tool's own state stays in, even under
         # a folder named like one of these.
         if not tool_hint and not self._ignored_names.isdisjoint(parts):
@@ -657,7 +782,6 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
             if len(self._last_change) >= MAX_TRACKED_FILE_SIZES:
                 self._last_change.clear()
             self._last_change[path] = now
-        workspace = self._config.workspace_for_path(path)
         growth_bytes = 0
         size_bytes = 0
         if event_type != "deleted":
@@ -677,7 +801,6 @@ class _WatchHandler:  # pragma: no cover - exercised through watchdog integratio
                 "path": path,
                 "event_type": event_type,
                 "tool_hint": tool_hint,
-                "workspace": workspace,
                 "growth_bytes": growth_bytes,
                 "size_bytes": size_bytes,
             },

@@ -826,6 +826,29 @@ def is_lazy() -> bool:
     return _lazy
 
 
+def repositories(root: str | Path) -> list[Path]:
+    """The work tree tops at or under *root*, and the one that holds *root*, that earlier reads found.
+
+    Reads nothing itself: it reports what listings and the background thread already found.
+    """
+    r = str(root)
+    tops: dict[str, Path] = {}
+
+    def add(p: Path) -> None:
+        if _under(str(p), r) or _under(r, str(p)):
+            tops.setdefault(_key(p), p)
+
+    with _lock:
+        for u in _units.values():
+            add(u.top)
+            for rel in u.nested:
+                add(Path(os.path.normpath(str(u.folder / Path(*rel.split("/"))))))
+        for o in _outside.values():
+            for p in o.repos:
+                add(p)
+    return sorted(tops.values(), key=lambda p: _key(p))
+
+
 # ── Sessions and files ───────────────────────────────────────────────
 
 

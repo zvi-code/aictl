@@ -87,7 +87,21 @@ PK: `(ts, tool, kind)`
 
 **Event kinds**: `session_start`, `session_end`, `config_change`,
 `model_switch`, `anomaly`, `mcp_start`, `mcp_stop`, `file_modified`,
-`otel_toggle`, `quota_warning`
+`git_head`, `otel_toggle`, `quota_warning`
+
+A `file_modified` event for a file in a git repository has these `detail`
+fields: `path`, `project_path` (the top of the work tree), `change`
+(`created`, `modified`, `deleted`, `renamed` or `conflict`), `git_status`
+(the porcelain `XY` code, `??` for an untracked file, `!!` for an AI tool
+file that git ignores, or empty when the file matches the last commit
+again), `tracked`, `growth_bytes`, `size_bytes`, `session_id` (empty when no
+single live session works in the repository), and, when known,
+`lines_added`, `lines_removed` and `renamed_from`.
+
+A `git_head` event is one new line of a repository's `HEAD` reflog: a
+commit, checkout, reset, merge or rebase step. Its `detail` fields are
+`project_path`, `action` (the reflog message before `:`, for example
+`commit`), `message`, `old` and `new` (commit hashes) and `session_id`.
 
 ### `file_store` — KV file content store
 

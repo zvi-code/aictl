@@ -86,6 +86,7 @@ class PersistentMonitor:
             filesystem_enabled=cfg.filesystem_enabled,
             telemetry_enabled=cfg.telemetry_enabled,
             ignored_paths=(str(Path(cfg.logging_dir).resolve()), str(config_dir())),
+            repo_state_path=config_dir() / "repo_changes.json",
         )
         self._runtime = MonitorRuntime(config, sink=self._sink)
         if self._live_sources is not None:

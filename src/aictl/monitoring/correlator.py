@@ -11,7 +11,9 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 
+from .. import tree_walk
 from ..data.schema import metric_name as M
+from ..platforms import path_key
 from .collectors.process import classify_process
 from .config import MonitorConfig
 from .session import (
@@ -26,6 +28,10 @@ from .session import (
 )
 
 log = logging.getLogger(__name__)
+
+LIVE_SESSION_S = 120.0  # a session without processes still owns repository changes this long after it was last seen
+MAX_CWD_WORKSPACES = 4096
+_UNATTRIBUTED_TOOL = "unknown"
 
 @dataclass(frozen=True, slots=True)
 class MonitorSnapshot:
@@ -65,6 +71,7 @@ class SessionCorrelator:
         self._runtime_latest: dict[int, dict] = {}
         self._runtime_snapshot: dict | None = None
         self._runtime_lock = threading.RLock()
+        self._cwd_workspaces: dict[str, str | None] = {}
 
     def observe_runtime(self, observer: Callable[[str, dict], None]) -> Callable[[], None]:
         """Observe current process/file notifications, not historical telemetry.
@@ -193,16 +200,16 @@ class SessionCorrelator:
         pid: int | None = None,
         process: ProcessInfo | None = None,
         tool_hint: str | None = None,
-        workspace: str | None = None,
         ts: float | None = None,
         sent_to_llm: str | None = None,
     ) -> None:
+        """A file that no tracked git repository holds, such as a file in a tool home. Repository files go to :meth:`on_repo_change`."""
         ts = ts or time.time()
         self._notify_runtime("file", {"path": path, "event_type": event_type, "ts": ts})
-        session = self._resolve_session_typed(pid, process, tool_hint, workspace, ts)
+        session = self._resolve_session_typed(pid, process, tool_hint, None, ts)
         if session is None:
             return
-        session.add_file_activity(ts, path, workspace, self.config.state_root_for_path(path), growth_bytes)
+        session.add_file_activity(ts, path, None, self.config.state_root_for_path(path), growth_bytes)
         if sent_to_llm and sent_to_llm.lower() in ("yes", "conditional", "partial"):
             session.files_loaded.add(path)
         if growth_bytes != 0 or event_type in ("created", "modified"):
@@ -212,6 +219,81 @@ class SessionCorrelator:
                 "file_modified",
                 {"path": path, "growth_bytes": growth_bytes, "session_id": session.session_id, "project_path": session.project},
             )
+
+    def workspace_for_cwd(self, cwd: str) -> str | None:
+        """The project of a working folder: the top of its git work tree; None outside git."""
+        if cwd in self._cwd_workspaces:
+            return self._cwd_workspaces[cwd]
+        top = tree_walk.git_root(cwd)
+        workspace = str(top) if top is not None else None
+        if len(self._cwd_workspaces) >= MAX_CWD_WORKSPACES:
+            self._cwd_workspaces.clear()
+        self._cwd_workspaces[cwd] = workspace
+        return workspace
+
+    def session_workspaces(self) -> list[str]:
+        """The projects of the sessions seen recently."""
+        cutoff = time.time() - LIVE_SESSION_S
+        return sorted({w for s in list(self.sessions.values()) if s.pids or s.last_seen_at >= cutoff for w in s.workspaces})
+
+    def _session_for_repo(self, repo: str, tool_hint: str | None, ts: float) -> SessionState | None:
+        """The one live session that works in *repo*; None when there is none or more than one."""
+        key = path_key(repo)
+        live = [
+            s
+            for s in self.sessions.values()
+            if (s.pids or ts - s.last_seen_at <= LIVE_SESSION_S) and any(path_key(w) == key for w in s.workspaces)
+        ]
+        if tool_hint:
+            same_tool = [s for s in live if s.tool == tool_hint]
+            if same_tool:
+                live = same_tool
+        return live[0] if len(live) == 1 else None
+
+    def on_repo_change(self, change) -> None:
+        """A file in a git repository whose git status or content changed (a ``repo_changes.FileChange``)."""
+        ts = change.ts
+        self._notify_runtime("file", {"path": change.path, "event_type": change.change, "ts": ts})
+        session = self._session_for_repo(change.repo, change.tool_hint, ts)
+        if session is not None:
+            session.add_file_activity(ts, change.path, change.repo, None, change.growth_bytes)
+        detail = {
+            "path": change.path,
+            "project_path": change.repo,
+            "change": change.change,
+            "git_status": change.status,
+            "tracked": change.tracked,
+            "growth_bytes": change.growth_bytes,
+            "size_bytes": change.size_bytes,
+            "session_id": session.session_id if session else "",
+        }
+        if change.lines_added is not None:
+            detail["lines_added"] = change.lines_added
+        if change.lines_removed is not None:
+            detail["lines_removed"] = change.lines_removed
+        if change.renamed_from:
+            detail["renamed_from"] = change.renamed_from
+        tool = session.tool if session else (change.tool_hint or _UNATTRIBUTED_TOOL)
+        self._emit_event(ts, tool, "file_modified", detail)
+
+    def on_head_move(self, move) -> None:
+        """A new line of a repository's HEAD reflog (a ``repo_changes.HeadMove``): a commit, checkout, reset ..."""
+        session = self._session_for_repo(move.repo, None, move.ts)
+        if session is not None:
+            session.last_seen_at = max(session.last_seen_at, move.ts)
+        self._emit_event(
+            move.ts,
+            session.tool if session else _UNATTRIBUTED_TOOL,
+            "git_head",
+            {
+                "project_path": move.repo,
+                "action": move.action,
+                "message": move.message,
+                "old": move.old,
+                "new": move.new,
+                "session_id": session.session_id if session else "",
+            },
+        )
 
     def on_telemetry(
         self,
@@ -425,7 +507,7 @@ class SessionCorrelator:
 
         session.pids.add(process.pid)
         if process.cwd:
-            workspace = self.config.workspace_for_path(process.cwd)
+            workspace = self.workspace_for_cwd(process.cwd)
             if workspace:
                 session.workspaces.add(workspace)
 
@@ -461,8 +543,9 @@ class SessionCorrelator:
 
         if workspace:
             candidates = [s for s in self.sessions.values() if workspace in s.workspaces]
-            if candidates:
-                return max(candidates, key=lambda s: s.last_seen_at)
+            # Two sessions in one project: the file cannot tell which one wrote it.
+            if len(candidates) == 1:
+                return candidates[0]
 
         return None
 

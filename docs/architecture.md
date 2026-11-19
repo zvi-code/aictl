@@ -359,7 +359,7 @@ All collectors extend `BaseCollector` and implement `async collect()`:
 |-----------|--------|----------|------|
 | `DiscoveryCollector` | CSV registry + filesystem | 5s | Files, MCP servers |
 | `PsutilProcessCollector` | psutil process table | 1s | PID, CPU%, memory, threads |
-| `WatchdogFileCollector` | FSEvents/inotify | event-driven | File create/modify/delete events |
+| `WatchdogFileCollector` | FSEvents/inotify/ReadDirectoryChangesW + `git status` | event-driven | Git repositories (under the root and of each session's working folder) and AI tool state folders. In a repository, `RepoChangeTracker` (`monitoring/repo_changes.py`) reports only changes that git sees and AI tool files that git ignores, and `HEAD` reflog lines as `git_head` events |
 | `StructuredTelemetryCollector` | Tool-specific logs | 5s | Token counts, latency |
 | `NetworkCollector` | Platform adapter | 1s | Per-process bytes in/out |
 
