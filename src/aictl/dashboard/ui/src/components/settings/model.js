@@ -990,7 +990,7 @@ export function readSettingsUrl(search) {
     tool: q.get('tool') || '',
     sec: q.get('sec') || '',
     row: q.get('row') || '',
-    scope: q.get('scope') === 'local' ? '' : q.get('scope') || '',
+    scope: ['local', 'node', 'fleet'].includes(q.get('scope')) ? '' : q.get('scope') || '',
     unset: q.get('unset') === '1',
     group: q.get('group') === 'purpose' ? 'purpose' : 'location',
     purpose: q.get('purpose') || '',

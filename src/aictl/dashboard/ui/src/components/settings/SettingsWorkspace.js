@@ -42,7 +42,7 @@ function currentSearch() {
 }
 
 /** The pivot and selection, kept in the URL query next to `tab`. */
-function useSettingsState() {
+function useSettingsState(readonly) {
   const [st, setSt] = useState(() => readSettingsUrl(currentSearch()));
   const set = useCallback(patch => setSt(prev => {
     const next = { ...prev, ...patch };
@@ -56,7 +56,9 @@ function useSettingsState() {
     return next;
   }), []);
   useEffect(() => {
-    if (boardNodeScope(currentSearch()) === 'local') writeUrl(settingsParams(st));
+    const params = settingsParams(st);
+    if (boardNodeScope(currentSearch()) !== 'local') delete params.scope;
+    writeUrl(params);
   }, [st]);
   useEffect(() => {
     const onPop = () => setSt(readSettingsUrl(currentSearch()));
@@ -66,20 +68,22 @@ function useSettingsState() {
       if (boardNodeScope(currentSearch()) === 'local') writeUrl(CLEAR_PARAMS);
     };
   }, []);
+  useEffect(() => { setSt(readSettingsUrl(currentSearch())); }, [readonly]);
   return [st, set];
 }
 
-function useFiles() {
+function useFiles(readonly) {
   const [res, setRes] = useState({ status: 'loading', files: null });
   useEffect(() => {
+    if (readonly) return;
     const ctrl = new AbortController();
     getSettingsFiles({ signal: ctrl.signal }).then(
       r => { if (!ctrl.signal.aborted) setRes(Array.isArray(r?.files) ? { status: 'ready', files: r.files } : { status: 'unavailable', files: null }); },
       () => { if (!ctrl.signal.aborted) setRes({ status: 'unavailable', files: null }); },
     );
     return () => ctrl.abort();
-  }, []);
-  return res;
+  }, [readonly]);
+  return readonly ? { status: 'unavailable', files: null } : res;
 }
 
 /** The audit state the Findings view reads: loading, error or ready, from the source's findings. */
@@ -100,13 +104,13 @@ function RuntimeConfiguration({ records = [] }) {
 export default function SettingsWorkspace({ source = {}, note = '' }) {
   const { toolConfigs, tools, monitor, root, enabledTools = null, recentFiles, toolName, openFile, findings: sourceFindings, refresh, hooks, configuredOnly, runtimeConfiguration } = source;
   const snap = useMemo(() => snapOf({ toolConfigs, tools, monitor, root, enabledTools }), [toolConfigs, tools, monitor, root, enabledTools]);
-  const [st, set] = useSettingsState();
+  const [st, set] = useSettingsState(source.readonly);
   const [q, setQ] = useState('');
   const [nonDefault, setNonDefault] = useState(false);
   const [riskyOnly, setRiskyOnly] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const searchRef = useRef(null);
-  const filesRes = useFiles();
+  const filesRes = useFiles(source.readonly);
   const audit = auditState(sourceFindings);
   const rescan = sourceFindings?.rescan;
 
@@ -155,7 +159,7 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
   }, [files, snap]);
 
   if (!snap) return html`<p class="loading-state">Loading...</p>`;
-  if (!entries.length && !aictl && !isFiltered(enabledTools)) {
+  if (!entries.length && !aictl && !isFiltered(enabledTools) && !source.readonly) {
     return html`<p class="empty-state">No tool configuration detected. Are AI tools installed?</p>`;
   }
 
@@ -187,7 +191,7 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
 
   const w = {
     st, set, select, q, pass, passAll, passTool, showUnset: st.unset, scopesOf, managedAbsent, entries, aictl, toolId, files, filesStatus: filesRes.status,
-    findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan,
+    findings, audit: scoped, auditStatus: audit.status, auditError: audit.error, scan: audit.scan, rescan, readonly: source.readonly,
     selected, selectedFile, selectedFinding, selectedEnv, openAt: openSource, openEnv, labelOf: labelFor, mtimeOf, recentFiles,
     drawer, closeDrawer, refresh, hooks,
   };
@@ -229,7 +233,7 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
         onClick=${() => setNonDefault(!nonDefault)}>Only non-default</button>
       <button type="button" class=${'st-toggle st-toggle--risky' + (riskyOnly ? ' is-on' : '')} aria-pressed=${riskyOnly ? 'true' : 'false'}
         onClick=${() => setRiskyOnly(!riskyOnly)}>Only risky</button>
-      ${knowsSet && html`<button type="button" class=${'st-toggle' + (st.unset ? ' is-on' : '')} aria-pressed=${st.unset ? 'true' : 'false'}
+      ${(knowsSet || source.keepUnsetControl) && html`<button type="button" class=${'st-toggle' + (st.unset ? ' is-on' : '')} disabled=${!knowsSet} aria-pressed=${st.unset ? 'true' : 'false'}
         onClick=${() => set({ unset: !st.unset })}>Show unset knobs</button>`}
       <div class="st-kpis" data-testid="st-kpis">
         <span><b>${entries.length}</b> tools</span>
@@ -242,6 +246,7 @@ export default function SettingsWorkspace({ source = {}, note = '' }) {
       </div>
     </div>
     ${note && html`<p class="st-wsnote" data-testid="st-wsnote">${note}</p>`}
+    ${source.unavailable && html`<p class="st-wsnote" role="status">${source.unavailable}</p>`}
     ${configuredOnly ? html`<${RuntimeConfiguration} records=${runtimeConfiguration}/>` : null}
     ${scopeEmpty && html`<div class="st-scope-empty"><${ToolScopeEmpty} enabledTools=${enabledTools} snap=${snap} what="the settings"/></div>`}
     <div class="st-grid">

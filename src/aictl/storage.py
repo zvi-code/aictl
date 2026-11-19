@@ -2686,6 +2686,7 @@ class HistoryDB:
         # Connection pool: one connection per thread
         self._local = threading.local()
         self._writers: dict[int, list[tuple[str, float]]] = {}
+        self.node_runtime_sample: Callable[[], dict] | None = None
         self._rewriting_file = False  # a lock during VACUUM is expected and ends
         self._quality_seen: dict[tuple[str, str], tuple[str, str, float]] = {}
         self._closed = False
@@ -3462,7 +3463,7 @@ class HistoryDB:
             values["cpu_per_core"] = json.dumps(row.cpu_per_core)
             import os
 
-            from .health import host_memory
+            from .health import host_memory, node_client_counters
 
             settings = self._kusto
             memory = host_memory()
@@ -3473,6 +3474,18 @@ class HistoryDB:
                           host_cpu_percent=sum(row.cpu_per_core) / len(row.cpu_per_core) if row.cpu_per_core else None,
                           host_memory_used_mb=used / (1024 ** 2) if used is not None else None,
                           host_memory_total_mb=total / (1024 ** 2) if total is not None else None)
+            # Piggyback on one normal sample per 30 s, not one ingestion per counter.
+            now = time.monotonic()
+            if now >= getattr(self, "_next_health_sample", 0):
+                self._next_health_sample = now + 30
+                try:
+                    runtime = getattr(self, "node_runtime_sample", None)
+                    values["node_health_counters"] = json.dumps(
+                        {"pid": os.getpid(), "at": time.time(), "store": node_client_counters(settings),
+                         "runtime": runtime() if runtime else {}}, separators=(",", ":")
+                    )
+                except Exception:  # noqa: BLE001 - optional counters cannot discard the system snapshot
+                    log.warning("Could not sample node health counters", exc_info=True)
             self._ingest_observations("system_snapshots", [values])
             return
         with self._lock:

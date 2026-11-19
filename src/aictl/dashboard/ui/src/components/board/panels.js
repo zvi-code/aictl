@@ -14,6 +14,7 @@ import { EMPTY_MACHINE } from './useBoardData.js';
 import { panelSessions } from './sessionsPanel.js';
 import { panelStoreHealth } from './health.js';
 import { ingesterState, measuredValue, otelConfig, pollSuccess, qualityContext, writeWarning } from './healthModel.js';
+import { ReportedValues } from './ReportedBoard.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
@@ -32,16 +33,21 @@ const SEVERITY = {
 const severityOf = s => SEVERITY[s] || SEVERITY.info;
 const ZOMBIE_RANK = { high: 3, medium: 2, low: 1 };
 const copyAction = (ctx, command) => () => ctx.actions.copy?.(command, 'Copied: ' + command);
+export function reportingNode(id) {
+  if (typeof id !== 'string' || id[0] !== '[') return null;
+  try { const parts = JSON.parse(id); return Array.isArray(parts) && parts.length === 2 ? parts[0] : null; } catch { return null; }
+}
 
 /** A model name without its vendor prefix; the full name stays in the hover text. */
 export const shortModel = m => String(m || '').replace(/^claude-/, '');
 
-export const openAgent = (ctx, id, tab = 'flow', reset = true) => () => ctx.actions.openDrawer({ type: 'agent', id, tab }, reset);
+export const openAgent = (ctx, id, tab = 'flow', reset = true) =>
+  id ? () => ctx.actions.openDrawer({ type: 'agent', id, tab }, reset) : null;
 
 function agentCell(ctx, a, level, foldOn, foldOpen, onFold) {
   return {
     v: a.parent_id ? (a.role || a.title) : a.title,
-    sub: a.short,
+    sub: a.node_id ? `${a.node_id} · ${a.short}` : a.short,
     title: (a.parent_id ? 'Subagent ' + (a.role || a.title) : a.title) + ', ' + a.id,
     pad: level ? 16 : 0,
     foldOn, foldOpen, foldLabel: foldOpen ? 'Fold subagents' : 'Unfold subagents', fold: onFold, foldSp: !foldOn,
@@ -63,7 +69,7 @@ function panelAttention(ctx) {
   const rows = items.filter(i => !ctx.stopped[i.agent_id]).map((i, idx) => {
     const loop = i.kind === 'loop';
     return {
-      id: i.kind + ':' + i.agent_id + ':' + idx,
+      id: i.kind + ':' + i.agent_id + ':' + idx, node_id: reportingNode(i.agent_id),
       go: openAgent(ctx, i.agent_id, loop ? 'errors' : 'tools'),
       sort: { kind: loop ? 'Loop' : 'Waiting for you', title: i.title, what: i.detail, cost: loop ? i.cost_usd : (i.since_ts ? now - i.since_ts : null) },
       cells: {
@@ -374,7 +380,7 @@ function panelPrompts(ctx) {
   const rows = ctx.data.prompts.map((p, idx) => {
     const text = p.text || (metadata ? 'Text not stored' : NA);
     return {
-      id: p.ts + ':' + idx, go: () => ctx.actions.openDrawer({ type: 'prompt', ts: p.ts, agent_id: p.agent_id, summary: p }, true),
+      id: p.id || (p.ts + ':' + idx), node_id: p.node_id, go: () => ctx.actions.openDrawer({ type: 'prompt', ts: p.ts, session_id: p.session_id, agent_id: p.agent_id, summary: p }, true),
       sort: { at: p.ts, text: p.text, tokens: p.tokens, project: p.project },
       cells: {
         at: { v: stamp(p.ts), cls: 'dim' },
@@ -391,14 +397,14 @@ function panelPrompts(ctx) {
 
 function panelProjectPrompts(ctx) {
   const rows = ctx.data.project_prompts.map(f => ({
-    id: f.project + '|' + f.file, sort: { f: f.file, n: f.uses, p: f.project },
+    id: JSON.stringify([f.node_id, f.project, f.file]), node_id: f.node_id, sort: { f: f.file, n: f.uses, p: f.project },
     cells: { f: { v: baseName(f.file), title: f.project + ': ' + f.file }, p: { v: f.project ? projectName(f.project) : 'User', cls: 'dim', title: f.project || 'User folder' }, n: { v: f.uses ?? NA, cls: f.uses ? '' : 'dim', title: f.uses ? 'Last used ' + stamp(f.last_ts, true) : 'Not used in this time' } },
   }));
   const searched = ctx.data.project_prompts_searched || [];
   const none = searched.length
     ? 'No prompt files found. Searched ' + searched.slice(0, 6).join(', ') + (searched.length > 6 ? ' and ' + (searched.length - 6) + ' more folders' : '')
     : 'No prompt files found. No project folder is known to search.';
-  return { sub: 'Files in each project, its parent folders and the user folders', table: { cols: [{ k: 'f', l: 'Prompt file' }, { k: 'p', l: 'Project', w: '92px' }, { k: 'n', l: 'Uses', n: true, w: '44px' }], rows, sort: { k: 'n', dir: 'desc' }, none } };
+  return { sub: ctx.remote ? 'Prompt files referenced by recorded prompts' : 'Files in each project, its parent folders and the user folders', table: { cols: [{ k: 'f', l: 'Prompt file' }, { k: 'p', l: 'Project', w: '92px' }, { k: 'n', l: 'Uses', n: true, w: '44px' }], rows, sort: { k: 'n', dir: 'desc' }, none: ctx.remote ? 'No prompt file was referenced in this range.' : none } };
 }
 
 function panelSkills(ctx) {
@@ -437,7 +443,7 @@ function panelConfirms(ctx) {
   const total = (c.auto || 0) + (c.approved || 0) + (c.denied || 0) + (c.blocked || 0);
   const share = v => (total && v ? Math.round((v / total) * 100) + '%' : '');
   const rows = pend.map((p, i) => ({
-    id: 'p' + i, go: openAgent(ctx, p.agent_id, 'tools'), sort: { k: 'zz', auto: 1e9 },
+    id: 'p' + i, node_id: reportingNode(p.agent_id), go: openAgent(ctx, p.agent_id, 'tools'), sort: { k: 'zz', auto: 1e9 },
     cells: { k: { v: p.name, warn: true, title: p.target }, auto: { v: '' }, approved: { v: '' }, denied: { v: '' }, w: { v: 'waiting ' + fmtDur(ctx.nowS - p.since_ts), cls: 'warn' } },
   })).concat((c.by_tool || []).map(t => ({
     id: t.name, go: () => ctx.actions.openDrawer({ type: 'tool', name: t.name }, true),
@@ -491,7 +497,7 @@ function panelLoops(ctx) {
   const rows = ctx.data.loops.map((x, i) => {
     const a = byId.get(x.agent_id);
     return {
-      id: x.agent_id + ':' + i, go: openAgent(ctx, x.agent_id, 'errors'),
+      id: x.agent_id + ':' + i, node_id: reportingNode(x.agent_id), go: openAgent(ctx, x.agent_id, 'errors'),
       sort: { a: x.title, st: x.status, pat: x.pattern, n: x.repeats, tokens: x.tokens, cost: x.cost_usd, since: x.since_ts },
       cells: {
         a: { v: x.title, sw: a ? colorFor('tool', a.tool) : null }, st: statusCell({ id: x.agent_id, status: x.status }, ctx.stopped), pat: { v: x.pattern, cls: 'm' },
@@ -509,7 +515,7 @@ function panelChanges(ctx) {
   const { files, totals } = ctx.data.changes;
   const mx = Math.max(1, ...files.map(f => (f.lines_added || 0) + (f.lines_removed || 0)));
   const rows = files.map(f => ({
-    id: f.path, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path }, true),
+    id: f.id || f.path, node_id: f.node_id, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path, record: f.id }, true),
     sort: { f: f.path, ch: f.lines_added == null && f.lines_removed == null ? null : (f.lines_added || 0) + (f.lines_removed || 0), edits: f.edits, last: f.last_ts, ag: f.agents },
     cells: { f: { v: relPath(f.path, f.project, 4), title: f.project + ': ' + f.path }, ch: { barOn: true, bar: pctBar((f.lines_added || 0) + (f.lines_removed || 0), mx), barC: 'var(--s1)', v: fmtLines(f.lines_added, f.lines_removed) }, edits: { v: f.edits ?? NA }, ag: { v: f.agents ?? NA }, last: { v: stamp(f.last_ts), cls: 'dim' } },
   }));
@@ -545,7 +551,7 @@ function panelMemFiles(ctx) {
     const changed = f.changed_ts != null;
     const by = f.changed_by ? byId.get(f.changed_by) : null;
     return {
-      id: f.path, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path }, true),
+      id: f.id || f.path, node_id: f.node_id, go: () => ctx.actions.openDrawer({ type: 'file', path: f.path, record: f.id }, true),
       sort: { path: f.path, tool: f.read_by, scope: f.scope, tokens: f.tokens, ch: changed ? (f.lines_added || 0) + (f.lines_removed || 0) : null, by: by ? by.short : f.changed_by, at: f.changed_ts },
       cells: {
         path: { v: f.path, path: true }, tool: { v: f.read_by || NA, cls: 'dim' }, scope: { v: f.scope || NA, cls: 'dim' }, tokens: { v: fmtN(f.tokens) },
@@ -570,7 +576,7 @@ function panelResource(ctx, local, pid, pn, kind) {
   const liveSum = procs.length ? sumOf(procs.map(p => (kind === 'cpu' ? p.cpu_percent : p.mem_mb))) : null;
   const nowSum = liveSum != null ? liveSum : sumOf(series.map(s => lastVal(s.vals)));
   const legendFmt = kind === 'cpu' ? LAST_CPU : LAST_MEM;
-  const out = chartPanel(ctx, local, pid, pn, { kind: 'line', series, unit, h: 120, legendFmt, aria: kind === 'cpu' ? 'CPU by tool' : 'Memory by tool' }, 'Now ' + (series.length || liveSum != null ? fmt(nowSum) : NA) + ' across tools');
+  const out = chartPanel(ctx, local, pid, pn, { kind: 'line', series, unit, h: 120, legendFmt, aria: kind === 'cpu' ? 'CPU by tool' : 'Memory by tool' }, (ctx.remote ? 'Latest recorded ' : 'Now ') + (series.length || liveSum != null ? fmt(nowSum) : NA) + ' across tools');
   const f = ctx.filters;
   if (f.project !== 'all' || f.model !== 'all' || f.status !== 'all') out.note = 'This chart follows the Tool filter and the time only.';
   if (kind === 'cpu' && !local.tableView) out.cores = coreBars(machineOf(ctx).cpu_per_core);
@@ -615,7 +621,7 @@ function procRow(ctx, p, i, m, noDetail, level, rootId, depth) {
       parent: { v: parent, cls: 'dim', title: ppid == null ? 'Parent not known' : 'Started by ' + parent + (ppid === 0 || ppid === 1 ? '. Its own parent is gone, so the system adopted it.' : '') },
       anom: anomalies.length
         ? { v: '', chips: anomalies.map(a => ({ text: a.label, title: a.text, sev: a.severity })), title: anomalies.map(a => a.text).join('\n') }
-        : { v: 'None', cls: 'dim', title: 'No anomalies found' },
+        : { v: ctx.remote ? NA : 'None', cls: 'dim', title: ctx.remote ? 'Not reported' : 'No anomalies found' },
       zr: { v: zr ? zr[0].toUpperCase() + zr.slice(1) : 'None', cls: zr === 'high' ? 'crit' : zr === 'medium' ? 'warn' : 'dim', title: zr ? 'Zombie risk in the process catalog: ' + zr + '. A process of this kind can outlive the tool that started it.' : 'No zombie risk in the process catalog' },
       cpu: { v: fmtCpu(p.cpu_percent) },
       mem: { v: fmtMem(p.mem_mb) },
@@ -651,14 +657,16 @@ export function procTree(items, pidOf, ppidOf) {
 }
 
 function panelProcs(ctx, local) {
-  const list = ctx.data.processes;
+  const list = ctx.remote ? (machineOf(ctx).recorded_processes || []).map(p => ({
+    ...p, name: p.role || 'Recorded process', agent_id: p.session_id, title: 'Recorded session',
+  })) : ctx.data.processes;
   const info = new Map(machineOf(ctx).processes.map(p => [p.pid, p]));
   const tree = local.mode('view', 'list') === 'tree';
   // A process with no session data has no detail to open.
   const noDetail = new Set(ctx.data.agents.filter(a => a.placeholder).map(a => a.id));
   const items = list.map((p, i) => ({ p, i, m: info.get(p.pid) || null }));
   let rows;
-  if (tree) {
+  if (tree && !ctx.remote) {
     rows = procTree(items, x => x.p.pid, x => x.m?.ppid ?? null).map(({ x, depth, root }) => (
       procRow(ctx, x.p, x.i, x.m, noDetail, depth ? 1 : 0, depth ? root.p.pid + ':' + root.i : null, depth)));
   } else rows = items.map(x => procRow(ctx, x.p, x.i, x.m, noDetail, 0, null, 0));
@@ -666,7 +674,7 @@ function panelProcs(ctx, local) {
   const mem = sumOf(list.map(p => p.mem_mb));
   const flagged = items.filter(x => x.m?.anomalies?.length).length;
   return {
-    sub: 'Live now: ' + rows.length + ' processes, ' + fmtCpu(cpu) + ' CPU (100% is one full core), ' + fmtMem(mem) + (flagged ? ', ' + flagged + ' with anomalies' : '') + '. The time range does not apply',
+    sub: ctx.remote ? 'Recorded session processes · not a live process tree' : 'Live now: ' + rows.length + ' processes, ' + fmtCpu(cpu) + ' CPU (100% is one full core), ' + fmtMem(mem) + (flagged ? ', ' + flagged + ' with anomalies' : '') + '. The time range does not apply',
     modes: [{ key: 'view', label: 'Show processes as', def: 'list', items: [['list', 'List'], ['tree', 'Tree']] }],
     hasCols: true,
     table: {
@@ -677,9 +685,9 @@ function panelProcs(ctx, local) {
         { k: 'zr', l: 'Zombie risk', n: true, w: '84px', t: 'How likely this kind of process is to outlive its tool, from the process catalog' },
         { k: 'cpu', l: 'CPU', n: true, w: '60px' }, { k: 'mem', l: 'RAM', n: true, w: '76px' }, { k: 'act', l: 'Cleanup', w: '150px', t: 'Copy the command that ends this process' },
       ],
-      rows, tree, columns: true, sort: { k: 'cpu', dir: 'desc' }, none: 'No live processes.',
+      rows: rows.map((r, i) => ({ ...r, node_id: ctx.remote ? list[i]?.node_id : ctx.localNode })), tree, columns: true, sort: { k: 'cpu', dir: 'desc' }, none: ctx.remote ? machineOf(ctx).unavailable || 'No session processes were reported.' : 'No live processes.',
     },
-    note: tree ? 'A child process is listed under its parent when both are in this list.' : null,
+    note: ctx.remote ? 'Parent, anomaly and cleanup data are live local measurements. The activity range does not apply.' : tree ? 'A child process is listed under its parent when both are in this list.' : null,
   };
 }
 
@@ -701,22 +709,25 @@ function panelAlerts(ctx) {
     };
   });
   return {
-    sub: rows.length ? rows.length + ' open, whole machine' : 'Nothing to look at',
+    sub: ctx.remote ? 'Live diagnostics are local only' : rows.length ? rows.length + ' open, whole machine' : 'Nothing to look at',
     table: {
       cols: [{ k: 'sev', l: 'Severity', w: '92px' }, { k: 'what', l: 'Finding', w: '330px' }, { k: 'detail', l: 'Detail' }, { k: 'tool', l: 'Tool', w: '120px' }, { k: 'n', l: 'PIDs', w: '120px' }, { k: 'act', l: 'Action', w: '120px' }],
       rows, sort: { k: 'sev', dir: 'asc' },
-      none: 'Nothing to look at. This checks for subagents over 2 GB of RAM, MCP servers whose parent is gone, headless browsers, and more than 5 process anomalies.',
+      none: ctx.remote ? 'Process anomalies are checked on This node only.' : 'Nothing to look at. This checks for subagents over 2 GB of RAM, MCP servers whose parent is gone, headless browsers, and more than 5 process anomalies.',
     },
   };
 }
 
 function panelTraffic(ctx) {
-  const per = machineOf(ctx).monitor.per_tool;
+  const per = ctx.remote ? (machineOf(ctx).hosts || []).map(h => ({
+    node_id: h.node_id, label: 'Whole host', sessions: h.live_sessions, pids: h.active_processes, inbound_bps: h.live_in_rate,
+    outbound_bps: h.live_out_rate, est_tokens: h.ai_token_rate, cpu_pct: h.host_cpu_percent,
+  })) : machineOf(ctx).monitor.per_tool;
   const rows = per.map(t => {
     const loop = t.mcp_loop;
     const conf = t.est_confidence;
     return {
-      id: t.tool,
+      id: t.node_id || t.tool, node_id: t.node_id,
       sort: {
         tool: t.label || t.tool, sess: t.sessions, in: t.inbound_bps, out: t.outbound_bps, tok: t.est_tokens,
         mcp: loop ? (loop.detected ? 1 + (loop.loops || 0) : 0) : null, fev: t.file_events, files: t.files_touched, cpu: t.cpu_pct, ws: t.workspace_bytes,
@@ -738,14 +749,14 @@ function panelTraffic(ctx) {
     };
   });
   return {
-    sub: 'Live, from the network and file monitor. Tokens here are an estimate',
+    sub: ctx.remote ? 'Last host samples · independent of the Tool and time filters' : 'Live, from the network and file monitor. Tokens here are an estimate',
     table: {
       cols: [
         { k: 'tool', l: 'Tool', w: '140px' }, { k: 'sess', l: 'Sessions', n: true, w: '76px', t: 'Sessions and processes' }, { k: 'in', l: 'In', n: true, w: '76px', t: 'Bytes received per second' },
         { k: 'out', l: 'Out', n: true, w: '76px', t: 'Bytes sent per second' }, { k: 'tok', l: 'Tokens (estimate)', n: true, w: '128px' }, { k: 'mcp', l: 'MCP loop', w: '84px' },
         { k: 'fev', l: 'File events', n: true, w: '80px' }, { k: 'files', l: 'Files', n: true, w: '56px' }, { k: 'cpu', l: 'CPU', n: true, w: '104px' }, { k: 'ws', l: 'Workspace', n: true },
       ],
-      rows, sort: { k: 'in', dir: 'desc' }, none: 'The live monitor reports no tool right now.',
+      rows, sort: { k: 'in', dir: 'desc' }, none: ctx.remote ? machineOf(ctx).unavailable || 'No host traffic samples were reported.' : 'The live monitor reports no tool right now.',
     },
   };
 }
@@ -789,14 +800,14 @@ function panelFindings(ctx, local) {
     sub: 'Settings and text that change what the model gets, and that no prompt shows',
     table: {
       cols: [{ k: 'what', l: 'Finding', w: '330px' }, { k: 'tool', l: 'Tool', w: '130px' }, { k: 'where', l: 'Where', w: '240px' }, { k: 'effect', l: 'What it does' }, { k: 'act', l: 'Action', w: '124px' }],
-      rows, tree: true, none: ctx.findings.loading ? 'Reading the settings...' + (ctx.findings.scan ? ' ' + ctx.findings.scan.step + ', ' + Math.round(ctx.findings.scan.elapsed_s) + ' s' : '') : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.'),
+      rows, tree: true, none: ctx.findings.unavailable || (ctx.findings.loading ? 'Reading the settings...' + (ctx.findings.scan ? ' ' + ctx.findings.scan.step + ', ' + Math.round(ctx.findings.scan.elapsed_s) + ' s' : '') : (ctx.findings.error ? 'Could not read the settings: ' + ctx.findings.error : 'No open findings.')),
     },
     note: [
       byWhat.size < ctx.findings.list.length ? 'Findings of one kind are folded under one row. Unfold a row for each place.' : '',
       ctx.findings.incomplete?.length ? 'The scan reached its time limit and skipped: ' + ctx.findings.incomplete.join(', ') + '.' : '',
       ctx.findings.failed?.length ? 'The scan could not read: ' + ctx.findings.failed.map(f => f.step + ' (' + f.error + ')').join(', ') + '.' : '',
     ].filter(Boolean).join(' ') || null,
-    actions: ctx.findings.loading ? null : [{ label: 'See every source', go: () => ctx.actions.openDrawer({ type: 'hidden' }, true) }],
+    actions: ctx.findings.loading ? null : [{ label: 'See every source', disabled: ctx.remote, go: () => ctx.actions.openDrawer({ type: 'hidden' }, true) }],
   };
 }
 
@@ -814,7 +825,8 @@ function panelSettings(ctx) {
   });
   return {
     sub: 'Value in force for each tool, and where it comes from',
-    table: { cols: [{ k: 'k', l: 'Setting', w: '180px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows, none: ctx.findings.loading ? 'Reading the settings...' : 'No settings read yet.' },
+    view: { C: ReportedValues, props: {} },
+    table: { cols: [{ k: 'k', l: 'Setting', w: '180px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows, none: ctx.findings.unavailable || (ctx.findings.loading ? 'Reading the settings...' : 'No settings read yet.') },
     actions: [{ label: 'Open the Settings screen', go: () => ctx.actions.setScreen('settings') }],
     note: ctx.findings.note || '',
   };
@@ -875,9 +887,11 @@ function panelDaemon(ctx) {
   const kids = (s.children || []).map(c => ({ name: c.name, cpu: c.cpu_percent, rss: c.memory_rss_bytes }));
   const kidCpu = sumOf(kids.map(k => k.cpu));
   const kidRss = sumOf(kids.map(k => k.rss));
-  const list = [{ name: Array.isArray(s.children) ? 'aictl daemon' : 'aictl daemon and helpers', cpu: s.cpu_percent == null ? null : Math.max(0, s.cpu_percent - kidCpu), rss: s.memory_rss_bytes == null ? null : Math.max(0, s.memory_rss_bytes - kidRss) }, ...kids];
+  const list = ctx.remote ? (machineOf(ctx).hosts || []).map(h => ({ node_id: h.node_id,
+    name: h.daemon_pid ? `aictl daemon (PID ${h.daemon_pid})` : 'Daemon not reported' }))
+    : [{ name: Array.isArray(s.children) ? 'aictl daemon' : 'aictl daemon and helpers', cpu: s.cpu_percent == null ? null : Math.max(0, s.cpu_percent - kidCpu), rss: s.memory_rss_bytes == null ? null : Math.max(0, s.memory_rss_bytes - kidRss) }, ...kids];
   const rows = list.map((r, i) => ({
-    id: r.name + i, sort: { n: r.name, c: r.cpu, m: r.rss },
+    id: r.name + i, node_id: r.node_id, sort: { n: r.name, c: r.cpu, m: r.rss },
     cells: { n: { v: r.name, cls: 'm' }, c: { v: fmtCpu(r.cpu) }, m: { v: fmtBytes(r.rss) } },
   }));
   return {
@@ -892,7 +906,7 @@ function panelDaemon(ctx) {
     table: { cols: [{ k: 'n', l: 'Process' }, { k: 'c', l: 'CPU', n: true, w: '56px' }, { k: 'm', l: 'RAM', n: true, w: '64px' }], rows, sort: { k: 'c', dir: 'desc' } },
     actions: [
       { label: 'Open aictl Health', go: () => ctx.actions.setScreen('health') },
-      { label: 'Compact the history', go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes records older than the retention time, then rewrites the history file to free its empty space. On a large file this can take minutes, and new data waits until it ends.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) },
+      { label: 'Compact the history', disabled: ctx.remote, go: () => ctx.actions.runCommand({ title: 'Compact the history', lead: 'This removes records older than the retention time, then rewrites the history file to free its empty space. On a large file this can take minutes, and new data waits until it ends.', command: 'aictl db compact', applyLabel: 'Run this command', action: 'db-compact', done: 'Compacted the history' }) },
     ],
   };
 }
@@ -1026,7 +1040,7 @@ function panelCoverage(ctx) {
     return { id: r.key, cells, sort };
   });
   return {
-    sub: 'What aictl can collect for each tool, and how exact it is',
+    sub: ctx.remote ? 'Global collection capabilities, checked against records in the selected node scope' : 'What aictl can collect for each tool, and how exact it is',
     table: { cols: [{ k: 'k', l: 'Data', w: '260px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows },
     note: ['Some Exact items still need new collection work. Cost is always an estimate from list prices.']
       .concat((ctx.data.coverage?.notes || []).filter(n => shown.includes(n.tool)).map(n => n.text)).join(' '),
@@ -1050,5 +1064,14 @@ export const PANEL_IDS = Object.keys(BUILDERS);
 export function buildPanel(id, ctx, local, pn) {
   const b = BUILDERS[id];
   if (!b) return {};
-  return b(ctx, local, id, pn);
+  const body = b(ctx, local, id, pn);
+  if (body.table && ctx.nodeScope && ['attention', 'agentsT', 'promptsL', 'pprompts', 'confirms', 'loops', 'changesT', 'memfiles', 'procs', 'traffic', 'daemon'].includes(id)) {
+    const table = body.table;
+    body.table = { ...table, cols: [...table.cols.slice(0, 1), { k: 'node', l: 'Reporting node', w: '146px' }, ...table.cols.slice(1)],
+      rows: table.rows.map(r => {
+        const node = r.node_id || (id === 'agentsT' && reportingNode(r.id)) || (!ctx.remote && ctx.localNode);
+        return { ...r, sort: { ...r.sort, node }, cells: { ...r.cells, node: { v: node === 'legacy' ? 'Untagged history' : node || ctx.scopeName, cls: 'dim' } } };
+      }) };
+  }
+  return body;
 }

@@ -528,7 +528,7 @@ Key: node_id, ts, metric, seq. Scope: machine-wide. 8 columns.
 
 ### `system_snapshots`
 
-Key: node_id, ts. Scope: machine-wide. 27 columns.
+Key: node_id, ts. Scope: machine-wide. 28 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -559,6 +559,7 @@ Key: node_id, ts. Scope: machine-wide. 27 columns.
 | host_cpu_percent | real |  |  |  |
 | host_memory_used_mb | real |  |  |  |
 | host_memory_total_mb | real |  |  |  |
+| node_health_counters | string |  |  |  |
 | rowid | long | system | | |
 | _v | datetime | system | | |
 | _deleted | bool | system | | |

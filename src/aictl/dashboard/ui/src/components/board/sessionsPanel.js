@@ -8,6 +8,7 @@ import * as api from '../../api.js';
 import { NA, fmtDur, fmtN, fmtUsd, projectName, stamp } from './format.js';
 import { normalizeSessions } from './useBoardData.js';
 import Table from './Table.js';
+import { ReportTable, reportPath } from './ReportedBoard.js';
 
 export const SEARCH_DEBOUNCE_MS = 250;
 export const PAGE_SIZE = 50;
@@ -17,7 +18,7 @@ export const MATCH_LABEL = {
 };
 
 /** The table of the search answer. *q* adds the "Matched in" column. */
-export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {} } = {}) {
+export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {}, localNode, showNode = false } = {}) {
   const cols = [
     { k: 'tool', l: 'Tool', w: '110px' },
     { k: 'title', l: 'Title', minw: 220 },
@@ -31,6 +32,7 @@ export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {} }
     { k: 'arts', l: 'Artifacts', n: true, w: '76px' },
     { k: 'commits', l: 'Commits', n: true, w: '76px' },
   ];
+  if (showNode || rows.some(r => r.node_id)) cols.splice(2, 0, { k: 'node', l: 'Reporting node', w: '140px' });
   if (q) cols.push({ k: 'match', l: 'Matched in', minw: 240, t: 'Where the search text was found, with a short excerpt' });
   return {
     key: 'sessions',
@@ -43,10 +45,11 @@ export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {} }
       return {
         id: r.tool + ':' + r.id,
         go: () => open(r.id),
-        sort: { tool: toolName(r.tool), title: r.title || '', project: r.project || '', started: r.started_at, dur, tokens: r.tokens, cost: r.cost_usd, calls: r.tool_calls, prompts: r.prompts, arts: r.artifacts, commits: r.commits, match: matched || null },
+        sort: { tool: toolName(r.tool), title: r.title || '', node: r.node_id, project: r.project || '', started: r.started_at, dur, tokens: r.tokens, cost: r.cost_usd, calls: r.tool_calls, prompts: r.prompts, arts: r.artifacts, commits: r.commits, match: matched || null },
         cells: {
           tool: { v: toolName(r.tool), cls: 'dim' },
-          title: { v: r.title || r.id, title: (r.title || 'No title') + ', ' + r.id },
+          title: { v: r.title || r.session_id || r.id, title: (r.title || 'No title') + ', ' + (r.session_id || r.id) },
+          node: { v: r.node_id || localNode || 'This node', cls: 'dim' },
           project: { v: r.project ? projectName(r.project) : NA, cls: 'dim', title: r.project || 'No project' },
           started: { v: stamp(r.started_at, true), cls: 'dim', title: r.started_at ? new Date(r.started_at * 1000).toLocaleString() : '' },
           dur: { v: fmtDur(dur), title: r.ended_at ? 'Ended ' + stamp(r.ended_at, true) : 'No end time stored' },
@@ -68,9 +71,11 @@ export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {} }
 export function SessionsView({ ctx }) {
   const [text, setText] = useState('');
   const [q, setQ] = useState('');
-  const [state, setState] = useState({ rows: [], total: null, error: null, busy: true });
+  const [answer, setState] = useState(null);
   const tools = ctx.tools || null;
-  const toolKey = tools ? tools.join(',') : '*';
+  const toolKey = JSON.stringify([tools ? tools.join(',') : '*', ctx.nodeScope || 'local', ctx.nodeId || null]);
+  const requestKey = q + '|' + toolKey;
+  const state = answer?.key === requestKey ? answer : { rows: [], total: null, error: null, busy: true };
   const toolsRef = useRef(tools);
   toolsRef.current = tools;
   const ctrl = useRef(null);
@@ -86,36 +91,43 @@ export function SessionsView({ ctx }) {
     if (ctrl.current) ctrl.current.abort();
     const mine = new AbortController();
     ctrl.current = mine;
-    setState(s => ({ ...s, busy: true, error: null }));
-    api.getBoardSessions({ q, tool: toolsRef.current, limit: PAGE_SIZE, offset }, { signal: mine.signal }).then((raw) => {
+    setState(s => offset ? { ...s, busy: true, error: null } : { key, rows: [], total: null, busy: true, error: null });
+    api.getBoardSessions({
+      q, tool: toolsRef.current, limit: PAGE_SIZE, offset,
+      scope: ctx.nodeScope, nodeId: ctx.nodeId,
+    }, { signal: mine.signal }).then((raw) => {
+      if (mine.signal.aborted) return;
       const d = normalizeSessions(raw);
       const rows = offset ? live.current.rows.concat(d.rows) : d.rows;
       live.current = { key, rows };
-      setState({ rows, total: d.total, error: null, busy: false });
+      setState({ key, rows, total: d.total, byNode: d.by_node, error: null, busy: false });
     }).catch((e) => {
-      if (e?.name === 'AbortError') return;
+      if (mine.signal.aborted || e?.name === 'AbortError') return;
       setState(s => ({ ...s, busy: false, error: e }));
     });
   };
 
   // A new search or a new Tool filter starts again at the first page.
   useEffect(() => {
-    load(q + '|' + toolKey, 0);
+    load(requestKey, 0);
     return () => { if (ctrl.current) ctrl.current.abort(); };
   }, [q, toolKey]);
 
   const open = id => ctx.actions.openDrawer({ type: 'agent', id, tab: 'flow' }, true);
-  const def = useMemo(() => sessionsDef(state.rows, { q, toolName: ctx.toolName, open }), [state.rows, q, ctx.toolName]);
+  const def = useMemo(() => sessionsDef(state.rows, { q, toolName: ctx.toolName, open, localNode: ctx.localNode, showNode: !!ctx.nodeScope }), [state.rows, q, ctx.toolName, ctx.localNode, ctx.nodeScope]);
   const more = state.total != null && state.rows.length < state.total;
   const toolNote = tools ? (tools.length ? ' Only the tools chosen in the Tool filter.' : ' No tool is chosen in the Tool filter.') : '';
   return html`<div class="bd-sessions">
+    ${ctx.nodeScope && html`<${ReportTable} title="Matching sessions by node" rows=${state.byNode || (!ctx.remote && state.total != null ? [{ node_id: ctx.localNode || 'This node', sessions: state.total }] : [])} columns=${[['node_id', 'Reporting node'], ['sessions', 'Sessions']]}
+      note="All matching sessions, before pagination. The activity range does not apply." source=${reportPath(ctx, '/api/board/sessions',
+        new URLSearchParams({ q, ...(tools ? {tool: tools.join(',') || '-'} : {}), limit: PAGE_SIZE }).toString())}/>`}
     <div class="bd-srchrow">
       <input type="search" class="bd-sessq" aria-label="Search all past sessions" placeholder="Search titles, prompts, projects, files and commits"
         value=${text} onInput=${e => setText(e.currentTarget.value)}/>
       <span class="bd-note bd-sessn" role="status">${state.error ? '' : state.total == null ? 'Loading...' : state.rows.length + ' of ' + state.total + (q ? ' sessions match' : ' sessions') + (state.busy ? ', updating' : '') + '.'}${toolNote}</span>
     </div>
     ${state.error ? html`<div class="bd-empty" role="status">Could not load sessions: ${state.error.message}${state.error.status === 404 ? ' This server does not have session search yet. Reinstall and restart the daemon.' : ''}</div>` : null}
-    ${state.total != null ? html`<${Table} def=${def} label="Sessions"/>` : null}
+    ${state.total != null || ctx.nodeScope ? html`<${Table} def=${def} label="Sessions" keepHeader=${!!ctx.nodeScope}/>` : null}
     ${more ? html`<button type="button" class="bd-more" disabled=${state.busy} onClick=${() => load(live.current.key, state.rows.length)}>Showing ${state.rows.length} of ${state.total}. Show ${Math.min(PAGE_SIZE, state.total - state.rows.length)} more</button>` : null}
   </div>`;
 }

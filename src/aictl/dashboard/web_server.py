@@ -563,6 +563,32 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
             return
+        if path.startswith("/api/") and path != "/api/board/nodes":
+            from .board_history import ScopeError, identity_parts, parse_scope
+
+            params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            scoped = "node_id" in params or any(v in {"node", "fleet"} for v in params.get("scope", ()))
+            if scoped:
+                try:
+                    scope = parse_scope(params)
+                except ScopeError as exc:
+                    self._json_response({"error": str(exc), "reason": exc.reason}, status=exc.status)
+                    return
+                if scope.kind != "local":
+                    history = path in {
+                        "/api/board", "/api/board/sessions", "/api/board/agent", "/api/board/agent/flow",
+                        "/api/board/agent/transcript", "/api/board/prompt", "/api/board/tool", "/api/board/error",
+                        "/api/board/skill", "/api/board/file", "/api/board/context", "/api/board/machine",
+                        "/api/board/session/records", "/api/session-evidence",
+                    }
+                    if history:
+                        self._serve_board(path)
+                    else:
+                        self._json_response({"error": "Available only on This node", "reason": "local_only"}, status=422)
+                    return
+            if any(identity_parts(value) for key in ("id", "session_id") for value in params.get(key, ())):
+                self._json_response({"error": "A node-qualified record requires a historical scope"}, status=400)
+                return
         if path == "/":
             self._serve_html()
         elif path == "/api/snapshot":
@@ -1818,6 +1844,24 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
                 self._owns_live_hub = True
             self.live_dashboard = LiveDashboard(hub, db, store, health_provider=self._live_health)
             self.attach_live_ingesters()
+            getattr(db, "machine", db).node_runtime_sample = self._node_runtime_sample
+
+    def _node_runtime_sample(self) -> dict:
+        """Only report operational measurements; paths, command lines and error text stay local."""
+        from .board_api import _ingester_rows, _self_usage, _sink_section
+
+        usage = _self_usage()
+        otel = self.otel_receiver.status()
+        diagnostics = (getattr(self.store.snapshot, "live_monitor", None) or {}).get("diagnostics", {})
+        return {
+            "daemon": {"cpu_percent": usage.get("daemon_cpu_percent"), "rss_bytes": usage.get("daemon_memory_rss_bytes"),
+                       "threads": usage.get("threads"), "uptime_s": usage.get("uptime_s")},
+            "sink": _sink_section(self.store),
+            "otel_receiver": {k: otel.get(k) for k in ("metrics_received", "events_received", "errors", "dropped", "last_receive_at", "active")},
+            "collectors": [{"name": name, "status": d.get("status"), "mode": d.get("mode")}
+                           for name, d in diagnostics.items() if isinstance(d, dict)],
+            "ingesters": [{k: row.get(k) for k in ("name", "status", "last_ok", "last_poll")} for row in _ingester_rows(self.ingesters, [])],
+        }
 
     def attach_live_ingesters(self) -> None:
         sources = getattr(self.store, "live_sources", None)
@@ -1895,6 +1939,10 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
     def server_close(self) -> None:
         if self.live_dashboard is not None:
+            db = getattr(self.store, "_db", None)
+            machine = getattr(db, "machine", db)
+            if getattr(machine, "node_runtime_sample", None) == self._node_runtime_sample:
+                machine.node_runtime_sample = None
             self.live_dashboard.close()
             if self._owns_live_hub:
                 self.store.live_hub.close()

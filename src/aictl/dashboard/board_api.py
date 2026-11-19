@@ -47,12 +47,15 @@ from ..context_audit import _git_states, _path_key, _redact, skill_description, 
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..health import host_memory as _host_memory
 from ..ingesters._common import project_key, project_root
-from ..storage import EventRow, _session_uuid
+from ..storage import EventRow
+from ..storage import _session_uuid as _raw_session_uuid
 from ..tool_scope import is_unattributed, normalize_selection, stored_ids_for
 from ..tools import TOOL_LABELS
 from ..utils import estimate_tokens_from_size
 from .analytics import _day_span
 from .api_handlers import self_usage
+from .board_history import ScopeError, identity, identity_parts, parse_scope
+from .board_history import label as node_label
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +279,22 @@ def _label(tool: str) -> str:
 
 
 def _short(identifier: str) -> str:
+    parts = identity_parts(identifier)
+    if parts:
+        identifier = parts[1]
     return identifier.rsplit(":", 1)[-1][:8] if identifier else ""
+
+
+def _session_uuid(identifier: str) -> str | None:
+    parts = identity_parts(identifier)
+    if parts:
+        uuid = _raw_session_uuid(parts[1])
+        return identity(parts[0], uuid) if uuid else None
+    return _raw_session_uuid(identifier)
+
+
+def _is_reported_history(obj: Any) -> bool:
+    return getattr(obj, "_reported_history", False) is True
 
 
 def _basename(path: str) -> str:
@@ -919,13 +937,14 @@ class _Board:
             meta = self.meta.get(sid) or {}
             meta_tool = meta.get("tool") or ""
             self.session_tool[sid] = meta_tool if not is_unattributed(meta_tool) else tool_seen.get(sid, meta_tool)
-            self.session_project[sid] = project_root(meta.get("project_path") or project_seen.get(sid, ""))
+            path = meta.get("project_path") or project_seen.get(sid, "")
+            self.session_project[sid] = path if _is_reported_history(self.conn) else project_root(path)
         for c in self.cells:
             self.session_tool.setdefault(c.sid, c.tool)
             self.session_project.setdefault(c.sid, c.project)
             if is_unattributed(c.tool):
                 c.tool = self.session_tool[c.sid]
-            c.project = project_root(c.project) or self.session_project[c.sid]
+            c.project = (c.project if _is_reported_history(self.conn) else project_root(c.project)) or self.session_project[c.sid]
 
     def _price_cells(self) -> None:
         tiered: dict[str, int] = {}
@@ -1344,7 +1363,10 @@ class _Board:
                 hits.add(sid)
         pattern = "%" + self.f.q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         where, params = self._window()
-        for table, column in (("session_prompts", "text"), ("tool_invocations", "target")):
+        searchable = [("session_prompts", "text"), ("tool_invocations", "target")]
+        if _is_reported_history(self.conn):
+            searchable += [("tool_invocations", "tool_name"), ("file_write_events", "path")]
+        for table, column in searchable:
             hits.update(
                 r[0]
                 for r in self.conn.execute(
@@ -1548,6 +1570,8 @@ class _Board:
         }
         if root and sid in self.estimated:
             row["estimated"] = True
+        if _is_reported_history(self.conn) and (parts := identity_parts(sid)):
+            row.update(node_id=node_label(parts[0]), session_id=sid)
         if live is not None:
             pids = sorted(live["pids"])
             row["mem_mb"] = _mem_of(self._pid_memory(), pids)
@@ -1644,8 +1668,8 @@ class _Board:
         """Active first, then newest. Roots always fit before any subagent."""
         rank = {"waiting": 0, "looping": 1, "running": 2}
 
-        def sort_key(sid: str) -> tuple[int, float]:
-            return (rank.get(self.status.get(sid, ""), 3), -self.last_activity.get(sid, 0.0))
+        def sort_key(sid: str) -> tuple[int, float, str]:
+            return (rank.get(self.status.get(sid, ""), 3), -self.last_activity.get(sid, 0.0), sid)
 
         roots = sorted(self.scope, key=sort_key)
         shown = roots[:MAX_AGENT_ROWS]
@@ -1739,6 +1763,8 @@ def _fallback_rows(conn: sqlite3.Connection, since: float, until: float, only_se
         " AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.session_id = su.session_id)"
     )
     params: list[Any] = [since, until]
+    if _is_reported_history(conn):
+        sql += " AND NOT EXISTS (SELECT 1 FROM scoped_request_sessions r WHERE r.session_id = su.session_id)"
     if only_session is not None:
         sql += " AND session_id = ?"
         params.append(only_session)
@@ -1912,7 +1938,7 @@ _TOTAL_COLUMNS = {"input": "input_tokens", "output": "output_tokens", "cache_rea
 
 def _sampled_rows(board: _Board, total: int, columns: str, condition: str, table: str, where: str, params: list) -> tuple[list, int]:
     """Rows for percentiles: all of them, or every k-th by id once they are many."""
-    k = max(1, math.ceil(total / MAX_LATENCY_VALUES))
+    k = 1 if _is_reported_history(board.conn) else max(1, math.ceil(total / MAX_LATENCY_VALUES))
     sample_sql = f" AND id % {k} = 0" if k > 1 else ""
     rows = board.conn.execute(
         f"SELECT {columns} FROM {board._source(table)} WHERE {where} AND {condition}{sample_sql}",
@@ -2090,7 +2116,7 @@ def _turns(board: _Board, skill_rows: list[tuple]) -> _Turns:
     starts: dict[str, list[float]] = defaultdict(list)
     for sid, ts in rows:
         starts[sid].append(ts)
-    every = max(1, math.ceil(len(rows) / MAX_TURN_SAMPLE))
+    every = 1 if _is_reported_history(board.conn) else max(1, math.ceil(len(rows) / MAX_TURN_SAMPLE))
     sampled = {rows[i] for i in range(0, len(rows), every)}
     wanted = set(sampled)
     wanted.update(sorted(rows, key=lambda r: r[1], reverse=True)[:MAX_PROMPTS])
@@ -2356,17 +2382,19 @@ def _errors_section(board: _Board) -> tuple[list[dict], list[int], dict[str, int
 
 def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
     where, params = board._scoped()
+    reported = _is_reported_history(board.conn)
+    node = ", node_id" if reported else ""
     rows = board.conn.execute(
         "SELECT path, MAX(project_path), SUM(json_extract(detail, '$.lines_added')),"
         " SUM(json_extract(detail, '$.lines_removed')), COUNT(*), COUNT(DISTINCT session_id), MAX(ts), MAX(session_id)"
-        f" FROM file_write_events WHERE {where} GROUP BY path",
+        f" {node} FROM file_write_events WHERE {where} GROUP BY path{node}",
         params,
     ).fetchall()
     files = []
     by_project: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     added_any = removed_any = False
     added_total = removed_total = edits_total = 0
-    for path, project, added, removed, edits, agents, last_ts, sid in rows:
+    for path, project, added, removed, edits, agents, last_ts, sid, *nodes in rows:
         project = project or board.session_project.get(sid, "")
         files.append(
             {
@@ -2377,6 +2405,7 @@ def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
                 "edits": edits,
                 "agents": agents,
                 "last_ts": last_ts,
+                **({"node_id": node_label(nodes[0]), "id": identity(nodes[0], path)} if nodes else {}),
             }
         )
         edits_total += edits
@@ -2526,18 +2555,20 @@ def _tokens_of(row: dict) -> int | None:
 def _prompts_section(board: _Board, turn_tokens: dict[tuple[str, float], int | None]) -> list[dict]:
     where, params = board._scoped()
     out = []
-    native_ids = getattr(board.conn, "_live_projection", False) is True
+    historical = _is_reported_history(board.conn)
+    native_ids = historical or getattr(board.conn, "_live_projection", False) is True
     identity_column = "id, " if native_ids else ""
     for raw in board.conn.execute(
         f"SELECT {identity_column}ts, session_id, agent_id, project_path, text, prompt_file FROM session_prompts WHERE {where} AND agent_id = ''"
-        f" ORDER BY ts DESC LIMIT {MAX_PROMPTS}",
+        f" ORDER BY ts DESC{', node_id, id' if historical else ''} LIMIT {MAX_PROMPTS}",
         params,
     ):
         row = tuple(raw)
         ts, sid, aid, project, text, prompt_file = row[1:] if native_ids else row
         out.append(
             {
-                **({"id": str(row[0])} if native_ids else {}),
+                **({"id": identity(parts[0], str(row[0])), "node_id": node_label(parts[0])} if historical and (parts := identity_parts(sid))
+                   else {"id": str(row[0])} if native_ids else {}),
                 "ts": ts,
                 "session_id": sid,
                 "agent_id": _agent_key(sid, aid),
@@ -2683,6 +2714,14 @@ def _prompt_files_on_disk(projects: list[str]) -> tuple[list[tuple[str, str]], l
 
 def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict], list[str]]:
     where, params = board._scoped()
+    if _is_reported_history(board.conn):
+        return [
+            {"node_id": node_label(node), "file": path, "project": project or board.session_project.get(sid, ""), "uses": count, "last_ts": ts}
+            for node, path, project, sid, count, ts in board.conn.execute(
+                f"SELECT node_id,prompt_file,project_path,MAX(session_id),COUNT(*),MAX(ts) FROM session_prompts WHERE {where}"
+                " AND agent_id='' AND prompt_file<>'' AND prompt_file NOT LIKE '%SKILL.md' GROUP BY node_id,prompt_file,project_path"
+                " ORDER BY COUNT(*) DESC, MAX(ts) DESC LIMIT ?", [*params, MAX_LIST_ROWS])
+        ], []
     used: dict[tuple[str, str], dict] = {}
     live = getattr(board.conn, "_live_projection", False) is True
     for prompt_file, project, sid, n, last_ts in board.conn.execute(
@@ -2872,7 +2911,8 @@ def _skill_file_reads(conn: Any, name: str, uses: list[tuple], range_sql: str, r
         return any(begin <= used < end for used in started.get(sid, []))
 
     return [
-        {"ts": ts, "session_id": sid, "agent_id": aid, "tool": tool, "project": project_root(project or "")}
+        {"ts": ts, "session_id": sid, "agent_id": aid, "tool": tool,
+         "project": (project or "") if _is_reported_history(conn) else project_root(project or "")}
         for ts, sid, aid, tool, project, _target in reads
         if not same_turn_started(sid, ts)
     ]
@@ -2905,13 +2945,13 @@ def skill_detail(
     read_pairs = {(r["session_id"], _agent_key(r["session_id"], r["agent_id"])) for r in file_reads[:MAX_DETAIL_ROWS]}
     total, first, last = conn.execute(f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM skill_uses WHERE {named}", names).fetchone()
     raw_projects = [r[0] for r in conn.execute(f"SELECT DISTINCT project_path FROM skill_uses WHERE {named} AND project_path != '' LIMIT 50", names)]
-    projects = list(dict.fromkeys(p for raw in raw_projects for p in (project_root(raw), raw) if p))
+    projects = [] if _is_reported_history(db) else list(dict.fromkeys(p for raw in raw_projects for p in (project_root(raw), raw) if p))
     pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows} | read_pairs
     titles = _titles_for(conn, pairs, now)
 
     locations = []
     seen_text: dict[str, str] = {}
-    for row in skill_locations(name, projects):
+    for row in ([] if _is_reported_history(db) else skill_locations(name, projects)):
         git_state = ""
         if row["scope"] == "project":
             git_state = _git_states(Path(row["owner"]), [row["path"]]).get(row["path"], "outside-repo")
@@ -2960,7 +3000,7 @@ def skill_detail(
                 "agent_id": _agent_key(sid, aid),
                 "title": titles.get((sid, _agent_key(sid, aid)), ""),
                 "tool": tool,
-                "project": project_root(project or ""),
+                "project": (project or "") if _is_reported_history(db) else project_root(project or ""),
                 "trigger": trigger or None,
             }
             for ts, sid, aid, tool, project, trigger in rows
@@ -2990,13 +3030,15 @@ def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> li
             row["tokens"] = (row["tokens"] or 0) + value
     out = [{**row, "agents": len(row["agents"])} for row in skills.values()]
     out = sorted(out, key=lambda r: (-r["uses"], r["name"]))[:MAX_LIST_ROWS]
-    return [{**{k: v for k, v in row.items() if k != "projects"}, **_skill_file(row["name"], row["projects"])} for row in out]
+    return [{**{k: v for k, v in row.items() if k != "projects"},
+             **({} if _is_reported_history(board.conn) else _skill_file(row["name"], row["projects"]))} for row in out]
 
 
 def _memory_files(board: _Board) -> list[dict]:
     selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
+    node = ", node_id" if _is_reported_history(board.conn) else ""
     rows = board.conn.execute(
-        "SELECT path, tool, scope, tokens, last_changed FROM files WHERE (category LIKE '%memory%' OR category LIKE '%instruction%')"
+        f"SELECT path, tool, scope, tokens, last_changed{node} FROM files WHERE (category LIKE '%memory%' OR category LIKE '%instruction%')"
         f" ORDER BY last_changed DESC LIMIT {MAX_LIST_ROWS}"
     ).fetchall()
     rows = [
@@ -3008,18 +3050,20 @@ def _memory_files(board: _Board) -> list[dict]:
     if not rows:
         return []
     writes: dict[str, tuple] = {}
-    for path, added, removed, tool, ts in board.conn.execute(
-        "SELECT path, SUM(json_extract(detail, '$.lines_added')), SUM(json_extract(detail, '$.lines_removed')), tool, MAX(ts)"
-        " FROM file_write_events WHERE ts >= ? AND ts <= ? AND path IN (SELECT value FROM json_each(?)) GROUP BY path",
+    for path, added, removed, tool, ts, *nodes in board.conn.execute(
+        f"SELECT path, SUM(json_extract(detail, '$.lines_added')), SUM(json_extract(detail, '$.lines_removed')), tool, MAX(ts){node}"
+        f" FROM file_write_events WHERE ts >= ? AND ts <= ? AND path IN (SELECT value FROM json_each(?)) GROUP BY path{node}",
         (board.f.since, board.f.until, json.dumps([r[0] for r in rows])),
     ):
-        writes[path] = (added, removed, tool, ts)
+        writes[identity(nodes[0], path) if nodes else path] = (added, removed, tool, ts)
     out = []
-    for path, tool, scope, tokens, last_changed in rows:
-        added, removed, changed_by, changed_ts = writes.get(path, (None, None, None, None))
+    for path, tool, scope, tokens, last_changed, *nodes in rows:
+        key = identity(nodes[0], path) if nodes else path
+        added, removed, changed_by, changed_ts = writes.get(key, (None, None, None, None))
         out.append(
             {
                 "path": path,
+                **({"id": key, "node_id": node_label(nodes[0])} if nodes else {}),
                 "read_by": tool or None,
                 "scope": scope,
                 "tokens": tokens,
@@ -3086,17 +3130,21 @@ def _resource_series(board: _Board) -> tuple[dict, dict]:
         stored = stored_ids_for(f.tools)
         where += f" AND tool IN ({','.join('?' * len(stored))})" if stored else " AND 0"
         params.extend(stored)
+    node = ", node_id" if _is_reported_history(board.conn) else ""
+    sql = (
+        f"SELECT tool, MIN({f.buckets - 1}, CAST((ts - ?) / ? AS INTEGER)) b, AVG(cpu) cpu, AVG(mem) mem FROM"
+        f" (SELECT tool, ts{node}, SUM(cpu_percent) cpu, SUM(memory_rss_mb) mem"
+        f" FROM process_snapshots WHERE {where} GROUP BY tool, ts{node}) GROUP BY tool, b{node}"
+    )
     rows = board.conn.execute(
-        f"SELECT tool, MIN({f.buckets - 1}, CAST((ts - ?) / ? AS INTEGER)) b, AVG(cpu), AVG(mem) FROM"
-        f" (SELECT tool, ts, SUM(cpu_percent) cpu, SUM(memory_rss_mb) mem FROM process_snapshots WHERE {where} GROUP BY tool, ts)"
-        " GROUP BY tool, b",
+        f"SELECT tool, b, SUM(cpu), SUM(mem) FROM ({sql}) GROUP BY tool,b" if node else sql,
         [f.since, f.bucket_s, *params],
     ).fetchall()
     cpu: dict[str, list] = {}
     mem: dict[str, list] = {}
     for tool, b, avg_cpu, avg_mem in rows:
-        cpu.setdefault(tool, [None] * f.buckets)[b] = round(avg_cpu, 2)
-        mem.setdefault(tool, [None] * f.buckets)[b] = round(avg_mem, 2)
+        cpu.setdefault(tool, [None] * f.buckets)[b] = None if avg_cpu is None else round(avg_cpu, 2)
+        mem.setdefault(tool, [None] * f.buckets)[b] = None if avg_mem is None else round(avg_mem, 2)
     order = [t for t in board.tool_order if t in cpu] + sorted(t for t in cpu if t not in board.tool_order)
     return {t: cpu[t] for t in order}, {t: mem[t] for t in order}
 
@@ -3104,6 +3152,18 @@ def _resource_series(board: _Board) -> tuple[dict, dict]:
 def _previous(board: _Board) -> dict:
     """The same filters over the window before this one. Null when it holds no data."""
     f = board.f
+    if _is_reported_history(board.conn):
+        hi = f.since - 1e-6
+        prior = replace(f, since=f.since - (f.until - f.since), until=hi)
+        previous = _Board(board.conn, prior, board.now, None, facts=_store_facts(board.conn, "")).load()
+        calls = sum(agg.n for (sid, _), agg in previous.tool_agg.items() if sid in previous.scope)
+        calls += sum(previous.fallback_tools.values())
+        prompts = sum(previous.fallback_user.values())
+        prompts += sum(n for (sid, aid), n in previous.prompt_agg.items() if sid == aid and sid in previous.scope)
+        if not (previous.total.calls or calls or prompts):
+            return {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
+        return {"messages": previous.total.calls + calls + prompts, "tokens": previous.total.tokens,
+                "cost_usd": _usd(previous.total.cost), "tool_calls": calls}
     span = f.until - f.since
     since, until = f.since - span, f.since
     where = "ts >= ? AND ts < ?"
@@ -3287,10 +3347,16 @@ def _gather(conn: Any, calls: list) -> list:
 
 def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]:
     """Per tool, which kinds of rows exist in the store. This changes rarely."""
-    with _facts_lock:
-        cached = _facts_memo.get(memo_key)
-        if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
-            return cached[1]
+    historical = _is_reported_history(conn)
+    if historical:
+        cached_facts = getattr(conn, "_reported_facts", None)
+        if cached_facts is not None:
+            return cached_facts
+    else:
+        with _facts_lock:
+            cached = _facts_memo.get(memo_key)
+            if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
+                return cached[1]
     facts: dict[str, set[str]] = defaultdict(set)
     answers = _gather(conn, [lambda sql=sql: _per_store(conn, sql) for sql, _names in _FACTS_SQL])
     for (_sql, names), rows in zip(_FACTS_SQL, answers, strict=False):
@@ -3301,8 +3367,11 @@ def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]
                 if flag:
                     facts[tool].add(name)
     result = dict(facts)
-    with _facts_lock:
-        _facts_memo[memo_key] = (time.monotonic(), result)
+    if historical:
+        conn._reported_facts = result
+    else:
+        with _facts_lock:
+            _facts_memo[memo_key] = (time.monotonic(), result)
     return result
 
 
@@ -3348,19 +3417,28 @@ def coverage_rows(facts: dict[str, set[str]], tool_ids: list[str]) -> list[dict]
 
 
 def _source_rows(conn: sqlite3.Connection, memo_key: str) -> list[tuple]:
-    with _facts_lock:
-        cached = _sources_memo.get(memo_key)
-        if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
-            return cached[1]
+    historical = _is_reported_history(conn)
+    if historical:
+        cached_rows = getattr(conn, "_reported_sources", None)
+        if cached_rows is not None:
+            return cached_rows
+    else:
+        with _facts_lock:
+            cached = _sources_memo.get(memo_key)
+            if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
+                return cached[1]
     # Rows of a tool and source can repeat, one per store: _sources merges them.
     rows = _per_store(conn, "SELECT tool, source, MAX(ts) FROM requests NOT INDEXED GROUP BY tool, source")
     rows += _per_store(conn, "SELECT tool, source, MAX(last_activity_at) FROM session_usage GROUP BY tool, source")
-    with _facts_lock:
-        _sources_memo[memo_key] = (time.monotonic(), rows)
+    if historical:
+        conn._reported_sources = rows
+    else:
+        with _facts_lock:
+            _sources_memo[memo_key] = (time.monotonic(), rows)
     return rows
 
 
-def _sources(source_rows: list[tuple], tool_ids: list[str], selected: set[str] | None) -> list[dict]:
+def _sources(source_rows: list[tuple], tool_ids: list[str], selected: set[str] | None, *, reported: bool = False) -> list[dict]:
     rows: dict[str, dict] = {}
     for tool, source, last_ts in source_rows:
         if selected is not None and tool not in selected:
@@ -3377,7 +3455,7 @@ def _sources(source_rows: list[tuple], tool_ids: list[str], selected: set[str] |
             "label": r["label"],
             "data_from": ", ".join(sorted(r["names"])) or None,
             "last_data_ts": r["last_data_ts"],
-            "locations": _tool_locations(r["tool"]),
+            "locations": [] if reported else _tool_locations(r["tool"]),
         }
         for r in ordered
     ]
@@ -3439,6 +3517,63 @@ def _options(board: _Board) -> dict:
 
 def _count_agents(board: _Board, sids: Iterable[str]) -> int:
     return sum(1 + sum(1 for a in board.agents_by_root.get(sid, ()) if a != sid) for sid in sids)
+
+
+def _node_activity(board: _Board, skill_rows: list[tuple]) -> list[dict]:
+    """Contributions to the selected window, before the board's display limits."""
+    integer_fields = ("agents", "sessions", "messages", "tokens", "cache_read", "replies", "calls", "tool_errors",
+                      "api_errors", "prompts", "skill_uses", "edits", "files", "tests", "failed_tests")
+    rows = {}
+
+    def row(node):
+        return rows.setdefault(node, dict.fromkeys(integer_fields, 0) | {"node_id": node, "cost_usd": None, "tools": set()})
+
+    for (node,) in board.conn.execute("SELECT DISTINCT node_id FROM sessions UNION SELECT DISTINCT node_id FROM files "
+                                      "UNION SELECT DISTINCT node_id FROM process_snapshots"):
+        row(node_label(node))
+    for sid in board.scope:
+        parts = identity_parts(sid)
+        if not parts:
+            continue
+        r = row(node_label(parts[0]))
+        r["sessions"] += 1
+        r["agents"] += _count_agents(board, [sid])
+        r["tools"].add(board.session_tool.get(sid, ""))
+        usage = board.by_root.get(sid)
+        if usage:
+            r["replies"] += usage.calls
+            r["tokens"] += usage.tokens
+            r["cache_read"] += usage.cache_read
+            r["api_errors"] += usage.errors
+            if usage.cost is not None:
+                r["cost_usd"] = (r["cost_usd"] or 0.0) + usage.cost
+        r["calls"] += board.fallback_tools.get(sid, 0)
+        r["messages"] += board.fallback_user.get(sid, 0) + board.prompt_agg.get((sid, sid), 0)
+        for aid in {sid, *board.agents_by_root.get(sid, ())}:
+            agg = board.tool_agg.get((sid, aid))
+            if agg:
+                r["calls"] += agg.n
+                r["tool_errors"] += agg.errs
+    where, params = board._scoped()
+    for table, totals, condition, fields in [
+        ("session_prompts", "COUNT(*)", " AND agent_id=''", ("prompts",)),
+        ("file_write_events", "COUNT(*),COUNT(DISTINCT path)", "", ("edits", "files")),
+    ]:
+        for node, *values in board.conn.execute(f"SELECT node_id,{totals} FROM {table} WHERE {where}{condition} GROUP BY node_id", params):
+            row(node_label(node)).update(zip(fields, values, strict=True))
+    for _name, sid, *_ in skill_rows:
+        if sid in board.scope:
+            row(node_label(identity_parts(sid)[0]))["skill_uses"] += 1
+    for sid, _aid, _ts, _name, _target, err, code, _duration in board.test_rows:
+        if sid in board.scope:
+            r = row(node_label(identity_parts(sid)[0]))
+            r["tests"] += 1
+            r["failed_tests"] += int(_test_failed(err, code))
+    for r in rows.values():
+        r["messages"] += r["replies"] + r["calls"]
+        r["cost_usd"] = _usd(r["cost_usd"])
+        r["tools"] = sorted(r["tools"] - {""})
+    return sorted(rows.values(), key=lambda r: (r["node_id"] == "legacy", r["node_id"]))
 
 
 _self_memo: list = [0.0, None]
@@ -3727,7 +3862,7 @@ def _compute_board(
             "p95_ms": _ms(_percentile(latency["by_model"].get(model, []), 0.95)),
             "agent_ids": sorted(board.model_agents[model])[:MAX_AGENT_IDS],
         }
-        for model, usage in sorted(board.by_model.items(), key=lambda kv: -kv[1].tokens)
+        for model, usage in sorted(board.by_model.items(), key=lambda kv: (-kv[1].tokens, kv[0]))[:MAX_LIST_ROWS]
     ]
 
     by_role = [
@@ -3739,7 +3874,7 @@ def _compute_board(
             "cost_usd": _usd(role["cost"]),
             "fail_rate": _ratio(role["failed"], role["calls"]),
         }
-        for kind, role in sorted(role_rows.items(), key=lambda kv: (kv[0] != "Main agents", -kv[1]["tokens"], kv[0]))
+        for kind, role in sorted(role_rows.items(), key=lambda kv: (kv[0] != "Main agents", -kv[1]["tokens"], kv[0]))[:MAX_LIST_ROWS]
     ]
 
     loops_by_project: dict[str, int] = defaultdict(int)
@@ -3816,7 +3951,9 @@ def _compute_board(
     }
 
     runs = []
-    for row in agents:
+    historical = _is_reported_history(db)
+    run_rows = (board._agent_row(sid, aid, "", []) for sid in board.scope for aid in board.agents_by_root[sid]) if historical else agents
+    for row in run_rows:
         if row["started_at"] and row["ended_at"] and row["ended_at"] > row["started_at"]:
             runs.append((row["ended_at"] - row["started_at"]) * 1000.0)
     latency_rows = [
@@ -3845,8 +3982,8 @@ def _compute_board(
     return {
         "generated_at": now,
         # When the settings records last changed: the settings screen reads them again on a new value.
-        "settings_at": tool_configs_at(),
-        "capture_mode": getattr(db, "capture", "full"),
+        "settings_at": None if _is_reported_history(db) else tool_configs_at(),
+        "capture_mode": None if _is_reported_history(db) else getattr(db, "capture", "full"),
         "range": {
             "since": f.since,
             "until": f.until,
@@ -3863,6 +4000,7 @@ def _compute_board(
             "listed_agents": len(agents),
         },
         "kpis": kpis,
+        **({"by_node": _node_activity(board, skill_rows)} if historical else {}),
         "attention": _attention(board, loops, agents),
         "agents": agents,
         "by_model": by_model,
@@ -3889,9 +4027,10 @@ def _compute_board(
         "processes": _processes(board),
         # Names for tools that have processes but no activity in this range.
         "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in _processes(board)} | set(cpu)},
-        "sources": _sources(_source_rows(conn, memo_key), tool_order or option_tools, selected),
+        "sources": _sources(_source_rows(conn, memo_key), tool_order or option_tools, selected,
+                            reported=_is_reported_history(db)),
         "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
-        "self": _self_section(db),
+        "self": None if _is_reported_history(db) else _self_section(db),
     }
 
 
@@ -4156,7 +4295,7 @@ def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, ro
     project = str(session.get("project_path") or row.get("project") or "")
     agent = "" if root else str(row.get("id") or "")
     loaded = _loaded_files(conn, sid, agent)
-    if getattr(db, "_kusto", None) is not None:
+    if _is_reported_history(db) or getattr(db, "_kusto", None) is not None:
         from .queryable_context import session_context_files
 
         context_files = session_context_files(conn, project, loaded, session.get("tool") or "")
@@ -4855,7 +4994,9 @@ def _session_flow(db: Any, agent_id: str, since: float, until: float, legacy_flo
 
 
 def _session_flow_build(db: Any, conn: sqlite3.Connection, sid: str, since: float, until: float, legacy_flow: Callable[[str, float, float], dict] | None) -> tuple[str, list[dict], str] | None:
-    if legacy_flow is None:
+    if _is_reported_history(db):
+        legacy_flow = lambda *_args: {}
+    elif legacy_flow is None:
         from .session_flow import build_session_flow
 
         def legacy_flow(session_id: str, lo: float, hi: float) -> dict:
@@ -5155,8 +5296,11 @@ def _session_row(db: Any, conn: sqlite3.Connection, sid: str) -> dict:
         return row
     uuid = _session_uuid(sid)
     if uuid:
+        parts = identity_parts(uuid) if _is_reported_history(db) else None
         found = conn.execute(
-            "SELECT session_id FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC LIMIT 1", (f"%{uuid}%",)
+            "SELECT session_id FROM sessions WHERE session_id LIKE ?"
+            + (" AND node_id = ?" if parts else "") + " ORDER BY started_at DESC LIMIT 1",
+            (f"%{parts[1]}%", parts[0]) if parts else (f"%{uuid}%",),
         ).fetchone()
         if found:
             return db.get_session(found[0]) or {}
@@ -5891,11 +6035,16 @@ def _titles_for(conn: sqlite3.Connection, pairs: set[tuple[str, str]], now: floa
     return board._titles(pairs)
 
 
-def tool_detail(db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None) -> tuple[int, dict]:
+def tool_detail(db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None,
+                *, filters: Filters | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
     conn = db._conn()
     window, window_params = "", []
-    if since is not None and until is not None:
+    if filters is not None:
+        board = _Board(conn, filters, now, facts=_store_facts(conn, str(getattr(db, "_path", "memory")))).load()
+        where, window_params = board._scoped()
+        window = f" AND {where} AND {_IS_CALL_SQL}"
+    elif since is not None and until is not None:
         window, window_params = " AND ts >= ? AND ts < ?", [since, until]
     rows = conn.execute(
         "SELECT ts, target, session_id, agent_id, duration_ms, is_error, confirm FROM tool_invocations"
@@ -5923,28 +6072,36 @@ def tool_detail(db: Any, name: str, now: float | None = None, since: float | Non
     }
 
 
-def error_detail(db: Any, key: str, now: float | None = None) -> tuple[int, dict]:
+def error_detail(db: Any, key: str, now: float | None = None, *, filters: Filters | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
     conn = db._conn()
     found: list[tuple[float, str, str, str]] = []
     parts = key.split(":", 2)
     if len(parts) < 3 or parts[0] not in ("tool", "api"):
         return 400, {"error": "Bad error key"}
+    where, params = "", []
+    if filters is not None:
+        board = _Board(conn, filters, now, facts=_store_facts(conn, str(getattr(db, "_path", "memory")))).load()
+        condition, params = board._scoped()
+        where = f" AND {condition}"
     if parts[0] == "tool":
         for ts, summary, sid, aid in conn.execute(
             "SELECT ts, result_summary, session_id, agent_id FROM tool_invocations"
-            " WHERE tool_name = ? AND is_error = 1 ORDER BY ts DESC LIMIT 5000",
-            (parts[1],),
+            f" WHERE tool_name = ? AND is_error = 1 AND {_IS_CALL_SQL}{where} ORDER BY ts DESC LIMIT 5000",
+            [parts[1], *params],
         ):
             if _tool_error_key(parts[1], summary) == key:
                 found.append((ts, _one_line(summary, 500), sid, aid))
                 if len(found) >= MAX_DETAIL_ROWS:
                     break
     else:
+        if filters is not None and filters.model:
+            where += " AND model = ?"
+            params.append(filters.model)
         for ts, error_type, status, sid, aid in conn.execute(
             "SELECT ts, error_type, http_status, session_id, agent_id FROM requests"
-            " WHERE is_error = 1 AND error_type = ? ORDER BY ts DESC LIMIT 5000",
-            ("" if parts[1] == "error" else parts[1],),
+            f" WHERE is_error = 1 AND error_type = ?{where} ORDER BY ts DESC LIMIT 5000",
+            ["" if parts[1] == "error" else parts[1], *params],
         ):
             if _api_error_key(error_type, status) == key:
                 found.append((ts, " ".join(str(p) for p in (error_type, status) if p), sid, aid))
@@ -6021,7 +6178,8 @@ def _history_text(conn: sqlite3.Connection, content: str, blob_hash: str) -> str
     return content or None
 
 
-def _stored_diff(conn: sqlite3.Connection, path: str, event_ids: list[str]) -> list[dict] | None:
+def _stored_diff(conn: sqlite3.Connection, path: str, event_ids: list[str],
+                 *, since: float | None = None, until: float | None = None) -> tuple[list[dict] | None, float | None]:
     """The newest change that has its text stored, from the edit input or the file history."""
     for event_id in event_ids:
         if not event_id:
@@ -6031,25 +6189,29 @@ def _stored_diff(conn: sqlite3.Connection, path: str, event_ids: list[str]) -> l
         ).fetchone()
         pairs = _edit_pairs(row[0]) if row else None
         if pairs:
-            return _diff_lines(pairs)
+            return _diff_lines(pairs), None
     versions = conn.execute(
-        "SELECT content, blob_hash FROM file_history WHERE path = ? ORDER BY ts DESC LIMIT 2", (path,)
+        "SELECT ts, content, blob_hash FROM file_history WHERE path = ?"
+        + (" AND ts <= ?" if until is not None else "") + " ORDER BY ts DESC LIMIT 2",
+        (path,) if until is None else (path, until),
     ).fetchall()
-    if versions:
-        new = _history_text(conn, *versions[0])
-        old = _history_text(conn, *versions[1]) if len(versions) > 1 else ""
+    if versions and (since is None or versions[0][0] >= since):
+        new = _history_text(conn, *versions[0][1:])
+        old = _history_text(conn, *versions[1][1:]) if len(versions) > 1 else ""
         if new is not None and old is not None:
-            return _diff_lines([(old, new)])
-    return None
+            return _diff_lines([(old, new)]), versions[0][0]
+    return None, None
 
 
-def file_detail(db: Any, path: str, now: float | None = None) -> tuple[int, dict]:
+def file_detail(db: Any, path: str, now: float | None = None, *, since: float | None = None,
+                until: float | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
     conn = db._conn()
+    bounds = (" AND ts >= ?" if since is not None else "") + (" AND ts <= ?" if until is not None else "")
     rows = conn.execute(
         "SELECT ts, session_id, detail, source_event_id FROM file_write_events WHERE path = ?"
-        f" ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        (path,),
+        f"{bounds} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
+        (path, *(v for v in (since, until) if v is not None)),
     ).fetchall()
     titles = _titles_for(conn, {(sid, sid) for _ts, sid, _d, _e in rows}, now)
     edits = []
@@ -6067,7 +6229,11 @@ def file_detail(db: Any, path: str, now: float | None = None) -> tuple[int, dict
                 "lines_removed": info.get("lines_removed"),
             }
         )
-    return 200, {"path": path, "edits": edits, "diff": _stored_diff(conn, path, [r[3] for r in rows])}
+    nodes = getattr(db, "scope", None)
+    diff, as_of = (None, None) if nodes and nodes.kind == "fleet" else _stored_diff(
+        conn, path, [r[3] for r in rows], since=since, until=until
+    )
+    return 200, {"path": path, "edits": edits, "diff": diff, "diff_as_of": as_of}
 
 
 @_in_session_scope("session_id")
@@ -6315,6 +6481,14 @@ def handle_get(
         return (qs.get(key) or [""])[0]
 
     try:
+        scope = parse_scope(qs)
+        if scope.kind != "local":
+            from .board_history import route
+
+            return route(db, scope, path, query, qs, time.time() if now is None else now)
+        # A scoped deep link is never interpreted as a local native ID.
+        if any(identity_parts(one(key)) for key in ("id", "session_id")):
+            raise ScopeError("A node-qualified record requires a historical scope")
         if path == "/api/board":
             return 200, board_bytes(db, store, query, now, background=True)
         snapshot = getattr(store, "snapshot", None)
@@ -6335,11 +6509,15 @@ def handle_get(
             )
         elif path == "/api/board/tool":
             if one("name"):
-                status, payload = tool_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")))
+                filters = parse_filters(query, time.time() if now is None else now) if one("since") and one("until") else None
+                with read_scope(db, filters):
+                    status, payload = tool_detail(db, one("name"), now, filters=filters)
             else:
                 status, payload = 400, {"error": "Missing name"}
         elif path == "/api/board/error":
-            status, payload = error_detail(db, one("key"), now) if one("key") else (400, {"error": "Missing key"})
+            filters = parse_filters(query, time.time() if now is None else now) if one("since") and one("until") else None
+            with read_scope(db, filters):
+                status, payload = error_detail(db, one("key"), now, filters=filters) if one("key") else (400, {"error": "Missing key"})
         elif path == "/api/board/skill":
             if one("name"):
                 tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
@@ -6350,7 +6528,8 @@ def handle_get(
             at = _as_number(one("line"))
             status, payload = file_excerpt(one("path"), max(1, int(at or 1)), is_allowed) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/file":
-            status, payload = file_detail(db, one("path"), now) if one("path") else (400, {"error": "Missing path"})
+            status, payload = file_detail(db, one("path"), now, since=_as_number(one("since")),
+                                          until=_as_number(one("until"))) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/prompt":
             ts = _as_number(one("ts"))
             if ts is None or not one("session_id"):
@@ -6361,6 +6540,8 @@ def handle_get(
             status, payload = 404, {"error": "No such route"}
     except BoardRequestError as exc:
         status, payload = 400, {"error": str(exc)}
+    except ScopeError as exc:
+        status, payload = exc.status, {"error": str(exc), "reason": exc.reason}
     return status, json.dumps(payload).encode("utf-8")
 
 
@@ -7826,11 +8007,14 @@ def _context_workflows(tool_list: list[Any]) -> list[dict]:
     return sorted(out.values(), key=lambda w: (w["type"], w["name"].lower(), w["path"]))
 
 
-def _context_daily(conn: sqlite3.Connection, tools: tuple[str, ...] | None, now: float) -> dict:
+def _context_daily(conn: sqlite3.Connection, tools: tuple[str, ...] | None, now: float, node: str | None = None) -> dict:
     """Model calls in the history for the last CONTEXT_DAYS local days, by day and model."""
     days, first = _context_days(now)
     where = "ts >= ?"
     params: list[Any] = [first]
+    if node is not None:
+        where += " AND node_id = ?"
+        params.append(node)
     if tools is not None:
         ids = stored_ids_for(tools)
         if not ids:
@@ -7927,9 +8111,6 @@ def _context_daily_empty(now: float) -> dict:
 
 def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, now: float | None = None) -> dict:
     """Everything ``GET /api/board/context`` returns. Token counts are estimates at four characters per token."""
-    from ..tool_scope import is_selected
-    from ..tools import compute_token_budget
-
     now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
     queryable = getattr(db, "_kusto", None) is not None
@@ -7937,6 +8118,14 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
         from .queryable_context import context_snapshot
 
         snapshot = context_snapshot(db, snapshot)
+    return _context_from_snapshot(snapshot, tools, now, queryable, _context_db_parts(db, tools, now))
+
+
+def _context_from_snapshot(snapshot: Any, tools: tuple[str, ...] | None, now: float, queryable: bool, db_parts: dict,
+                           *, global_budget: bool = False) -> dict:
+    from ..tool_scope import is_selected
+    from ..tools import compute_token_budget
+
     root = str(_ctx_field(snapshot, "root", "") or "")
     tool_list = _context_tools(snapshot, tools) if snapshot is not None else []
     configs = list(_ctx_field(snapshot, "tool_configs", []) or [])
@@ -7951,7 +8140,11 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
         if queryable:
             from ..tools import ToolResources
 
-            budget_tool = ToolResources(t.tool, t.label, files=[f for f in t.files if f.sent_to_llm != "unknown"])
+            budget_tool = ToolResources(t.tool, t.label, files=[
+                f for f in t.files if f.sent_to_llm != "unknown" and (not global_budget or f.scope in _CONTEXT_GLOBAL_SCOPES)
+            ])
+            if global_budget and not budget_tool.files:
+                continue
         budget_tools.append(budget_tool)
         model, model_from = _context_model(t.tool, configs, by_tool)
         budget_row = _context_budget(budget_tool, root, model, model_from)
@@ -7979,7 +8172,6 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
     categories.sort(key=lambda c: (-c["tokens"], c["tool"]))
     telemetry = [_context_telemetry(t) for t in raw_telemetry if t.get("tool") and is_selected(str(t["tool"]), tools)]
     telemetry.sort(key=lambda t: (-(t["input"] + t["output"]), t["tool"]))
-    db_parts = _context_db_parts(db, tools, now)
     memory = _context_memory(snapshot, now) if snapshot is not None else []
     return {
         "generated_at": now,

@@ -43,7 +43,7 @@ export default function EventsTab({ a, st, ctx }) {
   const sid = sessionIdOf(a);
   const win = windowOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
-  const { data, error } = useDetail(() => load(sid, win), 'events:' + sid, tick);
+  const { data, error } = useDetail(opts => ctx.remote ? api.getRecordedSession(sid, 'events', ctx, opts) : load(sid, win), 'events:' + sid, ctx.remote ? 0 : tick);
   const [kind, setKind] = useState(null);
   const [sort, setSort] = useState(null);
   const cw = useColumnWidths('agent.events');

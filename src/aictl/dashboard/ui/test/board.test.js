@@ -574,9 +574,9 @@ describe('board screen', () => {
     expect(container.querySelector('#p-skills')).toBeTruthy();
     fireEvent.click(getByRole('button', { name: 'Options for Skills used' }));
     fireEvent.click(getByText('Move earlier'));
-    expect(getByRole('button', { name: /Layout.*Changed/ })).toHaveAttribute('aria-expanded', 'false');
-    expect(getByText('Changed')).toBeTruthy();
-    fireEvent.click(getByText('Changed').closest('button'));
+    const changed = getByRole('button', { name: /Layout.*Changed/ });
+    expect(changed).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(changed);
     fireEvent.click(getByText('Reset to the default layout'));
     expect(container.querySelector('#p-skills .bd-pb')).toBeTruthy();
     fireEvent.click(await findByText('Undo'));
@@ -713,7 +713,7 @@ describe('board screen', () => {
     const seen = [];
     const fn = vi.fn(async (url, opts) => {
       const u = String(url);
-      if (!u.startsWith('/api/board') || u.startsWith('/api/board/sessions')) return jsonResponse({ rows: [], total: 0 });
+      if (!u.startsWith('/api/board?')) return jsonResponse({ rows: [], total: 0 });
       seen.push(opts?.headers?.['If-None-Match'] || null);
       return seen.length > 1 ? new Response(null, { status: 304 }) : jsonResponse(boardFixture(), 200, { ETag: '"abc"' });
     });

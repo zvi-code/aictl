@@ -14,8 +14,8 @@ import { Failed, SessionNote, clock, isActive, sessionIdOf } from './common.js';
 
 export const API_CALL_LIMIT = 200;
 
-function McpPanel({ sid, tick }) {
-  const { data, error } = useDetail(() => api.getSessionMcpUsage(sid), 'mcp:' + sid, tick);
+function McpPanel({ sid, tick, ctx }) {
+  const { data, error } = useDetail(opts => ctx.remote ? api.getRecordedSession(sid, 'mcp', ctx, opts) : api.getSessionMcpUsage(sid), 'mcp:' + sid, tick);
   const servers = Array.isArray(data?.servers) ? data.servers : [];
   const configured = Array.isArray(data?.configured_servers) ? data.configured_servers : [];
   const def = useMemo(() => {
@@ -28,7 +28,7 @@ function McpPanel({ sid, tick }) {
         ...servers.map(s => ({ id: s.server_name, sort: { n: s.server_name, c: s.call_count, e: s.err_count, d: s.total_duration_ms, l: s.last_ts }, cells: { n: { v: s.server_name, cls: 'm' }, c: { v: fmtN(s.call_count) }, e: { v: fmtN(s.err_count || 0), cls: s.err_count ? 'crit' : 'dim' }, d: { v: fmtMs(s.total_duration_ms) }, l: { v: stamp(s.last_ts, true), cls: 'dim' } } })),
         ...configured.filter(n => !used.has(n)).map(n => ({ id: 'u:' + n, sort: { n, c: 0, e: 0 }, cells: { n: { v: n, sub: 'configured, not used', cls: 'm dim' }, c: { v: 0, cls: 'dim' }, e: { v: NA, cls: 'dim' }, d: { v: NA, cls: 'dim' }, l: { v: NA, cls: 'dim' } } })),
       ],
-      sort: { k: 'c', dir: 'desc' }, none: 'No MCP server is configured or called in this session.',
+      sort: { k: 'c', dir: 'desc' }, none: ctx.remote ? 'No MCP calls were attributed to a server in this session. Configuration files were not read.' : 'No MCP server is configured or called in this session.',
     };
   }, [data]);
   const sub = data ? servers.length + ' called, ' + fmtN(data.total_calls || 0) + ' calls' + (configured.length ? ', ' + configured.length + ' configured' : '') : '';
@@ -37,8 +37,8 @@ function McpPanel({ sid, tick }) {
   </${FixedPanel}>`;
 }
 
-function ApiCallsPanel({ sid, tick, models }) {
-  const { data, error } = useDetail(() => api.getApiCalls(0, API_CALL_LIMIT, sid), 'apicalls:' + sid, tick);
+function ApiCallsPanel({ sid, tick, models, ctx }) {
+  const { data, error } = useDetail(opts => ctx.remote ? api.getRecordedSession(sid, 'calls', ctx, opts) : api.getApiCalls(0, API_CALL_LIMIT, sid), 'apicalls:' + sid, tick);
   const calls = Array.isArray(data?.calls) ? data.calls : [];
   const s = data?.summary || {};
   const def = useMemo(() => ({
@@ -135,14 +135,14 @@ function Artifacts({ sid, act }) {
 
 export default function IntegrationsTab({ a, st, ctx, act, data }) {
   const sid = sessionIdOf(a);
-  const tick = isActive(st) ? ctx.refreshKey : 0;
+  const tick = !ctx.remote && isActive(st) ? ctx.refreshKey : 0;
   const res = data.resources || {};
   const copilot = String(a.tool || '').startsWith('copilot');
   return html`<${SessionNote} a=${a}/>
-    <${McpPanel} sid=${sid} tick=${tick}/>
-    <${ApiCallsPanel} sid=${sid} tick=${tick} models=${data.by_model}/>
+    <${McpPanel} sid=${sid} tick=${tick} ctx=${ctx}/>
+    <${ApiCallsPanel} sid=${sid} tick=${tick} models=${data.by_model} ctx=${ctx}/>
     ${res.rate_limit ? html`<${RateLimit} rl=${res.rate_limit}/>` : null}
     ${res.lm_by_extension?.length ? html`<${LmUsage} rows=${res.lm_by_extension}/>` : null}
-    ${copilot ? html`<${Artifacts} sid=${sid} act=${act}/>` : null}
+    ${copilot && !ctx.remote ? html`<${Artifacts} sid=${sid} act=${act}/>` : null}
     ${!res.rate_limit && !res.lm_by_extension?.length ? html`<div class="bd-note bd-ag-top">No rate-limit report and no VS Code language-model record for this session.</div>` : null}`;
 }

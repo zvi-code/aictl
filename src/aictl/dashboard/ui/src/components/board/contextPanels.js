@@ -16,7 +16,7 @@ import { EMPTY_CONTEXT } from './useBoardData.js';
 export const contextOf = ctx => ctx.data?.contextData || EMPTY_CONTEXT;
 
 const WAITING = 'Reading the context files...';
-const noneText = (c, text) => (c.loaded ? text : WAITING);
+const noneText = (c, text) => (c.loaded ? c.unavailable || text : WAITING);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
 const TOP_SERIES = 5;
 
@@ -47,6 +47,11 @@ function readText(path) {
 
 /** The text of one file, rendered when it is Markdown, with a way to open it in the drawer. */
 export function Preview({ path, ctx, onClose }) {
+  if (ctx.remote) return html`<p class="bd-note">${path} · Recorded file metadata. File contents can only be opened on This node.</p>`;
+  return html`<${LocalPreview} path=${path} ctx=${ctx} onClose=${onClose}/>`;
+}
+
+function LocalPreview({ path, ctx, onClose }) {
   const [st, setSt] = useState({ loading: true });
   useEffect(() => {
     let live = true;
@@ -125,8 +130,9 @@ function panelBudget(ctx) {
   const top = rows.reduce((m, b) => (b.always_share > (m?.always_share ?? -1) ? b : m), null);
   return {
     sub: top ? 'Largest: ' + (top.label || ctx.toolName(top.tool)) + ', ' + fmtWindowShare(top.always_share) + ' of its window before the first prompt' : 'Files each tool loads, against its model\'s window',
-    view: { C: BudgetView, props: { rows, none: noneText(c, 'No context files found for these tools.') } },
-    note: 'Estimates at four characters per token. Always loaded counts the global files plus the largest project, as one session loads one project. The system prompt, tool definitions and the conversation are not in these numbers.',
+    view: { C: BudgetView, props: { rows, none: noneText(c, ctx.remote ? 'No host-wide files with a known loading policy were reported.' : 'No context files found for these tools.') } },
+    note: ctx.remote ? 'Host-wide files with a known loading policy only. The scan root is not reported, so project-specific files are listed in the inventory, not combined into a fictitious session budget. File tokens are estimates.'
+      : 'Estimates at four characters per token. Always loaded counts the global files plus the largest project, as one session loads one project. The system prompt, tool definitions and the conversation are not in these numbers.',
   };
 }
 
@@ -336,9 +342,9 @@ function panelMemory(ctx) {
   const c = contextOf(ctx);
   const mem = c.memory;
   return {
-    sub: mem.entries.length + ' memory files, ' + fmtN(mem.tokens) + ' tokens. Click a file to read it',
+    sub: mem.entries.length + ' memory files, ' + fmtN(mem.tokens) + (ctx.remote ? ' tokens · recorded inventory' : ' tokens. Click a file to read it'),
     view: { C: MemoryView, props: { mem, none: noneText(c, 'No agent memory found.') } },
-    note: 'Memory is not split by tool, so the Tool filter does not apply here.' + (mem.growth.length >= 2 ? ' The chart is the memory size since ' + stamp(mem.growth[0].ts, true) + ', as far back as the history goes within the last 7 days.' : ''),
+    note: (ctx.remote ? 'Files follow the Tool filter. The memory trend is for this host.' : 'Memory is not split by tool, so the Tool filter does not apply here.') + (mem.growth.length >= 2 ? ' The chart is the memory size since ' + stamp(mem.growth[0].ts, true) + ', as far back as the history goes within the last 7 days.' : ''),
   };
 }
 
@@ -407,7 +413,7 @@ function panelInventory(ctx, local) {
   const n = sumOf(c.files.map(t => t.count));
   const recent = c.files.reduce((s, t) => s + t.files.filter(f => f.recent).length, 0);
   return {
-    sub: fmtN(n) + ' files' + (recent ? ', ' + recent + ' changed in the last 5 min' : '') + '. Click a file to read it',
+    sub: fmtN(n) + ' files' + (recent ? ', ' + recent + ' changed in the last 5 min' : '') + (ctx.remote ? ' · recorded metadata' : '. Click a file to read it'),
     modes: [{ key: 'group', label: 'Group files by', def: 'kind', items: [['kind', 'Kind'], ['tool', 'Tool'], ['none', 'No groups']] }],
     view: { C: InventoryView, props: { c, group } },
   };
@@ -562,7 +568,7 @@ function panelWorkflows(ctx, local) {
   const show = local.mode('show', 'all');
   const list = c.workflows.filter(w => show === 'all' || w.type === show);
   const rows = list.map(w => ({
-    id: w.path, go: () => ctx.actions.openFile?.(w.path, 1),
+    id: w.path, go: ctx.remote ? null : () => ctx.actions.openFile?.(w.path, 1),
     sort: { n: w.name, ty: w.type, tool: w.tool, sz: w.size, t: w.tokens, ch: w.mtime },
     cells: {
       n: { v: w.name, title: w.path, sub: tailPath(w.path, 3) }, ty: { v: TYPE_LABEL[w.type] || w.type, cls: 'dim' }, tool: { v: ctx.toolName(w.tool), sw: colorFor('tool', w.tool) },
@@ -571,7 +577,7 @@ function panelWorkflows(ctx, local) {
   }));
   const wf = c.workflows.filter(w => w.type === 'workflow').length;
   return {
-    sub: wf + ' workflows, ' + (c.workflows.length - wf) + ' prompt files. Click one for its text',
+    sub: wf + ' workflows, ' + (c.workflows.length - wf) + (ctx.remote ? ' prompt files. Recorded metadata' : ' prompt files. Click one for its text'),
     modes: [{ key: 'show', label: 'Show', def: 'all', items: [['all', 'All'], ['workflow', 'Workflows'], ['prompt', 'Prompt files']] }],
     table: {
       cols: [{ k: 'n', l: 'Name' }, { k: 'ty', l: 'Type', w: '88px' }, { k: 'tool', l: 'Tool', w: '120px' }, { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 'ch', l: 'Changed', n: true, w: '84px' }],
@@ -589,7 +595,9 @@ export const CONTEXT_BUILDERS = {
 /** The rail line of the Context section. */
 export function contextSummary(data) {
   const c = data?.contextData || EMPTY_CONTEXT;
+  if (c.unavailable) return 'Inventory unavailable';
   if (!c.loaded) return 'n/a';
+  if (c.nodes) return fmtN(c.nodes.reduce((n, r) => n + r.files.reduce((a, x) => a + x.count, 0), 0)) + ' recorded files';
   const top = c.budget.tools.reduce((m, b) => (b.always_share > (m?.always_share ?? -1) ? b : m), null);
   const mem = c.memory.entries.length;
   return (top ? fmtWindowShare(top.always_share) + ' of a window, ' : 'No context files, ') + mem + (mem === 1 ? ' memory file' : ' memory files');

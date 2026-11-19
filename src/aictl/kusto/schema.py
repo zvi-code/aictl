@@ -217,6 +217,7 @@ def store_schema() -> dict[str, Table]:
         Column("settings_captured_at", "", "real"),
         Column("host_cpu_percent", "", "real"), Column("host_memory_used_mb", "", "real"),
         Column("host_memory_total_mb", "", "real"),
+        Column("node_health_counters", "", "string"),
     ])
     return tables | tables_for(tables)
 
@@ -241,13 +242,17 @@ def node_predicate(node_id: str) -> str:
     return f"{quote(NODE)} == {json.dumps(node_id, ensure_ascii=True)}"
 
 
-def current(table: Table, alias: str | None = None, *, node_id: str | None = None) -> str:
+def current(table: Table, alias: str | None = None, *, node_id: str | None = None, prefilter: str = "",
+            columns: tuple[str, ...] | None = None) -> str:
     """KQL for the rows of *table* as SQLite would read them: the newest version per key, no deleted rows.
 
     ``rowid`` stays a column; the version columns are left out, so ``SELECT *``
-    returns the SQLite column set.
+    returns the SQLite column set. A narrow read retains only its requested
+    columns and the keys through version resolution.
     """
     name = quote(alias or table.name)
+    if prefilter:
+        name += f" | where {prefilter}"
     if node_id is not None:
         name += f" | where {node_predicate(node_id)}"
     key = ", ".join(quote(k) for k in table.key)
@@ -259,8 +264,11 @@ def current(table: Table, alias: str | None = None, *, node_id: str | None = Non
             f" | where {quote(DELETED)} == false"
             f" | project-away __aictl_call, {quote(VERSION)}, {quote(DELETED)}"
         )
+    fields = "*" if columns is None else ", ".join(
+        quote(c) for c in dict.fromkeys((DELETED, NODE, *columns)) if c not in table.key and (c != NODE or node_id is not None)
+    )
     return (
-        f"{name} | summarize arg_max({quote(VERSION)}, *) by {key}{node_key}"
+        f"{name} | summarize arg_max({quote(VERSION)}, {fields}) by {key}{node_key}"
         f" | where {quote(DELETED)} == false | project-away {quote(VERSION)}, {quote(DELETED)}"
     )
 

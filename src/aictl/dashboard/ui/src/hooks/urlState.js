@@ -67,15 +67,15 @@ function currentLocation() {
 }
 
 /** Write to the URL. Changes with `push` add a history entry (Back works); the rest replace the entry. */
-export function writeUrl(patch, { push = false } = {}) {
+export function writeUrl(patch, { push = false, state } = {}) {
   const loc = currentLocation();
   if (!loc || typeof history === 'undefined') return;
   const next = mergeSearch(loc.search, patch);
   if (next === loc.search) return;
   const target = loc.pathname + next + loc.hash;
   try {
-    if (push) history.pushState(null, '', target);
-    else history.replaceState(null, '', target);
+    if (push) history.pushState(state ?? null, '', target);
+    else history.replaceState(state === undefined ? history.state : state, '', target);
   } catch { /* sandboxed document: the view still works, only the URL is stale */ }
 }
 

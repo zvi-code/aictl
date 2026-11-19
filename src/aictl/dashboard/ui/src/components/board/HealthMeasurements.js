@@ -1,6 +1,7 @@
 import { html } from 'htm/preact';
 import { useMemo, useRef, useState } from 'preact/hooks';
 import { fmtBytes, fmtN, stamp } from './format.js';
+import { mergeSearch } from '../../hooks/urlState.js';
 
 const known = Number.isFinite;
 const WINDOW = 15 * 60, BUCKET = 10;
@@ -46,6 +47,23 @@ export function Trend({ points, metric, label }) {
 }
 
 const pct = n => `${n.toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
+function NodeResources({ report }) {
+  const rows = report.rows;
+  return html`<div class="bd-healthresource bd-healthhosts">
+    <h3>${report.scope === 'fleet' ? 'Reporting machines' : 'Reporting machine'}</h3>
+    ${rows.length ? html`<div class="bd-healthscroll" tabindex="0" role="region" aria-label="Node measurements">
+      <table aria-label="Reported node runtime"><thead><tr>
+        ${['Reporting node', 'Last report', 'Host CPU', 'Memory used / total', 'Sessions', 'Processes', 'Daemon PID', 'Daemon CPU', 'Daemon RSS'].map(s => html`<th scope="col" key=${s}>${s}</th>`)}
+      </tr></thead><tbody>${rows.map(r => html`<tr key=${r.node_id}>
+        <th scope="row">${report.scope === 'fleet' ? html`<a class="bd-link" href=${mergeSearch(location.search, { scope: 'node', node_id: r.node_id })}>${r.node_id}</a>` : r.node_id}</th>
+        <td>${r.captured_at ? stamp(r.captured_at, true) : 'Not reported'}${r.status === 'stale' ? ' · stale' : ''}</td>
+        <td>${known(r.cpu_percent) ? pct(r.cpu_percent) : '—'}</td>
+        <td>${[r.memory_used_mb, r.memory_total_mb].map(v => known(v) ? fmtBytes(v * 1048576) : '—').join(' / ')}</td>
+        <td>${known(r.active_sessions) ? fmtN(r.active_sessions) : '—'}</td><td>${known(r.active_processes) ? fmtN(r.active_processes) : '—'}</td><td>${r.daemon_pid ?? '—'}</td>
+        <td>${known(r.daemon?.cpu_percent) ? pct(r.daemon.cpu_percent) : '—'}</td><td>${known(r.daemon?.rss_bytes) ? fmtBytes(r.daemon.rss_bytes) : '—'}</td>
+      </tr>`)}</tbody></table></div>` : html`<p>No nodes have reported host measurements.</p>`}
+    ${report.truncated && html`<p>Not all reporting nodes are listed.</p>`}</div>`;
+}
 function ResourceBlock({ label, metrics, note, warning }) {
   const present = metrics.filter(m => known(m[1]));
   return html`<div class="bd-healthresource"><h3>${label}</h3>
@@ -54,24 +72,26 @@ function ResourceBlock({ label, metrics, note, warning }) {
     ${note && html`<p>${note}</p>`}${warning && html`<p class="bd-warn">${warning}</p>`}</div>`;
 }
 
-export function Resources({ health }) {
+export function Resources({ health, localNode }) {
   const { daemon: d = {}, host: h = {}, cluster: c } = health.resources || {};
   const self = health.pipeline.self;
   const sample = c?.samples || {};
   const clusterMetrics = [['CPU', 'cpu_percent'], ['Hot-cache utilization', 'cache_percent'], ['Ingestion utilization', 'ingestion_percent'],
     ['Streaming utilization', 'streaming_percent']].map(([label, key]) => [label, sample[key]?.value, pct, sample[key]?.at]);
   const dates = Object.values(sample).map(v => v.at).filter(known);
+  const mb = v => known(v) ? v / 1048576 : null;
+  const report = health.node_report?.servingOnly || !health.node_report ? {
+    scope: health.node_report?.scope || 'local',
+    rows: [{ node_id: health.node_report?.nodeId || localNode || 'This node', captured_at: h.checked_at,
+      cpu_percent: h.cpu_percent, memory_used_mb: mb(h.memory_used_bytes), memory_total_mb: mb(h.memory_total_bytes),
+      active_sessions: health.node_report?.rows[0]?.active_sessions,
+      active_processes: health.node_report?.rows[0]?.active_processes,
+      daemon_pid: self.pid, daemon: d }],
+  } : health.node_report;
   return html`<section class="bd-healthcard bd-healthresources" aria-label="Resource usage">
     <div class="bd-healthsectionhead"><h2>Resource usage</h2><span>By measurement source</span></div>
     <div class="bd-healthresourcegrid">
-      <${ResourceBlock} label="Daemon process" metrics=${[
-        ['CPU', d.cpu_percent ?? self.cpu, pct], ['Resident memory', d.rss_bytes ?? self.rss, fmtBytes],
-        ['Threads', d.threads ?? self.threads, fmtN],
-      ]} note=${d.checked_at ? `Measured ${stamp(d.checked_at, true)} · CPU can exceed 100% across cores.` : 'Local process, not the cluster.'}/>
-      <${ResourceBlock} label="Local machine" metrics=${[
-        ['CPU', h.cpu_percent, pct, h.cpu_checked_at], ['Memory used', h.memory_used_bytes, fmtBytes, h.memory_checked_at],
-        ['Memory available', h.memory_available_bytes, fmtBytes, h.memory_checked_at], ['Total memory', h.memory_total_bytes, fmtBytes, h.memory_checked_at],
-      ]} note=${h.checked_at ? 'Host samples · measurement times on each value.' : 'Host snapshot not available yet.'}/>
+      <${NodeResources} report=${report}/>
       ${health.store.kind === 'kusto' && html`<${ResourceBlock} label="ADX cluster" metrics=${[
         ['Nodes', c?.native?.nodes, fmtN], ['Offline nodes', c?.native?.offline_nodes || null, fmtN],
         ['Active ingestions', c?.native?.ingestions || null, fmtN], ['Active merges', c?.native?.merges || null, fmtN],

@@ -1,0 +1,37 @@
+import{u as K,d as S,y as M,bh as P,T as j,bi as W,m as a,S as z,h as u,o as L,N as Q}from"./index-C_yL16rp.js";import{TextView as V}from"./TextView-Rq9jaqMk.js";import{u as Y,N as D,W as q,S as G,F as A,i as J,c as U,b as N}from"./Drawer-B_UKqqyp.js";import"./LoadedConfiguration-B23iGxY5.js";function X(){var n;if(typeof navigator>"u")return!1;const t=((n=navigator.userAgentData)==null?void 0:n.platform)||navigator.platform||navigator.userAgent||"";return/win/i.test(t)&&!/darwin/i.test(t)}function Z(){return`Set capture = "full" under [storage] in ${X()?"%APPDATA%\\aictl\\config.toml":"~/.config/aictl/config.toml"}. It applies to new sessions.`}function x(t){var l;const n=[],e=o=>{const d=String(o||"").trim();d&&!n.includes(d)&&n.push(d)};e(t.response);for(const o of t.actions||[])o.kind==="api_response"&&e(((l=o.detail)==null?void 0:l.response)||o.response||o.output_summary);return n.join(`
+
+`)}function tt(t,n){return((t==null?void 0:t.turns)||[]).filter(e=>e.prompt&&e.prompt.length>0||e.actions&&e.actions.length>0||e.tool_use_count>0||n&&(e.ts||e.tokens))}const et=5e3,st={tool_use:"Tool",api_call:"Model call",api_response:"Reply",file_edit:"Edit",compaction:"Compaction",subagent:"Subagent",error:"Error",hook:"Hook"},at={tool_use:"var(--s3)",api_call:"var(--s2)",api_response:"var(--ink3)",file_edit:"var(--s4)",compaction:"var(--warn)",subagent:"var(--s5)",error:"var(--crit)",hook:"var(--s4)"};function ot({tokens:t}){const n=t||{},e=[["Input",n.input||0,"var(--s1)"],["Cache read",n.cache_read||0,"var(--s3)"],["Output",n.output||0,"var(--s2)"]].filter(l=>l[1]>0);return e.length?a`<div class="bd-ag-tokbar" role="img" aria-label=${e.map(l=>l[0]+" "+u(l[1])).join(", ")}>
+    ${e.map(([l,o,d])=>a`<span key=${l} style=${{flex:o+" 1 0",background:d}} title=${l+": "+u(o)}>${l.toLowerCase()+" "+u(o)}</span>`)}
+  </div>`:null}function nt({x:t,turnTs:n}){const e=t.ts-n,l=t.tokens?(t.tokens.input||0)+(t.tokens.output||0):0,o=t.success===!1?"Failed":t.success===!0?"OK":"";return a`<li class="bd-ag-act">
+    <span class="bd-ag-actk" style=${{color:at[t.kind]||"var(--ink3)"}}>${st[t.kind]||t.kind}</span>
+    <span class="bd-ag-actn">${t.name||Q}</span>
+    <span class="bd-ag-acta" title=${t.input_summary||""}>${N(t.input_summary,90)}${t.output_summary?a`<em title=${t.output_summary}>${" → "+N(t.output_summary,70)}</em>`:null}</span>
+    <span class="bd-ag-actm">${[e>0?"+"+(e<10?e.toFixed(1):Math.round(e))+" s":"",t.duration_ms>0?L(t.duration_ms):"",l?u(l)+" tokens":""].filter(Boolean).join(", ")}${o?a` <b class=${o==="Failed"?"bd-ag-bad":""}>${o}</b>`:null}</span>
+  </li>`}function lt({turn:t,n,open:e,onToggle:l,withheld:o,replyNote:d,loading:h}){const k=t.actions||[],v=x(t),_=t.tokens||{},r=(_.input||0)+(_.output||0),y=t.wall_ms||t.duration_ms||0,c=p=>k.filter(m=>m.kind===p).length,w=[r?u(r)+" tokens":"",c("tool_use")||t.tool_use_count?(c("tool_use")||t.tool_use_count)+" tool calls":"",c("subagent")?c("subagent")+" subagents":"",c("hook")?c("hook")+" hooks":"",c("error")?c("error")+" errors":""].filter(Boolean).join(", "),g=t.prompt||"",T=o?"Text not kept.":"No prompt captured.";return a`<li class=${"bd-ag-turn"+(e?" bd-open":"")}>
+    <button type="button" class="bd-ag-turnh" aria-expanded=${e?"true":"false"} onClick=${l}>
+      <b>${n}</b><span>${U(t.ts)}</span>${t.model?a`<span class="bd-ag-dim">${t.model}</span>`:null}${y>0?a`<span class="bd-ag-dim">${L(y)}</span>`:null}
+      <span class="bd-ag-turns">${w}</span>
+    </button>
+    <div class="bd-ag-msg"><span class="bd-ag-who">You</span>
+      ${g?a`<div class="bd-ag-text">${e?g:N(t.prompt_preview||g,160)}</div>`:a`<div class="bd-ag-text bd-ag-dim">${T}</div>`}
+    </div>
+    ${v?a`<div class="bd-ag-msg"><span class="bd-ag-who">Reply</span>
+      ${e?a`<div class="bd-ag-reply"><${V} text=${v} path="reply.md" source=${a`<div class="bd-ptext">${v}</div>`}/></div>`:a`<div class="bd-ag-text">${N(t.response_preview||v,200)}</div>`}
+    </div>`:e?a`<div class="bd-ag-msg"><span class="bd-ag-who">Reply</span><div class="bd-ag-text bd-ag-dim">${o?"Text not kept.":d||"No reply captured."}</div></div>`:null}
+    <${ot} tokens=${_}/>
+    ${e&&h?a`<div class="bd-ag-text bd-ag-dim" role="status">Reading the turn...</div>`:null}
+    ${e&&k.length?a`<ul class="bd-ag-acts" aria-label=${"Actions of turn "+n}>${k.map((p,m)=>a`<${nt} key=${m} x=${p} turnTs=${t.ts}/>`)}</ul>`:null}
+  </li>`}function ut({a:t,st:n,ctx:e}){var B,F;const{state:l}=K(),o=l.mode==="incremental",d=J(n),[h,k]=S(!0),[v,_]=S(0);M(()=>{if(o||!d||!h)return;const s=setInterval(()=>{document.hidden||_(i=>i+1)},et);return()=>clearInterval(s)},[d,h,o]);const{data:r,error:y}=Y(s=>P(t.id,{...s,nodeScope:e.nodeScope,nodeId:e.nodeId}),"transcript:"+t.id,e.remote?0:v),[c,w]=S(()=>new Set),[g,T]=S({}),p=(r==null?void 0:r.capture_mode)??((B=e.data)==null?void 0:B.capture_mode),m=p!=null&&p!=="full"||(r==null?void 0:r.content_retained)===!1,C=j(()=>tt(r,m),[r,m]),b=j(()=>C.map(s=>g[s.ts]?{...s,...g[s.ts],detail:!1}:s),[C,g]),I=[...c].map(s=>C[s]).filter(s=>s&&s.detail&&!g[s.ts]).map(s=>s.ts);if(M(()=>{if(!I.length)return;const s=new AbortController;return I.forEach(i=>{W(t.id,i,{signal:s.signal,nodeScope:e.nodeScope,nodeId:e.nodeId}).then($=>T(E=>({...E,[i]:$.turn||{detail:!1}}))).catch($=>{($==null?void 0:$.name)!=="AbortError"&&T(E=>({...E,[i]:{detail:!1}}))})}),()=>s.abort()},[t.id,I.join(","),e.nodeScope,e.nodeId]),!r)return a`<${D} a=${t} captureMode=${(F=e.data)==null?void 0:F.capture_mode}/><${q} error=${y} what="the transcript"/>`;const O=b.length>0&&c.size>=b.length,H=s=>w(i=>{const $=new Set(i);return $.has(s)?$.delete(s):$.add(s),$}),f=r.summary||{},R=r.replies_kept===!1?(r.reply_note||"The reply text is not kept")+".":null;return a`<${G} a=${t}/>
+    <${D} a=${t} captureMode=${p}/>
+    ${m?a`<div class="bd-banner bd-ag-capture" role="status">${"Text is not kept: the capture mode is "+(p&&p!=="full"?p:"not full")+" for this session. Counts, times, models and tool calls are still shown. "+Z()}</div>`:null}
+    <${A} id="agtrs" title=${o?"Historical summary":"Summary"} sub=${f.source||""}>
+      <${z} stats=${[{label:"Turns",value:u(f.total_turns??b.length)},{label:"Model calls",value:u(f.total_api_calls)},{label:"Tool calls",value:u(f.total_tool_uses)},{label:"Tokens",value:u(f.total_tokens)},{label:"Errors",value:u(f.errors)},{label:"Subagents",value:u(f.subagents)},{label:"Compactions",value:u(f.compactions)}]}/>
+    </${A}>
+    <${A} id="agtr" title="Transcript, oldest first" sub=${o?"Queryable Kusto history · read on open":d?h?"Read again every 5 s while the agent runs":"Not refreshing":""}>
+      <div class="bd-ag-bar">
+        ${b.length?a`<button type="button" class="bd-btn" onClick=${()=>w(O?new Set:new Set(b.map((s,i)=>i)))}>${O?"Collapse all":"Expand all"}</button>`:null}
+        ${d&&!o?a`<label class="bd-ag-check"><input type="checkbox" checked=${h} onChange=${s=>k(s.currentTarget.checked)}/>Refresh while it runs</label>`:null}
+      </div>
+      ${R&&!m&&b.length?a`<div class="bd-note" role="status">${R} The prompts, model calls, tool calls and tokens of each turn are shown.</div>`:null}
+      ${b.length?a`<ol class="bd-ag-turnl">${b.map((s,i)=>a`<${lt} key=${i} turn=${s} n=${i+1} open=${c.has(i)} onToggle=${()=>H(i)} withheld=${m} replyNote=${R} loading=${!!s.detail&&c.has(i)}/>`)}</ol>`:a`<div class="bd-empty">${m?"No turn has times or tokens to show.":"No turn for this session: aictl has no prompt, model call or tool call of it."}</div>`}
+    </${A}>`}export{et as REFRESH_MS,ut as default};

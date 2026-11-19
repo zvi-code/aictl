@@ -2,18 +2,19 @@ import { html } from 'htm/preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { getBoardNodeView } from '../../api.js';
 
-export function useNodeView({ view, scope, nodeId, sessionId, since, until }, revision = 0) {
+export function useNodeView({ view, scope, nodeId, sessionId, since, until, enabled = true }, revision = 0) {
   const [result, setResult] = useState(null);
   const key = JSON.stringify([view, scope, nodeId, sessionId, since, until, revision]);
   useEffect(() => {
+    if (!enabled) return;
     const ctrl = new AbortController();
     const put = state => { if (!ctrl.signal.aborted) setResult({ key, ...state }); };
     getBoardNodeView({ view, scope, nodeId, sessionId, since, until }, { signal: ctrl.signal })
       .then(data => put({ data }), error => put({ error }));
     return () => ctrl.abort();
-  }, [key, view, scope, nodeId, sessionId, since, until]);
+  }, [key, view, scope, nodeId, sessionId, since, until, enabled]);
   // Do not paint the previous node even for the render before effect cleanup.
-  return result?.key === key ? result : {};
+  return enabled && result?.key === key ? result : {};
 }
 
 export const scopeLabel = (scope, nodeId) => scope === 'local' ? 'This node' : scope === 'fleet' ? 'All nodes' : nodeId || 'Named node';
@@ -30,11 +31,12 @@ function ScopeChoices({ scope, nodeId, visited, select }) {
   const { data, error } = useNodeView({ view: 'nodes', scope: 'fleet' });
   const [typed, setTyped] = useState(nodeId || '');
   const ids = [...new Set([...visited, ...(data?.rows || []).map(r => r.node_id), 'legacy'])];
+  const pick = (s, id) => select(s, id);
   const choice = (s, id) => html`<button key=${JSON.stringify([s, id])} type="button" class="bd-mi"
-    aria-pressed=${s === scope && (s !== 'node' || id === nodeId)} onClick=${() => select(s, id)}>${scopeLabel(s, id)}</button>`;
+    aria-pressed=${s === scope && (s !== 'node' || id === nodeId)} onClick=${() => pick(s, id)}>${scopeLabel(s, id)}</button>`;
   return html`<div class="bd-menu bd-nodemenu" role="group" aria-label="Choose node scope">
     ${choice('local')}${choice('fleet')}
-    <form onSubmit=${e => { e.preventDefault(); if (typed.trim()) select('node', typed.trim().toLowerCase()); }}>
+    <form onSubmit=${e => { e.preventDefault(); if (typed.trim()) pick('node', typed.trim().toLowerCase()); }}>
       <label>Node ID<input type="text" value=${typed} placeholder="Enter a node ID" onInput=${e => setTyped(e.currentTarget.value)}/></label>
       <button class="bd-btn" type="submit" disabled=${!typed.trim()}>Open node</button>
     </form>

@@ -37,7 +37,7 @@ export function byName(subprocesses, tree) {
 export default function ProcessesTab({ a, st, ctx, data }) {
   const sid = sessionIdOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
-  const rec = useDetail(() => api.getSessionProcesses(sid), 'procs:' + sid, tick);
+  const rec = useDetail(opts => ctx.remote ? api.getRecordedSession(sid, 'processes', ctx, opts) : api.getSessionProcesses(sid), 'procs:' + sid, ctx.remote ? 0 : tick);
   const res = data.resources || {};
   const live = useMemo(() => res.process_tree || [], [res.process_tree]);
   const recorded = useMemo(() => recordedTree(rec.data?.processes), [rec.data]);

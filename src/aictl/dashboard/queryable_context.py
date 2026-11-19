@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
+from collections import defaultdict
 from dataclasses import asdict
+from functools import lru_cache
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,18 +17,28 @@ _POLICY_FIELDS = ("sent_to_llm", "loaded_when", "cacheable", "survives_compactio
 _PLACEHOLDER = re.compile(r"%[^%]+%|\$\{[^}]+\}|\{[^}]+\}|\$[A-Z_]+|^~")
 
 
-def context_snapshot(db: Any, current: Any) -> Any:
-    """No discovery, stat, transcript, or local telemetry read supplies inventory."""
-    import json
+@lru_cache(maxsize=2)
+def _policy_index(all_platforms: bool) -> dict:
+    if all_platforms:
+        from ..tools import _data_path, _load_path_csv
 
+        specs = [s for os in ("windows", "unix") for s in _load_path_csv(_data_path(f"paths-{os}.csv"))]
+    else:
+        specs = get_registry().path_specs()
+    index = defaultdict(list)
+    for spec in specs:
+        pattern = _PLACEHOLDER.sub("*", spec.path_template).replace("\\", "/").lower()
+        index[spec.ai_tool, spec.category].append((re.compile(fnmatch.translate(pattern)), spec))
+    return index
+
+
+INVENTORY_COLUMNS = ("path", "tool", "category", "scope", "size_bytes", "tokens", "lines", "mtime", "meta")
+
+
+def inventory_snapshot(rows, telemetry, current=None, *, reported=False) -> Any:
     tools: dict[str, ToolResources] = {}
     memory = []
-    specs = get_registry().path_specs()
-    rows = (
-        db._conn()
-        .execute("SELECT path, tool, category, scope, size_bytes, tokens, lines, mtime, meta FROM files")
-        .fetchall()
-    )
+    index = _policy_index(reported)
     for path, tool, category, scope, size, tokens, lines, mtime, raw_meta in rows:
         try:
             meta = json.loads(raw_meta or "{}")
@@ -33,16 +46,9 @@ def context_snapshot(db: Any, current: Any) -> Any:
             meta = {}
         if not isinstance(meta, dict):
             meta = {}
+        normalized = path.replace("\\", "/").lower()
         candidates = [
-            spec
-            for spec in specs
-            if spec.ai_tool == tool
-            and spec.category == category
-            and (not scope or spec.scope == scope)
-            and fnmatch.fnmatchcase(
-                path.replace("\\", "/").lower(),
-                _PLACEHOLDER.sub("*", spec.path_template).replace("\\", "/").lower(),
-            )
+            s for pattern, s in index[tool, category] if (not scope or s.scope == scope) and pattern.match(normalized)
         ]
         policies = {}
         for field in _POLICY_FIELDS:
@@ -62,9 +68,15 @@ def context_snapshot(db: Any, current: Any) -> Any:
         tools.setdefault(tool, ToolResources(tool, TOOL_LABELS.get(tool, tool))).files.append(resource)
         if "memory" in category or "instruction" in category:
             memory.append(
-                {"file": path, "source": category, "tokens": tokens or 0, "lines": lines or 0, "mtime": mtime or 0}
+                {
+                    "file": path,
+                    "source": category,
+                    "tool": tool,
+                    "tokens": tokens or 0,
+                    "lines": lines or 0,
+                    "mtime": mtime or 0,
+                }
             )
-    telemetry = [asdict(row) for row in db.latest_telemetry().values()]
     # Configuration is explicitly current/configured, never evidence of a running agent's model.
     return SimpleNamespace(
         root=getattr(current, "root", ""),
@@ -73,6 +85,12 @@ def context_snapshot(db: Any, current: Any) -> Any:
         tool_telemetry=telemetry,
         agent_memory=memory,
     )
+
+
+def context_snapshot(db: Any, current: Any) -> Any:
+    """No discovery, stat, transcript, or local telemetry read supplies inventory."""
+    rows = db._conn().execute(f"SELECT {', '.join(INVENTORY_COLUMNS)} FROM files")
+    return inventory_snapshot(rows, [asdict(row) for row in db.latest_telemetry().values()], current)
 
 
 def session_context_files(conn: Any, folder: str, loaded: list[dict], tool: str = "") -> dict:

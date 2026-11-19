@@ -3,6 +3,32 @@
 
 let _baseUrl = '';
 
+export function withNodeScope(query, scope = 'local', nodeId = null) {
+  if (scope === 'local') return query;
+  const params = new URLSearchParams(query);
+  params.set('scope', scope);
+  if (scope === 'node') params.set('node_id', nodeId || '');
+  return params.toString();
+}
+
+function confirmHistory(data, scope, nodeId) {
+  if (scope && scope !== 'local' && (data?.node_scope?.kind !== scope
+    || (scope === 'node' && data.node_scope.node_id !== nodeId))) {
+    const error = new Error('The server did not confirm the requested node scope.');
+    error.reason = 'unconfirmed_scope';
+    throw error;
+  }
+  return data;
+}
+
+async function historyJson(path, opts) {
+  const { nodeScope, nodeId, ...fetchOptions } = opts || {};
+  const [base, ...query] = path.split('?');
+  const data = await fetchJson(base + '?' + withNodeScope(query.join('?'), nodeScope, nodeId),
+    Object.keys(fetchOptions).length ? fetchOptions : undefined);
+  return confirmHistory(data, nodeScope, nodeId);
+}
+
 /** Set the base URL for all API calls (useful for tests). */
 export function setBaseUrl(url) { _baseUrl = url; }
 
@@ -69,7 +95,7 @@ export async function getSessionEvidence(sessionId, { q, kind, stepKey, flowRef,
   if (stepKey) params.set('step_key', stepKey);
   if (['turn_id', 'round_id', 'agent_id', 'tool_call_id', 'request_id', 'message_id', 'trace_id', 'span_id'].includes(flowRef?.field)) params.set(flowRef.field, flowRef.id);
   if (flowRef?.field === 'span_id' && flowRef.traceId) params.set('trace_id', flowRef.traceId);
-  const page = await fetchJson('/api/session-evidence?' + params, opts);
+  const page = await historyJson('/api/session-evidence?' + params, opts);
   if (!Array.isArray(page?.rows) || (page.session_id && page.session_id !== sessionId)
       || page.rows.some(row => !row || (row.session_id && row.session_id !== sessionId))) {
     throw new Error('Invalid evidence page for this session.');
@@ -238,31 +264,36 @@ export async function getBoard(query, { signal, etag } = {}) {
   const r = await fetch(url('/api/board?' + query), opts);
   if (r.status === 304) return { status: 304 };
   if (!r.ok) throw await responseError(r, '/api/board');
-  return { status: r.status, etag: r.headers.get('ETag'), data: await r.json() };
+  const params = new URLSearchParams(query);
+  return { status: r.status, etag: r.headers.get('ETag'), data: confirmHistory(await r.json(), params.get('scope'), params.get('node_id')) };
 }
 
-export const getBoardAgent = (id, opts) => fetchJson('/api/board/agent?id=' + encodeURIComponent(id), opts);
+export const getBoardAgent = (id, opts) => historyJson('/api/board/agent?id=' + encodeURIComponent(id), opts);
+export const getBoardContext = (query, opts) => historyJson('/api/board/context?' + query, opts);
+export const getBoardMachine = (query, opts) => historyJson('/api/board/machine?' + query, opts);
+export const getRecordedSession = (sid, part, ctx, opts) => historyJson('/api/board/session/records?' +
+  new URLSearchParams({ session_id: sid, part }), { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId });
 /** The session flow of a board agent: events from the store, with hook and OTel events merged in. `query` is `since=..&until=..`. */
 /** Session search over all time: {q, tool (list of ids, or [] for none), limit, offset}. */
-export function getBoardSessions({ q = '', tool = null, limit = 50, offset = 0 } = {}, opts) {
+export function getBoardSessions({ q = '', tool = null, limit = 50, offset = 0, scope = 'local', nodeId = null } = {}, opts) {
   const p = new URLSearchParams();
   p.set('q', q);
   if (tool) p.set('tool', tool.length ? tool.join(',') : '-');
   p.set('limit', String(limit));
   p.set('offset', String(offset));
-  return fetchJson('/api/board/sessions?' + p.toString(), opts);
+  return historyJson('/api/board/sessions?' + p.toString(), { ...opts, nodeScope: scope, nodeId });
 }
-export const getBoardAgentFlow = (id, query = '', opts) => fetchJson('/api/board/agent/flow?id=' + encodeURIComponent(id) + (query ? '&' + query : ''), opts);
+export const getBoardAgentFlow = (id, query = '', opts) => historyJson('/api/board/agent/flow?id=' + encodeURIComponent(id) + (query ? '&' + query : ''), opts);
 /** The transcript of a board agent's session: each prompt with its reply, actions and tokens. */
-export const getBoardAgentTranscript = (id, opts) => fetchJson('/api/board/agent/transcript?id=' + encodeURIComponent(id), opts);
+export const getBoardAgentTranscript = (id, opts) => historyJson('/api/board/agent/transcript?id=' + encodeURIComponent(id), opts);
 /** One turn whole: its actions and full texts. `ts` is the turn's timestamp. */
-export const getBoardAgentTranscriptTurn = (id, ts, opts) => fetchJson('/api/board/agent/transcript?id=' + encodeURIComponent(id) + '&turn=' + encodeURIComponent(ts), opts);
-export const getBoardTool = (name, query = '', opts) => fetchJson('/api/board/tool?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
-export const getBoardError = (key, query = '', opts) => fetchJson('/api/board/error?key=' + encodeURIComponent(key) + (query ? '&' + query : ''), opts);
-export const getBoardSkill = (name, query = '', opts) => fetchJson('/api/board/skill?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
+export const getBoardAgentTranscriptTurn = (id, ts, opts) => historyJson('/api/board/agent/transcript?id=' + encodeURIComponent(id) + '&turn=' + encodeURIComponent(ts), opts);
+export const getBoardTool = (name, query = '', opts) => historyJson('/api/board/tool?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
+export const getBoardError = (key, query = '', opts) => historyJson('/api/board/error?key=' + encodeURIComponent(key) + (query ? '&' + query : ''), opts);
+export const getBoardSkill = (name, query = '', opts) => historyJson('/api/board/skill?name=' + encodeURIComponent(name) + (query ? '&' + query : ''), opts);
 export const getBoardExcerpt = (path, line, opts) => fetchJson('/api/board/excerpt?path=' + encodeURIComponent(path) + '&line=' + encodeURIComponent(line), opts);
-export const getBoardFile = (path, query = '', opts) => fetchJson('/api/board/file?path=' + encodeURIComponent(path) + (query ? '&' + query : ''), opts);
-export const getBoardPrompt = (ts, sessionId, opts) => fetchJson('/api/board/prompt?ts=' + encodeURIComponent(ts) + '&session_id=' + encodeURIComponent(sessionId), opts);
+export const getBoardFile = (path, query = '', opts) => historyJson('/api/board/file?path=' + encodeURIComponent(path) + (query ? '&' + query : ''), opts);
+export const getBoardPrompt = (ts, sessionId, opts) => historyJson('/api/board/prompt?ts=' + encodeURIComponent(ts) + '&session_id=' + encodeURIComponent(sessionId), opts);
 
 /** Run one command the dialog has shown to the user. */
 export async function boardAction(action, args = {}) {

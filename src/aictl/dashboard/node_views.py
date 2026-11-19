@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+import uuid
 from datetime import timedelta
 from urllib.parse import urlsplit
 
@@ -29,23 +30,33 @@ class NodeViewError(ValueError):
 
 def _read(settings, kql):
     from azure.kusto.data import ClientRequestProperties
+    from azure.kusto.data.exceptions import KustoApiError, KustoMultiApiError
 
     from ..kusto.connection import KustoClientFactory, Result
 
     props = ClientRequestProperties()
+    props.client_request_id = f"aictl.NodeView;{uuid.uuid4()}"
     for key, value in {
         "request_readonly": True,
         "request_readonly_hardline": True,
         "deferpartialqueryfailures": False,
         "servertimeout": timedelta(seconds=15),
         "truncationmaxrecords": MAX_NODES + MAX_SESSIONS + 3,
-        "truncationmaxsize": 1_000_000,
+        "truncationmaxsize": 8 * 1024**2 if "node_health_counters" in kql else 1_000_000,
         "max_memory_consumption_per_query_per_node": 134_217_728,
+        # Concurrent scan buffers can exhaust the 128 MiB budget even for max(ts) by node.
+        "query_fanout_threads_percent": 1,
     }.items():
         props.set_option(key, value)
-    response = KustoClientFactory.client(settings).execute(settings.database, kql, props)
+    try:
+        response = KustoClientFactory.client(settings).execute(settings.database, kql, props)
+    except (KustoApiError, KustoMultiApiError) as exc:
+        errors = exc.get_api_errors() if isinstance(exc, KustoMultiApiError) else [exc.get_api_error()]
+        if errors and all(e.code == "LowMemoryCondition" or "E_LOW_MEMORY_CONDITION" in (e.description or "") for e in errors):
+            raise NodeViewError(f"Kusto reported E_LOW_MEMORY_CONDITION (client request ID: {props.client_request_id})", 503) from exc
+        raise
     if getattr(response, "errors_count", 0) or not response.primary_results:
-        raise NodeViewError("Kusto returned an incomplete node view", 503)
+        raise NodeViewError(f"Kusto returned an incomplete node view (client request ID: {props.client_request_id})", 503)
     return Result.from_response(response).dicts()
 
 
@@ -67,6 +78,19 @@ def _time(params, key, default):
 
 def _fields(row, names):
     return {k: row.get(k) for k in names}
+
+
+def _client_sample(row, now):
+    """Do not pair a restarted daemon's host report with counters from its previous process."""
+    try:
+        sample = json.loads(row.get("counter_sample") or "null")
+    except (ValueError, TypeError):
+        return None
+    if (not isinstance(sample, dict) or not isinstance(sample.get("at"), (float, int))
+            or sample.get("pid") != row.get("daemon_pid") or not isinstance(sample.get("store"), dict)
+            or _status(sample["at"], now) != "reported"):
+        return None
+    return sample
 
 
 def node_view(db, query, *, now=None, read=_read, local_health=None, shared_health=None):
@@ -129,12 +153,16 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
             else None
         )
         if settings and shared_health is not None:
-            capacity = shared_health().get("capacity") or {}
+            cached = shared_health()
+            capacity = cached.get("capacity") or {}
             out["shared_kusto"].update(
                 capacity_total=capacity.get("total"),
                 capacity_available=capacity.get("available"),
                 capacity_checked_at=capacity.get("checked_at"),
                 capacity_status=capacity.get("status", "unknown"),
+                table_inventory=cached.get("table_inventory"),
+                cluster_resources=cached.get("cluster_resources"),
+                policies=cached.get("policies"),
             )
         if scope == "local" and local_health is not None:
             runtime = local_health()
@@ -237,8 +265,11 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
                 samples
                 + " | project node_id, ts, _v, _deleted, "
                 + projection
+                + ("" if settings_view else ', counter_sample=column_ifexists("node_health_counters","")')
                 + " | summarize arg_max(_v, *) by node_id, ts | where not(_deleted)"
-                + " | summarize arg_max(captured_at, *) by node_id"
+                + (" | summarize arg_max(captured_at, *) by node_id" if settings_view else
+                   " | summarize arg_max(captured_at, " + ", ".join(health_cols) + "),"
+                   " arg_max(iff(isnotempty(counter_sample), ts, real(null)), counter_sample) by node_id")
             )
             if scope == "fleet":
                 # Nodes with session history but no samples have no observed health/settings.
@@ -264,6 +295,7 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
                     "captured_at": r["captured_at"],
                     "status": _status(r["captured_at"], now),
                 }
+                | ({} if settings_view else {"client_sample": _client_sample(r, now)})
                 for r in rows[:MAX_NODES]
             ],
             "truncated": len(rows) > MAX_NODES,

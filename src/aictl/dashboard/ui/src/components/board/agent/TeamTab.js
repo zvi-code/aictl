@@ -41,6 +41,14 @@ export function treeOrder(agents) {
 }
 
 export default function TeamTab({ a, st, ctx, act, data: detail }) {
+  if (ctx.remote) return html`<${FixedPanel} id="agtm" title="Recorded team" sub=${a.node_id}>
+    <${Table} def=${{ ...subagentDef(detail.subagents || [], ctx, act, true), none: 'No subagent recorded for this agent.' }} label="Recorded team"/>
+    <div class="bd-note">Live task status and messages between agents are not part of this node report.</div>
+  </${FixedPanel}>`;
+  return html`<${LiveTeam} ...${{ a, st, ctx, act, detail }}/>`;
+}
+
+function LiveTeam({ a, st, ctx, act, detail }) {
   const sid = sessionIdOf(a);
   const tick = isActive(st) ? ctx.refreshKey : 0;
   const { data, error } = useDetail(() => api.getSessionStats(sid).catch(e => (e?.status === 404 ? {} : Promise.reject(e))), 'team:' + sid, tick);

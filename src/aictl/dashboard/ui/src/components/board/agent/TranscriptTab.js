@@ -87,7 +87,7 @@ export default function TranscriptTab({ a, st, ctx }) {
     const t = setInterval(() => { if (!document.hidden) setBeat(b => b + 1); }, REFRESH_MS);
     return () => clearInterval(t);
   }, [live, auto, incremental]);
-  const { data, error } = useDetail(o => api.getBoardAgentTranscript(a.id, o), 'transcript:' + a.id, beat);
+  const { data, error } = useDetail(o => api.getBoardAgentTranscript(a.id, { ...o, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'transcript:' + a.id, ctx.remote ? 0 : beat);
   const [open, setOpen] = useState(() => new Set());
   // Whole turns read on demand, by timestamp. A failed read keeps the brief turn.
   const [full, setFull] = useState({});
@@ -100,12 +100,12 @@ export default function TranscriptTab({ a, st, ctx }) {
     if (!wanted.length) return undefined;
     const ctl = new AbortController();
     wanted.forEach((ts) => {
-      api.getBoardAgentTranscriptTurn(a.id, ts, { signal: ctl.signal })
+      api.getBoardAgentTranscriptTurn(a.id, ts, { signal: ctl.signal, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId })
         .then(r => setFull(f => ({ ...f, [ts]: r.turn || { detail: false } })))
         .catch(e => { if (e?.name !== 'AbortError') setFull(f => ({ ...f, [ts]: { detail: false } })); });
     });
     return () => ctl.abort();
-  }, [a.id, wanted.join(',')]);
+  }, [a.id, wanted.join(','), ctx.nodeScope, ctx.nodeId]);
   if (!data) return html`<${NativeOutput} a=${a} captureMode=${ctx.data?.capture_mode}/><${Wait} error=${error} what="the transcript"/>`;
   const allOpen = turns.length > 0 && open.size >= turns.length;
   const toggle = i => setOpen((prev) => {

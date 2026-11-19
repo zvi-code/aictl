@@ -77,7 +77,7 @@ export function sectionSummary(id, data, series, findingsCount) {
       if (!procs.length) return fmtCpu(sumLast(series.cpu)) + ' CPU, ' + fmtMem(sumLast(series.mem)) + more;
       return fmtCpu(procs.reduce((a, p) => a + (p.cpu_percent || 0), 0)) + ' CPU, ' + fmtMem(procs.reduce((a, p) => a + (p.mem_mb || 0), 0)) + more;
     }
-    case 'effect': return findingsCount + (findingsCount === 1 ? ' finding' : ' findings');
+    case 'effect': return findingsCount == null ? 'Reported settings by node' : findingsCount + (findingsCount === 1 ? ' finding' : ' findings');
     case 'sources': {
       const all = data.sources.length;
       const live = data.sources.filter(s => s.last_data_ts != null).length;

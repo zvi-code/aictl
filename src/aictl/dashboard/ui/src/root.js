@@ -20,15 +20,24 @@ const tabOf = search => new URLSearchParams(search || '').get('tab');
 
 /** The board query that opens one agent in the drawer, from any current query. */
 export function agentLinkOf(search, sessionId, nodeId = null) {
-  if (nodeId || boardNodeScope(search) !== 'local') {
-    return mergeSearch(search, { tab: null, session: null, screen: null, agent: null, session_id: sessionId,
-      ...(nodeId ? { scope: 'node', node_id: nodeId } : {}) });
+  const params = new URLSearchParams(search);
+  const node = nodeId || (boardNodeScope(search) === 'node' ? params.get('node_id') : null);
+  let agent = sessionId;
+  if (node) {
+    let qualified = false;
+    try { qualified = Array.isArray(JSON.parse(sessionId)); } catch { /* native ID */ }
+    if (!qualified) agent = JSON.stringify([node.trim().toLowerCase(), sessionId]);
   }
-  return mergeSearch(search, { tab: null, session: null, screen: null, agent: sessionId });
+  return mergeSearch(search, { tab: null, session: null, screen: null, session_id: null, agent,
+    ...(nodeId ? { scope: 'node', node_id: nodeId } : {}) });
 }
 
 /** The query that opens the same view on the board, for an old link; null when the link stands. */
 export function redirectOf(search) {
+  const params = new URLSearchParams(search);
+  if (boardNodeScope(search) === 'node' && params.get('session_id') && !params.get('agent')) {
+    return agentLinkOf(search, params.get('session_id'));
+  }
   const tab = tabOf(search);
   if (!tab || KEPT_TABS.has(tab)) return null;
   const sid = new URLSearchParams(search || '').get('session');

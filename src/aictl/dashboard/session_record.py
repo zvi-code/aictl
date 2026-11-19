@@ -475,7 +475,7 @@ def session_commits(db: Any, session: dict, sid: str) -> tuple[list[dict], str]:
     project = str(session.get("project_path") or "")
     ended = session.get("ended_at")
     started = float(session.get("started_at") or 0.0)
-    queryable_only = getattr(db, "_kusto", None) is not None
+    queryable_only = getattr(db, "_kusto", None) is not None or getattr(db, "_reported_history", False) is True
     if not queryable_only and not commits and ended and started > 0 and project:
         last = _attributed.get(stored_sid)
         if last is None or time.monotonic() - last >= ATTRIBUTION_RETRY_S:
@@ -510,14 +510,20 @@ def session_commits(db: Any, session: dict, sid: str) -> tuple[list[dict], str]:
 
 def _artifact_sids(sid: str, session: dict) -> list[str]:
     """The ids whose artifacts are a session's: its own, its stored id and its tool UUID."""
-    return sorted(s for s in {sid, str(session.get("session_id") or ""), _session_uuid(sid) or ""} if s)
+    if sid.startswith("["):
+        from .board_api import _session_uuid as scoped_uuid
+
+        uuid = scoped_uuid(sid)
+    else:
+        uuid = _session_uuid(sid)
+    return sorted(s for s in {sid, str(session.get("session_id") or ""), uuid or ""} if s)
 
 
 def record_section(db: Any, conn: Any, session: dict, sid: str, project: str) -> dict:
     """The artifacts and commits fields of the agent detail."""
     sids = _artifact_sids(sid, session)
     artifacts, total, size = session_artifacts(
-        conn, sids, project, queryable_only=getattr(db, "_kusto", None) is not None
+        conn, sids, project, queryable_only=getattr(db, "_kusto", None) is not None or getattr(db, "_reported_history", False) is True
     )
     commits, note = session_commits(db, session, sid)
     return {"artifacts": artifacts, "artifacts_total": total, "artifacts_bytes": size, "commits": commits, "prs_note": note}

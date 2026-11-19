@@ -254,20 +254,68 @@ use `aictl_requests_observations()` to inspect evidence instead; it does not
 turn observations into billable requests.
 
 **Overview, Health and Settings** default to **This node**. Select **All nodes**
-or a named node for read-only reported data. Overview counts sessions **started**
-in the selected window (seven days by default); its counts, tokens and cost are
-the current session records' counters, not a reconstruction of requests in the
-window. The breakdown and totals are not limited to the displayed session list.
-Session detail uses both the reporting node and the session ID.
+or a named node for read-only reported data. `legacy` is history without a node
+tag. Browser Overview uses the same charts, filters, and drill-downs in every
+scope. It aggregates activity in the selected window and uses the reporting
+node and native ID together for session links. It does not read local files or
+join in local runtime for a named node or All nodes.
 
-Health separates host samples from shared Kusto ingestion capacity. A sample older
-than five minutes is marked stale; a node without a sample is unknown, not down.
+The browser's historical Overview requires a current history store. A valid
+empty range is not a query failure. If a scope exceeds the 31-day range or query
+size limits, narrow the chart range. Session search is independent of the chart
+range. Fleet CPU and memory charts sum per-node bucket averages from available
+samples; a node without samples is not counted as a zero sample.
+
+The node selector applies to every dashboard section. Choosing the serving
+host **by name** selects its stored history; **This node** selects its local
+runtime. Overview, Agents, Usage, Prompts, Tools, Changes and Sources show
+per-node contributions before row limits. Session search shows matches per
+node before pagination. A zero in these tables means no matching records,
+not proof that an instrumented activity did not occur. Collection capabilities
+in the Sources matrix are global; its evidence comes from the selected scope.
+
+Context compares indexed files, latest tool reports and seven days of model
+calls by node. Each detail panel uses one reporting node, so identical paths,
+different model windows and lifetime counters do not get combined. Historical
+budgets include only host-wide files with known loading policies; scan roots
+and current file contents are not inferred. Machine separates whole-host
+samples from recorded session/PID associations; neither is a live process
+tree. Settings in effect shows reported daemon values and their capture time,
+not local audit findings. Session drawer tabs retain the originating node,
+including Events, Team, Processes and Integrations. They do not read a
+same-named file, PID, session or local configuration from the serving host.
+
+Health keeps the same sidebar, activity, resources, table inventory and detailed
+metrics in every scope. Host measurements retain their node and capture time.
+SDK rates and client counters use only reporting daemons in the selection;
+Health shows the coverage, and does not count a missing measurement as zero.
+An upgraded daemon includes bounded operational counters in an existing system
+snapshot every 30 seconds; no extra ingestion request is needed. Older daemons
+still report host metrics. Cluster capacity, diagnostics and physical table
+sizes describe the shared destination and are shown once, not summed per node.
+A sample older than five minutes is marked stale; no sample means unknown, not down.
+Kusto node-report reads limit scan-thread fan-out to 1% per node under the
+existing 128 MiB per-node query budget. This does not exclude any nodes or
+shorten history. If a read still fails for lack of memory, the API returns
+HTTP 503 with the Kusto client request ID (`aictl.NodeView;…`), not empty data.
+Historical dashboard reads also limit scan fan-out and batch concurrency.
+Long ranges read bounded, non-overlapping time slices and combine their
+current facts before computing totals and percentiles. The same filtered
+session set is used for tool and error drill-downs. File history shows the
+timestamp of the fallback comparison and does not use a newer snapshot than
+the selected end time.
+For session details they select candidate physical keys first, then resolve
+all versions of those keys and recheck the session. This avoids grouping the
+whole store without letting an old version or a deleted record reappear.
+The node filter keeps the same panels, table columns, and Settings views.
 Settings shows the effective node ID and its source. Remote settings show the
 reported capture, ingestion and retention configuration and its capture time;
 they never open another machine's files or expose environment variable values.
 These fields appear after an upgraded daemon publishes a system snapshot.
 
-The CLI uses the same local daemon endpoint as the dashboard:
+The CLI uses the daemon's node report endpoint. `aictl board overview` counts
+sessions **started** in its selected window (seven days by default), using the
+current session record counters rather than activity in the window:
 
 ```powershell
 aictl board nodes

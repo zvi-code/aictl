@@ -5,15 +5,25 @@ import { STALE_AFTER_S } from './summary.js';
 import { clientState, ingesterState, measuredValue, measurementState, operationFailing, otelConfig, pollSuccess, qualityContext, writeWarning } from './healthModel.js';
 import Table from './Table.js';
 import { Resources, TableInventory, Trend, useMeasuredTrend } from './HealthMeasurements.js';
+import { boardNodePath } from '../../api.js';
 
 export function healthStatus(data, error, nowS = Date.now() / 1000) {
   if (!data) return error ? { label: 'Unavailable', cls: 'crit', issues: ['Could not read live health.'] }
     : { label: 'Unknown', cls: 'warn', issues: [], pending: ['Waiting for live health.'] };
   const pipe = data.pipeline;
   const store = data.store;
+  const report = data.node_report;
   const severe = [], warnings = [], pending = [], limitations = [];
   const add = (text, critical = false) => (critical ? severe : warnings).push(text);
   if (error) add('Could not update health; showing the last response.', true);
+  if (report) {
+    const stale = report.rows.filter(r => r.status === 'stale');
+    const unknown = report.rows.filter(r => r.status === 'unknown');
+    if (stale.length) add(`Stale host reports: ${stale.map(r => r.node_id).join(', ')}.`);
+    if (unknown.length || !report.rows.length) pending.push('Some selected hosts have not reported measurements.');
+    if (report.supplementError) add(report.supplementError);
+    if (report.contributors.length < report.rows.length) limitations.push('Not every selected node reports SDK counters.');
+  }
   if (!data.generated_at) add('The server does not report a health timestamp.');
   else if (nowS - data.generated_at > STALE_AFTER_S) add('Health response is stale.');
   if (pipe.stream.snapshot_age_s > STALE_AFTER_S) add('Collector snapshot is stale.');
@@ -29,16 +39,16 @@ export function healthStatus(data, error, nowS = Date.now() / 1000) {
   for (const [label, op] of failures) add(`${label}: ${op.last_error || 'last request failed'}`, true);
   if (state === 'degraded' && (!failures.length || store.health.last_error && !failures.some(([, op]) => op.last_error === store.health.last_error))) {
     add('Store client: ' + (store.health.last_error || 'degraded'), true);
-  } else if (state !== 'degraded' && state !== 'ok') pending.push('Store client: ' + state + '.');
+  } else if (state !== 'degraded' && state !== 'ok' && (!report || report.contributors.length)) pending.push('Store client: ' + state + '.');
   for (const [label, metric] of [['Stored volume', store.volume], ['Cluster ingestion capacity', store.ingestion_capacity], ['Kusto ingestion policies', store.ingestion_details?.policies]]) {
     if (metric?.last_error || ['stale', 'error'].includes(metric?.status)) add(`${label}: ${metric.last_error || metric.status}.`);
     else if (metric?.status === 'pending') pending.push(`${label}: measurement pending.`);
-    else if (store.kind === 'kusto' && measurementState(metric) === 'not reported') pending.push(`${label}: measurement status not reported.`);
+    else if (store.kind === 'kusto' && measurementState(metric) === 'not reported' && !(report && label === 'Stored volume')) pending.push(`${label}: measurement status not reported.`);
   }
   for (const collector of data.monitor.collectors) {
     if (['active', 'ok'].includes(collector.status)) continue;
     const text = `${collector.name}: ${collector.status || 'unknown'}` + (collector.detail ? ` — ${collector.detail}` : '');
-    if (collector.mode === 'etw-fallback' && collector.status === 'degraded' && collector.name === 'network:windows-etw') limitations.push(text);
+    if (collector.mode === 'etw-fallback' && collector.status === 'degraded' && (collector.source_name || collector.name) === 'network:windows-etw') limitations.push(text);
     else add(text, ['failed', 'error'].includes(collector.status));
   }
   for (const ingester of pipe.ingesters) {
@@ -61,7 +71,7 @@ export function healthStatus(data, error, nowS = Date.now() / 1000) {
       && (q.severity === 'warning' || ingesterState(i).cls === 'crit'))) continue;
     add(`${q.component || 'Data quality'}: ${q.text || q.error || q.status || q.severity}`, q.severity === 'error');
   }
-  if (!data.monitor.collectors.length && !pipe.ingesters.some(i => i.status !== 'off') && otel?.active == null) pending.push('No active collection health is reported.');
+  if (!report && !data.monitor.collectors.length && !pipe.ingesters.some(i => i.status !== 'off') && otel?.active == null) pending.push('No active collection health is reported.');
   const issues = [...new Set([...severe, ...warnings])];
   return { label: severe.length ? 'Degraded' : issues.length ? 'Needs attention' : pending.length ? 'Not ready' : limitations.length ? 'Limited coverage' : 'OK', cls: severe.length ? 'crit' : issues.length || pending.length || limitations.length ? 'warn' : 'good', issues, pending, limitations };
 }
@@ -351,9 +361,9 @@ const smallRate = n => n < 0.01 ? '<0.01/s' : perSecond(n);
 const smallBps = n => n < 1 ? '<1 B/s' : fmtBps(n);
 const smallMs = n => n < 1 ? '<1 ms' : fmtMs(n);
 
-function MetricList({ title, items, note }) {
+function MetricList({ title, items, note, empty }) {
   const shown = items.filter(([, n]) => positive(n));
-  if (!shown.length) return null;
+  if (!shown.length) return empty ? html`<section class="bd-healthcard bd-healthledger" aria-label=${title}><h2>${title}</h2><p>${empty}</p></section>` : null;
   return html`<section class="bd-healthcard bd-healthledger" aria-label=${title}><h2>${title}</h2>
     <dl>${shown.map(([label, n, format, hint]) => html`<div key=${label} title=${hint}><dt>${label}</dt><dd>${format(n)}</dd></div>`)}</dl>
     <p>${note}</p></section>`;
@@ -391,7 +401,7 @@ function ActiveTraffic({ store }) {
   </section>`;
 }
 
-function Highlights({ health, status, nowS }) {
+function Highlights({ health, status, nowS, localNode }) {
   const { store, pipeline: p } = health;
   const modes = store.ingestion_traffic || {};
   const volume = store.volume, cap = store.ingestion_capacity;
@@ -408,6 +418,10 @@ function Highlights({ health, status, nowS }) {
   }
   signals.push(['Read latency', Number.isFinite(op?.recent_avg_ms) ? (op.recent_avg_ms === 0 ? '0 ms' : smallMs(op.recent_avg_ms)) : 'No sample',
     positive(op?.rate_per_s) ? `${smallRate(op.rate_per_s)} · last minute` : 'Mean of completed reads · last minute', 'read']);
+  const report = health.node_report;
+  const hosts = report?.rows.filter(r => r.status === 'reported') || [];
+  const hostSum = key => hosts.length && hosts.every(r => Number.isFinite(r[key]))
+    ? hosts.reduce((v, r) => v + r[key], 0) : null;
   if (store.kind === 'kusto') {
     const available = measuredValue(cap, 'available');
     signals.push([available == null ? 'Cluster capacity' : 'Free ingestion slots',
@@ -415,33 +429,43 @@ function Highlights({ health, status, nowS }) {
       cap?.checked_at ? `Cluster · ${stamp(cap.checked_at, true)} · ${measurementState(cap)}` : measurementState(cap), 'capacity']);
   }
   const activeWrites = [...(p.self.writes || [])].sort((a, b) => b.age_s - a.age_s);
+  const inventory = store.table_inventory;
+  const extents = inventory?.tables;
+  const physical = !volume && health.node_report && Array.isArray(extents);
+  const total = field => !inventory?.truncated && extents?.length && extents.every(t => Number.isFinite(t[field]))
+    ? extents.reduce((v, t) => v + t[field], 0) : null;
   return html`<${Diagnostics} health=${health} status=${status} nowS=${nowS} compact=${true}/>
     <section class="bd-healthsignals" id="health-stages" aria-label="Current activity">
       <div class="bd-healthsectionhead"><h2>Live activity</h2><span>Rates: last minute · trends: up to 15 min observed on this page</span></div>
+      ${report && !report.contributors.length && html`<p>Latest host samples: ${fmtN(hostSum('active_sessions'))} active sessions ·
+        ${fmtN(hostSum('active_processes'))} processes. These nodes have not reported SDK rates.</p>`}
       ${signals.length ? html`<dl>${signals.map(([label, value, sub, metric]) => html`<div key=${label}><dt>${label}</dt><dd>${value}</dd>
         <dd class="bd-healthplot">${metric === 'capacity' && Number.isFinite(cap?.available) && positive(cap?.total)
           ? html`<meter aria-label="Available ingestion slots" min="0" max=${cap.total} value=${cap.available}></meter>`
-          : metric && html`<${Trend} points=${points} metric=${metric} label=${label}/>`}</dd><dd>${sub}</dd></div>`)}</dl>`
+          : metric && html`<${Trend} points=${points} metric=${metric} label=${label}/>`}</dd><dd>${sub}${report?.scope === 'fleet' && report.metricNodes[metric] != null ? ` · ${report.metricNodes[metric]}/${report.rows.length} nodes` : ''}</dd></div>`)}</dl>`
         : html`<p>No positive rates or measured capacity to show.</p>`}
     </section>
-    <${Resources} health=${health}/>
+    <${Resources} health=${health} localNode=${localNode}/>
     <div class="bd-healthpriority">
       <div class="bd-healthcolumn">
         ${store.kind === 'kusto' && html`<${ActiveTraffic} store=${store}/>`}
         <${TableInventory} inventory=${store.table_inventory} all=${false} kind=${store.kind}/>
-        <details class="bd-healthcard bd-healthwork"><summary>Work in progress <span>${activeWrites.length ? `${activeWrites.length} running` : 'Idle'}</span></summary>
+        <details class="bd-healthcard bd-healthwork"><summary>Work in progress <span>${activeWrites.length ? `${activeWrites.length} running` : p.self.writes ? 'Idle' : 'Not reported'}</span></summary>
           <div class="bd-healthscroll bd-healthworkscroll" tabindex="0" role="region" aria-label="Active writes, elapsed time">
             ${activeWrites.length ? html`<ul>${activeWrites.map((w, index) => html`<li key=${w.name + index}><span title=${w.name}>${w.name}</span><b>${Number.isFinite(w.age_s) ? fmtAge(w.age_s) : 'Duration unknown'}</b></li>`)}</ul>`
-            : html`<p>No writes in progress.</p>`}
+            : html`<p>${p.self.writes ? 'No writes in progress.' : 'Active writes were not reported for this scope.'}</p>`}
           </div></details>
       </div>
       <div class="bd-healthcolumn">
-        <${MetricList} title="Stored history" items=${[
+        <${MetricList} title="Stored history" empty=${report && 'No stored volume measurement is available for this scope.'} items=${physical ? [
+          ['Extent rows', total('rows'), fmtN], ['Extent storage', total('extent_bytes'), fmtBytes],
+          ['Tables reported', extents.length, fmtN],
+        ] : [
           ['Stored rows (cached)', measuredValue(volume, 'rows'), fmtN, volume?.scope],
           ['Request rows', measuredValue(volume, 'tables')?.requests, fmtN],
           ['Stored bytes', measuredValue(volume, 'bytes'), fmtBytes],
-        ]} note=${volume?.checked_at ? `Selected tables · ${stamp(volume.checked_at, true)} · ${measurementState(volume)}` : 'Selected history tables'}/>
-        <${MetricList} title="Since daemon start" items=${[
+        ]} note=${physical ? 'Shared database · sealed extents include earlier versions and tombstones.' : volume?.checked_at ? `Selected tables · ${stamp(volume.checked_at, true)} · ${measurementState(volume)}` : 'Selected history tables'}/>
+        <${MetricList} title=${report?.scope === 'fleet' ? 'Since reporting daemons started' : 'Since daemon start'} empty=${report && 'No nonzero process counters were reported for this scope.'} items=${[
           ['Collector samples received', p.sink?.emitted, fmtN], ['Samples dropped', p.sink?.dropped, fmtN],
           ['OTel metrics received', p.otel_receiver?.metrics_received, fmtN], ['OTel events received', p.otel_receiver?.events_received, fmtN],
           ['Read requests', op?.total, fmtN], ...MODES.map(m => [`${MODE_NAME[m]} failures`, modes[m]?.failed, fmtN]),
@@ -598,10 +622,11 @@ function StoreStages({ store, pipeline, nowS, links, health, status }) {
     </details>`;
 }
 
-export function HealthOverview({ health, status, error, nowS, children }) {
+export function HealthOverview({ health, status, error, nowS, children, localNode }) {
   const [all, setAll] = useState(false);
   const store = health?.store || {};
   const links = storeLinks(store);
+  const report = health?.node_report;
   return html`<section class="bd-healthoverview" id="health-overview" aria-label="Health overview">
     <header class="bd-healthheader">
       <div><h1>aictl Health</h1><strong class=${'bd-' + status.cls} role="status">${status.label}</strong>
@@ -610,7 +635,12 @@ export function HealthOverview({ health, status, error, nowS, children }) {
       <div class="bd-healthdestination"><span>${store.kind === 'kusto' ? 'Shared Kusto store: ' : ''}${[store.kind, store.cluster_url || store.destination, store.database, store.ingestion_mode].filter(Boolean).join(' · ') || 'Store not reported'}</span>
         <nav aria-label="Store links">${links.map(link => html`<a key=${link.label} class="bd-link" href=${link.href}>${link.label}</a>`)}</nav>
       </div>
-      <div class="bd-healthdestination">Runtime, collection and client counters are from this node.${store.kind === 'kusto' && ' Kusto database and cluster measurements are shared across nodes.'}</div>
+      <div class="bd-healthdestination">${report ? html`
+        Host measurements are per reporting node. Client counters: ${report.contributors.length} of ${report.rows.length} nodes${report.contributors.length && report.contributors.length < report.rows.length ? ` (${report.contributors.join(', ')})` : ''}; missing counters are not counted.
+        Database and cluster measurements are shared, not summed.
+        ${(report.scope !== 'node' || report.nodeId) && html`<a class="bd-link" href=${boardNodePath({ view: 'health', scope: report.scope, nodeId: report.nodeId })}>Node measurements</a>`}
+        ${report.contributors.includes(report.localNode) && html`<a class="bd-link" href=${boardNodePath({ view: 'health', scope: 'local' })}>Serving-node counters</a>`}`
+        : html`Runtime, collection and client counters are from this node.${store.kind === 'kusto' && ' Kusto database and cluster measurements are shared across nodes.'}`}</div>
     </header>
     ${error ? html`<div class="bd-banner" role="alert">Could not read live health: ${error.status === 404 ? 'this daemon does not provide /api/board/health.' : error.message} ${health ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
     ${!health && !error && status.label !== 'Unavailable' ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
@@ -620,8 +650,8 @@ export function HealthOverview({ health, status, error, nowS, children }) {
       <label><input type="checkbox" checked=${all} onChange=${e => setAll(e.currentTarget.checked)}/> Show all metrics</label>
     </div>
     ${all ? html`<${StoreStages} store=${store} pipeline=${health.pipeline} nowS=${nowS} links=${links} health=${health} status=${status}/>
-      <${Resources} health=${health}/><${TableInventory} inventory=${store.table_inventory} all=${true} kind=${store.kind}/>${children}`
-      : html`<${Highlights} health=${health} status=${status} nowS=${nowS}/>`}
+      <${Resources} health=${health} localNode=${localNode}/><${TableInventory} inventory=${store.table_inventory} all=${true} kind=${store.kind}/>${children}`
+      : html`<${Highlights} health=${health} status=${status} nowS=${nowS} localNode=${localNode}/>`}
     ${status.limitations?.length > 0 && html`<details class="bd-healthdetails"><summary>Known limitations (${status.limitations.length})</summary>
       <ul>${status.limitations.map(item => html`<li key=${item}>${item}</li>`)}</ul></details>`}`}
     <p class="bd-healthscope">Client counters reset with this daemon; rates cover up to 60 s. Stored volume covers the selected history tables. Ingestion capacity is cluster-wide. Board filters do not apply.</p>

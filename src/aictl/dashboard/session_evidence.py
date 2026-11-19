@@ -35,7 +35,8 @@ def _number(params: dict, key: str, default: int, low: int, high: int) -> int:
 
 
 def session_evidence(db: Any, params: dict[str, list[str]]) -> dict:
-    sid = _param(params, "session_id")
+    reported = getattr(db, "_reported_history", False) is True
+    sid = _param(params, "session_id", 4096 if reported else 384)
     if not sid:
         raise EvidenceInputError("session_id is required")
     limit = _number(params, "limit", 100, 1, 100)
@@ -49,7 +50,7 @@ def session_evidence(db: Any, params: dict[str, list[str]]) -> dict:
     if (q and not terms) or len(terms) > 8:
         raise EvidenceInputError("Search requires one to eight words")
     keep = db._keeps_text()
-    floor = time.time() - db._content_retention_days * 86400
+    floor = 0 if reported else time.time() - db._content_retention_days * 86400
     detail = bool(filters.get("step_key"))
     scope = getattr(db, "read_scope", None)
     with scope(session=sid) if scope else contextlib.nullcontext():

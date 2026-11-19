@@ -50,6 +50,7 @@ export function normalizeContext(raw) {
   const memory = obj(raw.memory);
   const daily = obj(raw.daily);
   return {
+    ...(Array.isArray(raw.nodes) ? { nodes: raw.nodes.map(n => ({ ...normalizeContext(n), node_id: n.node_id })) } : {}),
     generated_at: raw.generated_at ?? null,
     root: raw.root ?? null,
     budget: { tools: list(budget.tools).map(b => ({ ...b, projects: list(b.projects) })), totals: obj(budget.totals) },
@@ -120,7 +121,7 @@ export function normalizeAgentDetail(raw) {
 /** Fill what /api/board/sessions leaves out. */
 export function normalizeSessions(raw) {
   const rows = Array.isArray(raw?.rows) ? raw.rows : [];
-  return { rows, total: Number.isFinite(raw?.total) ? raw.total : rows.length };
+  return { rows, total: Number.isFinite(raw?.total) ? raw.total : rows.length, ...(Array.isArray(raw?.by_node) ? { by_node: raw.by_node } : {}) };
 }
 
 /** Fill any key a response leaves out, so one missing list cannot blank the screen. */
@@ -149,6 +150,7 @@ function createLoader(onData, onError) {
   let again = false;
   let last = { query: null, etag: null };
   const loader = {
+    pending: () => ctrl !== null,
     load(query) {
       if (ctrl && pending === query) { again = true; return undefined; }
       if (ctrl) ctrl.abort();
@@ -178,23 +180,32 @@ function createLoader(onData, onError) {
 /** /api/board/machine for the tool filter. A failed read keeps the last answer.
  * An answer equal to the last one, apart from generated_at, is not passed on, so the
  * board does not rebuild every panel for it. */
+function toolsQuery(tools) {
+  return tools ? 'tool=' + (tools.length ? tools.map(encodeURIComponent).join(',') : '-') : '';
+}
+
 function createMachineLoader(onData) {
   let ctrl = null;
-  let lastText = null;
+  let pending = null;
+  let last = {};
   return {
-    load(tools) {
+    load(tools, nodeScope = 'local', nodeId = null) {
+      const q = toolsQuery(tools);
+      const key = api.withNodeScope(q, nodeScope, nodeId);
+      if (ctrl && pending === key) return;
       if (ctrl) ctrl.abort();
       const mine = new AbortController();
       ctrl = mine;
-      const q = tools ? '?tool=' + (tools.length ? tools.map(encodeURIComponent).join(',') : '-') : '';
-      return api.fetchJson('/api/board/machine' + q, { signal: mine.signal }).then((d) => {
+      pending = key;
+      return (nodeScope === 'local' ? api.fetchJson('/api/board/machine' + (q ? '?' + q : ''), { signal: mine.signal })
+        : api.getBoardMachine(q, { signal: mine.signal, nodeScope, nodeId })).then((d) => {
         if (ctrl !== mine) return;
         ctrl = null;
         const text = JSON.stringify(d && typeof d === 'object' ? { ...d, generated_at: null } : d);
-        if (text === lastText) return;
-        lastText = text;
-        onData(normalizeMachine(d));
-      }).catch(() => { if (ctrl === mine) ctrl = null; });
+        if (last.key === key && last.text === text) return;
+        last = { key, text };
+        onData({ key, data: normalizeMachine(d) });
+      }).catch(e => { if (ctrl === mine) { ctrl = null; if (nodeScope !== 'local') { last = {}; onData({ key, data: { ...EMPTY_MACHINE, unavailable: e.message } }); } } });
     },
     stop() { if (ctrl) { ctrl.abort(); ctrl = null; } },
   };
@@ -205,26 +216,28 @@ function createContextLoader(onData, onError = () => {}) {
   let ctrl = null;
   let last = { key: null, at: 0 };
   return {
-    load(tools) {
-      const q = tools ? '?tool=' + (tools.length ? tools.map(encodeURIComponent).join(',') : '-') : '';
+    load(tools, nodeScope = 'local', nodeId = null) {
+      const q = toolsQuery(tools);
+      const key = api.withNodeScope(q, nodeScope, nodeId);
       const now = Date.now();
-      if (last.key === q && now - last.at < CONTEXT_REFRESH_MS) return undefined;
+      if (last.key === key && (ctrl || now - last.at < CONTEXT_REFRESH_MS)) return undefined;
       if (ctrl) ctrl.abort();
       const mine = new AbortController();
       ctrl = mine;
-      last = { key: q, at: now };
-      return api.fetchJson('/api/board/context' + q, { signal: mine.signal }).then((d) => {
+      last = { key, at: now };
+      return (nodeScope === 'local' ? api.fetchJson('/api/board/context' + (q ? '?' + q : ''), { signal: mine.signal })
+        : api.getBoardContext(q, { signal: mine.signal, nodeScope, nodeId })).then((d) => {
         if (ctrl !== mine) return;
         ctrl = null;
-        onData(normalizeContext(d));
+        onData({ key, data: normalizeContext(d) });
       }).catch(error => {
         if (ctrl !== mine) return;
         ctrl = null;
         last = { key: null, at: 0 };
-        if (error?.name !== 'AbortError') onError(error);
+        if (error?.name !== 'AbortError') onError({ key, error });
       });
     },
-    stop() { if (ctrl) { ctrl.abort(); ctrl = null; } },
+    stop() { if (ctrl) { ctrl.abort(); ctrl = null; last = { key: null, at: 0 }; } },
   };
 }
 
@@ -280,20 +293,27 @@ export function liveBoardData(subscription, filters, tools, context = EMPTY_CONT
   };
 }
 
-export function useBoardData({ filters, tools, live, pausedRef, enabled = true, history = enabled, requiredTopics = history ? ['history.board'] : [] }) {
+export function useBoardData({ filters, tools, live, pausedRef, enabled = true, history = enabled, requiredTopics = history ? ['history.board'] : [], scope = 'local', nodeId = null }) {
   const { client, state: subscription } = useLiveState();
-  const incremental = subscription.mode === 'incremental';
-  const legacy = subscription.mode === 'legacy';
+  const remote = scope !== 'local';
+  const incremental = !remote && subscription.mode === 'incremental';
+  const legacy = remote || subscription.mode === 'legacy';
   const [main, setMain] = useState(null);
   const [mainQuery, setMainQuery] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [selectedQuery, setSelectedQuery] = useState(null);
   const [error, setError] = useState(null);
+  const [selectionError, setSelectionError] = useState(null);
   const [contextError, setContextError] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [machine, setMachine] = useState(EMPTY_MACHINE);
-  const [context, setContext] = useState(EMPTY_CONTEXT);
+  const [machineResult, setMachine] = useState(null);
+  const [contextResult, setContext] = useState(null);
+  const auxKey = api.withNodeScope(toolsQuery(tools), scope, nodeId);
+  const machine = machineResult?.key === auxKey ? machineResult.data : EMPTY_MACHINE;
+  const context = contextResult?.key === auxKey ? contextResult.data : EMPTY_CONTEXT;
+  const currentContextError = contextError?.key === auxKey ? contextError.error : null;
   const stateRef = useRef({ filters, tools });
-  stateRef.current = { filters, tools, incremental, legacy, subscription };
+  stateRef.current = { filters, tools, incremental, legacy, subscription, remote, scope, nodeId };
   const dirty = useRef(false);
 
   const loaders = useRef(null);
@@ -301,26 +321,30 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
     const mark = () => { try { performance.mark('board-data'); } catch { /* no timing api */ } };
     loaders.current = {
       main: createLoader((d, query) => { setBusy(false); setError(null); if (d) { mark(); setMain(d); setMainQuery(query); } }, (e) => { setBusy(false); setError(e); }),
-      sel: createLoader((d) => { setError(null); if (d) { mark(); setSelected(d); } }, (e) => setError(e)),
+      sel: createLoader((d, query) => { setSelectionError(null); if (d) { mark(); setSelected(d); setSelectedQuery(query); } }, setSelectionError),
       machine: createMachineLoader(setMachine),
       context: createContextLoader(data => { setContext(data); setContextError(null); }, setContextError),
     };
   }
 
+  const lastFetch = useRef(0);
   const fetchNow = useCallback(() => {
-    const { filters: f, tools: t, incremental: stream, legacy: rest } = stateRef.current;
+    const { filters: f, tools: t, incremental: stream, legacy: rest, remote: reported, scope: nodeScope, nodeId: requestedNode } = stateRef.current;
     if (stream) { client?.resync(); return; }
     if (!rest) return;
     setBusy(true);
-    loaders.current.main.load(boardQuery(f, t, windowOf(f.range)));
-    loaders.current.machine.load(t);
-    loaders.current.context.load(t);
-    if (f.sel) loaders.current.sel.load(boardQuery(f, t, { since: Math.floor(f.sel.since), until: Math.floor(f.sel.until) }));
-    else { loaders.current.sel.stop(); setSelected(null); }
+    if (reported) lastFetch.current = Date.now();
+    const scoped = q => api.withNodeScope(q, nodeScope, requestedNode);
+    const mainLoad = loaders.current.main.load(scoped(boardQuery(f, t, windowOf(f.range))));
+    loaders.current.machine.load(t, nodeScope, requestedNode);
+    loaders.current.context.load(t, nodeScope, requestedNode);
+    if (f.sel) loaders.current.sel.load(scoped(boardQuery(f, t, { since: Math.floor(f.sel.since), until: Math.floor(f.sel.until) })));
+    else { loaders.current.sel.stop(); setSelected(null); setSelectedQuery(null); setSelectionError(null); }
+    return mainLoad;
   }, [client]);
 
   const toolKey = tools ? tools.join(',') : '*';
-  const filterKey = JSON.stringify([filters.range, filters.project, filters.model, filters.status, filters.q, filters.sel]);
+  const filterKey = JSON.stringify([filters.range, filters.project, filters.model, filters.status, filters.q, filters.sel, scope, nodeId]);
   // Keep the scope stable across gauge updates. Only a user filter change replaces it.
   const liveQuery = useMemo(() => {
     const { filters: f, tools: t } = stateRef.current;
@@ -333,7 +357,9 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
     return boardQuery(f, t, windowOf(f.range));
   }, [filterKey, toolKey]);
   const requirementKey = JSON.stringify(requiredTopics);
-  useEffect(() => { client?.configure({ query: liveQuery, history, live, requiredTopics: JSON.parse(requirementKey) }); }, [client, liveQuery, history, live, requirementKey]);
+  useEffect(() => {
+    if (!remote) client?.configure({ query: liveQuery, history, live, requiredTopics: JSON.parse(requirementKey) });
+  }, [client, liveQuery, history, live, requirementKey, remote]);
   useEffect(() => { if (enabled && legacy) fetchNow(); }, [filterKey, toolKey, enabled, legacy, fetchNow]);
   useEffect(() => {
     if (!incremental || !history) return;
@@ -352,7 +378,6 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
 
   // A stream message is a change on the server: fetch at once, unless a fetch began less
   // than MESSAGE_FETCH_GAP_MS ago or the page is hidden or paused; then the tick fetches.
-  const lastFetch = useRef(0);
   const onMessage = useCallback(() => {
     if (!stateRef.current.legacy || !live) return;
     const now = Date.now();
@@ -361,29 +386,35 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
     lastFetch.current = now;
     fetchNow();
   }, [fetchNow, pausedRef, live]);
-  const { connected: legacyConnected } = useSse(enabled && legacy && live ? api.streamUrl() : null, onMessage);
+  const { connected: legacyConnected } = useSse(enabled && legacy && live && !remote ? api.streamUrl() : null, onMessage);
   const connected = incremental ? subscription.connected : legacyConnected;
 
   useEffect(() => {
     if (!enabled || !legacy || !live) return undefined;
     const id = setInterval(() => {
       if (document.hidden || pausedRef?.current) return;
+      if (remote && (loaders.current.main.pending() || loaders.current.sel.pending())) return;
       const now = Date.now();
       const stale = !connected && now - lastFetch.current >= POLL_WITHOUT_STREAM_MS;
-      if (!dirty.current && !stale) { loaders.current.machine.load(stateRef.current.tools); return; }
+      if (!dirty.current && !stale) {
+        if (!stateRef.current.remote) loaders.current.machine.load(stateRef.current.tools);
+        return;
+      }
       dirty.current = false;
       lastFetch.current = now;
       fetchNow();
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [enabled, legacy, live, connected, fetchNow, pausedRef]);
+  }, [enabled, legacy, live, connected, fetchNow, pausedRef, remote]);
 
   // A stream that was up and is down now, as against one that has not opened yet.
   const everConnected = useRef(false);
   if (connected) everConnected.current = true;
 
   const refresh = fetchNow;
-  const sourceMain = main || EMPTY;
+  const mainParams = new URLSearchParams(mainQuery || '');
+  const mainMatches = !!main && (mainParams.get('scope') || 'local') === scope && mainParams.get('node_id') === (nodeId || null);
+  const sourceMain = mainMatches ? main : EMPTY;
   const projection = subscription.board;
   const agentTopic = subscription.topics?.get('runtime.agent');
   const processTopic = subscription.topics?.get('runtime.process');
@@ -394,7 +425,10 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
     ? liveBoardData(stateRef.current.subscription, stateRef.current.filters, stateRef.current.tools, context)
     : null, [incremental, projection, agentTopic, processTopic, machineTopic, healthTopic, sourceTopic, filters, tools, context]);
   // A selected time keeps the charts on the whole range.
-  const withSel = filters.sel && selected;
+  const currentSelection = filters.sel ? api.withNodeScope(boardQuery(filters, tools, {
+    since: Math.floor(filters.sel.since), until: Math.floor(filters.sel.until),
+  }), scope, nodeId) : null;
+  const withSel = currentSelection && selectedQuery === currentSelection && selected;
   const data = useMemo(() => {
     if (incremental) {
       if (!filters.sel) return incrementalData;
@@ -404,19 +438,19 @@ export function useBoardData({ filters, tools, live, pausedRef, enabled = true, 
     const base = withSel
       ? { ...selected, series: sourceMain.series, range: sourceMain.range, options: sourceMain.options.tools.length ? sourceMain.options : selected.options, scope: selected.scope }
       : sourceMain;
-    return { ...base, machine, contextData: context };
-  }, [incremental, incrementalData, filters.sel, main, mainQuery, wholeRangeQuery, withSel, selected, sourceMain, machine, context]);
+    return { ...base, machine, contextData: remote && currentContextError ? { ...EMPTY_CONTEXT, loaded: true, unavailable: currentContextError.message } : context };
+  }, [incremental, incrementalData, filters.sel, main, mainQuery, wholeRangeQuery, withSel, selected, sourceMain, machine, context, currentContextError, remote]);
   const failure = incremental ? historyFailure(subscription) : null;
   return {
     data, machine: data.machine,
     chartSeries: incremental ? data.series : sourceMain.series,
     chartRange: incremental ? data.range : sourceMain.range,
-    loaded: incremental ? historyReady(subscription) : !!main,
+    loaded: incremental ? historyReady(subscription) : mainMatches,
     busy: incremental ? !subscription.ready : busy,
     error: incremental || subscription.mode === 'unavailable'
-      ? subscription.error || (failure ? new Error(failure.error) : null) : error,
+      ? subscription.error || (failure ? new Error(failure.error) : null) : error || (filters.sel ? selectionError : null),
     refresh, connected, everConnected: incremental ? subscription.everConnected : everConnected.current,
     subscription,
-    analyticsError: incremental ? error || contextError : null,
+    analyticsError: incremental ? error || currentContextError : null,
   };
 }

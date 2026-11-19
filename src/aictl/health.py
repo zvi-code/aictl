@@ -130,6 +130,7 @@ class OperationStats:
                 "in_flight": self._in_flight,
                 "failed": self._failed,
                 "avg_ms": self._duration_ms / self._completed if self._completed else None,
+                "recent_completed": int(completed),
                 "recent_avg_ms": sum(b[5] for b in recent) / completed if completed else None,
                 "recent_failures": int(sum(b[6] for b in recent)),
                 "rows": self._rows if self._volume else None,
@@ -283,6 +284,35 @@ def ingestion_traffic(
                 else f"{mode} SDK ingestion request attempts and successful payload volume; not a stored-row count"
             ),
         }
+    return result
+
+
+def node_client_counters(settings: Any) -> dict:
+    """Numeric SDK counters for a node heartbeat. Never persist errors, KQL or request bodies."""
+    from .kusto.connection import KustoClientFactory
+
+    client, ingester = KustoClientFactory.health_objects(settings)
+    operations = getattr(ingester, "operations", None)
+    fields = ("total", "successful_requests", "in_flight", "failed", "recent_completed", "recent_avg_ms", "avg_ms",
+              "rate_per_s", "rows", "rows_per_s", "bytes", "bytes_per_s", "last_success_at", "last_error_at")
+
+    def numeric(stats: dict) -> dict:
+        return {key: stats[key] for key in fields if isinstance(stats.get(key), (int, float))}
+
+    result = {}
+    for key, op in (("reads", getattr(client, "reads", None)), ("commands", getattr(client, "commands", None)),
+                    ("writes", operations)):
+        if op is not None:
+            result[key] = numeric(op.snapshot())
+    if operations is not None:
+        modes = {}
+        for mode in ("streaming", "inline", "queued"):
+            counter = operations.mode_counter(mode)
+            groups = counter.traffic_snapshot()
+            modes[mode] = numeric(counter.snapshot()) | {
+                "groups": [{"id": key, **numeric(value)} for key, value in groups.items()]
+            }
+        result["ingestion_traffic"] = modes
     return result
 
 

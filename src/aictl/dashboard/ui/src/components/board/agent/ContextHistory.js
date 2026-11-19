@@ -14,11 +14,11 @@ const help = {
 };
 const number = v => typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString() : 'Not reported';
 
-function Rows({ sid, agent, group }) {
+function Rows({ sid, agent, group, ctx }) {
   const [offset, setOffset] = useState(0);
   const [attempt, retry] = useState(0);
   const flowRef = agent ? { field: 'agent_id', id: agent } : null;
-  const { data, error } = useDetail(o => getSessionEvidence(sid, { contextGroup: group, flowRef, offset }, o),
+  const { data, error } = useDetail(o => getSessionEvidence(sid, { contextGroup: group, flowRef, offset }, { ...o, nodeScope: ctx?.nodeScope, nodeId: ctx?.nodeId }),
     JSON.stringify([sid, agent, group, offset, attempt]));
   if (!data) return html`<${Wait} what="context history" error=${error}/>
     ${error && html`<button type="button" class="bd-btn" onClick=${() => retry(attempt + 1)}>Retry</button>`}`;
@@ -44,12 +44,12 @@ function Rows({ sid, agent, group }) {
     </div>`}`;
 }
 
-export default function ContextHistory({ sid, agent, children }) {
+export default function ContextHistory({ sid, agent, children, ctx }) {
   const [group, setGroup] = useState('measurements');
   return html`<${FixedPanel} id="agcontextsources" title="Context sources" sub="Reported by transcripts and OpenTelemetry">
     <${Seg} label="Context evidence view" value=${group} onPick=${setGroup} items=${groups}/>
     <p class="bd-note">${help[group]}</p>
-    ${group !== 'measurements' && (sid ? html`<${Rows} key=${JSON.stringify([sid, agent, group])} sid=${sid} agent=${agent} group=${group}/>`
+    ${group !== 'measurements' && (sid ? html`<${Rows} key=${JSON.stringify([sid, agent, group])} sid=${sid} agent=${agent} group=${group} ctx=${ctx}/>`
       : html`<p class="bd-empty">No native session ID is available.</p>`)}
   </${FixedPanel}>${group === 'measurements' && children}`;
 }

@@ -227,7 +227,9 @@ describe('health data and status', () => {
     const view = render(html`<${HealthOverview} health=${h} status=${healthStatus(h, null, NOW)} nowS=${NOW}/>`);
     const table = view.getByRole('table', { name: 'Measured tables' });
     expect(table.querySelector('tbody th').textContent).toBe('trace_data');
-    fireEvent.change(view.getByLabelText('Order by'), { target: { value: 'extent_bytes' } });
+    const order = view.getByLabelText('Order by');
+    order.value = 'extent_bytes';
+    fireEvent(order, new Event('change', { bubbles: true })); // Preact's fireEvent.change emits input, not select's change.
     expect(table.querySelector('tbody th').textContent).toBe('sample_data');
     fireEvent.input(view.getByLabelText('Find a table'), { target: { value: 'empty_' } });
     expect(table.querySelector('tbody th').textContent).toBe('empty_table');

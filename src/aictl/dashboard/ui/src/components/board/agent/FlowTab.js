@@ -379,7 +379,7 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
   const initialCategory = initialPrompts ? 'prompts' : initialSkills ? 'skills' : '';
   const [filters, setFilters] = useState(initialCategory ? 'category=' + initialCategory : '');
   const query = 'limit=' + limit + (filters ? '&' + filters : '');
-  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, query, o), JSON.stringify(['flow', a.id, query]), tick);
+  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, query, { ...o, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), JSON.stringify(['flow', a.id, query]), ctx.remote ? 0 : tick);
   const [diagram, setDiagram] = usePref(FLOW_MODE_KEY, 'timeline', ['timeline', 'swimlane']);
   const [laneMode, setLaneMode] = usePref('aictl-pref-flow-lanes', 'individual', ['individual', 'grouped']);
   const [source, setSource] = useState(initialEvidence);
@@ -458,6 +458,6 @@ function SessionFlow({ a, st, ctx, act, flowRef, sid, captureMode, initialEviden
             ${selectedEvent && html`<${Inspector} ev=${selectedEvent} sessionId=${sessionId} onClose=${() => setSel(null)}/>`}
           </div>`}
       </div>
-      ${visited && html`<div hidden=${!source}><${EvidenceTab} inline=${true} a=${a} sid=${sourceSid} data=${agentData} act=${act} captureMode=${captureMode ?? ctx.data?.capture_mode}/></div>`}
+      ${visited && html`<div hidden=${!source}><${EvidenceTab} inline=${true} a=${a} sid=${sourceSid} data=${agentData} ctx=${ctx} act=${act} captureMode=${captureMode ?? ctx.data?.capture_mode}/></div>`}
     </${FixedPanel}>`;
 }

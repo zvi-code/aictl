@@ -37,7 +37,7 @@ function Cell({ col, x, go, primary }) {
 }
 
 /** A table definition plus its own sort and "show all" state. */
-export default function Table({ def, hidden, sort: sortProp, onSort, label }) {
+export default function Table({ def, hidden, sort: sortProp, onSort, label, keepHeader = false }) {
   const [localSort, setLocalSort] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const sort = sortProp !== undefined ? sortProp : localSort;
@@ -51,7 +51,7 @@ export default function Table({ def, hidden, sort: sortProp, onSort, label }) {
     ? { tableLayout: 'fixed', width: m.cols.reduce((s, c) => s + pxOf(c), 0) + 'px' }
     : { minWidth: m.min + 'px' };
   return html`<div class="bd-tw">
-    ${m.rows.length || !m.none ? html`<table class=${'bd-t' + (cw.set ? ' bd-fixed' : '')} style=${tableStyle}>
+    ${keepHeader || m.rows.length || !m.none ? html`<table class=${'bd-t' + (cw.set ? ' bd-fixed' : '')} style=${tableStyle}>
       ${label ? html`<caption>${label}</caption>` : null}
       <thead><tr>${m.cols.map(c => html`<th key=${c.k} scope="col" class=${(c.n ? 'bd-n ' : '') + (c.on ? 'bd-on' : '')} data-col=${c.k} style=${{ width: cw.set ? pxOf(c) + 'px' : c.width }} title=${c.t || c.l}
         aria-sort=${c.on ? (c.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>

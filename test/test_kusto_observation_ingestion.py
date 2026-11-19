@@ -135,6 +135,25 @@ def test_sample_filters_do_not_reduce_kusto_observations(observation_store):
     assert sink.stats()["buffer_size"] == 0
 
 
+def test_node_health_counters_piggyback_without_logging_requests_or_sampling_each_tick(observation_store, monkeypatch):
+    from aictl.health import OperationStats
+    from aictl.kusto.connection import KustoClientFactory
+
+    db, ingester = observation_store
+    reads = OperationStats()
+    reads.finish(reads.begin(), error="example private query")
+    client = type("Client", (), {"reads": reads})()
+    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda settings: (client, None))
+    for ts in (100, 101):
+        db.append_metrics(SystemSnapshotRow(ts))
+    first, second = [rows[0] for _, rows in ingester.batches]
+    counters = json.loads(first["node_health_counters"])
+    assert counters["store"]["reads"]["total"] == counters["store"]["reads"]["recent_completed"] == 1
+    assert counters["pid"] == first["daemon_pid"]
+    assert "example private query" not in first["node_health_counters"]
+    assert not second.get("node_health_counters")
+
+
 def test_collector_does_not_round_memory_before_kusto_capture():
     seen = []
 

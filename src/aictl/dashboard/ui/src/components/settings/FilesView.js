@@ -270,13 +270,13 @@ export function FilesMain({ w }) {
           onClick=${() => w.set({ group: o.value })}>${o.label}</button>`)}
       </div>
     </div>
-    ${w.filesStatus !== 'ready' && html`<p class="st-note" role="status">File details are loading</p>`}
+    ${w.filesStatus !== 'ready' && html`<p class="st-note" role="status">${w.readonly ? 'File details are not reported for the selected nodes.' : 'File details are loading'}</p>`}
     <${Summary} w=${w}/>
     <${FilterChips} w=${w}/>
     ${groups.length || absent.length ? html`<div class="st-scroll"><table class=${'st-table st-files ' + grid.tableProps.class} style=${grid.tableProps.style}>
       <thead><tr>${fileCols(w).map(grid.th)}</tr></thead>
       ${groups.map(g => html`<${GroupBody} key=${g.key} g=${g} w=${w} open=${open} setOpen=${setOpen} shut=${shut} setShut=${setShut} grid=${grid}/>`)}
       ${absent.length > 0 && html`<${AbsentGroup} w=${w} items=${absent}/>`}
-    </table></div>` : html`<p class="st-empty">${w.files.length ? 'No file matches the search or the filters.' : 'No settings files were found.'}</p>`}
+    </table></div>` : html`<p class="st-empty">${w.readonly ? 'No settings file records for this scope.' : w.files.length ? 'No file matches the search or the filters.' : 'No settings files were found.'}</p>`}
   </section>`;
 }

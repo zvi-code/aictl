@@ -71,7 +71,7 @@ function Viewer({ item, act }) {
   </${FixedPanel}>`;
 }
 
-export default function ArtifactsTab({ data, act }) {
+export default function ArtifactsTab({ data, act, ctx }) {
   const list = data.artifacts || [];
   const [filter, setFilter] = useState('');
   const [sel, setSel] = useState(null);
@@ -92,7 +92,7 @@ export default function ArtifactsTab({ data, act }) {
     ${total > list.length ? html`<div class="bd-note">Showing ${list.length} of ${total} artifacts. The newest come first. The totals count all of them.</div>` : null}
     <div class="bd-note">aictl stores the path, size and time of each file, not its content.</div>
   </${FixedPanel}>
-  ${item?.viewable && item.exists !== false ? html`<${Viewer} key=${item.path} item=${item} act=${act}/>` : null}
+  ${item?.viewable && item.exists !== false && !ctx?.remote ? html`<${Viewer} key=${item.path} item=${item} act=${act}/>` : null}
   ${item && (!item.viewable || item.exists === false) ? html`<${FixedPanel} id="artno" title="Cannot show this file" sub=${item.path}>
     <div class="bd-ptext">${whyNotViewable(item)}</div>
     <${Actions} actions=${[{ label: 'Copy path', go: () => act.copy(item.path, 'Copied the path') }]}/>

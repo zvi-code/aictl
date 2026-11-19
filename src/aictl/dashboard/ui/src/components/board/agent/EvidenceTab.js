@@ -45,10 +45,10 @@ function Facts({ entries, label }) {
     <div key=${key}><dt>${key}</dt><dd>${plain(value)}</dd></div>`)}</dl>`;
 }
 
-function Detail({ row, rows, sid, a, turns, act, select, hidden }) {
+function Detail({ row, rows, sid, a, turns, act, select, hidden, ctx }) {
   const { step_key: key } = row;
   const [attempt, retry] = useState(0);
-  const { data, error } = useDetail(o => getSessionEvidence(sid, { stepKey: key }, o), JSON.stringify([sid, key, attempt]));
+  const { data, error } = useDetail(o => getSessionEvidence(sid, { stepKey: key }, { ...o, nodeScope: ctx?.nodeScope, nodeId: ctx?.nodeId }), JSON.stringify([sid, key, attempt]));
   if (!data) return html`<${Wait} what="step detail" error=${error}/>
     ${error && html`<button class="bd-btn" type="button" onClick=${() => retry(attempt + 1)}>Retry detail</button>`}`;
   const r = data.rows.find(x => x.step_key === key);
@@ -94,20 +94,20 @@ function Detail({ row, rows, sid, a, turns, act, select, hidden }) {
   </article>`;
 }
 
-function Browser({ sid, a, turns, contextOnly, flowRef, act, hidden }) {
+function Browser({ sid, a, turns, contextOnly, flowRef, act, hidden, ctx }) {
   const [draft, setDraft] = useState('');
   const [q, setQ] = useState('');
   const [offset, setOffset] = useState(0);
   const [selected, select] = useState(null);
   const [attempt, retry] = useState(0);
   const kind = contextOnly ? 'context' : '';
-  const { data, error } = useDetail(o => getSessionEvidence(sid, { kind, q, offset, flowRef }, o), JSON.stringify([sid, kind, q, offset, flowRef, attempt]));
+  const { data, error } = useDetail(o => getSessionEvidence(sid, { kind, q, offset, flowRef }, { ...o, nodeScope: ctx?.nodeScope, nodeId: ctx?.nodeId }), JSON.stringify([sid, kind, q, offset, flowRef, attempt]));
   const search = e => { e.preventDefault(); setQ(draft.trim()); setOffset(0); select(null); };
   // Message, trace and span IDs may not be indexed filters. Inspect only this
   // bounded page and keep paging available even when it contains no match.
   const rows = flowRef ? data?.rows.filter(r => r[flowRef.field] === flowRef.id && (!flowRef.traceId || r.trace_id === flowRef.traceId)) : data?.rows;
   if (selected) return html`<div class="bd-ag-bar"><button type="button" class="bd-btn" onClick=${() => select(null)}>Back to results</button></div>
-    <${Detail} key=${selected.step_key} row=${selected} rows=${rows} sid=${sid} a=${a} turns=${turns} act=${act} select=${select} hidden=${hidden}/>`;
+    <${Detail} key=${selected.step_key} row=${selected} rows=${rows} sid=${sid} a=${a} turns=${turns} act=${act} select=${select} hidden=${hidden} ctx=${ctx}/>`;
   return html`
     ${!contextOnly && !flowRef && !hidden && html`<form class="bd-srchrow" role="search" aria-label="Session evidence" onSubmit=${search}>
       <input type="search" class="bd-sessq" maxlength="160" aria-label="Search retained text in this session" placeholder="Search messages and commands, e.g. pytest" value=${draft} onInput=${e => setDraft(e.currentTarget.value)}/>
@@ -134,10 +134,10 @@ function Browser({ sid, a, turns, contextOnly, flowRef, act, hidden }) {
     </div>`}`;
 }
 
-export default function EvidenceTab({ a, sid, data, act, captureMode, contextOnly = false, flowRef, inline = false }) {
+export default function EvidenceTab({ a, sid, data, act, captureMode, contextOnly = false, flowRef, inline = false, ctx }) {
   const hidden = captureMode != null && captureMode !== 'full';
   const browser = sid ? html`<${Browser} key=${JSON.stringify([sid, contextOnly, hidden, flowRef])} sid=${sid} a=${a} act=${act} flowRef=${flowRef}
-    turns=${data?.turns || []} contextOnly=${contextOnly} hidden=${hidden}/>`
+    turns=${data?.turns || []} contextOnly=${contextOnly} hidden=${hidden} ctx=${ctx}/>`
     : html`<div class="bd-empty" role="status">No session ID is available for this record.</div>`;
   if (inline) return html`<div role="region" aria-label="Source steps">${browser}</div>`;
   return html`<${SessionNote} a=${a}/>

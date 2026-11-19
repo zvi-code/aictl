@@ -9,7 +9,7 @@ import * as api from '../../api.js';
 import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, estTokens, estTokensFromSize, isLive, sparkPath, stamp, statusMeta } from './format.js';
 import { Ico, PATHS } from './icons.js';
 import { Actions, Stats } from './Panel.js';
-import { statusCell } from './panels.js';
+import { reportingNode, statusCell } from './panels.js';
 import Table from './Table.js';
 import TextView from '../ui/TextView.js';
 import { scopeAudit } from '../../utils/auditScope.js';
@@ -183,7 +183,7 @@ function evidenceSessionId(a, data, listed) {
 function AgentDrawer({ d, ctx, frame, act }) {
   const { state: subscription } = useLiveState();
   const incremental = subscription.mode === 'incremental';
-  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, opts), 'agent:' + d.id, incremental ? 0 : ctx.refreshKey);
+  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'agent:' + d.id, incremental || ctx.remote ? 0 : ctx.refreshKey);
   const historical = useMemo(() => normalizeAgentDetail(raw), [raw]);
   const listed = ctx.data.agents.find(a => a.id === d.id);
   const a = useMemo(() => {
@@ -223,7 +223,8 @@ function AgentDrawer({ d, ctx, frame, act }) {
     ['team', 'Team'],
     ['procs', 'Processes'],
     ['integrations', 'Integrations'],
-  ].map(([id, label, count]) => (label ? { id, label, count, on: (d.tab === 'evidence' ? 'flow' : d.tab || 'flow') === id, pick: () => act.setDrawerTab(id) } : { id, sep: true }));
+  ]
+    .map(([id, label, count]) => (label ? { id, label, count, on: (d.tab === 'evidence' ? 'flow' : d.tab || 'flow') === id, pick: () => act.setDrawerTab(id) } : { id, sep: true }));
   const models = (a.models || []).join(', ');
   const processOnly = a.running === true && st === 'unknown';
   const sm = statusMeta(processOnly ? 'running' : st);
@@ -234,13 +235,14 @@ function AgentDrawer({ d, ctx, frame, act }) {
     a.tool ? { k: 'Tool', v: ctx.toolName(a.tool) } : null,
     a.project ? { k: 'Project', v: projectName(a.project), title: a.project } : null,
     models ? { k: (a.models || []).length > 1 ? 'Models' : 'Model', v: models } : null,
-    { k: 'ID', v: String(a.id).slice(0, 8), mono: true, title: a.id, copy: act.copy ? { label: 'Copy session ID ' + a.id, go: () => act.copy(a.id, 'Copied ' + a.id) } : null },
+    a.node_id ? { k: 'Reporting node', v: a.node_id } : null,
+    { k: 'ID', v: a.short || String(a.id).slice(0, 8), mono: true, title: a.id, copy: act.copy ? { label: 'Copy session ID ' + a.id, go: () => act.copy(a.id, 'Copied ' + a.id) } : null },
   ].filter(Boolean);
   // Only a main agent owns a process tree; a subagent stops with its parent.
-  const actions = (isLive(st) || a.running === true) && !a.parent_id ? [{ label: 'Stop', go: () => act.stopAgent(a) }] : [];
+  const actions = !ctx.remote && (isLive(st) || a.running === true) && !a.parent_id ? [{ label: 'Stop', go: () => act.stopAgent(a) }] : [];
   const sid = d.sessionId || evidenceSessionId(a, data, listed);
   const evidence = (contextOnly, flowRef) => !sid && !data && !error ? html`<${Pending}/>` : html`
-    <${Part} key=${'evidence:' + contextOnly} part="evidence" a=${a} sid=${sid} data=${data} act=${act} flowRef=${flowRef}
+    <${Part} key=${'evidence:' + contextOnly} part="evidence" a=${a} sid=${sid} data=${data} ctx=${ctx} act=${act} flowRef=${flowRef}
       captureMode=${subscription.capabilities?.capture_mode ?? ctx.data.capture_mode} contextOnly=${contextOnly}/>`;
   const body = () => {
     if (!d.tab || d.tab === 'flow' || d.tab === 'evidence') return html`${d.flowRef && evidence(false, d.flowRef)}
@@ -264,13 +266,13 @@ function AgentDrawer({ d, ctx, frame, act }) {
     if (d.tab === 'instructions') return html`<${InstructionsTab} a=${a} data=${data} act=${act}/>`;
     if (d.tab !== 'overview' && AGENT_PARTS[d.tab]) return html`<${Part} key=${d.tab} part=${d.tab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
     return html`<${OverviewTab} a=${a} data=${data} st=${st} ctx=${ctx} act=${act} pending=${pending}/>
-      <${Part} part="overview" name="OverviewExtras" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
+      ${!ctx.remote && html`<${Part} part="overview" name="OverviewExtras" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`}`;
   };
   const head = data?.git ? html`<${Part} part="overview" name="GitBadge" git=${data.git} a=${a}/>` : null;
   return html`<${Frame} ...${frame} title=${a.title ? titleOf(a) : a.id} meta=${meta} head=${head} tabs=${tabs} actions=${actions}>
-    <${LoadedConfiguration} sessionId=${a.session_id || a.native_session_id || a.parent_id || a.id}/>
+    ${!ctx.remote && html`<${LoadedConfiguration} sessionId=${a.session_id || a.native_session_id || a.parent_id || a.id}/>`}
     ${body()}
-    ${d.tab === 'context' && html`<${ContextHistory} key=${sid} sid=${sid} agent=${a.parent_id ? a.id : ''}>${evidence(true)}</${ContextHistory}>`}
+    ${d.tab === 'context' && html`<${ContextHistory} key=${sid} ctx=${ctx} sid=${sid} agent=${a.parent_id ? a.id : ''}>${evidence(true)}</${ContextHistory}>`}
   </${Frame}>`;
 }
 
@@ -896,10 +898,10 @@ function ErrorsTab({ data }) {
 }
 
 function ToolDrawer({ d, ctx, frame, act }) {
-  const { data, error } = useDetail(opts => api.getBoardTool(d.name, ctx.query, opts), 'tool:' + d.name + ':' + ctx.query);
+  const { data, error } = useDetail(opts => api.getBoardTool(d.name, ctx.query, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'tool:' + d.name + ':' + ctx.query);
   const def = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '60px' }, { k: 'target', l: 'Target' }, { k: 'ag', l: 'Agent', w: '74px' }, { k: 'ms', l: 'Took', n: true, w: '58px' }, { k: 'ok', l: 'Result', w: '56px' }, { k: 'conf', l: 'Confirm', w: '68px' }],
-    rows: (data?.calls || []).map((c, i) => ({ id: i, go: c.agent_id ? () => act.openDrawer({ type: 'agent', id: c.agent_id, tab: 'tools' }) : null, sort: { at: c.ts, ms: c.duration_ms, ok: c.failed ? 1 : 0 }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, target: { v: c.target || NA, cls: 'm' }, ag: { v: (c.agent_id || '').slice(0, 8) || NA, cls: 'dim', title: c.title || '' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
+    rows: (data?.calls || []).map((c, i) => ({ id: i, go: c.agent_id ? () => act.openDrawer({ type: 'agent', id: c.agent_id, tab: 'tools' }) : null, sort: { at: c.ts, ms: c.duration_ms, ok: c.failed ? 1 : 0 }, cells: { at: { v: stamp(c.ts), cls: 'dim' }, target: { v: c.target || NA, cls: 'm' }, ag: { v: c.title || (c.agent_id || '').slice(0, 8) || NA, sub: reportingNode(c.agent_id), cls: 'dim', title: c.title || '' }, ms: { v: fmtMs(c.duration_ms) }, ok: { v: c.failed ? 'Failed' : 'OK', cls: c.failed ? 'crit' : 'dim' }, conf: { v: c.confirm || NA, cls: 'dim' } } })),
     sort: { k: 'at', dir: 'desc' }, limit: 80, none: 'No calls in this time.', primary: 'target',
   }), [data]);
   return html`<${Frame} ...${frame} title=${d.name} sub=${data ? (data.total ?? (data.calls || []).length) + ' calls in this time' + ((data.total ?? 0) > (data.calls || []).length ? ', newest ' + data.calls.length + ' listed' : '') : 'Loading...'}>
@@ -908,7 +910,7 @@ function ToolDrawer({ d, ctx, frame, act }) {
 }
 
 function ErrorDrawer({ d, ctx, frame, act }) {
-  const { data, error } = useDetail(opts => api.getBoardError(d.key, ctx.query, opts), 'error:' + d.key + ':' + ctx.query);
+  const { data, error } = useDetail(opts => api.getBoardError(d.key, ctx.query, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'error:' + d.key + ':' + ctx.query);
   const def = useMemo(() => ({
     cols: [{ k: 'at', l: 'Time', w: '60px' }, { k: 'msg', l: 'Detail' }, { k: 'ag', l: 'Agent', w: '220px' }],
     rows: (data?.items || []).map((x, i) => ({ id: i, go: x.agent_id ? () => act.openDrawer({ type: 'agent', id: x.agent_id, tab: 'errors' }) : null, sort: { at: x.ts }, cells: { at: { v: stamp(x.ts), cls: 'dim' }, msg: { v: x.detail || NA, cls: 'm' }, ag: { v: x.title || NA, cls: 'dim' } } })),
@@ -948,10 +950,11 @@ function useExcerpt(path, line, version = 0) {
 const CONTEXT_FILE = /(^|[\\/])\.context\.toml$/;
 
 function FileDrawer({ d, ctx, frame, act }) {
-  const { data, error } = useDetail(opts => api.getBoardFile(d.path, ctx.query, opts), 'file:' + d.path + ':' + ctx.query);
+  const recordQuery = ctx.query + (d.record ? '&record=' + encodeURIComponent(d.record) : '');
+  const { data, error } = useDetail(opts => api.getBoardFile(d.path, recordQuery, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'file:' + d.path + ':' + recordQuery);
   const [editing, setEditing] = useState(false);
   const [version, setVersion] = useState(0);
-  const excerpt = useExcerpt(d.path, d.line, version);
+  const excerpt = useExcerpt(ctx.remote ? null : d.path, d.line, version);
   const fileActions = [
     editing ? null : { label: 'Edit file', go: () => setEditing(true) },
     CONTEXT_FILE.test(d.path) && act.runCommand ? { label: 'Deploy the context', go: () => act.runCommand({ title: 'Deploy the context files', lead: 'This writes every tool\'s native files from the .context.toml files of the project, the same as the command below.', command: 'aictl ctx deploy', applyLabel: 'Run this command', action: 'ctx-deploy', done: 'Deployed the context' }) } : null,
@@ -961,11 +964,11 @@ function FileDrawer({ d, ctx, frame, act }) {
     rows: (data?.edits || []).map((e, i) => ({ id: i, go: e.agent_id ? () => act.openDrawer({ type: 'agent', id: e.agent_id, tab: 'changes' }) : null, sort: { at: e.ts }, cells: { at: { v: stamp(e.ts, true), cls: 'dim' }, ag: { v: e.title || NA }, ch: { v: fmtLines(e.lines_added, e.lines_removed) } } })),
     sort: { k: 'at', dir: 'desc' }, none: 'No agent edited this file in this time.', primary: 'ag',
   }), [data]);
-  const sub = d.line ? 'Line ' + d.line : (data?.diff ? 'Diff of the last edit' : '');
+  const sub = d.line ? 'Line ' + d.line : data?.diff_as_of != null ? 'Stored version at ' + stamp(data.diff_as_of, true) : (data?.diff ? 'Recorded edit' : '');
   return html`<${Frame} ...${frame} title=${d.path} sub=${sub}>
-    <${FixedPanel} id="edit" title=${editing ? 'Edit' : 'Actions'} sub=${editing ? d.path : ''}>
+    ${ctx.remote ? html`<p class="bd-note">Only recorded file changes are available in this scope.</p>` : html`<${FixedPanel} id="edit" title=${editing ? 'Edit' : 'Actions'} sub=${editing ? d.path : ''}>
       ${editing ? html`<${FileEditor} path=${d.path} onClose=${() => setEditing(false)} onSaved=${() => setVersion(v => v + 1)}/>` : html`<${Actions} actions=${fileActions}/>`}
-    </${FixedPanel}>
+    </${FixedPanel}>`}
     ${excerpt?.error ? html`<${FixedPanel} id="code" title="File"><div class="bd-empty" role="status">${excerpt.error}</div></${FixedPanel}>` : null}
     ${excerpt?.lines ? html`<${FixedPanel} id="code" title="File"><${CodeLines} lines=${excerpt.lines}/><div class="bd-note">Values under names that look like secrets are never shown.</div></${FixedPanel}>` : null}
     ${data ? html`
@@ -979,8 +982,8 @@ function FileDrawer({ d, ctx, frame, act }) {
 
 function PromptDrawer({ d, ctx, frame, act }) {
   const listed = ctx.data.agents.find(a => a.id === d.agent_id);
-  const sessionId = listed?.parent_id || d.agent_id;
-  const { data, error } = useDetail(opts => api.getBoardPrompt(d.ts, sessionId, opts), 'prompt:' + d.ts + ':' + sessionId);
+  const sessionId = d.session_id || listed?.parent_id || d.agent_id;
+  const { data, error } = useDetail(opts => api.getBoardPrompt(d.ts, sessionId, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'prompt:' + d.ts + ':' + sessionId);
   const metadata = ctx.data.capture_mode === 'metadata';
   const text = data?.text || (metadata ? 'The text of this prompt is not stored, because the capture mode is metadata.' : NA);
   const sub = [stamp(d.ts, true), projectName(data?.project || d.summary?.project), data?.title].filter(Boolean).join(', ');
@@ -994,7 +997,7 @@ function PromptDrawer({ d, ctx, frame, act }) {
 }
 
 function SkillDrawer({ d, ctx, frame, act }) {
-  const { data, error } = useDetail(opts => api.getBoardSkill(d.name, ctx.query, opts), 'skill:' + d.name + ':' + ctx.query);
+  const { data, error } = useDetail(opts => api.getBoardSkill(d.name, ctx.query, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'skill:' + d.name + ':' + ctx.query);
   const locations = data?.locations || [];
   const whereDef = useMemo(() => ({
     cols: [{ k: 'sc', l: 'Scope', w: '74px' }, { k: 'who', l: 'Who can see it' }, { k: 'start', l: 'Who can start it', w: '170px' }, { k: 'tools', l: 'Tools that read it', w: '200px' }, { k: 'path', l: 'File', w: '280px' }],
@@ -1156,6 +1159,7 @@ export default function Drawer({ stack, ctx, act }) {
   const d = stack[stack.length - 1];
   const View = VIEWS[d.type];
   if (!View) return null;
-  const frame = { canBack: stack.length > 1, back: act.drawerBack, close: act.drawerClose };
+  const frame = { canBack: stack.length > 1, back: act.drawerBack, close: act.drawerClose,
+    ...(ctx.remote ? { meta: [{ k: 'Node scope', v: reportingNode(d.record || d.session_id) || ctx.scopeName }] } : {}) };
   return html`<${View} d=${d} ctx=${ctx} act=${act} frame=${frame} key=${d.type}/>`;
 }

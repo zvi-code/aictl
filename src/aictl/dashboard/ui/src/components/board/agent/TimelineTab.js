@@ -46,7 +46,7 @@ const gapText = s => (s < 60 ? Math.round(s) + ' s' : fmtDur(s));
 
 export default function TimelineTab({ a, st, ctx }) {
   const tick = isActive(st) ? ctx.refreshKey : 0;
-  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, '', o), 'flow:' + a.id, tick);
+  const { data, error } = useDetail(o => api.getBoardAgentFlow(a.id, '', { ...o, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'flow:' + a.id, ctx.remote ? 0 : tick);
   const [off, setOff] = useState(() => new Set());
   const [mode, setMode] = useState('all');
   const bars = useMemo(() => (data?.turns || []).filter(t => KINDS.has(t.type)), [data]);
