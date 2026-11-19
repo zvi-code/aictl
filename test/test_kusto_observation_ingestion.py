@@ -120,19 +120,51 @@ def test_all_process_snapshots_and_system_snapshots_are_ingested(observation_sto
     assert snapshot["settings_captured_at"] >= snapshot["ts"]
 
 
-def test_sample_filters_do_not_reduce_kusto_observations(observation_store):
+def test_kusto_samples_use_the_same_change_filters_as_sqlite(observation_store):
     db, ingester = observation_store
     sink = SampleSink(db=db)
-    sink._flood_max = 0
-    sink.emit("m", 3.1415926535, ts=100)
-    sink.emit_if_changed("m", 3.1415926535, ts=101, gauge=True)
-    sink.emit_with_sensitivity("m", 3.1415926535, ts=102, rounding=1, max_threshold=10)
-    sink.emit_batch([("m", 3.1415926535, None), ("m", 3.1415926535, None)], ts=103)
+    stale = SampleSink.DEDUP_STALE_SECONDS
+    sink.emit_if_changed("m", 3.14159, ts=100, gauge=True)
+    sink.emit_if_changed("m", 3.14159, ts=101, gauge=True)
+    sink.emit_if_changed("m", 3.14159, ts=100 + stale, gauge=True)
+    sink.emit_with_sensitivity("s", 2.04, ts=100, rounding=1, max_threshold=10)
+    sink.emit_with_sensitivity("s", 2.01, ts=101, rounding=1, max_threshold=10)
+    sink.emit("e", 5, ts=102)
     rows = [r for table, batch in ingester.batches for r in batch if table == "metrics"]
-    assert len(rows) == 5
-    assert all(r["value"] == 3.1415926535 for r in rows)
-    assert sink.stats()["total_dropped"] == 0
+    assert [(r["metric"], r["value"], r["ts"]) for r in rows] == [
+        ("m", 3.14159, 100),
+        ("m", 3.14159, 100 + stale),
+        ("s", 2.0, 100),
+        ("e", 5, 102),
+    ]
     assert sink.stats()["buffer_size"] == 0
+
+
+def test_kusto_samples_keep_the_flood_limit(observation_store):
+    db, ingester = observation_store
+    sink = SampleSink(db=db)
+    sink._flood_max = 2
+    notices = []
+    sink.record_data_quality = lambda component, status, **kw: notices.append((component, status))
+    for value in (1, 2, 3):
+        sink.emit("m", value, ts=100)
+    rows = [r for table, batch in ingester.batches for r in batch if table == "metrics"]
+    assert [r["value"] for r in rows] == [1, 2]
+    assert sink.stats()["total_dropped"] == 1
+    assert notices == [("sample-sink", "degraded")]
+
+
+def test_failed_kusto_handoff_does_not_suppress_the_value_sent_again(observation_store):
+    db, ingester = observation_store
+    sink = SampleSink(db=db)
+    ingester.error = RuntimeError("offline")
+    with pytest.raises(KustoStoreError, match="offline"):
+        sink.emit_if_changed("m", 7, ts=100, gauge=True)
+    ingester.error = None
+    sink.emit_if_changed("m", 7, ts=101, gauge=True)
+    sink.emit_if_changed("m", 7, ts=102, gauge=True)
+    rows = [r for table, batch in ingester.batches for r in batch if table == "metrics"]
+    assert [r["ts"] for r in rows] == [101]
 
 
 def test_node_health_counters_piggyback_without_logging_requests_or_sampling_each_tick(observation_store, monkeypatch):
@@ -154,17 +186,42 @@ def test_node_health_counters_piggyback_without_logging_requests_or_sampling_eac
     assert not second.get("node_health_counters")
 
 
-def test_collector_does_not_round_memory_before_kusto_capture():
-    seen = []
+def test_collector_rounds_and_filters_memory_in_kusto_mode(observation_store):
+    db, ingester = observation_store
 
     class Collector(BaseCollector):
+        name = "test:memory"
+
         async def run(self):
-            pass
+            self.sink_emit_memory("memory", 65537, {"pid": 42})
+            self.sink_emit_memory("memory", 65540, {"pid": 42})
+            await self.sink_flush_batch()
 
     collector = Collector()
-    collector.set_sink(SimpleNamespace(streams_observations=True, emit=lambda *args: seen.append(args)))
-    collector.sink_emit_memory("memory", 65537, {"pid": 42})
-    assert seen == [("memory", 65537, {"pid": 42})]
+    collector.set_sink(SampleSink(db=db))
+    asyncio.run(collector.run())
+    assert [[r["value"] for r in rows] for table, rows in ingester.batches if table == "metrics"] == [[65536]]
+
+
+def test_collector_batch_that_kusto_refuses_is_sent_again_on_the_next_scan(observation_store):
+    db, ingester = observation_store
+
+    class Collector(BaseCollector):
+        name = "test:retry"
+
+        async def run(self):
+            self.sink_emit_if_changed("m", 7, gauge=True)
+            await self.sink_flush_batch()
+
+    collector = Collector()
+    sink = SampleSink(db=db)
+    collector.set_sink(sink)
+    ingester.error = RuntimeError("offline")
+    asyncio.run(collector.run())
+    ingester.error = None
+    asyncio.run(collector.run())
+    asyncio.run(collector.run())
+    assert [[r["value"] for r in rows] for table, rows in ingester.batches if table == "metrics"] == [[7]]
 
 
 def test_refused_handoff_raises_and_does_not_claim_acceptance(observation_store):
@@ -532,17 +589,20 @@ def test_auto_streams_live_tables_but_respects_overrides_and_emulator():
     assert KustoSettings("http://localhost:8080").ingestion_mode("events") == "inline"
 
 
-def test_discovery_uses_one_producer_batch_without_truncating_file_metrics(tmp_path, monkeypatch):
+def test_discovery_sends_one_batch_of_changed_samples_with_the_file_cap(tmp_path, monkeypatch, observation_store):
     from aictl import tools
     from aictl.monitoring.config import MonitorConfig
     from aictl.monitoring.runtime import DiscoveryCollector
-    from aictl.tools import ResourceFile, ToolResources
+    from aictl.tools import MAX_FILE_SAMPLES_PER_TOOL, ResourceFile, ToolResources
 
-    files = [ResourceFile(str(tmp_path / f"f{i}.md"), "rules", size=4, tokens=1) for i in range(501)]
+    db, ingester = observation_store
+    files = [
+        ResourceFile(str(tmp_path / f"f{i}.md"), "rules", size=4, tokens=2)
+        for i in range(MAX_FILE_SAMPLES_PER_TOOL + 1)
+    ]
     monkeypatch.setattr(tools, "discover_all", lambda *_args, **_kwargs: [ToolResources("t", "T", files=files)])
     collector = DiscoveryCollector(MonitorConfig(root=tmp_path, workspace_paths=(tmp_path,), state_paths=()))
-    batches = []
-    collector.set_sink(SimpleNamespace(streams_observations=True, emit_batch=lambda rows: batches.append(rows)))
+    collector.set_sink(SampleSink(db=db))
 
     class PollComplete(Exception):
         pass
@@ -550,15 +610,21 @@ def test_discovery_uses_one_producer_batch_without_truncating_file_metrics(tmp_p
     async def report(**_kwargs):
         pass
 
+    scans = []
+
     async def stop(_interval):
-        raise PollComplete
+        scans.append(len(ingester.batches))
+        if len(scans) == 2:
+            raise PollComplete
 
     collector.report_status = report
     collector.sleep_paced = stop
     with pytest.raises(PollComplete):
         asyncio.run(collector.run())
-    assert len(batches) == 1
-    assert len(batches[0]) == 5 + 2 * len(files)
+    assert scans == [1, 1]
+    table, rows = ingester.batches[0]
+    assert table == "metrics"
+    assert len(rows) == 5 + 2 * MAX_FILE_SAMPLES_PER_TOOL
 
 
 def test_collector_delivery_failure_records_degraded_quality_without_killing_collector():

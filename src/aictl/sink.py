@@ -137,6 +137,83 @@ class SampleSink:
         for k in stale_keys:
             del self._dedup_cache[k]
 
+    def _count_emits_for_gc_locked(self, count: int) -> None:
+        self._emit_count_since_gc += count
+        if self._emit_count_since_gc >= self._DEDUP_GC_INTERVAL:
+            self._emit_count_since_gc = 0
+            self._dedup_gc()
+
+    def _flood_check_locked(self, ts: float, notices: list[tuple[str, str, str, dict]]) -> tuple[bool, bool, int]:
+        """Count one emission against the flood limit: ``(dropped, first_drop, total_dropped)``."""
+        if ts - self._flood_window_start > self._flood_window:
+            if self._flood_drop_count:
+                notices.append(
+                    (
+                        "ok",
+                        "info",
+                        "sample emission rate back under flood limit",
+                        {"dropped_in_previous_window": self._flood_drop_count},
+                    )
+                )
+            self._flood_window_start = ts
+            self._flood_count = 0
+            self._flood_drop_count = 0
+            self._drop_logged = False
+        self._flood_count += 1
+        if self._flood_count <= self._flood_max:
+            return False, False, self._total_dropped
+        self._total_dropped += 1
+        self._flood_drop_count += 1
+        first_drop = not self._drop_logged
+        if first_drop:
+            self._drop_logged = True
+            notices.append(
+                (
+                    "degraded",
+                    "warning",
+                    "sample flood protection is dropping datapoints",
+                    {"flood_max_per_second": self._flood_max, "total_dropped": self._total_dropped},
+                )
+            )
+        return True, first_drop, self._total_dropped
+
+    def _report_flood(
+        self,
+        metric: str,
+        ts: float,
+        notices: list[tuple[str, str, str, dict]],
+        dropped: bool,
+        first_drop: bool,
+        total_dropped: int,
+    ) -> None:
+        for status, severity, message, detail in notices:
+            self.record_data_quality(
+                "sample-sink",
+                status,
+                kind="sink",
+                severity=severity,
+                message=message,
+                detail=detail,
+                ts=ts,
+            )
+        if dropped:
+            log.debug("Flood drop: metric=%s total_dropped=%d", metric, total_dropped)
+            if first_drop:
+                log.warning(
+                    "Too many samples: dropping those over %d per second, starting with %s. Dropped so far: %d",
+                    self._flood_max,
+                    metric,
+                    total_dropped,
+                )
+
+    def _forget_dedup(self, samples: list[tuple[str, float, dict[str, Any], float]]) -> None:
+        """Forget the change-filter entries of samples whose handoff failed, so the next value is sent."""
+        with self._lock:
+            for metric, value, t, sample_ts in samples:
+                key = self._cache_key(metric, t)
+                if self._dedup_cache.get(key) == (value, sample_ts):
+                    del self._dedup_cache[key]
+
     # ── Emission ──────────────────────────────────────────────────
 
     def emit(
@@ -161,56 +238,28 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
-        if self.streams_observations:
-            self.emit_batch([(metric, value, tags)], ts)
-            return
         t = tags or {}
 
         # Deferred record_data_quality calls — issued after the lock is
         # released so DB writes never happen while holding it.
         notices: list[tuple[str, str, str, dict]] = []
-        first_drop = False
-        dropped = False
         should_flush = False
+
+        if self.streams_observations:
+            with self._lock:
+                dropped, first_drop, total_dropped = self._flood_check_locked(ts, notices)
+            self._report_flood(metric, ts, notices, dropped, first_drop, total_dropped)
+            if not dropped:
+                self.emit_batch([(metric, value, tags)], ts)
+            return
 
         # Single lock acquisition per emit: flood accounting, cache and
         # buffer updates, and periodic dedup GC all share the same
         # critical section (these structures are mutated from the monitor
         # thread and the RefreshLoop thread concurrently).
         with self._lock:
-            # Flood protection: drop if exceeding rate limit
-            if ts - self._flood_window_start > self._flood_window:
-                if self._flood_drop_count:
-                    notices.append(
-                        (
-                            "ok",
-                            "info",
-                            "sample emission rate back under flood limit",
-                            {"dropped_in_previous_window": self._flood_drop_count},
-                        )
-                    )
-                self._flood_window_start = ts
-                self._flood_count = 0
-                self._flood_drop_count = 0
-                self._drop_logged = False
-            self._flood_count += 1
-            if self._flood_count > self._flood_max:
-                dropped = True
-                self._total_dropped += 1
-                self._flood_drop_count += 1
-                total_dropped = self._total_dropped
-                if not self._drop_logged:
-                    first_drop = True
-                    self._drop_logged = True
-                    notices.append(
-                        (
-                            "degraded",
-                            "warning",
-                            "sample flood protection is dropping datapoints",
-                            {"flood_max_per_second": self._flood_max, "total_dropped": total_dropped},
-                        )
-                    )
-            else:
+            dropped, first_drop, total_dropped = self._flood_check_locked(ts, notices)
+            if not dropped:
                 # Update latest + series cache (LRU-bounded)
                 self._lru_set_latest(metric, (ts, value, t))
                 self._series_append(metric, (ts, value))
@@ -221,31 +270,10 @@ class SampleSink:
                 should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
 
                 # Periodic dedup GC
-                self._emit_count_since_gc += 1
-                if self._emit_count_since_gc >= self._DEDUP_GC_INTERVAL:
-                    self._emit_count_since_gc = 0
-                    self._dedup_gc()
+                self._count_emits_for_gc_locked(1)
 
-        for status, severity, message, detail in notices:
-            self.record_data_quality(
-                "sample-sink",
-                status,
-                kind="sink",
-                severity=severity,
-                message=message,
-                detail=detail,
-                ts=ts,
-            )
-
+        self._report_flood(metric, ts, notices, dropped, first_drop, total_dropped)
         if dropped:
-            log.debug("Flood drop: metric=%s total_dropped=%d", metric, total_dropped)
-            if first_drop:
-                log.warning(
-                    "Too many samples: dropping those over %d per second, starting with %s. Dropped so far: %d",
-                    self._flood_max,
-                    metric,
-                    total_dropped,
-                )
             return
 
         # Write to datapoint log file (if configured)
@@ -306,20 +334,35 @@ class SampleSink:
 
         Uses a composite key of metric + ALL tag values to detect
         duplicates. Unchanged values are still updated in the in-memory
-        latest/series caches but NOT persisted to SQLite — unless
+        latest/series caches but NOT persisted — unless
         the last persist was more than DEDUP_STALE_SECONDS ago, in which
-        case we re-emit to keep time-series continuous.
+        case we re-emit to keep time-series continuous. Kusto mode applies
+        the same rule; only the buffering differs.
         """
         if ts is None:
             ts = time.time()
-        if self.streams_observations:
+        if self.admit_if_changed(metric, value, tags, ts, gauge=gauge):
             self.emit(metric, value, tags, ts)
-            return
 
+    def admit_if_changed(
+        self,
+        metric: str,
+        value: float,
+        tags: dict[str, Any] | None = None,
+        ts: float | None = None,
+        *,
+        gauge: bool = False,
+    ) -> bool:
+        """The change decision of :meth:`emit_if_changed`, for producers that send their own batch.
+
+        True means the caller must persist the sample with this ``ts``. A
+        Kusto handoff that fails forgets the decision, so the value is sent again.
+        """
+        if ts is None:
+            ts = time.time()
         # Event-like datapoints: never suppress
         if not gauge and self._is_event_like(value):
-            self.emit(metric, value, tags, ts)
-            return
+            return True
 
         t = tags or {}
         cache_key = self._cache_key(metric, t)
@@ -328,17 +371,15 @@ class SampleSink:
             if prev is not None:
                 prev_value, prev_ts = prev
                 # Skip expired dedup entries
-                if (ts - prev_ts) >= self.DEDUP_TTL:
-                    prev = None
-                else:
+                if (ts - prev_ts) < self.DEDUP_TTL:
                     stale = (ts - prev_ts) >= self.DEDUP_STALE_SECONDS
                     if prev_value == value and not stale:
                         # Value unchanged and recent — update in-memory caches only
                         self._lru_set_latest(metric, (ts, value, t))
                         self._series_append(metric, (ts, value))
-                        return
+                        return False
             self._lru_set_dedup(cache_key, (value, ts))
-        self.emit(metric, value, tags, ts)
+        return True
 
     def emit_with_sensitivity(
         self,
@@ -372,9 +413,36 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
-        if self.streams_observations:
-            self.emit(metric, value, tags, ts)
-            return
+        admitted = self.admit_with_sensitivity(
+            metric,
+            value,
+            tags,
+            ts,
+            abs_threshold=abs_threshold,
+            max_threshold=max_threshold,
+            rounding=rounding,
+        )
+        if admitted is not None:
+            self.emit(metric, admitted, tags, ts)
+
+    def admit_with_sensitivity(
+        self,
+        metric: str,
+        value: float,
+        tags: dict[str, Any] | None = None,
+        ts: float | None = None,
+        *,
+        abs_threshold: float = 0.0,
+        max_threshold: float = 0.0,
+        rounding: int | None = None,
+    ) -> float | None:
+        """The decision of :meth:`emit_with_sensitivity`, for producers that send their own batch.
+
+        Returns the (rounded) value to persist with this ``ts``, or None when
+        the sample is suppressed. A Kusto handoff that fails forgets the decision.
+        """
+        if ts is None:
+            ts = time.time()
         if rounding is not None:
             value = round(value, rounding)
 
@@ -410,10 +478,10 @@ class SampleSink:
                     # Suppressed — update in-memory caches only
                     self._lru_set_latest(metric, (ts, value, t))
                     self._series_append(metric, (ts, value))
-                    return
+                    return None
 
             self._lru_set_dedup(cache_key, (value, ts))
-        self.emit(metric, value, tags, ts)
+        return value
 
     def emit_batch(
         self,
@@ -436,15 +504,20 @@ class SampleSink:
             from .storage import Sample
 
             # Handoff first: a refused batch must not appear accepted in caches or counters.
-            self._db.append_samples(
-                [Sample(ts=sample_ts, metric=metric, value=value, tags=t) for metric, value, t, sample_ts in normalized]
-            )
+            try:
+                self._db.append_samples(
+                    [Sample(ts=sample_ts, metric=metric, value=value, tags=t) for metric, value, t, sample_ts in normalized]
+                )
+            except BaseException:
+                self._forget_dedup(normalized)
+                raise
             with self._lock:
                 for metric, value, t, sample_ts in normalized:
                     self._lru_set_latest(metric, (sample_ts, value, t))
                     self._series_append(metric, (sample_ts, value))
                 self._total_emitted += len(normalized)
                 self._total_flushed += len(normalized)
+                self._count_emits_for_gc_locked(len(normalized))
             for metric, value, t, sample_ts in normalized:
                 if self._datapoint_logger:
                     try:

@@ -357,10 +357,11 @@ def collect(
     samples = []
 
     def emit(metric, value, tags, *, ts, gauge=False):
-        if streaming:
-            samples.append((metric, value, tags))
-        else:
+        # Kusto mode sends the changed samples as one batch; both modes keep only changes.
+        if not streaming:
             _sink.emit_if_changed(metric, value, tags, ts=ts, gauge=gauge)
+        elif _sink.admit_if_changed(metric, value, tags, ts, gauge=gauge):
+            samples.append((metric, value, tags))
 
     # Emit discovery data through sink (skip when DiscoveryCollector handled it)
     if _sink and _discovered_override is None:
@@ -379,7 +380,7 @@ def collect(
             emit(M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, ts=ts)
             # Per-file metrics: only emit on change (not every cycle).
             # The sink's dedup handles this — we just need a stable cache key.
-            for f in tool_res.files if streaming else files_to_sample(tool_res.files):
+            for f in files_to_sample(tool_res.files):
                 ftags = {
                     "aictl.tool": tool,
                     "file.path": f.path,
@@ -1309,8 +1310,6 @@ class SnapshotPersistence:
         These are cumulative totals; storing an identical row every 5 s made
         tool_stats 89k rows of mostly repeats.
         """
-        if getattr(self._db, "streams_observations", False) is True:
-            return reports
         changed = []
         for t in reports:
             tool = t.get("tool")

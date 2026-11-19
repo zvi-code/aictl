@@ -271,74 +271,71 @@ class SessionCorrelator:
         )
         # Emit derived metrics through sink (OTel units: ratio 0-1, bytes)
         # Display path (ToolReport) uses 0-100% and MB for human readability.
-        if self.sink and getattr(self.sink, "streams_observations", False) is True:
-            samples = []
-            for report in reports:
-                tags = {"aictl.tool": report.tool}
-                samples.extend([
-                    (M("aictl.tool.cpu"), report.cpu_percent / 100, tags),
-                    (M("aictl.tool.memory"), float(report.memory_rss_bytes), tags),
-                    (M("aictl.tool.network.io"), report.inbound_rate_bps, {**tags, "network.io.direction": "receive"}),
-                    (M("aictl.tool.network.io"), report.outbound_rate_bps, {**tags, "network.io.direction": "transmit"}),
-                    (M("aictl.tool.sessions"), float(report.session_count), tags),
-                    (M("aictl.tool.pids"), float(report.pid_count), tags),
-                    (M("aictl.tool.token.usage"), float(report.token_estimate.input_tokens), {**tags, "gen_ai.token.type": "input"}),
-                    (M("aictl.tool.token.usage"), float(report.token_estimate.output_tokens), {**tags, "gen_ai.token.type": "output"}),
-                    (M("aictl.tool.token.confidence"), report.token_estimate.confidence, tags),
-                    (M("aictl.tool.mcp.score"), report.mcp.confidence, tags),
-                ])
-            if samples:
-                try:
-                    self.sink.emit_batch(samples)
-                except Exception as exc:
-                    log.warning("Correlator tool-report sample delivery failed: %s", exc)
-        elif self.sink:
-            for r in reports:
-                tags = {"aictl.tool": r.tool}
-                # Continuously varying — use sensitivity-aware emission
-                self.sink.emit_with_sensitivity(
-                    M("aictl.tool.cpu"), r.cpu_percent / 100, tags, abs_threshold=0.10, max_threshold=0.05, rounding=3
-                )
-                self.sink.emit_with_sensitivity(
-                    M("aictl.tool.memory"),
-                    round(float(r.memory_rss_bytes) / 65536) * 65536,
-                    tags,
-                    abs_threshold=1_048_576,
-                    max_threshold=10_485_760,
-                    rounding=0,
-                )
-                self.sink.emit_with_sensitivity(
-                    M("aictl.tool.network.io"),
-                    r.inbound_rate_bps,
-                    {**tags, "network.io.direction": "receive"},
-                    abs_threshold=1024,
-                    max_threshold=512,
-                    rounding=0,
-                )
-                self.sink.emit_with_sensitivity(
-                    M("aictl.tool.network.io"),
-                    r.outbound_rate_bps,
-                    {**tags, "network.io.direction": "transmit"},
-                    abs_threshold=1024,
-                    max_threshold=512,
-                    rounding=0,
-                )
-                # Change infrequently — skip if unchanged
-                self.sink.emit_if_changed(M("aictl.tool.sessions"), float(r.session_count), tags)
-                self.sink.emit_if_changed(M("aictl.tool.pids"), float(r.pid_count), tags)
-                self.sink.emit_if_changed(
-                    M("aictl.tool.token.usage"),
-                    float(r.token_estimate.input_tokens),
-                    {**tags, "gen_ai.token.type": "input"},
-                )
-                self.sink.emit_if_changed(
-                    M("aictl.tool.token.usage"),
-                    float(r.token_estimate.output_tokens),
-                    {**tags, "gen_ai.token.type": "output"},
-                )
-                self.sink.emit_if_changed(M("aictl.tool.token.confidence"), r.token_estimate.confidence, tags)
-                self.sink.emit_if_changed(M("aictl.tool.mcp.score"), r.mcp.confidence, tags)
+        if self.sink:
+            self._emit_tool_report_samples(reports)
         return reports
+
+    def _emit_tool_report_samples(self, reports: list[ToolReport]) -> None:
+        """Persist the changed tool-report samples; Kusto mode sends them as one batch."""
+        sink = self.sink
+        streaming = getattr(sink, "streams_observations", False) is True
+        ts = time.time()
+        samples: list[tuple[str, float, dict]] = []
+
+        def sensitive(metric: str, value: float, tags: dict, **limits) -> None:
+            if not streaming:
+                sink.emit_with_sensitivity(metric, value, tags, ts, **limits)
+                return
+            admitted = sink.admit_with_sensitivity(metric, value, tags, ts, **limits)
+            if admitted is not None:
+                samples.append((metric, admitted, tags))
+
+        def changed(metric: str, value: float, tags: dict) -> None:
+            if not streaming:
+                sink.emit_if_changed(metric, value, tags, ts)
+            elif sink.admit_if_changed(metric, value, tags, ts):
+                samples.append((metric, value, tags))
+
+        for r in reports:
+            tags = {"aictl.tool": r.tool}
+            # Continuously varying — use sensitivity-aware emission
+            sensitive(M("aictl.tool.cpu"), r.cpu_percent / 100, tags, abs_threshold=0.10, max_threshold=0.05, rounding=3)
+            sensitive(
+                M("aictl.tool.memory"),
+                round(float(r.memory_rss_bytes) / 65536) * 65536,
+                tags,
+                abs_threshold=1_048_576,
+                max_threshold=10_485_760,
+                rounding=0,
+            )
+            sensitive(
+                M("aictl.tool.network.io"),
+                r.inbound_rate_bps,
+                {**tags, "network.io.direction": "receive"},
+                abs_threshold=1024,
+                max_threshold=512,
+                rounding=0,
+            )
+            sensitive(
+                M("aictl.tool.network.io"),
+                r.outbound_rate_bps,
+                {**tags, "network.io.direction": "transmit"},
+                abs_threshold=1024,
+                max_threshold=512,
+                rounding=0,
+            )
+            # Change infrequently — skip if unchanged
+            changed(M("aictl.tool.sessions"), float(r.session_count), tags)
+            changed(M("aictl.tool.pids"), float(r.pid_count), tags)
+            changed(M("aictl.tool.token.usage"), float(r.token_estimate.input_tokens), {**tags, "gen_ai.token.type": "input"})
+            changed(M("aictl.tool.token.usage"), float(r.token_estimate.output_tokens), {**tags, "gen_ai.token.type": "output"})
+            changed(M("aictl.tool.token.confidence"), r.token_estimate.confidence, tags)
+            changed(M("aictl.tool.mcp.score"), r.mcp.confidence, tags)
+        if samples:
+            try:
+                sink.emit_batch(samples, ts=ts)
+            except Exception as exc:
+                log.warning("Correlator tool-report sample delivery failed: %s", exc)
 
     def active_sessions(self) -> list[dict]:
         """Return active sessions as serializable dicts with process trees."""

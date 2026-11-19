@@ -179,8 +179,6 @@ class PsutilProcessCollector(BaseCollector):
         while True:
             snapshot = await asyncio.to_thread(self._snapshot, psutil)
             current_pids = set(snapshot)
-            streaming = getattr(self._sink, "streams_observations", False) is True
-            samples = []
 
             # Surface registry-load failures (classification kill-switch)
             # through the collector status + data-quality plumbing.
@@ -190,10 +188,7 @@ class PsutilProcessCollector(BaseCollector):
             try:
                 per_core = psutil.cpu_percent(interval=0, percpu=True)
                 for i, pct in enumerate(per_core):
-                    if streaming:
-                        samples.append((M("system.cpu.utilization"), pct / 100, {"cpu.id": str(i)}))
-                    else:
-                        self.sink_emit_cpu(M("system.cpu.utilization"), pct / 100, {"cpu.id": str(i)})
+                    self.sink_emit_cpu(M("system.cpu.utilization"), pct / 100, {"cpu.id": str(i)})
             except (psutil.Error, OSError):
                 pass
 
@@ -213,13 +208,6 @@ class PsutilProcessCollector(BaseCollector):
                 match = self._classified.get((pid, proc.name)) or classify_process(proc)
                 if match.tool:
                     ptags["aictl.tool"] = match.tool
-                if streaming:
-                    if cpu_pct is not None:
-                        samples.append((M("process.cpu.utilization"), cpu_pct / 100, ptags))
-                    if mem_rss is not None:
-                        samples.append((M("process.memory.usage"), float(mem_rss), ptags))
-                    samples.append((M("process.thread.count"), float(sample["child_count"]), ptags))
-                    continue
                 if cpu_pct is not None:
                     self.sink_emit_cpu(M("process.cpu.utilization"), cpu_pct / 100, ptags)
                 if mem_rss is not None:
@@ -237,8 +225,8 @@ class PsutilProcessCollector(BaseCollector):
 
             if self.correlator:
                 self.correlator.on_process_snapshot(len(current_pids))
-            if streaming and samples:
-                await self.sink_flush_batch(samples)
+            if self._pending_samples:
+                await self.sink_flush_batch()
             await self.sleep_paced(self.config.process_interval)
 
     async def _report_classification_health(self) -> None:

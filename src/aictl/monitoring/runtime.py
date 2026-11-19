@@ -64,19 +64,10 @@ class DiscoveryCollector(BaseCollector):
             detail=f"Scanning {self._root} every {self._interval}s",
         )
 
-        streaming = getattr(self._sink, "streams_observations", False) is True
-        samples = []
-
-        def emit(metric, value, tags, *, gauge=False):
-            if streaming:
-                samples.append((metric, value, tags))
-            else:
-                self.sink_emit_if_changed(metric, value, tags, gauge=gauge)
-
+        emit = self.sink_emit_if_changed
         while True:
             discovered = await asyncio.to_thread(discover_all, self._root, include_processes=self._include_processes)
             self._latest = discovered
-            samples.clear()
             for tool_res in discovered:
                 tool = tool_res.tool
                 if tool == "aictl":
@@ -88,7 +79,7 @@ class DiscoveryCollector(BaseCollector):
                 emit(_M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, gauge=True)
                 emit(_M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, gauge=True)
 
-                for f in tool_res.files if streaming else files_to_sample(tool_res.files):
+                for f in files_to_sample(tool_res.files):
                     ftags = {
                         "aictl.tool": tool,
                         "file.path": f.path,
@@ -104,8 +95,9 @@ class DiscoveryCollector(BaseCollector):
                     if mname:
                         emit(_M("aictl.mcp.status"), 1.0 if m.get("status") == "running" else 0.0, {"aictl.tool": tool, "aictl.mcp.server": mname}, gauge=True)
 
-            if streaming and samples:
-                await self.sink_flush_batch(samples)
+            # One producer batch per scan in Kusto mode, holding only the changed samples.
+            if self._pending_samples:
+                await self.sink_flush_batch()
             await self.sleep_paced(self._interval)
 
 

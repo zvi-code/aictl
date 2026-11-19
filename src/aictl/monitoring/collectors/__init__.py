@@ -52,13 +52,17 @@ class BaseCollector(ABC):
     def correlator(self) -> SessionCorrelator | None:
         return self._correlator
 
-    def _defer_on_event_loop(self, metric: str, value: float, tags: dict[str, Any] | None) -> bool:
-        """Queue sample with its observation timestamp when streaming on an asyncio loop."""
-        if (
+    def _streams_on_event_loop(self) -> bool:
+        """True when samples must be queued here and sent off the event loop as one Kusto batch."""
+        return (
             self._sink is not None
             and getattr(self._sink, "streams_observations", False) is True
             and asyncio._get_running_loop() is not None
-        ):
+        )
+
+    def _defer_on_event_loop(self, metric: str, value: float, tags: dict[str, Any] | None) -> bool:
+        """Queue sample with its observation timestamp when streaming on an asyncio loop."""
+        if self._streams_on_event_loop():
             self._pending_samples.append((metric, value, tags, time.time()))
             return True
         return False
@@ -74,17 +78,28 @@ class BaseCollector(ABC):
         self, metric: str, value: float, tags: dict[str, Any] | None = None, *, gauge: bool = False
     ) -> None:
         """Emit only if value changed (skip DB write for unchanged)."""
-        if self._sink is not None:
-            if self._defer_on_event_loop(metric, value, tags):
-                return
-            self._sink.emit_if_changed(metric, value, tags, gauge=gauge)
+        if self._sink is None:
+            return
+        if self._streams_on_event_loop():
+            ts = time.time()
+            if self._sink.admit_if_changed(metric, value, tags, ts, gauge=gauge):
+                self._pending_samples.append((metric, value, tags, ts))
+            return
+        self._sink.emit_if_changed(metric, value, tags, gauge=gauge)
+
+    def _sink_emit_sensitive(self, metric: str, value: float, tags: dict[str, Any] | None, **limits: Any) -> None:
+        if self._streams_on_event_loop():
+            ts = time.time()
+            admitted = self._sink.admit_with_sensitivity(metric, value, tags, ts, **limits)
+            if admitted is not None:
+                self._pending_samples.append((metric, admitted, tags, ts))
+            return
+        self._sink.emit_with_sensitivity(metric, value, tags, **limits)
 
     def sink_emit_cpu(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit CPU metric with sensitivity (ratio 0-1, rounded to 0.1%)."""
         if self._sink is not None:
-            if self._defer_on_event_loop(metric, value, tags):
-                return
-            self._sink.emit_with_sensitivity(
+            self._sink_emit_sensitive(
                 metric,
                 value,
                 tags,
@@ -96,14 +111,9 @@ class BaseCollector(ABC):
     def sink_emit_memory(self, metric: str, value: float, tags: dict[str, Any] | None = None) -> None:
         """Emit memory metric with sensitivity (bytes, rounded to 64KB)."""
         if self._sink is not None:
-            if getattr(self._sink, "streams_observations", False) is True:
-                if self._defer_on_event_loop(metric, value, tags):
-                    return
-                self._sink.emit(metric, value, tags)
-                return
             # Round to nearest 64KB
             rounded = round(value / 65536) * 65536
-            self._sink.emit_with_sensitivity(
+            self._sink_emit_sensitive(
                 metric,
                 rounded,
                 tags,
