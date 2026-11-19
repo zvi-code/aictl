@@ -91,6 +91,50 @@ describe('node scope across the board', () => {
     expect(data.store.ingestion_capacity).toMatchObject({ total: 12, available: 0 });
     expect(data.node_report.contributors).toEqual(['a', 'b']);
   });
+
+  it('uses the live monitor counts even when there are no historical agent records', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const own = { node_id: 'local-only', activity_at: now, active_sessions: 6, active_processes: 15,
+        agents: { captured_at: now, total: 1, rows: [
+          { session_id: 'live-only', running: true, status: 'unknown', tool: 'copilot-cli' },
+        ] } };
+      const peer = { node_id: 'node-a', activity_at: now, active_sessions: 9, active_processes: 25, agents: null };
+      const ui = mount('?scope=fleet', (q, _opts, path = ENDPOINT) => {
+        if (path === ENDPOINT && q.view === 'runtime') return json(envelope(q, { generated_at: now, rows: q.scope === 'fleet' ? [own, peer] : [peer] }));
+        if (path === '/api/board') {
+          return json({ ...boardFixture(), ...nodeContract(q), agents: [], kpis: { running: 0 },
+            scope: { shown_agents: 0, all_agents: 0 }, by_node: [{ node_id: 'node-a', agents: 0 }] });
+        }
+      });
+      const kpi = ui.getByRole('link', { name: /Monitored sessions/ });
+      await waitFor(() => expect(kpi.querySelector('.bd-v')).toHaveTextContent(/^15$/));
+      const agents = within(ui.container.querySelector('#p-agentsT'));
+      expect(agents.getByText(/Agent lists reported by 1 of 2 nodes/)).toBeVisible();
+      expect(agents.getByRole('columnheader', { name: /^Node\b/ })).toBeVisible();
+      expect(agents.getByRole('row', { name: /Monitored session.*local-only/ })).toBeVisible();
+      expect(ui.queryByRole('table', { name: 'Agents by node' })).toBeNull();
+      expect(ui.getByText(/No historical agent records in the selected time range/)).toBeVisible();
+      fireEvent.click(picker(ui));
+      fireEvent.click(await within(ui.getByRole('group', { name: 'Choose node scope' })).findByRole('button', { name: 'node-a', exact: true }));
+      await waitFor(() => expect(kpi.querySelector('.bd-v')).toHaveTextContent(/^9$/));
+      expect(agents.getByText(/Agent lists reported by 0 of 1 node/)).toBeVisible();
+      expect(agents.queryByText('Monitored session', { exact: true })).toBeNull();
+  }, 15000);
+
+  it('uses the local Health monitor for the Sessions and Processes cells', async () => {
+      const at = Date.now() / 1000;
+      const ui = mount('?screen=health', (_q, _opts, path) => path === '/api/board/health'
+        ? json({ generated_at: at, pipeline: { self: { pid: 7 } }, resources: {
+          host: { node_id: 'local-only', activity_at: at - 5, active_sessions: 4, active_processes: 16,
+            inbound_bps: 2048, outbound_bps: 0 },
+          daemon: { cpu_percent: 8, rss_bytes: 4096 },
+        } }) : undefined);
+      const table = await ui.findByRole('table', { name: 'Reported node runtime' });
+      const row = within(table).getByRole('row', { name: /^local-only/ });
+      expect(within(row).getAllByRole('cell').map(cell => cell.textContent).slice(3, 5)).toEqual(['4', '16']);
+      const traffic = ui.getByRole('table', { name: 'Reported node network traffic' });
+      expect(within(traffic).getAllByRole('cell').map(cell => cell.textContent).slice(1)).toEqual(['2 KB/s', '0 B/s']);
+  });
   it('keeps the same Settings workspace and pivot while dropping local file data', async () => {
     const ui = mount('?tab=config&scope=project-local&pivot=files&row=%2Flocal%2Fprivate.json', (q, _opts, path = ENDPOINT) => {
       if (path !== ENDPOINT) return undefined;
@@ -105,7 +149,7 @@ describe('node scope across the board', () => {
     fireEvent.click(picker(ui));
     await ui.findByText('Fleet history requires a shared Kusto store.');
     fireEvent.click(ui.getByRole('button', { name: 'All nodes', exact: true }));
-    await ui.findByRole('alert');
+    await ui.findByText('Tool configuration files and policy findings are not reported for this scope.');
     expect(query()).toMatchObject({ scope: 'fleet', screen: 'settings' });
     expect(query().row).toBeUndefined();
     expect(ui.calls.find(c => c.path === '/api/settings/files').signal.aborted).toBe(true);
@@ -125,19 +169,20 @@ describe('node scope across the board', () => {
     const ui = mount('?scope=fleet&range=custom&since=1000&until=2000&project=local-project');
     expect((await ui.findAllByText('Fix retry logic')).length).toBeGreaterThan(0);
     expect(ui.container.querySelector('#p-agentsT')).toBeTruthy();
-    expect(await ui.findByRole('table', { name: 'Usage by node' })).toHaveTextContent('node-b');
     expect(ui.container).toHaveTextContent('Historical fleet data');
     expect(ui.container).not.toHaveTextContent('Reading the context files...');
     expect(ui.container).not.toHaveTextContent('Reading the settings...');
-    expect(await ui.findByRole('table', { name: 'Context inventory by node' })).toHaveTextContent('node-a');
     const inventory = within(ui.container.querySelector('#p-inventory'));
-    fireEvent.click(inventory.getByRole('button', { name: 'node-b', exact: true }));
-    expect(inventory.getByText('node-b-file')).toBeVisible();
-    expect(inventory.queryByText('node-a-file')).toBeNull();
+    expect(await inventory.findByText('node-b-file')).toBeVisible();
+    expect(inventory.getByText('node-a-file')).toBeVisible();
+    expect(inventory.getByRole('columnheader', { name: /^Node\b/ })).toBeVisible();
+    expect(inventory.queryByRole('button', { name: 'node-b', exact: true })).toBeNull();
     fireEvent.click(inventory.getByText('node-b-file'));
     expect(ui.calls.some(c => c.path === '/api/file')).toBe(false);
     expect(ui.container).toHaveTextContent('Settings files and local policy findings are available only on This node.');
-    expect(ui.container).toHaveTextContent('Reported daemon settings');
+    for (const name of ['Usage by node', 'Context inventory by node', 'Reported daemon settings', 'Reported node network traffic']) {
+      expect(ui.queryByRole('table', { name })).toBeNull();
+    }
     const fleetBoard = ui.calls.find(c => c.path === '/api/board' && c.q.scope === 'fleet');
     expect(fleetBoard.q).toMatchObject({ scope: 'fleet', since: '1000', until: '2000', project: 'local-project' });
     fireEvent.click(picker(ui));
@@ -148,6 +193,9 @@ describe('node scope across the board', () => {
       && c.q.scope === 'node' && c.q.node_id === 'node-a')).toBe(true));
     expect(ui.container.querySelector('#p-agentsT')).toBeTruthy();
     expect(ui.container).toHaveTextContent('Historical node-a data');
+    expect(await inventory.findByText('node-a-file')).toBeVisible();
+    expect(inventory.queryByText('node-b-file')).toBeNull();
+    expect(inventory.getByRole('columnheader', { name: /^Node\b/ })).toBeVisible();
     window.history.back();
     await waitFor(() => expect(picker(ui)).toHaveTextContent('All nodes'));
     expect(ui.container.querySelector('#p-agentsT')).toBeTruthy();
@@ -155,8 +203,8 @@ describe('node scope across the board', () => {
 
   it('keeps the normal Health sidebar and measured panels on the fleet and named Health URLs', async () => {
       const now = Math.floor(Date.now() / 1000);
-      const node = (node_id, cpu_percent, daemon_pid) => ({ node_id, cpu_percent, daemon_pid, captured_at: now,
-        status: 'reported', active_sessions: 3, active_processes: 7, memory_total_mb: 8192, memory_used_mb: 1024 });
+      const node = (node_id, cpu_percent, daemon_pid) => ({ node_id, cpu_percent, daemon_pid, captured_at: now, activity_at: now,
+        status: 'reported', active_sessions: 3, active_processes: 7, inbound_bps: daemon_pid, memory_total_mb: 8192, memory_used_mb: 1024 });
       const local = node('local-only', 21, 100), peer = node('node-a', 37, 200);
       const shared = { scope: 'shared', database: 'fleet-db', cluster: 'fleet.example', capacity_total: 12, capacity_available: 0,
         capacity_checked_at: now, capacity_status: 'cached' };
@@ -179,6 +227,9 @@ describe('node scope across the board', () => {
       expect(ui.getByRole('heading', { name: 'Traffic by destination' })).toBeVisible();
       expect(ui.getByRole('table', { name: 'Measured tables' })).toHaveTextContent('metrics');
       expect(ui.getByRole('table', { name: 'Reported node runtime' })).toHaveTextContent('37%');
+      const traffic = ui.getByRole('table', { name: 'Reported node network traffic' });
+      expect(traffic).toHaveTextContent('100 B/s');
+      expect(traffic).toHaveTextContent('200 B/s');
       expect(ui.container).toHaveTextContent('1 of 2 nodes');
       fireEvent.click(ui.getByLabelText('Show all metrics'));
       expect(ui.getByRole('table', { name: 'Destination traffic by physical ingestion mode' })).toBeVisible();
@@ -187,11 +238,14 @@ describe('node scope across the board', () => {
       await waitFor(() => expect(ui.getByRole('table', { name: 'Reported node runtime' })).toHaveTextContent('node-a'));
       expect(ui.getByLabelText('Show all metrics')).toBeChecked();
       expect(ui.getByRole('table', { name: 'Reported node runtime' })).not.toHaveTextContent('local-only');
+      const rates = within(ui.getByRole('table', { name: 'Reported node network traffic' }))
+        .getAllByRole('cell').map(cell => cell.textContent).slice(1);
+      expect(rates).toEqual(['200 B/s', '—']);
       expect(ui.container).not.toHaveTextContent('983 rows/s');
       fireEvent.click(ui.getByLabelText('Show all metrics'));
       expect(ui.getByRole('heading', { name: 'Live activity' })).toBeVisible();
       expect(ui.getByText('Streaming ingestion', { exact: true })).toBeVisible();
-      expect(ui.container).toHaveTextContent('3 active sessions');
+      expect(ui.container).toHaveTextContent('3 monitored sessions');
       expect(ui.getByRole('table', { name: 'Measured tables' })).toHaveTextContent('metrics');
       expect(ui.container).toHaveTextContent('0 / 12');
       expect(ui.getByRole('navigation', { name: 'Sections of this screen' })).toHaveTextContent('Changes and testing');
@@ -274,7 +328,7 @@ describe('node scope across the board', () => {
     choose(ui, 'All nodes');
     expect((await ui.findAllByText('Fix retry logic')).length).toBeGreaterThan(0);
     expect(ui.container.querySelector('#p-agentsT')).toBeTruthy();
-    expect(ui.getByRole('table', { name: 'Usage by node' })).toHaveTextContent('node-a');
+    expect(within(area.querySelector('#p-agentsT')).getByRole('columnheader', { name: /^Node\b/ })).toBeVisible();
     expect(ui.container.querySelector('#main-area')).toBe(area);
     expect([...area.querySelectorAll('.bd-panel')].every((p, i) => p === panels[i])).toBe(true);
     expect(within(processControls).getByRole('button', { name: 'Tree' })).toHaveAttribute('aria-pressed', 'true');
@@ -292,15 +346,19 @@ describe('node scope across the board', () => {
 
   it('does not attach live CPU, RAM or counters to a previous daemon PID', () => {
     const report = { scope: 'fleet', generated_at: 100, local_node: { node_id: 'node-a' },
-      rows: [{ node_id: 'node-a', daemon_pid: 11, status: 'reported' }],
+      rows: [{ node_id: 'node-a', daemon_pid: 11, activity_at: 97, status: 'reported', inbound_bps: 7 }],
       shared_kusto: { cluster: 'fleet.example', database: 'fleet-db' } };
     const live = { store: { kind: 'kusto', cluster_url: 'https://fleet.example', database: 'fleet-db', reads: { total: 25 } },
-      pipeline: { self: { pid: 22 } }, resources: { daemon: { cpu_percent: 28, rss_bytes: 555 } } };
+      pipeline: { self: { pid: 22 } }, resources: {
+        daemon: { cpu_percent: 28, rss_bytes: 555 }, host: { activity_at: 98, inbound_bps: 12, outbound_bps: 0 },
+      } };
     const mismatch = scopedHealth(report, live);
-    expect(mismatch.node_report.rows[0]).toMatchObject({ daemon_pid: 11, daemon: undefined });
+    expect(mismatch.node_report.rows[0]).toMatchObject({ daemon_pid: 11, daemon: undefined, inbound_bps: 7 });
     expect(mismatch.node_report.contributors).toEqual([]);
     report.rows[0].daemon_pid = 22;
-    expect(scopedHealth(report, live).node_report.rows[0].daemon.cpu_percent).toBe(28);
+    expect(scopedHealth(report, live).node_report.rows[0]).toMatchObject({
+      daemon: { cpu_percent: 28 }, inbound_bps: 12, outbound_bps: 0, activity_at: 98,
+    });
   });
 
   it('does not mount the normal board for an invalid node scope', async () => {

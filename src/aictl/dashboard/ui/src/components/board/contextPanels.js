@@ -19,6 +19,10 @@ const WAITING = 'Reading the context files...';
 const noneText = (c, text) => (c.loaded ? c.unavailable || text : WAITING);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
 const TOP_SERIES = 5;
+const nodeText = (row, ctx) => row.node_id === 'legacy' ? 'Untagged history' : row.node_id || ctx.localNode || 'This node';
+const contextKey = (row, key) => JSON.stringify([row.node_id ?? null, key]);
+const toolKey = row => contextKey(row, row.tool);
+const nodeColumn = ctx => ctx.nodeScope ? [{ k: 'node', l: 'Node', w: '140px' }] : [];
 
 export const POLICIES = [
   { id: 'yes', label: 'Sent to the model', c: 'var(--s1)' },
@@ -47,7 +51,10 @@ function readText(path) {
 
 /** The text of one file, rendered when it is Markdown, with a way to open it in the drawer. */
 export function Preview({ path, ctx, onClose }) {
-  if (ctx.remote) return html`<p class="bd-note">${path} · Recorded file metadata. File contents can only be opened on This node.</p>`;
+  if (ctx.remote) return html`<div class="bd-prev" role="region" aria-label=${'Preview of ' + path}>
+    <div class="bd-prevh"><span class="bd-mono">${path}</span><span class="bd-sp"></span>
+    ${onClose && html`<button type="button" class="bd-ib-btn" aria-label="Close the preview" onClick=${onClose}><${Ico} d=${PATHS.close}/></button>`}</div>
+    <p class="bd-note">Recorded metadata only. File contents are available on This node.</p></div>`;
   return html`<${LocalPreview} path=${path} ctx=${ctx} onClose=${onClose}/>`;
 }
 
@@ -93,7 +100,7 @@ function BudgetRow({ b, ctx }) {
   const [open, setOpen] = useState(false);
   const def = useMemo(() => projectsDef(b), [b]);
   const level = shareLevel(b.always_share);
-  const label = b.label || ctx.toolName(b.tool);
+  const label = (b.label || ctx.toolName(b.tool)) + (b.node_id ? ' · ' + nodeText(b, ctx) : '');
   const windowText = fmtN(b.window) + ' token window' + (b.window_assumed ? ' (assumed)' : '');
   const modelTitle = b.model
     ? b.model + (b.model_from ? ', from ' + b.model_from : '') + (b.window_assumed ? '. Its window is not known, so 200 k is assumed.' : '')
@@ -121,7 +128,7 @@ function BudgetRow({ b, ctx }) {
 
 function BudgetView({ rows, none, ctx }) {
   if (!rows.length) return html`<div class="bd-empty">${none}</div>`;
-  return html`<div class="bd-buds">${rows.map(b => html`<${BudgetRow} key=${b.tool} b=${b} ctx=${ctx}/>`)}</div>`;
+  return html`<div class="bd-buds">${rows.map(b => html`<${BudgetRow} key=${toolKey(b)} b=${b} ctx=${ctx}/>`)}</div>`;
 }
 
 function panelBudget(ctx) {
@@ -140,11 +147,11 @@ function panelBudget(ctx) {
 
 function fileDef(list, ctx, go) {
   return {
-    cols: [{ k: 'n', l: 'File' }, { k: 'sc', l: 'Scope', w: '70px' }, { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 's', l: 'Sent', w: '86px', t: 'Sent to the model' }],
+    cols: [{ k: 'n', l: 'File' }, ...nodeColumn(ctx), { k: 'sc', l: 'Scope', w: '70px' }, { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 's', l: 'Sent', w: '86px', t: 'Sent to the model' }],
     rows: list.map(f => ({
-      id: f.path, go: () => go(f.path),
-      sort: { n: f.name, sc: f.scope, sz: f.size, t: f.tokens, s: f.policy },
-      cells: { n: { v: f.name, title: f.path }, sc: { v: f.scope || NA, cls: 'dim' }, sz: { v: fmtBytes(f.size) }, t: { v: fmtN(f.tokens) }, s: { v: SENT_LABEL[f.policy] || NA, cls: f.policy === 'no' ? 'dim' : '', title: 'sent_to_llm: ' + (f.sent_to_llm || 'not set') } },
+      id: contextKey(f, f.path), go: () => go(f.path),
+      sort: { n: f.name, node: nodeText(f, ctx), sc: f.scope, sz: f.size, t: f.tokens, s: f.policy },
+      cells: { n: { v: f.name, title: f.path }, node: { v: nodeText(f, ctx) }, sc: { v: f.scope || NA, cls: 'dim' }, sz: { v: fmtBytes(f.size) }, t: { v: fmtN(f.tokens) }, s: { v: SENT_LABEL[f.policy] || NA, cls: f.policy === 'no' ? 'dim' : '', title: 'sent_to_llm: ' + (f.sent_to_llm || 'not set') } },
     })),
     sort: { k: 't', dir: 'desc' }, limit: 50, none: 'No files of this kind.',
   };
@@ -153,26 +160,27 @@ function fileDef(list, ctx, go) {
 function SplitView({ cats, files, none, ctx }) {
   const [pick, setPick] = useState(null);
   const [path, setPath] = useState(null);
-  const picked = pick && files.find(f => f.tool === pick.tool);
+  const picked = pick && files.find(f => toolKey(f) === pick.tool);
   const list = useMemo(() => (picked ? picked.files.filter(f => f.kind === pick.kind) : []), [picked, pick]);
   const def = useMemo(() => fileDef(list, ctx, p => setPath(cur => (cur === p ? null : p))), [list, ctx]);
   if (!cats.length) return html`<div class="bd-empty">${none}</div>`;
   const choose = (tool, kind) => { setPath(null); setPick(pick && pick.tool === tool && pick.kind === kind ? null : { tool, kind }); };
   return html`<div class="bd-splits">
     ${cats.map((c) => {
-      const label = c.label || ctx.toolName(c.tool);
-      return html`<div key=${c.tool} class="bd-split">
+      const label = (c.label || ctx.toolName(c.tool)) + (c.node_id ? ' · ' + nodeText(c, ctx) : '');
+      const key = toolKey(c);
+      return html`<div key=${key} class="bd-split">
         <div class="bd-budh"><i class="bd-sw" style=${{ background: colorFor('tool', c.tool) }}></i><b>${label}</b>
           <span class="bd-dim">${fmtN(c.sent) + ' sent, ' + fmtN(c.never_sent) + ' never sent'}</span></div>
         <div class="bd-splitbar">${c.kinds.filter(k => k.tokens > 0).map((k) => {
-          const on = pick && pick.tool === c.tool && pick.kind === k.kind;
+          const on = pick && pick.tool === key && pick.kind === k.kind;
           const text = k.kind + ': ' + fmtN(k.tokens) + ' tokens in ' + k.files + ' files, ' + fmtN(k.sent) + ' sent, ' + fmtN(k.never_sent) + ' never sent';
-          return html`<button key=${k.kind} type="button" class="bd-splitseg" style=${{ flex: k.tokens + ' 1 0' }} title=${text} aria-label=${label + ', ' + text + '. Show the files'} aria-pressed=${on ? 'true' : 'false'} onClick=${() => choose(c.tool, k.kind)}>
+          return html`<button key=${k.kind} type="button" class="bd-splitseg" style=${{ flex: k.tokens + ' 1 0' }} title=${text} aria-label=${label + ', ' + text + '. Show the files'} aria-pressed=${on ? 'true' : 'false'} onClick=${() => choose(key, k.kind)}>
             ${k.sent ? html`<span style=${{ flex: k.sent + ' 1 0', background: colorFor('kind', k.kind) }}></span>` : null}
             ${k.never_sent ? html`<span class="bd-never" style=${{ flex: k.never_sent + ' 1 0', background: colorFor('kind', k.kind) }}></span>` : null}
           </button>`;
         })}</div>
-        <div class="bd-legend">${c.kinds.map(k => html`<button key=${k.kind} type="button" aria-pressed=${pick && pick.tool === c.tool && pick.kind === k.kind ? 'true' : 'false'} title=${'Show the ' + k.kind + ' files'} onClick=${() => choose(c.tool, k.kind)}><i class="bd-sw" style=${{ background: colorFor('kind', k.kind) }}></i>${k.kind} <em>${fmtN(k.tokens)}</em></button>`)}</div>
+        <div class="bd-legend">${c.kinds.map(k => html`<button key=${k.kind} type="button" aria-pressed=${pick && pick.tool === key && pick.kind === k.kind ? 'true' : 'false'} title=${'Show the ' + k.kind + ' files'} onClick=${() => choose(key, k.kind)}><i class="bd-sw" style=${{ background: colorFor('kind', k.kind) }}></i>${k.kind} <em>${fmtN(k.tokens)}</em></button>`)}</div>
       </div>`;
     })}
     <div class="bd-legend bd-key"><span class="bd-li"><i class="bd-sw" style="background:var(--ink2)"></i>Sent to the model</span><span class="bd-li"><i class="bd-sw bd-never" style="background:var(--ink2)"></i>Never sent</span></div>
@@ -303,11 +311,21 @@ function MemoryView({ mem, none, ctx }) {
   const groups = useMemo(() => memoryGroups(mem.entries), [mem.entries]);
   const growth = mem.growth;
   const range = useMemo(() => {
-    const starts = growth.map(g => g.ts);
+    const starts = [...new Set(growth.map(g => g.ts))].sort((a, b) => a - b);
     const step = starts.length > 1 ? (starts[starts.length - 1] - starts[0]) / (starts.length - 1) : 60;
     return { bucket_starts: starts, bucket_s: step };
   }, [growth]);
-  const series = useMemo(() => [{ label: 'Memory tokens', c: 'var(--s1)', vals: growth.map(g => g.mem_tokens) }], [growth]);
+  const series = useMemo(() => {
+    const samples = new Map();
+    for (const point of growth) {
+      const name = point.node_id ? nodeText(point, ctx) : 'Memory tokens';
+      if (!samples.has(name)) samples.set(name, new Map());
+      samples.get(name).set(point.ts, point.mem_tokens);
+    }
+    return [...samples].map(([label, points], i) => ({
+      label, c: ITEM_COLORS[i % ITEM_COLORS.length], vals: range.bucket_starts.map(ts => points.get(ts) ?? null),
+    }));
+  }, [growth, range, ctx.localNode]);
   const isOpen = (k, def) => (open[k] === undefined ? def : open[k]);
   const toggle = (k, def) => setOpen(o => ({ ...o, [k]: !isOpen(k, def) }));
   const nowS = ctx.nowS;
@@ -323,13 +341,13 @@ function MemoryView({ mem, none, ctx }) {
           const pOpen = isOpen(pk, p.items.length <= 5);
           return html`<div key=${p.profile} class="bd-mp">
             <button type="button" class="bd-mgh bd-mph" aria-expanded=${pOpen ? 'true' : 'false'} title=${p.profile} onClick=${() => toggle(pk, p.items.length <= 5)}>${fold(pOpen, p.profile || 'No profile')}<span class="bd-ct">${p.items.length + ' files, ' + fmtN(p.tokens) + ' tokens'}</span></button>
-            ${pOpen ? p.items.map(m => html`<div key=${m.file} class="bd-mitem">
-              <button type="button" class="bd-mrow" aria-expanded=${path === m.file ? 'true' : 'false'} title=${m.file} onClick=${() => setPath(path === m.file ? null : m.file)}>
+            ${pOpen ? p.items.map(m => html`<div key=${contextKey(m, m.file)} class="bd-mitem">
+              <button type="button" class="bd-mrow" aria-expanded=${path === contextKey(m, m.file) ? 'true' : 'false'} title=${m.file} onClick=${() => setPath(path === contextKey(m, m.file) ? null : contextKey(m, m.file))}>
                 <span class="bd-st"><i style=${{ background: m.recent ? 'var(--good)' : 'var(--line2)' }} title=${m.recent ? 'Changed in the last 5 min' : 'No change in the last 5 min'}></i></span>
-                <span class="bd-mname">${m.name}</span>
+                <span class="bd-mname">${m.name}${m.node_id ? ' · ' + nodeText(m, ctx) : ''}</span>
                 <span class="bd-ct">${fmtN(m.tokens) + ' tokens, ' + fmtN(m.lines) + ' lines' + (m.mtime ? ', ' + ago(m.mtime, nowS) : '')}</span>
               </button>
-              ${path === m.file ? html`<${Preview} path=${m.file} ctx=${ctx} onClose=${() => setPath(null)}/>` : null}
+              ${path === contextKey(m, m.file) ? html`<${Preview} path=${m.file} ctx=${ctx} onClose=${() => setPath(null)}/>` : null}
             </div>`) : null}
           </div>`;
         }) : null}
@@ -344,7 +362,8 @@ function panelMemory(ctx) {
   return {
     sub: mem.entries.length + ' memory files, ' + fmtN(mem.tokens) + (ctx.remote ? ' tokens · recorded inventory' : ' tokens. Click a file to read it'),
     view: { C: MemoryView, props: { mem, none: noneText(c, 'No agent memory found.') } },
-    note: (ctx.remote ? 'Files follow the Tool filter. The memory trend is for this host.' : 'Memory is not split by tool, so the Tool filter does not apply here.') + (mem.growth.length >= 2 ? ' The chart is the memory size since ' + stamp(mem.growth[0].ts, true) + ', as far back as the history goes within the last 7 days.' : ''),
+    note: ctx.remote ? 'Files follow the Tool filter. Each trend is from its reporting node; missing samples are gaps.'
+      : 'Memory is not split by tool, so the Tool filter does not apply here.' + (mem.growth.length >= 2 ? ' The chart is the memory size since ' + stamp(mem.growth[0].ts, true) + ', as far back as the history goes within the last 7 days.' : ''),
   };
 }
 
@@ -362,14 +381,16 @@ function InventoryView({ c, group, ctx }) {
   const [path, setPath] = useState(null);
   const [folded, setFolded] = useState({});
   const nowS = ctx.nowS;
+  const all = useMemo(() => c.files.flatMap(t => t.files), [c.files]);
+  const selected = all.find(f => contextKey(f, [f.tool, f.path]) === path);
   const def = useMemo(() => {
-    const all = c.files.flatMap(t => t.files);
     const keyOf = f => (group === 'kind' ? f.kind : group === 'tool' ? ctx.toolName(f.tool) : null);
     const rows = all.map(f => ({
-      id: f.tool + '|' + f.path, groupKey: keyOf(f), go: () => setPath(p => (p === f.path ? null : f.path)),
-      sort: { n: f.name, tool: f.tool, kind: f.kind, sc: f.scope, sz: f.size, t: f.tokens, s: f.policy, w: f.loaded_when, ch: f.mtime, ses: (f.sessions || []).length },
+      id: contextKey(f, [f.tool, f.path]), groupKey: keyOf(f), go: () => setPath(p => (p === contextKey(f, [f.tool, f.path]) ? null : contextKey(f, [f.tool, f.path]))),
+      sort: { n: f.name, node: nodeText(f, ctx), tool: f.tool, kind: f.kind, sc: f.scope, sz: f.size, t: f.tokens, s: f.policy, w: f.loaded_when, ch: f.mtime, ses: (f.sessions || []).length },
       cells: {
         n: { v: f.name, title: f.path + (f.recent ? '\nChanged in the last 5 min' : ''), dot: f.recent ? 'var(--good)' : 'var(--line2)' },
+        node: { v: nodeText(f, ctx), cls: 'dim' },
         tool: { v: ctx.toolName(f.tool), cls: 'dim' }, kind: { v: f.kind, cls: 'dim' }, sc: { v: f.scope || NA, cls: 'dim', title: (f.scope || NA) + (f.project ? ', project ' + f.project : '') },
         sz: { v: fmtBytes(f.size) }, t: { v: fmtN(f.tokens) },
         s: { v: SENT_LABEL[f.policy] || NA, cls: f.policy === 'no' ? 'dim' : '', title: 'sent_to_llm: ' + (f.sent_to_llm || 'not set') + (f.load ? '. Loads: ' + LOAD_LABEL[f.load] : '') },
@@ -393,18 +414,18 @@ function InventoryView({ c, group, ctx }) {
     };
     return {
       cols: [
-        { k: 'n', l: 'File', w: '220px' }, { k: 'tool', l: 'Tool', w: '104px' }, { k: 'kind', l: 'Kind', w: '92px' }, { k: 'sc', l: 'Scope', w: '70px' },
+        { k: 'n', l: 'File', w: '220px' }, ...nodeColumn(ctx), { k: 'tool', l: 'Tool', w: '104px' }, { k: 'kind', l: 'Kind', w: '92px' }, { k: 'sc', l: 'Scope', w: '70px' },
         { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 's', l: 'Sent to model', w: '100px' },
         { k: 'w', l: 'Loaded when', w: '120px' }, { k: 'ch', l: 'Changed', n: true, w: '84px', t: 'A green dot: changed in the last 5 min' },
         { k: 'ses', l: 'Sessions', n: true, w: '76px', t: 'Live sessions that work in the file\'s folder or below it, so the file can affect them' },
       ],
       rows, groupRow, sort: { k: 't', dir: 'desc' }, limit: 200, none: noneText(c, 'No files found for these tools.'),
     };
-  }, [c, group, folded, nowS, ctx]);
+  }, [all, c, group, folded, nowS, ctx]);
   const cut = c.files.filter(t => t.truncated);
   return html`<${Table} def=${def} label="Files each tool reads"/>
-    ${cut.length ? html`<div class="bd-note">${cut.map(t => (t.label || ctx.toolName(t.tool)) + ' has ' + fmtN(t.count) + ' files; the largest ' + fmtN(t.files.length) + ' are listed').join('. ')}.</div>` : null}
-    ${path ? html`<${Preview} key=${path} path=${path} ctx=${ctx} onClose=${() => setPath(null)}/>` : null}`;
+    ${cut.length ? html`<div class="bd-note">${cut.map(t => (t.label || ctx.toolName(t.tool)) + (t.node_id ? ' · ' + nodeText(t, ctx) : '') + ' has ' + fmtN(t.count) + ' files; the largest ' + fmtN(t.files.length) + ' are listed').join('. ')}.</div>` : null}
+    ${selected ? html`<${Preview} key=${path} path=${selected.path} ctx=${ctx} onClose=${() => setPath(null)}/>` : null}`;
 }
 
 function panelInventory(ctx, local) {
@@ -461,9 +482,9 @@ function panelDailyModels(ctx, local) {
   const series = dailySeries(d, key);
   const rows = d.rows.map((r, i) => ({
     id: r.date + '|' + (r.model || '') + '|' + i,
-    sort: { d: r.date, m: r.model, n: r.requests, i: r.input, o: r.output, cr: r.cache_read, cw: r.cache_write, t: r.tokens, c: r.cost_usd },
+    sort: { d: r.date, node: nodeText(r, ctx), m: r.model, n: r.requests, i: r.input, o: r.output, cr: r.cache_read, cw: r.cache_write, t: r.tokens, c: r.cost_usd },
     cells: {
-      d: { v: dayText(r.date), title: r.date }, m: { v: r.model || NO_MODEL, sw: colorFor('model', r.model || NO_MODEL) }, n: { v: fmtN(r.requests) },
+      d: { v: dayText(r.date), title: r.date }, node: { v: nodeText(r, ctx), cls: 'dim' }, m: { v: r.model || NO_MODEL, sw: colorFor('model', r.model || NO_MODEL) }, n: { v: fmtN(r.requests) },
       i: { v: fmtN(r.input) }, o: { v: fmtN(r.output) }, cr: { v: fmtN(r.cache_read), cls: 'dim' }, cw: { v: fmtN(r.cache_write), cls: 'dim' }, t: { v: fmtN(r.tokens) },
       c: { v: fmtUsd(r.cost_usd), title: r.cost_usd == null ? 'No price is known for this model' : 'List price, not a bill' },
     },
@@ -481,7 +502,7 @@ function panelDailyModels(ctx, local) {
     ],
     chart: d.days.length ? { kind: 'stack', series, unit: by === 'cost' ? 'usd' : 'n', h: 120, range: { bucket_starts: d.days.map(dayStart), bucket_s: 86400 }, aria: 'Daily ' + by + ' by model, last 7 days' } : null,
     table: {
-      cols: [{ k: 'd', l: 'Day', w: '92px' }, { k: 'm', l: 'Model' }, { k: 'n', l: 'Calls', n: true, w: '52px' }, { k: 'i', l: 'Input', n: true, w: '58px' }, { k: 'o', l: 'Output', n: true, w: '58px' }, { k: 'cr', l: 'Cache read', n: true, w: '72px' }, { k: 'cw', l: 'Cache write', n: true, w: '76px' }, { k: 't', l: 'Total', n: true, w: '58px' }, { k: 'c', l: 'Cost', n: true, w: '58px' }],
+      cols: [{ k: 'd', l: 'Day', w: '92px' }, ...nodeColumn(ctx), { k: 'm', l: 'Model' }, { k: 'n', l: 'Calls', n: true, w: '52px' }, { k: 'i', l: 'Input', n: true, w: '58px' }, { k: 'o', l: 'Output', n: true, w: '58px' }, { k: 'cr', l: 'Cache read', n: true, w: '72px' }, { k: 'cw', l: 'Cache write', n: true, w: '76px' }, { k: 't', l: 'Total', n: true, w: '58px' }, { k: 'c', l: 'Cost', n: true, w: '58px' }],
       rows, sort: { k: 'd', dir: 'desc' }, none: noneText(c, 'No model calls in the last 7 days.'),
     },
   };
@@ -494,14 +515,17 @@ const COST_NOTE = { reported: 'reported', estimated: 'estimate' };
 function lifetimeDef(list, ctx, open, setOpen, errOpen, setErrOpen) {
   const rows = [];
   for (const t of list) {
-    const isOpen = !!open[t.tool];
+    const key = toolKey(t);
+    const node = nodeText(t, ctx);
+    const isOpen = !!open[key];
     const reqs = t.by_model.some(m => m.requests != null) ? sumOf(t.by_model.map(m => m.requests)) : null;
     const q = t.quota || {};
     rows.push({
-      id: t.tool,
-      sort: { tool: t.label || t.tool, src: t.source, asof: t.as_of, i: t.input, o: t.output, cr: t.cache_read, cw: t.cache_write, s: t.sessions, msg: t.messages, req: reqs, c: t.cost_usd, pr: t.premium_requests, api: q.api_duration_ms, e: t.errors.length },
+      id: key,
+      sort: { tool: t.label || t.tool, node, src: t.source, asof: t.as_of, i: t.input, o: t.output, cr: t.cache_read, cw: t.cache_write, s: t.sessions, msg: t.messages, req: reqs, c: t.cost_usd, pr: t.premium_requests, api: q.api_duration_ms, e: t.errors.length },
       cells: {
-        tool: { v: t.label || ctx.toolName(t.tool), sw: colorFor('tool', t.tool), foldOn: t.by_model.length > 0, foldSp: !t.by_model.length, foldOpen: isOpen, foldLabel: isOpen ? 'Fold the models' : 'Unfold the models', fold: () => setOpen({ ...open, [t.tool]: !isOpen }) },
+        tool: { v: t.label || ctx.toolName(t.tool), sw: colorFor('tool', t.tool), foldOn: t.by_model.length > 0, foldSp: !t.by_model.length, foldOpen: isOpen, foldLabel: isOpen ? 'Fold the models' : 'Unfold the models', fold: () => setOpen({ ...open, [key]: !isOpen }) },
+        node: { v: node, cls: 'dim' },
         src: { v: t.source || NA, cls: 'dim', sub: t.confidence == null ? '' : Math.round(t.confidence * 100) + '% sure', title: 'Read from ' + (t.source || NA) + (t.token_quality ? '. Tokens: ' + t.token_quality : '') },
         asof: { v: t.as_of || 'Now', cls: 'dim', title: t.as_of ? 'This source is a cache the tool last computed on ' + t.as_of + '. Later usage is not in these totals.' : 'Read from the tool\'s live files' },
         i: { v: fmtN(t.input) }, o: { v: fmtN(t.output) }, cr: { v: fmtN(t.cache_read), cls: 'dim' }, cw: { v: fmtN(t.cache_write), cls: 'dim' },
@@ -510,23 +534,23 @@ function lifetimeDef(list, ctx, open, setOpen, errOpen, setErrOpen) {
         pr: { v: fmtN(t.premium_requests), cls: t.premium_requests ? '' : 'dim', title: 'Premium requests the tool counts against its quota' + (q.current_model ? '. Model: ' + q.current_model : '') },
         api: { v: fmtMs(q.api_duration_ms), cls: 'dim', title: 'Time spent waiting on the model API' + (q.lines_added != null ? '. Code changes: +' + q.lines_added + ' −' + q.lines_removed + ' in ' + q.files_modified + ' files' : '') },
         e: t.errors.length
-          ? { v: t.errors.length + (t.errors.length === 1 ? ' error' : ' errors'), cls: 'lk', go: () => setErrOpen({ ...errOpen, [t.tool]: !errOpen[t.tool] }), title: errOpen[t.tool] ? 'Fold the errors' : 'Show the errors, newest first' }
+          ? { v: t.errors.length + (t.errors.length === 1 ? ' error' : ' errors'), cls: 'lk', go: () => setErrOpen({ ...errOpen, [key]: !errOpen[key] }), title: errOpen[key] ? 'Fold the errors' : 'Show the errors, newest first' }
           : { v: 'None', cls: 'dim' },
       },
     });
     if (isOpen) {
       for (const m of t.by_model) {
         rows.push({
-          id: t.tool + '|' + m.model, parentId: t.tool, level: 1,
+          id: contextKey(t, [t.tool, m.model]), parentId: key, level: 1,
           sort: { tool: m.model, i: m.input, o: m.output, cr: m.cache_read, cw: m.cache_write, req: m.requests, c: m.cost_usd },
-          cells: { tool: { v: m.model, pad: 16, foldSp: true, sw: colorFor('model', m.model) }, i: { v: fmtN(m.input) }, o: { v: fmtN(m.output) }, cr: { v: fmtN(m.cache_read), cls: 'dim' }, cw: { v: fmtN(m.cache_write), cls: 'dim' }, req: { v: fmtN(m.requests) }, c: { v: fmtUsd(m.cost_usd) } },
+          cells: { tool: { v: m.model, pad: 16, foldSp: true, sw: colorFor('model', m.model) }, node: { v: node, cls: 'dim' }, i: { v: fmtN(m.input) }, o: { v: fmtN(m.output) }, cr: { v: fmtN(m.cache_read), cls: 'dim' }, cw: { v: fmtN(m.cache_write), cls: 'dim' }, req: { v: fmtN(m.requests) }, c: { v: fmtUsd(m.cost_usd) } },
         });
       }
     }
   }
   return {
     cols: [
-      { k: 'tool', l: 'Tool', w: '170px' }, { k: 'src', l: 'Source', w: '120px' }, { k: 'asof', l: 'As of', w: '84px', t: 'When a cached source was last computed' },
+      { k: 'tool', l: 'Tool', w: '170px' }, ...nodeColumn(ctx), { k: 'src', l: 'Source', w: '120px' }, { k: 'asof', l: 'As of', w: '84px', t: 'When a cached source was last computed' },
       { k: 'i', l: 'Input', n: true, w: '62px' }, { k: 'o', l: 'Output', n: true, w: '62px' }, { k: 'cr', l: 'Cache read', n: true, w: '72px' }, { k: 'cw', l: 'Cache write', n: true, w: '76px' },
       { k: 's', l: 'Sessions', n: true, w: '62px' }, { k: 'msg', l: 'Messages', n: true, w: '66px' }, { k: 'req', l: 'Requests', n: true, w: '66px' },
       { k: 'c', l: 'Cost', n: true, w: '76px' }, { k: 'pr', l: 'Premium', n: true, w: '64px', t: 'Premium requests used' }, { k: 'api', l: 'API time', n: true, w: '70px' }, { k: 'e', l: 'Errors', w: '84px', t: 'The newest 20 errors the tool logged' },
@@ -541,9 +565,9 @@ function LifetimeView({ list, none, ctx }) {
   const def = useMemo(() => lifetimeDef(list, ctx, open, setOpen, errOpen, setErrOpen), [list, ctx, open, errOpen]);
   if (!list.length) return html`<div class="bd-empty">${none}</div>`;
   return html`<${Table} def=${def} label="Lifetime totals each tool reports"/>
-    ${list.filter(t => errOpen[t.tool] && t.errors.length).map(t => html`<div key=${t.tool} class="bd-errl" role="region" aria-label=${'Errors ' + (t.label || t.tool) + ' reported'}>
+    ${list.filter(t => errOpen[toolKey(t)] && t.errors.length).map(t => html`<div key=${toolKey(t)} class="bd-errl" role="region" aria-label=${'Errors ' + (t.label || t.tool) + ' reported'}>
       <div class="bd-prevh"><b>${'Errors ' + (t.label || ctx.toolName(t.tool)) + ' reported, newest first (' + t.errors.length + ')'}</b><span class="bd-sp"></span>
-        <button type="button" class="bd-ib-btn" aria-label="Fold the errors" title="Fold the errors" onClick=${() => setErrOpen({ ...errOpen, [t.tool]: false })}><${Ico} d=${PATHS.close}/></button></div>
+        <button type="button" class="bd-ib-btn" aria-label="Fold the errors" title="Fold the errors" onClick=${() => setErrOpen({ ...errOpen, [toolKey(t)]: false })}><${Ico} d=${PATHS.close}/></button></div>
       ${t.errors.map((e, i) => html`<div key=${i} class="bd-errrow"><span class="bd-mono bd-dim">${e.ts || NA}</span><span class="bd-tag bd-tag-crit">${e.type || 'error'}</span><span class="bd-errm" title=${e.message}>${e.message || NA}</span>${e.model ? html`<span class="bd-mono bd-dim">${e.model}</span>` : null}</div>`)}
     </div>`)}`;
 }
@@ -568,10 +592,11 @@ function panelWorkflows(ctx, local) {
   const show = local.mode('show', 'all');
   const list = c.workflows.filter(w => show === 'all' || w.type === show);
   const rows = list.map(w => ({
-    id: w.path, go: ctx.remote ? null : () => ctx.actions.openFile?.(w.path, 1),
-    sort: { n: w.name, ty: w.type, tool: w.tool, sz: w.size, t: w.tokens, ch: w.mtime },
+    id: contextKey(w, w.path), go: ctx.remote ? null : () => ctx.actions.openFile?.(w.path, 1),
+    sort: { n: w.name, node: nodeText(w, ctx), ty: w.type, tool: w.tool, sz: w.size, t: w.tokens, ch: w.mtime },
     cells: {
       n: { v: w.name, title: w.path, sub: tailPath(w.path, 3) }, ty: { v: TYPE_LABEL[w.type] || w.type, cls: 'dim' }, tool: { v: ctx.toolName(w.tool), sw: colorFor('tool', w.tool) },
+      node: { v: nodeText(w, ctx), cls: 'dim' },
       sz: { v: fmtBytes(w.size) }, t: { v: fmtN(w.tokens) }, ch: { v: w.mtime ? ago(w.mtime, ctx.nowS) : NA, cls: 'dim', title: w.mtime ? stamp(w.mtime, true) : NA },
     },
   }));
@@ -580,7 +605,7 @@ function panelWorkflows(ctx, local) {
     sub: wf + ' workflows, ' + (c.workflows.length - wf) + (ctx.remote ? ' prompt files. Recorded metadata' : ' prompt files. Click one for its text'),
     modes: [{ key: 'show', label: 'Show', def: 'all', items: [['all', 'All'], ['workflow', 'Workflows'], ['prompt', 'Prompt files']] }],
     table: {
-      cols: [{ k: 'n', l: 'Name' }, { k: 'ty', l: 'Type', w: '88px' }, { k: 'tool', l: 'Tool', w: '120px' }, { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 'ch', l: 'Changed', n: true, w: '84px' }],
+      cols: [{ k: 'n', l: 'Name' }, ...nodeColumn(ctx), { k: 'ty', l: 'Type', w: '88px' }, { k: 'tool', l: 'Tool', w: '120px' }, { k: 'sz', l: 'Size', n: true, w: '64px' }, { k: 't', l: 'Tokens', n: true, w: '64px' }, { k: 'ch', l: 'Changed', n: true, w: '84px' }],
       rows, sort: { k: 'n', dir: 'asc' }, primary: 'n',
       none: noneText(c, 'No workflow or prompt files found. Workflows are .workflow.md files, as in .github/workflows/; prompt files are .prompt.md files and slash commands.'),
     },
@@ -597,7 +622,6 @@ export function contextSummary(data) {
   const c = data?.contextData || EMPTY_CONTEXT;
   if (c.unavailable) return 'Inventory unavailable';
   if (!c.loaded) return 'n/a';
-  if (c.nodes) return fmtN(c.nodes.reduce((n, r) => n + r.files.reduce((a, x) => a + x.count, 0), 0)) + ' recorded files';
   const top = c.budget.tools.reduce((m, b) => (b.always_share > (m?.always_share ?? -1) ? b : m), null);
   const mem = c.memory.entries.length;
   return (top ? fmtWindowShare(top.always_share) + ' of a window, ' : 'No context files, ') + mem + (mem === 1 ? ' memory file' : ' memory files');

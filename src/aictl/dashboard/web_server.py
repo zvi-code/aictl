@@ -630,11 +630,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 self._json_response({"error": "Session evidence query failed"}, status=503)
         elif path == "/api/board/nodes":
             from .board_api import _cached_health_data
-            from .node_views import NodeViewError, node_view
+            from .node_views import NodeViewError, agent_inventory, node_view
 
             try:
                 body = node_view(self._db, parse_qs(urlparse(self.path).query, keep_blank_values=True),
-                                 local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time()))
+                                 local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time()),
+                                 local_inventory=lambda: agent_inventory(getattr(self.server.store, "live_hub", None), time.time()))
             except NodeViewError as exc:
                 self._json_response({"error": str(exc)}, status=exc.status)
                 return
@@ -1849,11 +1850,13 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
     def _node_runtime_sample(self) -> dict:
         """Only report operational measurements; paths, command lines and error text stay local."""
         from .board_api import _ingester_rows, _self_usage, _sink_section
+        from .node_views import agent_inventory
 
         usage = _self_usage()
         otel = self.otel_receiver.status()
         diagnostics = (getattr(self.store.snapshot, "live_monitor", None) or {}).get("diagnostics", {})
         return {
+            "agents": agent_inventory(getattr(self.store, "live_hub", None), time.time()),
             "daemon": {"cpu_percent": usage.get("daemon_cpu_percent"), "rss_bytes": usage.get("daemon_memory_rss_bytes"),
                        "threads": usage.get("threads"), "uptime_s": usage.get("uptime_s")},
             "sink": _sink_section(self.store),

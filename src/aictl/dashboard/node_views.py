@@ -15,6 +15,7 @@ from ..kusto import NODE_ENV, local_node_id, normalize_node_id
 
 MAX_NODES = 256
 MAX_SESSIONS = 100
+MAX_RUNTIME_AGENTS = 128
 STALE_AFTER = 300
 METRICS = ("sessions", "requests", "input_tokens", "output_tokens", "cost_usd")
 SESSION_FIELDS = (
@@ -61,7 +62,7 @@ def _read(settings, kql):
 
 
 def _status(ts, now):
-    if not ts or ts > now + 60:
+    if not isinstance(ts, (float, int)) or not math.isfinite(ts) or ts <= 0 or ts > now + 60:
         return "unknown"
     return "stale" if now - ts > STALE_AFTER else "reported"
 
@@ -93,14 +94,79 @@ def _client_sample(row, now):
     return sample
 
 
-def node_view(db, query, *, now=None, read=_read, local_health=None, shared_health=None):
+def _session_identifier(value):
+    return isinstance(value, str) and 0 < len(value) <= 384 and not any(ord(c) < 32 for c in value)
+
+
+_AGENT_FIELDS = (
+    "session_id", "native_session_id", "tool", "status", "running", "native_activity",
+    "cpu_percent", "mem_mb", "started_at",
+)
+
+
+def _agent_rows(rows):
+    by_session = {}
+    for row in rows:
+        if not isinstance(row, dict) or not _session_identifier(row.get("session_id")):
+            continue
+        native = row.get("native_session_id")
+        key = native if _session_identifier(native) else row["session_id"]
+        record = _fields(row, _AGENT_FIELDS)
+        if key != native:
+            record["native_session_id"] = None
+        if key not in by_session or record["running"] is True:
+            by_session[key] = record
+    return sorted(by_session.values(), key=lambda row: (row["running"] is not True, row["session_id"]))
+
+
+def agent_inventory(hub, now):
+    """Bounded, process-backed session records; never export paths or transcript text."""
+    if hub is None:
+        return None
+    ready = next((r for r in hub.values("source.status") if r.get("producer") == "runtime-collector"), None)
+    if not ready or not ready.get("ready") or _status(ready.get("observed_at"), now) != "reported":
+        return None
+    rows = _agent_rows(hub.values("runtime.agent"))
+    return {"captured_at": ready["observed_at"], "rows": rows[:MAX_RUNTIME_AGENTS], "total": len(rows)}
+
+
+def _agent_sample(row, now):
+    sample = _client_sample(row, now)
+    runtime = sample.get("runtime") if sample else None
+    agents = runtime.get("agents") if isinstance(runtime, dict) else None
+    if (
+        not isinstance(agents, dict)
+        or _status(agents.get("captured_at"), now) != "reported"
+        or not isinstance(agents.get("rows"), list)
+        or not isinstance(agents.get("total"), int)
+        or agents["total"] < len(agents["rows"])
+    ):
+        return None
+    return {"captured_at": agents["captured_at"], "total": agents["total"],
+            "rows": _agent_rows(agents["rows"][:MAX_RUNTIME_AGENTS])}
+
+
+def _local_health_row(runtime, node, now):
+    host = (runtime.get("resources") or {}).get("host") or {}
+    proc = (runtime.get("pipeline") or {}).get("self") or {}
+    return {
+        "node_id": node, "captured_at": host.get("checked_at"), "status": _status(host.get("activity_at"), now),
+        "cpu_percent": host.get("cpu_percent"),
+        "memory_total_mb": host["memory_total_bytes"] / (1024**2) if host.get("memory_total_bytes") is not None else None,
+        "memory_used_mb": host["memory_used_bytes"] / (1024**2) if host.get("memory_used_bytes") is not None else None,
+        "daemon_pid": proc.get("pid"),
+        **_fields(host, ("active_sessions", "active_processes", "inbound_bps", "outbound_bps", "activity_at")),
+    }
+
+
+def node_view(db, query, *, now=None, read=_read, local_health=None, shared_health=None, local_inventory=None):
     now = time.time() if now is None else now
     valid = {"view", "scope", "node_id", "session_id", "since", "until"}
     if set(query) - valid or any(len(values) != 1 for values in query.values()):
         raise NodeViewError("Unknown or repeated node view parameter")
     p = {k: v[0] for k, v in query.items()}
     view, scope = p.get("view", "nodes"), p.get("scope", "local")
-    if view not in ("identity", "nodes", "health", "settings", "overview", "session") or scope not in (
+    if view not in ("identity", "nodes", "health", "runtime", "settings", "overview", "session") or scope not in (
         "local",
         "node",
         "fleet",
@@ -146,6 +212,10 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
         raise NodeViewError("Fleet history requires a shared Kusto store", 409)
     if db is None:
         raise NodeViewError("History store unavailable", 503)
+    if view == "runtime" and (scope == "local" or node == local) and local_health is not None:
+        row = _local_health_row(local_health(), local, now)
+        row["agents"] = local_inventory() if local_inventory is not None else None
+        return {**out, "rows": [row]}
     if view == "health":
         out["shared_kusto"] = (
             {"scope": "shared", "cluster": urlsplit(settings.cluster).hostname, "database": settings.database}
@@ -166,26 +236,10 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
             )
         if scope == "local" and local_health is not None:
             runtime = local_health()
-            host = (runtime.get("resources") or {}).get("host") or {}
-            proc = runtime.get("pipeline", {}).get("self") or {}
-
-            def mib(name):
-                return host[name] / (1024**2) if host.get(name) is not None else None
-
             return {
                 **out,
                 "local_runtime": runtime,
-                "rows": [
-                    {
-                        "node_id": local,
-                        "captured_at": host.get("checked_at"),
-                        "status": _status(host.get("checked_at"), now),
-                        "cpu_percent": host.get("cpu_percent"),
-                        "memory_total_mb": mib("memory_total_bytes"),
-                        "memory_used_mb": mib("memory_used_bytes"),
-                        "daemon_pid": proc.get("pid"),
-                    }
-                ],
+                "rows": [_local_health_row(runtime, local, now)],
             }
     if view == "settings" and scope == "local":
         return {
@@ -216,6 +270,33 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
         if getattr(db, "current_history", False)
         else sessions.replace("sessions |", "sessions_observations |", 1)
     )
+    if view == "runtime":
+        recent = (
+            samples + f" | where node_id != '' and ts >= {now - STALE_AFTER!r}"
+            ' | project node_id, ts, _v, _deleted, active_sessions=live_sessions, active_processes,'
+            ' cpu_percent=column_ifexists("host_cpu_percent",real(null)),'
+            ' memory_used_mb=column_ifexists("host_memory_used_mb",real(null)),'
+            ' memory_total_mb=column_ifexists("host_memory_total_mb",real(null)),'
+            ' daemon_pid=column_ifexists("daemon_pid",long(null)), counter_sample=column_ifexists("node_health_counters","")'
+            " | summarize arg_max(_v, *) by node_id, ts | where not(_deleted)"
+            " | summarize arg_max(ts, active_sessions, active_processes, cpu_percent, memory_used_mb, memory_total_mb, daemon_pid),"
+            " arg_max(iff(isnotempty(counter_sample), ts, real(null)), counter_sample) by node_id"
+            f" | order by node_id asc | take {MAX_NODES + 1}"
+        )
+        reports = read(settings, recent) if settings and node != "" else []
+        rows = []
+        for r in reports[:MAX_NODES]:
+            rows.append(_fields(r, ("node_id", "active_sessions", "active_processes", "cpu_percent",
+                                    "memory_used_mb", "memory_total_mb", "daemon_pid")) |
+                        {"captured_at": r["ts"], "activity_at": r["ts"], "status": _status(r["ts"], now),
+                         "agents": _agent_sample(r, now)})
+        if scope == "fleet" and local_health is not None:
+            row = _local_health_row(local_health(), local, now)
+            stored = next((r for r in rows if r["node_id"] == local), None)
+            if row["status"] == "reported" and (stored is None or row["activity_at"] >= stored["activity_at"]):
+                row["agents"] = local_inventory() if local_inventory is not None else None
+                rows = [r for r in rows if r["node_id"] != local] + [row]
+        return {**out, "rows": sorted(rows, key=lambda r: r["node_id"]), "truncated": len(reports) > MAX_NODES}
     inventory = (
         "union ("
         + samples
@@ -244,6 +325,8 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
             "memory_total_mb",
             "active_sessions",
             "active_processes",
+            "inbound_bps",
+            "outbound_bps",
             "daemon_pid",
         )
         settings_cols = ("node_source", "capture", "ingestion", "retention_days", "content_retention_days")
@@ -258,6 +341,7 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
                 ' memory_used_mb=column_ifexists("host_memory_used_mb",real(null)),'
                 ' memory_total_mb=column_ifexists("host_memory_total_mb",real(null)), active_sessions=live_sessions,'
                 ' active_processes=iff(isnotnull(column_ifexists("daemon_pid",long(null))),active_processes,long(null)),'
+                ' inbound_bps=column_ifexists("live_in_rate",real(null)), outbound_bps=column_ifexists("live_out_rate",real(null)),'
                 ' daemon_pid=column_ifexists("daemon_pid",long(null))'
             )
             # Do not let a tombstone resurface an older version of the same sample.
@@ -281,7 +365,8 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
         else:
             cursor = db._conn().execute(
                 "SELECT ts AS captured_at, NULL AS cpu_percent,NULL AS memory_used_mb,NULL AS memory_total_mb,"
-                "live_sessions AS active_sessions,active_processes FROM system_snapshots ORDER BY ts DESC LIMIT 1"
+                "live_sessions AS active_sessions,active_processes,live_in_rate AS inbound_bps,"
+                "live_out_rate AS outbound_bps FROM system_snapshots ORDER BY ts DESC LIMIT 1"
             )
             rows = [dict(zip((c[0] for c in cursor.description), r, strict=True)) | {"node_id": local} for r in cursor]
         if node is not None and not rows:
@@ -295,7 +380,7 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
                     "captured_at": r["captured_at"],
                     "status": _status(r["captured_at"], now),
                 }
-                | ({} if settings_view else {"client_sample": _client_sample(r, now)})
+                | ({} if settings_view else {"client_sample": _client_sample(r, now), "activity_at": r.get("captured_at")})
                 for r in rows[:MAX_NODES]
             ],
             "truncated": len(rows) > MAX_NODES,

@@ -8,7 +8,6 @@ import * as api from '../../api.js';
 import { NA, fmtDur, fmtN, fmtUsd, projectName, stamp } from './format.js';
 import { normalizeSessions } from './useBoardData.js';
 import Table from './Table.js';
-import { ReportTable, reportPath } from './ReportedBoard.js';
 
 export const SEARCH_DEBOUNCE_MS = 250;
 export const PAGE_SIZE = 50;
@@ -32,7 +31,7 @@ export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {}, 
     { k: 'arts', l: 'Artifacts', n: true, w: '76px' },
     { k: 'commits', l: 'Commits', n: true, w: '76px' },
   ];
-  if (showNode || rows.some(r => r.node_id)) cols.splice(2, 0, { k: 'node', l: 'Reporting node', w: '140px' });
+  if (showNode || rows.some(r => r.node_id)) cols.splice(2, 0, { k: 'node', l: 'Node', w: '140px' });
   if (q) cols.push({ k: 'match', l: 'Matched in', minw: 240, t: 'Where the search text was found, with a short excerpt' });
   return {
     key: 'sessions',
@@ -49,7 +48,7 @@ export function sessionsDef(rows, { q = '', toolName = x => x, open = () => {}, 
         cells: {
           tool: { v: toolName(r.tool), cls: 'dim' },
           title: { v: r.title || r.session_id || r.id, title: (r.title || 'No title') + ', ' + (r.session_id || r.id) },
-          node: { v: r.node_id || localNode || 'This node', cls: 'dim' },
+          node: { v: r.node_id === 'legacy' ? 'Untagged history' : r.node_id || localNode || 'This node', cls: 'dim' },
           project: { v: r.project ? projectName(r.project) : NA, cls: 'dim', title: r.project || 'No project' },
           started: { v: stamp(r.started_at, true), cls: 'dim', title: r.started_at ? new Date(r.started_at * 1000).toLocaleString() : '' },
           dur: { v: fmtDur(dur), title: r.ended_at ? 'Ended ' + stamp(r.ended_at, true) : 'No end time stored' },
@@ -100,7 +99,7 @@ export function SessionsView({ ctx }) {
       const d = normalizeSessions(raw);
       const rows = offset ? live.current.rows.concat(d.rows) : d.rows;
       live.current = { key, rows };
-      setState({ key, rows, total: d.total, byNode: d.by_node, error: null, busy: false });
+      setState({ key, rows, total: d.total, error: null, busy: false });
     }).catch((e) => {
       if (mine.signal.aborted || e?.name === 'AbortError') return;
       setState(s => ({ ...s, busy: false, error: e }));
@@ -118,9 +117,6 @@ export function SessionsView({ ctx }) {
   const more = state.total != null && state.rows.length < state.total;
   const toolNote = tools ? (tools.length ? ' Only the tools chosen in the Tool filter.' : ' No tool is chosen in the Tool filter.') : '';
   return html`<div class="bd-sessions">
-    ${ctx.nodeScope && html`<${ReportTable} title="Matching sessions by node" rows=${state.byNode || (!ctx.remote && state.total != null ? [{ node_id: ctx.localNode || 'This node', sessions: state.total }] : [])} columns=${[['node_id', 'Reporting node'], ['sessions', 'Sessions']]}
-      note="All matching sessions, before pagination. The activity range does not apply." source=${reportPath(ctx, '/api/board/sessions',
-        new URLSearchParams({ q, ...(tools ? {tool: tools.join(',') || '-'} : {}), limit: PAGE_SIZE }).toString())}/>`}
     <div class="bd-srchrow">
       <input type="search" class="bd-sessq" aria-label="Search all past sessions" placeholder="Search titles, prompts, projects, files and commits"
         value=${text} onInput=${e => setText(e.currentTarget.value)}/>

@@ -29,7 +29,7 @@ import { useBoardHealth } from './useBoardHealth.js';
 import { HealthOverview, healthSources, healthStatus } from './health.js';
 import BoardRange from './BoardRange.js';
 import { NodeScopePicker, scopeLabel, useNodeView } from './NodeScope.js';
-import { NodeBreakdown, PreviousDaemonOverview, ReportedValues } from './ReportedBoard.js';
+import { nodeActivity, overlayReportedAgents, useNodeRuntime } from './nodeRuntime.js';
 import { LiveProvider } from '../../live/context.js';
 import LiveStatus from '../../live/Status.js';
 import { historyFailure, historyReady, topicData } from '../../live/model.js';
@@ -101,7 +101,7 @@ const Rail = memo(({ ui, data, series, loaded, findingsCount, attention, screen,
   const mini = ui.railMini;
   const railLabel = mini ? 'Show section names' : 'Hide section names';
   const items = [{ id: 'top', label: 'Overview', anchor: 'sec-top', sum: rangeSum, icon: PATHS.top }].concat(ui.layout.filter(sec => sec.id !== 'health').map(sec => ({
-    id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: screen === 'health' && !loaded && sec.id !== 'sessions' ? '' : sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
+    id: sec.id, label: SEC_BY_ID[sec.id].title, anchor: SEC_BY_ID[sec.id].anchor, sum: !loaded && !['agents', 'sessions'].includes(sec.id) ? '' : sectionSummary(sec.id, data, series, findingsCount), icon: PATHS[sec.id],
   })));
   return html`<aside class=${'bd-rail' + (mini ? ' bd-mini' : '')} aria-label="Sections">
     <div class="bd-brandrow">
@@ -176,7 +176,7 @@ function FilterMenu({ fkey, label, value, active, menu, items, act }) {
   </div>`;
 }
 
-const FilterRow = memo(({ board, data, ctx, menu, act, subscription }) => {
+const FilterRow = memo(({ board, data, ctx, menu, act, subscription, loaded, screen }) => {
   const { filters, tools } = board;
   const opts = data.options;
   const toolIds = opts.tools.map(t => t.id);
@@ -193,9 +193,9 @@ const FilterRow = memo(({ board, data, ctx, menu, act, subscription }) => {
   const selValue = filters.sel ? stamp(filters.sel.since, true) + ' to ' + stamp(filters.sel.until, true) : '';
   const clearable = canClear(filters, tools);
   const shown = data.scope.shown_agents;
-  const queryable = subscription?.mode !== 'incremental' || historyReady(subscription);
+  const queryable = loaded && (subscription?.mode !== 'incremental' || historyReady(subscription));
   const runtimeOnly = data.agents.filter(agent => agent.runtime_present && agent.queryable === false).length;
-  const scope = (queryable ? (shown === allAgents ? 'Showing all ' + allAgents + ' agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' agents in this time') : historyFailure(subscription) ? 'Queryable history is unavailable' : 'Queryable history is not ready')
+  const scope = (screen !== 'board' ? 'Historical activity is shown on Overview' : queryable ? (shown === allAgents ? 'Showing all ' + allAgents + ' recorded agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' recorded agents in this time') : historyFailure(subscription) ? 'Queryable history is unavailable' : 'Queryable history is not ready')
     + (runtimeOnly ? ' · ' + runtimeOnly + ' live runtime ' + (runtimeOnly === 1 ? 'agent' : 'agents') + ' not yet in this history' : '');
   // Tool calls, tests and errors belong to a session, not to one model or project.
   const narrowed = filters.model !== 'all' || filters.project !== 'all';
@@ -376,6 +376,16 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
     .filter(record => isStoredToolSelected(record.tool, tools)), [loadedConfiguration, tools]);
   const health = useBoardHealth({ enabled: screen === 'health', live, scope: nodeScope, nodeId });
   const { data: identity } = useNodeView({ view: 'identity', scope: 'local', enabled: !remote && screen !== 'health' });
+  const runtimeReport = useNodeRuntime(nodeScope, nodeId, live, screen !== 'health');
+  const localHost = !remote ? (screen === 'health' ? health.data?.resources?.host : topicData(subscription, 'runtime.health', 'local')?.resources?.host) : null;
+  const activityReport = screen === 'health' ? health.data?.node_report : runtimeReport?.data;
+  const activityClock = live ? Math.floor(Date.now() / 5000) * 5 : activityReport?.generated_at ?? health.data?.generated_at;
+  const activity = useMemo(() => nodeActivity(activityReport, localHost, activityClock ?? Date.now() / 1000),
+    [activityReport, localHost, activityClock]);
+  const boardData = useMemo(() => ({
+    ...data, history_ready: loaded, live_activity: activity, runtime_error: runtimeReport?.error || null,
+    ...(remote ? { agents: overlayReportedAgents(data.agents, activity, applied, tools) } : {}),
+  }), [data, loaded, activity, remote, applied, tools, runtimeReport]);
   const healthState = useMemo(() => healthStatus(health.data, health.error, health.nowS), [health.data, health.error, health.nowS]);
   const pill = streamPill({ live, connected, everConnected, ageS: data.machine?.pipeline?.stream?.snapshot_age_s });
 
@@ -828,9 +838,9 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
 
   const nowS = screen === 'health' ? health.nowS : data.generated_at || Date.now() / 1000;
   const viewData = useMemo(() => screen === 'health' ? {
-    ...data, health: health.data, machine: health.data || data.machine,
+    ...boardData, health: health.data, machine: health.data || data.machine,
     sources: health.data ? healthSources(health.data) : [],
-  } : data, [screen, data, health.data]);
+  } : boardData, [screen, boardData, data.machine, health.data]);
   const query = useMemo(() => {
     const win = applied.sel || (data.range?.until > data.range?.since ? data.range : windowOf(applied.range));
     return boardQuery(applied, tools, { since: Math.floor(win.since), until: Math.floor(win.until), buckets: win.bucket_starts?.length || win.buckets });
@@ -838,8 +848,8 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
 
   const ctx = useMemo(() => ({
     data: viewData, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: incremental ? 0 : data.generated_at,
-    nodeScope, nodeId, scopeName, remote, localNode: identity?.local_node?.node_id,
-  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act, incremental, nodeScope, nodeId, scopeName, remote, identity]);
+    nodeScope, nodeId, scopeName, remote, localNode: identity?.local_node?.node_id || runtimeReport?.data?.local_node?.node_id,
+  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act, incremental, nodeScope, nodeId, scopeName, remote, identity, runtimeReport]);
 
   const settingsFindings = useMemo(() => ({ ...findings, rescan: act.rescan }), [findings, act]);
   const settingsSource = useMemo(() => (remote ? {
@@ -862,34 +872,32 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
   const settingsSum = useMemo(() => remote ? 'Reported daemon settings' : settingsLine(settingsRes, tools), [settingsRes, tools, remote]);
 
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
-  const attention = data.attention.filter(i => !stopped[i.agent_id]).length;
+  const attention = boardData.attention.filter(i => !stopped[i.agent_id]).length;
 
   return html`<div class="bd-app" tabindex="-1" data-theme=${resolvedTheme} data-density=${ui.density} aria-busy=${(screen === 'health' ? health.busy : busy) ? 'true' : 'false'}>
-    <${Rail} ui=${ui} data=${data} series=${chartSeries} loaded=${loaded} findingsCount=${findings.unavailable ? null : findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} healthSum=${health.data ? healthState.label : 'Collection, ingestion and store'} rangeSum=${act.rangeSummary()} act=${act}/>
+    <${Rail} ui=${ui} data=${boardData} series=${chartSeries} loaded=${loaded} findingsCount=${findings.unavailable ? null : findings.list.length} attention=${attention} screen=${screen} settingsSum=${settingsSum} healthSum=${health.data ? healthState.label : 'Collection, ingestion and store'} rangeSum=${act.rangeSummary()} act=${act}/>
     <div class="bd-main">
       <${TopBar} f=${filters} board=${board} menu=${menu} ui=${ui} resolvedTheme=${resolvedTheme} setTheme=${setTheme} live=${live} act=${act} screen=${screen} picker=${picker}/>
-      ${screen !== 'health' ? html`<${FilterRow} board=${board} data=${data} ctx=${ctx} menu=${menu} act=${act} subscription=${subscription}/>` : null}
+      ${screen !== 'health' ? html`<${FilterRow} board=${board} data=${boardData} ctx=${ctx} menu=${menu} act=${act} subscription=${subscription} loaded=${loaded} screen=${screen}/>` : null}
       <div class="bd-body">
         <main class=${'bd-area' + (screen === 'health' ? ' bd-healtharea' : '')} id="main-area" aria-label=${screen === 'settings' ? 'Settings' : screen === 'health' ? 'aictl Health' : undefined}>
           ${screen !== 'health' && html`<div class="bd-muted" role="status">
             Node scope: ${scopeName}${!remote && ctx.localNode ? html` (<code>${ctx.localNode}</code>)` : ''}.
-            ${remote ? ` Historical ${nodeScope === 'fleet' ? 'fleet' : nodeId} data. Local-only measurements are not substituted.` : ''}
+            ${remote ? ` Historical ${nodeScope === 'fleet' ? 'fleet' : nodeId} data and the latest monitor reports. Local-only measurements are not substituted.` : ''}
           </div>`}
           ${screen !== 'health' && !remote && html`<${LiveStatus} state=${subscription} history=${screen === 'board'}/>`}
           ${screen === 'board' && analyticsError ? html`<div class="bd-banner" role="alert">Could not read on-demand historical data: ${analyticsError.message}. Runtime fields update independently.</div>` : null}
-          ${screen === 'settings' ? html`<${ReportedValues} ctx=${ctx}/><${SettingsArea} Workspace=${SettingsC} res=${remote ? {} : settingsRes} source=${settingsSource}/>` : html`
+          ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${remote ? {} : settingsRes} source=${settingsSource}/>` : html`
           ${screen === 'health' ? html`<${HealthOverview} health=${health.data} status=${healthState} error=${health.error} nowS=${nowS} localNode=${ctx.localNode}>
             <${HealthCollectionDetails} ctx=${ctx}/>
             ${!remote && html`<${LiveStatus} state=${subscription} history=${false}/>`}
           <//>
           ` : html`
           ${error && (remote || subscription.mode === 'legacy') ? html`<div class="bd-banner" role=${!remote && error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${!remote && error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + (loaded ? '. Showing the last data for this scope.' : '')}</div>` : null}
-          ${remote && !loaded && error?.reason === 'unconfirmed_scope' && html`<${PreviousDaemonOverview}
-            scope=${nodeScope} nodeId=${nodeId} since=${new URLSearchParams(query).get('since')} until=${new URLSearchParams(query).get('until')}/>`}
-          ${remote && loaded && !error && !data.scope.all_agents ? html`<p class="bd-muted" role="status">No agents were reported in this time range for ${scopeName}.</p>` : null}
+          ${remote && loaded && !error && !data.scope.all_agents ? html`<p class="bd-muted" role="status">No historical agent records in the selected time range. This does not mean the node has no live sessions.</p>` : null}
           ${staleCode(data) ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>aictl was updated on disk at ${stamp(staleCode(data), true)}, after this daemon started at ${stamp(data.machine.pipeline.self.started_at, true)}. The page is new and the daemon runs the old code, so new parts of the board may fail. Restart the daemon: stop it, then run aictl daemon serve again.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}
-          <${Kpis} data=${data} pill=${pill}/><${NodeBreakdown} section="top" ctx=${ctx}/>`}
+          <${Kpis} data=${boardData} pill=${pill}/>`}
           ${ui.layout.filter(sec => screen !== 'health' && sec.id !== 'health').map((sec) => {
             const def = SEC_BY_ID[sec.id];
             return html`<section key=${sec.id} class=${'bd-sec' + (sec.id === 'health' ? ' bd-health' : '')} id=${def.anchor} aria-label=${def.title}>
@@ -902,7 +910,6 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
                 </span>
               </div>
               ${sec.open ? html`<div class="bd-grid" onDragOver=${(e) => { if (dragId) e.preventDefault(); }} onDrop=${e => act.dropOnSection(e, sec.id)}>
-                <${NodeBreakdown} section=${sec.id} ctx=${ctx}/>
                 ${sec.panels.filter(p => !hiddenIds.has(p.id)).map(pn => html`<${Panel} key=${pn.id} pn=${pn} ctx=${ctx} hiddenCols=${ui.hiddenCols[pn.id]}
                   menuOpen=${menu === 'panel:' + pn.id} over=${over && over.id === pn.id ? (over.after ? 'after' : 'before') : null} dragging=${dragId === pn.id} act=${act} sections=${SECTIONS.filter(s => screen === 'health' ? s.id === 'health' : s.id !== 'health')}/>`)}
               </div>` : null}

@@ -74,7 +74,15 @@ export function scopedHealth(report, localRuntime, supplementError = null) {
   const contributors = samples.filter(s => s.store.reads || s.store.writes || s.store.ingestion_traffic);
   const namedLocal = report.scope === 'node' && rows.length === 1 && liveFor(rows[0]);
   const provenance = { scope: report.scope, nodeId: report.scope === 'node' ? rows[0]?.node_id : null, localNode: own, servingOnly: !!namedLocal,
-    rows: rows.map(r => ({ ...r, daemon: samples.find(s => s.id === r.node_id)?.runtime.daemon })),
+    rows: rows.map(r => {
+      const host = liveFor(r) ? live.resources?.host : null;
+      const at = host?.activity_at;
+      const current = Number.isFinite(at) && at >= (r.activity_at ?? r.captured_at ?? 0)
+        && at >= report.generated_at - 300 && at <= report.generated_at + 60;
+      return { ...r, ...(current ? { active_sessions: host.active_sessions, active_processes: host.active_processes,
+        inbound_bps: host.inbound_bps, outbound_bps: host.outbound_bps,
+        activity_at: at, status: 'reported' } : {}), daemon: samples.find(s => s.id === r.node_id)?.runtime.daemon };
+    }),
     contributors: contributors.map(c => c.id),
     metricNodes: Object.fromEntries([...modes, 'read'].map(m => [m, contributors.filter(c => m === 'read'
       ? Number.isFinite(c.store.reads?.recent_avg_ms) : Number.isFinite(c.store.ingestion_traffic?.[m]?.rows_per_s)).length])),

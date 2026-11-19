@@ -1,6 +1,6 @@
 import { html } from 'htm/preact';
 import { useMemo, useRef, useState } from 'preact/hooks';
-import { fmtBytes, fmtN, stamp } from './format.js';
+import { fmtBps, fmtBytes, fmtN, stamp } from './format.js';
 import { mergeSearch } from '../../hooks/urlState.js';
 
 const known = Number.isFinite;
@@ -10,7 +10,9 @@ const WINDOW = 15 * 60, BUCKET = 10;
 export function updateTrend(last, health) {
   const at = health?.generated_at;
   if (!known(at)) return last;
-  const id = `${health.store.destination}/${health.pipeline.self.pid}/${health.pipeline.self.started_at}`;
+  const report = health.node_report;
+  const id = JSON.stringify([health.store.destination, health.pipeline.self.pid, health.pipeline.self.started_at,
+    report?.scope, report?.nodeId, report?.rows.map(r => [r.node_id, r.daemon_pid]), report?.contributors]);
   if (last.id !== id) last = { id, points: [] };
   const start = Math.floor(at / BUCKET) * BUCKET;
   const prev = last.points.at(-1);
@@ -47,6 +49,13 @@ export function Trend({ points, metric, label }) {
 }
 
 const pct = n => `${n.toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
+function NodeName({ report, row }) {
+  if (row.node_id === 'legacy') return 'Untagged history';
+  return report.scope === 'fleet'
+    ? html`<a class="bd-link" href=${mergeSearch(location.search, { scope: 'node', node_id: row.node_id })}>${row.node_id}</a>`
+    : row.node_id;
+}
+
 function NodeResources({ report }) {
   const rows = report.rows;
   return html`<div class="bd-healthresource bd-healthhosts">
@@ -55,15 +64,33 @@ function NodeResources({ report }) {
       <table aria-label="Reported node runtime"><thead><tr>
         ${['Reporting node', 'Last report', 'Host CPU', 'Memory used / total', 'Sessions', 'Processes', 'Daemon PID', 'Daemon CPU', 'Daemon RSS'].map(s => html`<th scope="col" key=${s}>${s}</th>`)}
       </tr></thead><tbody>${rows.map(r => html`<tr key=${r.node_id}>
-        <th scope="row">${report.scope === 'fleet' ? html`<a class="bd-link" href=${mergeSearch(location.search, { scope: 'node', node_id: r.node_id })}>${r.node_id}</a>` : r.node_id}</th>
+        <th scope="row"><${NodeName} report=${report} row=${r}/></th>
         <td>${r.captured_at ? stamp(r.captured_at, true) : 'Not reported'}${r.status === 'stale' ? ' · stale' : ''}</td>
         <td>${known(r.cpu_percent) ? pct(r.cpu_percent) : '—'}</td>
         <td>${[r.memory_used_mb, r.memory_total_mb].map(v => known(v) ? fmtBytes(v * 1048576) : '—').join(' / ')}</td>
-        <td>${known(r.active_sessions) ? fmtN(r.active_sessions) : '—'}</td><td>${known(r.active_processes) ? fmtN(r.active_processes) : '—'}</td><td>${r.daemon_pid ?? '—'}</td>
+        <td title="Monitored sessions, including idle sessions">${r.status === 'reported' && known(r.active_sessions) ? fmtN(r.active_sessions) : '—'}</td>
+        <td title="Processes associated with monitored AI tools">${r.status === 'reported' && known(r.active_processes) ? fmtN(r.active_processes) : '—'}</td><td>${r.daemon_pid ?? '—'}</td>
         <td>${known(r.daemon?.cpu_percent) ? pct(r.daemon.cpu_percent) : '—'}</td><td>${known(r.daemon?.rss_bytes) ? fmtBytes(r.daemon.rss_bytes) : '—'}</td>
       </tr>`)}</tbody></table></div>` : html`<p>No nodes have reported host measurements.</p>`}
     ${report.truncated && html`<p>Not all reporting nodes are listed.</p>`}</div>`;
 }
+
+function NodeTraffic({ report }) {
+  const rate = (row, value) => row.status === 'reported' && known(value) && value >= 0 ? fmtBps(value) : '—';
+  return html`<div class="bd-healthresource bd-healthhosts">
+    <h3>Network traffic by node</h3>
+    ${report.rows.length ? html`<div class="bd-healthscroll" tabindex="0" role="region" aria-label="Node traffic measurements">
+      <table aria-label="Reported node network traffic"><thead><tr>
+        <th scope="col">Reporting node</th><th scope="col">Sample time</th><th scope="col">Inbound</th><th scope="col">Outbound</th>
+      </tr></thead><tbody>${report.rows.map(r => html`<tr key=${r.node_id}>
+        <th scope="row"><${NodeName} report=${report} row=${r}/></th>
+        <td>${known(r.activity_at) && r.status !== 'unknown' ? stamp(r.activity_at, true) : 'Not reported'}${r.status === 'stale' ? ' · stale' : ''}</td>
+        <td>${rate(r, r.inbound_bps)}</td><td>${rate(r, r.outbound_bps)}</td>
+      </tr>`)}</tbody></table></div>` : html`<p>No nodes have reported network traffic.</p>`}
+    <p>Network rates for monitored AI tools, in bytes per second. Kusto client traffic is shown separately.</p>
+  </div>`;
+}
+
 function ResourceBlock({ label, metrics, note, warning }) {
   const present = metrics.filter(m => known(m[1]));
   return html`<div class="bd-healthresource"><h3>${label}</h3>
@@ -80,18 +107,21 @@ export function Resources({ health, localNode }) {
     ['Streaming utilization', 'streaming_percent']].map(([label, key]) => [label, sample[key]?.value, pct, sample[key]?.at]);
   const dates = Object.values(sample).map(v => v.at).filter(known);
   const mb = v => known(v) ? v / 1048576 : null;
-  const report = health.node_report?.servingOnly || !health.node_report ? {
-    scope: health.node_report?.scope || 'local',
-    rows: [{ node_id: health.node_report?.nodeId || localNode || 'This node', captured_at: h.checked_at,
+  const report = !health.node_report ? {
+    scope: 'local',
+    rows: [{ node_id: h.node_id || localNode || 'This node', captured_at: h.activity_at ?? h.checked_at, activity_at: h.activity_at,
+      status: !known(h.activity_at) || h.activity_at <= 0 || h.activity_at > health.generated_at + 60 ? 'unknown'
+        : health.generated_at - h.activity_at > 300 ? 'stale' : 'reported',
       cpu_percent: h.cpu_percent, memory_used_mb: mb(h.memory_used_bytes), memory_total_mb: mb(h.memory_total_bytes),
-      active_sessions: health.node_report?.rows[0]?.active_sessions,
-      active_processes: health.node_report?.rows[0]?.active_processes,
+      active_sessions: h.active_sessions, active_processes: h.active_processes,
+      inbound_bps: h.inbound_bps, outbound_bps: h.outbound_bps,
       daemon_pid: self.pid, daemon: d }],
   } : health.node_report;
   return html`<section class="bd-healthcard bd-healthresources" aria-label="Resource usage">
     <div class="bd-healthsectionhead"><h2>Resource usage</h2><span>By measurement source</span></div>
     <div class="bd-healthresourcegrid">
       <${NodeResources} report=${report}/>
+      <${NodeTraffic} report=${report}/>
       ${health.store.kind === 'kusto' && html`<${ResourceBlock} label="ADX cluster" metrics=${[
         ['Nodes', c?.native?.nodes, fmtN], ['Offline nodes', c?.native?.offline_nodes || null, fmtN],
         ['Active ingestions', c?.native?.ingestions || null, fmtN], ['Active merges', c?.native?.merges || null, fmtN],

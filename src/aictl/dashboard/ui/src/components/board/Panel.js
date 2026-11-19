@@ -8,7 +8,6 @@ import Chart from './Chart.js';
 import { Ico, PATHS } from './icons.js';
 import { HEIGHT, TITLES, WIDTHS } from './layout.js';
 import { buildPanel } from './panels.js';
-import { CONTEXT_BUILDERS } from './contextPanels.js';
 import Table from './Table.js';
 
 export function Stats({ stats }) {
@@ -37,12 +36,6 @@ const noop = {};
 
 function PanelImpl({ pn, ctx, hiddenCols, menuOpen, over, dragging, act, sections }) {
   const { id } = pn;
-  const [pickedNode, setPickedNode] = useState(null);
-  const inventory = CONTEXT_BUILDERS[id] ? ctx.data.contextData : null;
-  const reports = useMemo(() => inventory?.nodes || (!ctx.remote && inventory?.loaded
-    ? [{ ...inventory, node_id: ctx.localNode || 'This node' }] : []), [inventory, ctx.remote, ctx.localNode]);
-  const report = reports.find(n => n.node_id === pickedNode) || reports[0];
-  const panelCtx = useMemo(() => report ? { ...ctx, data: { ...ctx.data, contextData: report } } : ctx, [ctx, report]);
   const [modes, setModes] = useState(noop);
   const [tableView, setTableView] = useState(false);
   const [folded, setFolded] = useState(noop);
@@ -53,7 +46,7 @@ function PanelImpl({ pn, ctx, hiddenCols, menuOpen, over, dragging, act, section
   const growth = pn.h || 0;
   // A folded panel is not built; its header keeps the sub line of the last build.
   const lastSub = useRef('');
-  const body = useMemo(() => (pn.open ? buildPanel(id, panelCtx, local, pn) : { sub: lastSub.current }), [id, panelCtx, local, growth, pn.open]);
+  const body = useMemo(() => (pn.open ? buildPanel(id, ctx, local, pn) : { sub: lastSub.current }), [id, ctx, local, growth, pn.open]);
   if (pn.open) lastSub.current = body.sub;
   const title = TITLES[id];
   const onColToggle = k => act.toggleCol(id, k);
@@ -96,13 +89,10 @@ function PanelImpl({ pn, ctx, hiddenCols, menuOpen, over, dragging, act, section
       <button type="button" class="bd-ib-btn" aria-label=${pn.open ? 'Fold this panel' : 'Unfold this panel'} title=${pn.open ? 'Fold this panel' : 'Unfold this panel'} aria-expanded=${pn.open ? 'true' : 'false'} onClick=${() => act.toggleFold(id)}><${Ico} d=${PATHS.chev} cls=${'bd-chev' + (pn.open ? ' bd-open' : '')}/></button>
     </div>
     ${pn.open ? html`<div class="bd-pb" style=${pbStyle}>
-      ${inventory ? html`<div class="bd-reportpick" role="group" aria-label=${title + ': reporting node'}>
-        <span>Reporting node</span>${reports.map(n => html`<button key=${n.node_id} type="button" class="bd-ctl" aria-pressed=${n === report ? 'true' : 'false'}
-          onClick=${() => setPickedNode(n.node_id)}>${n.node_id === 'legacy' ? 'Untagged history' : n.node_id}</button>`)}</div>` : null}
       ${body.banner ? html`<div class="bd-pbanner" role="alert" title=${body.banner}><${Ico} d=${PATHS.warn}/>${body.banner}</div>` : null}
       ${body.stats ? html`<${Stats} stats=${body.stats}/>` : null}
       ${body.segbar ? html`<${Segbar} segbar=${body.segbar}/>` : null}
-      ${body.view ? html`<${body.view.C} key=${report?.node_id} ...${body.view.props} ctx=${panelCtx}/>` : null}
+      ${body.view ? html`<${body.view.C} ...${body.view.props} ctx=${ctx}/>` : null}
       ${body.chart ? (body.chart.range
         ? html`<${Chart} ...${body.chart} sel=${null} onSelect=${null}/>`
         : html`<${Chart} ...${body.chart} range=${ctx.chartRange} sel=${ctx.sel} onSelect=${act.select}/>`) : null}

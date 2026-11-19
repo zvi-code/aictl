@@ -419,9 +419,14 @@ function Highlights({ health, status, nowS, localNode }) {
   signals.push(['Read latency', Number.isFinite(op?.recent_avg_ms) ? (op.recent_avg_ms === 0 ? '0 ms' : smallMs(op.recent_avg_ms)) : 'No sample',
     positive(op?.rate_per_s) ? `${smallRate(op.rate_per_s)} · last minute` : 'Mean of completed reads · last minute', 'read']);
   const report = health.node_report;
-  const hosts = report?.rows.filter(r => r.status === 'reported') || [];
-  const hostSum = key => hosts.length && hosts.every(r => Number.isFinite(r[key]))
-    ? hosts.reduce((v, r) => v + r[key], 0) : null;
+  const host = health.resources?.host;
+  const localFresh = Number.isFinite(host?.activity_at) && health.generated_at - host.activity_at <= 300
+    && host.activity_at <= health.generated_at + 60;
+  const hosts = report ? report.rows.filter(r => r.status === 'reported') : localFresh ? [host] : [];
+  const hostCounts = key => {
+    const measured = hosts.filter(row => Number.isFinite(row[key]));
+    return measured.length ? `${fmtN(measured.reduce((v, r) => v + r[key], 0))}` : 'Not reported';
+  };
   if (store.kind === 'kusto') {
     const available = measuredValue(cap, 'available');
     signals.push([available == null ? 'Cluster capacity' : 'Free ingestion slots',
@@ -437,8 +442,9 @@ function Highlights({ health, status, nowS, localNode }) {
   return html`<${Diagnostics} health=${health} status=${status} nowS=${nowS} compact=${true}/>
     <section class="bd-healthsignals" id="health-stages" aria-label="Current activity">
       <div class="bd-healthsectionhead"><h2>Live activity</h2><span>Rates: last minute · trends: up to 15 min observed on this page</span></div>
-      ${report && !report.contributors.length && html`<p>Latest host samples: ${fmtN(hostSum('active_sessions'))} active sessions ·
-        ${fmtN(hostSum('active_processes'))} processes. These nodes have not reported SDK rates.</p>`}
+      <p>Latest host samples: ${hostCounts('active_sessions')} monitored sessions ·
+        ${hostCounts('active_processes')} AI tool processes.
+        ${report && !report.contributors.length ? ' SDK rates are not reported for this scope.' : ''}</p>
       ${signals.length ? html`<dl>${signals.map(([label, value, sub, metric]) => html`<div key=${label}><dt>${label}</dt><dd>${value}</dd>
         <dd class="bd-healthplot">${metric === 'capacity' && Number.isFinite(cap?.available) && positive(cap?.total)
           ? html`<meter aria-label="Available ingestion slots" min="0" max=${cap.total} value=${cap.available}></meter>`

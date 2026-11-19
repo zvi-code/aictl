@@ -14,7 +14,6 @@ import { EMPTY_MACHINE } from './useBoardData.js';
 import { panelSessions } from './sessionsPanel.js';
 import { panelStoreHealth } from './health.js';
 import { ingesterState, measuredValue, otelConfig, pollSuccess, qualityContext, writeWarning } from './healthModel.js';
-import { ReportedValues } from './ReportedBoard.js';
 
 const num = v => (v === null || v === undefined ? -1 : v);
 const sumOf = list => list.reduce((s, v) => s + (v || 0), 0);
@@ -112,7 +111,7 @@ function panelAgents(ctx, local, pid) {
     const pendingOn = a.pending && st === 'waiting';
     const models = (a.models || []).join(', ');
     return {
-      id: a.id, parentId: a.parent_id, level, queryable: a.queryable, go: a.placeholder ? null : openAgent(ctx, a.id), groupKey: key,
+      id: a.id, parentId: a.parent_id, level, queryable: a.queryable, go: a.placeholder || (ctx.remote && a.queryable === false) ? null : openAgent(ctx, a.id), groupKey: key,
       sort: {
         _cr: a.cache_read, _in: a.queryable === undefined ? num(a.cache_read) + num(a.input) + num(a.cache_write) : [a.cache_read, a.input, a.cache_write].every(value => value == null) ? null : sumOf([a.cache_read, a.input, a.cache_write]),
         name: a.title, st: meta.rank + (a.started_at ? (nowS - a.started_at) / 1e9 : 0), tool: a.tool, project: a.project, model: models,
@@ -177,12 +176,18 @@ function panelAgents(ctx, local, pid) {
   // The list is capped, so the count comes from the totals when the server gives them.
   const scope = ctx.data.scope || {};
   const kidCount = scope.shown_sessions != null ? scope.shown_agents - scope.shown_sessions : agents.length - roots.length;
+  const activity = ctx.data.live_activity;
+  const lists = activity?.rows.filter(r => r.agents && Number.isSafeInteger(r.active_sessions)).length;
   return {
-    sub: liveN + ' running, ' + (idleN ? idleN + ' idle, ' : '') + (roots.length - liveN - idleN - unknownN) + ' ended, ' + kidCount + ' subagents' + (unknownN ? ', ' + unknownN + ' state unknown' : '') + (noData ? ', ' + noData + ' with processes only' : ''),
+    sub: activity ? (activity.sessions == null ? 'No fresh monitor report' : fmtN(activity.sessions) + ' monitored sessions') +
+      ` · ${fmtN(ctx.data.history_ready ? scope.shown_agents : null)} recorded agents` +
+      (activity.hosts ? ` · Agent lists reported by ${lists} of ${activity.hosts} ${activity.hosts === 1 ? 'node' : 'nodes'}` : '')
+      : liveN + ' running, ' + (idleN ? idleN + ' idle, ' : '') + (roots.length - liveN - idleN - unknownN) + ' ended, ' + kidCount + ' subagents' + (unknownN ? ', ' + unknownN + ' state unknown' : '') + (noData ? ', ' + noData + ' with processes only' : ''),
     modes: [{ key: 'group', label: 'Group agents by', def: 'none', items: [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] }],
     hasCols: true,
-    table: { cols, rows, tree: true, sort: { k: 'st', dir: 'asc' }, columns: true, limit: 60, groupRow, none: 'No agents match these filters.', pid },
-    note: 'Click a row for the full detail. CPU and RAM are live values, so ended agents show n/a. 100% CPU is one full core. An agent row includes its subagents.',
+    table: { cols, rows, tree: true, sort: { k: 'st', dir: 'asc' }, columns: true, limit: 60, groupRow,
+      none: activity?.sessions > 0 ? 'No individual agent records match these filters. See monitor counts and list coverage above.' : 'No individual agent records match these filters.', pid },
+    note: 'CPU and RAM come from the live agent list, when reported. Recorded rows open session details. A monitored session can be idle or have unknown native activity.',
   };
 }
 
@@ -825,7 +830,6 @@ function panelSettings(ctx) {
   });
   return {
     sub: 'Value in force for each tool, and where it comes from',
-    view: { C: ReportedValues, props: {} },
     table: { cols: [{ k: 'k', l: 'Setting', w: '180px' }].concat(shown.map(id => ({ k: id, l: ctx.toolName(id), minw: 112 }))), rows, none: ctx.findings.unavailable || (ctx.findings.loading ? 'Reading the settings...' : 'No settings read yet.') },
     actions: [{ label: 'Open the Settings screen', go: () => ctx.actions.setScreen('settings') }],
     note: ctx.findings.note || '',
@@ -1065,9 +1069,9 @@ export function buildPanel(id, ctx, local, pn) {
   const b = BUILDERS[id];
   if (!b) return {};
   const body = b(ctx, local, id, pn);
-  if (body.table && ctx.nodeScope && ['attention', 'agentsT', 'promptsL', 'pprompts', 'confirms', 'loops', 'changesT', 'memfiles', 'procs', 'traffic', 'daemon'].includes(id)) {
+  if (body.table && ctx.nodeScope && ['attention', 'agentsT', 'promptsL', 'pprompts', 'confirms', 'loops', 'changesT', 'memfiles', 'procs', 'traffic', 'daemon', 'findings', 'settings'].includes(id)) {
     const table = body.table;
-    body.table = { ...table, cols: [...table.cols.slice(0, 1), { k: 'node', l: 'Reporting node', w: '146px' }, ...table.cols.slice(1)],
+    body.table = { ...table, cols: [...table.cols.slice(0, 1), { k: 'node', l: 'Node', w: '146px' }, ...table.cols.slice(1)],
       rows: table.rows.map(r => {
         const node = r.node_id || (id === 'agentsT' && reportingNode(r.id)) || (!ctx.remote && ctx.localNode);
         return { ...r, sort: { ...r.sort, node }, cells: { ...r.cells, node: { v: node === 'legacy' ? 'Untagged history' : node || ctx.scopeName, cls: 'dim' } } };

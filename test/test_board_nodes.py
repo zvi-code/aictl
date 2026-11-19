@@ -113,9 +113,11 @@ def test_session_and_totals_use_node_qualified_keys_and_bound_session_identifier
 def test_health_sample_uses_only_current_process_counters_and_shared_resource_scope():
     def read(_settings, kql):
         assert 'column_ifexists("node_health_counters","")' in kql
+        assert 'inbound_bps=column_ifexists("live_in_rate",real(null))' in kql
+        assert 'outbound_bps=column_ifexists("live_out_rate",real(null))' in kql
         assert kql.index("arg_max(_v, *)") < kql.index("where not(_deleted)") < kql.index("arg_max(captured_at,")
         return [
-            {"node_id": n, "captured_at": 600, "daemon_pid": 7,
+            {"node_id": n, "captured_at": 600, "daemon_pid": 7, "inbound_bps": 240, "outbound_bps": 0,
              "counter_sample": json.dumps({"at": at, "pid": pid, "store": {"reads": {"total": 123}}})}
             for n, at, pid in (("current", 598, 7), ("old-process", 598, 6), ("stale", 100, 7))
         ]
@@ -124,9 +126,59 @@ def test_health_sample_uses_only_current_process_counters_and_shared_resource_sc
                                               "table_inventory": {"tables": [{"name": "events", "rows": 200}]},
                                               "cluster_resources": {"native": {"nodes": 3}}, "quality": ["private"]})
     assert [r["client_sample"] is not None for r in report["rows"]] == [True, False, False]
+    assert (report["rows"][0]["inbound_bps"], report["rows"][0]["outbound_bps"]) == (240, 0)
     assert report["shared_kusto"]["capacity_available"] == 0
     assert report["shared_kusto"]["table_inventory"]["tables"][0]["rows"] == 200
     assert "private" not in json.dumps(report)
+
+
+def test_runtime_reports_keep_monitored_counts_independent_of_agent_inventory():
+    def read(_settings, kql):
+        assert "ts >= 700.0" in kql
+        assert "active_sessions=live_sessions" in kql
+        return [
+            {"node_id": "host-a", "ts": 991, "active_sessions": 4, "active_processes": 8, "daemon_pid": 6},
+            {"node_id": "host-b", "ts": 992, "active_sessions": 9, "active_processes": 13, "daemon_pid": 7,
+             "counter_sample": json.dumps({"at": 992, "pid": 7, "store": {},
+                "runtime": {"agents": {"captured_at": 990, "total": 1, "rows": [
+                    {"session_id": "same-session", "running": True, "project_path": "/private/path", "prompt": "private"}
+                ]}}})},
+            {"node_id": "host-c", "ts": 993, "active_sessions": 0, "active_processes": 0, "daemon_pid": 30,
+             "counter_sample": json.dumps({"at": 993, "pid": 29, "store": {},
+                "runtime": {"agents": {"captured_at": 991, "total": 0, "rows": []}}})},
+        ]
+
+    def local_health():
+        return {"resources": {"host": {"checked_at": 997, "activity_at": 996, "active_sessions": 5,
+                                       "active_processes": 11, "memory_total_bytes": 100 * 1024**2}},
+                "pipeline": {"self": {"pid": 6}}}
+
+    fleet = node_view(project(), query("runtime", "fleet"), now=1000.0, read=read, local_health=local_health)
+    a, b, c = fleet["rows"]
+    assert (a["active_sessions"], a["active_processes"]) == (5, 11)
+    assert (b["active_sessions"], b["active_processes"]) == (9, 13)
+    assert b["agents"]["rows"][0]["session_id"] == "same-session"
+    assert "private" not in json.dumps(fleet)
+    assert c["active_sessions"] == 0 and c["agents"] is None
+    own = node_view(project(), query("health"), now=1000.0, read=read, local_health=local_health)
+    assert own["rows"] == [{k: v for k, v in a.items() if k != "agents"}]
+
+
+def test_local_runtime_inventory_does_not_export_paths_and_deduplicates_sessions():
+    from aictl.dashboard.node_views import agent_inventory
+
+    records = {
+        "source.status": [{"producer": "runtime-collector", "ready": True, "observed_at": 980.0}],
+        "runtime.agent": [
+            {"session_id": "x", "native_session_id": "x", "running": True, "project": "private", "title": "private"},
+            {"session_id": "process-id", "native_session_id": "x", "running": False},
+        ],
+    }
+    hub = SimpleNamespace(values=records.__getitem__)
+    inventory = agent_inventory(hub, 1000)
+    assert inventory["total"] == 1 and inventory["rows"][0]["running"] is True
+    assert "private" not in json.dumps(inventory)
+    assert agent_inventory(hub, 1300) is None
 
 
 def test_historical_detail_prefilters_immutable_session_keys_before_current_winner():

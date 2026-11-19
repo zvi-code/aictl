@@ -257,8 +257,10 @@ turn observations into billable requests.
 or a named node for read-only reported data. `legacy` is history without a node
 tag. Browser Overview uses the same charts, filters, and drill-downs in every
 scope. It aggregates activity in the selected window and uses the reporting
-node and native ID together for session links. It does not read local files or
-join in local runtime for a named node or All nodes.
+node and native ID together for session links. Runtime data is independent
+of the historical time range. The serving node supplies its current monitor
+snapshot; other nodes supply their latest shared reports. A scope that
+excludes the serving node never uses its runtime measurements.
 
 The browser's historical Overview requires a current history store. A valid
 empty range is not a query failure. If a scope exceeds the 31-day range or query
@@ -267,26 +269,37 @@ range. Fleet CPU and memory charts sum per-node bucket averages from available
 samples; a node without samples is not counted as a zero sample.
 
 The node selector applies to every dashboard section. Choosing the serving
-host **by name** selects its stored history; **This node** selects its local
-runtime. Overview, Agents, Usage, Prompts, Tools, Changes and Sources show
-per-node contributions before row limits. Session search shows matches per
-node before pagination. A zero in these tables means no matching records,
+host **by name** or **This node** selects its own history and runtime.
+Tables whose rows belong to one machine identify it in the Node column.
+Aggregates use the selected nodes before row limits. A zero in a historical
+table means no matching records,
 not proof that an instrumented activity did not occur. Collection capabilities
 in the Sources matrix are global; its evidence comes from the selected scope.
 
-Context compares indexed files, latest tool reports and seven days of model
-calls by node. Each detail panel uses one reporting node, so identical paths,
-different model windows and lifetime counters do not get combined. Historical
+The **Monitored sessions** counter includes idle sessions and does not
+establish that a model is generating a reply. This count and the AI tool
+process count come from each node's monitor, not from recent historical
+requests. The Agents panel distinguishes the live count from recorded agents
+and shows how many reporting nodes sent individual agent lists. Upgraded daemons include
+up to 128 session records per node in an existing operational sample.
+Older daemons can report host counts without an agent list; the dashboard
+shows that gap without inventing agent rows. Lists join historical rows
+only by the reporting node and exact session ID.
+
+Context includes indexed files, the latest tool reports and seven days of model
+calls from the selected nodes. File rows keep their node identities, and
+distinct model windows and lifetime counters do not get combined. Historical
 budgets include only host-wide files with known loading policies; scan roots
 and current file contents are not inferred. Machine separates whole-host
 samples from recorded session/PID associations; neither is a live process
-tree. Settings in effect shows reported daemon values and their capture time,
-not local audit findings. Session drawer tabs retain the originating node,
+tree. Session drawer tabs retain the originating node,
 including Events, Team, Processes and Integrations. They do not read a
 same-named file, PID, session or local configuration from the serving host.
 
 Health keeps the same sidebar, activity, resources, table inventory and detailed
 metrics in every scope. Host measurements retain their node and capture time.
+Network traffic by node shows the latest inbound and outbound rates for
+monitored AI tools in bytes per second. These are not Kusto SDK rates.
 SDK rates and client counters use only reporting daemons in the selection;
 Health shows the coverage, and does not count a missing measurement as zero.
 An upgraded daemon includes bounded operational counters in an existing system
@@ -308,10 +321,9 @@ For session details they select candidate physical keys first, then resolve
 all versions of those keys and recheck the session. This avoids grouping the
 whole store without letting an old version or a deleted record reappear.
 The node filter keeps the same panels, table columns, and Settings views.
-Settings shows the effective node ID and its source. Remote settings show the
-reported capture, ingestion and retention configuration and its capture time;
-they never open another machine's files or expose environment variable values.
-These fields appear after an upgraded daemon publishes a system snapshot.
+Settings shows the effective node ID and its source for the serving daemon.
+Local tool configuration files and policy findings are not read in remote
+scopes or substituted for the selected nodes.
 
 The CLI uses the daemon's node report endpoint. `aictl board overview` counts
 sessions **started** in its selected window (seven days by default), using the

@@ -49,8 +49,29 @@ export function normalizeContext(raw) {
   const map = obj(raw.map);
   const memory = obj(raw.memory);
   const daily = obj(raw.daily);
+  if (Array.isArray(raw.nodes)) {
+    const nodes = raw.nodes.map(n => ({ ...normalizeContext(n), node_id: n.node_id }));
+    const tagged = pick => nodes.flatMap(n => pick(n).map(row => ({ ...row, node_id: n.node_id })));
+    const total = (list, key) => list.reduce((sum, row) => sum + (row[key] || 0), 0);
+    const policies = {};
+    for (const n of nodes) for (const [k, v] of Object.entries(n.map.policy)) {
+      policies[k] = (policies[k] || 0) + v;
+    }
+    return {
+      ...EMPTY_CONTEXT, loaded: true, generated_at: raw.generated_at,
+      budget: { tools: tagged(n => n.budget.tools) },
+      categories: tagged(n => n.categories),
+      map: { total: nodes.reduce((sum, n) => sum + n.map.total, 0), policy: policies,
+        rows: tagged(n => n.map.rows), items: tagged(n => n.map.items) },
+      memory: { entries: tagged(n => n.memory.entries), tokens: total(nodes.map(n => n.memory), 'tokens'), growth: tagged(n => n.memory.growth) },
+      files: nodes.flatMap(n => n.files.map(f => ({ ...f, node_id: n.node_id, files: f.files.map(row => ({ ...row, node_id: n.node_id })) }))),
+      telemetry: tagged(n => n.telemetry),
+      daily: { days: [...new Set(nodes.flatMap(n => n.daily.days))].sort(), rows: tagged(n => n.daily.rows),
+        models: [...new Map(nodes.flatMap(n => n.daily.models.map(m => [m.model, m]))).values()] },
+      workflows: tagged(n => n.workflows),
+    };
+  }
   return {
-    ...(Array.isArray(raw.nodes) ? { nodes: raw.nodes.map(n => ({ ...normalizeContext(n), node_id: n.node_id })) } : {}),
     generated_at: raw.generated_at ?? null,
     root: raw.root ?? null,
     budget: { tools: list(budget.tools).map(b => ({ ...b, projects: list(b.projects) })), totals: obj(budget.totals) },

@@ -348,7 +348,8 @@ def test_health_resources_keep_process_host_and_component_sample_times_distinct(
     monkeypatch.setattr(board_api, "_own_process", lambda: samplers.append("threads") or {"threads": 9, "uptime_s": 12})
     vm = SimpleNamespace(total=5000, available=2000)
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(virtual_memory=lambda: samplers.append("host") or vm))
-    snapshot = SimpleNamespace(timestamp=990.0, cpu_per_core=[0.0, 40.0], tools=[], total_cpu=110.0, total_mem_mb=50)
+    snapshot = SimpleNamespace(timestamp=990.0, cpu_per_core=[0.0, 40.0], tools=[], total_cpu=110.0, total_mem_mb=50,
+                               total_live_inbound_rate_bps=800, total_live_outbound_rate_bps=0)
     store = SimpleNamespace(snapshot=snapshot)
     data = board_api.compute_health(None, store)
     daemon, host = data["resources"]["daemon"], data["resources"]["host"]
@@ -358,6 +359,7 @@ def test_health_resources_keep_process_host_and_component_sample_times_distinct(
         20.0, 5000, 3000, 2000,
     )
     assert (host["cpu_checked_at"], host["memory_checked_at"], host["checked_at"]) == (990.0, 1000.0, 1000.0)
+    assert (host["inbound_bps"], host["outbound_bps"], host["activity_at"]) == (800, 0, 990.0)
     clock[0] += 5
     snapshot.timestamp, snapshot.cpu_per_core = clock[0], [0.0, 0.0]
     host = board_api.compute_health(None, store)["resources"]["host"]

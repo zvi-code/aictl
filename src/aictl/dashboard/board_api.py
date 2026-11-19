@@ -7074,6 +7074,16 @@ def _own_process() -> dict:
         return {"threads": None, "uptime_s": None}
 
 
+def _host_activity(snapshot: Any) -> dict:
+    return {
+        "active_sessions": getattr(snapshot, "total_live_sessions", None),
+        "active_processes": getattr(snapshot, "total_processes", None),
+        "inbound_bps": getattr(snapshot, "total_live_inbound_rate_bps", None),
+        "outbound_bps": getattr(snapshot, "total_live_outbound_rate_bps", None),
+        "activity_at": getattr(snapshot, "timestamp", None),
+    }
+
+
 def _health_resources(snapshot: Any, usage: dict, cluster: dict | None) -> dict:
     cores = getattr(snapshot, "cpu_per_core", None) or []
     host_cpu = round(sum(cores) / len(cores), 1) if cores else None
@@ -7088,7 +7098,8 @@ def _health_resources(snapshot: Any, usage: dict, cluster: dict | None) -> dict:
             "scope": "aictl daemon process only, excluding children; 100% CPU is one logical core",
         },
         "host": {
-            "cpu_percent": host_cpu, **memory, "cpu_checked_at": cpu_at, "memory_checked_at": memory_at,
+            "cpu_percent": host_cpu, **memory, **_host_activity(snapshot),
+            "cpu_checked_at": cpu_at, "memory_checked_at": memory_at,
             "checked_at": max((t for t in (cpu_at, memory_at) if t is not None), default=None),
             "scope": "Whole daemon host. CPU is the mean across logical cores in the monitor snapshot; "
                      "memory used is total minus available. checked_at is the latest component sample.",
@@ -7324,6 +7335,9 @@ def _collection_health(
     }
     if include_resources:
         payload["resources"] = _health_resources(snapshot, usage, cached.get("cluster_resources") if cached else None)
+        settings = getattr(db, "_kusto", None)
+        if settings is not None:
+            payload["resources"]["host"]["node_id"] = settings.node_id
     return payload
 
 
