@@ -1,0 +1,15 @@
+let t0 = datetime(2026-11-19 23:46:00); let t1 = datetime(2026-11-20 00:46:00); metrics | where ingestion_time() between (t0 .. t1) and node_id == 'desktop-1c0ea28' | extend grp = case(metric startswith 'aictl.file.', 'aictl.file.*', metric startswith 'aictl.discovery.', 'aictl.discovery.*', metric startswith 'process.', 'process.*', metric startswith 'system.', 'system.*', 'other'), key=strcat(metric, '/', tags) | order by key asc, ts asc | extend rep = key == prev(key) and value == prev(value), first_in_window = key != prev(key) | summarize rows=count(), series=dcount(key), first_in_window=countif(first_in_window), unchanged=countif(rep) by grp | extend rows_per_min=round(rows/60.0), unchanged_pct_of_rest = round(100.0*unchanged/max_of(rows-first_in_window,1), 1) | order by rows desc
+
+let t0 = datetime(2026-11-19 23:46:00); let t1 = datetime(2026-11-20 00:46:00); metrics | where ingestion_time() between (t0 .. t1) and node_id == 'desktop-1c0ea28' and metric startswith 'aictl.file.' | summarize rows=count() by t=bin(ingestion_time(), 5m) | order by t asc
+
+let t0 = datetime(2026-11-19 23:46:00); let t1 = datetime(2026-11-20 00:46:00); events | where ingestion_time() between (t0 .. t1) and node_id == 'desktop-1c0ea28' | summarize rows=count() by kind | extend rows_per_min=round(rows/60.0, 1) | top 12 by rows desc
+
+let t0 = datetime(2026-11-19 23:46:00); let t1 = datetime(2026-11-20 00:46:00); events | where ingestion_time() between (t0 .. t1) and node_id == 'desktop-1c0ea28' and kind == 'file_modified' | extend path=tostring(parse_json(detail).path) | summarize rows=count() by path | top 12 by rows desc
+
+let t0 = datetime(2026-11-19 23:46:00); let t1 = datetime(2026-11-20 00:46:00); union withsource=T metrics, OTELMetrics, OTELLogs, OTELTraces, events, tool_invocations, session_steps, requests, hook_calls, process_snapshots, tool_stats, datapoint_catalog | where ingestion_time() between (t0 .. t1) and node_id == 'desktop-1c0ea28' | summarize rows=count() by T | extend rows_per_min=round(rows/60.0, 1) | order by rows desc
+
+.show queries | where StartedOn between (datetime(2026-11-19 23:46:00) .. datetime(2026-11-20 00:46:00)) and Database == 'aictl_current' | summarize n=count(), per_min=round(count()/60.0, 1), cpuS=round(sum(TotalCpu)/1s, 1), p50Ms=round(percentile(Duration,50)/1ms), p95Ms=round(percentile(Duration,95)/1ms), memMB=round(max(MemoryPeak)/1048576.0, 1) by Application, State
+
+.show commands | where StartedOn between (datetime(2026-11-19 23:46:00) .. datetime(2026-11-20 00:46:00)) and Database == 'aictl_current' | summarize n=count(), per_min=round(count()/60.0, 1), cpuS=round(sum(TotalCpu)/1s, 1) by Application, CommandType, State
+
+.show queries | where StartedOn between (datetime(2026-11-19 23:46:00) .. datetime(2026-11-20 00:46:00)) and Database == 'aictl_current' and State == 'Failed' | extend r = replace_regex(substring(FailureReason, 0, 160), @'[\r\n\t|]+', ' ') | summarize n=count() by Application, r | top 10 by n desc

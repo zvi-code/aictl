@@ -118,7 +118,6 @@ The SQL compatibility profile retains inline routing for the tables below. In ob
 | Configuration and maintenance | `schema_version`, `maintenance_state`, `data_quality_status`, `path_defs`, `process_defs`, `datapoint_catalog` |
 | Sessions and their related state | `tools`, `projects`, `processes`, `sessions`, `session_processes`, `session_commits`, `agents`, `requests`, `context_events`, `tool_invocations`, `session_prompts`, `skill_uses`, `session_usage` |
 | Files and context | `file_blobs`, `files`, `file_write_events`, `session_folders`, `session_artifacts`, `session_loaded_files`, `session_context_items`, `memory_snapshots` |
-| Dashboard configuration | `ui_dashboard`, `ui_section`, `ui_widget`, `ui_tab`, `ui_group_by_option`, `ui_datasource`, `ui_widget_datasource`, `ui_preference`, `ui_theme` |
 | Tool message state | `cursor_session_messages`, `copilot_session_messages`, `vscode_chat_messages` |
 
 `events`, `metrics`, `system_snapshots`, `process_snapshots`, `tool_stats`, `hook_calls`, and the four raw OpenTelemetry tables use streaming ingestion in remote `auto` mode. Remaining tables not listed above use queued ingestion. These automatic profiles apply **only to `auto`**. An explicit global `queued`, `streaming` or `inline` applies to every table unless a per-table override replaces it.

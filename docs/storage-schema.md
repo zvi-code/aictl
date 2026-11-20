@@ -320,7 +320,7 @@ lets `/api/file` find a path. v34 also adds `idx_sessions_started` on
 
 ## Version 37 (cursor text, dashboard dates)
 
-`maintenance_state` gains `text TEXT NOT NULL DEFAULT ''`. `value` is always a number; a cursor that is JSON goes in `text` (the VS Code chat ingester's file cursor). `ui_dashboard.created_at` and `updated_at` held the literal text `%s` in databases made before v37 (a doubled `%%` in the column default); the migration sets them to the time of the repair, and both inserts now pass the time.
+`maintenance_state` gains `text TEXT NOT NULL DEFAULT ''`. `value` is always a number; a cursor that is JSON goes in `text` (the VS Code chat ingester's file cursor). In databases made before v37, `ui_dashboard.created_at` and `updated_at` could hold the literal text `%s` because of a doubled `%%` in the column default. If the table exists, the migration replaces those text values with the time of the repair.
 
 ## Version 38 (hook calls)
 

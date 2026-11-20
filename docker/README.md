@@ -43,7 +43,6 @@ docker compose -f docker/docker-compose.yml run --rm aictl shell
 | Current schema | DB schema equals `aictl.storage.SCHEMA_VERSION`; required core tables, structured columns, and indexes exist |
 | Observability tables | `file_write_events` and `data_quality_status` are present in a fresh DB |
 | CSV definitions seeded | Path and process definitions populated from CSVs |
-| UI layout seeded | Dashboard, tabs, widgets created |
 | Dashboard HTTP | Returns 200, API endpoints respond |
 | Deploy | `.context.toml` → native files (CLAUDE.md, .mcp.json, etc.) |
 | OTel config | Environment variables set correctly |

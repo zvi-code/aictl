@@ -370,10 +370,6 @@ class _ProjectDB(HistoryDB):
     def _sync_csv_to_db(conn: sqlite3.Connection) -> None:  # type: ignore[override]
         return None
 
-    @staticmethod
-    def _seed_ui_layout(conn: sqlite3.Connection) -> None:
-        return None
-
     def _buffer_events(self, events: list[EventRow]) -> None:
         """Events already throttled, stripped, logged and announced by the machine store."""
         with self._lock:

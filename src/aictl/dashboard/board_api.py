@@ -3519,63 +3519,6 @@ def _count_agents(board: _Board, sids: Iterable[str]) -> int:
     return sum(1 + sum(1 for a in board.agents_by_root.get(sid, ()) if a != sid) for sid in sids)
 
 
-def _node_activity(board: _Board, skill_rows: list[tuple]) -> list[dict]:
-    """Contributions to the selected window, before the board's display limits."""
-    integer_fields = ("agents", "sessions", "messages", "tokens", "cache_read", "replies", "calls", "tool_errors",
-                      "api_errors", "prompts", "skill_uses", "edits", "files", "tests", "failed_tests")
-    rows = {}
-
-    def row(node):
-        return rows.setdefault(node, dict.fromkeys(integer_fields, 0) | {"node_id": node, "cost_usd": None, "tools": set()})
-
-    for (node,) in board.conn.execute("SELECT DISTINCT node_id FROM sessions UNION SELECT DISTINCT node_id FROM files "
-                                      "UNION SELECT DISTINCT node_id FROM process_snapshots"):
-        row(node_label(node))
-    for sid in board.scope:
-        parts = identity_parts(sid)
-        if not parts:
-            continue
-        r = row(node_label(parts[0]))
-        r["sessions"] += 1
-        r["agents"] += _count_agents(board, [sid])
-        r["tools"].add(board.session_tool.get(sid, ""))
-        usage = board.by_root.get(sid)
-        if usage:
-            r["replies"] += usage.calls
-            r["tokens"] += usage.tokens
-            r["cache_read"] += usage.cache_read
-            r["api_errors"] += usage.errors
-            if usage.cost is not None:
-                r["cost_usd"] = (r["cost_usd"] or 0.0) + usage.cost
-        r["calls"] += board.fallback_tools.get(sid, 0)
-        r["messages"] += board.fallback_user.get(sid, 0) + board.prompt_agg.get((sid, sid), 0)
-        for aid in {sid, *board.agents_by_root.get(sid, ())}:
-            agg = board.tool_agg.get((sid, aid))
-            if agg:
-                r["calls"] += agg.n
-                r["tool_errors"] += agg.errs
-    where, params = board._scoped()
-    for table, totals, condition, fields in [
-        ("session_prompts", "COUNT(*)", " AND agent_id=''", ("prompts",)),
-        ("file_write_events", "COUNT(*),COUNT(DISTINCT path)", "", ("edits", "files")),
-    ]:
-        for node, *values in board.conn.execute(f"SELECT node_id,{totals} FROM {table} WHERE {where}{condition} GROUP BY node_id", params):
-            row(node_label(node)).update(zip(fields, values, strict=True))
-    for _name, sid, *_ in skill_rows:
-        if sid in board.scope:
-            row(node_label(identity_parts(sid)[0]))["skill_uses"] += 1
-    for sid, _aid, _ts, _name, _target, err, code, _duration in board.test_rows:
-        if sid in board.scope:
-            r = row(node_label(identity_parts(sid)[0]))
-            r["tests"] += 1
-            r["failed_tests"] += int(_test_failed(err, code))
-    for r in rows.values():
-        r["messages"] += r["replies"] + r["calls"]
-        r["cost_usd"] = _usd(r["cost_usd"])
-        r["tools"] = sorted(r["tools"] - {""})
-    return sorted(rows.values(), key=lambda r: (r["node_id"] == "legacy", r["node_id"]))
-
-
 _self_memo: list = [0.0, None]
 _self_lock = threading.Lock()
 
@@ -3997,10 +3940,8 @@ def _compute_board(
             "shown_agents": _count_agents(board, board.scope),
             "shown_sessions": sum(1 for sid in board.scope if sid in board.agents_by_root),
             "all_agents": _count_agents(board, (sid for sid in board.agents_by_root if sid)),
-            "listed_agents": len(agents),
         },
         "kpis": kpis,
-        **({"by_node": _node_activity(board, skill_rows)} if historical else {}),
         "attention": _attention(board, loops, agents),
         "agents": agents,
         "by_model": by_model,

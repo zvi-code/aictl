@@ -336,20 +336,6 @@ TABLE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("vscode_chat_messages", "copilot_session_messages", "cursor_session_messages"),
     ),
     ("Catalogs seeded from the package's YAML and CSV", ("datapoint_catalog", "path_defs", "process_defs")),
-    (
-        "Dashboard layout",
-        (
-            "ui_dashboard",
-            "ui_section",
-            "ui_widget",
-            "ui_tab",
-            "ui_group_by_option",
-            "ui_datasource",
-            "ui_widget_datasource",
-            "ui_preference",
-            "ui_theme",
-        ),
-    ),
     ("Bookkeeping", ("schema_version", "maintenance_state", "data_quality_status")),
 )
 

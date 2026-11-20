@@ -81,7 +81,6 @@ required = {
     'tool_stats', 'events', 'metrics', 'path_defs', 'process_defs',
     'memory_snapshots', 'cursor_session_messages', 'copilot_session_messages',
     'vscode_chat_messages', 'datapoint_catalog',
-    'ui_dashboard', 'ui_tab', 'ui_widget',
 }
 print(' '.join(sorted(required - tables)))
 conn.close()
@@ -154,25 +153,6 @@ if [ "$PATH_SPECS" -gt 0 ] && [ "$PROC_SPECS" -gt 0 ]; then
     pass "CSV specs seeded: $PATH_SPECS path specs, $PROC_SPECS process specs"
 else
     fail "CSV specs not seeded: $PATH_SPECS paths, $PROC_SPECS procs"
-fi
-
-# Check UI layout seeded
-UI_COUNT=$(python3 -c "
-import sqlite3
-conn = sqlite3.connect('$DB_PATH')
-d = conn.execute('SELECT COUNT(*) FROM ui_dashboard').fetchone()[0]
-t = conn.execute('SELECT COUNT(*) FROM ui_tab').fetchone()[0]
-w = conn.execute('SELECT COUNT(*) FROM ui_widget').fetchone()[0]
-print(f'{d} {t} {w}')
-conn.close()
-")
-DASHBOARDS=$(echo "$UI_COUNT" | cut -d' ' -f1)
-TABS=$(echo "$UI_COUNT" | cut -d' ' -f2)
-WIDGETS=$(echo "$UI_COUNT" | cut -d' ' -f3)
-if [ "$DASHBOARDS" -gt 0 ] && [ "$TABS" -gt 0 ] && [ "$WIDGETS" -gt 0 ]; then
-    pass "UI layout seeded: $DASHBOARDS dashboards, $TABS tabs, $WIDGETS widgets"
-else
-    fail "UI layout not seeded: $DASHBOARDS/$TABS/$WIDGETS"
 fi
 
 # ── 3. Dashboard HTTP ─────────────────────────────────────────────

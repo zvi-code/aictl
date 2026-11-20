@@ -373,7 +373,6 @@ class TestAgents:
         conn.commit()
         payload = _board(db)
         assert len(payload["agents"]) == 200
-        assert payload["scope"]["listed_agents"] == 200
         assert payload["scope"]["shown_agents"] == 255 + 1
         assert all(a["parent_id"] is None for a in payload["agents"])
 
@@ -555,7 +554,7 @@ class TestFilters:
         payload = _board(db, tools=("codex-cli",), project="/p/gamma")
         assert {t["id"] for t in payload["options"]["tools"]} == {"claude-code", "copilot-vscode", "codex-cli"}
         assert {p["id"] for p in payload["options"]["projects"]} == {"/p/alpha", "/p/beta", "/p/gamma"}
-        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 6, "listed_agents": 1}
+        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 6}
 
     def test_cpu_and_memory_follow_only_tool_and_time(self, db):
         unfiltered = _board(db)["series"]
@@ -1091,7 +1090,7 @@ class TestLiveProcessSessions:
         assert row["mem_mb"] == 40.0
         assert payload["kpis"]["running"] == 0
         assert payload["kpis"]["idle"] == 1
-        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 1, "listed_agents": 1}
+        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 1}
         assert {p["agent_id"] for p in payload["processes"]} == {"real"}
 
     def test_a_known_pid_link_merges_whatever_the_project_says(self, db):

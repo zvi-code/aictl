@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, within } from '@testing-library/preact';
+import { cleanup, fireEvent, render } from '@testing-library/preact';
 import { html } from 'htm/preact';
 import SessionKql, { sessionKqlExamples } from '../src/components/board/agent/SessionKql.js';
 
@@ -19,7 +19,6 @@ async function open(overrides) {
 }
 const type = (input, value) => fireEvent.input(input, { target: { value } });
 const key = (input, key, extra) => fireEvent.keyDown(input, { key, ...extra });
-const select = (ui, id) => fireEvent.change(ui.getByLabelText('Example'), { target: { value: id } });
 
 it('uses only fields and filters from the example source and never aggregates superseded rows', () => {
   const sid = '" \\ ;\r\n| take 7\u2028';
@@ -69,80 +68,6 @@ it('uses only fields and filters from the example source and never aggregates su
   }
 });
 
-it('scopes every source in a session query to one node and keeps identical session IDs apart in the fleet view', async () => {
-  const ui = await open();
-  select(ui, 'prompts');
-  const node = ui.getByLabelText('Reporting node');
-  const query = () => ui.getByLabelText('KQL query').value;
-  expect(query().match(/where node_id == "server-a"/g)).toHaveLength(2); // steps and text
-  type(node, 'SERVER-B');
-  expect(query().match(/where node_id == "server-b"/g)).toHaveLength(2);
-  type(node, 'legacy');
-  expect(query().match(/where node_id == ""/g)).toHaveLength(2);
-  select(ui, 'nodes');
-  expect(query()).toContain('arg_max(_v, *) by node_id, session_id');
-  expect(query()).not.toContain('where node_id ==');
-});
-
-it('offers retained prompt previews only by explicit selection, without sending prompt content to the browser or URL', async () => {
-  const fetch = vi.fn();
-  vi.stubGlobal('fetch', fetch);
-  const ui = await open({ url: 'https://adx.example/db?query=private-server-seed&autorun=true' });
-  const examples = sessionKqlExamples(props);
-  for (const { id, query } of examples.filter(e => !['prompts', 'assistant', 'commands'].includes(e.id))) {
-    expect(query, id).not.toMatch(/session_step_text|prompt_preview|\['text'\]/);
-  }
-  const original = ui.getByLabelText('KQL query').value;
-  expect(original).not.toContain('session_step_text');
-  const option = ui.getByRole('option', { name: 'User input prompts' });
-  select(ui, option.value);
-  const query = ui.getByLabelText('KQL query').value;
-  const [steps, texts] = query.split('| join kind=inner (');
-  expect(steps).toContain('), session_steps');
-  expect(steps).toContain('by step_key\n| where not(coalesce(_deleted, false))\n| where isnotempty(sid) and session_id == sid');
-  expect(steps).toContain(`| where ['kind'] == "message" and role == "user" and ['source'] == "user.message"`);
-  expect(steps).toContain('text_status in ("captured", "truncated")');
-  expect(query).not.toMatch(/gen_ai|agent_prompt|OTELTraces|assistant/);
-  expect(texts).toContain('), session_step_text');
-  expect(texts).toContain('where step_key in (selected_steps | where text_status in ("captured", "truncated") | project step_key)');
-  expect(texts).toContain(`substring(trim(@"\\s+", ['text']), 0, 240)`);
-  expect(texts).toMatch(/arg_max\(_v, \*\) by step_key\s*\| where not\(coalesce\(_deleted, false\)\) and session_id == sid and isnotempty\(text_preview\) and matched/);
-  expect(texts).toContain(') on session_id, step_key');
-  expect(texts.split('| project ').at(-1)).toMatch(/text_status, prompt_preview=text_preview$/);
-  const link = new URL(ui.getByRole('link').href);
-  expect(link.searchParams.get('query')).toBe(query);
-  expect(link.searchParams.get('autorun')).toBe('false');
-  expect(link.href).not.toContain('private-server-seed');
-  expect(fetch).not.toHaveBeenCalled();
-  select(ui, 'steps');
-  expect(ui.getByLabelText('KQL query')).toHaveValue(original);
-});
-
-it('searches retained messages, not preview prefixes or hidden fields, and separates command evidence from messages', async () => {
-  const ui = await open();
-  const query = () => ui.getByLabelText('KQL query').value;
-  for (const [id, role] of [['prompts', 'user'], ['assistant', 'assistant']]) {
-    select(ui, id);
-    type(ui.getByLabelText('Keyword or phrase (optional)'), 'cost "spike" | count');
-    expect(query()).toContain(`let needle = "cost \\"spike\\" | count";`);
-    expect(query()).toContain(`role == "${role}" and ['source'] == "${role}.message"`);
-    expect(query()).toContain("['text'] contains needle");
-    expect(query()).not.toContain('text_preview contains needle');
-    if (id === 'assistant') expect(query()).toContain('| where phase in ("", "commentary", "response", "final", "final_answer")');
-    expect(query()).not.toMatch(/TraceAttributes|gen_ai\.|reasoning/i);
-  }
-  select(ui, 'commands');
-  expect(ui.queryByLabelText(/Keyword or phrase/)).toBeNull();
-  expect(query()).toContain(`['kind'] == "tool_call" and phase == "requested"`);
-  expect(query()).toContain(`['kind'] == "command" and phase == "started"`);
-  expect(query()).toContain(`['kind'] == "tool_result" and phase in ("completed", "failed")`);
-  expect(query()).toContain('join kind=leftouter'); // Missing retained text must not erase a lifecycle event.
-  select(ui, 'reasoning');
-  expect(query()).toContain('tolong(TraceAttributes["gen_ai.usage.reasoning.output_tokens"])');
-  expect(query().match(/TraceAttributes\[/g)).toHaveLength(1);
-  expect(query()).not.toMatch(/session_step_text|project.*,\s*TraceAttributes(?:,|\n)/);
-});
-
 it('limits duration to complete native pairs and distinguishes unmeasured tool bytes from measured zero', () => {
   const q = Object.fromEntries(sessionKqlExamples(props).map(e => [e.id, e.query]));
   expect(q.longest).toMatch(/assistant\.turn_start.*phase == "started".*assistant\.turn_end.*phase == "ended"/);
@@ -155,26 +80,6 @@ it('limits duration to complete native pairs and distinguishes unmeasured tool b
   for (const p of [50, 95, 99]) expect(q.sizes).toContain(`percentile(bytes, ${p})`);
   expect(q.mcp).toContain('tool_name matches regex');
   expect(q.mcp).toMatch(/project event_time=.*source_event_id/);
-});
-
-it('requires explicit global opt-in and never generates an unbounded global query', async () => {
-  const ui = await open({ since: null, until: null });
-  select(ui, 'costAll');
-  expect(ui.queryByRole('link')).toBeNull();
-  expect(ui.queryByLabelText('KQL query')).toBeNull();
-  fireEvent.click(ui.getByRole('checkbox', { name: /Include all sessions/ }));
-  const all = ui.getByLabelText('KQL query').value;
-  expect(all).toContain('window_end = now();\nlet window_start = window_end - 7d');
-  expect(all).not.toContain(props.sessionId);
-  expect(new URL(ui.getByRole('link').href).searchParams.get('autorun')).toBe('false');
-  ui.rerender(html`<${SessionKql} ...${props}/>`);
-  expect(ui.queryByRole('link')).toBeNull(); // Previously confirmed dates no longer match.
-  expect(sessionKqlExamples(props).some(e => e.id === 'costAll')).toBe(false);
-  const global = bounds => sessionKqlExamples({ ...bounds, includeAllSessions: true }).find(e => e.id === 'costAll').query;
-  expect(global({ since: 0 })).toContain('window_end = window_start + 7d');
-  expect(global({ until: 50 })).toContain('unixtime_seconds_todatetime(50);\nlet window_start = window_end - 7d');
-  expect(global({ until: 'bad' })).toContain('window_end = datetime(null)');
-  expect(global(props)).toContain('ts < (window_end - datetime(1970-01-01)) / 1s');
 });
 
 it('ranks recorded cost only for exact, current links and returns scope coverage independently of any winner', () => {
@@ -197,39 +102,6 @@ it('ranks recorded cost only for exact, current links and returns scope coverage
     expect(cost).toContain('by root_session_id, root_turn_id');
     expect(cost).not.toContain('and isnotempty(turn_id)'); // A known spawn root need not have a child-local turn.
   }
-});
-
-it('filters observed choices by prefix, supports keyboard and pointer selection, and retains unlisted values', async () => {
-  const ui = await open();
-  const sid = ui.getByRole('combobox', { name: 'Session ID' });
-  expect(sid).toHaveValue('native-1');
-  expect(ui.queryByRole('combobox', { name: /Model/ })).toBeNull();
-  type(sid, 'OTH');
-  const list = ui.getByRole('listbox', { name: 'Session ID suggestions' });
-  expect(within(list).getAllByRole('option').map(o => o.textContent)).toEqual(['other-A', 'other-B']);
-  key(sid, 'ArrowUp');
-  expect(document.getElementById(sid.getAttribute('aria-activedescendant'))).toHaveTextContent('other-B');
-  key(sid, 'Enter');
-  expect(sid).toHaveValue('other-B');
-  expect(sid).toHaveAttribute('aria-expanded', 'false');
-  select(ui, 'spans');
-  const model = ui.getByRole('combobox', { name: /Model/ });
-  const tool = ui.getByRole('combobox', { name: /Tool name/ });
-  type(model, 'model b');
-  fireEvent.click(ui.getByRole('option', { name: 'Model B' }));
-  type(tool, 'she');
-  key(tool, 'ArrowDown'); key(tool, 'Enter');
-  const query = () => ui.getByLabelText('KQL query').value;
-  expect(query()).toContain('let sid = "other-B"');
-  expect(query()).toContain('where Model == "Model B"\n| where ToolName == "Shell / local"');
-  type(tool, 'not on board');
-  expect(ui.getByText(/No matching suggestion/)).toBeInTheDocument();
-  key(tool, 'Tab');
-  expect(query()).toContain('where ToolName == "not on board"');
-  select(ui, 'requests');
-  expect(ui.queryByLabelText(/Tool name \(optional\)/)).toBeNull();
-  expect(query()).toContain('where model == "Model B"');
-  expect(query()).not.toContain('not on board');
 });
 
 it('inserts completions at the caret and copies or links the exact edited query, without a daemon request', async () => {

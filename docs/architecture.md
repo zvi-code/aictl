@@ -144,8 +144,7 @@ aictl/
     ├── processes-windows.csv  # Process detection patterns (Windows)
     ├── metrics.yaml        #   OpenTelemetry metric definitions
     ├── telemetry-sources.yaml  # Structured telemetry collection rules
-    ├── tool-configs.yaml   #   Tool-specific config metadata
-    └── ui-widget-schema.yaml   # Dashboard widget schemas
+    └── tool-configs.yaml   #   Tool-specific config metadata
 ```
 
 ---
@@ -509,7 +508,6 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/datapoints` | GET | Datapoint catalog |
 | `/api/self-status` | GET | aictl's own runtime status |
 | `/api/board/health` | GET | Unified collection, ingestion, request and backend health; available before the first snapshot |
-| `/api/layout` | GET | Widget layout configuration |
 
 **Frontend** — Preact 10 with htm/preact tagged template literals. The UI has one screen, the board
 (`components/board/`), with Settings at `?screen=settings` and aictl Health at

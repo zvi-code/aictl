@@ -38,7 +38,6 @@ function mount(search, intercept = () => undefined) {
       const fixture = boardFixture();
       if (q.scope) {
         Object.assign(fixture, nodeContract(q));
-        fixture.by_node = (q.scope === 'node' ? [q.node_id] : ['node-a', 'node-b']).map((node_id, i) => ({ node_id, agents: i + 1, tools: ['copilot-cli'] }));
         fixture.agents = fixture.agents.map(r => ({
           ...r, id: rowID(r.id, q.node_id), node_id: q.node_id || 'node-a',
           parent_id: r.parent_id && rowID(r.parent_id, q.node_id),
@@ -103,7 +102,7 @@ describe('node scope across the board', () => {
         if (path === ENDPOINT && q.view === 'runtime') return json(envelope(q, { generated_at: now, rows: q.scope === 'fleet' ? [own, peer] : [peer] }));
         if (path === '/api/board') {
           return json({ ...boardFixture(), ...nodeContract(q), agents: [], kpis: { running: 0 },
-            scope: { shown_agents: 0, all_agents: 0 }, by_node: [{ node_id: 'node-a', agents: 0 }] });
+            scope: { shown_agents: 0, all_agents: 0 } });
         }
       });
       const kpi = ui.getByRole('link', { name: /Monitored sessions/ });

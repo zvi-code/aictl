@@ -51,7 +51,8 @@ ACCEPTED_UNSUPPORTED: dict[tuple[str, str], int] = {
     # A trigger body (new.rowid) and SQLite internals.
     ("aictl/storage.py", "new.rowid"): 1,
     ("aictl/storage.py", "dbstat"): 1,
-    ("aictl/storage.py", "last_insert_rowid()"): 1,
+    # Migration 37 repairs a legacy SQLite table absent from the current Kusto schema.
+    ("aictl/storage_migrations/m037_maintenance_text.py", "no such table: ui_dashboard"): 1,
 }
 
 # Statements whose f-string holes the corpus cannot fill with valid SQL.
@@ -204,11 +205,11 @@ def test_insert_or_replace_fills_defaults(tr):
 
 def test_upsert_copying_the_new_row_stays_an_insert(tr):
     ins = tr.translate(
-        "INSERT INTO ui_preference(dashboard_id, user_id, pref_key, pref_value) VALUES(?, ?, ?, ?)"
-        " ON CONFLICT(dashboard_id, user_id, pref_key) DO UPDATE SET pref_value = excluded.pref_value",
-        [1, "u", "k", "v"],
+        "INSERT INTO processes(pid, started_at, tool) VALUES(?, ?, ?)"
+        " ON CONFLICT(pid, started_at) DO UPDATE SET tool = excluded.tool",
+        [7, 1.0, "copilot"],
     )
-    # ui_preference is keyed by rowid: its conflict target is a unique index, so the cluster merges.
+    # processes is keyed by rowid: its (pid, started_at) unique constraint requires a cluster merge.
     assert isinstance(ins, Mutation) and ins.kind == "insert"
     ins = tr.translate(
         "INSERT INTO vscode_chat_messages(session_id, source_file, source_row_id, role, content, model, ts,"

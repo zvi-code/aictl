@@ -415,10 +415,6 @@ def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
     assert {r["node_id"] for r in board["agents"]} == {"host-a", "host-b", "legacy"}
     assert len({r["id"] for r in board["prompts"]}) == 3
     assert len({r["id"] for r in board["changes"]["files"]}) == 3
-    by_node = {r["node_id"]: r for r in board["by_node"]}
-    assert {node: r["tokens"] for node, r in by_node.items()} == {"host-a": 100, "host-b": 400, "legacy": 20}
-    for metric, kpi in (("calls", "tool_calls"), ("messages", "messages"), ("tokens", "tokens"), ("tool_errors", "failures")):
-        assert sum(r[metric] for r in by_node.values()) == board["kpis"][kpi]
     assert board["processes"] == [] and board["self"] is None and board["settings_at"] is None
     assert history.call(since=1000, until=2000, buckets=2)[1] == board
     _, filtered = history.call(
