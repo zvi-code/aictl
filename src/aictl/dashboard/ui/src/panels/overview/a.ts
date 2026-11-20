@@ -6,8 +6,6 @@ const flow = { kind: 'agent', field: 'id', tab: 'flow' } as const
 const context = (path: string) => ({ route: '/api/board/context', path }) as const
 const share = (path = 'cached_share', label = 'Cached share') => field(path, label, 'board.kpi.cached_share')
 const agentMetric = (path: string, label: string, key: string) => field(path, label, `board.agent.${key}`)
-const usage = [tokens('tokens', 'Tokens'), tokens('input', 'Input'), tokens('output', 'Output'),
-  tokens('cache_read', 'Cache read'), tokens('cache_write', 'Cache write'), share(), cost()]
 
 export const overviewA: readonly PanelDef[] = [
   {
@@ -15,10 +13,11 @@ export const overviewA: readonly PanelDef[] = [
     sources: [{ field: 'agents' }, { topic: 'runtime.agent' }, { field: 'scope' }, { field: 'tool_labels' }, { route: '/api/board/nodes' }],
     columns: [
       field('title', 'Agent'), agentMetric('status', 'Status', 'status'), agentMetric('tool', 'Tool', 'tool'),
-      agentMetric('project', 'Project', 'project'), agentMetric('model_names', 'Models', 'model'),
-      agentMetric('messages', 'Messages', 'msgs'), agentMetric('input', 'Input', 'input'),
-      agentMetric('output', 'Output', 'output'), tokens('cache_read', 'Cache read'), tokens('cache_write', 'Cache write'), share(), cost(),
+      agentMetric('messages', 'Messages', 'msgs'),
       agentMetric('tool_calls', 'Tool calls', 'tool_calls'), agentMetric('failures', 'Failures', 'failures'),
+      agentMetric('project', 'Project', 'project'), agentMetric('model_names', 'Models', 'model'),
+      agentMetric('input', 'Input', 'input'), agentMetric('output', 'Output', 'output'),
+      tokens('cache_read', 'Cache read'), tokens('cache_write', 'Cache write'), share(), cost(),
       agentMetric('confirms_asked', 'Confirmations asked', 'confirms_asked'),
       count('confirms_denied', 'Confirmations denied', 'board.agent.confirms_asked'),
       agentMetric('cpu_percent', 'CPU', 'cpu'), { ...agentMetric('mem_mb', 'RAM', 'mem'), scale: 1048576 },
@@ -32,16 +31,19 @@ export const overviewA: readonly PanelDef[] = [
     id: 'byModel', title: 'Usage by model', kind: 'table', defaultSize: 'medium', requiredCapabilities: [],
     sources: [{ field: 'by_model' }, { field: 'agents' }],
     columns: [agentMetric('model', 'Model', 'model'), count('agents', 'Agents', 'board.project.agents'),
-      count('msgs', 'Calls'), ...usage, { ...field('p95_ms', 'p95 reply', 'board.kpi.p95_ms'), scale: 0.001 }],
+      tokens('tokens', 'Tokens'), cost(), count('msgs', 'Calls'), tokens('input', 'Input'), tokens('output', 'Output'),
+      tokens('cache_read', 'Cache read'), tokens('cache_write', 'Cache write'), share(),
+      { ...field('p95_ms', 'p95 reply', 'board.kpi.p95_ms'), scale: 0.001 }],
     actions: [{ ...flow, field: 'agent_id' }, { kind: 'filter', field: 'model', filter: 'model', label: 'Toggle model filter' }],
     rowIdentity: ['model'], empty: 'No model usage reported.', load: () => loadRows(import('./agentRows').then(m => m.modelRows)),
   },
   {
     id: 'byRole', title: 'Main agents and subagents', kind: 'table',
     defaultSize: 'medium', requiredCapabilities: [], sources: [{ field: 'by_role' }],
-    columns: [field('kind', 'Kind of agent'), count('runs', 'Runs'), count('msgs', 'Messages'),
-      field('tokens', 'Tokens', 'board.role.row'), cost(), field('fail_rate', 'Tool failure rate', 'board.kpi.fail_rate')],
+    columns: [field('kind', 'Kind of agent'), count('runs', 'Runs'), field('tokens', 'Tokens', 'board.role.row'),
+      count('msgs', 'Messages'), cost(), field('fail_rate', 'Tool failure rate', 'board.kpi.fail_rate')],
     actions: [], rowIdentity: ['kind'], empty: 'No role aggregates reported.',
+    load: () => loadRows(import('./agentRows').then(m => m.roleRows)),
   },
   {
     // Paging and debounced search need a request controller that a table does not provide.
@@ -69,7 +71,7 @@ export const overviewA: readonly PanelDef[] = [
     rowIdentity: ['kind', 'agent_id', 'since_ts'],
     actions: [{ kind: 'agent', field: 'agent_id', tabs: { field: 'kind', values: { waiting: 'tools', wait: 'tools', loop: 'errors' } },
       tab: 'errors', excludeStopped: true }],
-    defaultSize: 'small', requiredCapabilities: [], empty: 'Nothing needs attention.',
+    defaultSize: 'small', requiredCapabilities: [],
     load: () => loadRows(import('./RowSummaries').then(m => m.attentionOptions)),
   },
   {

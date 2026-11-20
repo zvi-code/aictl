@@ -7,14 +7,16 @@
   background: var(--color-accent);
   color: var(--color-on-accent);
 }
-.body { display: grid; grid-template-columns: minmax(0, var(--overlay-sm)) minmax(0, 1fr); gap: var(--space-6); }
-.body[data-rail="closed"] { grid-template-columns: auto minmax(0, 1fr); }
-.rail { align-self: start; border-inline-end: var(--border-size) solid var(--color-border); padding-inline-end: var(--space-5); }
-.rail a { display: block; padding: var(--space-2) var(--space-4); color: var(--color-accent); }
-.rail a[aria-current="location"] { color: var(--color-text); background: var(--color-raised); }
-.rail a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
-.work { min-inline-size: 0; display: grid; align-content: start; gap: var(--space-5); }
+.filterSelect { max-inline-size: var(--panel-sm); text-overflow: ellipsis; }
+.quiet { composes: button focus from "../ui/control.module.css"; }
+.controls .quiet { background: transparent; border-color: transparent; font-weight: var(--weight-strong); }
+.sections:not([hidden]) { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.sections a { padding: var(--space-2) var(--space-4); color: var(--color-accent); }
+.sections a[aria-current="location"] { color: var(--color-text); background: var(--color-raised); }
+.sections a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
+.work { min-inline-size: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--space-4); }
 .work h1 { margin: 0 0 var(--space-5); font-size: var(--text-2xl); }
+.overview h1 { margin: 0; }
 .popup {
   max-inline-size: min(var(--overlay-md), calc(100vw - var(--space-6)));
   max-block-size: var(--overlay-md);
@@ -48,9 +50,4 @@
   border: var(--border-size) solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--elevation-2);
-}
-@media (max-width: 62rem) {
-  .body, .body[data-rail="closed"] { grid-template-columns: minmax(0, 1fr); }
-  .rail { border-inline-end: 0; padding: 0; }
-  .rail nav:not([hidden]) { display: flex; flex-wrap: wrap; }
 }

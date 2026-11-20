@@ -1,41 +1,44 @@
-.toolbar, .heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
-.heading { justify-content: space-between; }
+.toolbar, .heading, .panelActions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.toolbar > h1 + button { margin-inline-start: auto; }
+.panelActions { gap: var(--space-2); }
+.heading { color: var(--color-muted); }
 .heading > h2 { margin: 0; font-size: var(--text-lg); }
-.button { composes: button focus from "../ui/control.module.css"; }
-.section { margin-block: var(--space-7); scroll-margin-top: calc(var(--control-size) * 3); }
-.toolbar + .section { margin-block-start: var(--space-3); }
-.toolbar + .section, .toolbar + .section + .section { margin-block-end: var(--space-3); }
+.button, .select { composes: button focus from "../ui/control.module.css"; }
+.quiet, .disclosure, .summaryFold, .iconButton { composes: button focus from "../ui/control.module.css"; }
+.root :is(.quiet, .disclosure, .summaryFold, .iconButton) { background: transparent; border-color: transparent; }
+.root :is(.quiet, .disclosure, .summaryFold, .iconButton):hover:not(:disabled) { background: var(--color-raised); }
+.disclosure, .summaryFold { font-weight: var(--weight-strong); padding-inline: var(--space-2); }
+.iconButton { padding: var(--space-2); min-inline-size: var(--control-size); }
+.iconButton:disabled { opacity: .55; }
+.grip { display: inline-flex; cursor: grab; padding: var(--space-2); }
+.grip svg { pointer-events: none; }
+.srOnly { composes: visuallyHidden from "../ui/control.module.css"; }
+.section { margin-block: var(--space-7); scroll-margin-top: calc(var(--app-header-height, var(--control-size) * 2) + var(--space-4)); }
+.section:first-of-type { margin-block: var(--space-2) var(--space-5); }
 .section:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
 .dock, .dockContent, .split, .group, .slot { min-inline-size: 0; block-size: 100%; }
-.dock { position: relative; margin-block-start: var(--space-2); --dock-tab-height: calc(var(--control-size) + var(--space-2) - var(--border-size)); }
-.dockContent { contain: content; }
+.dock { position: relative; margin-block-start: var(--space-2); }
 .split { display: grid; position: relative; }
 .cell { min-inline-size: 0; min-block-size: 0; }
-.group { display: grid; grid-template-rows: var(--dock-tab-height) minmax(0, 1fr); overflow: hidden; }
-.tabs { display: flex; overflow: auto hidden; scrollbar-width: none; background: var(--color-raised); }
+.group { display: grid; grid-template-rows: minmax(0, 1fr); }
+.group[data-stack] { grid-template-rows: auto minmax(0, 1fr); }
+.tabs { display: flex; flex-wrap: wrap; gap: var(--space-1); border-block-end: var(--border-size) solid var(--color-border); }
 .tab {
   composes: focus from "../ui/control.module.css";
   display: flex;
   align-items: flex-start;
   flex: 0 0 auto;
   position: relative;
-  padding: var(--space-2) var(--space-6) 0;
+  padding: var(--space-2) var(--space-4);
   border: 0;
-  background: var(--color-raised);
+  background: transparent;
   color: var(--color-muted);
   font: inherit;
   font-size: calc(var(--text-sm) + var(--border-size));
-  cursor: grab;
+  cursor: pointer;
   white-space: nowrap;
 }
-.tab + .tab::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  inline-size: var(--border-size);
-  background: var(--color-border);
-  pointer-events: none;
-}
+.tab[draggable="true"] { cursor: grab; }
 .tab[data-selected] { background: var(--color-surface); color: var(--color-text); }
 .tab:focus-visible { outline-offset: calc(-1 * var(--focus-size)); }
 .sash {
@@ -61,3 +64,20 @@
 }
 .sash:hover, .sash:active, .sash:focus-visible { background: var(--color-accent); }
 .empty { color: var(--color-muted); margin: var(--space-2) 0; }
+.root[data-flow] { --dock-gap: var(--space-4); }
+.root[data-flow] :is(.dock, .dockContent, .split, .group, .slot) { block-size: auto; }
+.root[data-flow] .split { gap: var(--dock-gap); }
+.root[data-flow] .split[data-axis="HORIZONTAL"] { grid-template-columns: var(--dock-columns); }
+.root[data-flow] .cell { position: relative; }
+.root[data-flow] .cell > .sash { left: calc(100% + var(--dock-gap) / 2); }
+.root[data-flow][data-dock-mode="static"] :global(#sec-top) .heading:has([aria-expanded="true"]) {
+  position: absolute;
+  z-index: 1;
+  inset-inline-end: var(--space-3);
+  inset-block-start: var(--space-2);
+}
+.root[data-flow] :global(#sec-top) { position: relative; }
+@media (max-width: 48rem) {
+  .root[data-flow] .split[data-axis="HORIZONTAL"] { grid-template-columns: minmax(0, 1fr); }
+  .root[data-flow] .sash { display: none; }
+}

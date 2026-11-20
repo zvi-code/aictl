@@ -11,18 +11,31 @@ export type Field<T> = {
   label: string
   read: (row: T) => string | number | boolean | null | undefined
   format?: (value: string | number | boolean) => string
+  compact?: (value: number) => string | undefined
   sortable?: boolean
+  numeric?: boolean
   action?: { label: (row: T) => string | undefined; run: (row: T) => void }
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true })
 const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 })
+export const missingField = 'Not available from this source'
 
 export function formatField<T>(field: Field<T>, row: T) {
-  const value = field.read(row)
-  if (value == null) return 'Not available from this source'
+  return formatValue(field, field.read(row))
+}
+
+export function formatValue<T>(field: Field<T>, value: ReturnType<Field<T>['read']>) {
+  if (value == null) return missingField
   if (field.format) return field.format(value)
   return typeof value === 'number' ? number.format(value) : String(value)
+}
+
+export function compareFieldValues(left: ReturnType<Field<unknown>['read']>, right: ReturnType<Field<unknown>['read']>, desc = false) {
+  if (left == null || right == null) return Number(left == null) - Number(right == null)
+  const result = typeof left === 'number' && typeof right === 'number'
+    ? left - right : collator.compare(String(left), String(right))
+  return desc ? -result : result
 }
 
 const features = tableFeatures({
@@ -39,12 +52,7 @@ export function makeColumns<T extends object>(fields: readonly Field<T>[]): Colu
     accessorFn: row => field.read(row) ?? undefined,
     enableSorting: field.sortable !== false,
     sortUndefined: 'last',
-    sortFn: (a, b) => {
-      const left = field.read(a.original)
-      const right = field.read(b.original)
-      if (typeof left === 'number' && typeof right === 'number') return left - right
-      return collator.compare(String(left), String(right))
-    },
+    sortFn: (a, b) => compareFieldValues(field.read(a.original), field.read(b.original)),
   }))
 }
 

@@ -1,4 +1,5 @@
-import { boardUrl, captureFrame, checkAxe, checkConsole, expect, goToBoard, recordedUrl, test } from './fixtures.mjs';
+import { boardUrl, captureFrame, checkAxe, checkConsole, dist, expect, goToBoard, recordedUrl, test } from './fixtures.mjs';
+import { startReplay } from '../replay/server.mjs';
 
 const sessionMiss = '/api/board/sessions?limit=50&offset=0&q=';
 const unavailable = 'Not available from this source';
@@ -28,12 +29,15 @@ function stat(panel, label) {
   return panel.locator('[data-summary] dl').filter({ has: panel.page().getByText(label, { exact: true }) }).locator('dd');
 }
 
-test('BRD-02: the recorded empty attention list reports zero', async ({ page, snapshotReplay }) => {
+test('BRD-02: a stale empty attention report is compact and does not give an all-clear', async ({ page, snapshotReplay }) => {
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'attention');
-  await expect(stat(panel, 'Needs attention')).toHaveText('0');
-  await expect(panel.getByRole('group', { name: 'Attention by kind' }).getByRole('meter')).toHaveCount(0);
-  await expect(panel.getByText('Nothing needs attention.')).toBeVisible();
+  await expect(panel.getByRole('status')).toContainText('Attention data is stale.');
+  await expect(panel.getByText('Nothing needs attention.')).toHaveCount(0);
+  await expect(panel.locator('time')).toHaveAttribute('datetime', /^2026-11-20T/);
+  await expect(panel.locator('[data-summary]')).toHaveCount(0);
+  await expect(panel.getByRole('group', { name: 'Attention by kind' })).toHaveCount(0);
+  expect((await panel.boundingBox()).height).toBeLessThan(110);
 });
 
 async function contextRecord(replay) {
@@ -73,6 +77,52 @@ function serveBootstrap(route, bootstrap, params, keep) {
     ? { ...entity, data: { ...entity.data, scope } } : entity);
   return route.fulfill({ contentType: 'text/event-stream',
     body: `event: bootstrap\nid: ${bootstrap.cursor}\ndata: ${JSON.stringify({ ...bootstrap, scope, entities })}\n\n` });
+}
+
+for (const state of ['empty', 'unknown-time', 'missing', 'populated']) {
+  test(`BRD-02: handles ${state} attention`, async ({ page }) => {
+    const replay = await startReplay({
+      dist, speed: 10, boardWindow: true, bootstrapOnly: true, supplemental: true,
+      mapBootstrap(recorded) {
+        const entities = recorded.entities.filter(({ data }) =>
+          (state !== 'missing' || data.field !== 'attention') && (state !== 'unknown-time' || data.field !== 'generated_at'))
+          .map(entity => entity.data.component === 'history' ? { ...entity, data: {
+            ...entity.data, error: null, reason: null, stale: false,
+            ...(state === 'unknown-time' && { computed_at: undefined, attempted_at: undefined }),
+          } } : entity);
+        if (state === 'populated') {
+          const agent = entities.find(({ data }) => data.field === 'agents' && data.key && !data.value.parent_id);
+          const marker = entities.find(({ data }) => data.field === 'attention' && data.collection);
+          entities.push({ ...marker, id: 'test-attention-wait', data: {
+            scope: marker.data.scope, field: 'attention', key: 'test-wait', order: 0,
+            value: { agent_id: agent.data.value.id, title: agent.data.value.title, kind: 'waiting',
+              detail: 'Waiting for confirmation', since_ts: 1795134000, tokens: null, cost_usd: 0 },
+          } });
+        }
+        return { ...recorded, entities };
+      },
+    });
+    try {
+      await goToBoard(page, replay);
+      const panel = await showPanel(page, 'attention');
+      if (state === 'empty') {
+        await expect(panel.getByRole('status')).toContainText('Nothing needs attention.');
+        await expect(panel.locator('[data-summary]')).toHaveCount(0);
+      } else if (state === 'unknown-time') {
+        await expect(panel.getByRole('status')).toContainText('No attention items reported.');
+        await expect(panel.getByText('Last updated: unknown')).toBeVisible();
+        await expect(panel.getByText('Nothing needs attention.')).toHaveCount(0);
+      } else if (state === 'missing') {
+        await expect(panel.getByRole('status')).toContainText('Attention data is not available');
+        await expect(panel.getByText('Nothing needs attention.')).toHaveCount(0);
+      } else {
+        await expect(stat(panel, 'Needs attention')).toHaveText('1');
+        await expect(stat(panel, 'Tokens')).toHaveText(unavailable);
+        await expect(stat(panel, 'Listed cost')).toHaveText('$0.00');
+        await expect(panel.getByRole('meter', { name: 'Waiting' })).toBeVisible();
+      }
+    } finally { await replay.close(); }
+  });
 }
 
 async function replayFacet(page, replay, facet, field) {
@@ -116,21 +166,55 @@ test('Overview A panels are in their default sections', async ({ page, snapshotR
   }
 });
 
-test('BRD-03: sort, group, fold and reach rows beyond the first window', async ({ page, snapshotReplay }) => {
+test('BRD-03: readable agent names, keyboard paging, sorting, grouping and folding', async ({ page, snapshotReplay }, testInfo) => {
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'agentsT');
   const table = panel.getByRole('table', { name: 'Agents and subagents' });
   const first = row(table, 'anon_33186031882f5bc3b1a54036');
-  await expect(first).toContainText('anon_2c2f5bb3489bbb651fa965a6');
+  const name = first.getByRole('button', { name: 'Open anon_2c2f5bb3489bbb651fa965a6', exact: true });
+  await expect(name).toHaveText('anon_2c2f5bb3489bbb651fa965a6');
+  expect(await name.evaluate(button => {
+    const range = document.createRange();
+    range.selectNodeContents(button);
+    const bounds = range.getBoundingClientRect();
+    const cell = button.closest('td').getBoundingClientRect();
+    return bounds.left >= cell.left && bounds.right <= cell.right && bounds.bottom <= cell.bottom;
+  })).toBe(true);
   await expect(first.getByText('0', { exact: true }).first()).toBeVisible();
-  await expect(first.getByText(unavailable, { exact: true }).first()).toBeVisible();
-  await expect(table.getByRole('columnheader', { name: 'Node', exact: true })).toHaveCount(0);
-  const viewport = panel.getByRole('region', { name: 'Agents and subagents scroll area' });
-  const late = row(table, 'runtime:anon_df00885f95ef8deeff1ef17d');
-  await expect(late).toHaveCount(0);
-  await viewport.press('End');
-  await expect(table.getByText('Activity unknown', { exact: true }).first()).toBeVisible();
-  await viewport.press('Home');
+  await expect(table.getByRole('columnheader')).toHaveText(['Agent', 'Status', 'Tool', 'Messages', 'Tool calls', 'Failures']);
+  await expect(panel.getByRole('region', { name: 'Agents and subagents scroll area' })).toHaveCount(0);
+  await expect(table.locator('tbody tr')).toHaveCount(10);
+  await page.locator('#sec-agents').evaluate(section => section.scrollIntoView());
+  expect(await table.locator('tbody tr').evaluateAll(rows => rows.filter(row => {
+    const bounds = row.getBoundingClientRect();
+    return bounds.top >= 0 && bounds.bottom <= innerHeight;
+  }).length)).toBeGreaterThanOrEqual(5);
+  await page.screenshot({ path: testInfo.outputPath('agents-light.png') });
+  const pager = panel.getByRole('group', { name: 'Agents and subagents pages' });
+  await expect(pager.getByRole('status')).toContainText('1–10 of ');
+  const next = pager.getByRole('button', { name: 'Next page' });
+  await next.press('Enter');
+  await expect(next).toBeFocused();
+  await expect(pager.getByRole('status')).toContainText('11–20 of ');
+  await expect(first).toHaveCount(0);
+  await pager.getByRole('button', { name: 'Previous page' }).press('Space');
+  await expect(first).toBeVisible();
+  const columns = panel.getByRole('button', { name: 'Columns', exact: true });
+  await columns.press('Enter');
+  await expect(columns).toHaveAttribute('aria-expanded', 'true');
+  const cpu = panel.getByRole('checkbox', { name: 'CPU', exact: true });
+  await cpu.press('Space');
+  await expect(cpu).toBeChecked();
+  await expect(table.getByRole('columnheader', { name: 'CPU', exact: true })).toBeVisible();
+  await expect(first.getByText('N/A', { exact: true }).last()).toBeVisible();
+  await cpu.press('Escape');
+  await expect(columns).toBeFocused();
+  await checkAxe(page, '#p-agentsT', 'Agent table in light theme');
+  await page.locator('html').evaluate(node => node.setAttribute('data-theme', 'dark'));
+  await columns.press('Enter');
+  await checkAxe(page, '#p-agentsT', 'Agent table and open column chooser in dark theme');
+  await page.screenshot({ path: testInfo.outputPath('agents-columns-dark.png') });
+  await page.keyboard.press('Escape');
   const mode = panel.getByRole('radiogroup', { name: 'Group agents by' });
   await mode.getByRole('radio', { name: 'No groups' }).press('ArrowRight');
   await expect(mode.getByRole('radio', { name: 'Project' })).toHaveAttribute('aria-checked', 'true');
@@ -139,6 +223,7 @@ test('BRD-03: sort, group, fold and reach rows beyond the first window', async (
   await expect(table.getByRole('button', { name: /^Unfold / }).first()).toHaveAttribute('aria-expanded', 'false');
   await table.getByRole('button', { name: 'Status', exact: true }).press('Enter');
   await expect(table.getByRole('columnheader', { name: 'Status', exact: true })).toHaveAttribute('aria-sort', 'ascending');
+  await expect(table.getByRole('button', { name: 'Status', exact: true })).toBeFocused();
 });
 
 test('BRD-04/05: model participants, filter toggles and role totals', async ({ page, snapshotReplay }) => {
@@ -147,8 +232,9 @@ test('BRD-04/05: model participants, filter toggles and role totals', async ({ p
   const model = 'anon_eb574eb0c91a8699ae7f3fe7';
   const panel = await showPanel(page, 'byModel');
   const parent = row(panel, 'anon_43ada58e9cdd2e0c9deaca20');
-  await expect(parent).toContainText('701,991,452');
-  await expect(parent).toContainText(unavailable);
+  await expect(parent).toContainText('702.0 M');
+  await expect(parent.getByTitle('701,991,452', { exact: true })).toBeVisible();
+  await expect(parent.getByText('N/A', { exact: true })).toBeVisible();
   const count = Number(await panel.getByRole('table').getAttribute('aria-rowcount'));
   await parent.getByRole('button', { name: `Unfold ${model}` }).press('Space');
   await expect.poll(async () => Number(await panel.getByRole('table').getAttribute('aria-rowcount'))).toBeGreaterThan(count);
@@ -161,7 +247,7 @@ test('BRD-04/05: model participants, filter toggles and role totals', async ({ p
   await expect(page).not.toHaveURL(/[?&]model=/);
   const roles = await showPanel(page, 'byRole');
   const total = row(roles, 'anon_bfccafddcc1259437c0a1df0');
-  await expect(total).toContainText('1,204,105,997');
+  await expect(total).toContainText('1.20 B');
   await roles.getByRole('button', { name: 'Runs' }).press('Enter');
   await expect(roles.getByRole('columnheader', { name: 'Runs' })).toHaveAttribute('aria-sort', 'ascending');
 });

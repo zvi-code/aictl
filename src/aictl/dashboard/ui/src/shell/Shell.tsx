@@ -10,7 +10,7 @@ import { sections } from '../panels/layout'
 import type { Command, NodeScope, PanelContext } from '../panels/types'
 import { AppShell } from '../ui/AppShell'
 import { Dialog } from '../ui/Dialog'
-import { PanelState } from '../ui/PanelState'
+import { Freshness, PanelState } from '../ui/PanelState'
 import { Popover } from '../ui/Popover'
 import { BoardControls } from './BoardControls'
 import type { DrawerEntry } from './drawerTypes'
@@ -46,10 +46,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   const [findText, setFindText] = createSignal(filters().q)
   const [paused, setPaused] = createSignal(false)
   const [revision, bump] = createSignal(0)
-  const [reset, setReset] = createSignal(0)
   const [theme, setTheme] = createSignal<Theme>(stored('aictl-theme', ['light', 'dark'], 'light'))
   const [density, setDensity] = createSignal<Density>(stored('aictl-shell-density', ['compact', 'comfortable'], 'compact'))
-  const [rail, setRail] = createSignal(stored('aictl-shell-rail', ['open', 'closed'], 'open') === 'open')
+  const [rail, setRail] = createSignal(stored('aictl-shell-rail', ['open', 'closed'], 'closed') === 'open')
   const [order, setOrder] = createSignal(sections.board.map(section => section.id))
   const [palette, setPalette] = createSignal(false)
   const [shortcuts, setShortcuts] = createSignal(false)
@@ -224,7 +223,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   const commands = (): PaletteCommand[] => [
     ...(Object.entries(screenNames) as [Screen, string][]).map(([id, name]) =>
       ({ id: `screen-${id}`, label: `Open ${name}`, run: () => changeScreen(id) })),
-    ...sectionList().slice(1).map(section => ({ id: `section-${section.id}`, label: `Go to ${section.title}`, run: () => jump(section.id) })),
+    ...sectionList().filter(section => section.id !== 'top').map(section => ({ id: `section-${section.id}`, label: `Go to ${section.title}`, run: () => jump(section.id) })),
     ...RANGES.map(range => ({ id: `range-${range.id}`, label: `Time range: ${range.label}`, run: () => {
       if (screen() !== 'board') changeScreen('board')
       navigate({ range: range.id, since: null, until: null, sel: null })
@@ -237,7 +236,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     } })),
     { id: 'theme', label: `Use ${theme() === 'light' ? 'dark' : 'light'} theme`, run: () => setTheme(theme() === 'light' ? 'dark' : 'light') },
     { id: 'density', label: `Use ${density() === 'compact' ? 'comfortable' : 'compact'} density`, run: () => setDensity(density() === 'compact' ? 'comfortable' : 'compact') },
-    { id: 'reset', label: 'Reset layout', run: () => setReset(i => i + 1) },
+    ...screen() === 'settings' ? [] : [{ id: 'layout', label: 'Edit layout', run: () => {
+      document.querySelector<HTMLButtonElement>('[data-edit-layout]')?.click()
+    } }],
     { id: 'shortcuts', label: 'Show keyboard shortcuts', run: () => setShortcuts(true) },
     ...agents().slice(0, 100).map(agent => ({ id: `agent-${agent.id}`, label: `Open agent: ${agent.title}`, run: () => ctx.openAgent(agent.id) })),
   ]
@@ -299,14 +300,17 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     if (hash.startsWith('#sec-')) requestAnimationFrame(() => { if (hash === location.hash) scroll(hash.slice(5)) })
   }
   const sourceRows = createMemo(() => scope() === 'local' ? statuses(client) : [])
-  const updateAge = () => at(topic(client, 'runtime.machine', 'local'), 'pipeline.stream.snapshot_age_s')
+  const stream = () => {
+    const health = topic(client, 'runtime.health', 'local')
+    return health && 'pipeline' in health ? health.pipeline.stream : undefined
+  }
   const liveStatus = () => {
     if (scope() !== 'local') return 'Node reports and scoped history; no local values substituted'
     if (paused()) return 'Live paused'
     if (client.status.error) return client.store.meta.ready ? 'Live disconnected — last received data' : 'Live source unavailable'
     if (!client.status.connected || !client.store.meta.ready) return 'Waiting for live sources'
-    const age = updateAge()
-    if (typeof age === 'number' && age > 60) return `Collector snapshot is ${Math.floor(age)} s old`
+    const age = stream()?.snapshot_age_s
+    if (typeof age === 'number' && age > 60) return 'Collector snapshot is stale'
     if (sourceRows().some(row => 'error' in row && row.error || 'stale' in row && row.stale)) return 'Live — some sources are delayed or unavailable'
     return 'Live connected'
   }
@@ -328,21 +332,16 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     navigation={<nav class={styles.controls} aria-label="Screens"><For each={Object.keys(screenNames) as Screen[]}>{id =>
       <button class={styles.button} type="button" aria-current={screen() === id ? 'page' : undefined}
         onClick={() => changeScreen(id)}>{screenNames[id]}</button>}</For></nav>}>
-    <div class={styles.body} data-rail={rail() ? 'open' : 'closed'}>
-      <aside class={styles.rail}>
-        <button class={styles.button} type="button" aria-controls="overview-sections" aria-expanded={rail() ? 'true' : 'false'}
-          onClick={() => setRail(old => !old)}>{rail() ? 'Collapse rail' : 'Expand rail'}</button>
-        <nav id="overview-sections" aria-label="Overview sections" hidden={!rail()}>
-          <For each={sectionList()} keyed={section => section.id}>{section =>
-            <a href={`#sec-${section().id}`} aria-current={query().hash === `#sec-${section().id}` ? 'location' : undefined}
-              onClick={event => { event.preventDefault(); jump(section().id) }}>{section().title}</a>}</For>
-          <Show when={screen() === 'board' && ctx.board('scope')}><small>{ctx.board('scope')?.shown_agents} agents in range</small></Show>
-          <Show when={screen() === 'health'}><small>{liveStatus()}</small></Show>
-        </nav>
-      </aside>
-      <div class={styles.work}>
+    <div class={styles.work}>
         <div class={styles.controls}>
+          <Show when={screen() === 'board'}>
+            <button class={styles.quiet} type="button" aria-controls="overview-sections" aria-expanded={rail() ? 'true' : 'false'}
+              onClick={() => setRail(old => !old)}>Sections</button>
+          </Show>
           <span role="status">{scopeLabel(scope(), nodeId())} · {liveStatus()}</span>
+          <Show when={scope() === 'local' && liveStatus() === 'Collector snapshot is stale'}>
+            <Freshness updatedAt={stream()?.snapshot_ts} />
+          </Show>
           <Popover label="Source status" title="Data sources">
             <Show when={scope() === 'local'} fallback={<p>Uses reported data for {scopeLabel(scope(), nodeId())}.</p>}>
               <dl class={styles.sources}>
@@ -357,16 +356,20 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
           </Popover>
         </div>
         <Show when={screen() === 'board'}>
+          <nav class={styles.sections} id="overview-sections" aria-label="Overview sections" hidden={!rail()}>
+            <For each={sectionList()} keyed={section => section.id}>{section =>
+              <a href={`#sec-${section().id}`} aria-current={query().hash === `#sec-${section().id}` ? 'location' : undefined}
+                onClick={event => { event.preventDefault(); jump(section().id) }}>{section().title}</a>}</For>
+          </nav>
           <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} custom={custom()} setCustom={setCustom} text={findText()} search={searchFor} />
         </Show>
         <Loading fallback={<PanelState state="loading" />}>
           <Switch>
-            <Match when={screen() === 'board'}><Overview ctx={ctx} reset={reset} order={sectionOrder} /></Match>
-            <Match when={screen() === 'health'}><Health ctx={ctx} reset={reset} order={sectionOrder} /></Match>
+            <Match when={screen() === 'board'}><Overview ctx={ctx} order={sectionOrder} /></Match>
+            <Match when={screen() === 'health'}><Health ctx={ctx} order={sectionOrder} /></Match>
             <Match when={screen() === 'settings'}><Settings ctx={ctx} /></Match>
           </Switch>
         </Loading>
-      </div>
     </div>
     <Show when={stack().length}>
       <Loading fallback={<div class={styles.drawerLoading}><PanelState state="loading" message="Loading detail…" /></div>}>

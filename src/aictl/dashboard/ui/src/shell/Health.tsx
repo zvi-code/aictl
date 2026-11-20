@@ -5,7 +5,7 @@ import { healthPanels } from '../panels/health'
 import { healthData, HealthContext } from '../panels/health/healthData'
 import styles from '../panels/health/Health.module.css'
 
-export default function Health(props: { ctx: PanelContext; reset: () => number; order: (order: string[]) => void }) {
+export default function Health(props: { ctx: PanelContext; order: (order: string[]) => void }) {
   const [all, setAll] = createSignal(false)
   const original = untrack(() => props.ctx)
   const health = untrack(() => healthData(original))

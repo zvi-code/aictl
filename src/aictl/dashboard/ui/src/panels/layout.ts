@@ -8,7 +8,7 @@ export type LayoutScreen = 'board' | 'health'
 export type Placement = { id: string; span?: number; height?: number; params?: Record<string, unknown> }
 type Section = { id: string; title: string; bands: Placement[][] }
 export const sections: Record<LayoutScreen, Section[]> = { board: board.tree, health: health.tree }
-export type SectionState = { id: string; open: boolean; height: number; tree: SerializedDockview }
+export type SectionState = { id: string; open: boolean; height: number; tree: SerializedDockview; minHeights?: Record<string, number> }
 export type DockNode = SerializedDockview['grid']['root']
 export type GroupState = Exclude<DockNode['data'], DockNode[]>
 export const isBranch = (node: DockNode): node is DockNode & { type: 'branch'; data: DockNode[] } =>
@@ -100,6 +100,27 @@ export function selectTab(tree: SerializedDockview, group: string, panel: string
   return { ...tree, activeGroup: group, grid: { ...tree.grid, root: select(tree.grid.root) } }
 }
 
+export function panelOrder(tree: SerializedDockview): string[] {
+  const panels = (node: DockNode): string[] => isBranch(node) ? node.data.flatMap(panels) : isLeaf(node) ? node.data.views : []
+  return panels(tree.grid.root)
+}
+
+/** Swap the two panel IDs in reading order, retaining the group geometry and panel parameters. */
+export function reorderPanel(tree: SerializedDockview, id: string, step: -1 | 1): SerializedDockview {
+  const order = panelOrder(tree), index = order.indexOf(id), neighbor = order[index + step]
+  if (index < 0 || !neighbor) return tree
+  const swap = (value: string) => value === id ? neighbor : value === neighbor ? id : value
+  const visit = (node: DockNode): DockNode => {
+    if (isBranch(node)) return { ...node, data: node.data.map(visit) }
+    if (!isLeaf(node)) return node
+    const views = node.data.views.map(swap)
+    // Keep the moved panel selected, including when it lands in an inactive tab's slot.
+    const activeView = views.includes(id) ? id : swap(node.data.activeView ?? node.data.views[0])
+    return { ...node, data: { ...node.data, views, activeView } }
+  }
+  return { ...tree, grid: { ...tree.grid, root: visit(tree.grid.root) } }
+}
+
 export function restoreLayout(raw: string | null, screen: LayoutScreen): SectionState[] | undefined {
   if (!raw) return
   try {
@@ -108,7 +129,9 @@ export function restoreLayout(raw: string | null, screen: LayoutScreen): Section
     const valid = new Set(sections[screen].map(section => section.id))
     for (const section of data.tree) {
       if (!valid.delete(section?.id) || typeof section.open !== 'boolean' || !Number.isInteger(section.height) ||
-        section.height < 0 || section.height > 10000 || !object(section.tree?.panels) || !object(section.tree?.grid?.root)) return
+        section.height < 0 || section.height > 10000 || !object(section.tree?.panels) || !object(section.tree?.grid?.root) ||
+        (section.minHeights !== undefined && (!object(section.minHeights) ||
+          !Object.values(section.minHeights).every(n => Number.isInteger(n) && Number(n) >= 48 && Number(n) <= 10000)))) return
     }
     return valid.size ? undefined : data.tree as SectionState[]
   } catch { return undefined }

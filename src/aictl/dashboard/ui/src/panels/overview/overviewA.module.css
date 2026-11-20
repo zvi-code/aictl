@@ -12,6 +12,8 @@
   font: inherit;
 }
 .note { margin-block: 0 var(--space-2); color: var(--color-muted); }
+.attentionStatus { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-5); }
+.attentionStatus[data-warning] { color: var(--color-warning); }
 .measures { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-block: 0 var(--space-2); }
 .measures div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .measures dd { margin: 0; font-variant-numeric: tabular-nums; }

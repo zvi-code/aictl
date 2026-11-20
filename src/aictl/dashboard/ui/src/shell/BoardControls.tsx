@@ -54,7 +54,7 @@ export function BoardControls(props: {
       </Popover>
       <For each={['project', 'model'] as const}>{key => {
         const rows = () => options()?.[key === 'project' ? 'projects' : 'models'] ?? []
-        return <label>{key === 'project' ? 'Project' : 'Model'} <select class={styles.input} value={ctx.filters()[key]}
+        return <label>{key === 'project' ? 'Project' : 'Model'} <select class={`${styles.input} ${styles.filterSelect}`} value={ctx.filters()[key]}
           onChange={event => ctx.navigate({ [key]: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
           <option value="all">All</option>
           <Show when={ctx.filters()[key] !== 'all' && !rows().some(row => row.id === ctx.filters()[key])}>

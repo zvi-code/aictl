@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SerializedDockview } from 'dockview-core'
-import { pruneDock, restoreLayout, sections } from '../src/panels/layout'
+import { panelOrder, pruneDock, reorderPanel, restoreLayout, sections } from '../src/panels/layout'
 import { keyedRows, nodeColumn } from '../src/panels/kinds/model'
 
 describe('saved dock layout', () => {
@@ -28,6 +28,19 @@ describe('saved dock layout', () => {
     const saved = sections.board.map(section => ({ id: section.id, open: true, height: 300, tree }))
     expect(restoreLayout(JSON.stringify({ version: 1, screen: 'board', tree: saved }), 'board')).toHaveLength(saved.length)
     expect(restoreLayout(JSON.stringify({ version: 1, screen: 'board', tree: [...saved, saved[0]] }), 'board')).toBeUndefined()
+  })
+
+  it('moves a panel across a stack boundary without changing group sizes or panel parameters', () => {
+    const group = { type: 'leaf', size: 400, data: { id: 'group2', views: ['cost'], activeView: 'cost' } } as const
+    const input = {
+      ...tree,
+      grid: { ...tree.grid, root: { ...tree.grid.root, data: [...tree.grid.root.data as SerializedDockview['grid']['root'][], group] } },
+    } as SerializedDockview
+    const moved = reorderPanel(input, 'tokens', 1)
+    expect(panelOrder(moved)).toEqual(['removed', 'cost', 'tokens'])
+    expect(moved.grid.root.data).toMatchObject([{ size: 1200 }, { size: 400, data: { activeView: 'tokens' } }])
+    expect(moved.panels.tokens.params).toEqual({ series: 'output' })
+    expect(reorderPanel(input, 'removed', -1)).toBe(input)
   })
 })
 

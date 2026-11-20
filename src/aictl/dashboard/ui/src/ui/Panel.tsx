@@ -9,6 +9,9 @@ export function Panel(props: {
   active?: boolean
   observeViewport?: boolean
   fill?: boolean
+  flow?: boolean
+  heading?: 'visible' | 'sr-only'
+  height?: number
   actions?: JSX.Element
   children: JSX.Element
 }) {
@@ -26,12 +29,14 @@ export function Panel(props: {
     return () => observer.disconnect()
   })
 
-  return <section ref={box} class={styles.panel} data-size={props.size ?? 'medium'} data-fill={props.fill ? '' : undefined} aria-labelledby={title}>
+  return <section ref={box} class={styles.panel} data-size={props.size ?? 'medium'} data-fill={props.fill ? '' : undefined}
+    data-flow={props.flow ? '' : undefined} style={{ 'min-block-size': props.height ? `${props.height}px` : undefined }} aria-labelledby={title}>
     <header class={styles.header}>
-      <h3 id={title} class={styles.title}>{props.title}</h3>
+      <h3 id={title} class={props.heading === 'sr-only' ? styles.visuallyHidden : styles.title}>{props.title}</h3>
       {props.actions}
     </header>
-    <div class={styles.content} role="region" aria-label={`${props.title} content`} tabindex={showContent() ? 0 : undefined}>
+    <div class={styles.content} role={props.flow ? undefined : 'region'} aria-label={props.flow ? undefined : `${props.title} content`}
+      tabindex={!props.flow && showContent() ? 0 : undefined}>
       <Show when={showContent()}>
         <Errored fallback={(_error, reset) => <PanelState state="error" onRetry={reset} />}>
           <Loading fallback={<PanelState state="loading" />}>{props.children}</Loading>

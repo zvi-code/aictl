@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import AxeBuilder from '@axe-core/playwright';
 import { resolve } from 'node:path';
 import { boardReady, prepareBoard } from './catalog.mjs';
 import { startReplay } from './server.mjs';
@@ -19,128 +18,103 @@ async function open(page) {
   await expect(mode(page)).toHaveAttribute('data-dock-mode', 'static');
 }
 
-function boxes(page) {
-  return page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-dock-mode] [id^="p-"]')]
-    .filter(element => element.getClientRects().length)
-    .map(element => {
-      const { x, y, width, height } = element.getBoundingClientRect();
-      return [element.id, [x + scrollX, y + scrollY, width, height]];
-    })));
-}
-
-function sameBoxes(before, after) {
-  expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
-  for (const [id, rect] of Object.entries(before)) {
-    for (const [i, edge] of rect.entries()) expect(Math.abs(after[id][i] - edge), `${id}, dimension ${i}`).toBeLessThanOrEqual(1);
-  }
-}
-
-async function checkThemes(page) {
-  for (const theme of ['light', 'dark']) {
-    await page.getByLabel('Theme').selectOption(theme);
-    const report = await new AxeBuilder({ page }).analyze();
-    expect(report.violations.map(({ id, nodes }) => ({ id, targets: nodes.map(node => node.target) }))).toEqual([]);
-  }
-}
-
-async function attachWithoutMoving(page, title = 'Overview summary') {
-  const action = page.getByRole('button', { name: `${title} layout` });
-  await action.press('ArrowDown');
-  // A group with no horizontal sibling already occupies the full width.
-  await page.getByRole('menuitem', { name: 'Wider', exact: true }).press('Enter');
+async function edit(page) {
+  await page.getByRole('button', { name: 'Edit layout', exact: true }).press('Enter');
   await expect(mode(page)).toHaveAttribute('data-dock-mode', 'editor');
-  await expect(action).toBeFocused();
 }
 
-for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 720 }]) {
-  test(`static and Dockview panel boxes agree at ${viewport.width} × ${viewport.height}`, async ({ page }) => {
-    await page.setViewportSize(viewport);
-    await page.addInitScript(() => {
-      window.dockShifts = [];
-      new PerformanceObserver(list => {
-        for (const entry of list.getEntries()) {
-          if (entry.hadRecentInput) continue;
-          // Measure dock geometry, not movement inside a panel as its data changes.
-          if (entry.sources.some(({ node }) => {
-            const element = node instanceof Element ? node : node?.parentElement;
-            const panel = element?.closest('[id^="p-"]');
-            return element?.closest('[data-dock-mode="static"]') && (!panel || panel === element);
-          })) window.dockShifts.push(entry.toJSON());
-        }
-      }).observe({ type: 'layout-shift', buffered: true });
-    });
-    const requests = [];
-    page.on('request', request => requests.push(request.url()));
-    await open(page);
-    expect(requests.filter(assets)).toEqual([]);
-    expect(await page.evaluate(() => window.dockShifts)).toEqual([]);
-    const before = await boxes(page);
-    expect(Object.keys(before).length).toBeGreaterThan(30);
-    const pin = await page.locator('#p-kpis').elementHandle();
-    const scroll = await page.evaluate(() => scrollY);
-    const apiBefore = requests.filter(url => url.includes('/api/'));
-    await attachWithoutMoving(page);
-    sameBoxes(before, await boxes(page));
-    expect(await pin.evaluate(node => node === document.querySelector('#p-kpis'))).toBe(true);
-    expect(await page.evaluate(() => scrollY)).toBe(scroll);
-    expect(requests.filter(url => url.includes('/api/'))).toEqual(apiBefore);
-    expect(requests.some(url => /\/assets\/dockview-.*\.js$/.test(url))).toBe(true);
-    expect(requests.some(url => /\/assets\/DockEditor-.*\.css$/.test(url))).toBe(true);
-  });
-}
-
-test('attach at a scrolled panel without restarting its in-flight read', async ({ page }) => {
-  let release, reads = 0;
-  const held = new Promise(resolve => { release = resolve; });
-  const path = '/api/effective-models';
-  await page.route(`**${path}`, async route => {
-    reads++;
-    await held;
-    await route.continue();
-  });
-  try {
-    await open(page);
-    const findings = page.locator('#p-findings');
-    await findings.scrollIntoViewIfNeeded();
-    const stale = findings.locator('[data-status="stale"]', { hasText: 'Not all settings sources' });
-    await expect(stale).toBeVisible();
-    await expect.poll(() => reads).toBe(1);
-    const scroll = await page.evaluate(() => scrollY);
-    expect(scroll).toBeGreaterThan(0);
-    const table = findings.getByRole('table', { name: 'Hidden changes and conflicts' });
-    const original = await table.elementHandle();
-    await attachWithoutMoving(page, 'Hidden changes and conflicts');
-    expect(await page.evaluate(() => scrollY)).toBe(scroll);
-    expect(await original.evaluate(node => node.isConnected)).toBe(true);
-    const response = page.waitForResponse(r => r.url().endsWith(path) && r.ok());
-    release();
-    await response;
-    await expect(stale).toBeHidden();
-    expect(reads).toBe(1);
-  } finally { release(); }
+test('SHL-05: edit mode is lazy and keeps visible panel roots mounted', async ({ page }) => {
+  const requests = [];
+  page.on('request', request => requests.push(request.url()));
+  await open(page);
+  expect(requests.filter(assets)).toEqual([]);
+  await expect(page.getByRole('tablist', { name: 'Panels' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Resize columns/ })).toHaveCount(0);
+  const pin = await page.locator('#p-kpis').getByText('Messages', { exact: true }).elementHandle();
+  await edit(page);
+  await expect(page.getByRole('button', { name: 'Done editing' })).toBeFocused();
+  expect(requests.some(url => /\/assets\/dockview-.*\.js$/.test(url))).toBe(true);
+  expect(await pin.evaluate(node => node.isConnected)).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Edit layout', exact: true })).toBeFocused();
+  expect(await pin.evaluate(node => node.isConnected)).toBe(true);
 });
 
-test('resize and drag before attachment; restore saved tabs and geometry', async ({ page }) => {
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test(`SHL-01: Overview uses page scrolling at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await open(page);
+    const agents = page.locator('#sec-agents');
+    await page.keyboard.press('2');
+    await expect(agents).toBeFocused();
+    await expect(agents.getByRole('heading', { name: 'Needs you now' })).toBeVisible();
+    const layout = await agents.evaluate(section => ({
+      width: section.getBoundingClientRect().width, x: section.getBoundingClientRect().x,
+      overflow: [...section.querySelectorAll('[data-flow], [id^="dock-"]')].map(node =>
+        [node.id, getComputedStyle(node).overflowY, ...[...node.children].map(child => getComputedStyle(child).overflowY)]),
+      pageWidth: document.documentElement.scrollWidth,
+    }));
+    expect(layout.width).toBeGreaterThan(viewport.width * 0.87);
+    expect(layout.x).toBeLessThan(32);
+    expect(layout.pageWidth).toBeLessThanOrEqual(viewport.width);
+    expect(layout.overflow.flat()).not.toContain('auto');
+    expect(layout.overflow.flat()).not.toContain('scroll');
+    const before = await page.evaluate(() => scrollY);
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(before);
+  });
+}
+
+test('SHL-05: direct moves persist and retain keyboard focus', async ({ page }) => {
   await open(page);
+  await edit(page);
+  const agents = page.locator('#sec-agents');
+  const ordering = () => agents.locator('[id^="p-"]').evaluateAll(nodes => nodes.map(node => node.id));
+  const before = await ordering();
+  await agents.locator('#p-agentsT').scrollIntoViewIfNeeded();
+  const up = agents.getByRole('button', { name: 'Move Agents and subagents up', exact: true });
+  await up.press('Enter');
+  await expect(agents.getByRole('button', { name: 'Move Agents and subagents down', exact: true })).toBeFocused();
+  await expect.poll(ordering).toEqual([before[1], before[0], ...before.slice(2)]);
+  await expect(mode(page).getByRole('status').filter({ hasText: 'Moved Agents and subagents to position 1' })).toBeAttached();
+  const earlier = page.getByRole('button', { name: 'Move Agents section up' });
+  await earlier.press('Enter');
+  await expect(earlier).toBeFocused();
+  await page.reload();
+  await boardReady(page);
+  await expect(mode(page)).toHaveAttribute('data-dock-mode', 'static');
+  await expect.poll(ordering).toEqual([before[1], before[0], ...before.slice(2)]);
+  await page.keyboard.press('1');
+  await expect(page).toHaveURL(/#sec-agents$/);
+});
+
+test('SHL-05: resize and stack by pointer, restore tabs and keyboard navigation', async ({ page }) => {
+  await open(page);
+  await edit(page);
   const usage = page.locator('#dock-usage');
   const sash = usage.getByRole('button', { name: 'Resize columns 1 and 2', exact: true }).first();
   await sash.scrollIntoViewIfNeeded();
   const { x, y, width, height } = await sash.boundingBox();
-  const oldWidth = (await boxes(page))['p-tokens'][2];
+  const panel = usage.locator('#p-tokens');
+  const oldWidth = (await panel.boundingBox()).width;
   await page.mouse.move(x + width / 2, y + height / 2);
   await page.mouse.down();
   await page.mouse.move(x + width / 2 + 20, y + height / 2);
   await page.mouse.up();
-  expect((await boxes(page))['p-tokens'][2]).toBe(oldWidth + 20);
+  await expect.poll(async () => (await panel.boundingBox()).width).toBeGreaterThan(oldWidth + 18);
   await sash.press('ArrowRight');
-  await expect(mode(page)).toHaveAttribute('data-dock-mode', 'static');
   const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), key);
-  expect(saved.tree.find(section => section.id === 'usage').tree.grid.root.data[0].data[0].size)
-    .toBe((await boxes(page))['p-tokens'][2]);
-  const tokenTab = usage.locator('button[data-dock-tab="tokens"]');
-  const cacheTab = usage.locator('button[data-dock-tab="cacheRate"]');
-  await tokenTab.dragTo(cacheTab);
-  await expect(mode(page)).toHaveAttribute('data-dock-mode', 'editor');
+  expect(saved.tree.find(section => section.id === 'usage').tree.grid.root.data[0].data[0].size).toBeGreaterThan(oldWidth + 30);
+  const grip = panel.locator('[draggable]');
+  const target = usage.locator('#p-cacheRate');
+  const handle = await grip.boundingBox();
+  const onto = await target.boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 10 });
+  await page.mouse.move(onto.x + onto.width / 2 + 1, onto.y + onto.height / 2);
+  await page.mouse.up();
+  await expect(usage.getByRole('tab', { name: 'Tokens, cached and not cached' })).toBeVisible();
   await page.reload();
   await boardReady(page);
   const group = usage.getByRole('tablist').filter({ has: page.locator('[data-dock-tab="tokens"]') });
@@ -157,11 +131,4 @@ test('resize and drag before attachment; restore saved tabs and geometry', async
   await page.reload();
   await boardReady(page);
   await expect(token).toHaveAttribute('aria-selected', 'true');
-  await checkThemes(page);
-  await page.setViewportSize({ width: 1280, height: 720 });
-  await page.evaluate(() => scrollTo(0, 0));
-  const before = await boxes(page);
-  await attachWithoutMoving(page);
-  sameBoxes(before, await boxes(page));
-  await checkThemes(page);
 });

@@ -21,7 +21,7 @@
   border-block-end: var(--border-size) solid var(--color-border);
 }
 .title { font-size: var(--text-lg); }
-.actions { margin-inline-start: auto; }
+.actions { margin-inline-start: auto; min-inline-size: 0; }
 .main { min-inline-size: 0; padding: var(--space-7); }
 .footer { border-block-start: var(--border-size) solid var(--color-border); color: var(--color-muted); }
 .skip {

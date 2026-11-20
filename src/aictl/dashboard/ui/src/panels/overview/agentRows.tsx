@@ -94,6 +94,7 @@ export function agentRows({ ctx, def }: PanelProps) {
   const placeholders = createMemo(() => records().filter(agent => agent.placeholder).length)
   return {
     result, rows,
+    flowColumns: ['title', 'status', 'tool', 'messages', 'tool_calls', 'failures'],
     controls: <Choice label="Group agents by" items={groupOptions} value={group} change={setGroup} />,
     description: <p class={css.note}>
       Recorded agents: {ctx.board('scope')?.shown_agents?.toLocaleString() ?? missing}.
@@ -101,7 +102,6 @@ export function agentRows({ ctx, def }: PanelProps) {
       <Show when={ctx.scope() !== 'local'}>
         {' '}Agent lists: {hosts() ? `${covered()?.length ?? 0} of ${hosts()!.length} nodes` : missing}.
       </Show>
-      {' '}CPU and RAM are available only when reported. Process presence does not report native activity.
     </p>,
   }
 }
@@ -122,7 +122,11 @@ export function modelRows({ ctx, def }: PanelProps) {
       })
     return [{ ...entry, folded: children.length ? true : undefined }, ...children]
   }))
-  return { result, rows, description: <p class={css.note}>
+  return { result, rows, flowColumns: ['model', 'agents', 'tokens', 'cost_usd'], description: <p class={css.note}>
     Unfold a model to see listed agents. Usage for agents with more than one model is not available from this source.
   </p> }
 }
+
+export const roleRows = ({ ctx, def }: PanelProps) => ({
+  result: () => ctx.read(def.sources[0]), flowColumns: ['kind', 'runs', 'tokens'],
+})

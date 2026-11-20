@@ -14,6 +14,22 @@
 .panel[data-size="small"] { block-size: var(--panel-sm); }
 .panel[data-size="large"] { block-size: var(--panel-lg); }
 .panel[data-fill] { block-size: 100%; }
+.panel[data-flow] {
+  display: block;
+  block-size: auto;
+  overflow: visible;
+  contain: layout style;
+  border-color: transparent;
+  box-shadow: none;
+}
+.panel[data-flow] > .header { border: 0; min-block-size: 0; padding-block-end: 0; }
+.panel[data-flow] > .header:not(:has(.title, button)) { padding: 0; }
+.panel[data-flow] > .content { overflow: visible; }
+.panel[data-flow] .content figure:has(> figcaption + [aria-hidden="true"] + ul) {
+  min-block-size: calc(var(--panel-sm) + var(--space-8));
+}
+.panel[data-flow] .title { overflow: visible; white-space: normal; font-size: var(--text-lg); }
+.visuallyHidden { composes: visuallyHidden from "./control.module.css"; }
 .header {
   display: flex;
   justify-content: space-between;

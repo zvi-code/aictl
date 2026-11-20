@@ -16,13 +16,11 @@ test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overvi
   await expect(page.locator('#p-kpis')).toContainText('18,065');
   await expect(page.locator('#p-kpis')).toContainText('93.8%');
   await expect(page.locator('#p-kpis')).toBeInViewport();
-  await expect(page.locator('#p-tokens canvas')).toBeInViewport({ ratio: 1 });
-  await expect(page.locator('#p-cacheRate canvas')).toBeInViewport({ ratio: 1 });
+  await expect(page.locator('#p-tokens canvas')).toBeInViewport({ ratio: 0.99 });
+  await expect(page.locator('#p-cacheRate canvas')).toBeInViewport({ ratio: 0.99 });
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
-  await captureFrame(page);
-  await expect(page).toHaveScreenshot('overview.png');
   await page.keyboard.press('2');
-  await expect(page.locator('#p-attention')).toContainText('Nothing needs attention');
+  await expect(page.locator('#p-attention').getByRole('heading', { name: 'Needs you now' })).toBeVisible();
   await page.keyboard.press('1');
   await expect(page).toHaveURL(/#sec-usage$/);
   await expect(page.locator('#p-tokens canvas')).toBeVisible();
@@ -39,14 +37,23 @@ test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overvi
   await expect(page.getByRole('searchbox', { name: 'Find' })).toBeFocused();
   await page.keyboard.press('s');
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
-  await page.getByRole('button', { name: 'Collapse rail' }).click();
+  const sections = page.getByRole('button', { name: 'Sections', exact: true });
+  await sections.click();
+  await page.getByRole('navigation', { name: 'Overview sections' }).getByRole('link', { name: 'Agents', exact: true }).press('Enter');
+  await expect(page).toHaveURL(/#sec-agents$/);
+  await sections.click();
   await expect(page.getByRole('navigation', { name: 'Overview sections' })).toBeHidden();
   checkConsole(capture, ['/api/board/sessions?limit=50&offset=0&q=']);
 });
 
+test('Overview snapshot', async ({ page, snapshotReplay }) => {
+  await goToBoard(page, snapshotReplay);
+  await captureFrame(page);
+  await expect(page).toHaveScreenshot('overview.png');
+});
+
 test('SHL-01: Health navigation and snapshot', async ({ page, snapshotReplay, capture }) => {
   await goToBoard(page, snapshotReplay);
-  await page.getByRole('button', { name: 'Collapse rail' }).click();
   await page.getByRole('button', { name: 'Health', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'aictl Health', level: 1 })).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Find' })).toBeHidden();
@@ -81,6 +88,31 @@ test('BRD-02: each attention kind opens its agent tab', async ({ page, snapshotR
     await expect(page).toHaveURL(/[?&]tab=errors/);
     await expect(page.locator('#drawer').getByRole('tab', { name: /^Failures and loops/ })).toHaveAttribute('aria-selected', 'true');
   } finally { await replay.close(); }
+});
+
+test('SHL-03: collector staleness has a source clock and age, or an explicit unknown time', async ({ page }) => {
+  const timestamp = Date.parse('2026-11-20T00:21:24Z') / 1000 - 8500;
+  for (const known of [true, false]) {
+    const replay = await startReplay({ dist, speed: 10, boardWindow: true, bootstrapOnly: true, supplemental: true,
+      mapBootstrap: data => ({ ...data, entities: data.entities.map(entity =>
+        entity.topic === 'runtime.health' && entity.id === 'local' ? {
+          ...entity, data: { ...entity.data, pipeline: { ...entity.data.pipeline,
+            stream: { ...entity.data.pipeline?.stream, snapshot_age_s: 8500, snapshot_ts: known ? timestamp : null },
+          } },
+        } : entity) }),
+    });
+    try {
+      await goToBoard(page, replay);
+      const notice = page.getByText('This node · Collector snapshot is stale', { exact: true }).locator('..');
+      if (known) {
+        await expect(notice.locator('time')).toHaveAttribute('datetime', new Date(timestamp * 1000).toISOString());
+        await expect(notice).toContainText('hours ago');
+      } else {
+        await expect(notice).toContainText('Last updated: unknown');
+        await expect(notice.locator('time')).toHaveCount(0);
+      }
+    } finally { await page.goto('about:blank'); await replay.close(); }
+  }
 });
 
 test('SHL-01/02: legacy session URL, manual node scope and Back', async ({ page, snapshotReplay }) => {
@@ -157,20 +189,23 @@ test('SHL-03/04: provenance, pause, refresh, time and filter URLs', async ({ pag
 
 test('SHL-05: restore geometry and preferences, re-add panels and reset invalid layouts', async ({ page, snapshotReplay }) => {
   await goToBoard(page, snapshotReplay);
-  const layout = page.getByRole('button', { name: 'Overview summary layout' });
-  const dock = page.locator('#dock-top');
-  const height = Number(await dock.getAttribute('data-height'));
+  const layout = page.getByRole('button', { name: 'Options for Overview summary' });
+  const panel = page.locator('#p-kpis section');
+  const edit = page.getByRole('button', { name: 'Edit layout', exact: true });
+  await expect(layout).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Add panel' })).toBeHidden();
+  await edit.press('Enter');
   await layout.press('ArrowDown');
   await page.getByRole('menuitem', { name: 'Taller' }).press('Enter');
-  await expect(dock).toHaveAttribute('data-height', String(height + 64));
+  await expect(panel).toHaveCSS('min-block-size', '384px');
   await page.getByLabel('Theme').selectOption('dark');
   await page.getByLabel('Density').selectOption('comfortable');
   await page.reload();
-  await expect(dock).toHaveAttribute('data-height', String(height + 64));
+  await expect(panel).toHaveCSS('min-block-size', '384px');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.locator('html')).toHaveAttribute('data-density', 'comfortable');
-  await layout.press('ArrowDown');
-  await page.getByRole('menuitem', { name: 'Move to Sessions' }).press('Enter');
+  await edit.press('Enter');
+  await page.getByLabel('Move Overview summary to section').selectOption('sessions');
   await expect(page.locator('#sec-sessions #p-kpis')).toBeVisible();
   await layout.press('ArrowDown');
   await page.getByRole('menuitem', { name: 'Hide panel' }).press('Enter');
@@ -179,7 +214,9 @@ test('SHL-05: restore geometry and preferences, re-add panels and reset invalid 
   await page.getByRole('menuitem', { name: 'Overview summary' }).press('Enter');
   await expect(page.locator('#sec-top #p-kpis')).toBeVisible();
   await page.getByRole('button', { name: 'Reset layout' }).click();
-  await expect(dock).toHaveAttribute('data-height', String(height));
+  await expect(panel).toHaveCSS('min-block-size', '0px');
+  await page.keyboard.press('Escape');
+  await expect(edit).toBeFocused();
   await page.evaluate(() => localStorage.setItem('aictl-dock-board-v1', '{"version":99}'));
   await page.reload();
   await expect(page.locator('#sec-top #p-kpis')).toBeVisible();

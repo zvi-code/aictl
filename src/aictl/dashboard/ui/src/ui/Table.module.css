@@ -40,3 +40,66 @@
   vertical-align: middle;
 }
 .spacer > td { padding: 0; }
+.pageViewport {
+  composes: focus from "./control.module.css";
+  overflow: auto;
+  max-inline-size: 100%;
+  clear: both;
+}
+.paged {
+  inline-size: 100%;
+  border-spacing: 0;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.paged th, .paged td {
+  padding: var(--space-2) var(--space-4);
+  border-block-end: var(--border-size) solid var(--color-border);
+  text-align: start;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+.paged th {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+.paged th:first-child {
+  inline-size: 42%;
+  min-inline-size: calc(var(--space-8) * 3);
+}
+.paged [data-numeric] { text-align: end; }
+.paged td[data-numeric] { white-space: nowrap; }
+.paged .sort, .paged .action {
+  display: inline;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  white-space: normal;
+  text-align: inherit;
+  overflow-wrap: anywhere;
+}
+.paged .sort { color: inherit; }
+.paged .action { color: var(--color-accent); }
+.paged .sort:hover, .paged .action:hover, .paged [aria-sort] .sort {
+  background: transparent;
+  text-decoration: underline;
+}
+.missing { color: var(--color-muted); font-size: var(--text-xs); }
+.visuallyHidden { composes: visuallyHidden from "./control.module.css"; }
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  justify-content: flex-end;
+  margin-block-end: var(--space-2);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.pageButton { composes: button from "./control.module.css"; padding-inline: var(--space-3); }
+.pageButton[aria-disabled="true"] { color: var(--color-muted); cursor: default; }
