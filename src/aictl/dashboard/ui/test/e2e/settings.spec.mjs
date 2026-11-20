@@ -104,6 +104,16 @@ settings('SET-01/02/03/12: the keyboard selects pivots and rows, and tool values
   await open(page, settingsReplay);
   const tool = page.getByRole('radio', { name: 'By tool' });
   const search = page.getByRole('searchbox', { name: 'Find a setting, value, key or file' });
+  const findings = page.getByRole('radio', { name: 'Findings' });
+  await tool.press('ArrowLeft');
+  await expect(findings).toBeFocused();
+  await expect(findings).toHaveAttribute('tabindex', '0');
+  await expect(tool).toHaveAttribute('tabindex', '-1');
+  await findings.press('Home');
+  await expect(tool).toBeFocused();
+  await tool.press('End');
+  await expect(findings).toBeChecked();
+  await findings.press('Home');
   await tool.focus();
   await page.keyboard.press('/');
   await expect(search).toBeFocused();
@@ -127,11 +137,15 @@ settings('SET-01/02/03/12: the keyboard selects pivots and rows, and tool values
   await tool.press('ArrowRight');
   await expect(page.getByRole('radio', { name: 'By topic' })).toBeChecked();
   const matrix = page.getByRole('table', { name: 'Model comparison' });
-  await expect(matrix.getByRole('row', { name: /Effort/ }).getByRole('cell', { name: '—', exact: true })).toBeVisible();
-  await matrix.getByRole('button', { name: 'Compare Model' }).click();
-  await page.getByRole('button', { name: 'Inspect Model for Codex CLI' }).press('Enter');
+  const absent = matrix.getByRole('row', { name: /Effort/ }).getByRole('cell', { name: '—', exact: true });
+  await expect(absent).toBeVisible();
+  await expect(absent.getByRole('button')).toHaveCount(0);
+  const model = matrix.getByRole('button', { name: 'Inspect Model for Codex CLI' });
+  await model.press('Enter');
   await expect(inspector(page).getByText('GPT', { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/[?&]tool=codex-cli/);
+  await page.keyboard.press('Escape');
+  await expect(model).toBeFocused();
   checkConsole(capture);
 });
 
@@ -279,7 +293,9 @@ settings('SET-10/14: finding counts, rule filters, progress, rescan, and diagnos
   await expect(page.getByRole('button', { name: 'Scanning…' })).toBeDisabled();
   await expect(page.getByRole('table', { name: 'Policy findings' })).toBeVisible();
   await expect.poll(() => !!held).toBe(true);
-  await held.fulfill({ json: { ...audit, findings: [] } });
+  await page.route('**/api/context-audit?nowait=1', route => route.fulfill({ json: { ...audit, findings: [] } }));
+  await held.fulfill({ json: { status: 'scanning', elapsed_s: 1, step: 'Reading sources' } });
+  await expect(page.getByText('Scanning: Reading sources', { exact: true })).toBeVisible();
   await expect(page.getByText('No matching findings.')).toBeVisible();
 });
 

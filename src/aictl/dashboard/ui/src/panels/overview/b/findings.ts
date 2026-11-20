@@ -1,8 +1,7 @@
 // ─── Board findings — settings and text that no prompt shows ──────
-// The audit stays where it is: /api/context-audit finds, utils/auditScope.js scopes
-// to the tool filter. This file only turns those results into table rows.
+// Turn audit results for the selected tools into table rows.
 import type { DetailContextAudit, DetailEffectiveModels, DetailHooksStatus, DetailOtelStatus } from '../../../data/contract.gen';
-import { scopeAudit } from '../../../utils/auditScope.js';
+import { scopeAudit } from '../../../data/auditScope';
 import { tailPath } from '../../../design/format';
 
 type Audit = Extract<DetailContextAudit, { findings: unknown }>;
@@ -63,7 +62,7 @@ const tailAt = (path: unknown, line: unknown) => at(tailPath(path), line);
 /** Audit, effective models and hook status to rows for the findings panel. */
 export function buildFindings({ audit, effective, hooks, otel, tools }: Inputs & { tools?: readonly string[] | null }) {
   const list: Finding[] = [];
-  const scoped = audit && 'findings' in audit ? scopeAudit(audit, tools) as Audit : undefined;
+  const scoped = audit && 'findings' in audit ? scopeAudit(audit, tools) : undefined;
   for (const f of scoped?.findings || []) {
     if (f.severity === 'info') continue;
     const rule = text(f.rule);

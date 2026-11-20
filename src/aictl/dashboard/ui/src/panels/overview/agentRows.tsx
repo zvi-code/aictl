@@ -1,6 +1,6 @@
 import { createMemo, createSignal, Show } from 'solid-js'
 import type { BoardAgentRow, DetailNodes } from '../../data/contract.gen'
-import { overlayAgents } from '../../live/selectors'
+import { overlayAgents } from '../../data/runtimeAgents'
 import { at, detailPath, object } from '../data'
 import { keyedRows } from '../kinds/model'
 import type { KeyedRow, PanelProps, Read } from '../types'

@@ -2,7 +2,7 @@ import { createMemo, createSignal, lazy, Loading, Match, Show, Switch, untrack }
 import type { DetailError, DetailExcerpt, DetailFile, DetailPrompt, DetailSkill, DetailTool } from '../data/contract.gen'
 import { boardQuery, windowOf } from '../data/filters'
 import type { Detail, PanelContext } from '../panels/types'
-import type { DrawerProps } from '../shell/islandTypes'
+import type { DrawerProps } from '../shell/drawerTypes'
 import { CodeView } from '../ui/CodeView'
 import { Drawer } from '../ui/Drawer'
 import { Markdown } from '../ui/Markdown'

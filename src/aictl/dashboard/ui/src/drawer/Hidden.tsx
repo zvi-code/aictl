@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
 import type { DetailContextAudit } from '../data/contract.gen'
 import { stamp } from '../design/format'
-import type { DrawerProps } from '../shell/islandTypes'
+import type { DrawerProps } from '../shell/drawerTypes'
 import { PanelState } from '../ui/PanelState'
 import { path, records, Rows, Section, Stats, text, labelOf, type Measure } from './shared'
 import styles from './drawer.module.css'

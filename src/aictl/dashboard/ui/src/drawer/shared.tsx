@@ -1,14 +1,14 @@
 import { For, Show, type Accessor } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import type { BoardAgentRow, DetailAgent, TopicRuntimeAgent } from '../data/contract.gen'
-import { fmtN, stamp } from '../design/format'
+import { fmtBytes, fmtN, stamp } from '../design/format'
 import type { DetailResource, PanelContext, Row } from '../panels/types'
-import type { DrawerEntry, DrawerProps } from '../shell/islandTypes'
+import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Chart } from '../ui/Chart'
 import { PanelState } from '../ui/PanelState'
 import { Stat } from '../ui/Stat'
-import { Table } from '../ui/Table'
 import type { Field } from '../ui/tableModel'
+import { ResizableTable } from './ResizableTable'
 import styles from './drawer.module.css'
 
 export const NA = 'Not available from this source'
@@ -81,7 +81,7 @@ export function Stats(props: { items: readonly Measure[] }) {
   }</For></div>
 }
 
-type Column = string | readonly [key: string, label: string, format?: 'number' | 'time']
+type Column = string | readonly [key: string, label: string, format?: 'number' | 'time' | 'bytes']
 export function Rows<T extends object>(props: {
   label: string; rows?: readonly T[] | null; columns: readonly Column[]; identity: readonly string[];
   action?: { label: (row: T) => string; run: (row: T) => void }; empty?: string
@@ -93,13 +93,15 @@ export function Rows<T extends object>(props: {
         const value = (row as Row)[key]
         return number(value) ?? text(value) ?? (typeof value === 'boolean' ? value : undefined)
       },
-      ...(format === 'time' ? { format: (value: unknown) => number(value) == null ? NA : stamp(number(value), true) }
-        : format === 'number' ? { format: (value: unknown) => number(value) == null ? NA : fmtN(number(value)) } : {}),
+      ...(format ? { format: (value: unknown) => {
+        const n = number(value)
+        return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'bytes' ? fmtBytes(n) : fmtN(n)
+      } } : {}),
     }
   })
   return <Show when={props.rows != null} fallback={<PanelState state="unavailable" />}>
     <Show when={props.rows!.length} fallback={<PanelState state="empty" message={props.empty} />}>
-      <Table label={props.label} fields={fields()} rows={props.rows!} rowId={row => rowId(...props.identity.map(key => (row as Row)[key]))}
+      <ResizableTable label={props.label} fields={fields()} rows={props.rows!} rowId={row => rowId(...props.identity.map(key => (row as Row)[key]))}
         action={props.action} />
     </Show>
   </Show>

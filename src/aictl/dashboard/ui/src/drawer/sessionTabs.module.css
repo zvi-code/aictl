@@ -1,0 +1,30 @@
+.tabs { composes: tabs from "../ui/Tabs.module.css"; }
+.list {
+  composes: list from "../ui/Tabs.module.css";
+  align-items: center;
+  gap: var(--space-1);
+}
+.tab {
+  composes: tab from "../ui/Tabs.module.css";
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-block-size: var(--row-size);
+  padding-inline: var(--space-2);
+  white-space: nowrap;
+}
+.divider {
+  block-size: var(--space-4);
+  inline-size: var(--border-size);
+  margin-inline: var(--space-1);
+  background: var(--color-border);
+}
+.badge {
+  border-radius: var(--radius-pill);
+  background: var(--color-raised);
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  padding-inline: var(--space-1);
+}
+.content { composes: content from "../ui/Tabs.module.css"; }

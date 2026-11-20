@@ -161,9 +161,6 @@ export function TopicView(props: { w: Workspace }) {
 function TopicSection(props: { w: Workspace; sec: string; label: string }) {
   const w = untrack(() => props.w)
   const matrix = createMemo(() => topicMatrix(w.entries(), props.sec, w.pass()))
-  const [picked, setPicked] = createSignal('')
-  const selected = () => matrix().rows.find(row => row.id === picked())
-  let chooser: HTMLElement | undefined
   return <div class={styles.stack}>
     <Show when={props.sec === 'autonomy'}><PermissionView entries={w.entries()} w={w} /></Show>
     <Show when={props.sec !== 'agents'} fallback={
@@ -175,22 +172,14 @@ function TopicSection(props: { w: Workspace; sec: string; label: string }) {
             const cell = row.cells.get(tool.id)
             return cell ? rowValue(cell, true) : DASH
           },
-        }))]}
-        action={{ label: row => `Compare ${row.label}`, run: row => {
-          if (row.cells.size === 1) { w.selectSetting(row.cells.values().next().value!); return }
-          setPicked(row.id)
-          queueMicrotask(() => chooser?.querySelector('button')?.focus())
-        } }} />
-      <Show when={selected()}>{row =>
-        <section ref={chooser} class={styles.controls} aria-label={`Inspect ${row().label} by tool`}>
-          <For each={[...row().cells.values()]} keyed={cell => cell.uid}>{cell =>
-            <button type="button" onClick={() => w.selectSetting(cell())}
-              aria-label={`Inspect ${row().label} for ${w.label(cell().tool)}`}>
-              {w.label(cell().tool)} · {rowValue(cell(), true)}
-            </button>}
-          </For>
-        </section>}
-      </Show>
+          action: {
+            label: (row: Comparison) => row.cells.has(tool.id) ? `Inspect ${row.label} for ${tool.label}` : undefined,
+            run: (row: Comparison) => {
+              const cell = row.cells.get(tool.id)
+              if (cell) w.selectSetting(cell)
+            },
+          },
+        }))]} />
     </Show>
   </div>
 }

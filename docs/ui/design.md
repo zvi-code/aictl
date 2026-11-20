@@ -22,7 +22,7 @@ Use the [Solid primitives](/src/aictl/dashboard/ui/src/ui). Each has a TSX compo
 | `Panel` | Give content a `title`, `size` and optional `actions`. Set `active` from tab visibility; keep viewport observation on. Each panel has its own `Loading` and `Errored` boundaries. |
 | `PanelState` | Set `state` to `loading`, `empty`, `error`, `unavailable` or `stale`. Override `message` or supply `onRetry` when appropriate. Only `stale` renders its `children` beneath the notice. |
 | `Stat` | Show a `label` and `value`, with optional `unit`, `detail` and `tone`. Leave a missing value absent; zero is a value. |
-| `Table` | Give the virtualized, sortable table a `label`, `fields`, `rows` and stable `rowId`. Supply `action` for a named row button. |
+| `Table` | Give the virtualized, sortable table a `label`, `fields`, `rows` and stable `rowId`. Supply `action` for a named row button, or a field `action` for an actionable cell value. |
 | `Chart` | Pass `series` and `points` to uPlot. Give the plot a `label` and text `description`; use `xAxis`, `unit` and `yRange` to describe the scale. |
 | `Segmented` | Choose one option in a labelled radio group. Supply `options`, `value` and `onChange`; arrows change the selection. |
 | `Tabs` | Switch between content views. Supply `label`, `items`, `value` and `onChange`; arrows move focus and only the selected item's `content` mounts. |
@@ -107,7 +107,7 @@ Put browser checks in the [Playwright specs](/src/aictl/dashboard/ui/test/e2e). 
 - **R1.** Delete the replaced code in the same PR. Do not keep a feature flag or fallback.
 - **R2.** Use the contract from the daemon that ships the UI. Do not support old daemons or payload shapes.
 - **R3.** Allow only the temporary Preact island host and old-subscription adapter. Delete both in phase 5.
-- Keep the legacy selectors in [island.css](/src/aictl/dashboard/ui/src/shell/island.css) for the drawer and Settings only. Do not use them when writing Solid screens or panels.
+- Phase 5 removes the island stylesheet. Use tokens and CSS Modules for Solid screens and panels.
 - **R4.** Move pure modules with `git mv`, then convert them to TypeScript. Do not copy them.
 - **R5.** Report lines added and deleted for UI source, CSS, UI tests, backend and backend tests in each PR. Each cutover phase must delete more lines than it adds.
 - **R6.** Before deleting a test, identify its behavior in the parity inventory and cover it with a replacement test.

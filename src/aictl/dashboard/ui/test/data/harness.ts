@@ -1,5 +1,5 @@
 import { createLiveStore, type FrameScheduler, type LiveStore } from '../../src/data/store'
-import { liveBootstrap, liveEnvelope } from '../fixtures/live.fixture.js'
+import { liveBootstrap, liveEnvelope } from '../fixtures/live.fixture'
 
 export function frameClock() {
   let hidden = false

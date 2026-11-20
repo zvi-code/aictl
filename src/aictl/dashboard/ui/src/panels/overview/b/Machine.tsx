@@ -1,7 +1,7 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { BoardSeries, DetailMachine, MachineLocal, MachinePipeline, TopicRuntimeAgent, TopicRuntimeProcess } from '../../../data/contract.gen'
 import { Segmented } from '../../../ui/Segmented'
-import { isStoredToolSelected } from '../../../utils/toolScope.js'
+import { isStoredToolSelected } from '../../../data/toolScope'
 import { SeriesView } from '../../kinds/Series'
 import type { PanelProps, Read, Row } from '../../types'
 import { buckets, field, health, machine, metric, processes } from '../b'

@@ -12,8 +12,6 @@
       "solid-js/jsx-runtime": ["./node_modules/@solidjs/web/types/jsx.d.ts"],
       "solid-js/jsx-dev-runtime": ["./node_modules/@solidjs/web/types/jsx.d.ts"]
     },
-    "allowJs": true,
-    "checkJs": false,
     "noEmit": true,
     "types": ["vite/client", "node"]
   },

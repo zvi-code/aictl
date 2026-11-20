@@ -12,6 +12,7 @@ export type Field<T> = {
   read: (row: T) => string | number | boolean | null | undefined
   format?: (value: string | number | boolean) => string
   sortable?: boolean
+  action?: { label: (row: T) => string | undefined; run: (row: T) => void }
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true })

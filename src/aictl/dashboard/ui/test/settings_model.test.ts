@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  isRecent, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowValue, settingsParams,
+  isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowValue, settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
 import { derivePermissions, listDiff, parseLines, permissionEdit } from '../src/settings/permissions'
@@ -27,6 +27,16 @@ const cfg: SettingsToolConfig = {
 }
 
 describe('settings contract projections', () => {
+  it('uses reported tool labels and preserves names while tool details load', () => {
+    const detail: DetailSettingsTools = {
+      generated_at: 1, tools: [{ tool: 'copilot-desktop', label: 'Work Copilot' }],
+      tool_configs: [], monitor: { diagnostics: {}, state_paths: [], workspace_paths: [] },
+    }
+    expect(labelOf('copilot-desktop', detail)).toBe('Work Copilot')
+    expect(labelOf('copilot-desktop')).toBe('Copilot Desktop')
+    expect(labelOf('copilot365', detail)).toBe('Microsoft 365 Copilot')
+  })
+
   it('SET-01/02/04/05/12/13: does not replace stream values with local detail, and preserves distinct reported states', () => {
     const detail: DetailSettingsTools = {
       generated_at: 1, tools: [], monitor: { diagnostics: {}, state_paths: [], workspace_paths: [] },

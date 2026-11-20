@@ -1,15 +1,14 @@
-// @vitest-environment jsdom
-
 import { createRoot, flush } from 'solid-js'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { parseFilters } from '../../src/data/filters'
 import { createLiveClient } from '../../src/data/live'
 import { panelData } from '../../src/panels/data'
 import type { NodeScope } from '../../src/panels/types'
 
-// Vitest's unit project resolves the Node build, which does not run effect callbacks.
+// Exercise the client effects in Node without mounting a DOM.
 vi.mock('solid-js', () => vi.importActual('../../node_modules/solid-js/dist/solid.js'))
 
+beforeEach(() => vi.stubGlobal('location', { origin: 'http://dashboard.test' }))
 afterEach(() => vi.unstubAllGlobals())
 
 function board(scope: NodeScope, returnedNode = 'node-a') {

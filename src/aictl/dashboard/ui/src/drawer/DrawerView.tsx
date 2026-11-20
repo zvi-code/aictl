@@ -1,11 +1,11 @@
-import { createMemo, For, lazy, Loading, Show, untrack, type Component } from 'solid-js'
-import type { BoardAgentRow, TopicConfigurationLoaded, TopicRuntimeAgent } from '../data/contract.gen'
+import { createEffect, createMemo, createSignal, For, lazy, Loading, Show, untrack, type Component } from 'solid-js'
+import type { BoardAgentRow, DetailAgent, TopicConfigurationLoaded, TopicRuntimeAgent } from '../data/contract.gen'
 import { fmtDur, isLive, projectName, stamp } from '../design/format'
-import type { DrawerEntry, DrawerProps } from '../shell/islandTypes'
+import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Drawer } from '../ui/Drawer'
 import { PanelState } from '../ui/PanelState'
-import { Tabs } from '../ui/Tabs'
 import { agentView, watchedDetail } from './liveAgent'
+import { SessionTabs } from './SessionTabs'
 import { path, NA, type AgentEntry, type TabProps } from './shared'
 import styles from './drawer.module.css'
 
@@ -35,6 +35,19 @@ const items = [
 
 const pending = () => <PanelState state="loading" />
 
+function detailCounts(data: DetailAgent): Partial<Record<typeof items[number][0], number>> {
+  const loaded = new Set(data.context_files?.loaded?.map(row => row.path).filter(path => typeof path === 'string' && path))
+  return {
+    instructions: loaded.size || undefined,
+    turns: data.turns?.length,
+    tools: data.tool_calls?.length,
+    errors: data.errors ? data.errors.length + Number(!!data.loop) : undefined,
+    changes: data.files?.length,
+    artifacts: data.artifacts_total,
+    commits: data.commits?.length,
+  }
+}
+
 export function evidenceSessionId(agent?: BoardAgentRow, runtime?: TopicRuntimeAgent) {
   if (agent?.native_session_id || runtime?.native_session_id) return agent?.native_session_id || runtime?.native_session_id || undefined
   if (agent?.placeholder || !agent || runtime?.native_session_id === null) return undefined
@@ -48,6 +61,9 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
       ? path(ctx, '/api/board/agent', { id: props.entry.id }) : undefined),
     createMemo(() => agentView(props.entry.tab) === 'detail'))
   const agent = createMemo(() => detail()?.data?.agent ?? ctx.board('agents')?.find(row => row.id === props.entry.id))
+  const [counts, rememberCounts] = createSignal<ReturnType<typeof detailCounts>>({})
+  // Keep the last known counts for this drawer when the watch switches to Flow or Transcript.
+  createEffect(() => detail()?.data, data => { if (data) rememberCounts(detailCounts(data)) })
   const storedId = () => agent()?.native_id ?? props.entry.id
   const runtime = createMemo(() => {
     if (ctx.scope() !== 'local' || agent()?.parent_id) return
@@ -71,7 +87,9 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
   const ended = () => runtime()?.running ? undefined : agent()?.ended_at
   const name = () => agent()?.parent_id ? `${agent()?.role || agent()?.title} (subagent)` : agent()?.title || runtime()?.title || props.entry.id
   const options = items.map(([id, label, Tab]) => ({
-    id, label, content: () => <Loading fallback={pending()}>
+    id, label, groupStart: id === 'changes' || id === 'events',
+    count: () => (id === 'tools' ? agent()?.tool_calls : undefined) ?? counts()[id],
+    content: () => <Loading fallback={pending()}>
       <div class={styles.body}><Tab shell={props.shell} entry={props.entry} detail={detail} agent={agent} runtime={runtime} session={session} /></div>
     </Loading>,
   }))
@@ -106,7 +124,7 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
         <Show when={evidence().unknown.length}><p>Not observed: {evidence().unknown.join(', ')}</p></Show>
       </details>}
     </Show>
-    <Tabs label="Session views" items={options} value={options.some(item => item.id === props.entry.tab) ? props.entry.tab : 'flow'}
+    <SessionTabs items={options} value={options.some(item => item.id === props.entry.tab) ? props.entry.tab : 'flow'}
       onChange={props.shell.changeTab} />
   </Drawer>
 }

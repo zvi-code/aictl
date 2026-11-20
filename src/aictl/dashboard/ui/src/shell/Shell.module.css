@@ -49,12 +49,6 @@
   border-radius: var(--radius-md);
   box-shadow: var(--elevation-2);
 }
-.island:global(.bd-app) { display: block; block-size: auto; min-inline-size: 0; }
-.island[data-drawer] { position: fixed; inset: 0 0 0 auto; z-index: var(--z-drawer); }
-.island[data-drawer] > :global(.bd-dr) {
-  position: relative; block-size: 100%; inline-size: min(var(--drw, var(--overlay-lg)), 100vw);
-  transition: none;
-}
 @media (max-width: 62rem) {
   .body, .body[data-rail="closed"] { grid-template-columns: minmax(0, 1fr); }
   .rail { border-inline-end: 0; padding: 0; }

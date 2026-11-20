@@ -1,16 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { brotliCompressSync, gzipSync } from 'node:zlib'
 import { defineConfig } from 'vite'
-import preact from '@preact/preset-vite'
 // The npm alias selects an upstream @solidjs/vite-plugin release that supports Solid 2.0 RC.21.
 import solid from 'vite-plugin-solid'
-
-export function dashboardFrameworks() {
-  return [
-    preact({ include: /\.js$/ }),
-    solid({ include: /\.tsx$/ }),
-  ]
-}
 
 // Dockview 8.9 ships CSS in its browser bundle. Extract it instead of injecting it at runtime.
 function dockviewStyles() {
@@ -75,7 +67,7 @@ function staticAssets() {
 }
 
 export default defineConfig({
-  plugins: [dockviewStyles(), ...dashboardFrameworks(), staticAssets()],
+  plugins: [dockviewStyles(), solid({ include: /\.tsx$/ }), staticAssets()],
   css: { postcss: { plugins: [dockviewTheme] } },
   root: '.',
   build: {

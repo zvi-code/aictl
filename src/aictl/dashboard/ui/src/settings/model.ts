@@ -1,5 +1,5 @@
 import type { DetailContextAudit, DetailSettingsFiles, DetailSettingsTools, SettingsToolConfig } from '../data/contract.gen'
-import { isConfigSelected, isToolSelected } from '../utils/toolScope.js'
+import { isConfigSelected, isToolSelected } from '../data/toolScope'
 import { rowTip } from './tips'
 
 export const MISSING = 'Not available from this source'
@@ -43,10 +43,15 @@ export const scopeLabel = (id?: string, scopes: readonly Scope[] = []) =>
 export const isLockedEntry = (entry?: ChainEntry, scopes: readonly Scope[] = []) =>
   !!entry && (entry.locked === true || scopes.some(s => s.id === entry.scope && s.changeable === false))
 
+const toolLabels = new Map([
+  ['any', 'Unattributed'], ['vscode', 'VS Code'], ['claude-code', 'Claude Code'],
+  ['claude-desktop', 'Claude Desktop'], ['codex-cli', 'Codex CLI'], ['gemini-cli', 'Gemini CLI'],
+  ['copilot-cli', 'Copilot CLI'], ['copilot-desktop', 'Copilot Desktop'], ['copilot-vscode', 'Copilot VS Code'],
+  ['copilot365', 'Microsoft 365 Copilot'],
+])
+
 export function labelOf(id: string, detail?: DetailSettingsTools) {
-  return detail?.tools?.find(tool => tool.tool === id)?.label ??
-    ({ vscode: 'VS Code', 'claude-code': 'Claude Code', 'copilot-cli': 'Copilot CLI',
-      'codex-cli': 'Codex CLI', 'gemini-cli': 'Gemini CLI' } as Record<string, string>)[id] ?? id
+  return detail?.tools?.find(tool => tool.tool === id)?.label || toolLabels.get(id) || id
 }
 
 function setting(raw: RawRow, tool: string, sec: string): Setting {

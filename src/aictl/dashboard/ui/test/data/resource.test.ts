@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { createResourceCache } from '../../src/data/resource'
-import { liveEntity } from '../fixtures/live.fixture.js'
+import { liveEntity } from '../fixtures/live.fixture'
 import { storeHarness } from './harness'
 
 function fetchHarness() {

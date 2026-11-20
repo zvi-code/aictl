@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createLiveClient } from '../../src/data/live'
 import { nativeOutput } from '../../src/data/store'
-import { liveBootstrap, liveCapabilities, liveEntity, liveEnvelope, liveField } from '../fixtures/live.fixture.js'
+import { liveBootstrap, liveCapabilities, liveEntity, liveEnvelope, liveField } from '../fixtures/live.fixture'
 import { dataOf, frameClock } from './harness'
 
 class Source {

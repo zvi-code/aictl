@@ -1,5 +1,5 @@
 import { mergeSearch, type UrlPatch } from '../data/urlState'
-import type { DrawerEntry } from './islandTypes'
+import type { DrawerEntry } from './drawerTypes'
 
 export const clearDrawer = { agent: null, tab: null, show: null, detail: null, record: null, detail_ts: null, detail_session: null } as const
 
@@ -25,7 +25,7 @@ export function drawerPatch(detail?: DrawerEntry): UrlPatch {
     detail_ts: detail.ts, detail_session: detail.record }
 }
 
-// Keep opening a detail possible from an island without adding it to the navigation state.
+// Read the detail encoded in the shell URL.
 export function nextAddress(patch: UrlPatch) {
   return location.pathname + mergeSearch(location.search, patch) + location.hash
 }

@@ -13,7 +13,7 @@ import { Dialog } from '../ui/Dialog'
 import { PanelState } from '../ui/PanelState'
 import { Popover } from '../ui/Popover'
 import { BoardControls } from './BoardControls'
-import type { DrawerEntry } from './islandTypes'
+import type { DrawerEntry } from './drawerTypes'
 import { NodePicker, scopeLabel } from './NodePicker'
 import { Palette, type PaletteCommand } from './Palette'
 import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored, typing } from './viewState'
@@ -370,7 +370,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     </div>
     <Show when={stack().length}>
       <Loading fallback={<div class={styles.drawerLoading}><PanelState state="loading" message="Loading detail…" /></div>}>
-        <Drawer ctx={ctx} stack={stack()} theme={theme()} density={density()} open={open} back={back} close={close}
+        <Drawer ctx={ctx} stack={stack()} open={open} back={back} close={close}
           changeTab={tab => {
             const last = stack().at(-1)
             if (last?.type !== 'agent') return

@@ -128,9 +128,16 @@ function VirtualTable<T extends object>(props: TableProps<T>): JSX.Element {
                 </tr>
               </Show>
               <tr aria-rowindex={item().index + 2} data-row-id={item().key}>
-                <For each={props.fields} keyed={field => field.id}>{field =>
-                  <td class={styles.cell}>{formatField(field(), row())}</td>
-                }</For>
+                <For each={props.fields} keyed={field => field.id}>{field => {
+                  const display = () => formatField(field(), row())
+                  return <td class={styles.cell}>
+                    <Show when={field().action?.label(row())} fallback={display()}>{label =>
+                      <button type="button" class={styles.action} aria-label={label()}
+                        onFocus={() => setFocusedRow(item().row.id)} onBlur={() => setFocusedRow(undefined)}
+                        onClick={() => field().action?.run(row())}>{display()}</button>}
+                    </Show>
+                  </td>
+                }}</For>
                 <Show when={props.action}>{action =>
                   <td class={styles.cell}><Show when={action().label(row())}><button type="button" class={styles.action}
                     onFocus={() => setFocusedRow(item().row.id)} onBlur={() => setFocusedRow(undefined)}

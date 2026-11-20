@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { canonicalScope, MAX_REMOVAL_REVISIONS, nativeOutput } from '../../src/data/store'
-import { liveBootstrap, liveEntity, liveEnvelope, liveField } from '../fixtures/live.fixture.js'
+import { liveBootstrap, liveEntity, liveEnvelope, liveField } from '../fixtures/live.fixture'
 import { dataOf, storeHarness } from './harness'
 
 const agent = (cpu: number, revision = 1) => liveEntity('runtime.agent', 'a', { cpu_percent: cpu }, revision)

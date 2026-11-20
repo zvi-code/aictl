@@ -2,7 +2,7 @@ import { createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-j
 import type { DetailContextAudit, DetailEffectiveModels, DetailHooksStatus, DetailOtelStatus } from '../../../data/contract.gen'
 import { createResourceCache } from '../../../data/resource'
 import { PanelState } from '../../../ui/PanelState'
-import { isToolSelected } from '../../../utils/toolScope.js'
+import { isToolSelected } from '../../../data/toolScope'
 import { json } from '../../data'
 import type { PanelProps, Read, Row } from '../../types'
 import { Bars, bins, severityLabel, severityTone, StatStrip, usable } from '../Summary'

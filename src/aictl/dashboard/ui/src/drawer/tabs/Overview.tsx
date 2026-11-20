@@ -1,7 +1,8 @@
 import { createSignal, For, Show } from 'solid-js'
-import { fmtDur, fmtUsd } from '../../design/format'
+import { fmtDur, fmtUsd, stamp } from '../../design/format'
 import { Meter } from '../../ui/Meter'
 import { OtelSections } from '../OtelSections'
+import { ContextCards, GitCard, InstructionsCard, OutputsCard } from '../OverviewCards'
 import { median, runDelta } from '../overviewModel'
 import { ResourceCharts } from '../ResourceCharts'
 import { openAgent, Resource, Rows, Section, Series, Stats, type TabProps } from '../shared'
@@ -17,7 +18,7 @@ export default function Overview(props: TabProps) {
     const context = () => data().context
     const live = props.runtime
     const start = () => agent()?.started_at
-    const end = () => agent()?.ended_at ?? (data().turns.at(-1)?.ts ?? start())
+    const end = () => live()?.running ? Date.now() / 1000 : agent()?.ended_at ?? (data().turns.at(-1)?.ts ?? start())
     const prior = () => data().runs?.filter(run => !run.current) ?? []
     const current = () => data().runs?.find(run => run.current)
     return <>
@@ -33,14 +34,15 @@ export default function Overview(props: TabProps) {
         <Meter label="Cache share" value={agent()?.cached_share == null ? undefined : agent()!.cached_share! * 100} />
         <Show when={context()?.series?.length}><Series label="Context growth" values={context()?.series} unit="tokens" /></Show>
         <div class={styles.bar}>
+          <button type="button" class={styles.button} onClick={() => props.shell.ctx.copy(props.session() ?? props.entry.id)}>Copy ID</button>
           <button type="button" class={styles.button} onClick={() => props.shell.ctx.copy(location.href)}>Copy link to this agent</button>
-          <Show when={data().git?.branch || data().git?.commit}>
-            <span>Branch: {data().git.branch}{data().git.commit && ` · ${data().git.commit}`}</span>
-            <button type="button" class={styles.button} onClick={() => props.shell.changeTab('commits')}>Inspect commits</button>
-          </Show>
+          <button type="button" class={styles.button} onClick={() => props.shell.changeTab('evidence')}>Search execution evidence</button>
         </div>
-        <Show when={agent()?.pending && (live()?.status ?? agent()?.status) === 'waiting'}>
-          <p role="status">Confirmation pending for {agent()?.pending?.name}. Answer in the requesting tool.</p>
+        <Show when={(live()?.status ?? agent()?.status) === 'waiting' && agent()?.pending}>{pending =>
+          <div role="status">
+            <Stats items={[{ label: 'Waiting for', value: fmtDur(Math.max(0, Date.now() / 1000 - pending().since_ts)) }]} />
+            <p>Confirmation pending for {pending().name}{pending().target ? `: ${pending().target}` : ''}. Answer in the requesting tool.</p>
+          </div>}
         </Show>
         <Show when={data().loop || data().errors?.length}>
           <div class={styles.bar} role="status"><span>{data().errors?.length} recorded failures
@@ -49,26 +51,19 @@ export default function Overview(props: TabProps) {
           </div>
         </Show>
       </Section>
-      <Section title="Outputs and instructions">
-        <Stats items={[
-          { label: 'Files changed', value: data().files?.length },
-          { label: 'Artifacts', value: data().artifacts_total },
-          { label: 'Commits', value: data().commits?.length },
-          { label: 'Applicable files', value: data().context_files?.read ? data().context_files.total : undefined },
-          { label: 'Observed loads', value: data().context_files?.loaded?.length },
-        ]} />
-        <div class={styles.bar}><For each={[
-          ['changes', 'Changes'], ['artifacts', 'Artifacts'], ['commits', 'Commits'], ['instructions', 'Instructions'],
-        ]}>{([tab, label]) => <button type="button" class={styles.button} onClick={() => props.shell.changeTab(tab)}>{label}</button>}</For></div>
-      </Section>
+      <ContextCards data={data()} tab={props} />
+      <OutputsCard data={data()} tab={props} />
+      <Show when={!agent()?.parent_id}><InstructionsCard data={data()} tab={props} /></Show>
+      <GitCard data={data()} tab={props} />
       <Section title="Usage by model"><Rows label="Usage by model" rows={data().by_model} identity={['model']}
         columns={['model', ['msgs', 'Calls'], 'input', 'output', 'cache_read', 'cache_write', ['cost_usd', 'Cost (USD)', 'number']]} /></Section>
       <Section title="Session resources">
         <Stats items={[
           { label: 'CPU', value: live()?.cpu_percent ?? data().process?.cpu_percent, unit: '%' },
           { label: 'Memory', value: live()?.mem_mb ?? data().process?.mem_mb, unit: 'MB' },
-          { label: 'Processes', value: (live()?.pids ?? data().process?.pids)?.length }, { label: 'First context', value: context()?.first },
-          { label: 'Last context', value: context()?.last },
+          { label: 'Processes', value: (live()?.pids ?? data().process?.pids)?.length },
+          { label: 'Started', value: start() == null ? undefined : stamp(start(), true) },
+          { label: 'Ended', value: !live()?.running && agent()?.ended_at != null ? stamp(agent()?.ended_at, true) : undefined },
         ]} />
         <div class={styles.bar}><For each={[
           ['procs', 'Processes'], ['evidence', 'Execution evidence'], ['context', 'Context'], ['tools', 'Tool calls'],
@@ -76,10 +71,15 @@ export default function Overview(props: TabProps) {
         ]}>{([tab, label]) => <button type="button" class={styles.button} onClick={() => props.shell.changeTab(tab)}>{label}</button>}</For></div>
       </Section>
       <Section title="Skills">
+        <Stats items={[
+          { label: 'Skills used', value: data().skills?.length },
+          { label: 'Skill uses', value: data().skills?.reduce((total, skill) => total + skill.uses, 0) },
+        ]} />
         <Rows label="Skills" rows={data().skills} identity={['name']} columns={['name', 'uses', 'started_by', ['last_ts', 'Last use', 'time']]}
           action={{ label: row => `Open skill ${row.name}`, run: row => props.shell.open({ type: 'skill', name: row.name }) }} />
       </Section>
       <Section title="Agents over time">
+        <Stats items={[{ label: 'Subagents', value: data().subagents?.length }]} />
         <Show when={start() != null && end() != null && end()! > start()!}>
           <For each={data().subagents?.filter(row => row.started_at != null).slice().sort((a, b) => a.started_at! - b.started_at!).slice(0, 8)}>{row => {
             const span = () => end()! - start()!
@@ -94,6 +94,10 @@ export default function Overview(props: TabProps) {
         </Show>
         <Rows label="Subagents" rows={data().subagents} identity={['id']} columns={['title', 'role', 'status', ['started_at', 'Started', 'time'], ['ended_at', 'Ended', 'time']]}
           action={{ label: row => `Open ${row.title}`, run: row => openAgent(props, row.id, 'overview') }} />
+        <div class={styles.bar}>
+          <button type="button" class={styles.button} onClick={() => props.shell.changeTab('timeline')}>Open Timeline</button>
+          <button type="button" class={styles.button} onClick={() => props.shell.changeTab('team')}>Open Team</button>
+        </div>
       </Section>
       <Section title="Project run history">
         <Show when={prior().length >= 2}>

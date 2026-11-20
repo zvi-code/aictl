@@ -1,6 +1,6 @@
 import { createMemo, createSignal, Show, untrack } from 'solid-js'
 import type { TopicConfigurationLoaded } from '../data/contract.gen'
-import { isStoredToolSelected } from '../utils/toolScope.js'
+import { isStoredToolSelected } from '../data/toolScope'
 import { PanelState } from '../ui/PanelState'
 import { Stat } from '../ui/Stat'
 import { Table } from '../ui/Table'

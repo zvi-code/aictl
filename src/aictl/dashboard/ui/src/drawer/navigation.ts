@@ -1,4 +1,4 @@
-import type { DrawerEntry } from '../shell/islandTypes'
+import type { DrawerEntry } from '../shell/drawerTypes'
 import { drawerPatch, readDrawer } from '../shell/viewState'
 
 export function drawerStack(search: string, state: unknown): readonly DrawerEntry[] {
