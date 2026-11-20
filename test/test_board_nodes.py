@@ -370,8 +370,9 @@ def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
     assert {r["node_id"] for r in board["agents"]} == {"host-a", "host-b", "legacy"}
     assert len({r["id"] for r in board["prompts"]}) == 3
     assert len({r["id"] for r in board["changes"]["files"]}) == 3
-    assert not ({"processes", "self", "settings_at", "generated_at"} & board.keys())
-    assert history.call(since=1000, until=2000, buckets=2)[1] == board
+    assert not ({"processes", "self", "settings_at"} & board.keys())
+    assert board["generated_at"] == 4000
+    assert history.call(since=1000, until=2000, buckets=2, now=4001)[1] == board
     assert history.call(since=1000, until=2000, buckets=2, view="charts")[1] == {
         key: board[key] for key in ("node_scope", "range", "series")
     }
