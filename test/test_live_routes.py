@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aictl.dashboard.live_hub import LiveHub
+from aictl.dashboard.live.hub import LiveHub
 from aictl.dashboard.web_server import _DashboardHandler
 
 
@@ -26,12 +26,12 @@ def handler(path, live=None):
     return request
 
 
-def test_legacy_backend_capabilities_are_cheap_and_explicitly_disabled():
+def test_live_capabilities_are_cheap_and_always_enabled():
     request = handler("/api/live/capabilities")
     request._do_GET()
     value = json.loads(request.wfile.getvalue())
-    assert request.status == 200 and value["enabled"] is False
-    assert value["stream"] is None and value["legacy_stream"] == "/api/stream"
+    assert request.status == 200 and value["enabled"] is True
+    assert value["stream"] == "/api/live/stream" and value["legacy_stream"] == "/api/stream"
 
 
 def test_incremental_sse_writes_baseline_frames_and_forwards_resume_controls():

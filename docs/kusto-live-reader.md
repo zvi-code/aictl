@@ -1,11 +1,16 @@
 # Query-visible Kusto live reader
 
-The Kusto live dashboard uses one process-local
+The Kusto store plugin uses one process-local
 [`SharedKustoReader`](../src/aictl/stores/kusto/live_reader.py) per normalized engine
 endpoint, case-insensitive database name, authentication mode and reporting
 `node_id`. Data queries filter to that node. Ingestion
 settings do not create additional readers. Browser connections subscribe to
-the live hub, not to independent Kusto pollers.
+the [live hub](../src/aictl/dashboard/live/hub.py), not to independent Kusto pollers.
+
+The [dashboard projection](../src/aictl/dashboard/live/projection.py) gets the
+feed through the configured store reader's optional `live_feed` feature. It
+reads history from named store views. If the configured reader has no feed,
+the projection polls the views and the hub publishes the entity differences.
 
 The reader is an invalidation feed, not another history database. It does not
 open SQLite, initialize `HistoryDB`, ingest rows, change schemas or set policies.
@@ -16,7 +21,7 @@ and management reads use the existing health operation counters.
 ## Authority and interface
 
 ```python
-from aictl.kusto.live_reader import shared_reader
+from aictl.stores.kusto.live_reader import shared_reader
 
 reader = shared_reader(settings)
 subscription = reader.subscribe(on_batch)

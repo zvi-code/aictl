@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-memory-files.schema.json",
+  "title": "BoardMemoryFiles",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string"},
+      "read_by": {"type": "string"},
+      "scope": {"type": "string"},
+      "tokens": {"type": ["integer", "null"]},
+      "lines_added": {"type": ["integer", "null"]},
+      "lines_removed": {"type": ["integer", "null"]},
+      "changed_by": {"type": ["string", "null"]},
+      "changed_ts": {"type": ["number", "null"]},
+      "node_id": {"type": "string"}
+    },
+    "required": [
+      "path",
+      "read_by",
+      "scope",
+      "tokens",
+      "lines_added",
+      "lines_removed",
+      "changed_by",
+      "changed_ts"
+    ]
+  }
+}

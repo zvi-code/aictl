@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-events.schema.json",
+  "title": "DetailEvents",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "ts": {"type": "number"},
+      "kind": {"type": "string"},
+      "tool": {"type": "string"},
+      "detail": {"type": ["object", "string", "null"]},
+      "seq": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+      "session_id": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    },
+    "required": ["ts", "kind", "tool", "detail"]
+  }
+}

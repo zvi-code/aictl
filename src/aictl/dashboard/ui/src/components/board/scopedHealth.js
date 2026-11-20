@@ -56,9 +56,7 @@ function sameStore(report, live) {
 export function scopedHealth(report, localRuntime, supplementError = null) {
   const shared = report.shared_kusto;
   const own = report.local_node?.node_id;
-  const matches = sameStore(report, localRuntime)
-    || (!report.fleet_available && !shared && ['sqlite', 'memory'].includes(localRuntime?.store?.kind));
-  const live = matches ? localRuntime : null;
+  const live = sameStore(report, localRuntime) ? localRuntime : null;
   const rows = report.rows;
   const liveFor = row => row.node_id === own && live && row.daemon_pid != null && row.daemon_pid === live.pipeline?.self?.pid;
   const samples = rows.flatMap(row => {

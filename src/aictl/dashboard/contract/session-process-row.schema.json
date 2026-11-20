@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/session-process-row.schema.json",
+  "title": "SessionProcessRow",
+  "type": "object",
+  "properties": {
+    "pid": {"type": "integer"},
+    "tool": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "role": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "joined_at": {"anyOf": [{"type": "number"}, {"type": "null"}]}
+  },
+  "required": ["pid", "tool", "role", "joined_at"]
+}

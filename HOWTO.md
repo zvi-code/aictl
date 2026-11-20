@@ -629,8 +629,9 @@ still in a tool's write-ahead log until that tool checkpoints. Titles are hidden
 and the dashboard's file view work under every mode. The `/api/copilot-sessions` routes answer
 requests from this machine only, even when the dashboard is bound to another interface.
 
-Plain `aictl session list` shows the daemon's live sessions when a daemon is running;
-any of `--all`, `--project` or `--limit` reads the index instead.
+Plain `aictl session list` reads active sessions from the daemon's live stream
+and session details when a compatible daemon is running. Without one, or with
+`--all`, `--project` or `--limit`, the command reads the local index.
 
 ## Open the dashboard
 

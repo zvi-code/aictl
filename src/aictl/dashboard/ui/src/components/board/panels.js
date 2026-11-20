@@ -177,7 +177,7 @@ function panelAgents(ctx, local, pid) {
   const scope = ctx.data.scope || {};
   const kidCount = scope.shown_sessions != null ? scope.shown_agents - scope.shown_sessions : agents.length - roots.length;
   const activity = ctx.data.live_activity;
-  const lists = activity?.rows.filter(r => r.agents && Number.isSafeInteger(r.active_sessions)).length;
+  const lists = activity?.rows.filter(r => (r.agents || r.local_agent_list_reported) && Number.isSafeInteger(r.active_sessions)).length;
   return {
     sub: activity ? (activity.sessions == null ? 'No fresh monitor report' : fmtN(activity.sessions) + ' monitored sessions') +
       ` · ${fmtN(ctx.data.history_ready ? scope.shown_agents : null)} recorded agents` +
@@ -669,7 +669,7 @@ function panelProcs(ctx, local) {
   const tree = local.mode('view', 'list') === 'tree';
   // A process with no session data has no detail to open.
   const noDetail = new Set(ctx.data.agents.filter(a => a.placeholder).map(a => a.id));
-  const items = list.map((p, i) => ({ p, i, m: info.get(p.pid) || null }));
+  const items = list.map((p, i) => ({ p, i, m: info.get(p.pid) || (ctx.remote ? null : p) }));
   let rows;
   if (tree && !ctx.remote) {
     rows = procTree(items, x => x.p.pid, x => x.m?.ppid ?? null).map(({ x, depth, root }) => (

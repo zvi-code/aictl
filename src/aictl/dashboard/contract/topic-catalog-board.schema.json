@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-catalog-board.schema.json",
+  "title": "TopicCatalogBoard",
+  "type": "object",
+  "properties": {
+    "scope": {"type": "string"},
+    "field": {"const": "tool_labels"},
+    "value": {"$ref": "board-tool-labels.schema.json"}
+  },
+  "required": ["scope", "field", "value"],
+  "additionalProperties": false
+}

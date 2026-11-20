@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-session-processes.schema.json",
+  "title": "DetailSessionProcesses",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "total": {"type": "integer"},
+    "by_role": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "processes": {"type": "array", "items": {"$ref": "session-process-row.schema.json"}}
+  },
+  "required": ["session_id", "total", "by_role", "processes"]
+}

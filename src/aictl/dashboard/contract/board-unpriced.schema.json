@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-unpriced.schema.json",
+  "title": "BoardUnpriced",
+  "type": "object",
+  "properties": {
+    "tokens": {"type": "integer"},
+    "share": {"type": ["number", "null"]},
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"model": {"type": "string"}, "tokens": {"type": "integer"}},
+        "required": ["model", "tokens"]
+      }
+    }
+  },
+  "required": ["tokens", "share", "models"]
+}

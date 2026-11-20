@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-effective-models.schema.json",
+  "title": "DetailEffectiveModels",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "properties": {
+      "tool": {"type": "string"},
+      "value": {"type": ["string", "null"]},
+      "source": {"type": ["string", "null"]},
+      "scope": {"type": ["string", "null"]},
+      "line": {"type": ["integer", "null"]},
+      "in_project": {"type": "boolean"},
+      "verified": {"type": "boolean"},
+      "why_in_effect": {"type": ["string", "null"]},
+      "conflicts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        }
+      },
+      "narrower_pins": {"type": "integer"}
+    },
+    "required": [
+      "tool",
+      "value",
+      "source",
+      "scope",
+      "line",
+      "in_project",
+      "verified",
+      "why_in_effect",
+      "conflicts",
+      "narrower_pins"
+    ]
+  }
+}

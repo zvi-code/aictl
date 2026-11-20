@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-runtime-process.schema.json",
+  "title": "TopicRuntimeProcess",
+  "type": "object",
+  "properties": {
+    "pid": {"type": "integer"},
+    "ppid": {"type": ["integer", "null"]},
+    "created_at": {"type": ["number", "null"]},
+    "name": {"type": "string"},
+    "tool": {"type": "string"},
+    "cwd": {"type": ["string", "null"]},
+    "cpu_percent": {"type": ["number", "null"]},
+    "memory_rss_bytes": {"type": ["integer", "null"]},
+    "present": {"type": "boolean"},
+    "session_id": {"type": ["string", "null"]}
+  },
+  "required": [
+    "pid",
+    "ppid",
+    "created_at",
+    "name",
+    "tool",
+    "cwd",
+    "cpu_percent",
+    "memory_rss_bytes",
+    "present",
+    "session_id"
+  ],
+  "additionalProperties": false
+}

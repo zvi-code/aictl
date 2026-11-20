@@ -23,6 +23,7 @@ import { nextTools } from '../src/hooks/useBoardFilters.js';
 import { redirectOf } from '../src/root.js';
 import { getBoard, getContextAudit } from '../src/api.js';
 import { NOW, agentDetailFixture, boardFixture, fileDetailFixture, machineFixture } from './fixtures/board.fixture.js';
+import { boardEventSource, ControlledEventSource } from './fixtures/live.fixture.js';
 
 // jsdom's localStorage is an empty object in this project's vitest setup (see hooks.test.js).
 if (typeof globalThis.localStorage?.setItem !== 'function') {
@@ -38,6 +39,7 @@ if (typeof globalThis.localStorage?.setItem !== 'function') {
 const jsonResponse = (body, status = 200, headers = {}) => new Response(status === 304 ? null : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });
 
 function stubFetch(board = boardFixture()) {
+  vi.stubGlobal('EventSource', boardEventSource({ board: () => board, machine: () => stubFetch.machine?.() ?? machineFixture() }));
   const calls = [];
   const fn = vi.fn(async (url) => {
     const u = String(url);
@@ -49,18 +51,14 @@ function stubFetch(board = boardFixture()) {
     if (u.startsWith('/api/board/prompt')) return jsonResponse({ text: '', prompt_file: '', project: 'alpha', title: 'Fix', input: null, output: 1, cache_read: 2, reply_ms: 3, tool_calls: 0 });
     if (u.startsWith('/api/board/action')) return jsonResponse({ ok: true });
     if (u.startsWith('/api/session-kill')) return jsonResponse({ ok: true });
-    if (u.startsWith('/api/board/machine')) return jsonResponse(stubFetch.machine ? stubFetch.machine() : machineFixture());
-    if (u.startsWith('/api/board')) return jsonResponse(board);
     if (u.startsWith('/api/context-audit')) return jsonResponse({ findings: [], sources: [], counts: {} });
     return jsonResponse({});
   });
   vi.stubGlobal('fetch', fn);
   return calls;
 }
-class FakeES { constructor() { FakeES.last = this; } close() {} }
-
 beforeEach(() => {
-  vi.stubGlobal('EventSource', FakeES);
+  ControlledEventSource.instances = [];
   window.history.replaceState(null, '', '/');
 });
 afterEach(() => {
@@ -283,7 +281,8 @@ describe('filters in the URL', () => {
     fireEvent.click(projectBtn());
     fireEvent.click(container.querySelector('.bd-menu').querySelectorAll('button')[1]);
     expect(window.location.search).toContain('project=alpha');
-    await waitFor(() => expect(calls.some(c => c.startsWith('/api/board?') && c.includes('project=alpha'))).toBe(true));
+    await waitFor(() => expect(ControlledEventSource.instances.at(-1).url).toContain('project=alpha'));
+    expect(calls.some(c => c.startsWith('/api/board?'))).toBe(false);
     window.history.back();
     await waitFor(() => expect(window.location.search).not.toContain('project='));
     await waitFor(() => expect(projectBtn().textContent).toContain('All'));
@@ -628,101 +627,16 @@ describe('board screen', () => {
     expect(container.querySelector('#p-cacheRate .bd-chart')).toBeNull();
     await within(container.querySelector('#p-cacheRate')).findAllByText('No data');
   });
-  it('keeps the old data on screen and says so when a refresh fails', async () => {
-    const { container, getByRole } = await mountBoard();
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, 500)));
-    fireEvent.click(getByRole('button', { name: '7 d' }));
-    await waitFor(() => expect(container.querySelector('.bd-banner')).toBeTruthy());
-    expect(container.querySelector('#p-agentsT tbody').textContent).toContain('Fix retry logic');
-  });
-  it('says aictl is starting, not that it failed, while the daemon collects its first snapshot', async () => {
-    const { container, getByRole } = await mountBoard();
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'aictl is starting', starting: true }, 503)));
-    fireEvent.click(getByRole('button', { name: '7 d' }));
-    await waitFor(() => expect(container.querySelector('.bd-banner')).toBeTruthy());
-    expect(container.querySelector('.bd-banner').textContent).toContain('aictl is starting');
-    expect(container.querySelector('.bd-banner').textContent).not.toContain('Could not');
-    expect(container.querySelector('.bd-banner').getAttribute('role')).toBe('status');
-  });
-  it('fetches at once on a stream message, a burst once more at the tick, and never when paused', async () => {
-    const { calls } = await mountBoard();
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    try {
-      cleanup();
-      const view = render(html`<${BoardScreen}/>`);
-      await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
-      const es = FakeES.last;
-      await act(async () => { es.onopen(); });
-      const boardCalls = () => calls.filter(c => c.startsWith('/api/board?')).length;
-      const before = boardCalls();
-      await act(async () => { vi.advanceTimersByTime(5000); });
-      expect(boardCalls()).toBe(before);
-      await act(async () => { for (let i = 0; i < 5; i++) es.onmessage({ data: '{}' }); });
-      expect(boardCalls()).toBe(before + 1);
-      // The rest of the burst is read once more at the tick, after the first read ends.
-      await act(async () => { vi.advanceTimersByTime(5000); });
-      await waitFor(() => expect(boardCalls()).toBe(before + 2));
-      await act(async () => { vi.advanceTimersByTime(5000); });
-      expect(boardCalls()).toBe(before + 2);
-      fireEvent.click(view.getByRole('button', { name: 'Live' }));
-      await act(async () => { es.onmessage({ data: '{}' }); vi.advanceTimersByTime(15000); });
-      expect(boardCalls()).toBe(before + 2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-  it('lets a slow board read finish instead of aborting it on each tick, then reads once more', async () => {
-    const { calls } = await mountBoard();
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    try {
-      cleanup();
-      // Every board read waits until released; the fetch signal is watched for an abort.
-      const pendingBoard = [];
-      const base = fetch;
-      vi.stubGlobal('fetch', vi.fn((url, opts) => {
-        const u = String(url);
-        if (!u.startsWith('/api/board?')) return base(url, opts);
-        calls.push(u);
-        return new Promise((resolve, reject) => {
-          opts?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-          pendingBoard.push(() => resolve(jsonResponse(boardFixture())));
-        });
-      }));
-      const view = render(html`<${BoardScreen}/>`);
-      await waitFor(() => expect(pendingBoard.length).toBe(1));
-      const es = FakeES.last;
-      await act(async () => { es.onopen(); });
-      const boardCalls = () => calls.filter(c => c.startsWith('/api/board?')).length;
-      const before = boardCalls();
-      // Three ticks with stream messages while the first read is still pending: no new read.
-      for (let i = 0; i < 3; i++) await act(async () => { es.onmessage({ data: '{}' }); vi.advanceTimersByTime(5000); });
-      expect(boardCalls()).toBe(before);
-      expect(pendingBoard.length).toBe(1);
-      // The slow read answers; one more read follows for the ticks that asked.
-      await act(async () => { pendingBoard.shift()(); });
-      await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
-      await waitFor(() => expect(boardCalls()).toBe(before + 1));
-      await act(async () => { pendingBoard.shift()(); });
-      await act(async () => { vi.advanceTimersByTime(5000); });
-      expect(boardCalls()).toBe(before + 1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-  it('makes a conditional request, and a 304 keeps the data', async () => {
+  it('passes the ETag and reports a 304 on a conditional board request', async () => {
     const seen = [];
-    const fn = vi.fn(async (url, opts) => {
-      const u = String(url);
-      if (!u.startsWith('/api/board?')) return jsonResponse({ rows: [], total: 0 });
+    const fn = vi.fn(async (_url, opts) => {
       seen.push(opts?.headers?.['If-None-Match'] || null);
       return seen.length > 1 ? new Response(null, { status: 304 }) : jsonResponse(boardFixture(), 200, { ETag: '"abc"' });
     });
     vi.stubGlobal('fetch', fn);
-    const view = render(html`<${BoardScreen}/>`);
-    await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
+    expect((await getBoard('q')).etag).toBe('"abc"');
     expect((await getBoard('q', { etag: '"abc"' })).status).toBe(304);
     expect(seen.at(-1)).toBe('"abc"');
-    expect(view.container.querySelector('#p-agentsT tbody').textContent).toContain('Fix retry logic');
   });
   it('passes the accessibility rules that apply without a browser', async () => {
     const { container } = await mountBoard();

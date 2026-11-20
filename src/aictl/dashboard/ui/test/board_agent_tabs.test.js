@@ -8,7 +8,6 @@ import { flowModel } from '../src/components/board/agent/flowModel.js';
 import { median, trend } from '../src/components/board/agent/OverviewExtras.js';
 import { byName, recordedTree } from '../src/components/board/agent/ProcessesTab.js';
 import { treeOrder } from '../src/components/board/agent/TeamTab.js';
-import { REFRESH_MS } from '../src/components/board/agent/TranscriptTab.js';
 import { entityOf, slotsOf } from '../src/components/board/agent/TimelineTab.js';
 import { flowToTranscript, isFlow } from '../src/components/board/agent/transcriptModel.js';
 import { agentLinkOf, listenSelectSession, redirectOf } from '../src/root.js';
@@ -455,20 +454,14 @@ describe('Transcript tab', () => {
     expect(t.turns[0].actions.map(x => x.kind)).toEqual(['api_call', 'api_response', 'tool_use', 'subagent', 'hook', 'error', 'tool_use']);
   });
 
-  it('reads the transcript again every 5 s while the agent runs', async () => {
-    // Only the refresh interval is faked: it moves when the test says so, and the second
-    // answer adds a turn, so the wait ends on the new row rather than on a clock.
-    // Date moves with it, since a refetch waits 5 s from the last one.
+  it('loads the historical transcript once even while the agent runs', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
-    const second = { ...transcript.turns[0], ts: NOW - 100, prompt: 'And the lexer' };
     let reads = 0;
-    const route = () => (++reads === 1 ? transcript : { ...transcript, turns: [...transcript.turns, second] });
-    const { findByRole, findAllByText, queryByText } = mount({ tab: 'transcript', a: agent({ status: 'running', ended_at: null }), routes: { '/api/board/agent/transcript': route } });
+    const route = () => { reads++; return transcript; };
+    const { findByRole } = mount({ tab: 'transcript', a: agent({ status: 'running', ended_at: null }), routes: { '/api/board/agent/transcript': route } });
     await findByRole('button', { expanded: false, name: /^1/ });
-    expect(queryByText(/And the lexer/)).toBeNull();
-    await vi.advanceTimersByTimeAsync(REFRESH_MS);
-    await findAllByText(/And the lexer/);
-    expect(reads).toBe(2);
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(reads).toBe(1);
   });
 
   it('reads the board transcript route and says when the reply text is not kept', async () => {

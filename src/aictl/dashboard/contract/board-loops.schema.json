@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-loops.schema.json",
+  "title": "BoardLoops",
+  "type": "array",
+  "items": {"$ref": "board-loop-row.schema.json"}
+}

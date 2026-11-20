@@ -1,0 +1,752 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-history-board.schema.json",
+  "title": "TopicHistoryBoard",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "agents"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "agents"},
+        "value": {"$ref": "history-agent-row.schema.json"},
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "attention"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "attention"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "kind": {"type": "string"},
+            "agent_id": {"type": "string"},
+            "title": {"type": "string"},
+            "detail": {"type": "string"},
+            "tokens": {"type": ["integer", "null"]},
+            "cost_usd": {"type": ["number", "null"]},
+            "since_ts": {"type": "number"}
+          },
+          "required": ["kind", "agent_id", "title", "detail", "tokens", "cost_usd", "since_ts"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "by_model"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "by_model"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "model": {"type": "string"},
+            "agents": {"type": "integer"},
+            "msgs": {"type": "integer"},
+            "tokens": {"type": "integer"},
+            "input": {"type": ["integer", "null"]},
+            "output": {"type": ["integer", "null"]},
+            "cache_read": {"type": ["integer", "null"]},
+            "cache_write": {"type": ["integer", "null"]},
+            "cached_share": {"type": ["number", "null"]},
+            "cost_usd": {"type": ["number", "null"]},
+            "p95_ms": {"type": ["number", "null"]},
+            "agent_ids": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": [
+            "model",
+            "agents",
+            "msgs",
+            "tokens",
+            "input",
+            "output",
+            "cache_read",
+            "cache_write",
+            "cached_share",
+            "cost_usd",
+            "p95_ms",
+            "agent_ids"
+          ]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "by_role"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "by_role"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "kind": {"type": "string"},
+            "runs": {"type": "integer"},
+            "msgs": {"type": "integer"},
+            "tokens": {"type": "integer"},
+            "cost_usd": {"type": ["number", "null"]},
+            "fail_rate": {"type": ["number", "null"]}
+          },
+          "required": ["kind", "runs", "msgs", "tokens", "cost_usd", "fail_rate"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "capture_mode"},
+        "value": {"$ref": "board-capture-mode.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "changes"},
+        "value": {"$ref": "board-changes.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "confirms"},
+        "value": {"$ref": "board-confirms.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "coverage"},
+        "value": {"$ref": "board-coverage.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "credits"},
+        "value": {"$ref": "board-credits.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "errors"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "errors"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "key": {"type": "string"},
+            "kind": {"type": "string"},
+            "count": {"type": "integer"},
+            "agents": {"type": "integer"},
+            "last_ts": {"type": ["number", "null"]},
+            "sample": {"type": ["string", "null"]}
+          },
+          "required": ["key", "kind", "count", "agents", "last_ts", "sample"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "generated_at"},
+        "value": {"$ref": "board-generated-at.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "kpis"},
+        "value": {"$ref": "history-kpis.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "latency"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "latency"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "what": {"type": "string"},
+            "count": {"type": ["integer", "null"]},
+            "p50_ms": {"type": ["number", "null"]},
+            "p95_ms": {"type": ["number", "null"]},
+            "p99_ms": {"type": ["number", "null"]},
+            "max_ms": {"type": ["number", "null"]}
+          },
+          "required": ["what", "count", "p50_ms", "p95_ms", "p99_ms", "max_ms"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "loops"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "loops"},
+        "value": {"$ref": "board-loop-row.schema.json"},
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "memory_files"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "memory_files"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string"},
+            "read_by": {"type": "string"},
+            "scope": {"type": "string"},
+            "tokens": {"type": ["integer", "null"]},
+            "lines_added": {"type": ["integer", "null"]},
+            "lines_removed": {"type": ["integer", "null"]},
+            "changed_by": {"type": ["string", "null"]},
+            "changed_ts": {"type": ["number", "null"]},
+            "node_id": {"type": "string"}
+          },
+          "required": [
+            "path",
+            "read_by",
+            "scope",
+            "tokens",
+            "lines_added",
+            "lines_removed",
+            "changed_by",
+            "changed_ts"
+          ]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "options"},
+        "value": {"$ref": "board-options.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "project_prompts"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "project_prompts"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "project": {"type": "string"},
+            "file": {"type": "string"},
+            "uses": {"type": "integer"},
+            "last_ts": {"type": ["number", "null"]},
+            "recorded_file": {"type": "string"}
+          },
+          "required": ["project", "uses", "last_ts", "recorded_file"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "projects"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "projects"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "project": {"type": "string"},
+            "agents": {"type": "integer"},
+            "prompts": {"type": ["integer", "null"]},
+            "msgs": {"type": "integer"},
+            "tokens": {"type": "integer"},
+            "cached_share": {"type": ["number", "null"]},
+            "cost_usd": {"type": ["number", "null"]},
+            "tool_calls": {"type": ["integer", "null"]},
+            "fail_rate": {"type": ["number", "null"]},
+            "test_runs": {"type": ["integer", "null"]},
+            "test_passed": {"type": ["integer", "null"]},
+            "lines_added": {"type": ["integer", "null"]},
+            "lines_removed": {"type": ["integer", "null"]},
+            "api_errors": {"type": "integer"},
+            "loops": {"type": "integer"},
+            "p95_ms": {"type": ["number", "null"]}
+          },
+          "required": [
+            "project",
+            "agents",
+            "prompts",
+            "msgs",
+            "tokens",
+            "cached_share",
+            "cost_usd",
+            "tool_calls",
+            "fail_rate",
+            "test_runs",
+            "test_passed",
+            "lines_added",
+            "lines_removed",
+            "api_errors",
+            "loops",
+            "p95_ms"
+          ]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "prompts"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "prompts"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string"},
+            "node_id": {"type": "string"},
+            "ts": {"type": "number"},
+            "session_id": {"type": "string"},
+            "agent_id": {"type": "string"},
+            "project": {"type": "string"},
+            "text": {"type": "string"},
+            "prompt_file": {"type": ["string", "null"]},
+            "tokens": {"type": ["integer", "null"]}
+          },
+          "required": ["ts", "session_id", "agent_id", "project", "text", "prompt_file", "tokens"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "prompts_total"},
+        "value": {"$ref": "board-prompts-total.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "range"},
+        "value": {"$ref": "board-range.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "saved_usd"},
+        "value": {"$ref": "board-saved-usd.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "scope"},
+        "value": {"$ref": "board-scope.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "series"},
+        "value": {"$ref": "board-series.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "skills"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "skills"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "uses": {"type": "integer"},
+            "tokens": {"type": ["integer", "null"]},
+            "agents": {"type": "integer"},
+            "scope": {"type": ["string", "null"]},
+            "path": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "file_tokens": {"type": ["integer", "null"]}
+          },
+          "required": ["name", "uses", "tokens", "agents"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "sources"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "sources"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "tool": {"type": "string"},
+            "label": {"type": "string"},
+            "data_from": {"type": "string"},
+            "last_data_ts": {"type": ["number", "null"]},
+            "locations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "found_by": {"type": "string"}},
+                "required": ["path", "found_by"]
+              }
+            }
+          },
+          "required": ["tool", "label", "data_from", "last_data_ts", "locations"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "tests"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "tests"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "command": {"type": "string"},
+            "runs": {"type": "integer"},
+            "failed": {"type": "integer"},
+            "median_ms": {"type": ["number", "null"]},
+            "state": {"type": "string"},
+            "last_ts": {"type": "number"},
+            "project": {"type": "string"},
+            "node_id": {"type": "string"}
+          },
+          "required": ["command", "runs", "failed", "median_ms", "state", "last_ts"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "tests_piped"},
+        "value": {"$ref": "board-tests-piped.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "tools"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "tools"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "server": {"type": "boolean"},
+            "calls": {"type": "integer"},
+            "failed": {"type": "integer"},
+            "fail_rate": {"type": ["number", "null"]},
+            "p50_ms": {"type": ["number", "null"]},
+            "p95_ms": {"type": ["number", "null"]},
+            "max_ms": {"type": ["number", "null"]},
+            "mcp_server": {"type": ["string", "null"]},
+            "avg_input_bytes": {"type": ["number", "null"]},
+            "avg_output_bytes": {"type": ["number", "null"]},
+            "output_bytes": {"type": ["integer", "null"]},
+            "trend": {"type": "array", "items": {"type": ["integer", "null"]}}
+          },
+          "required": [
+            "name",
+            "server",
+            "calls",
+            "failed",
+            "fail_rate",
+            "p50_ms",
+            "p95_ms",
+            "max_ms",
+            "mcp_server",
+            "avg_input_bytes",
+            "avg_output_bytes",
+            "output_bytes",
+            "trend"
+          ]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "unpriced"},
+        "value": {"$ref": "board-unpriced.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    }
+  ]
+}

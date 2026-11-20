@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..dashboard.board_api import mask_secrets
-from ..dashboard.live_protocol import stable_id
+from ..dashboard.live.protocol import stable_id
 from ..ingesters._common import coerce_ts
 from ..ingesters.transcript_tail import records
 

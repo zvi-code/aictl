@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/live-capabilities.schema.json",
+  "title": "LiveCapabilities",
+  "type": "object",
+  "properties": {
+    "enabled": {"type": "boolean"},
+    "protocol": {"type": "integer"},
+    "contract_version": {"type": "integer"},
+    "stream": {"type": ["string", "null"]},
+    "source_policy": {
+      "type": "object",
+      "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+    },
+    "legacy_stream": {"type": "string"},
+    "datapoint_catalog": {"type": "string"},
+    "history": {"type": "string"},
+    "configuration": {"type": "string"},
+    "sequence": {"type": "string"},
+    "topics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "sources": {"type": "array", "items": {"type": "string"}},
+          "fields": {"type": "array", "items": {"type": "string"}},
+          "delivery": {"enum": ["latest", "ordered"]}
+        },
+        "required": ["sources", "delivery"]
+      }
+    }
+  },
+  "required": [
+    "enabled",
+    "protocol",
+    "contract_version",
+    "stream",
+    "source_policy",
+    "legacy_stream",
+    "datapoint_catalog",
+    "history",
+    "configuration",
+    "sequence",
+    "topics"
+  ]
+}

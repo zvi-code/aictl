@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/pending-confirmation.schema.json",
+  "title": "PendingConfirmation",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "target": {"type": ["string", "null"]},
+    "since_ts": {"type": "number"}
+  },
+  "required": ["name", "target", "since_ts"]
+}

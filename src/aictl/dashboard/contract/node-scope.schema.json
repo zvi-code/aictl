@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/node-scope.schema.json",
+  "title": "NodeScope",
+  "type": "object",
+  "properties": {"kind": {"type": "string"}, "node_id": {"type": ["string", "null"]}},
+  "required": ["kind", "node_id"]
+}

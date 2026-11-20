@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-terminal-sessions.schema.json",
+  "title": "DetailTerminalSessions",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "session_id": {"type": "string"},
+      "tool": {"type": "string"},
+      "label": {"type": "string"},
+      "root_pid": {"type": "integer"},
+      "project": {"type": "string"},
+      "started_at": {"type": "number"},
+      "last_seen_at": {"type": "number"},
+      "duration_s": {"type": "number"},
+      "pids": {"type": "array", "items": {"type": "integer"}},
+      "workspaces": {"type": "array", "items": {"type": "string"}},
+      "files_touched": {"type": "array", "items": {"type": "string"}},
+      "files_touched_limited": {"type": "boolean"},
+      "files_loaded": {"type": "array", "items": {"type": "string"}},
+      "file_events": {"type": "integer"},
+      "cpu_percent": {"type": "number"},
+      "peak_cpu_percent": {"type": "number"},
+      "inbound_bytes": {"type": "integer"},
+      "outbound_bytes": {"type": "integer"},
+      "state_bytes_written": {"type": "integer"},
+      "exact_input_tokens": {"type": "integer"},
+      "exact_output_tokens": {"type": "integer"},
+      "subprocess_count": {"type": "object", "additionalProperties": {"type": "integer"}},
+      "recent_subprocesses": {"type": "array", "items": {"type": "object"}},
+      "process_tree": {"type": "array", "items": {"type": "object"}}
+    },
+    "required": ["session_id", "tool", "pids"]
+  }
+}

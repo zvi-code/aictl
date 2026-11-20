@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-coverage.schema.json",
+  "title": "BoardCoverage",
+  "type": "object",
+  "properties": {
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string"},
+          "label": {"type": "string"},
+          "cells": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {"state": {"type": "string"}, "why": {"type": "string"}},
+              "required": ["state", "why"]
+            }
+          }
+        },
+        "required": ["key", "label", "cells"]
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"tool": {"type": "string"}, "text": {"type": "string"}},
+        "required": ["tool", "text"]
+      }
+    }
+  },
+  "required": ["rows", "notes"]
+}

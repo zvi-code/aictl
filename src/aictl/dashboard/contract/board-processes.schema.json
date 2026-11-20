@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-processes.schema.json",
+  "title": "BoardProcesses",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "name": {"type": "string"},
+      "pid": {"type": "integer"},
+      "tool": {"type": "string"},
+      "agent_id": {"type": ["string", "null"]},
+      "title": {"type": ["string", "null"]},
+      "cpu_percent": {"type": ["number", "null"]},
+      "mem_mb": {"type": ["number", "null"]}
+    },
+    "required": ["name", "pid", "tool", "agent_id", "title", "cpu_percent", "mem_mb"]
+  }
+}

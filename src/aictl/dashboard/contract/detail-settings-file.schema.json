@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-settings-file.schema.json",
+  "title": "DetailSettingsFile",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string"},
+    "mtime": {"type": "number"},
+    "size": {"type": "integer"},
+    "text": {"type": "string"},
+    "masked": {"type": "boolean"}
+  },
+  "required": ["path", "mtime", "size", "text", "masked"]
+}

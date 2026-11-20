@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-skill.schema.json",
+  "title": "DetailSkill",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "agents": {"type": "integer"},
+    "file_reads": {"type": "integer"},
+    "first_ts": {"type": ["number", "null"]},
+    "last_ts": {"type": ["number", "null"]},
+    "total_uses": {"type": "integer"},
+    "uses": {"type": "integer"},
+    "node_scope": {"$ref": "node-scope.schema.json"},
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "agent_id": {"type": "string"},
+          "project": {"type": "string"},
+          "title": {"type": "string"},
+          "tool": {"type": "string"},
+          "trigger": {"type": ["string", "null"]},
+          "ts": {"type": "number"}
+        },
+        "required": ["agent_id", "project", "title", "tool", "trigger", "ts"]
+      }
+    },
+    "reads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "agent_id": {"type": ["string", "null"]},
+          "project": {"type": "string"},
+          "title": {"type": "string"},
+          "tool": {"type": "string"},
+          "path": {"type": "string"},
+          "ts": {"type": "number"}
+        },
+        "required": ["agent_id", "ts"]
+      }
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "tools": {"type": "array", "items": {"type": "string"}},
+          "scope": {"type": ["string", "null"]},
+          "owner": {"type": ["string", "null"]},
+          "reach": {"type": ["string", "null"]},
+          "description": {"type": ["string", "null"]},
+          "content": {"type": ["string", "null"]},
+          "truncated": {"type": ["boolean", "null"]},
+          "note": {"type": ["string", "null"]},
+          "allowed_tools": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+          "git_state": {"type": ["string", "null"]},
+          "same_as": {"type": ["string", "null"]},
+          "starter": {"type": ["string", "null"]}
+        },
+        "required": [
+          "path",
+          "tools",
+          "scope",
+          "owner",
+          "reach",
+          "description",
+          "content",
+          "truncated",
+          "note",
+          "allowed_tools",
+          "git_state",
+          "same_as",
+          "starter"
+        ]
+      }
+    }
+  },
+  "required": [
+    "name",
+    "agents",
+    "file_reads",
+    "first_ts",
+    "last_ts",
+    "total_uses",
+    "uses",
+    "calls",
+    "reads",
+    "locations"
+  ]
+}

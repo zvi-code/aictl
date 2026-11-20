@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-file.schema.json",
+  "title": "DetailFile",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string"},
+    "diff_as_of": {"type": ["number", "null"]},
+    "node_scope": {"$ref": "node-scope.schema.json"},
+    "edits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "agent_id": {"type": "string"},
+          "title": {"type": "string"},
+          "lines_added": {"type": ["integer", "null"]},
+          "lines_removed": {"type": ["integer", "null"]}
+        },
+        "required": ["ts", "agent_id", "title", "lines_added", "lines_removed"]
+      }
+    },
+    "diff": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "n": {"type": ["integer", "null"]},
+              "text": {"type": "string"},
+              "kind": {"enum": ["same", "add", "del"]}
+            },
+            "required": ["n", "text", "kind"]
+          }
+        },
+        {"type": "null"}
+      ]
+    }
+  },
+  "required": ["path", "diff_as_of", "edits", "diff"]
+}

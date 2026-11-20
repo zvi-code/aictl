@@ -2,16 +2,14 @@
 import { html } from 'htm/preact';
 import { loadChunk } from './lazy.js';
 
-// The daemon answers 503 while it collects its first snapshot after a start; the board polls again.
-export const STARTING = 'aictl is starting: it is collecting its first snapshot. The board fills in when it is ready.';
 import { memo } from 'preact/compat';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
 import { useTheme } from '../../hooks/useTheme.js';
 import { nextTools, useBoardFilters } from '../../hooks/useBoardFilters.js';
-import { boardNodeScope, mergeSearch, writeUrl } from '../../hooks/urlState.js';
+import { boardNodeScope, loadToolFilter, mergeSearch, writeUrl } from '../../hooks/urlState.js';
 import { focusTrap } from '../../utils/a11y.js';
-import { listedTools, toolFilterLabel, canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery } from './filters.js';
+import { listedTools, toolFilterLabel, canClear, clearedFilters, RANGES, STATUSES, windowOf, boardQuery, boardLiveRequest, parseFilters, readScreen } from './filters.js';
 import { buildFindings, buildSettings } from './findings.js';
 import CommandPalette, { ShortcutsDialog, boardCommands, loadRecent, pushRecent, saveRecent } from './CommandPalette.js';
 import { colorFor, projectName, stamp } from './format.js';
@@ -30,9 +28,9 @@ import { HealthOverview, healthSources, healthStatus } from './health.js';
 import BoardRange from './BoardRange.js';
 import { NodeScopePicker, scopeLabel, useNodeView } from './NodeScope.js';
 import { nodeActivity, overlayReportedAgents, useNodeRuntime } from './nodeRuntime.js';
-import { LiveProvider } from '../../live/context.js';
+import { LiveProvider } from '../../live/context.ts';
 import LiveStatus from '../../live/Status.js';
-import { historyFailure, historyReady, topicData } from '../../live/model.js';
+import { historyFailure, sourceStatuses, topicData } from '../../live/selectors.js';
 import { isStoredToolSelected } from '../../utils/toolScope.js';
 import { settingsSummary, snapOf, toolEntries } from '../settings/model.js';
 import './board.css';
@@ -41,20 +39,12 @@ const SECTIONS = DEFAULT_LAYOUT.map(s => ({ id: s.id, title: s.title, anchor: s.
 const SEC_BY_ID = Object.fromEntries(SECTIONS.map(s => [s.id, s]));
 
 // The board's own screens, in the `screen` query value. The board screen has none.
-const SCREENS = new Set(['board', 'settings', 'health']);
-export function readScreen(search) {
-  const v = new URLSearchParams(search || '').get('screen');
-  return SCREENS.has(v) ? v : 'board';
-}
-// The settings are read again once the board's data is this much newer.
-// The settings are read again when the board says they changed (settings_at); without that word, this often.
-const SETTINGS_REFRESH_S = 300;
+export { readScreen } from './filters.js';
 const SETTINGS_NOTE = 'Settings are the current values on this machine; the time range does not apply';
 
 /** "12 set · 2 risky · 3 agents" for the rail, under the Tool filter. */
-function settingsLine(res, tools) {
-  const d = res.data;
-  if (!d) return res.error ? 'Could not read the settings' : '…';
+function settingsLine(d, tools) {
+  if (!d) return '…';
   const snap = snapOf({ toolConfigs: d.tool_configs || [], tools: d.tools || [], monitor: d.monitor || {}, enabledTools: tools });
   const n = settingsSummary(toolEntries(snap));
   return n.set + ' set · ' + n.risky + ' risky · ' + n.agents + ' agents';
@@ -193,7 +183,7 @@ const FilterRow = memo(({ board, data, ctx, menu, act, subscription, loaded, scr
   const selValue = filters.sel ? stamp(filters.sel.since, true) + ' to ' + stamp(filters.sel.until, true) : '';
   const clearable = canClear(filters, tools);
   const shown = data.scope.shown_agents;
-  const queryable = loaded && (subscription?.mode !== 'incremental' || historyReady(subscription));
+  const queryable = loaded;
   const runtimeOnly = data.agents.filter(agent => agent.runtime_present && agent.queryable === false).length;
   const scope = (screen !== 'board' ? 'Historical activity is shown on Overview' : queryable ? (shown === allAgents ? 'Showing all ' + allAgents + ' recorded agents in this time' : 'Showing ' + shown + ' of ' + allAgents + ' recorded agents in this time') : historyFailure(subscription) ? 'Queryable history is unavailable' : 'Queryable history is not ready')
     + (runtimeOnly ? ' · ' + runtimeOnly + ' live runtime ' + (runtimeOnly === 1 ? 'agent' : 'agents') + ' not yet in this history' : '');
@@ -226,13 +216,9 @@ function Kpis({ data, pill }) {
 }
 
 /** The Settings screen in the board's main area: the workspace once its code and data are here. */
-function SettingsArea({ Workspace, res, source }) {
-  if (res.error && !res.data) {
-    return html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>${res.error.status === 503 ? STARTING : 'Could not read the settings: ' + (res.error.message || String(res.error)) + '.'}</div>`;
-  }
+function SettingsArea({ Workspace, source }) {
   if (!Workspace || !source) return html`<div class="bd-sk" role="status">Loading the settings...</div>`;
-  return html`${res.error ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>Could not update the settings: ${res.error.message || String(res.error)}. Showing the last values.</div>` : null}
-    <${Workspace} source=${source} note=${source.readonly ? 'Reported settings for the selected nodes; the time range does not apply' : SETTINGS_NOTE}/>`;
+  return html`<${Workspace} source=${source} note=${source.readonly ? 'Reported settings for the selected nodes; the time range does not apply' : SETTINGS_NOTE}/>`;
 }
 
 function Modal({ modal, onCancel }) {
@@ -266,7 +252,12 @@ export function staleCode(data) {
   return self && typeof self.code_changed_at === 'number' ? self.code_changed_at : null;
 }
 
-export default function BoardScreen({ liveController }) {
+export default function BoardScreen({ liveController, startedAt }) {
+  const [firstRequest] = useState(() => {
+    const now = startedAt ?? Date.now() / 1000;
+    const search = window.location.search;
+    return { now, options: boardLiveRequest(parseFilters(search), loadToolFilter(search), readScreen(search), now) };
+  });
   const [search, setSearch] = useState(() => window.location.search);
   const { theme, setTheme } = useTheme();
   const resolvedTheme = useResolvedTheme(theme);
@@ -292,8 +283,8 @@ export default function BoardScreen({ liveController }) {
     ...CLEAR_DRAWER, row: null, session_id: null, session: null,
   })}/>`;
   const content = html`<${BoardContent}
-    ...${{ screen, picker, navigate, resolvedTheme, setTheme, nodeScope: scope, nodeId, scopeName: scopeLabel(scope, nodeId) }}/>`;
-  return html`<${LiveProvider} controller=${liveController} enabled=${scope === 'local'}>${content}<//>`;
+    ...${{ screen, picker, navigate, resolvedTheme, setTheme, nodeScope: scope, nodeId, scopeName: scopeLabel(scope, nodeId), startedAt: firstRequest.now }}/>`;
+  return html`<${LiveProvider} controller=${liveController} initial=${firstRequest.options} enabled=${scope === 'local'}>${content}<//>`;
 }
 
 const CLEAR_DRAWER = { agent: null, tab: null, show: null, detail: null, record: null, detail_ts: null, detail_session: null };
@@ -318,7 +309,7 @@ function drawerParams(d) {
     detail_ts: d.ts, detail_session: d.record };
 }
 
-function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeScope = 'local', nodeId = null, scopeName }) {
+function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeScope = 'local', nodeId = null, scopeName, startedAt }) {
   const remote = nodeScope !== 'local';
   const board = useBoardFilters();
   const { filters, applied, tools, update, setFind } = board;
@@ -353,10 +344,9 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
 
   const { data, chartSeries, chartRange, loaded, busy, error, refresh, connected, everConnected, subscription, analyticsError } = useBoardData({
     filters: applied, tools, live, pausedRef, enabled: remote ? screen === 'board' : screen !== 'health', history: screen === 'board',
-    scope: nodeScope, nodeId,
+    scope: nodeScope, nodeId, startedAt,
     requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'settings' ? ['configuration.file'] : ['history.board', 'runtime.machine'],
   });
-  const incremental = subscription.mode === 'incremental';
   const landOnFlow = useRef(!window.location.search && !window.location.hash);
   useEffect(() => {
     if (!landOnFlow.current) return;
@@ -376,12 +366,17 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
     .filter(record => isStoredToolSelected(record.tool, tools)), [loadedConfiguration, tools]);
   const health = useBoardHealth({ enabled: screen === 'health', live, scope: nodeScope, nodeId });
   const { data: identity } = useNodeView({ view: 'identity', scope: 'local', enabled: !remote && screen !== 'health' });
-  const runtimeReport = useNodeRuntime(nodeScope, nodeId, live, screen !== 'health');
-  const localHost = !remote ? (screen === 'health' ? health.data?.resources?.host : topicData(subscription, 'runtime.health', 'local')?.resources?.host) : null;
+  const runtimeReport = useNodeRuntime(nodeScope, nodeId, live, screen !== 'health' && remote);
+  const host = !remote ? (screen === 'health' ? health.data?.resources?.host : topicData(subscription, 'runtime.health', 'local')?.resources?.host) : null;
+  const localHost = useMemo(() => host && { ...host, node_id: host.node_id || identity?.local_node?.node_id }, [host, identity]);
+  const localInventoryAt = !remote && screen !== 'health'
+    ? sourceStatuses(subscription).find(source => source.producer === 'runtime-collector' && source.ready)?.observed_at
+    : null;
   const activityReport = screen === 'health' ? health.data?.node_report : runtimeReport?.data;
-  const activityClock = live ? Math.floor(Date.now() / 5000) * 5 : activityReport?.generated_at ?? health.data?.generated_at;
-  const activity = useMemo(() => nodeActivity(activityReport, localHost, activityClock ?? Date.now() / 1000),
-    [activityReport, localHost, activityClock]);
+  const activityClock = live ? Math.floor(Date.now() / 5000) * 5
+    : activityReport?.generated_at ?? health.data?.generated_at ?? data.machine?.generated_at;
+  const activity = useMemo(() => nodeActivity(activityReport, localHost, activityClock ?? Date.now() / 1000, localInventoryAt),
+    [activityReport, localHost, activityClock, localInventoryAt]);
   const boardData = useMemo(() => ({
     ...data, history_ready: loaded, live_activity: activity, runtime_error: runtimeReport?.error || null,
     ...(remote ? { agents: overlayReportedAgents(data.agents, activity, applied, tools) } : {}),
@@ -407,18 +402,16 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
     return () => cancelAnimationFrame(r);
   }, [data, loaded]);
 
-  // Hidden findings: the existing audit routes, after the first paint of the board.
-  const [settingsRaw, setSettingsRaw] = useState({ loading: true });
+  const [settingsRaw, setSettingsRaw] = useState({ loading: false });
   const lifetime = useMemo(() => new AbortController(), []);
   useEffect(() => () => lifetime.abort(), [lifetime]);
   // The scan follows the Project filter. A later scan replaces an answer still on its way.
   const scanProject = applied.project === 'all' ? null : applied.project;
   const scanController = useRef(null);
-  useEffect(() => () => scanController.current?.abort(), []);
-  const loadFindings = useCallback((fresh) => {
+  // The stream does not include audit results, so read them on an explicit rescan.
+  const loadFindings = useCallback(() => {
     if (remote || lifetime.signal.aborted) return;
     scanController.current?.abort();
-    if (incremental && !fresh) { setSettingsRaw(s => ({ ...s, loading: false })); return; }
     const ctrl = new AbortController();
     scanController.current = ctrl;
     const current = () => !ctrl.signal.aborted;
@@ -429,75 +422,25 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
       () => { if (current()) setSettingsRaw(s => ({ ...s, [key]: null })); },
     );
     setSettingsRaw(s => ({ ...s, loading: true, error: null }));
-    if (!incremental) put('effective', api.getEffectiveModels(opts));
     put('hooks', api.getHooksStatus(opts));
     put('otel', api.getOtelStatus(opts));
-    api.getContextAudit(fresh, scan => { if (current()) setSettingsRaw(s => ({ ...s, scan })); }, { project: scanProject, ...opts }).then(
+    api.getContextAudit(true, scan => { if (current()) setSettingsRaw(s => ({ ...s, scan })); }, { project: scanProject, ...opts }).then(
       audit => { if (current()) setSettingsRaw(s => ({ ...s, audit, scan: null, loading: false })); },
       e => { if (current()) setSettingsRaw(s => ({ ...s, audit: null, scan: null, loading: false, error: e?.message })); },
     );
-  }, [scanProject, incremental, lifetime, remote]);
-  // The findings and the settings wait for an idle moment after the board's first data.
-  const [idle, setIdle] = useState(false);
-  useEffect(() => {
-    if (!loaded || idle) return undefined;
-    if (typeof requestIdleCallback === 'function') {
-      const id = requestIdleCallback(() => setIdle(true), { timeout: 3000 });
-      return () => cancelIdleCallback(id);
-    }
-    const t = setTimeout(() => setIdle(true), 1500);
-    return () => clearTimeout(t);
-  }, [loaded, idle]);
-  useEffect(() => { if (idle) loadFindings(false); }, [idle, loadFindings]);
-  useEffect(() => { if (remote) scanController.current?.abort(); }, [remote]);
-
-  // Every tool's settings, for the Settings screen and its rail line. Read at the idle
-  // moment after the board's first data, or at once when the screen opens first, again as soon
-  // as the board reports a change in them (settings_at), and otherwise once the board's data is
-  // SETTINGS_REFRESH_S newer. The last answer stays on screen meanwhile.
-  const [settingsRes, setSettingsRes] = useState({ data: null, error: null });
-  const settingsAt = useRef(undefined);
-  const settingsVersion = useRef(undefined);
-  const settingsWanted = !remote && (idle || screen === 'settings');
-  const boardAt = data.generated_at || 0;
-  const changedAt = data.settings_at || 0;
-  const loadSettings = useCallback(() => {
-    if (remote) return Promise.resolve();
-    if (incremental && !configured) return Promise.resolve();
-    if (lifetime.signal.aborted) return Promise.resolve();
-    const request = incremental ? Promise.resolve(configured) : api.getSettingsTools({ signal: lifetime.signal });
-    return request.then(
-    d => { if (!lifetime.signal.aborted) setSettingsRes({ data: d || {}, error: null }); },
-    (e) => { if (!lifetime.signal.aborted) setSettingsRes(s => ({ ...s, error: e })); },
-    );
-  }, [incremental, configured, lifetime, remote]);
-  useEffect(() => {
-    if (incremental && settingsWanted && configured) loadSettings();
-  }, [incremental, settingsWanted, configured, loadSettings]);
-  useEffect(() => {
-    if (!settingsWanted || incremental || subscription.mode === 'pending') return;
-    const last = settingsAt.current;
-    const changed = settingsVersion.current !== undefined && changedAt !== settingsVersion.current;
-    settingsVersion.current = changedAt;
-    if (last !== undefined && !changed) {
-      // A read made before the board had data counts as made at the board's first data.
-      if (!last) { settingsAt.current = boardAt; return; }
-      if (boardAt - last <= SETTINGS_REFRESH_S) return;
-    }
-    settingsAt.current = boardAt;
-    loadSettings();
-  }, [settingsWanted, boardAt, changedAt, loadSettings, incremental, subscription.mode]);
+  }, [scanProject, lifetime, remote]);
+  useEffect(() => () => scanController.current?.abort(), [remote, scanProject]);
   // The hook status for the Settings screen's Hooks sections, read once when the screen first opens.
   const [hooksStatus, setHooksStatus] = useState(null);
   const hooksAsked = useRef(false);
   useEffect(() => {
-    if (remote || screen !== 'settings' || hooksAsked.current || subscription.mode === 'pending') return;
+    if (remote || screen !== 'settings' || hooksAsked.current) return;
     hooksAsked.current = true;
     api.getHooksStatus({ signal: lifetime.signal }).then(
       (h) => { if (!lifetime.signal.aborted && h && typeof h === 'object') setHooksStatus(h); },
       () => {},
     );
-  }, [screen, subscription.mode, lifetime, remote]);
+  }, [screen, lifetime, remote]);
 
   const toolIds = useMemo(() => data.options.tools.map(t => t.id), [data.options]);
   // Settings apply whether or not a tool ran in this time, so its data sources count too.
@@ -722,7 +665,7 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
         writeUrl(drawerParams(next.at(-1)), { state: { boardDrawers: next } });
       },
       drawerClose: () => { setDrawer([]); writeUrl(CLEAR_DRAWER, { state: null }); },
-      rescan: () => L.current.loadFindings(true),
+      rescan: () => L.current.loadFindings(),
       openFile: (path, line) => { if (path) a.openDrawer({ type: 'file', path, line: line > 0 ? line : undefined }); },
       copy: (text, done) => {
         try { navigator.clipboard?.writeText(text); notice(done); } catch { notice('Could not copy. ' + text); }
@@ -736,7 +679,7 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
             if (lifetime.signal.aborted) return;
             setModal(null);
             notice(spec.done);
-            L.current.loadFindings(true);
+            L.current.loadFindings();
             L.current.refresh();
           } catch (e) {
             setModal(null);
@@ -847,29 +790,29 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
   }, [applied, tools, data.range]);
 
   const ctx = useMemo(() => ({
-    data: viewData, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: incremental ? 0 : data.generated_at,
+    data: viewData, series: chartSeries, range: chartRange, chartRange, sel: applied.sel, filters: applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, actions: act, query, refreshKey: remote ? data.generated_at : 0,
     nodeScope, nodeId, scopeName, remote, localNode: identity?.local_node?.node_id || runtimeReport?.data?.local_node?.node_id,
-  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act, incremental, nodeScope, nodeId, scopeName, remote, identity, runtimeReport]);
+  }), [viewData, data.generated_at, chartSeries, chartRange, applied, tools, toolIds, settingToolIds, toolName, nowS, stopped, findings, query, act, nodeScope, nodeId, scopeName, remote, identity, runtimeReport]);
 
   const settingsFindings = useMemo(() => ({ ...findings, rescan: act.rescan }), [findings, act]);
   const settingsSource = useMemo(() => (remote ? {
     toolConfigs: [], readonly: true, keepUnsetControl: true, unavailable: 'Tool configuration files and policy findings are not reported for this scope.',
     findings: { loading: false }, toolName, enabledTools: tools, configuredOnly: true,
-  } : settingsRes.data ? {
-    toolConfigs: settingsRes.data.tool_configs || [],
-    tools: settingsRes.data.tools || [],
-    monitor: settingsRes.data.monitor || {},
+  } : configured ? {
+    toolConfigs: configured.tool_configs || [],
+    tools: configured.tools || [],
+    monitor: configured.monitor || {},
     enabledTools: tools,
     toolName,
     openFile: act.openFile,
     findings: settingsFindings,
-    refresh: loadSettings,
+    refresh,
     hooks: hooksStatus || undefined,
     configuredOnly: true,
     keepUnsetControl: true,
     runtimeConfiguration,
-  } : null), [settingsRes.data, tools, toolName, act, settingsFindings, loadSettings, hooksStatus, runtimeConfiguration, remote]);
-  const settingsSum = useMemo(() => remote ? 'Reported daemon settings' : settingsLine(settingsRes, tools), [settingsRes, tools, remote]);
+  } : null), [configured, tools, toolName, act, settingsFindings, refresh, hooksStatus, runtimeConfiguration, remote]);
+  const settingsSum = useMemo(() => remote ? 'Reported daemon settings' : settingsLine(configured, tools), [configured, tools, remote]);
 
   const hiddenIds = useMemo(() => new Set(ui.hidden), [ui.hidden]);
   const attention = boardData.attention.filter(i => !stopped[i.agent_id]).length;
@@ -887,13 +830,13 @@ function BoardContent({ screen, picker, navigate, resolvedTheme, setTheme, nodeS
           </div>`}
           ${screen !== 'health' && !remote && html`<${LiveStatus} state=${subscription} history=${screen === 'board'}/>`}
           ${screen === 'board' && analyticsError ? html`<div class="bd-banner" role="alert">Could not read on-demand historical data: ${analyticsError.message}. Runtime fields update independently.</div>` : null}
-          ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} res=${remote ? {} : settingsRes} source=${settingsSource}/>` : html`
+          ${screen === 'settings' ? html`<${SettingsArea} Workspace=${SettingsC} source=${settingsSource}/>` : html`
           ${screen === 'health' ? html`<${HealthOverview} health=${health.data} status=${healthState} error=${health.error} nowS=${nowS} localNode=${ctx.localNode}>
             <${HealthCollectionDetails} ctx=${ctx}/>
             ${!remote && html`<${LiveStatus} state=${subscription} history=${false}/>`}
           <//>
           ` : html`
-          ${error && (remote || subscription.mode === 'legacy') ? html`<div class="bd-banner" role=${!remote && error.status === 503 ? 'status' : 'alert'}><${Ico} d=${PATHS.warn}/>${!remote && error.status === 503 ? STARTING : 'Could not update the board: ' + error.message + (loaded ? '. Showing the last data for this scope.' : '')}</div>` : null}
+          ${error && remote ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>${'Could not update the board: ' + error.message + (loaded ? '. Showing the last data for this scope.' : '')}</div>` : null}
           ${remote && loaded && !error && !data.scope.all_agents ? html`<p class="bd-muted" role="status">No historical agent records in the selected time range. This does not mean the node has no live sessions.</p>` : null}
           ${staleCode(data) ? html`<div class="bd-banner" role="alert"><${Ico} d=${PATHS.warn}/>aictl was updated on disk at ${stamp(staleCode(data), true)}, after this daemon started at ${stamp(data.machine.pipeline.self.started_at, true)}. The page is new and the daemon runs the old code, so new parts of the board may fail. Restart the daemon: stop it, then run aictl daemon serve again.</div>` : null}
           ${!loaded && !error ? html`<div class="bd-sk" role="status">Loading the board...</div>` : null}

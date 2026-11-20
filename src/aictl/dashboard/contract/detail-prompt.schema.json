@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-prompt.schema.json",
+  "title": "DetailPrompt",
+  "type": "object",
+  "properties": {
+    "text": {"type": "string"},
+    "prompt_file": {"type": ["string", "null"]},
+    "project": {"type": "string"},
+    "title": {"type": "string"},
+    "input": {"type": ["integer", "null"]},
+    "output": {"type": ["integer", "null"]},
+    "cache_read": {"type": ["integer", "null"]},
+    "cache_write": {"type": ["integer", "null"]},
+    "cost_usd": {"type": ["number", "null"]},
+    "calls": {"type": "integer"},
+    "subagent_calls": {"type": "integer"},
+    "reply_ms": {"type": ["number", "null"]},
+    "tool_calls": {"type": "integer"},
+    "node_scope": {"$ref": "node-scope.schema.json"}
+  },
+  "required": [
+    "text",
+    "prompt_file",
+    "project",
+    "title",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "cost_usd",
+    "calls",
+    "subagent_calls",
+    "reply_ms",
+    "tool_calls"
+  ]
+}

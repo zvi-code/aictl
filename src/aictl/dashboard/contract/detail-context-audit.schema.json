@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-context-audit.schema.json",
+  "title": "DetailContextAudit",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string"},
+        "elapsed_s": {"type": "number"},
+        "step": {"type": "string"}
+      },
+      "required": ["status", "elapsed_s", "step"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "project": {"type": "string"},
+        "scanned_at": {"type": "number"},
+        "duration_ms": {"type": "number"},
+        "capture_mode": {"type": "string"},
+        "effective_models": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "counts": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "sources_per_tool": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "transcripts_read": {"type": "integer"},
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "drift": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "unknown_loaded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "unattributed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "failed_steps": {"type": "array", "items": {"type": "string"}},
+        "incomplete": {"type": "array", "items": {"type": "string"}},
+        "timings_ms": {"type": "object", "additionalProperties": {"type": "number"}}
+      },
+      "required": [
+        "project",
+        "scanned_at",
+        "duration_ms",
+        "capture_mode",
+        "effective_models",
+        "counts",
+        "sources",
+        "sources_per_tool",
+        "transcripts_read",
+        "findings",
+        "drift",
+        "unknown_loaded",
+        "unattributed",
+        "failed_steps",
+        "incomplete",
+        "timings_ms"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-scope.schema.json",
+  "title": "BoardScope",
+  "type": "object",
+  "properties": {
+    "shown_agents": {"type": "integer"},
+    "shown_sessions": {"type": "integer"},
+    "all_agents": {"type": "integer"},
+    "listed_agents": {"type": "integer"}
+  },
+  "required": ["shown_agents", "shown_sessions", "all_agents"]
+}

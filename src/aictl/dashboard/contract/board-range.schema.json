@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-range.schema.json",
+  "title": "BoardRange",
+  "type": "object",
+  "properties": {
+    "since": {"type": "number"},
+    "until": {"type": "number"},
+    "bucket_s": {"type": "number"},
+    "bucket_starts": {"type": "array", "items": {"type": "number"}},
+    "partial_bucket": {"type": ["integer", "null"]}
+  },
+  "required": ["since", "until", "bucket_s", "bucket_starts", "partial_bucket"]
+}

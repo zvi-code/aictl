@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-errors.schema.json",
+  "title": "BoardErrors",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "key": {"type": "string"},
+      "kind": {"type": "string"},
+      "count": {"type": "integer"},
+      "agents": {"type": "integer"},
+      "last_ts": {"type": ["number", "null"]},
+      "sample": {"type": ["string", "null"]}
+    },
+    "required": ["key", "kind", "count", "agents", "last_ts", "sample"]
+  }
+}

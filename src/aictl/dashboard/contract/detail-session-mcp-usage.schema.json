@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-session-mcp-usage.schema.json",
+  "title": "DetailSessionMcpUsage",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "total_calls": {"type": "integer"},
+    "configured_servers": {"type": "array", "items": {"type": "string"}},
+    "servers": {"type": "array", "items": {"$ref": "session-mcp-row.schema.json"}}
+  },
+  "required": ["session_id", "total_calls", "configured_servers", "servers"]
+}

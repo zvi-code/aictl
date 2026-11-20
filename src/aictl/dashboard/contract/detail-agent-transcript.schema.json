@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-agent-transcript.schema.json",
+  "title": "DetailAgentTranscript",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "session_id": {"type": "string"},
+        "summary": {"$ref": "flow-summary.schema.json"},
+        "capture_mode": {"type": "string"},
+        "replies_kept": {"type": "boolean"},
+        "reply_note": {"type": ["string", "null"]},
+        "is_live": {"type": "boolean"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "turns": {"type": "array", "items": {"$ref": "transcript-turn.schema.json"}}
+      },
+      "required": [
+        "session_id",
+        "summary",
+        "capture_mode",
+        "replies_kept",
+        "reply_note",
+        "is_live",
+        "turns"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "session_id": {"type": "string"},
+        "summary": {"$ref": "flow-summary.schema.json"},
+        "capture_mode": {"type": "string"},
+        "replies_kept": {"type": "boolean"},
+        "reply_note": {"type": ["string", "null"]},
+        "is_live": {"type": "boolean"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "turn": {"$ref": "transcript-turn.schema.json"}
+      },
+      "required": [
+        "session_id",
+        "summary",
+        "capture_mode",
+        "replies_kept",
+        "reply_note",
+        "is_live",
+        "turn"
+      ]
+    }
+  ]
+}

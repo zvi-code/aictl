@@ -4,6 +4,7 @@ import { html } from 'htm/preact';
 import Root from '../src/root.js';
 import { agentDetailFixture, boardFixture } from './fixtures/board.fixture.js';
 import { scopedHealth } from '../src/components/board/scopedHealth.js';
+import { boardEventSource, ControlledEventSource } from './fixtures/live.fixture.js';
 
 const ENDPOINT = '/api/board/nodes';
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
@@ -24,8 +25,13 @@ function report(q) {
   }
 }
 
-function mount(search, intercept = () => undefined) {
+function mount(search, intercept = () => undefined, live = {}) {
   window.history.replaceState(null, '', '/' + search);
+  vi.stubGlobal('EventSource', boardEventSource({
+    board: () => boardFixture(),
+    config: () => ({ tools: [], tool_configs: [{ tool: 'vscode', config_files: ['/local/private.json'], sections: [] }], monitor: {} }),
+    ...live,
+  }));
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async (url, opts = {}) => {
     const { pathname, searchParams } = new URL(url, window.location.href);
@@ -34,15 +40,13 @@ function mount(search, intercept = () => undefined) {
     if (pathname === ENDPOINT) return intercept(q, opts) ?? json(report(q));
     const response = intercept(q, opts, pathname);
     if (response !== undefined) return response;
-    if (pathname === '/api/board') {
+    if (q.scope && pathname === '/api/board') {
       const fixture = boardFixture();
-      if (q.scope) {
-        Object.assign(fixture, nodeContract(q));
-        fixture.agents = fixture.agents.map(r => ({
-          ...r, id: rowID(r.id, q.node_id), node_id: q.node_id || 'node-a',
-          parent_id: r.parent_id && rowID(r.parent_id, q.node_id),
-        }));
-      }
+      Object.assign(fixture, nodeContract(q));
+      fixture.agents = fixture.agents.map(r => ({
+        ...r, id: rowID(r.id, q.node_id), node_id: q.node_id || 'node-a',
+        parent_id: r.parent_id && rowID(r.parent_id, q.node_id),
+      }));
       return json(fixture);
     }
     if (pathname === '/api/board/agent') {
@@ -55,7 +59,6 @@ function mount(search, intercept = () => undefined) {
     })) });
     if (q.scope && pathname === '/api/board/machine') return json({ ...nodeContract(q), hosts: [], recorded_processes: [], recorded_total: 0 });
     if (q.scope && pathname === '/api/board/sessions') return json({ ...nodeContract(q), rows: [], total: 0, by_node: [] });
-    if (pathname === '/api/settings/tools') return json({ tools: [], tool_configs: [{ tool: 'vscode', config_files: ['/local/private.json'], sections: [] }], monitor: {} });
     if (pathname === '/api/settings/files') return json({ files: [] });
     return json({});
   }));
@@ -70,7 +73,7 @@ const query = () => Object.fromEntries(new URLSearchParams(location.search));
 const reportsOnly = calls => expect(calls.every(c => c.path === ENDPOINT && c.method === 'GET')).toBe(true);
 
 beforeEach(() => {
-  vi.stubGlobal('EventSource', class { close() {} });
+  ControlledEventSource.instances = [];
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -122,12 +125,13 @@ describe('node scope across the board', () => {
 
   it('uses the local Health monitor for the Sessions and Processes cells', async () => {
       const at = Date.now() / 1000;
-      const ui = mount('?screen=health', (_q, _opts, path) => path === '/api/board/health'
-        ? json({ generated_at: at, pipeline: { self: { pid: 7 } }, resources: {
+      const ui = mount('?screen=health', undefined, {
+        health: () => ({ generated_at: at, pipeline: { self: { pid: 7 } }, resources: {
           host: { node_id: 'local-only', activity_at: at - 5, active_sessions: 4, active_processes: 16,
             inbound_bps: 2048, outbound_bps: 0 },
           daemon: { cpu_percent: 8, rss_bytes: 4096 },
-        } }) : undefined);
+        } }),
+      });
       const table = await ui.findByRole('table', { name: 'Reported node runtime' });
       const row = within(table).getByRole('row', { name: /^local-only/ });
       expect(within(row).getAllByRole('cell').map(cell => cell.textContent).slice(3, 5)).toEqual(['4', '16']);

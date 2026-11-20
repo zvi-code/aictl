@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-terminal-events.schema.json",
+  "title": "DetailTerminalEvents",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "ts": {"type": "number"},
+      "tool": {"type": "string"},
+      "kind": {"type": "string"},
+      "detail": {"type": "object"},
+      "session_id": {"type": "string"},
+      "pid": {"type": "integer"}
+    },
+    "required": ["ts", "tool", "kind", "detail", "session_id", "pid"]
+  }
+}

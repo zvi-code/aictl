@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-node-scope.schema.json",
+  "title": "BoardNodeScope",
+  "$ref": "node-scope.schema.json"
+}

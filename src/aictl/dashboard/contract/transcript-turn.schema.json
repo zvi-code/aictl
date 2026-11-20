@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/transcript-turn.schema.json",
+  "title": "TranscriptTurn",
+  "type": "object",
+  "properties": {
+    "ts": {"type": "number"},
+    "end_ts": {"type": "number"},
+    "prompt": {"type": "string"},
+    "prompt_preview": {"type": "string"},
+    "prompt_event": {"type": "boolean"},
+    "response": {"type": "string"},
+    "response_preview": {"type": "string"},
+    "model": {"type": "string"},
+    "tokens": {"$ref": "usage-tokens.schema.json"},
+    "api_calls": {"type": "integer"},
+    "duration_ms": {"type": "number"},
+    "wall_ms": {"type": "number"},
+    "reply_ms": {"type": ["number", "null"]},
+    "tool_use_count": {"type": "integer"},
+    "detail": {"type": "boolean"},
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {"type": "string"},
+          "ts": {"type": "number"},
+          "name": {"type": ["string", "null"]},
+          "target": {"type": ["string", "null"]},
+          "text": {"type": ["string", "null"]},
+          "summary": {"type": ["string", "null"]},
+          "duration_ms": {"type": ["number", "null"]},
+          "success": {"type": ["boolean", "null"]},
+          "model": {"type": ["string", "null"]},
+          "tokens": {"$ref": "usage-tokens.schema.json"}
+        },
+        "required": ["kind", "ts"]
+      }
+    }
+  },
+  "required": [
+    "ts",
+    "end_ts",
+    "prompt",
+    "prompt_preview",
+    "prompt_event",
+    "response",
+    "response_preview",
+    "model",
+    "tokens",
+    "api_calls",
+    "duration_ms",
+    "wall_ms",
+    "reply_ms",
+    "tool_use_count",
+    "actions"
+  ]
+}

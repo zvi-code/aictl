@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-tool-config.schema.json",
+  "title": "DetailToolConfig",
+  "type": "object",
+  "properties": {
+    "tool": {"type": "string"},
+    "scope": {"type": "string"},
+    "path": {"type": "string"},
+    "exists": {"type": "boolean"},
+    "mtime": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "editable_fields": {"type": "array", "items": {"type": "string"}},
+    "permissions": {
+      "type": "object",
+      "additionalProperties": {"type": "array", "items": {"type": "string"}}
+    },
+    "raw": {
+      "type": "object",
+      "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+    }
+  },
+  "required": ["tool", "scope", "path", "exists", "mtime", "editable_fields", "permissions", "raw"]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-attention.schema.json",
+  "title": "BoardAttention",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "kind": {"type": "string"},
+      "agent_id": {"type": "string"},
+      "title": {"type": "string"},
+      "detail": {"type": "string"},
+      "tokens": {"type": ["integer", "null"]},
+      "cost_usd": {"type": ["number", "null"]},
+      "since_ts": {"type": "number"}
+    },
+    "required": ["kind", "agent_id", "title", "detail", "tokens", "cost_usd", "since_ts"]
+  }
+}

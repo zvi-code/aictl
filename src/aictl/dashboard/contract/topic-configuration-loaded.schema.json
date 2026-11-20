@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-configuration-loaded.schema.json",
+  "title": "TopicConfigurationLoaded",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "native_session_id": {"type": ["string", "null"]},
+    "tool": {"type": "string"},
+    "configured_on_disk": {"type": "boolean"},
+    "effective_known": {"type": "boolean"},
+    "unknown": {"type": "array", "items": {"type": "string"}},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string"},
+          "observed_at": {"type": "number"},
+          "source": {"type": "string"},
+          "value": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "required": ["key", "observed_at", "source", "value"]
+      }
+    }
+  },
+  "required": [
+    "session_id",
+    "native_session_id",
+    "tool",
+    "configured_on_disk",
+    "effective_known",
+    "unknown",
+    "evidence"
+  ]
+}

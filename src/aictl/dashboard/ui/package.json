@@ -8,6 +8,7 @@
     "watch": "vite build --watch",
     "preview": "vite preview",
     "lint": "eslint src test",
+    "gen:contract": "node scripts/gen-contract.mjs",
     "test": "tsc --noEmit && vitest run",
     "build:ui-test": "vite build --outDir node_modules/.cache/aictl-ui-baseline --emptyOutDir",
     "test:ui": "playwright test",

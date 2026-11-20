@@ -174,10 +174,6 @@ export async function getOtelStatus(opts) {
   return fetchJson('/api/otel-status', opts);
 }
 
-export async function getEffectiveModels(opts) {
-  return fetchJson('/api/effective-models', opts);
-}
-
 export async function getHooksStatus(opts) {
   return fetchJson('/api/hooks-status', opts);
 }
@@ -206,20 +202,6 @@ export async function killSession(sessionId, signal = 'TERM') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, confirm: true, signal }),
   });
-}
-
-// ─── SSE stream URL ────────────────────────────────────────────
-
-export function streamUrl() { return url('/api/stream'); }
-
-export const getLiveCapabilities = opts => fetchJson('/api/live/capabilities', opts);
-
-export function liveStreamUrl(query = '', { history = true, cursor = null } = {}) {
-  const params = new URLSearchParams(query);
-  params.set('history', history ? '1' : '0');
-  params.delete('cursor');
-  if (cursor) params.set('cursor', cursor);
-  return url('/api/live/stream?' + params.toString());
 }
 
 // ─── Board ─────────────────────────────────────────────────────
@@ -321,11 +303,6 @@ export async function saveSettingsFile(path, text, expectedMtime) {
 /** Every file the settings come from, with where it lives and which tools read it. */
 export async function getSettingsFiles(opts) {
   return fetchJson('/api/settings/files', opts);
-}
-
-/** Every tool's settings record, the tool names and aictl's own collectors, for the Settings screen. */
-export async function getSettingsTools(opts) {
-  return fetchJson('/api/settings/tools', opts);
 }
 
 /** The hidden-context scan. It runs on the server's own thread, so this asks how far it is. */

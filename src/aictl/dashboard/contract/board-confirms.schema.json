@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-confirms.schema.json",
+  "title": "BoardConfirms",
+  "type": "object",
+  "properties": {
+    "asked": {"type": ["integer", "null"]},
+    "blocked": {"type": ["integer", "null"]},
+    "auto": {"type": ["integer", "null"]},
+    "approved": {"type": ["integer", "null"]},
+    "denied": {"type": ["integer", "null"]},
+    "p95_wait_s": {"type": ["number", "null"]},
+    "pending": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "agent_id": {"type": "string"},
+          "name": {"type": "string"},
+          "target": {"type": ["string", "null"]},
+          "since_ts": {"type": "number"}
+        },
+        "required": ["agent_id", "name", "target", "since_ts"]
+      }
+    },
+    "by_tool": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "auto": {"type": "integer"},
+          "approved": {"type": "integer"},
+          "denied": {"type": "integer"},
+          "blocked": {"type": "integer"},
+          "median_wait_s": {"type": ["number", "null"]}
+        },
+        "required": ["name", "auto", "approved", "denied", "blocked", "median_wait_s"]
+      }
+    }
+  },
+  "required": ["asked", "blocked", "auto", "approved", "denied", "p95_wait_s", "pending", "by_tool"]
+}

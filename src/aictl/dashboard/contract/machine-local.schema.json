@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/machine-local.schema.json",
+  "title": "MachineLocal",
+  "type": "object",
+  "properties": {
+    "generated_at": {"type": "number"},
+    "monitor": {"$ref": "machine-monitor.schema.json"},
+    "cpu_cores": {"type": ["integer", "null"]},
+    "cpu_per_core": {"type": "array", "items": {"type": ["number", "null"]}},
+    "processes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pid": {"type": "integer"},
+          "ppid": {"type": ["integer", "null"]},
+          "parent_name": {"type": ["string", "null"]},
+          "name": {"type": "string"},
+          "tool": {"type": "string"},
+          "process_type": {"type": ["string", "null"]},
+          "cpu_pct": {"type": ["number", "null"]},
+          "mem_mb": {"type": ["number", "null"]},
+          "cmdline": {"type": ["string", "null"]},
+          "cleanup_cmd": {"type": ["string", "null"]},
+          "zombie_risk": {"type": ["string", "null"]},
+          "anomalies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {"type": "string"},
+                "severity": {"type": "string"},
+                "label": {"type": "string"},
+                "text": {"type": "string"}
+              },
+              "required": ["kind", "severity", "label", "text"]
+            }
+          }
+        },
+        "required": [
+          "pid",
+          "ppid",
+          "parent_name",
+          "name",
+          "tool",
+          "process_type",
+          "cpu_pct",
+          "mem_mb",
+          "cmdline",
+          "cleanup_cmd",
+          "zombie_risk",
+          "anomalies"
+        ]
+      }
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {"type": "string"},
+          "severity": {"type": "string"},
+          "text": {"type": "string"},
+          "detail": {"type": ["string", "null"]},
+          "pids": {"type": "array", "items": {"type": "integer"}},
+          "pid": {"type": ["integer", "null"]},
+          "tool": {"type": ["string", "null"]},
+          "action": {"type": ["string", "null"]}
+        },
+        "required": ["kind", "severity", "text", "detail", "pids", "pid", "tool", "action"]
+      }
+    }
+  },
+  "required": ["generated_at", "monitor", "cpu_cores", "cpu_per_core", "processes", "alerts"]
+}

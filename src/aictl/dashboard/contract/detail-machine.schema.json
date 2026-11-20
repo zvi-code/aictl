@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-machine.schema.json",
+  "title": "DetailMachine",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "pipeline": {"$ref": "machine-pipeline.schema.json"},
+        "node_scope": {"$ref": "node-scope.schema.json"}
+      },
+      "required": ["pipeline"],
+      "allOf": [{"$ref": "machine-local.schema.json"}]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "generated_at": {"type": "number"},
+        "recorded_total": {"type": "integer"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "status": {"type": "string"},
+              "ts": {"type": "number"},
+              "host_cpu_percent": {"type": ["number", "null"]},
+              "host_memory_used_mb": {"type": ["number", "null"]},
+              "host_memory_total_mb": {"type": ["number", "null"]},
+              "live_sessions": {"type": ["integer", "null"]},
+              "active_processes": {"type": ["integer", "null"]},
+              "daemon_pid": {"type": ["integer", "null"]},
+              "files": {"type": ["integer", "null"]},
+              "live_in_rate": {"type": ["number", "null"]},
+              "live_out_rate": {"type": ["number", "null"]},
+              "ai_token_rate": {"type": ["number", "null"]}
+            },
+            "required": [
+              "node_id",
+              "status",
+              "ts",
+              "host_cpu_percent",
+              "host_memory_used_mb",
+              "host_memory_total_mb",
+              "live_sessions",
+              "active_processes",
+              "daemon_pid",
+              "files",
+              "live_in_rate",
+              "live_out_rate",
+              "ai_token_rate"
+            ]
+          }
+        },
+        "recorded_processes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "session_id": {"type": "string"},
+              "pid": {"type": "integer"},
+              "tool": {"type": "string"},
+              "role": {"type": ["string", "null"]},
+              "joined_at": {"type": ["number", "null"]}
+            },
+            "required": ["node_id", "session_id", "pid", "tool", "role", "joined_at"]
+          }
+        }
+      },
+      "required": ["generated_at", "recorded_total", "hosts", "recorded_processes"]
+    }
+  ]
+}

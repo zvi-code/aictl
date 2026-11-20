@@ -116,20 +116,19 @@ function stubFetch(context = contextFixture()) {
     const u = String(url);
     calls.push(u);
     if (u.startsWith('/api/board/context')) return jsonResponse(context);
-    if (u.startsWith('/api/board/machine')) return jsonResponse(machineFixture());
     if (u.startsWith('/api/board/agent')) return jsonResponse(agentDetailFixture(new URL(u, 'http://x').searchParams.get('id')));
-    if (u.startsWith('/api/board?')) return jsonResponse(boardFixture());
     if (u.startsWith('/api/file?')) return new Response('# Notes\n\nKeep **this** in mind.', { status: 200 });
     if (u.startsWith('/api/context-audit')) return jsonResponse({ findings: [], sources: [], counts: {} });
     return jsonResponse({});
   }));
   return calls;
 }
-class FakeES { constructor() { FakeES.last = this; } close() {} }
+import { boardEventSource, ControlledEventSource } from './fixtures/live.fixture.js';
 
 let scrolled = [];
 beforeEach(() => {
-  vi.stubGlobal('EventSource', FakeES);
+  ControlledEventSource.instances = [];
+  vi.stubGlobal('EventSource', boardEventSource({ board: () => boardFixture(), machine: () => machineFixture() }));
   window.history.replaceState(null, '', '/');
   localStorage.clear?.();
   scrolled = [];

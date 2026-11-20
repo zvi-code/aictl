@@ -242,6 +242,10 @@ class TestTokenBudget:
 
 
 class TestStatusCLI:
+    @pytest.fixture(autouse=True)
+    def no_daemon(self, monkeypatch):
+        monkeypatch.setattr("aictl.client.ServerClient.try_connect", lambda: None)
+
     def test_basic_run(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("# Instructions")
         runner = CliRunner()

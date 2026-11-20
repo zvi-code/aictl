@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/health-local.schema.json",
+  "title": "HealthLocal",
+  "type": "object",
+  "properties": {
+    "generated_at": {"type": "number"},
+    "monitor": {"$ref": "machine-monitor.schema.json"},
+    "pipeline": {"$ref": "machine-pipeline.schema.json"},
+    "store": {"anyOf": [{"$ref": "health-store.schema.json"}, {"type": "null"}]},
+    "resources": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "node_id": {"type": "string"},
+            "checked_at": {"type": "number"},
+            "cpu_percent": {"type": ["number", "null"]},
+            "cpu_checked_at": {"type": ["number", "null"]},
+            "memory_total_bytes": {"type": ["integer", "null"]},
+            "memory_used_bytes": {"type": ["integer", "null"]},
+            "memory_available_bytes": {"type": ["integer", "null"]},
+            "memory_checked_at": {"type": ["number", "null"]},
+            "activity_at": {"type": ["number", "null"]},
+            "active_sessions": {"type": ["integer", "null"]},
+            "active_processes": {"type": ["integer", "null"]},
+            "inbound_bps": {"type": ["number", "null"]},
+            "outbound_bps": {"type": ["number", "null"]}
+          },
+          "required": [
+            "scope",
+            "node_id",
+            "checked_at",
+            "cpu_percent",
+            "cpu_checked_at",
+            "memory_total_bytes",
+            "memory_used_bytes",
+            "memory_available_bytes",
+            "memory_checked_at",
+            "activity_at",
+            "active_sessions",
+            "active_processes",
+            "inbound_bps",
+            "outbound_bps"
+          ]
+        },
+        "daemon": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "checked_at": {"type": "number"},
+            "cpu_percent": {"type": ["number", "null"]},
+            "rss_bytes": {"type": ["integer", "null"]},
+            "threads": {"type": ["integer", "null"]}
+          },
+          "required": ["scope", "checked_at", "cpu_percent", "rss_bytes", "threads"]
+        },
+        "cluster": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "resource_id": {"type": ["string", "null"]},
+                "source": {"type": ["string", "null"]},
+                "status": {"type": "string"},
+                "checked_at": {"type": ["number", "null"]},
+                "attempted_at": {"type": ["number", "null"]},
+                "last_error": {"type": ["string", "null"]},
+                "refresh_interval_s": {"type": "number"},
+                "native": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {"type": ["object", "array", "string", "number", "boolean", "null"]},
+                      {"type": "null"}
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "resource_id",
+                "source",
+                "status",
+                "checked_at",
+                "attempted_at",
+                "last_error",
+                "refresh_interval_s"
+              ]
+            },
+            {"type": "null"}
+          ]
+        }
+      },
+      "required": ["host", "daemon", "cluster"]
+    }
+  },
+  "required": ["generated_at", "monitor", "pipeline", "store", "resources"]
+}

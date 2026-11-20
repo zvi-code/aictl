@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-runtime-health.schema.json",
+  "title": "TopicRuntimeHealth",
+  "oneOf": [
+    {"$ref": "health-local.schema.json"},
+    {
+      "type": "object",
+      "properties": {"inventory": {"$ref": "table-inventory.schema.json"}},
+      "required": ["inventory"]
+    }
+  ]
+}

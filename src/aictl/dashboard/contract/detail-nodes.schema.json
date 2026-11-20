@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-nodes.schema.json",
+  "title": "DetailNodes",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "view": {"const": "identity"},
+        "rows": {"type": "array", "items": false}
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "view",
+        "rows"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "nodes"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"node_id": {"type": "string"}, "captured_at": {"type": ["number", "null"]}},
+            "required": ["node_id", "captured_at"]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "view",
+        "rows"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "since": {"type": "number"},
+        "until": {"type": "number"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "overview"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "sessions": {"type": "integer"},
+              "requests": {"type": "integer"},
+              "input_tokens": {"type": "integer"},
+              "output_tokens": {"type": "integer"},
+              "cost_usd": {"type": ["number", "null"]}
+            },
+            "required": ["node_id", "sessions", "requests", "input_tokens", "output_tokens", "cost_usd"]
+          }
+        },
+        "totals": {
+          "type": "object",
+          "properties": {
+            "sessions": {"type": "integer"},
+            "requests": {"type": "integer"},
+            "input_tokens": {"type": "integer"},
+            "output_tokens": {"type": "integer"},
+            "cost_usd": {"type": ["number", "null"]}
+          },
+          "required": ["sessions", "requests", "input_tokens", "output_tokens", "cost_usd"]
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "session_id": {"type": "string"},
+              "started_at": {"type": ["number", "null"]},
+              "ended_at": {"type": ["number", "null"]},
+              "tool": {"type": "string"},
+              "project_path": {"type": "string"},
+              "model": {"type": "string"},
+              "input_tokens": {"type": "integer"},
+              "output_tokens": {"type": "integer"},
+              "request_count": {"type": "integer"},
+              "cost_usd": {"type": ["number", "null"]}
+            },
+            "required": [
+              "node_id",
+              "session_id",
+              "started_at",
+              "ended_at",
+              "tool",
+              "project_path",
+              "model",
+              "input_tokens",
+              "output_tokens",
+              "request_count",
+              "cost_usd"
+            ]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "since",
+        "until",
+        "truncated",
+        "view",
+        "rows",
+        "totals",
+        "sessions"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "view": {"const": "session"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "session_id": {"type": "string"},
+              "started_at": {"type": ["number", "null"]},
+              "ended_at": {"type": ["number", "null"]},
+              "tool": {"type": "string"},
+              "project_path": {"type": "string"},
+              "model": {"type": "string"},
+              "input_tokens": {"type": "integer"},
+              "output_tokens": {"type": "integer"},
+              "request_count": {"type": "integer"},
+              "cost_usd": {"type": ["number", "null"]}
+            },
+            "required": [
+              "node_id",
+              "session_id",
+              "started_at",
+              "ended_at",
+              "tool",
+              "project_path",
+              "model",
+              "input_tokens",
+              "output_tokens",
+              "request_count",
+              "cost_usd"
+            ]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "view",
+        "rows"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "runtime"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "captured_at": {"type": ["number", "null"]},
+              "status": {"type": "string"},
+              "cpu_percent": {"type": ["number", "null"]},
+              "memory_used_mb": {"type": ["number", "null"]},
+              "memory_total_mb": {"type": ["number", "null"]},
+              "active_sessions": {"type": ["integer", "null"]},
+              "active_processes": {"type": ["integer", "null"]},
+              "daemon_pid": {"type": ["integer", "null"]},
+              "activity_at": {"type": ["number", "null"]},
+              "inbound_bps": {"type": ["number", "null"]},
+              "outbound_bps": {"type": ["number", "null"]},
+              "agents": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "captured_at": {"type": "number"},
+                      "total": {"type": "integer"},
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": ["object", "array", "string", "number", "boolean", "null"]
+                          }
+                        }
+                      }
+                    },
+                    "required": ["captured_at", "total", "rows"]
+                  },
+                  {"type": "null"}
+                ]
+              }
+            },
+            "required": [
+              "node_id",
+              "captured_at",
+              "status",
+              "cpu_percent",
+              "memory_used_mb",
+              "memory_total_mb",
+              "active_sessions",
+              "active_processes",
+              "daemon_pid",
+              "activity_at"
+            ]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "view",
+        "rows"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "health"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "captured_at": {"type": ["number", "null"]},
+              "status": {"type": "string"},
+              "cpu_percent": {"type": ["number", "null"]},
+              "memory_used_mb": {"type": ["number", "null"]},
+              "memory_total_mb": {"type": ["number", "null"]},
+              "active_sessions": {"type": ["integer", "null"]},
+              "active_processes": {"type": ["integer", "null"]},
+              "daemon_pid": {"type": ["integer", "null"]},
+              "activity_at": {"type": ["number", "null"]},
+              "inbound_bps": {"type": ["number", "null"]},
+              "outbound_bps": {"type": ["number", "null"]},
+              "agents": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "captured_at": {"type": "number"},
+                      "total": {"type": "integer"},
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": ["object", "array", "string", "number", "boolean", "null"]
+                          }
+                        }
+                      }
+                    },
+                    "required": ["captured_at", "total", "rows"]
+                  },
+                  {"type": "null"}
+                ]
+              },
+              "client_sample": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                  },
+                  {"type": "null"}
+                ]
+              }
+            },
+            "required": [
+              "node_id",
+              "captured_at",
+              "status",
+              "cpu_percent",
+              "memory_used_mb",
+              "memory_total_mb",
+              "active_sessions",
+              "active_processes",
+              "daemon_pid",
+              "activity_at"
+            ]
+          }
+        },
+        "shared_kusto": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "scope": {"type": "string"},
+                "cluster": {"type": "string"},
+                "database": {"type": "string"},
+                "capacity_available": {"type": ["integer", "null"]},
+                "capacity_total": {"type": ["integer", "null"]},
+                "capacity_status": {"type": ["string", "null"]},
+                "capacity_checked_at": {"type": ["number", "null"]},
+                "policies": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                    },
+                    {"type": "null"}
+                  ]
+                },
+                "cluster_resources": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                    },
+                    {"type": "null"}
+                  ]
+                },
+                "table_inventory": {"anyOf": [{"$ref": "table-inventory.schema.json"}, {"type": "null"}]}
+              },
+              "required": ["scope", "cluster", "database"]
+            },
+            {"type": "null"}
+          ]
+        },
+        "local_runtime": {"$ref": "health-local.schema.json"}
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "view",
+        "rows",
+        "shared_kusto"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "settings"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "captured_at": {"type": ["number", "null"]},
+              "status": {"type": "string"},
+              "node_source": {"type": ["string", "null"]},
+              "capture": {"type": ["string", "null"]},
+              "ingestion": {"type": ["string", "null"]},
+              "retention_days": {"type": ["integer", "null"]},
+              "content_retention_days": {"type": ["integer", "null"]}
+            },
+            "required": [
+              "node_id",
+              "captured_at",
+              "status",
+              "node_source",
+              "capture",
+              "ingestion",
+              "retention_days",
+              "content_retention_days"
+            ]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "truncated",
+        "view",
+        "rows"
+      ]
+    }
+  ]
+}

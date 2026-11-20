@@ -5,46 +5,11 @@
 // other `?tab=` lands on the board. The address is rewritten in place, so Back
 // does not return to the old link.
 import { html } from 'htm/preact';
+import { render } from 'preact';
 import { useEffect } from 'preact/hooks';
-import { boardNodeScope, mergeSearch } from './hooks/urlState.js';
+import { agentLinkOf, boardNodeScope, redirectOf } from './hooks/urlState.js';
 import BoardScreen from './components/board/BoardScreen.js';
-
-/** Old screens that became a screen of the board, by the board's `screen` value. */
-const BOARD_SCREENS = { config: 'settings', configuration: 'settings' };
-/** Old screens whose `session=` opens the agent drawer. */
-const SESSION_TABS = new Set(['explorer', 'sessions', 'session-explorer']);
-/** Old tab values the board reads itself. */
-const KEPT_TABS = new Set(['hidden']);
-
-const tabOf = search => new URLSearchParams(search || '').get('tab');
-
-/** The board query that opens one agent in the drawer, from any current query. */
-export function agentLinkOf(search, sessionId, nodeId = null) {
-  const params = new URLSearchParams(search);
-  const node = nodeId || (boardNodeScope(search) === 'node' ? params.get('node_id') : null);
-  let agent = sessionId;
-  if (node) {
-    let qualified = false;
-    try { qualified = Array.isArray(JSON.parse(sessionId)); } catch { /* native ID */ }
-    if (!qualified) agent = JSON.stringify([node.trim().toLowerCase(), sessionId]);
-  }
-  return mergeSearch(search, { tab: null, session: null, screen: null, session_id: null, agent,
-    ...(nodeId ? { scope: 'node', node_id: nodeId } : {}) });
-}
-
-/** The query that opens the same view on the board, for an old link; null when the link stands. */
-export function redirectOf(search) {
-  const params = new URLSearchParams(search);
-  if (boardNodeScope(search) === 'node' && params.get('session_id') && !params.get('agent')) {
-    return agentLinkOf(search, params.get('session_id'));
-  }
-  const tab = tabOf(search);
-  if (!tab || KEPT_TABS.has(tab)) return null;
-  const sid = new URLSearchParams(search || '').get('session');
-  if (SESSION_TABS.has(tab) && sid) return agentLinkOf(search, sid);
-  const screen = BOARD_SCREENS[tab];
-  return mergeSearch(search, screen ? { tab: null, screen } : { tab: null });
-}
+export { agentLinkOf, redirectOf } from './hooks/urlState.js';
 
 /**
  * Send every `aictl:select-session` request to the board's agent drawer.
@@ -76,12 +41,16 @@ export function applyRedirect() {
   } catch { /* sandboxed document: the board still opens, only the address is stale */ }
 }
 
-export default function Root() {
+export default function Root({ liveController, startedAt } = {}) {
   applyRedirect();
   useEffect(() => listenSelectSession(), []);
   useEffect(() => {
     window.addEventListener('popstate', applyRedirect, true);
     return () => window.removeEventListener('popstate', applyRedirect, true);
   }, []);
-  return html`<${BoardScreen}/>`;
+  return html`<${BoardScreen} liveController=${liveController} startedAt=${startedAt}/>`;
+}
+
+export function mount(app, liveController, startedAt) {
+  render(html`<${Root} liveController=${liveController} startedAt=${startedAt}/>`, app);
 }

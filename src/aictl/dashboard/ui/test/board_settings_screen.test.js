@@ -8,6 +8,7 @@ import { html } from 'htm/preact';
 import BoardScreen, { readScreen } from '../src/components/board/BoardScreen.js';
 import Root, { redirectOf } from '../src/root.js';
 import { NOW, agentDetailFixture, boardFixture, fileDetailFixture } from './fixtures/board.fixture.js';
+import { boardEventSource, ControlledEventSource } from './fixtures/live.fixture.js';
 
 if (typeof globalThis.localStorage?.setItem !== 'function') {
   const store = new Map();
@@ -40,21 +41,18 @@ function stubFetch() {
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const u = String(url);
     calls.push(u);
-    if (u.startsWith('/api/settings/tools')) return json(SETTINGS);
     if (u.startsWith('/api/settings/files')) return json({ error: 'not found' }, 404);
     if (u.startsWith('/api/board/agent')) return json(agentDetailFixture());
     if (u.startsWith('/api/board/excerpt')) return json({ lines: [{ n: 411, text: '"a": 1,' }, { n: 412, text: '"chat.tools.global.autoApprove": true' }] });
     if (u.startsWith('/api/board/file')) return json(fileDetailFixture(VS_USER));
-    if (u.startsWith('/api/board')) return json(boardFixture());
     if (u.startsWith('/api/context-audit')) return json({ findings: [], sources: [], counts: {} });
     return json({});
   }));
   return calls;
 }
-class FakeES { close() {} }
-
 beforeEach(() => {
-  vi.stubGlobal('EventSource', FakeES);
+  ControlledEventSource.instances = [];
+  vi.stubGlobal('EventSource', boardEventSource({ board: () => boardFixture(), config: () => SETTINGS }));
   window.history.replaceState(null, '', '/');
 });
 afterEach(() => {
@@ -75,9 +73,8 @@ describe('the Settings screen in the board', () => {
     const { container, calls } = await mountBoard();
     const link = settingsLink(container);
     expect(link).toBeTruthy();
-    // The settings are read at an idle moment, up to 1.5 s after the first data.
     await waitFor(() => expect(link.textContent).toContain('2 set · 1 risky · 0 agents'), { timeout: 3000 });
-    expect(calls.some(c => c.startsWith('/api/settings/tools'))).toBe(true);
+    expect(calls.some(c => c.startsWith('/api/settings/tools'))).toBe(false);
     expect(link.getAttribute('aria-current')).toBeNull();
     fireEvent.click(link);
     await waitFor(() => expect(container.querySelector('#main-area .st-ws')).toBeTruthy());
@@ -155,7 +152,7 @@ describe('the Settings screen in the board', () => {
     expect(container.querySelector('.st-ws')).toBeTruthy();
   });
 
-  it('passes the hook status to the workspace, and reads the settings again after a permissions save', async () => {
+  it('passes the hook status to the workspace and resyncs live settings after a permissions save', async () => {
     const local = '/home/u/proj/.claude/settings.local.json';
     const rules = { allow: ['Bash'], deny: [], ask: [] };
     const settings = {
@@ -169,11 +166,11 @@ describe('the Settings screen in the board', () => {
         ],
       }],
     };
+    vi.stubGlobal('EventSource', boardEventSource({ config: () => settings }));
     const calls = [];
     vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
       const u = String(url);
       calls.push((opts?.method || 'GET') + ' ' + u);
-      if (u.startsWith('/api/settings/tools')) return json(settings);
       if (u.startsWith('/api/hooks-status')) return json({ tools: { 'claude-code': { status: 'active', configured_events: ['Stop'], fired_24h: 3, sources: [] } } });
       if (u.startsWith('/api/tool-config/')) {
         return json(opts?.method === 'PUT'
@@ -181,7 +178,6 @@ describe('the Settings screen in the board', () => {
           : { path: local, exists: true, mtime: 1, permissions: rules });
       }
       if (u.startsWith('/api/settings/files')) return json({ error: 'not found' }, 404);
-      if (u.startsWith('/api/board')) return json(boardFixture());
       if (u.startsWith('/api/context-audit')) return json({ findings: [], sources: [], counts: {} });
       return json({});
     }));
@@ -189,8 +185,7 @@ describe('the Settings screen in the board', () => {
     const { container } = render(html`<${BoardScreen}/>`);
     await waitFor(() => expect(container.querySelector('[data-testid="st-hookstat"]')).toBeTruthy());
     expect(calls.filter(c => c.includes('/api/hooks-status'))).toHaveLength(1);
-    const reads = () => calls.filter(c => c.startsWith('GET /api/settings/tools')).length;
-    const before = reads();
+    const before = ControlledEventSource.instances.length;
     fireEvent.click([...container.querySelectorAll('.st-insp button')].find(b => b.textContent === 'Change value…'));
     const area = await waitFor(() => {
       const a = container.querySelector('textarea[data-bucket="allow"]');
@@ -200,7 +195,8 @@ describe('the Settings screen in the board', () => {
     fireEvent.input(area, { target: { value: 'Bash\nRead(*)' } });
     fireEvent.click([...container.querySelectorAll('[data-testid="st-perm-editor"] button')].find(b => b.textContent === 'Save'));
     await waitFor(() => expect(container.querySelector('[data-testid="st-editor-saved"]')).toBeTruthy());
-    await waitFor(() => expect(reads()).toBe(before + 1));
+    await waitFor(() => expect(ControlledEventSource.instances).toHaveLength(before + 1));
+    expect(calls.some(c => c.startsWith('GET /api/settings/tools'))).toBe(false);
     expect(calls.filter(c => c.includes('/api/hooks-status'))).toHaveLength(1);
   });
 

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-copilot-artifacts.schema.json",
+  "title": "DetailCopilotArtifacts",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string"},
+    "folder": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "artifacts": {"type": "array", "items": {"$ref": "copilot-artifact-row.schema.json"}}
+  },
+  "required": ["id", "folder", "artifacts"]
+}

@@ -296,6 +296,10 @@ aictl status
 
 Discovery is CSV-driven and covers 27+ tools. Use `--tool claude` to filter (expands to all Claude sub-tools), `--processes` for running processes with anomaly detection, `--budget` for token cost analysis, or `--json` for machine-readable output.
 
+When a compatible daemon is running, `status` reads live process data and
+dashboard details from it. Use `--no-server` for local discovery. HTML reports
+always use local discovery.
+
 ```bash
 aictl status --processes          # include process detection
 aictl status --budget             # token cost breakdown
@@ -305,7 +309,8 @@ aictl status --backtrace 12345    # sample a process stack trace
 ```
 
 Use `aictl board` to inspect the running daemon's Overview, Health and Settings
-from the CLI. `aictl board nodes` lists reporting nodes; `aictl board overview
+from the CLI. It reads the dashboard's `/api/board/nodes` detail.
+`aictl board nodes` lists reporting nodes; `aictl board overview
 --all-nodes` compares their sessions; `aictl board health --node build-07` and
 `aictl board settings --node build-07` read that node's last report. Add `--json`
 for scripts. See [multiple reporting nodes](docs/kusto-cluster.md#multiple-reporting-nodes).
@@ -541,6 +546,10 @@ A Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline
 - **MCP Servers tab** — status table with color-coded dots.
 - **Agent Memory tab** — select an entry to preview content inline.
 - **Live Monitor tab** — active tool sessions plus collector health and runtime confidence.
+
+The TUI uses the daemon's live stream for processes and sessions. It reads the
+other tables from dashboard detail routes. Without a compatible daemon, the
+TUI collects data locally; the Metrics tab requires a daemon.
 
 Keybindings: `r` refresh, `p` toggle processes, `f` toggle files, `m` toggle memory, `q` quit.
 

@@ -1,0 +1,537 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-agent.schema.json",
+  "title": "DetailAgent",
+  "type": "object",
+  "properties": {
+    "agent": {"$ref": "board-agent-row.schema.json"},
+    "subagents": {"type": "array", "items": {"$ref": "board-agent-row.schema.json"}},
+    "loop": {"anyOf": [{"$ref": "board-loop-row.schema.json"}, {"type": "null"}]},
+    "node_scope": {"$ref": "node-scope.schema.json"},
+    "artifacts_total": {"type": "integer"},
+    "artifacts_bytes": {"type": "integer"},
+    "prs_note": {"type": ["string", "null"]},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+      }
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+      }
+    },
+    "by_model": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "model": {"type": "string"},
+          "msgs": {"type": "integer"},
+          "input": {"type": ["integer", "null"]},
+          "output": {"type": ["integer", "null"]},
+          "cache_read": {"type": ["integer", "null"]},
+          "cache_write": {"type": ["integer", "null"]},
+          "cost_usd": {"type": ["number", "null"]},
+          "tokens": {"type": "integer"},
+          "cached_share": {"type": ["number", "null"]},
+          "estimated": {"type": "boolean"}
+        },
+        "required": [
+          "model",
+          "msgs",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "cost_usd",
+          "tokens",
+          "cached_share"
+        ]
+      }
+    },
+    "process": {
+      "type": "object",
+      "properties": {
+        "cpu_percent": {"type": ["number", "null"]},
+        "mem_mb": {"type": ["number", "null"]},
+        "pids": {"type": "array", "items": {"type": "integer"}},
+        "started_at": {"type": ["number", "null"]}
+      },
+      "required": ["cpu_percent", "mem_mb", "pids", "started_at"]
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "text": {"type": "string"},
+          "tools": {"type": "integer"},
+          "model": {"type": ["string", "null"]},
+          "input": {"type": ["integer", "null"]},
+          "output": {"type": ["integer", "null"]},
+          "cache_read": {"type": ["integer", "null"]},
+          "cache_write": {"type": ["integer", "null"]},
+          "cost_usd": {"type": ["number", "null"]},
+          "subagent_calls": {"type": ["integer", "null"]},
+          "reply_ms": {"type": ["number", "null"]}
+        },
+        "required": [
+          "ts",
+          "text",
+          "tools",
+          "model",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "cost_usd",
+          "subagent_calls",
+          "reply_ms"
+        ]
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "name": {"type": "string"},
+          "target": {"type": "string"},
+          "duration_ms": {"type": ["number", "null"]},
+          "failed": {"type": "boolean"},
+          "confirm": {"type": ["string", "null"]},
+          "input_bytes": {"type": ["integer", "null"]},
+          "output_bytes": {"type": ["integer", "null"]}
+        },
+        "required": [
+          "ts",
+          "name",
+          "target",
+          "duration_ms",
+          "failed",
+          "confirm",
+          "input_bytes",
+          "output_bytes"
+        ]
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "lines_added": {"type": ["integer", "null"]},
+          "lines_removed": {"type": ["integer", "null"]},
+          "edits": {"type": "integer"}
+        },
+        "required": ["path", "lines_added", "lines_removed", "edits"]
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "command": {"type": "string"},
+          "passed": {"type": ["boolean", "null"]},
+          "duration_ms": {"type": ["number", "null"]}
+        },
+        "required": ["ts", "command", "passed", "duration_ms"]
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"ts": {"type": "number"}, "key": {"type": "string"}, "detail": {"type": "string"}},
+        "required": ["ts", "key", "detail"]
+      }
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "branch": {"type": ["string", "null"]},
+        "commit": {"type": ["string", "null"]},
+        "commits_in_session": {"type": "integer"}
+      },
+      "required": ["branch", "commit", "commits_in_session"]
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "session_id": {"type": "string"},
+          "started_at": {"type": ["number", "null"]},
+          "ended_at": {"type": ["number", "null"]},
+          "duration_s": {"type": ["number", "null"]},
+          "tokens": {"type": ["integer", "null"]},
+          "file_churn": {"type": ["integer", "null"]},
+          "cost_usd": {"type": ["number", "null"]},
+          "current": {"type": "boolean"},
+          "duration_ratio": {"type": ["number", "null"]},
+          "tokens_ratio": {"type": ["number", "null"]},
+          "churn_ratio": {"type": ["number", "null"]}
+        },
+        "required": [
+          "session_id",
+          "started_at",
+          "ended_at",
+          "duration_s",
+          "tokens",
+          "file_churn",
+          "cost_usd",
+          "current",
+          "duration_ratio",
+          "tokens_ratio",
+          "churn_ratio"
+        ]
+      }
+    },
+    "tool_totals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "mcp_server": {"type": ["string", "null"]},
+          "calls": {"type": "integer"},
+          "failed": {"type": "integer"},
+          "total_ms": {"type": ["number", "null"]},
+          "p50_ms": {"type": ["number", "null"]},
+          "p95_ms": {"type": ["number", "null"]},
+          "max_ms": {"type": ["number", "null"]},
+          "input_bytes": {"type": ["integer", "null"]},
+          "output_bytes": {"type": ["integer", "null"]},
+          "avg_input_bytes": {"type": ["number", "null"]},
+          "avg_output_bytes": {"type": ["number", "null"]},
+          "max_output_bytes": {"type": ["integer", "null"]}
+        },
+        "required": [
+          "name",
+          "mcp_server",
+          "calls",
+          "failed",
+          "total_ms",
+          "p50_ms",
+          "p95_ms",
+          "max_ms",
+          "input_bytes",
+          "output_bytes",
+          "avg_input_bytes",
+          "avg_output_bytes",
+          "max_output_bytes"
+        ]
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "uses": {"type": "integer"},
+          "agents": {"type": "integer"},
+          "started_by": {"type": ["string", "null"]},
+          "first_ts": {"type": ["number", "null"]},
+          "last_ts": {"type": ["number", "null"]}
+        },
+        "required": ["name", "uses", "agents", "started_by", "first_ts", "last_ts"]
+      }
+    },
+    "sources": {
+      "type": "object",
+      "properties": {
+        "session_file": {"type": "integer"},
+        "otel_spans": {"type": "integer"},
+        "otel_span_events": {"type": "integer"},
+        "otel_last_ts": {"type": ["number", "null"]},
+        "hooks": {"type": "integer"},
+        "hooks_last_ts": {"type": ["number", "null"]}
+      },
+      "required": [
+        "session_file",
+        "otel_spans",
+        "otel_span_events",
+        "otel_last_ts",
+        "hooks",
+        "hooks_last_ts"
+      ]
+    },
+    "context_files": {
+      "type": "object",
+      "properties": {
+        "git_root": {"type": ["string", "null"]},
+        "read": {"type": "boolean"},
+        "source": {"type": "string"},
+        "total": {"type": "integer"},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "loaded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        }
+      },
+      "required": ["git_root", "read", "source", "total", "files", "loaded"]
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "bytes_in": {"type": ["integer", "null"]},
+        "bytes_out": {"type": ["integer", "null"]},
+        "state_writes": {"type": ["integer", "null"]},
+        "cpu_peak": {"type": ["number", "null"]},
+        "tool_calls_per_min": {"type": ["number", "null"]},
+        "rate_limit": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            },
+            {"type": "null"}
+          ]
+        },
+        "lm_by_extension": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "process_tree": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "subprocesses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        }
+      },
+      "required": [
+        "bytes_in",
+        "bytes_out",
+        "state_writes",
+        "cpu_peak",
+        "tool_calls_per_min",
+        "rate_limit",
+        "lm_by_extension",
+        "process_tree",
+        "subprocesses"
+      ]
+    },
+    "context": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "tool_tokens": {"type": ["integer", "null"]},
+            "prompt_limit": {"type": ["integer", "null"]},
+            "limit_share": {"type": ["number", "null"]},
+            "request_bytes_last": {"type": ["integer", "null"]},
+            "request_bytes_peak": {"type": ["integer", "null"]},
+            "available_tools": {"type": ["integer", "null"]},
+            "compactions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            },
+            "split": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                },
+                {"type": "null"}
+              ]
+            },
+            "calls": {"type": ["integer", "null"]},
+            "first": {"type": ["integer", "null"]},
+            "last": {"type": ["integer", "null"]},
+            "peak": {"type": ["integer", "null"]},
+            "drops": {"type": ["integer", "null"]},
+            "series": {"type": "array", "items": {"type": ["integer", "null"]}},
+            "by_agent": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            },
+            "breakdown": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                },
+                {"type": "null"}
+              ]
+            }
+          },
+          "required": [
+            "tool_tokens",
+            "prompt_limit",
+            "limit_share",
+            "request_bytes_last",
+            "request_bytes_peak",
+            "available_tools",
+            "compactions",
+            "split",
+            "calls",
+            "first",
+            "last",
+            "peak",
+            "drops",
+            "series",
+            "by_agent",
+            "breakdown"
+          ]
+        },
+        {"type": "null"}
+      ]
+    },
+    "otel": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "calls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            },
+            "logs": {
+              "type": "object",
+              "properties": {"count": {"type": "integer"}, "last_ts": {"type": ["number", "null"]}},
+              "required": ["count", "last_ts"]
+            },
+            "spans": {
+              "type": "object",
+              "properties": {"count": {"type": "integer"}, "last_ts": {"type": ["number", "null"]}},
+              "required": ["count", "last_ts"]
+            },
+            "span_events": {
+              "type": "object",
+              "properties": {"count": {"type": "integer"}, "last_ts": {"type": ["number", "null"]}},
+              "required": ["count", "last_ts"]
+            },
+            "mcp_servers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            },
+            "metrics": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                },
+                {"type": "null"}
+              ]
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                },
+                {"type": "null"}
+              ]
+            },
+            "totals": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            },
+            "in_context": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                },
+                {"type": "null"}
+              ]
+            },
+            "mcp_lifecycle": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            }
+          },
+          "required": [
+            "calls",
+            "logs",
+            "spans",
+            "span_events",
+            "mcp_servers",
+            "metrics",
+            "context",
+            "totals",
+            "in_context",
+            "mcp_lifecycle"
+          ]
+        },
+        {"type": "null"}
+      ]
+    }
+  },
+  "required": [
+    "agent",
+    "subagents",
+    "loop",
+    "artifacts_total",
+    "artifacts_bytes",
+    "prs_note",
+    "artifacts",
+    "commits",
+    "by_model",
+    "process",
+    "turns",
+    "tool_calls",
+    "files",
+    "tests",
+    "errors",
+    "git",
+    "runs",
+    "tool_totals",
+    "skills",
+    "sources",
+    "context_files",
+    "resources",
+    "context"
+  ]
+}

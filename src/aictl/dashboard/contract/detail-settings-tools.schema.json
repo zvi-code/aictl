@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-settings-tools.schema.json",
+  "title": "DetailSettingsTools",
+  "type": "object",
+  "properties": {
+    "generated_at": {"type": "number"},
+    "tool_configs": {"type": "array", "items": {"$ref": "settings-tool-config.schema.json"}},
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"tool": {"type": "string"}, "label": {"type": "string"}},
+        "required": ["tool", "label"]
+      }
+    },
+    "monitor": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "state_paths": {"type": "array", "items": {"type": "string"}},
+        "workspace_paths": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["diagnostics", "state_paths", "workspace_paths"]
+    }
+  },
+  "required": ["generated_at", "tool_configs", "tools", "monitor"]
+}

@@ -64,7 +64,7 @@ export function boardCommands({ sections, ranges, rangeId, tools, agents, theme,
   const out = [];
   sections.forEach((s, i) => out.push({ id: 'sec:' + s.id, group: 'Go to', label: 'Go to ' + s.title, keywords: s.keywords || '', shortcut: i < 9 ? String(i + 1) : '', run: () => go.section(s.id) }));
   out.push({ id: 'screen:board', group: 'Screens', label: 'Board', keywords: 'overview home', run: () => go.screen('board'), on: screen === 'board' });
-  out.push({ id: 'screen:health', group: 'Screens', label: 'aictl Health', keywords: 'collection ingestion pipeline store capacity requests kusto sqlite otel hooks', run: () => go.screen('health'), on: screen === 'health' });
+  out.push({ id: 'screen:health', group: 'Screens', label: 'aictl Health', keywords: 'collection ingestion pipeline store capacity requests kusto otel hooks', run: () => go.screen('health'), on: screen === 'health' });
   out.push({ id: 'screen:settings', group: 'Screens', label: 'Settings', shortcut: 's', run: () => go.screen('settings'), on: screen === 'settings' });
   for (const [p, label] of PIVOTS) out.push({ id: 'settings:' + p, group: 'Screens', label: 'Settings: ' + label, run: () => go.settings(p) });
   for (const r of ranges) out.push({ id: 'range:' + r.id, group: 'Time range', label: 'Show the last ' + r.label, keywords: 'range time ' + r.id, run: () => go.range(r.id), on: rangeId === r.id });

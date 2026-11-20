@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-copilot-sessions.schema.json",
+  "title": "DetailCopilotSessions",
+  "type": "object",
+  "properties": {
+    "total": {"type": "integer"},
+    "sessions": {"type": "array", "items": {"$ref": "copilot-session-record.schema.json"}}
+  },
+  "required": ["total", "sessions"]
+}

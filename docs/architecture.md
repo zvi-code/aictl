@@ -110,10 +110,12 @@ aictl/
 │
 ├── dashboard/              # All visualization renderers
 │   ├── models.py           #   DashboardTool + DashboardSnapshot dataclasses
-│   ├── web_server.py       #   ThreadingHTTPServer — routing, SSE, static
-│   ├── live_protocol.py    #   Kusto live source authority, stable IDs, wire capabilities
-│   ├── live_hub.py         #   Bounded entity state, replay, and client backpressure
-│   ├── live_projection.py  #   Shared history projection and independent operational health
+│   ├── web_server.py       #   ThreadingHTTPServer — routing and static assets
+│   ├── live/
+│   │   ├── protocol.py     #     Source authority, stable IDs, and wire capabilities
+│   │   ├── hub.py          #     Bounded entity state, replay, and client backpressure
+│   │   ├── projection.py   #     Store history and independent operational health
+│   │   └── stream.py       #     HTTP live capabilities and SSE handlers
 │   ├── queryable_context.py #  Named store views and projections for context and file details
 │   ├── api_handlers.py     #   REST endpoint handlers (budget, events, kill, …)
 │   ├── analytics.py        #   Cached analytics queries + cache health reporting
@@ -466,7 +468,7 @@ class DashboardSnapshot:
 
 ### Web Dashboard (`dashboard/web_server.py` + `dashboard/ui/`)
 
-A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). Kusto uses the incremental subscription below; SQLite and older daemons retain snapshot notifications and polling. For the rewrite's tokens, primitives and accessibility rules, see [`docs/ui/design.md`](ui/design.md).
+A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). The daemon always offers the incremental subscription below. The legacy snapshot stream remains available. For the rewrite's tokens, primitives and accessibility rules, see [`docs/ui/design.md`](ui/design.md).
 
 **Backend** — `ThreadingHTTPServer` with REST API:
 
@@ -486,7 +488,7 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/session-commits` | GET | Git commits attributed to a session |
 | `/api/session-stats` | GET | Aggregate stats for a session |
 | `/api/session-mcp-usage` | GET | MCP server usage for a session |
-| `/api/session-kill` | PUT | Signal a live session's process tree (TERM/KILL) |
+| `/api/session-kill` | POST | Signal a live session's process tree (TERM/KILL) |
 | `/api/otel-status` | GET | OTel receiver diagnostics |
 | `/api/hooks-status` | GET | Per-tool hook installation status |
 | `/api/hooks` | PUT | Install/repair tool hooks |
@@ -496,15 +498,21 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/self-status` | GET | aictl's own runtime status |
 | `/api/board/health` | GET | Unified collection, ingestion, request and backend health; available before the first snapshot |
 
+**Python clients** — The CLI and TUI check `/api/live/capabilities` before
+opening `/api/live/stream`. They use live entities for process and session
+state. The TUI resumes from the last applied cursor on reconnect and replaces
+its state when the daemon sends a new bootstrap. The local
+`/api/board/terminal/*` details supply resource metadata, session counters,
+recent events, metric samples, and previews of discovered files. `aictl board`
+reads the scoped `/api/board/nodes` detail directly.
+
 **Frontend** — Preact 10 with htm/preact tagged template literals. The UI has one screen, the board
 (`components/board/`), with Settings at `?screen=settings` and aictl Health at
 `?screen=health`. Charts are plain SVG.
 
-With SQLite or an older daemon, the Health screen polls independently every five
-seconds while visible, without overlapping requests or waiting for the historical
-board query. With Kusto, the same health projection uses the shared live stream
-and does not require a board-history baseline. Its default
-overview has four compact stages (collection, queued DM, engine ingestion, and
+The Health screen uses the shared live stream and does not require a
+board-history baseline. Its default overview has four compact stages
+(collection, queued DM, engine ingestion, and
 queryable storage/reads), one destination-group traffic matrix, and source,
 collector, ingester and issue summaries. Queued acknowledgements remain separate
 from cached stored volume and are not confirmed queryable. Store totals, upload
@@ -516,12 +524,13 @@ Machine CPU and process views remain on Machine. Backend operation counters are
 process-local; cached storage volume and Kusto capacity carry their own scope and
 timestamps. Unknown measurements remain unreported rather than becoming zero.
 
-### Kusto live source contract
+### Live source contract
 
 Authority follows the **kind and field**, not the selected screen. The
-[`live_protocol.py`](../src/aictl/dashboard/live_protocol.py) rules are exposed
-by `/api/live/capabilities`; the existing discovery registries and datapoint
-catalog still define tools and datapoint meanings.
+[`live/protocol.py`](../src/aictl/dashboard/live/protocol.py) rules are exposed
+by `/api/live/capabilities`. [`live/stream.py`](../src/aictl/dashboard/live/stream.py)
+serves both live routes. The discovery registries and datapoint catalog still
+define tools and datapoint meanings.
 
 | Data | Authority and delivery |
 |------|------------------------|
@@ -529,19 +538,21 @@ catalog still define tools and datapoint meanings.
 | Native output/progress of a proven running session | Supported native session adapters; ordered incremental entries with stable native identities. No hook/OTel/usage overlay. |
 | Current configured settings | Filesystem signature watchers using the shared `current_tool_configs()` cache. These are configured-on-disk records. |
 | Settings a running agent loaded/reports | Separate `configuration.loaded` evidence, from allowlisted process flags or native reports. Unreported values remain unknown; a disk edit does not establish a reload. |
-| Historical sessions, file inventory/history, hooks, OTel, usage, cost and activity | Queryable Kusto results only, including for running agents. An accepted upload or DM acknowledgement does not supply these values. |
+| Historical sessions, file inventory/history, hooks, OTel, usage, cost and activity | Queryable results from the configured store, including for running agents. An accepted upload or DM acknowledgement does not supply these values. |
 | Collection/transport health | Process-local operational counters can stream independently. Cached queryable volume, client upload volume and DM policies retain their separate scopes/timestamps. |
 
-`CollectionService` creates the hub and runtime/configuration producers only for
-Kusto. Collectors publish current observations without waiting for snapshot
-collection, persistence or a cluster read. The web server adds one independent
+`CollectionService` creates the [hub](../src/aictl/dashboard/live/hub.py) and the
+runtime and configuration producers. Collectors publish current observations
+without waiting for snapshot collection, persistence or a cluster read.
+The web server adds one independent
 operational-health worker and one coalescing history-projection worker. Health
 or Settings can subscribe with `history=0` without starting the board query.
 Closing a stream releases its subscription; it does not construct another
-collector or Kusto reader.
+collector or store reader.
 
-One shared reader per daemon/destination reads query-visible change hints, including
-other machines' writes. A reader bootstrap captures its cursor before the first
+The Kusto plugin uses one shared reader per daemon and destination. The reader
+detects query-visible changes, including other machines' writes.
+A reader bootstrap captures its cursor before the first
 history baseline. Fixed cursor ranges, supplemental query-visible reads and
 reconciliation handle writes that become visible after their producer timestamp,
 streaming rows whose database cursor has not caught up, tombstones and retention.
@@ -551,10 +562,12 @@ or ingestion receipt advances historical UI state.
 Reader API, query plans, policy/RowStore limits and the read-only validation scope
 are specified in [Kusto live reader](kusto-live-reader.md).
 
-The history worker builds the Board from named store views. Store revisions
-refresh the shared projection for active filters. Runtime gauge changes do not
-invalidate historical views. If the reader has no change feed, the worker polls
-on its refresh interval. Historical analytics and drawer details remain on demand.
+The [history worker](../src/aictl/dashboard/live/projection.py) builds the Board
+from named views on the configured store reader. If the reader provides a
+`live_feed`, its change hints refresh the shared projection for active filters.
+Otherwise, the worker polls the views and the hub publishes the entity differences.
+Runtime gauge changes do not invalidate historical views. Historical analytics
+and drawer details remain on demand.
 Current-state filters select queryable historical usage using proven runtime
 session identities/statuses, not event-derived running/idle guesses. A status
 membership change recomposes that selected population; a CPU/RSS change does

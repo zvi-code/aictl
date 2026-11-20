@@ -3,8 +3,7 @@ import { ago, fmtAge } from './format.js';
 export function writeWarning(writes, kind) {
   const longest = writes?.reduce((a, b) => !a || b.age_s > (a.age_s ?? -1) ? b : a, null);
   if (!(longest?.age_s >= 60) || kind === 'kusto') return null;
-  return `History write (${longest.name}) has run for ${fmtAge(longest.age_s)}.`
-    + (kind === 'sqlite' ? ' Other SQLite writers may be waiting.' : '');
+  return `History write (${longest.name}) has run for ${fmtAge(longest.age_s)}.`;
 }
 
 export function ingesterState(i) {

@@ -1,4 +1,4 @@
-// The board's Machine section and data-pipeline panels, from /api/board/machine.
+// The board's Machine section and data-pipeline panels.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
@@ -11,6 +11,7 @@ import { buildPanel, coreBars, procTree } from '../src/components/board/panels.j
 import { sectionSummary, streamPill } from '../src/components/board/summary.js';
 import { EMPTY_MACHINE, normalizeBoard, normalizeMachine } from '../src/components/board/useBoardData.js';
 import { NOW, boardFixture, machineFixture } from './fixtures/board.fixture.js';
+import { boardEventSource, ControlledEventSource } from './fixtures/live.fixture.js';
 
 if (typeof globalThis.localStorage?.setItem !== 'function') {
   const store = new Map();
@@ -25,21 +26,18 @@ if (typeof globalThis.localStorage?.setItem !== 'function') {
 const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 function stubFetch(machine = machineFixture(), board = boardFixture()) {
+  vi.stubGlobal('EventSource', boardEventSource({ board: () => board, machine: () => machine }));
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const u = String(url);
     calls.push(u);
-    if (u.startsWith('/api/board/machine')) return jsonResponse(machine);
-    if (u.startsWith('/api/board?')) return jsonResponse(board);
     if (u.startsWith('/api/context-audit')) return jsonResponse({ findings: [], sources: [], counts: {} });
     return jsonResponse({});
   }));
   return calls;
 }
-class FakeES { constructor() { FakeES.last = this; } close() {} }
-
 beforeEach(() => {
-  vi.stubGlobal('EventSource', FakeES);
+  ControlledEventSource.instances = [];
   window.history.replaceState(null, '', '/');
   localStorage.clear?.();
 });
@@ -229,8 +227,6 @@ describe('traffic, CPU cores, sources, self, collectors and quality', () => {
     expect(kusto.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 4 min; compact, 4 s', cls: null });
     expect(kusto.stats.find(s => s.label === 'OTel model calls').value).toBe('0');
     expect(kusto.stats.find(s => s.label === 'History rows (cached)').value).toBe('2.4 k');
-    ctx.data.health.store.kind = 'sqlite';
-    expect(buildPanel('self', ctx, local(), { id: 'self' }).banner).toContain('SQLite writers may be waiting');
     busy.pipeline.self.writes = [{ name: 'flush', age_s: 12 }];
     const short = buildPanel('self', ctxWith(busy), local(), { id: 'self' });
     expect(short.stats.find(s => s.label === 'Writing')).toMatchObject({ value: 'flush, 12 s', cls: null });
@@ -283,10 +279,8 @@ describe('stale and disconnected pill', () => {
     expect(pill.textContent).toBe('Data is 2 min old');
     expect(pill.getAttribute('role')).toBe('status');
     expect(view.container.querySelectorAll('.bd-kpi')).toHaveLength(9);
-    expect(calls.some(c => c.startsWith('/api/board/machine'))).toBe(true);
-    const es = FakeES.last;
-    await act(async () => { es.onopen(); });
-    await act(async () => { es.onerror?.(new Event('error')); });
+    expect(calls.some(c => c.startsWith('/api/board/machine'))).toBe(false);
+    await act(async () => ControlledEventSource.instances.at(-1).fail());
     await waitFor(() => expect(view.container.querySelector('.bd-kpipill').textContent).toBe('Live stream disconnected'));
   });
 });
@@ -301,11 +295,13 @@ describe('board screen with machine data', () => {
     for (const id of ['alerts', 'traffic', 'daemon']) expect(view.container.querySelector('#p-' + id), id).toBeTruthy();
     for (const id of ['collectors', 'quality', 'self']) expect(view.container.querySelector('#p-' + id), id).toBeNull();
     expect(view.container.querySelectorAll('#p-cpu .bd-core')).toHaveLength(4);
-    expect(view.container.querySelector('#p-procs .bd-tag')).toBeTruthy();
+    const processes = view.container.querySelector('#p-procs tbody');
+    expect(processes).toHaveTextContent('mcp-server');
+    expect(processes).toHaveTextContent('High memory');
+    expect(processes).toHaveTextContent('Fix retry logic');
     fireEvent.click(view.getByRole('button', { name: 'Tree' }));
     expect(view.container.querySelector('#p-procs .bd-note').textContent).toContain('under its parent');
-    const machineCalls = calls.filter(c => c.startsWith('/api/board/machine'));
-    expect(machineCalls.length).toBeGreaterThan(0);
-    expect(machineCalls.at(-1)).toBe('/api/board/machine?tool=tool-a');
+    expect(new URL(ControlledEventSource.instances.at(-1).url, location.href).searchParams.get('tool')).toBe('tool-a');
+    expect(calls.some(c => c.startsWith('/api/board/machine'))).toBe(false);
   });
 });

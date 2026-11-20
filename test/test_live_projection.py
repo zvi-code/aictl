@@ -4,12 +4,9 @@ import threading
 import time
 from types import SimpleNamespace
 
-from aictl.dashboard.live_hub import LiveHub
-from aictl.dashboard.live_projection import LiveDashboard, board_entities
-
-
-
-
+from aictl.dashboard.live import projection
+from aictl.dashboard.live.hub import LiveHub
+from aictl.dashboard.live.projection import LiveDashboard, board_entities
 
 
 def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority():
@@ -60,7 +57,7 @@ def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority()
 
 def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch, kusto_store):
     from aictl.dashboard import board_api
-    from aictl.dashboard.live_projection import _ProjectionDB
+    from aictl.dashboard.live.projection import _ProjectionDB
 
     monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
     monkeypatch.setattr(board_api, "_skill_file", lambda *_: {"scope": None, "path": None, "description": None})
@@ -84,7 +81,7 @@ def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch
 
 def test_equal_timestamp_prompts_use_native_ids_not_list_positions(monkeypatch, kusto_store):
     from aictl.dashboard import board_api
-    from aictl.dashboard.live_projection import _ProjectionDB
+    from aictl.dashboard.live.projection import _ProjectionDB
 
     monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
     db = kusto_store
@@ -156,6 +153,66 @@ def wait_for(predicate):
             return
         time.sleep(0.01)
     raise AssertionError("Live worker did not finish")
+
+
+def test_history_poll_emits_only_diffs_without_a_change_feed(monkeypatch):
+    from aictl.dashboard import board_api
+    from aictl.stores import Store
+    from aictl.stores.testing import FixtureReader
+
+    agents = [{"id": "a", "input": 1}, {"id": "b", "input": 2}]
+    reader = FixtureReader({"board.agents": agents})
+    store = Store(reader=reader)
+    assert not reader.capabilities()["change_feed"]
+    monkeypatch.setattr(
+        board_api,
+        "compute_board",
+        lambda _db, _filters, *, history, **_: {"agents": history.read("board.agents")},
+    )
+    clock = [1000.0]
+    monkeypatch.setattr(projection, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
+    hub = LiveHub()
+    dashboard = LiveDashboard(hub, store, store, health_provider=lambda: ({}, {}))
+    scope = "since=1&until=2"
+    subscription = dashboard.subscribe(scope)
+
+    def history_changes():
+        # Operational status can change independently of the board data.
+        upserts = []
+        while (message := subscription.next(0)) is not None:
+            event, payload = message
+            assert event == "change"
+            assert not payload["removals"]
+            upserts.extend(row for row in payload["upserts"] if row["topic"] == "history.board")
+        return upserts
+
+    def wait_for_poll():
+        wait_for(lambda: dashboard._scopes[scope].status.get("computed_at") == clock[0])
+
+    try:
+        event, bootstrap = subscription.next(0)
+        assert event == "bootstrap" and bootstrap["scope"] == scope
+        wait_for_poll()
+        baseline = {row["data"]["value"]["id"]: row for row in history_changes() if "key" in row["data"]}
+        assert set(baseline) == {"a", "b"}
+
+        agents[0]["input"] = 3
+        clock[0] += 5
+        dashboard._wake.set()
+        wait_for_poll()
+        (changed,) = history_changes()
+        assert changed["id"] == baseline["a"]["id"]
+        assert changed["data"]["value"]["input"] == 3
+
+        clock[0] += 5
+        dashboard._wake.set()
+        wait_for_poll()
+        assert len(reader.calls) == 3
+        assert history_changes() == []
+    finally:
+        subscription.close()
+        dashboard.close()
+        hub.close()
 
 
 def test_one_history_worker_is_shared_and_slow_kusto_cannot_block_runtime():
@@ -277,7 +334,6 @@ def test_unresolved_cutover_does_not_start_reader_or_compute_history(caplog):
 
 
 def test_unresolved_history_is_not_retried_after_clock_or_source_changes(monkeypatch, caplog):
-    from aictl.dashboard import live_projection
     from aictl.dashboard.board_api import Filters
     from aictl.kusto.observations import UnresolvedObservationsError
 
@@ -292,7 +348,7 @@ def test_unresolved_history_is_not_retried_after_clock_or_source_changes(monkeyp
     dashboard = LiveDashboard(
         hub, SimpleNamespace(), SimpleNamespace(), health_provider=lambda: ({}, {}), compute=compute
     )
-    entry = live_projection._Scope("since=1&until=2", Filters(1, 2), False, 1, refs=1)
+    entry = projection._Scope("since=1&until=2", Filters(1, 2), False, 1, refs=1)
     dashboard._scopes[entry.query] = entry
     dashboard._baseline_allowed = True
 
@@ -319,7 +375,7 @@ def test_unresolved_history_is_not_retried_after_clock_or_source_changes(monkeyp
             pass
 
     dashboard._wake = Wake()
-    monkeypatch.setattr(live_projection, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
+    monkeypatch.setattr(projection, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
     try:
         dashboard._history_loop()
         assert calls == [True]

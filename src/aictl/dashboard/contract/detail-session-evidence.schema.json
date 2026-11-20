@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-session-evidence.schema.json",
+  "title": "DetailSessionEvidence",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "rows": {"type": "array", "items": {"$ref": "session-evidence-row.schema.json"}},
+    "has_more": {"type": "boolean"},
+    "offset": {"type": "integer"},
+    "limit": {"type": "integer"},
+    "node_scope": {"$ref": "node-scope.schema.json"}
+  },
+  "required": ["session_id", "rows", "has_more", "offset", "limit"]
+}

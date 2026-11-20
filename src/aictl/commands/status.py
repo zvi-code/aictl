@@ -7,12 +7,15 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
+from http.client import HTTPException
 from pathlib import Path
 
 import click
 
+from ..client import ServerClient
 from ..dashboard.html_report import render_html
 from ..dashboard.models import DashboardSnapshot
+from ..dashboard.projections.terminal import terminal_sessions, terminal_snapshot
 from ..memory import get_summary, list_stashes
 from ..tools import (
     TOOL_GROUPS,
@@ -58,20 +61,19 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
     results = None
     if use_server and not as_html and not out_file:
         try:
-            from ..client import ServerClient
-
             client = ServerClient.try_connect()
             if client:
-                snap_dict = client.get_snapshot()
-                from ..dashboard.models import DashboardSnapshot
-
-                snap = DashboardSnapshot.from_dict(snap_dict)
-                results = [t for t in snap.tools]
+                state = client.read_live()
+                resources = client.get_terminal_resources(export=as_json)
+                sessions = terminal_sessions(state, client.get_terminal_sessions()) if as_json else []
+                events = client.get_terminal_events() if as_json else []
+                snap = terminal_snapshot(state, resources, sessions, events)
                 if as_json:
-                    click.echo(json.dumps(snap_dict, indent=2))
+                    click.echo(json.dumps(snap.to_dict_slim(), indent=2))
                     return
+                results = snap.tools
                 click.secho("(connected to aictl serve)", fg="green", err=True)
-        except (OSError, ConnectionError):
+        except (OSError, ValueError, HTTPException):
             pass  # server not running; fall through to local discovery
 
     # Fall back to local discovery

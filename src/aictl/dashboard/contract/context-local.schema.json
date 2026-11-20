@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/context-local.schema.json",
+  "title": "ContextLocal",
+  "type": "object",
+  "properties": {
+    "generated_at": {"type": "number"},
+    "root": {"type": "string"},
+    "source": {"type": "string"},
+    "configuration_scope": {"type": "string"},
+    "policy_note": {"type": "string"},
+    "budget": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {"type": "string"},
+              "label": {"type": "string"},
+              "window": {"type": ["integer", "null"]},
+              "model": {"type": ["string", "null"]},
+              "model_from": {"type": ["string", "null"]},
+              "always": {"type": "integer"},
+              "always_share": {"type": ["number", "null"]},
+              "cacheable": {"type": "integer"},
+              "conditional": {"type": "integer"},
+              "global_tokens": {"type": "integer"},
+              "largest_project": {"type": ["string", "null"]},
+              "max_potential": {"type": "integer"},
+              "never_sent_files": {"type": "integer"},
+              "on_demand": {"type": "integer"},
+              "potential_share": {"type": ["number", "null"]},
+              "projects": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "project": {"type": "string"},
+                    "always": {"type": "integer"},
+                    "on_demand": {"type": "integer"},
+                    "conditional": {"type": "integer"},
+                    "tokens": {"type": "integer"},
+                    "estimate": {"type": "integer"},
+                    "share": {"type": "number"}
+                  },
+                  "required": [
+                    "project",
+                    "always",
+                    "on_demand",
+                    "conditional",
+                    "tokens",
+                    "estimate",
+                    "share"
+                  ]
+                }
+              },
+              "raw_total": {"type": "integer"},
+              "survives_compaction": {"type": "integer"},
+              "unknown_policy_tokens": {"type": ["integer", "null"]},
+              "window_assumed": {"type": "boolean"}
+            },
+            "required": [
+              "tool",
+              "label",
+              "window",
+              "model",
+              "model_from",
+              "always",
+              "always_share",
+              "cacheable",
+              "conditional",
+              "global_tokens",
+              "largest_project",
+              "max_potential",
+              "never_sent_files",
+              "on_demand",
+              "potential_share",
+              "projects",
+              "raw_total",
+              "survives_compaction",
+              "unknown_policy_tokens",
+              "window_assumed"
+            ]
+          }
+        },
+        "totals": {
+          "type": "object",
+          "properties": {
+            "always": {"type": "integer"},
+            "cacheable": {"type": "integer"},
+            "conditional": {"type": "integer"},
+            "max_potential": {"type": "integer"},
+            "never_sent_files": {"type": "integer"},
+            "on_demand": {"type": "integer"}
+          },
+          "required": [
+            "always",
+            "cacheable",
+            "conditional",
+            "max_potential",
+            "never_sent_files",
+            "on_demand"
+          ]
+        }
+      },
+      "required": ["tools", "totals"]
+    },
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "label": {"type": "string"},
+          "never_sent": {"type": "integer"},
+          "sent": {"type": "integer"},
+          "tokens": {"type": "integer"},
+          "unknown": {"type": "integer"},
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          }
+        },
+        "required": ["tool", "label", "never_sent", "sent", "tokens", "kinds"]
+      }
+    },
+    "map": {
+      "type": "object",
+      "properties": {
+        "total": {"type": "integer"},
+        "policy": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {"type": "string"},
+              "name": {"type": "string"},
+              "project": {"type": "string"},
+              "tokens": {"type": "integer"}
+            },
+            "required": ["kind", "name", "project", "tokens"]
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "files": {"type": "integer"},
+              "kind": {"type": "string"},
+              "policy": {"type": "string"},
+              "project": {"type": "string"},
+              "scope": {"type": "string"},
+              "tokens": {"type": "integer"},
+              "tool": {"type": "string"}
+            },
+            "required": ["files", "kind", "policy", "project", "scope", "tokens", "tool"]
+          }
+        }
+      },
+      "required": ["total", "policy", "items", "rows"]
+    },
+    "memory": {
+      "type": "object",
+      "properties": {
+        "tokens": {"type": "integer"},
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {"type": "string"},
+              "lines": {"type": "integer"},
+              "mtime": {"type": ["number", "null"]},
+              "name": {"type": "string"},
+              "profile": {"type": ["string", "null"]},
+              "recent": {"type": "boolean"},
+              "source": {"type": ["string", "null"]},
+              "source_label": {"type": ["string", "null"]},
+              "tokens": {"type": "integer"}
+            },
+            "required": [
+              "file",
+              "lines",
+              "mtime",
+              "name",
+              "profile",
+              "recent",
+              "source",
+              "source_label",
+              "tokens"
+            ]
+          }
+        },
+        "growth": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mem_tokens": {"type": "integer"},
+              "memory_entries": {"type": "integer"},
+              "ts": {"type": "number"}
+            },
+            "required": ["mem_tokens", "memory_entries", "ts"]
+          }
+        }
+      },
+      "required": ["tokens", "entries", "growth"]
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "count": {"type": "integer"},
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          },
+          "label": {"type": "string"},
+          "tool": {"type": "string"},
+          "truncated": {"type": "boolean"}
+        },
+        "required": ["count", "files", "label", "tool", "truncated"]
+      }
+    },
+    "telemetry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "label": {"type": "string"},
+          "source": {"type": "string"},
+          "messages": {"type": "integer"},
+          "input": {"type": "integer"},
+          "output": {"type": "integer"},
+          "cache_read": {"type": "integer"},
+          "cache_write": {"type": "integer"},
+          "cost_usd": {"type": ["number", "null"]},
+          "cost_quality": {"type": ["string", "null"]},
+          "cost_reason": {"type": ["string", "null"]},
+          "confidence": {"type": ["number", "null"]},
+          "sessions": {"type": "integer"},
+          "active": {"type": ["integer", "null"]},
+          "as_of": {"type": ["string", "null"]},
+          "by_model": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          },
+          "premium_requests": {"type": ["number", "null"]},
+          "token_quality": {"type": ["string", "null"]},
+          "quota": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              },
+              {"type": "null"}
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "label",
+          "source",
+          "messages",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "cost_usd",
+          "cost_quality",
+          "cost_reason",
+          "confidence",
+          "sessions",
+          "active",
+          "as_of",
+          "by_model",
+          "errors",
+          "premium_requests",
+          "token_quality",
+          "quota"
+        ]
+      }
+    },
+    "daily": {
+      "type": "object",
+      "properties": {
+        "since": {"type": "number"},
+        "days": {"type": "array", "items": {"type": "string"}},
+        "available": {"type": "boolean"},
+        "error": {"type": "string"},
+        "incomplete": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "retryable": {"type": "boolean"},
+        "unresolved_families": {"type": "array", "items": {"type": "string"}},
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cost_usd": {"type": ["number", "null"]},
+              "model": {"type": "string"},
+              "requests": {"type": "integer"},
+              "tokens": {"type": "integer"}
+            },
+            "required": ["cost_usd", "model", "requests", "tokens"]
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cache_read": {"type": "integer"},
+              "cache_write": {"type": "integer"},
+              "cost_usd": {"type": ["number", "null"]},
+              "date": {"type": "string"},
+              "input": {"type": "integer"},
+              "model": {"type": "string"},
+              "output": {"type": "integer"},
+              "requests": {"type": "integer"},
+              "tokens": {"type": "integer"}
+            },
+            "required": [
+              "cache_read",
+              "cache_write",
+              "cost_usd",
+              "date",
+              "input",
+              "model",
+              "output",
+              "requests",
+              "tokens"
+            ]
+          }
+        }
+      },
+      "required": ["since", "days", "models", "rows"]
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "label": {"type": "string"},
+          "path": {"type": "string"},
+          "name": {"type": "string"},
+          "kind": {"type": "string"},
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          }
+        },
+        "required": ["tool"]
+      }
+    }
+  },
+  "required": [
+    "generated_at",
+    "root",
+    "budget",
+    "categories",
+    "map",
+    "memory",
+    "files",
+    "telemetry",
+    "daily",
+    "workflows"
+  ]
+}

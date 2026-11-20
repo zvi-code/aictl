@@ -845,7 +845,7 @@ def test_registry_normalizes_ingestion_endpoint_and_uses_one_idempotent_worker()
 
 
 def test_blocked_sdk_query_does_not_block_runtime_updates_on_the_same_hub():
-    from aictl.dashboard.live_hub import LiveHub
+    from aictl.dashboard.live.hub import LiveHub
 
     hub = LiveHub()
     stream = hub.subscribe(history=False)

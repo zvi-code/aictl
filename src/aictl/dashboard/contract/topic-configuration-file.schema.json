@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-configuration-file.schema.json",
+  "title": "TopicConfigurationFile",
+  "type": "object",
+  "properties": {
+    "configured_only": {"type": "boolean"},
+    "tool_configs": {"type": "array", "items": {"$ref": "settings-tool-config.schema.json"}}
+  },
+  "required": ["configured_only", "tool_configs"]
+}

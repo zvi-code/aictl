@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-projects.schema.json",
+  "title": "BoardProjects",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "project": {"type": "string"},
+      "agents": {"type": "integer"},
+      "prompts": {"type": ["integer", "null"]},
+      "msgs": {"type": "integer"},
+      "tokens": {"type": "integer"},
+      "cached_share": {"type": ["number", "null"]},
+      "cost_usd": {"type": ["number", "null"]},
+      "tool_calls": {"type": ["integer", "null"]},
+      "fail_rate": {"type": ["number", "null"]},
+      "test_runs": {"type": ["integer", "null"]},
+      "test_passed": {"type": ["integer", "null"]},
+      "lines_added": {"type": ["integer", "null"]},
+      "lines_removed": {"type": ["integer", "null"]},
+      "api_errors": {"type": "integer"},
+      "loops": {"type": "integer"},
+      "p95_ms": {"type": ["number", "null"]}
+    },
+    "required": [
+      "project",
+      "agents",
+      "prompts",
+      "msgs",
+      "tokens",
+      "cached_share",
+      "cost_usd",
+      "tool_calls",
+      "fail_rate",
+      "test_runs",
+      "test_passed",
+      "lines_added",
+      "lines_removed",
+      "api_errors",
+      "loops",
+      "p95_ms"
+    ]
+  }
+}

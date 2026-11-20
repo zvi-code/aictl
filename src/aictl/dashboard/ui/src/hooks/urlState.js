@@ -44,6 +44,42 @@ export function boardNodeScope(search) {
   return scope === 'node' || (!scope && q.has('node_id')) ? 'node' : 'local';
 }
 
+export function loadToolFilter(search) {
+  const fromUrl = parseUrlState(search).tools;
+  if (fromUrl !== undefined) return fromUrl;
+  try { return JSON.parse(localStorage.getItem('aictl-pref-tool_filter')); }
+  catch { return null; }
+}
+
+/** The board query that opens one agent in the drawer, from any current query. */
+export function agentLinkOf(search, sessionId, nodeId = null) {
+  const params = new URLSearchParams(search);
+  const node = nodeId || (boardNodeScope(search) === 'node' ? params.get('node_id') : null);
+  let agent = sessionId;
+  if (node) {
+    let qualified = false;
+    try { qualified = Array.isArray(JSON.parse(sessionId)); } catch { /* native ID */ }
+    if (!qualified) agent = JSON.stringify([node.trim().toLowerCase(), sessionId]);
+  }
+  return mergeSearch(search, { tab: null, session: null, screen: null, session_id: null, agent,
+    ...(nodeId ? { scope: 'node', node_id: nodeId } : {}) });
+}
+
+const SESSION_TABS = new Set(['explorer', 'sessions', 'session-explorer']);
+
+export function redirectOf(search) {
+  const params = new URLSearchParams(search);
+  if (boardNodeScope(search) === 'node' && params.get('session_id') && !params.get('agent')) {
+    return agentLinkOf(search, params.get('session_id'));
+  }
+  const tab = params.get('tab');
+  if (!tab || tab === 'hidden') return null;
+  const sid = params.get('session');
+  if (SESSION_TABS.has(tab) && sid) return agentLinkOf(search, sid);
+  return mergeSearch(search, tab === 'config' || tab === 'configuration'
+    ? { tab: null, screen: 'settings' } : { tab: null });
+}
+
 // Do not carry a local settings row (which can be an absolute file path) into a report link.
 export const CLEAR_SETTINGS_PARAMS = {
   pivot: null, tool: null, sec: null, row: null, scope: null, unset: null,

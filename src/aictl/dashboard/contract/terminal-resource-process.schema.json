@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/terminal-resource-process.schema.json",
+  "title": "TerminalResourceProcess",
+  "type": "object",
+  "properties": {
+    "pid": {"type": "integer"},
+    "tool": {"type": "string"},
+    "name": {"type": "string"},
+    "cmdline": {"type": "string"},
+    "process_type": {"type": "string"},
+    "expected_mem_mb": {"type": "string"},
+    "known_leak": {"type": "boolean"},
+    "zombie_risk": {"type": "string"},
+    "cleanup_cmd": {"type": "string"},
+    "anomalies": {"type": "array", "items": {"type": "object"}}
+  },
+  "required": ["pid", "name", "cmdline"]
+}

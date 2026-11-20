@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aictl.dashboard.live_hub import HubLimits, LiveHub
+from aictl.dashboard.live.hub import HubLimits, LiveHub
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.monitoring.collectors.process import PsutilProcessCollector
 from aictl.monitoring.config import MonitorConfig

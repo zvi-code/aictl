@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/terminal-resource-file.schema.json",
+  "title": "TerminalResourceFile",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string"},
+    "kind": {"type": "string"},
+    "size": {"type": "integer"},
+    "tokens": {"type": "integer"},
+    "tool": {"type": "string"},
+    "scope": {"type": "string"},
+    "sent_to_llm": {"type": "string"},
+    "loaded_when": {"type": "string"},
+    "cacheable": {"type": "string"},
+    "survives_compaction": {"type": "string"},
+    "mtime": {"type": "number"}
+  },
+  "required": ["path", "kind", "size", "tokens"]
+}

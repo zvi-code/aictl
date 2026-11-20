@@ -764,7 +764,7 @@ class CollectionService:
         self.sink = self.store._sink = SampleSink(datapoint_logger=self._dp_logger,
                                                  history_store=self.history_store,
                                                  quality=self.store.collection_status)
-        from .dashboard.live_hub import LiveHub
+        from .dashboard.live.hub import LiveHub
         from .monitoring.live_sources import LiveRuntimeSources
 
         self.store.live_hub = LiveHub()

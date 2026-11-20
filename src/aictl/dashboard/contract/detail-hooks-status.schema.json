@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-hooks-status.schema.json",
+  "title": "DetailHooksStatus",
+  "type": "object",
+  "properties": {
+    "generated_at": {"type": "number"},
+    "window_seconds": {"type": "integer"},
+    "server_port": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "total_configured": {"type": "integer"},
+    "total_fired_24h": {"type": "integer"},
+    "last_fire_ts": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "counts_by_kind": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "counts_by_tool_kind": {
+      "type": "object",
+      "additionalProperties": {"type": "object", "additionalProperties": {"type": "integer"}}
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "configured": {"type": "boolean"},
+          "configured_count": {"type": "integer"},
+          "configured_events": {"type": "array", "items": {"type": "string"}},
+          "missing_events": {"type": "array", "items": {"type": "string"}},
+          "fired_24h": {"type": "integer"},
+          "last_fire_ts": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+          "status": {"type": "string"},
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool": {"type": "string"},
+                "scope": {"type": "string"},
+                "path": {"type": "string"},
+                "exists": {"type": "boolean"},
+                "schema": {"type": "string"},
+                "host_enabled": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+                "host_reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "configured": {"type": "boolean"},
+                "configured_count": {"type": "integer"},
+                "configured_events": {"type": "array", "items": {"type": "string"}},
+                "missing_events": {"type": "array", "items": {"type": "string"}},
+                "status": {"type": "string"},
+                "checks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                  }
+                }
+              },
+              "required": [
+                "tool",
+                "scope",
+                "path",
+                "exists",
+                "schema",
+                "host_enabled",
+                "host_reason",
+                "configured",
+                "configured_count",
+                "configured_events",
+                "missing_events",
+                "status",
+                "checks"
+              ]
+            }
+          }
+        },
+        "required": [
+          "tool",
+          "configured",
+          "configured_count",
+          "configured_events",
+          "missing_events",
+          "fired_24h",
+          "last_fire_ts",
+          "status",
+          "warnings",
+          "sources"
+        ]
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "scope": {"type": "string"},
+          "path": {"type": "string"},
+          "exists": {"type": "boolean"},
+          "schema": {"type": "string"},
+          "host_enabled": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+          "host_reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "configured": {"type": "boolean"},
+          "configured_count": {"type": "integer"},
+          "configured_events": {"type": "array", "items": {"type": "string"}},
+          "missing_events": {"type": "array", "items": {"type": "string"}},
+          "status": {"type": "string"},
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+            }
+          }
+        },
+        "required": [
+          "tool",
+          "scope",
+          "path",
+          "exists",
+          "schema",
+          "host_enabled",
+          "host_reason",
+          "configured",
+          "configured_count",
+          "configured_events",
+          "missing_events",
+          "status",
+          "checks"
+        ]
+      }
+    },
+    "vscode": {
+      "type": "object",
+      "properties": {
+        "settings_path": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "use_hooks": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "hook_files_locations": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        }
+      },
+      "required": ["settings_path", "use_hooks", "hook_files_locations"]
+    },
+    "skill_usage": {
+      "type": "object",
+      "properties": {
+        "total_calls_24h": {"type": "integer"},
+        "by_skill": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "by_tool": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "by_tool_skill": {
+          "type": "object",
+          "additionalProperties": {"type": "object", "additionalProperties": {"type": "integer"}}
+        }
+      },
+      "required": ["total_calls_24h", "by_skill", "by_tool", "by_tool_skill"]
+    },
+    "subagents": {
+      "type": "object",
+      "properties": {
+        "starts_24h": {"type": "integer"},
+        "stops_24h": {"type": "integer"},
+        "by_tool": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "recent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        }
+      },
+      "required": ["starts_24h", "stops_24h", "by_tool", "recent"]
+    },
+    "tool_calls": {
+      "type": "object",
+      "properties": {
+        "total_calls_24h": {"type": "integer"},
+        "by_name": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "by_tool": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "by_tool_name": {
+          "type": "object",
+          "additionalProperties": {"type": "object", "additionalProperties": {"type": "integer"}}
+        }
+      },
+      "required": ["total_calls_24h", "by_name", "by_tool", "by_tool_name"]
+    }
+  },
+  "required": [
+    "generated_at",
+    "window_seconds",
+    "server_port",
+    "total_configured",
+    "total_fired_24h",
+    "last_fire_ts",
+    "counts_by_kind",
+    "counts_by_tool_kind",
+    "warnings",
+    "tools",
+    "sources",
+    "vscode",
+    "skill_usage",
+    "subagents",
+    "tool_calls"
+  ]
+}

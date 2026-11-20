@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-copilot-artifact.schema.json",
+  "title": "DetailCopilotArtifact",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string"},
+    "size": {"type": "integer"},
+    "binary": {"type": "boolean"},
+    "truncated": {"type": "boolean"},
+    "content": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+  },
+  "required": ["path", "size", "binary", "truncated", "content"]
+}

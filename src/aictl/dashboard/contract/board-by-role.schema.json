@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-by-role.schema.json",
+  "title": "BoardByRole",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "kind": {"type": "string"},
+      "runs": {"type": "integer"},
+      "msgs": {"type": "integer"},
+      "tokens": {"type": "integer"},
+      "cost_usd": {"type": ["number", "null"]},
+      "fail_rate": {"type": ["number", "null"]}
+    },
+    "required": ["kind", "runs", "msgs", "tokens", "cost_usd", "fail_rate"]
+  }
+}

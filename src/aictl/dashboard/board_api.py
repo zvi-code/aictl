@@ -5741,7 +5741,20 @@ def handle_get(
         if path in {"/api/board/agent", "/api/board/sessions", "/api/board/file"}:
             history.require_reader()
         snapshot = getattr(store, "snapshot", None)
-        if path == "/api/board/agent":
+        if path in {
+            "/api/board/terminal/resources", "/api/board/terminal/sessions", "/api/board/terminal/events",
+            "/api/board/terminal/metrics", "/api/board/terminal/file",
+        }:
+            from .projections.terminal import terminal_detail
+
+            try:
+                status, payload = terminal_detail(
+                    path.rsplit("/", 1)[-1], qs, snapshot, history.reader, is_allowed,
+                    time.time() if now is None else now,
+                )
+            except ValueError as exc:
+                status, payload = 400, {"error": str(exc)}
+        elif path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now, history=history) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/sessions":
             from .session_record import search_sessions

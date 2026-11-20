@@ -2,16 +2,19 @@
 # Copyright (c) 2026 Zvi Schneider. MIT License.
 """Live TUI dashboard using Textual.
 
-Launched via ``aictl dashboard``.  Refreshes discovery data on a timer
-and displays resource usage across all AI coding tools.
+Launched via ``aictl daemon dashboard``. Displays live resource usage
+and refreshes detail tables on a timer.
 """
 
 from __future__ import annotations
 
 import time
 from collections import defaultdict
+from http.client import HTTPException
 from pathlib import Path
+from threading import Lock
 
+from rich.markup import escape
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -31,10 +34,13 @@ from textual.widgets import (
     TabPane,
     Tree,
 )
+from textual.worker import get_current_worker
 
+from ..client import LiveProtocolError, LiveState, MetricRow, ServerClient
 from ..orchestrator import collect
 from ..tools import DEFAULT_TOOL_ICON, TOOL_COLORS, TOOL_ICONS, TOOL_LABELS
 from .models import SOURCE_LABELS, STATUS_COLOURS, DashboardSnapshot
+from .projections.terminal import preview_file, terminal_sessions, terminal_snapshot
 from .view_helpers import compute_tool_summary, format_duration, safe_float
 
 # ── Colour palette ───────────────────────────────────────────────
@@ -224,7 +230,9 @@ class DashboardApp(App):
         self._include_live_monitor = include_live_monitor
         self._server_host = server_host
         self._server_port = server_port
-        self._client = None  # ServerClient if connected to running server
+        self._client: ServerClient | None = None
+        self._live_state: LiveState | None = None
+        self._refresh_lock = Lock()
         self._monitor = None  # PersistentMonitor for standalone live data
         self._cpu_history = MetricHistory(60)
         self._mem_history = MetricHistory(60)
@@ -354,57 +362,95 @@ class DashboardApp(App):
 
         self.query_one("#file-tree", Tree).root.expand()
 
-        self._metrics_list: list[dict] = []
+        self._metrics_list: list[MetricRow] = []
 
         # Try connecting to running aictl serve instance
-        from ..client import ServerClient
-
         self._client = ServerClient.try_connect(host=self._server_host, port=self._server_port)
         if self._client:
             self.sub_title = f"connected to {self._server_host}:{self._server_port}"
+            self._read_live(self._client)
         else:
-            self.sub_title = "standalone mode"
-            # Start persistent monitor for live data in standalone mode
-            if self._include_live_monitor:
-                try:
-                    from ..orchestrator import PersistentMonitor
-
-                    self._monitor = PersistentMonitor(self._root)
-                    self._monitor.start()
-                except Exception:
-                    self._monitor = None  # degrade gracefully
+            self._start_standalone()
 
         # Initial data load + start timer
         self._do_refresh()
         self._refresh_timer = self.set_interval(self._interval, self._do_refresh)
 
+    def _start_standalone(self, *, disconnected: bool = False) -> None:
+        self._client = None
+        self._live_state = None
+        self.sub_title = "standalone mode (server disconnected)" if disconnected else "standalone mode"
+        if self._include_live_monitor:
+            try:
+                from ..orchestrator import PersistentMonitor
+
+                self._monitor = PersistentMonitor(self._root)
+                self._monitor.start()
+            except Exception:
+                self._monitor = None
+
+    @work(thread=True)
+    def _read_live(self, client: ServerClient) -> None:
+        worker = get_current_worker()
+        failures = 0
+        while not worker.is_cancelled:
+            try:
+                for state in client.stream(
+                    history=False, resume=self._live_state, cancelled=lambda: worker.is_cancelled
+                ):
+                    first = self._live_state is None
+                    self._live_state = state
+                    failures = 0
+                    if first and not worker.is_cancelled:
+                        self.call_from_thread(self._do_refresh)
+            except LiveProtocolError:
+                self._live_state = None
+            except (OSError, HTTPException):
+                pass
+            if worker.is_cancelled:
+                return
+            failures += 1
+            if failures >= 3:
+                self.call_from_thread(self._start_standalone, disconnected=True)
+                return
+            time.sleep(0.5)
+
     @work(thread=True)
     def _do_refresh(self) -> None:
-        """Collect data in a worker thread to keep TUI responsive.
-
-        Uses connected server when available (client mode), otherwise
-        falls back to local collection (standalone mode).
-        """
-        if self._client:
-            try:
-                snap_dict = self._client.get_snapshot()
-                snap = DashboardSnapshot.from_dict(snap_dict)
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            client = self._client
+            worker = get_current_worker()
+            if client:
+                state = self._live_state
+                if state is None:
+                    return
+                try:
+                    resources = client.get_terminal_resources()
+                    sessions = terminal_sessions(state, client.get_terminal_sessions())
+                except (OSError, ValueError, HTTPException):
+                    return
+                try:
+                    events = client.get_terminal_events()
+                except (OSError, ValueError, HTTPException):
+                    events = self._snapshot.events if self._snapshot else []
+                try:
+                    metrics = client.get_metric_inventory()
+                except (OSError, ValueError, HTTPException):
+                    metrics = None
+                snap = terminal_snapshot(state, resources, sessions, events)
+            else:
+                metrics = None
+                snap = collect(
+                    self._root, include_processes=True,
+                    _live_monitor_override=self._monitor.snapshot_dict() if self._monitor else None,
+                )
+            if not worker.is_cancelled and self._client is client:
                 self.call_from_thread(self._apply_snapshot, snap)
-                return
-            except Exception:
-                # Server went away — fall back to standalone
-                self._client = None
-                self.call_from_thread(lambda: setattr(self, "sub_title", "standalone mode (server disconnected)"))
-        # Use persistent monitor snapshot if available (no temporary runtime)
-        live_override = None
-        if self._monitor:
-            live_override = self._monitor.snapshot_dict()
-        snap = collect(
-            self._root,
-            include_processes=True,
-            _live_monitor_override=live_override,
-        )
-        self.call_from_thread(self._apply_snapshot, snap)
+                self.call_from_thread(self._update_metrics_table, metrics)
+        finally:
+            self._refresh_lock.release()
 
     def _apply_snapshot(self, snap: DashboardSnapshot) -> None:
         self._snapshot = snap
@@ -450,7 +496,6 @@ class DashboardApp(App):
         self._update_session_table(snap)
         self._update_event_table(snap)
         self._update_budget_table(snap)
-        self._update_metrics_table()
 
     def _update_tool_summaries(self, snap: DashboardSnapshot) -> None:
         """Render compact tool summary list in left panel."""
@@ -520,7 +565,10 @@ class DashboardApp(App):
         # Sort by memory descending
         all_procs.sort(key=lambda x: -safe_float(x[1].mem_mb))
         for tr, p in all_procs:
-            anom_str = "; ".join(p.anomalies) if p.anomalies else ""
+            anom_str = "; ".join(
+                str(a.get("message") or a.get("type") or a) if isinstance(a, dict) else str(a)
+                for a in p.anomalies
+            )
             cleanup = getattr(p, "cleanup_cmd", None) or ""
             if cleanup and anom_str:
                 anom_str = f"{anom_str} → {cleanup}"
@@ -671,12 +719,13 @@ class DashboardApp(App):
             tool = s.get("tool", "")
             sid = s.get("session_id", "")
             short_id = (sid[:12] + "…") if len(sid) > 12 else sid
-            dur_s = s.get("duration_s", 0)
-            dur = format_duration(dur_s)
-            cpu = f"{s.get('cpu_percent', 0):.1f}%"
-            in_tok = _human_tokens(s.get("exact_input_tokens", 0))
-            out_tok = _human_tokens(s.get("exact_output_tokens", 0))
-            files = str(s.get("file_events", 0))
+            dur_s = s.get("duration_s")
+            dur = format_duration(dur_s) if dur_s is not None else "—"
+            cpu_pct = s.get("cpu_percent")
+            cpu = f"{cpu_pct:.1f}%" if cpu_pct is not None else "—"
+            in_tok = _human_tokens(s["exact_input_tokens"]) if "exact_input_tokens" in s else "—"
+            out_tok = _human_tokens(s["exact_output_tokens"]) if "exact_output_tokens" in s else "—"
+            files = str(s.get("file_events", "—"))
             pids_val = s.get("pids", 0)
             pids = str(len(pids_val)) if isinstance(pids_val, list) else str(pids_val)
             out_b = int(s.get("outbound_bytes", 0))
@@ -751,19 +800,18 @@ class DashboardApp(App):
                 model,
             )
 
-    def _update_metrics_table(self) -> None:
-        """Fetch and display available metrics (client mode only)."""
+    def _update_metrics_table(self, metrics: list[MetricRow] | None) -> None:
         metrics_t = self.query_one("#metrics-table", DataTable)
         info = self.query_one("#metric-info", Label)
         if not self._client:
+            self._metrics_list = []
             metrics_t.clear()
             info.update("[dim]Connect to aictl serve for metrics data[/dim]")
             return
-        try:
-            self._metrics_list = self._client.get_samples(list_metrics=True)
-        except Exception:
+        if metrics is None:
             info.update("[dim]Failed to fetch metrics[/dim]")
             return
+        self._metrics_list = metrics
         metrics_t.clear()
         for m in self._metrics_list:
             val = m.get("last_value")
@@ -782,23 +830,24 @@ class DashboardApp(App):
             )
         info.update(f"{len(self._metrics_list)} metrics available — select a row for time series")
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="metric-series")
     def _load_metric_series(self, metric_name: str) -> None:
         """Fetch a metric's time series and update the sparkline."""
-        if not self._client:
+        client = self._client
+        if not client:
             return
         try:
-            import time as _time
-
-            series = self._client.get_samples(series=metric_name, since=_time.time() - 3600)
-            values = series.get("value", [])
-            self.call_from_thread(self._apply_metric_series, metric_name, values)
-        except Exception:
-            self.call_from_thread(
-                lambda: self.query_one("#metric-info", Label).update(
-                    f"[dim]Failed to load series for {metric_name}[/dim]"
+            series = client.get_metric_series(metric_name, since=time.time() - 3600)
+            values = series["value"]
+            if not get_current_worker().is_cancelled and self._client is client:
+                self.call_from_thread(self._apply_metric_series, metric_name, values)
+        except (OSError, ValueError, HTTPException):
+            if not get_current_worker().is_cancelled and self._client is client:
+                self.call_from_thread(
+                    lambda: self.query_one("#metric-info", Label).update(
+                        f"[dim]Failed to load series for {escape(metric_name)}[/dim]"
+                    )
                 )
-            )
 
     def _apply_metric_series(self, name: str, values: list[float]) -> None:
         try:
@@ -839,31 +888,30 @@ class DashboardApp(App):
         # Load file content into the File Content tab
         self._load_file_content(f.path)
 
+    @work(thread=True, exclusive=True, group="file-preview")
     def _load_file_content(self, path_str: str) -> None:
-        """Read and display file content in the content tab."""
+        client = self._client
         try:
-            p = Path(path_str)
-            if not p.is_file():
-                content = f"[dim]File not found: {path_str}[/dim]"
-            elif p.stat().st_size > 200_000:
-                # Read tail for large files
-                with open(p, errors="replace", encoding="utf-8") as fh:
-                    fh.seek(max(0, p.stat().st_size - 50_000))
-                    fh.readline()  # skip partial
-                    tail = fh.read()
-                content = f"[dim]... truncated (showing last {len(tail)} chars) ...[/dim]\n\n{tail}"
-            else:
-                content = p.read_text(errors="replace", encoding="utf-8")
-        except OSError as e:
-            content = f"[dim]Cannot read: {e}[/dim]"
+            payload = client.get_file_preview(path_str) if client else preview_file(path_str)
+            text = payload["text"]
+            notice = f"[dim]... truncated (showing last {len(text)} chars) ...[/dim]\n\n" if payload["truncated"] else ""
+            content = notice + escape(text)
+        except FileNotFoundError:
+            content = f"[dim]File not found: {escape(path_str)}[/dim]"
+        except (OSError, ValueError, HTTPException) as exc:
+            content = f"[dim]Cannot read: {escape(str(exc))}[/dim]"
 
+        if not get_current_worker().is_cancelled:
+            self.call_from_thread(self._apply_file_content, path_str, content)
+
+    def _apply_file_content(self, path_str: str, content: str) -> None:
         root = Path(self._snapshot.root) if self._snapshot else Path(".")
         home = Path.home()
         rel = _rel_display(path_str, root, home)
 
         try:
             pane = self.query_one("#file-content-pane", Label)
-            pane.update(f"[bold]{rel}[/bold]\n{'─' * 50}\n{content}")
+            pane.update(f"[bold]{escape(rel)}[/bold]\n{'─' * 50}\n{content}")
         except NoMatches:
             pass
 

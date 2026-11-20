@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-copilot-session.schema.json",
+  "title": "DetailCopilotSession",
+  "$ref": "copilot-session-record.schema.json"
+}

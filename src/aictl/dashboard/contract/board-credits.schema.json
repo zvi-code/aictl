@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-credits.schema.json",
+  "title": "BoardCredits",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "amount": {"type": ["number", "null"]},
+        "by_tool": {"type": "object", "additionalProperties": {"type": "number"}},
+        "approximate": {"type": "boolean"},
+        "unit": {"const": "ai_credits"}
+      },
+      "required": ["amount", "by_tool", "approximate", "unit"]
+    },
+    {"type": "null"}
+  ]
+}

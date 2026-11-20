@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-tools.schema.json",
+  "title": "BoardTools",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "name": {"type": "string"},
+      "server": {"type": "boolean"},
+      "calls": {"type": "integer"},
+      "failed": {"type": "integer"},
+      "fail_rate": {"type": ["number", "null"]},
+      "p50_ms": {"type": ["number", "null"]},
+      "p95_ms": {"type": ["number", "null"]},
+      "max_ms": {"type": ["number", "null"]},
+      "mcp_server": {"type": ["string", "null"]},
+      "avg_input_bytes": {"type": ["number", "null"]},
+      "avg_output_bytes": {"type": ["number", "null"]},
+      "output_bytes": {"type": ["integer", "null"]},
+      "trend": {"type": "array", "items": {"type": ["integer", "null"]}}
+    },
+    "required": [
+      "name",
+      "server",
+      "calls",
+      "failed",
+      "fail_rate",
+      "p50_ms",
+      "p95_ms",
+      "max_ms",
+      "mcp_server",
+      "avg_input_bytes",
+      "avg_output_bytes",
+      "output_bytes",
+      "trend"
+    ]
+  }
+}

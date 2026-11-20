@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-prompts.schema.json",
+  "title": "BoardPrompts",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "id": {"type": "string"},
+      "node_id": {"type": "string"},
+      "ts": {"type": "number"},
+      "session_id": {"type": "string"},
+      "agent_id": {"type": "string"},
+      "project": {"type": "string"},
+      "text": {"type": "string"},
+      "prompt_file": {"type": ["string", "null"]},
+      "tokens": {"type": ["integer", "null"]}
+    },
+    "required": ["ts", "session_id", "agent_id", "project", "text", "prompt_file", "tokens"]
+  }
+}

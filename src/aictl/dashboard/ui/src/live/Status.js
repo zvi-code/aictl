@@ -1,9 +1,7 @@
 import { html } from 'htm/preact';
-import { sourceStatuses } from './model.js';
+import { sourceStatuses } from './selectors.js';
 
 export default function LiveStatus({ state, history = false }) {
-  if (state.mode === 'unavailable') return html`<div class="bd-banner" role="alert">Live source capabilities are unavailable: ${state.error?.message || 'unknown error'}. No historical or runtime source is substituted.</div>`;
-  if (state.mode !== 'incremental') return null;
   const statuses = sourceStatuses(state);
   const pending = statuses.some(source => source.id.startsWith('history:') && source.ready !== true
     && source.pending !== false && source.retryable !== false);

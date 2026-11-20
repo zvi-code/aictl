@@ -361,12 +361,26 @@ def test_cli_not_found_and_ambiguous_messages(stores, no_daemon):
 
 
 def test_cli_list_uses_the_daemon_when_no_index_option_is_given(monkeypatch):
+    from aictl.client import LiveState
+
     class Fake:
-        def get_snapshot(self):
-            return {"sessions": [{"session_id": "live", "tool": "t", "pids": [1]}]}
+        def read_live(self):
+            agent = {"session_id": "native", "monitor_session_id": "live", "tool": "t", "pids": [1], "running": True}
+            return LiveState("", False, "d:1", "d", 1, {"runtime.agent": {"native": {"data": agent}}})
+
+        def get_terminal_sessions(self):
+            return [
+                {"session_id": "live", "tool": "t", "pids": [9], "file_events": 3},
+                {"session_id": "gone", "tool": "t", "pids": [2]},
+            ]
 
     monkeypatch.setattr("aictl.commands.session.ServerClient.try_connect", staticmethod(lambda: Fake()))
     assert "live" in CliRunner().invoke(session_group, ["list"]).output
+    result = CliRunner().invoke(session_group, ["list", "--tool", "t", "--json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [row["session_id"] for row in rows] == ["live"]
+    assert rows[0]["pids"] == [1] and rows[0]["file_events"] == 3
 
 
 def test_cp1252_console_output_does_not_raise():

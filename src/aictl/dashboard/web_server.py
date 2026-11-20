@@ -39,6 +39,7 @@ from ..records import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvoc
 from ..sink import OtelMetricGate
 from ..tool_scope import parse_tools_param
 from .api_handlers import _APIHandlersMixin
+from .live import stream as live_stream
 from .models import DashboardSnapshot
 
 # ── Re-exports for backward compatibility ────────────────────────
@@ -58,15 +59,6 @@ from .otel_receiver import (  # noqa: F401 — re-exports
 
 logger = logging.getLogger(__name__)
 _log = logger  # alias used by _serve_static
-
-# ─── SSE client limit ────────────────────────────────────────────
-
-_MAX_SSE_CLIENTS = 10
-from ..monitoring.pace import PACE  # noqa: E402
-
-_sse_client_count = 0
-_sse_client_lock = threading.Lock()
-
 
 # ─── Safe file reading ───────────────────────────────────────────
 
@@ -607,11 +599,9 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         elif path == "/api/stream":
             self._serve_sse()
         elif path == "/api/live/capabilities":
-            from .live_protocol import capabilities
-
-            self._json_response(capabilities(self.server.live_dashboard is not None))
+            live_stream.serve_capabilities(self)
         elif path == "/api/live/stream":
-            self._serve_live_sse()
+            live_stream.serve_stream(self)
         elif path == "/api/budget":
             self._serve_budget()
         elif path == "/api/history":
@@ -1218,18 +1208,11 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_sse(self) -> None:
-        global _sse_client_count
-
-        # Enforce max SSE client limit to avoid thread exhaustion
-        with _sse_client_lock:
-            if _sse_client_count >= _MAX_SSE_CLIENTS:
-                logger.warning("SSE client limit reached (%d), rejecting connection", _MAX_SSE_CLIENTS)
+        with live_stream.client_slot() as accepted:
+            if not accepted:
+                logger.warning("SSE client limit reached (%d), rejecting connection", live_stream.MAX_SSE_CLIENTS)
                 self.send_error(503, "Too many SSE clients")
                 return
-            _sse_client_count += 1
-        PACE.client_connected()
-
-        try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -1255,10 +1238,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                         self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     break
-        finally:
-            PACE.client_disconnected()
-            with _sse_client_lock:
-                _sse_client_count -= 1
 
     def _write_sse(self, snap: DashboardSnapshot, version: int = 0) -> None:
         """One small message per snapshot: the board fetches what it shows from /api/board.
@@ -1268,62 +1247,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """
         self.wfile.write(f'data: {{"timestamp": {snap.timestamp}, "version": {version}}}\n\n'.encode())
         self.wfile.flush()
-
-    def _serve_live_sse(self) -> None:
-        """One scoped baseline followed by entity changes, never board refetch signals."""
-        global _sse_client_count
-        from .board_api import BoardRequestError
-        from .live_hub import LiveCapacityError
-        from .live_protocol import sse_bytes
-
-        live = self.server.live_dashboard
-        if live is None:
-            self._json_response({"error": "Incremental live data requires Kusto", "enabled": False}, status=409)
-            return
-        with _sse_client_lock:
-            if _sse_client_count >= _MAX_SSE_CLIENTS:
-                self.send_error(503, "Too many SSE clients")
-                return
-            _sse_client_count += 1
-        subscription = None
-        PACE.client_connected()
-        try:
-            query = urlparse(self.path).query
-            params = parse_qs(query)
-            cursor = self.headers.get("Last-Event-ID") or (params.get("cursor") or [None])[0]
-            history = (params.get("history") or ["1"])[0] != "0"
-            try:
-                subscription = live.subscribe(query, history=history, cursor=cursor)
-            except LiveCapacityError as exc:
-                self._json_response({"error": str(exc)}, status=429)
-                return
-            except (BoardRequestError, ValueError) as exc:
-                self._json_response({"error": str(exc)}, status=400)
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache, no-transform")
-            self.send_header("Connection", "keep-alive")
-            self.send_header("X-Accel-Buffering", "no")
-            self._send_cors_header()
-            self.end_headers()
-            while not self.server._closing:
-                try:
-                    message = subscription.next(timeout=15.0)
-                    if message is None:
-                        self.wfile.write(b": keepalive\n\n")
-                    else:
-                        event, payload = message
-                        self.wfile.write(sse_bytes(event, payload))
-                    self.wfile.flush()
-                except (StopIteration, BrokenPipeError, ConnectionResetError, OSError):
-                    break
-        finally:
-            if subscription is not None:
-                subscription.close()
-            PACE.client_disconnected()
-            with _sse_client_lock:
-                _sse_client_count -= 1
 
     # ── Shared helpers (used by _APIHandlersMixin and core) ──
 
@@ -1455,7 +1378,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 urlparse(self.path).query,
                 otel=getattr(self.server, "otel_receiver", None),
                 ingesters=getattr(self.server, "ingesters", None),
-                stream_clients=_sse_client_count,
+                stream_clients=live_stream.client_count(),
                 port=int(self.server.server_address[1]),
             )
         except Exception as exc:  # any failure must reach the panel's error state
@@ -1475,7 +1398,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self.server.store,
             otel=getattr(self.server, "otel_receiver", None),
             ingesters=getattr(self.server, "ingesters", None),
-            stream_clients=_sse_client_count,
+            stream_clients=live_stream.client_count(),
             port=int(self.server.server_address[1]),
             http_reads=self.server.health_reads,
             http_writes=self.server.health_writes,
@@ -1667,10 +1590,9 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
         # start_server starts them after the first snapshot, so their backfills do not slow it.
         self.ingesters = start_ingesters(store) if start_ingesters_now else {}
-        self.live_dashboard = None
         self._owns_live_hub = False
-        from .live_hub import LiveHub
-        from .live_projection import LiveDashboard
+        from .live.hub import LiveHub
+        from .live.projection import LiveDashboard
 
         hub = getattr(store, "live_hub", None)
         if hub is None:
@@ -1715,7 +1637,7 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
             self.store,
             otel=self.otel_receiver,
             ingesters=self.ingesters,
-            stream_clients=_sse_client_count,
+            stream_clients=live_stream.client_count(),
             port=self.server_address[1],
             http_reads=self.health_reads,
             http_writes=self.health_writes,
@@ -1775,13 +1697,16 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
             item = self._requests.get()
 
     def server_close(self) -> None:
-        if self.live_dashboard is not None:
-            persistence = getattr(self.store, "_persistence", None)
-            if getattr(persistence, "runtime_sample", None) == self._node_runtime_sample:
-                persistence.runtime_sample = None
-            self.live_dashboard.close()
-            if self._owns_live_hub:
-                self.store.live_hub.close()
+        # TCPServer can call this before dashboard initialization if binding fails.
+        if not hasattr(self, "live_dashboard"):
+            super().server_close()
+            return
+        persistence = getattr(self.store, "_persistence", None)
+        if getattr(persistence, "runtime_sample", None) == self._node_runtime_sample:
+            persistence.runtime_sample = None
+        self.live_dashboard.close()
+        if self._owns_live_hub:
+            self.store.live_hub.close()
         with self._workers_lock:
             self._closing = True
             idle = self._idle_workers

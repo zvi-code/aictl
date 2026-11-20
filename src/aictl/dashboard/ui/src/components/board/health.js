@@ -228,9 +228,29 @@ function PolicyStatus({ policy, nowS, showError = false }) {
 }
 
 function storeOperations(store) {
-  const http = ['sqlite', 'memory'].includes(store.kind);
-  return [[http ? 'Daemon HTTP GET' : 'Read requests', store.reads], [http ? 'Daemon HTTP POST' : 'Write requests', store.writes],
+  return [['Read requests', store.reads], ['Write requests', store.writes],
     ...(store.kind === 'kusto' || store.commands ? [['Management requests', store.commands]] : [])];
+}
+
+function writerTable(tables) {
+  const count = value => ({ v: Number.isFinite(value) ? value.toLocaleString('en-US') : NA });
+  return {
+    key: 'health-writer',
+    cols: [
+      { k: 'name', l: 'Table' }, { k: 'mode', l: 'Mode' }, { k: 'depth', l: 'Queue depth', n: true },
+      { k: 'flight', l: 'In flight', n: true }, { k: 'sent', l: 'Rows sent', n: true },
+      { k: 'dropped', l: 'Rows dropped', n: true }, { k: 'lost', l: 'Lost at exit', n: true }, { k: 'error', l: 'Last error' },
+    ],
+    rows: Object.keys(tables ?? {}).sort().map(name => {
+      const table = tables[name];
+      return { id: name, sort: {}, cells: {
+        name: { v: name }, mode: { v: table?.mode ?? NA }, depth: count(table?.queue_depth),
+        flight: count(table?.in_flight), sent: count(table?.rows_sent), dropped: count(table?.rows_dropped),
+        lost: count(table?.lost_at_exit), error: { v: table?.last_error ?? (table?.last_error === null ? 'None reported' : NA) },
+      } };
+    }),
+    none: 'No table counters reported.',
+  };
 }
 
 function requestTable(store, nowS) {
@@ -329,7 +349,13 @@ function StoreDetails({ store, pipeline, nowS, links }) {
     <div class="bd-note">${store.measurement_scope || ''} ${store.commands_scope || ''}</div>
     <div class="bd-note">Stored volume is a cached observation at its check time. It does not confirm the visibility of every acknowledged ingestion request.</div>
     ${links.length ? html`<div class="bd-acts">${links.map(link => html`<a key=${link.label} class="bd-btn" href=${link.href}>${link.label}</a>`)}</div>` : null}
-  </section>`;
+  </section>
+  ${store.writer && html`<section aria-label="Store writer">
+    <h2 class="bd-note">Writer counters by table</h2>
+    <p class="bd-note">${store.writer.status || 'Writer status not reported'}. Rows sent are not confirmed queryable.</p>
+    ${store.writer.warning && html`<p class="bd-pbanner">${store.writer.warning}</p>`}
+    <${Table} def=${writerTable(store.writer.tables)} label="Writer counters by table"/>
+  </section>`}`;
 }
 
 const GROUPS = [
@@ -530,7 +556,7 @@ function StageCards({ store, pipeline, nowS }) {
       <h2><span>4</span> Queryable store / reads</h2>
       <${Metrics} items=${[
         ['Client availability', state, store.health?.scope || 'aictl client, not whole-cluster health', state === 'degraded' ? 'crit' : state === 'ok' ? null : 'warn'],
-        [['sqlite', 'memory'].includes(store.kind) ? 'HTTP GET/s' : 'Read requests/s', perSecond(store.reads?.rate_per_s)],
+        ['Read requests/s', perSecond(store.reads?.rate_per_s)],
         ['Stored rows (cached)', fmtN(measuredValue(volume, 'rows')), volume?.scope],
         ['Failed reads (total)', fmtN(store.reads?.failed), store.reads?.last_error, operationFailing(store.reads) ? 'crit' : null],
       ]}/>
@@ -648,7 +674,7 @@ export function HealthOverview({ health, status, error, nowS, children, localNod
         ${report.contributors.includes(report.localNode) && html`<a class="bd-link" href=${boardNodePath({ view: 'health', scope: 'local' })}>Serving-node counters</a>`}`
         : html`Runtime, collection and client counters are from this node.${store.kind === 'kusto' && ' Kusto database and cluster measurements are shared across nodes.'}`}</div>
     </header>
-    ${error ? html`<div class="bd-banner" role="alert">Could not read live health: ${error.status === 404 ? 'this daemon does not provide /api/board/health.' : error.message} ${health ? 'Showing the last response.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
+    ${error ? html`<div class="bd-banner" role="alert">Could not read health: ${error.message} ${health ? 'Showing the last values.' : 'Health is unavailable; history is not used as a substitute.'}</div>` : null}
     ${!health && !error && status.label !== 'Unavailable' ? html`<div class="bd-sk" role="status">Loading live health...</div>` : null}
     ${health && html`<div class="bd-healthview">
       <span>${[status.issues.length && `${status.issues.length} actionable`, status.pending?.length && `${status.pending.length} pending`,

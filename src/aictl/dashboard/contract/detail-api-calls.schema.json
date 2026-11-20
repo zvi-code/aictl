@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-api-calls.schema.json",
+  "title": "DetailApiCalls",
+  "type": "object",
+  "properties": {
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "session_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "ts": {"type": "number"},
+          "model": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "input_tokens": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+          "output_tokens": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+          "duration_ms": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+          "http_status": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+          "finish_reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "error_type": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "status": {"type": "string"}
+        },
+        "required": ["session_id", "ts", "model", "input_tokens", "output_tokens", "duration_ms"]
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total_calls": {"type": "integer"},
+        "total_errors": {"type": "integer"},
+        "avg_latency_ms": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "p95_latency_ms": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "by_model": {"type": "object", "additionalProperties": {"type": "integer"}}
+      },
+      "required": ["total_calls", "total_errors", "avg_latency_ms", "p95_latency_ms", "by_model"]
+    }
+  },
+  "required": ["calls", "summary"]
+}

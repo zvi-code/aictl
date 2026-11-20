@@ -25,8 +25,8 @@ processes = ["psutil>=5.9"]
 monitor = ["psutil>=5.9", "watchdog>=4.0"]
 otel = ["protobuf>=4.21", "opentelemetry-proto>=1.20"]
 all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0", "protobuf>=4.21", "opentelemetry-proto>=1.20"]
-test = ["pytest>=7.0", "pytest-timeout>=2.0"]
-dev = ["pytest>=7.0", "pytest-timeout>=2.0", "ruff>=0.5", "mypy>=1.8", "types-PyYAML", "types-psutil"]
+test = ["pytest>=7.0", "pytest-timeout>=2.0", "jsonschema>=4.26"]
+dev = ["pytest>=7.0", "pytest-timeout>=2.0", "jsonschema>=4.26", "ruff>=0.5", "mypy>=1.8", "types-PyYAML", "types-psutil"]
 
 [project.scripts]
 aictl = "aictl.cli:main"
@@ -38,6 +38,7 @@ include = ["aictl*"]
 [tool.setuptools.package-data]
 "aictl.data" = ["*.csv", "*.yaml"]
 "aictl.dashboard" = ["*.html", "dist/**/*"]
+"aictl.dashboard.contract" = ["*.json"]
 "aictl.kusto.report" = ["template.html", "queries/*.kql"]
 "aictl.stores.kusto" = ["queries/*.kql"]
 

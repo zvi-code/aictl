@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/session-mcp-row.schema.json",
+  "title": "SessionMcpRow",
+  "type": "object",
+  "properties": {
+    "server_name": {"type": "string"},
+    "call_count": {"type": "integer"},
+    "err_count": {"type": "integer"},
+    "first_ts": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "last_ts": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "total_duration_ms": {"anyOf": [{"type": "number"}, {"type": "null"}]}
+  },
+  "required": ["server_name", "call_count", "err_count", "last_ts", "total_duration_ms"]
+}

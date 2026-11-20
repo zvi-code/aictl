@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/usage-tokens.schema.json",
+  "title": "UsageTokens",
+  "type": "object",
+  "properties": {
+    "input": {"type": ["integer", "null"]},
+    "output": {"type": ["integer", "null"]},
+    "cache_read": {"type": ["integer", "null"]},
+    "cache_creation": {"type": ["integer", "null"]},
+    "total": {"type": ["integer", "null"]}
+  },
+  "required": ["input", "output", "cache_read", "cache_creation"]
+}

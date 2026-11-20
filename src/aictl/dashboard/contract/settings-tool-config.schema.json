@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/settings-tool-config.schema.json",
+  "title": "SettingsToolConfig",
+  "type": "object",
+  "properties": {
+    "tool": {"type": "string"},
+    "model": {"type": ["string", "null"]},
+    "auto_update": {"type": ["boolean", "null"]},
+    "launch_at_startup": {"type": ["boolean", "null"]},
+    "configured_only": {"type": "boolean"},
+    "config_files": {"type": "array", "items": {"type": "string"}},
+    "extensions": {"type": "array", "items": {"type": "string"}},
+    "hints": {"type": "array", "items": {"type": "string"}},
+    "mcp_servers": {"type": "array", "items": {"type": "string"}},
+    "features": {
+      "type": "object",
+      "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+    },
+    "feature_groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "key": {"type": "string"},
+          "label": {"type": "string"},
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {"type": "string"},
+                "label": {"type": "string"},
+                "value": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+                "source": {"type": ["string", "null"]},
+                "set": {"type": "boolean"}
+              },
+              "required": ["key"]
+            }
+          }
+        },
+        "required": ["rows"]
+      }
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "scope": {"type": "string"},
+          "label": {"type": "string"},
+          "name": {"type": "string"}
+        }
+      }
+    },
+    "env_vars": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "key": {"type": "string"},
+          "value": {"type": ["string", "null"]},
+          "set": {"type": "boolean"},
+          "persisted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "origin": {"type": "string"},
+                "kind": {"type": "string"},
+                "value": {"type": ["string", "null"]}
+              },
+              "required": ["origin", "kind", "value"]
+            }
+          },
+          "source": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "otel": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": ["boolean", "null"]},
+        "endpoint": {"type": ["string", "null"]},
+        "exporter": {"type": ["string", "null"]},
+        "capture_content": {"type": ["boolean", "null"]},
+        "source": {"type": ["string", "null"]}
+      }
+    },
+    "configurable_models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "label": {"type": "string"}}
+      }
+    },
+    "local_data": {"type": "object", "additionalProperties": {"type": "boolean"}}
+  },
+  "required": ["tool"]
+}

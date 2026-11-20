@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-kpis.schema.json",
+  "title": "BoardKpis",
+  "type": "object",
+  "properties": {
+    "running": {"type": "integer"},
+    "idle": {"type": "integer"},
+    "subagents_running": {"type": "integer"},
+    "messages": {"type": "integer"},
+    "tokens": {"type": "integer"},
+    "cached_share": {"type": ["number", "null"]},
+    "cost_usd": {"type": ["number", "null"]},
+    "tool_calls": {"type": ["integer", "null"]},
+    "failures": {"type": ["integer", "null"]},
+    "fail_rate": {"type": ["number", "null"]},
+    "p50_ms": {"type": ["number", "null"]},
+    "p95_ms": {"type": ["number", "null"]},
+    "loops": {"type": "integer"},
+    "prev": {
+      "type": "object",
+      "properties": {
+        "messages": {"type": ["integer", "null"]},
+        "tokens": {"type": ["integer", "null"]},
+        "cost_usd": {"type": ["number", "null"]},
+        "tool_calls": {"type": ["integer", "null"]}
+      },
+      "required": ["messages", "tokens", "cost_usd", "tool_calls"]
+    },
+    "spark": {
+      "type": "object",
+      "properties": {
+        "running": {"type": "array", "items": {"type": "integer"}},
+        "messages": {"type": "array", "items": {"type": "integer"}},
+        "tokens": {"type": "array", "items": {"type": "integer"}},
+        "cached": {"type": "array", "items": {"type": ["number", "null"]}},
+        "cost": {"type": "array", "items": {"type": ["number", "null"]}},
+        "tool_calls": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "failures": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "p95": {"type": "array", "items": {"type": ["number", "null"]}},
+        "loops": {"type": "array", "items": {"type": "integer"}}
+      },
+      "required": [
+        "running",
+        "messages",
+        "tokens",
+        "cached",
+        "cost",
+        "tool_calls",
+        "failures",
+        "p95",
+        "loops"
+      ]
+    }
+  },
+  "required": [
+    "running",
+    "idle",
+    "subagents_running",
+    "messages",
+    "tokens",
+    "cached_share",
+    "cost_usd",
+    "tool_calls",
+    "failures",
+    "fail_rate",
+    "p50_ms",
+    "p95_ms",
+    "loops",
+    "prev",
+    "spark"
+  ]
+}

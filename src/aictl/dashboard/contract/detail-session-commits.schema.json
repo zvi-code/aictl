@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-session-commits.schema.json",
+  "title": "DetailSessionCommits",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "branch": {"type": "string"},
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sha": {"type": "string"},
+          "short_sha": {"type": "string"},
+          "author_name": {"type": "string"},
+          "author_email": {"type": "string"},
+          "ts": {"type": "number"},
+          "subject": {"type": "string"},
+          "current_branch_match": {"type": "boolean"}
+        },
+        "required": [
+          "sha",
+          "short_sha",
+          "author_name",
+          "author_email",
+          "ts",
+          "subject",
+          "current_branch_match"
+        ]
+      }
+    }
+  },
+  "required": ["session_id", "branch", "commits"]
+}

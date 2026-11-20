@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-settings-files.schema.json",
+  "title": "DetailSettingsFiles",
+  "type": "object",
+  "properties": {
+    "generated_at": {"type": "number"},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "exists": {"type": "boolean"},
+          "is_dir": {"type": "boolean"},
+          "kind": {"type": "string"},
+          "loading": {"type": "string"},
+          "location": {"type": "string"},
+          "location_root": {"type": "string"},
+          "name": {"type": "string"},
+          "scope": {"type": "string"},
+          "bytes": {"type": ["integer", "null"]},
+          "mtime": {"type": ["number", "null"]},
+          "settings": {"type": ["integer", "null"]},
+          "tools": {"type": "array", "items": {"type": "string"}},
+          "git_state": {"type": ["string", "null"]}
+        },
+        "required": [
+          "path",
+          "exists",
+          "is_dir",
+          "kind",
+          "loading",
+          "location",
+          "location_root",
+          "name",
+          "scope",
+          "bytes",
+          "mtime",
+          "settings",
+          "tools",
+          "git_state"
+        ]
+      }
+    }
+  },
+  "required": ["generated_at", "files"]
+}

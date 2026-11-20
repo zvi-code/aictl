@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-agents.schema.json",
+  "title": "BoardAgents",
+  "type": "array",
+  "items": {"$ref": "board-agent-row.schema.json"}
+}

@@ -1,6 +1,8 @@
 import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
-import { useLiveState } from './context.js';
+import { useLiveState } from './context.ts';
+
+const TOPICS = ['configuration.loaded'];
 
 export function ConfigurationEvidence({ records = [] }) {
   return html`<p>These are observed launch flags and native runtime reports, not the current file configuration. Launch flags describe the original arguments; they do not prove the currently applied value after runtime changes. Unreported current values remain unknown.</p>
@@ -15,12 +17,12 @@ export function ConfigurationEvidence({ records = [] }) {
 }
 
 export default function LoadedConfiguration({ sessionId }) {
-  const { state } = useLiveState();
+  const { client, state } = useLiveState(TOPICS);
   const topic = state.topics?.get('configuration.loaded');
   const records = useMemo(() => [...(topic?.values() || [])]
     .filter(entity => entity.data?.session_id === sessionId || entity.data?.native_session_id === sessionId)
     .map(entity => ({ id: entity.id, ...entity.data })), [topic, sessionId]);
-  if (state.mode !== 'incremental') return null;
+  if (!client) return null;
   const known = records.some(record => record.effective_known);
   return html`<details class="bd-panel bd-ag-top" aria-label="Effective runtime settings">
     <summary class="bd-ph"><h3>Effective runtime settings</h3><span class="bd-psub">${known ? 'Runtime evidence' : 'Unknown until the runtime reports evidence'}</span></summary>

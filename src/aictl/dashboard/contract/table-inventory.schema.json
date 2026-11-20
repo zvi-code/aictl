@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/table-inventory.schema.json",
+  "title": "TableInventory",
+  "type": "object",
+  "properties": {
+    "attempted_at": {"type": ["number", "null"]},
+    "checked_at": {"type": ["number", "null"]},
+    "last_error": {"type": ["string", "null"]},
+    "limit": {"type": "integer"},
+    "refresh_interval_s": {"type": "number"},
+    "scope": {"type": "string"},
+    "size_scope": {"type": "string"},
+    "status": {"type": "string"},
+    "truncated": {"type": ["boolean", "null"]},
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "rows": {"type": ["integer", "null"]},
+          "compressed_bytes": {"type": ["integer", "null"]},
+          "extent_bytes": {"type": ["integer", "null"]},
+          "extent_count": {"type": ["integer", "null"]},
+          "hot_bytes": {"type": ["integer", "null"]},
+          "original_bytes": {"type": ["integer", "null"]}
+        },
+        "required": [
+          "name",
+          "rows",
+          "compressed_bytes",
+          "extent_bytes",
+          "extent_count",
+          "hot_bytes",
+          "original_bytes"
+        ]
+      }
+    }
+  },
+  "required": [
+    "attempted_at",
+    "checked_at",
+    "last_error",
+    "limit",
+    "refresh_interval_s",
+    "scope",
+    "size_scope",
+    "status",
+    "truncated",
+    "tables"
+  ]
+}

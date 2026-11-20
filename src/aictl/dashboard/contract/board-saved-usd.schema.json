@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-saved-usd.schema.json",
+  "title": "BoardSavedUsd",
+  "type": ["number", "null"]
+}

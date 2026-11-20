@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/copilot-session-record.schema.json",
+  "title": "CopilotSessionRecord",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string"},
+    "surface": {"type": "string"},
+    "surface_source": {"type": "string"},
+    "aliases": {"type": "array", "items": {"type": "string"}},
+    "folder": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "roots": {"type": "array", "items": {"type": "string"}},
+    "project": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "git_root": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "repository": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "branch": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "title": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "started_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "last_activity_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "state": {"type": "string"},
+    "models": {"type": "array", "items": {"type": "string"}},
+    "pids": {"type": "array", "items": {"type": "integer"}},
+    "artifact_count": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "artifact_bytes": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "sources": {"type": "array", "items": {"type": "string"}},
+    "partial": {"type": "boolean"},
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+      }
+    },
+    "sub_agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "model": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        },
+        "required": ["id", "name", "model"]
+      }
+    }
+  },
+  "required": [
+    "id",
+    "surface",
+    "surface_source",
+    "aliases",
+    "folder",
+    "roots",
+    "project",
+    "git_root",
+    "repository",
+    "branch",
+    "title",
+    "started_at",
+    "last_activity_at",
+    "state",
+    "models",
+    "pids",
+    "artifact_count",
+    "artifact_bytes",
+    "sources",
+    "partial",
+    "sub_agents"
+  ]
+}

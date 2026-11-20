@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-otel-status.schema.json",
+  "title": "DetailOtelStatus",
+  "type": "object",
+  "properties": {
+    "kusto": {
+      "type": "object",
+      "properties": {
+        "requests": {"type": "integer"},
+        "convert_errors": {"type": "integer"},
+        "rows_queued": {"type": "integer"},
+        "rows_sent": {"type": "integer"},
+        "rows_dropped_queue_full": {"type": "integer"},
+        "rows_rejected": {"type": "integer"},
+        "ingest_requests": {"type": "integer"},
+        "ingest_failures": {"type": "integer"},
+        "bytes_sent": {"type": "integer"},
+        "pending_rows": {"type": "integer"},
+        "pending_bytes": {"type": "integer"},
+        "last_sent_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "last_error": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "last_error_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "converted": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        }
+      },
+      "required": [
+        "requests",
+        "convert_errors",
+        "rows_queued",
+        "rows_sent",
+        "rows_dropped_queue_full",
+        "rows_rejected",
+        "ingest_requests",
+        "ingest_failures",
+        "bytes_sent",
+        "pending_rows",
+        "pending_bytes",
+        "last_sent_at",
+        "last_error",
+        "last_error_at",
+        "converted",
+        "tables"
+      ]
+    }
+  },
+  "required": [],
+  "allOf": [{"$ref": "otel-receiver-status.schema.json"}]
+}

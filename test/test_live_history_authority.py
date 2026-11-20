@@ -128,7 +128,7 @@ def test_kusto_commit_read_never_attributes_local_git_or_looks_up_prs(monkeypatc
 
 
 def test_live_prompt_and_skill_helpers_cannot_leak_disk_only_history(monkeypatch, kusto_store):
-    from aictl.dashboard.live_projection import _ProjectionDB, board_entities
+    from aictl.dashboard.live.projection import _ProjectionDB, board_entities
 
     calls = []
     local = "C:/recorded/.github/prompts/local.prompt.md"

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-source-status.schema.json",
+  "title": "TopicSourceStatus",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "ready": {"type": "boolean"},
+        "pending": {"type": "boolean"},
+        "stale": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "reason": {"type": ["string", "null"]},
+        "topic": {"type": "string"},
+        "producer": {"type": "string"},
+        "component": {"const": "configuration"}
+      },
+      "required": ["ready", "pending", "stale", "error", "reason", "topic", "producer", "component"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ready": {"type": "boolean"},
+        "pending": {"type": "boolean"},
+        "stale": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "reason": {"type": ["string", "null"]},
+        "topic": {"type": "string"},
+        "topics": {"type": "array", "items": {"type": "string"}},
+        "computed_at": {"type": "number"},
+        "checked_at": {"type": "number"},
+        "component": {"const": "health"}
+      },
+      "required": ["ready", "pending", "stale", "error", "reason", "topic", "topics", "component"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ready": {"type": "boolean"},
+        "pending": {"type": "boolean"},
+        "stale": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "reason": {"type": ["string", "null"]},
+        "topic": {"type": "string"},
+        "scope": {"type": "string"},
+        "computed_at": {"type": "number"},
+        "attempted_at": {"type": "number"},
+        "consistency": {"type": "string"},
+        "reader_ready": {"type": "boolean"},
+        "refresh_pending": {"type": "boolean"},
+        "incomplete": {"type": "boolean"},
+        "retryable": {"type": "boolean"},
+        "unresolved_families": {"type": "array", "items": {"type": "string"}},
+        "frontier": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "component": {"const": "history"}
+      },
+      "required": ["ready", "pending", "stale", "error", "reason", "topic", "scope", "component"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ready": {"type": "boolean"},
+        "stale": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+        "frontier": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        "component": {"const": "history_reader"}
+      },
+      "required": ["ready", "stale", "reason", "frontier", "details", "component"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "producer": {"type": "string"},
+        "mode": {"type": "string"},
+        "observed_at": {"type": ["number", "null"]},
+        "process_count": {"type": ["integer", "null"]},
+        "ready": {"type": "boolean"}
+      },
+      "required": ["producer", "mode", "observed_at", "process_count", "ready"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "producer": {"type": "string"},
+        "mode": {"type": "string"},
+        "fallback": {"type": "boolean"},
+        "poll_interval_s": {"type": "number"},
+        "discovery_batch": {"type": "integer"},
+        "discovery_reconcile_s": {"type": "number"},
+        "active_files": {"type": "integer"},
+        "native_file_capacity": {"type": "integer"},
+        "native_file_capacity_reached": {"type": "boolean"},
+        "capture": {"type": "string"},
+        "candidate_capacity_reached": {"type": "boolean"},
+        "discarded_oversize_lines": {"type": "integer"},
+        "native_record_gaps": {"type": "integer"},
+        "tail_truncated": {"type": "boolean"},
+        "native_metadata_limited": {"type": "boolean"},
+        "detail": {"type": "string"}
+      },
+      "required": [
+        "producer",
+        "mode",
+        "fallback",
+        "poll_interval_s",
+        "discovery_batch",
+        "discovery_reconcile_s",
+        "active_files",
+        "native_file_capacity",
+        "native_file_capacity_reached",
+        "capture",
+        "candidate_capacity_reached",
+        "discarded_oversize_lines",
+        "native_record_gaps",
+        "tail_truncated",
+        "native_metadata_limited",
+        "detail"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/otel-receiver-status.schema.json",
+  "title": "OtelReceiverStatus",
+  "type": "object",
+  "properties": {
+    "metrics_received": {"type": "integer"},
+    "events_received": {"type": "integer"},
+    "last_receive_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "errors": {"type": "integer"},
+    "api_calls_total": {"type": "integer"},
+    "api_errors_total": {"type": "integer"},
+    "dropped": {"type": "integer"},
+    "active": {"type": "boolean"},
+    "by_tool": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "metrics": {"type": "integer"},
+          "events": {"type": "integer"},
+          "last_at": {"anyOf": [{"type": "number"}, {"type": "null"}]}
+        },
+        "required": []
+      }
+    }
+  },
+  "required": [
+    "metrics_received",
+    "events_received",
+    "last_receive_at",
+    "errors",
+    "api_calls_total",
+    "api_errors_total",
+    "dropped",
+    "active",
+    "by_tool"
+  ]
+}

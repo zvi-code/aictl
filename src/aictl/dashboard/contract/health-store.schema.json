@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/health-store.schema.json",
+  "title": "HealthStore",
+  "type": "object",
+  "properties": {
+    "kind": {"type": ["string", "null"]},
+    "destination": {"type": ["string", "null"]},
+    "cluster_url": {"type": ["string", "null"]},
+    "database": {"type": ["string", "null"]},
+    "ingestion_mode": {"type": ["string", "null"]},
+    "measurement_scope": {"type": ["string", "null"]},
+    "counter_scope": {"type": ["string", "null"]},
+    "commands_scope": {"type": ["string", "null"]},
+    "capacity_scope": {"type": ["string", "null"]},
+    "write_volume_scope": {"type": ["string", "null"]},
+    "storage_budget_bytes": {"type": ["integer", "null"]},
+    "queued_history_rows_unconfirmed": {"type": ["integer", "null"]},
+    "table_inventory": {"anyOf": [{"$ref": "table-inventory.schema.json"}, {"type": "null"}]},
+    "reader": {
+      "type": ["object", "null"],
+      "properties": {
+        "status": {"type": "string"},
+        "queries": {"type": "integer"},
+        "query_failures": {"type": "integer"},
+        "last_latency_ms": {"type": ["number", "null"]},
+        "last_error": {"type": ["string", "null"]}
+      },
+      "required": ["status"]
+    },
+    "writer": {
+      "type": ["object", "null"],
+      "properties": {
+        "status": {"type": "string"},
+        "warning": {"type": ["string", "null"]},
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "mode": {"type": "string"},
+              "queue_depth": {"type": "integer"},
+              "queue_bytes": {"type": "integer"},
+              "in_flight": {"type": "integer"},
+              "rows_sent": {"type": "integer"},
+              "rows_dropped": {"type": "integer"},
+              "lost_at_exit": {"type": "integer"},
+              "last_error": {"type": ["string", "null"]},
+              "ingest_requests": {"type": "integer"},
+              "ingest_failures": {"type": "integer"},
+              "bytes_sent": {"type": "integer"},
+              "last_sent_at": {"type": ["number", "null"]},
+              "last_error_at": {"type": ["number", "null"]}
+            },
+            "required": [
+              "mode", "queue_depth", "queue_bytes", "in_flight", "rows_sent", "rows_dropped",
+              "lost_at_exit", "last_error", "ingest_requests", "ingest_failures", "bytes_sent",
+              "last_sent_at", "last_error_at"
+            ]
+          }
+        }
+      },
+      "required": ["status"]
+    },
+    "reads": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "writes": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "commands": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "ingestion_capacity": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "ingestion_details": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "ingestion_traffic": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "traffic_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "tables": {"type": "array", "items": {"type": "string"}},
+          "ingestion_modes": {"type": "array", "items": {"type": "string"}},
+          "rows": {"type": ["integer", "null"]},
+          "rows_per_s": {"type": ["number", "null"]},
+          "bytes": {"type": ["integer", "null"]},
+          "bytes_per_s": {"type": ["number", "null"]},
+          "rate_per_s": {"type": ["number", "null"]},
+          "failed": {"type": ["integer", "null"]},
+          "requests": {"type": ["integer", "null"]},
+          "pending": {"type": ["integer", "null"]},
+          "measurement_scope": {"type": "string"}
+        },
+        "required": [
+          "id",
+          "label",
+          "tables",
+          "ingestion_modes",
+          "rows",
+          "rows_per_s",
+          "bytes",
+          "bytes_per_s",
+          "rate_per_s",
+          "failed",
+          "requests",
+          "pending",
+          "measurement_scope"
+        ]
+      }
+    },
+    "volume": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {"type": ["object", "array", "string", "number", "boolean", "null"]},
+          {"type": "null"}
+        ]
+      }
+    },
+    "otel_sink": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+        },
+        {"type": "null"}
+      ]
+    },
+    "health": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {"type": "string"},
+            "scope": {"type": "string"},
+            "checked_at": {"type": ["number", "null"]},
+            "last_error": {"type": ["string", "null"]},
+            "last_success_at": {"type": ["number", "null"]}
+          }
+        },
+        {"type": "null"}
+      ]
+    }
+  },
+  "required": ["kind", "destination"]
+}

@@ -1,6 +1,34 @@
 import { DEFAULT_LAYOUT } from '../../src/components/board/layout.js';
 import { boardUrl, captureFrame, checkConsole, expect, goToBoard, initialMisses, recordedUrl, test } from './fixtures.mjs';
 
+test('opens one live stream before the board chunk and starts no polling interval', async ({ page, snapshotReplay }) => {
+  await page.addInitScript(() => {
+    const Source = window.EventSource;
+    const interval = window.setInterval;
+    const startup = window.__liveStartup = { streams: [], intervals: [] };
+    window.EventSource = class extends Source {
+      constructor(url, options) {
+        super(url, options);
+        startup.streams.push(new URL(url, location.href).pathname);
+      }
+    };
+    window.setInterval = (callback, delay, ...args) => {
+      startup.intervals.push(delay);
+      return interval(callback, delay, ...args);
+    };
+  });
+  let streamsBeforeScreen;
+  await page.route('**/assets/root-*.js', async route => {
+    streamsBeforeScreen = await page.evaluate(() => window.__liveStartup.streams);
+    await route.continue();
+  });
+  await goToBoard(page, snapshotReplay);
+  expect(streamsBeforeScreen).toEqual(['/api/live/stream']);
+  expect(await page.evaluate(() => window.__liveStartup)).toEqual({
+    streams: ['/api/live/stream'], intervals: [],
+  });
+});
+
 async function fixedTime(page) {
   await page.clock.setFixedTime(new Date('2026-11-20T00:21:24Z'));
 }

@@ -9,7 +9,6 @@ export const dist = resolve(process.env.UI_DIST ?? 'node_modules/.cache/aictl-ui
 export const boardUrl = '/?screen=board&range=7d';
 export const initialMisses = [
   '/api/board/sessions?limit=50&offset=0&q=',
-  '/api/board/nodes?scope=local&view=runtime',
 ];
 
 export const test = base.extend({

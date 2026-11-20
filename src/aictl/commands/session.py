@@ -13,10 +13,12 @@ import json
 import sys
 import time
 import urllib.error
+from http.client import HTTPException
 
 import click
 
 from ..client import ServerClient
+from ..dashboard.projections.terminal import terminal_sessions
 
 DEFAULT_LIST_LIMIT = 30
 
@@ -87,9 +89,14 @@ def session_list(tool, show_all, project, limit, as_json):
     Any of --all, --project or --limit always reads the index, which needs no daemon.
     """
     client = None if show_all or project or limit is not None else ServerClient.try_connect()
+    sessions = None
     if client is not None:
-        snap = client.get_snapshot()
-        sessions = [s for s in snap.get("sessions", []) if not tool or s.get("tool") == tool]
+        try:
+            sessions = terminal_sessions(client.read_live(), client.get_terminal_sessions())
+        except (OSError, ValueError, HTTPException):
+            pass
+    if sessions is not None:
+        sessions = [s for s in sessions if not tool or s.get("tool") == tool]
         if as_json:
             click.echo(json.dumps(sessions, indent=2))
             return

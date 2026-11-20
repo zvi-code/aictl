@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/machine-monitor.schema.json",
+  "title": "MachineMonitor",
+  "type": "object",
+  "properties": {
+    "collectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "mode": {"type": ["string", "null"]},
+          "status": {"type": "string"},
+          "detail": {"type": ["string", "null"]}
+        },
+        "required": ["name", "mode", "status", "detail"]
+      }
+    },
+    "roots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"kind": {"type": "string"}, "path": {"type": "string"}},
+        "required": ["kind", "path"]
+      }
+    },
+    "per_tool": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "label": {"type": "string"},
+          "sessions": {"type": ["integer", "null"]},
+          "pids": {"type": ["integer", "null"]},
+          "inbound_bps": {"type": ["number", "null"]},
+          "outbound_bps": {"type": ["number", "null"]},
+          "est_tokens": {"type": ["number", "null"]},
+          "est_confidence": {"type": ["number", "null"]},
+          "est_source": {"type": ["string", "null"]},
+          "file_events": {"type": ["integer", "null"]},
+          "files_touched": {"type": ["integer", "null"]},
+          "cpu_pct": {"type": ["number", "null"]},
+          "cpu_peak": {"type": ["number", "null"]},
+          "workspace_bytes": {"type": ["integer", "null"]},
+          "workspaces": {"type": "array", "items": {"type": "string"}},
+          "last_seen": {"type": ["number", "null"]},
+          "mcp_loop": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "detected": {"type": "boolean"},
+                  "loops": {"type": "integer"},
+                  "confidence": {"type": ["number", "null"]}
+                },
+                "required": ["detected", "loops", "confidence"]
+              },
+              {"type": "null"}
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "label",
+          "sessions",
+          "pids",
+          "inbound_bps",
+          "outbound_bps",
+          "cpu_pct",
+          "cpu_peak",
+          "workspaces",
+          "last_seen"
+        ]
+      }
+    }
+  },
+  "required": ["collectors", "roots", "per_tool"]
+}

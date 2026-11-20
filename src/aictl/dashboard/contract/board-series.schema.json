@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-series.schema.json",
+  "title": "BoardSeries",
+  "type": "object",
+  "properties": {
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "cache_read": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "input": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "cache_write": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "output": {"type": "array", "items": {"type": ["integer", "null"]}}
+      },
+      "required": ["cache_read", "input", "cache_write", "output"]
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "by_tool": {
+          "type": "object",
+          "additionalProperties": {"type": "array", "items": {"type": ["number", "null"]}}
+        },
+        "by_project": {
+          "type": "object",
+          "additionalProperties": {"type": "array", "items": {"type": ["number", "null"]}}
+        },
+        "by_model": {
+          "type": "object",
+          "additionalProperties": {"type": "array", "items": {"type": ["number", "null"]}}
+        }
+      },
+      "required": ["by_tool", "by_project", "by_model"]
+    },
+    "messages": {
+      "type": "object",
+      "properties": {
+        "user": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "assistant": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "tool": {"type": "array", "items": {"type": ["integer", "null"]}}
+      },
+      "required": ["user", "assistant", "tool"]
+    },
+    "cached_share": {"type": "array", "items": {"type": ["number", "null"]}},
+    "latency": {
+      "type": "object",
+      "properties": {
+        "p50": {"type": "array", "items": {"type": ["number", "null"]}},
+        "p95": {"type": "array", "items": {"type": ["number", "null"]}}
+      },
+      "required": ["p50", "p95"]
+    },
+    "failures": {
+      "type": "object",
+      "properties": {
+        "tool": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "api": {"type": "array", "items": {"type": ["integer", "null"]}}
+      },
+      "required": ["tool", "api"]
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "passed": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "failed": {"type": "array", "items": {"type": ["integer", "null"]}}
+      },
+      "required": ["passed", "failed"]
+    },
+    "cpu": {
+      "type": "object",
+      "additionalProperties": {"type": "array", "items": {"type": ["number", "null"]}}
+    },
+    "mem": {
+      "type": "object",
+      "additionalProperties": {"type": "array", "items": {"type": ["number", "null"]}}
+    }
+  },
+  "required": [
+    "tokens",
+    "cost",
+    "messages",
+    "cached_share",
+    "latency",
+    "failures",
+    "tests",
+    "cpu",
+    "mem"
+  ]
+}

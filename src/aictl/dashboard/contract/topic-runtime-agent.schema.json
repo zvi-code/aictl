@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-runtime-agent.schema.json",
+  "title": "TopicRuntimeAgent",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string"},
+    "session_id": {"type": "string"},
+    "native_session_id": {"type": ["string", "null"]},
+    "monitor_session_id": {"type": ["string", "null"]},
+    "tool": {"type": "string"},
+    "project": {"type": "string"},
+    "project_path": {"type": "string"},
+    "pids": {"type": "array", "items": {"type": "integer"}},
+    "running": {"type": "boolean"},
+    "native_activity": {"type": "string"},
+    "status": {"type": "string"},
+    "cpu_percent": {"type": ["number", "null"]},
+    "mem_mb": {"type": ["number", "null"]},
+    "started_at": {"type": ["number", "null"]},
+    "last_native_at": {"type": ["number", "null"]},
+    "title": {"type": ["string", "null"]},
+    "parent_id": {"type": ["string", "null"]}
+  },
+  "required": [
+    "id",
+    "session_id",
+    "native_session_id",
+    "monitor_session_id",
+    "tool",
+    "project",
+    "project_path",
+    "pids",
+    "running",
+    "native_activity",
+    "status",
+    "cpu_percent",
+    "mem_mb",
+    "started_at",
+    "last_native_at"
+  ],
+  "additionalProperties": false
+}

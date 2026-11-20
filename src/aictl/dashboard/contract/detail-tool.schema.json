@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-tool.schema.json",
+  "title": "DetailTool",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "total": {"type": "integer"},
+    "node_scope": {"$ref": "node-scope.schema.json"},
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "target": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "title": {"type": "string"},
+          "duration_ms": {"type": ["number", "null"]},
+          "failed": {"type": "boolean"},
+          "confirm": {"type": ["string", "null"]}
+        },
+        "required": ["ts", "target", "agent_id", "title", "duration_ms", "failed", "confirm"]
+      }
+    }
+  },
+  "required": ["name", "total", "calls"]
+}

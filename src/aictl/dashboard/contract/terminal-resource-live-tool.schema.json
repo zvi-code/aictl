@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/terminal-resource-live-tool.schema.json",
+  "title": "TerminalResourceLiveTool",
+  "type": "object",
+  "properties": {
+    "session_count": {"type": "integer"},
+    "pid_count": {"type": "integer"},
+    "inbound_bytes": {"type": "integer"},
+    "outbound_bytes": {"type": "integer"},
+    "inbound_rate_bps": {"type": "number"},
+    "outbound_rate_bps": {"type": "number"},
+    "cpu_percent": {"type": "number"},
+    "peak_cpu_percent": {"type": "number"},
+    "workspace_size_mb": {"type": "number"},
+    "files_touched": {"type": "integer"},
+    "file_events": {"type": "integer"},
+    "state_bytes_written": {"type": "integer"},
+    "token_estimate": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "source": {"type": "string"}
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "properties": {"detected": {"type": "boolean"}, "loops": {"type": "integer"}}
+    }
+  }
+}

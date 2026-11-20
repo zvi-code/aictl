@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-excerpt.schema.json",
+  "title": "DetailExcerpt",
+  "type": "object",
+  "properties": {
+    "line": {"type": "integer"},
+    "lines": {"type": "array", "items": {"$ref": "excerpt-line.schema.json"}},
+    "path": {"type": "string"}
+  },
+  "required": ["line", "lines", "path"]
+}

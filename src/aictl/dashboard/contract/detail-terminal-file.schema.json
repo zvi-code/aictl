@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-terminal-file.schema.json",
+  "title": "DetailTerminalFile",
+  "type": "object",
+  "properties": {
+    "text": {"type": "string"},
+    "truncated": {"type": "boolean"}
+  },
+  "required": ["text", "truncated"]
+}

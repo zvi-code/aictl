@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from aictl.dashboard.live_hub import HubLimits, LiveCapacityError, LiveHub
-from aictl.dashboard.live_protocol import canonical_scope, sse_bytes, stable_id
+from aictl.dashboard.live.hub import HubLimits, LiveCapacityError, LiveHub
+from aictl.dashboard.live.protocol import canonical_scope, sse_bytes, stable_id
 
 
 def publish(hub, value, entity_id="agent"):

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-terminal-metrics.schema.json",
+  "title": "DetailTerminalMetrics",
+  "oneOf": [
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {"type": "string"},
+          "count": {"type": "integer"},
+          "latest_ts": {"type": ["number", "null"]},
+          "last_value": {"type": ["number", "null"]}
+        },
+        "required": ["metric", "count", "last_value"]
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ts": {"type": "array", "items": {"type": "number"}},
+        "value": {"type": "array", "items": {"type": "number"}}
+      },
+      "required": ["ts", "value"]
+    }
+  ]
+}

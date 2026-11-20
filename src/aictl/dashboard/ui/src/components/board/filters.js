@@ -14,6 +14,23 @@ export const RANGES = [
 ];
 export const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 export const DEFAULT_RANGE = '24h';
+const SCREENS = new Set(['board', 'settings', 'health']);
+
+export function readScreen(search) {
+  const screen = new URLSearchParams(search).get('screen');
+  return SCREENS.has(screen) ? screen : 'board';
+}
+
+export function boardLiveRequest(filters, tools, screen, now) {
+  return {
+    query: boardQuery(filters, tools, filters.sel
+      ? { since: Math.floor(filters.sel.since), until: Math.floor(filters.sel.until) }
+      : windowOf(filters.range, now)),
+    history: screen === 'board',
+    requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'settings'
+      ? ['configuration.file'] : ['history.board', 'runtime.machine'],
+  };
+}
 export const STATUSES = [
   ['all', 'All'], ['active', 'Active now'], ['running', 'Running'], ['looping', 'Looping'],
   ['waiting', 'Waiting for you'], ['idle', 'Idle'], ['ended', 'Ended'], ['failed', 'Failed'],

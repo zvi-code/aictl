@@ -31,17 +31,10 @@ def board(view, session_id, node, all_nodes, since, until, port, as_json):
         raise click.UsageError("SESSION_ID is only valid for the session view")
     if view != "overview" and (since is not None or until is not None):
         raise click.UsageError("--since and --until apply only to overview")
-    params = {"view": view, "scope": "fleet" if all_nodes else "node" if node is not None else "local"}
-    params.update(
-        {
-            k: str(v)
-            for k, v in (("node_id", node), ("session_id", session_id), ("since", since), ("until", until))
-            if v is not None
-        }
-    )
+    scope = "fleet" if all_nodes else "node" if node is not None else "local"
     client = ServerClient(f"http://{DEFAULT_HOST}:{port}")
     try:
-        data = client.get_board_view(params)
+        data = client.get_board_nodes(view, scope=scope, node_id=node, session_id=session_id, since=since, until=until)
     except HTTPError as exc:
         try:
             message = json.loads(exc.read()).get("error") or exc.reason
@@ -54,7 +47,7 @@ def board(view, session_id, node, all_nodes, since, until, port, as_json):
         click.echo(json.dumps(data, indent=2))
         return
     click.echo(
-        f"{view.title()} | {params['scope']} | serving node: {data['local_node']['node_id']} ({data['local_node']['source']})"
+        f"{view.title()} | {scope} | serving node: {data['local_node']['node_id']} ({data['local_node']['source']})"
     )
     for key in ("totals", "shared_kusto", "rows", "sessions"):
         if key not in data or data[key] is None:

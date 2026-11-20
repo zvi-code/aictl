@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-runtime-output.schema.json",
+  "title": "TopicRuntimeOutput",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "native_session_id": {"type": ["string", "null"]},
+    "tool": {"type": "string"},
+    "entry_id": {"type": "string"},
+    "event_id": {"type": "string"},
+    "order": {"type": "integer"},
+    "kind": {"type": "string"},
+    "text": {"type": "string"},
+    "ts": {"type": "number"},
+    "agent_id": {"type": ["string", "null"]},
+    "progress": {"type": ["string", "null"]},
+    "content_retained": {"type": "boolean"},
+    "text_suppressed": {"type": "boolean"},
+    "text_truncated": {"type": "boolean"},
+    "tail_truncated": {"type": "boolean"}
+  },
+  "required": [
+    "session_id",
+    "native_session_id",
+    "tool",
+    "entry_id",
+    "event_id",
+    "order",
+    "kind",
+    "text",
+    "ts",
+    "agent_id",
+    "progress",
+    "content_retained",
+    "text_suppressed",
+    "text_truncated",
+    "tail_truncated"
+  ],
+  "additionalProperties": false
+}

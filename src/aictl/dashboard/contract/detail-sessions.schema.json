@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-sessions.schema.json",
+  "title": "DetailSessions",
+  "type": "object",
+  "properties": {
+    "total": {"type": "integer"},
+    "node_scope": {"$ref": "node-scope.schema.json"},
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "project": {"type": "string"},
+          "tool": {"type": "string"},
+          "started_at": {"type": ["number", "null"]},
+          "ended_at": {"type": ["number", "null"]},
+          "artifacts": {"type": "integer"},
+          "commits": {"type": "integer"},
+          "cost_usd": {"type": ["number", "null"]},
+          "prompts": {"type": "integer"},
+          "tokens": {"type": ["integer", "null"]},
+          "tool_calls": {"type": ["integer", "null"]},
+          "match": {"type": "string"},
+          "match_text": {"type": "string"},
+          "node_id": {"type": "string"},
+          "session_id": {"type": "string"}
+        },
+        "required": [
+          "id",
+          "title",
+          "project",
+          "tool",
+          "started_at",
+          "ended_at",
+          "artifacts",
+          "commits",
+          "cost_usd",
+          "prompts",
+          "tokens",
+          "tool_calls",
+          "match",
+          "match_text"
+        ]
+      }
+    },
+    "by_node": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"node_id": {"type": "string"}, "sessions": {"type": "integer"}},
+        "required": ["node_id", "sessions"]
+      }
+    }
+  },
+  "required": ["total", "rows"]
+}

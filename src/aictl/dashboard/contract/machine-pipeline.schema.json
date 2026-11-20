@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/machine-pipeline.schema.json",
+  "title": "MachinePipeline",
+  "type": "object",
+  "properties": {
+    "self": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "pid": {"type": ["integer", "null"]},
+            "cpu": {"type": ["number", "null"]},
+            "rss": {"type": ["integer", "null"]},
+            "uptime_s": {"type": ["number", "null"]},
+            "threads": {"type": ["integer", "null"]},
+            "db_bytes": {"type": ["integer", "null"]},
+            "db_rows": {"type": ["integer", "null"]},
+            "db_tables": {"type": "object", "additionalProperties": {"type": "integer"}},
+            "writes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              }
+            },
+            "started_at": {"type": ["number", "null"]},
+            "code_changed_at": {"type": ["number", "null"]}
+          },
+          "required": [
+            "pid",
+            "cpu",
+            "rss",
+            "uptime_s",
+            "threads",
+            "db_bytes",
+            "db_rows",
+            "db_tables",
+            "writes"
+          ]
+        },
+        {"type": "null"}
+      ]
+    },
+    "sink": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "emitted": {"type": "integer"},
+            "flushed": {"type": "integer"},
+            "dropped": {"type": "integer"},
+            "flood": {"type": "boolean"},
+            "flood_drops": {"type": "integer"},
+            "buffered": {"type": "integer"},
+            "tracked": {"type": "integer"}
+          },
+          "required": ["emitted", "flushed", "dropped", "flood", "flood_drops", "buffered", "tracked"]
+        },
+        {"type": "null"}
+      ]
+    },
+    "otel_receiver": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "active": {"type": "boolean"},
+            "api_calls_total": {"type": "integer"},
+            "api_errors_total": {"type": "integer"},
+            "dropped": {"type": "integer"},
+            "errors": {"type": "integer"},
+            "events_received": {"type": "integer"},
+            "last_receive_at": {"type": ["number", "null"]},
+            "metrics_received": {"type": "integer"},
+            "by_tool": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "metrics": {"type": "integer"},
+                  "events": {"type": "integer"},
+                  "last_at": {"type": ["number", "null"]}
+                }
+              }
+            }
+          },
+          "required": [
+            "active",
+            "api_calls_total",
+            "api_errors_total",
+            "dropped",
+            "errors",
+            "events_received",
+            "last_receive_at",
+            "metrics_received",
+            "by_tool"
+          ]
+        },
+        {"type": "null"}
+      ]
+    },
+    "otel_setup": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "source": {"type": ["string", "null"]},
+          "status": {"type": "string"},
+          "text": {"type": "string"},
+          "value": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+          "variable": {"type": "string"}
+        },
+        "required": ["source", "status", "text", "value", "variable"]
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {"count": {"type": "integer"}, "last_fire_ts": {"type": ["number", "null"]}},
+        "required": ["count", "last_fire_ts"]
+      }
+    },
+    "ingesters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "status": {"type": "string"},
+          "last_ok": {"type": ["number", "null"]},
+          "last_poll": {"type": ["number", "null"]},
+          "error": {"type": ["string", "null"]},
+          "rows": {"type": ["integer", "null"]},
+          "rows_total": {"type": ["integer", "null"]},
+          "source": {"type": ["string", "null"]},
+          "last_poll_duration_ms": {"type": ["number", "null"]},
+          "poll_in_flight": {"type": ["boolean", "null"]},
+          "source_path": {"type": ["string", "null"]}
+        },
+        "required": ["name", "status", "last_ok", "last_poll", "error", "rows", "rows_total", "source"]
+      }
+    },
+    "data_quality": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "component": {"type": "string"},
+          "source": {"type": ["string", "null"]},
+          "kind": {"type": "string"},
+          "status": {"type": "string"},
+          "severity": {"type": "string"},
+          "text": {"type": "string"},
+          "error": {"type": ["string", "null"]},
+          "tool": {"type": ["string", "null"]},
+          "count": {"type": "integer"},
+          "last_ok": {"type": ["number", "null"]}
+        },
+        "required": [
+          "ts",
+          "component",
+          "source",
+          "kind",
+          "status",
+          "severity",
+          "text",
+          "error",
+          "tool",
+          "count",
+          "last_ok"
+        ]
+      }
+    },
+    "freshness": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "label": {"type": "string"},
+          "last_seen": {"type": ["number", "null"]},
+          "source": {"type": ["string", "null"]},
+          "confidence": {"type": ["number", "null"]},
+          "errors": {"type": ["integer", "null"]},
+          "last_error": {"type": ["string", "null"]}
+        },
+        "required": ["tool", "label", "last_seen", "source", "confidence", "errors", "last_error"]
+      }
+    },
+    "stream": {
+      "type": "object",
+      "properties": {
+        "connected_clients": {"type": ["integer", "null"]},
+        "snapshot_ts": {"type": ["number", "null"]},
+        "snapshot_age_s": {"type": ["number", "null"]}
+      },
+      "required": ["connected_clients", "snapshot_ts", "snapshot_age_s"]
+    }
+  },
+  "required": [
+    "self",
+    "sink",
+    "otel_receiver",
+    "hooks",
+    "ingesters",
+    "data_quality",
+    "freshness",
+    "stream"
+  ]
+}

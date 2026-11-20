@@ -7,6 +7,7 @@ const REFRESH_MS = 30000;
 const validCount = n => Number.isSafeInteger(n) && n >= 0;
 const fresh = (at, now) => Number.isFinite(at) && at > 0 && now - at <= STALE_S && at <= now + 60;
 
+// Node/fleet runtime reports are not part of the local stream.
 export function useNodeRuntime(scope, nodeId, live, enabled = true) {
   const key = JSON.stringify([scope, nodeId]);
   const [result, setResult] = useState(null);
@@ -35,7 +36,7 @@ export function useNodeRuntime(scope, nodeId, live, enabled = true) {
   return enabled && result?.key === key ? result : null;
 }
 
-export function nodeActivity(report, localHost, now) {
+export function nodeActivity(report, localHost, now, localInventoryAt) {
   const rows = (report?.rows || []).map(r => ({
     ...r,
     active_sessions: fresh(r.activity_at, now) && validCount(r.active_sessions) ? r.active_sessions : null,
@@ -45,7 +46,10 @@ export function nodeActivity(report, localHost, now) {
   if (localHost && fresh(localHost.activity_at, now)) {
     const nodeId = localHost.node_id || report?.local_node?.node_id || 'This node';
     const i = rows.findIndex(r => r.node_id === nodeId);
-    const row = { ...rows[i], ...localHost, node_id: nodeId, agents: rows[i]?.agents || null };
+    const row = {
+      ...rows[i], ...localHost, node_id: nodeId, agents: rows[i]?.agents || null,
+      local_agent_list_reported: fresh(localInventoryAt, now),
+    };
     if (i < 0) rows.push(row);
     else rows[i] = row;
   }

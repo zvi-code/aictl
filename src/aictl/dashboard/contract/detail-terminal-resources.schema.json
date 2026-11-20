@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-terminal-resources.schema.json",
+  "title": "DetailTerminalResources",
+  "type": "object",
+  "properties": {
+    "timestamp": {"type": "number"},
+    "root": {"type": "string"},
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "label": {"type": "string"},
+          "vendor": {"type": "string"},
+          "host": {"type": "string"},
+          "meta": {"type": "boolean"},
+          "files": {"type": "array", "items": {"$ref": "terminal-resource-file.schema.json"}},
+          "processes": {"type": "array", "items": {"$ref": "terminal-resource-process.schema.json"}},
+          "mcp_servers": {
+            "type": "array", "items": {
+              "type": "object",
+              "properties": {"name": {"type": "string"}, "config": {"type": "object"}},
+              "required": ["name", "config"]
+            }
+          },
+          "memory": {"type": ["object", "null"]},
+          "live": {"anyOf": [{"$ref": "terminal-resource-live-tool.schema.json"}, {"type": "null"}]},
+          "token_breakdown": {"type": "object"}
+        },
+        "required": ["tool", "label", "files", "processes", "mcp_servers"]
+      }
+    },
+    "agent_memory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {"type": "string"},
+          "profile": {"type": "string"},
+          "file": {"type": "string"},
+          "content": {"type": "string"},
+          "tokens": {"type": "integer"},
+          "lines": {"type": "integer"},
+          "mtime": {"type": "number"}
+        },
+        "required": ["source", "profile", "file", "content", "tokens", "lines"]
+      }
+    },
+    "mcp_detail": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "tool": {"type": "string"},
+          "config": {"type": "object"},
+          "status": {"type": "string"},
+          "transport": {"type": "string"},
+          "endpoint": {"type": "string"},
+          "pid": {"type": ["integer", "null"]},
+          "cpu_pct": {"type": "string"},
+          "mem_mb": {"type": "string"}
+        },
+        "required": ["name", "tool", "status", "transport", "endpoint", "pid", "cpu_pct", "mem_mb"]
+      }
+    },
+    "tool_configs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"tool": {"type": "string"}, "hints": {"type": "array", "items": {"type": "string"}}},
+        "required": ["tool"]
+      }
+    },
+    "tool_telemetry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string"},
+          "input_tokens": {"type": "integer"},
+          "output_tokens": {"type": "integer"},
+          "cache_read_tokens": {"type": "integer"},
+          "cache_creation_tokens": {"type": "integer"},
+          "cost_usd": {"type": ["number", "null"]},
+          "total_sessions": {"type": "integer"},
+          "model": {"type": ["string", "null"]}
+        },
+        "required": ["tool"]
+      }
+    },
+    "live_monitor": {
+      "type": "object",
+      "properties": {
+        "platform": {"type": "string"},
+        "diagnostics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "status": {"type": "string"},
+              "mode": {"type": "string"},
+              "detail": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "agent_teams": {"type": "array", "items": {"type": "object"}},
+    "cpu_cores": {"type": "integer"},
+    "cpu_per_core": {"type": "array", "items": {"type": "number"}}
+  },
+  "required": [
+    "timestamp", "root", "tools", "agent_memory", "mcp_detail", "tool_configs",
+    "tool_telemetry", "live_monitor", "cpu_cores", "cpu_per_core"
+  ]
+}

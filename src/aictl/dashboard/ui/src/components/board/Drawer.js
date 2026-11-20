@@ -16,8 +16,8 @@ import { scopeAudit } from '../../utils/auditScope.js';
 import { instructionsByTool } from './findings.js';
 import FileEditor from './FileEditor.js';
 import { normalizeAgentDetail } from './useBoardData.js';
-import { useLiveState } from '../../live/context.js';
-import { liveProcessTree, mergeRuntimeAgents } from '../../live/model.js';
+import { useLiveState } from '../../live/context.ts';
+import { liveProcessTree, mergeRuntimeAgents } from '../../live/selectors.js';
 import NativeOutput from './agent/NativeOutput.js';
 import ContextHistory from './agent/ContextHistory.js';
 import LoadedConfiguration from '../../live/LoadedConfiguration.js';
@@ -171,8 +171,7 @@ export const Pending = ({ error }) => html`<div class="bd-empty" role="status">$
 const titleOf = a => (a.parent_id ? (a.role || a.title) + ' (subagent)' : a.title);
 const toolListText = t => (Array.isArray(t) ? t.join(', ') : (t == null ? '' : String(t)));
 
-// On older SQLite records the root's board ID is its session ID. In the live
-// projection a process group can have an ID without identifying a native session.
+// A process group can have an ID without identifying a native session.
 function evidenceSessionId(a, data, listed) {
   const explicit = data?.session_id || a.native_session_id || listed?.native_session_id;
   if (explicit) return explicit;
@@ -180,27 +179,28 @@ function evidenceSessionId(a, data, listed) {
   return a.session_id || listed?.session_id || a.parent_id || data?.agent?.id;
 }
 
+const AGENT_TOPICS = ['runtime.agent', 'runtime.process'];
+
 function AgentDrawer({ d, ctx, frame, act }) {
-  const { state: subscription } = useLiveState();
-  const incremental = subscription.mode === 'incremental';
-  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'agent:' + d.id, incremental || ctx.remote ? 0 : ctx.refreshKey);
+  const { client, state: subscription } = useLiveState(AGENT_TOPICS);
+  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'agent:' + d.id);
   const historical = useMemo(() => normalizeAgentDetail(raw), [raw]);
   const listed = ctx.data.agents.find(a => a.id === d.id);
   const a = useMemo(() => {
     const fallback = listed || { id: d.id, title: d.id };
-    if (!incremental) return historical?.agent || fallback;
+    if (!client) return historical?.agent || fallback;
     if (!historical?.agent) return fallback;
     return mergeRuntimeAgents([historical.agent], subscription).find(agent => agent.id === d.id) || fallback;
-  }, [incremental, historical, listed, d.id, subscription]);
+  }, [client, historical, listed, d.id, subscription]);
   const data = useMemo(() => {
-    if (!historical || !incremental) return historical;
+    if (!historical || !client) return historical;
     const tree = liveProcessTree(subscription, a);
     return {
       ...historical, agent: a,
       process: { cpu_percent: a.cpu_percent, mem_mb: a.mem_mb, pids: a.pid_list || a.pids, started_at: a.started_at },
       resources: { ...historical.resources, process_tree: tree },
     };
-  }, [historical, incremental, subscription, a]);
+  }, [historical, client, subscription, a]);
   const st = ctx.stopped[a.id] ? 'stopped' : a.status;
   const pending = a.pending && st === 'waiting' ? a.pending : null;
   // Three groups: what the agent did, what it changed, how it ran. A count on a tab is the rows it holds.
@@ -249,8 +249,8 @@ function AgentDrawer({ d, ctx, frame, act }) {
       <${Part} key="flow" part="flow" a=${a} st=${st} ctx=${ctx} act=${act} flowRef=${d.flowRef}
         sid=${sid} agentData=${data} captureMode=${subscription.capabilities?.capture_mode ?? ctx.data.capture_mode}
         initialEvidence=${d.initialEvidence || d.tab === 'evidence'} initialPrompts=${d.initialPrompts} initialSkills=${d.initialSkills}/>`;
-    if (incremental && d.tab === 'transcript') return html`<${Part} key="transcript" part="transcript" a=${a} data=${data} st=${st} ctx=${ctx} act=${act}/>`;
-    if (incremental && !data) return html`
+    if (d.tab === 'transcript') return html`<${Part} key="transcript" part="transcript" a=${a} ctx=${ctx}/>`;
+    if (client && !data) return html`
       <${FixedPanel} id="ag-runtime" title="Live runtime">
         <${Stats} stats=${[{ label: 'CPU', value: fmtCpu(a.cpu_percent) }, { label: 'RAM', value: fmtMem(a.mem_mb) }, { label: 'Native activity', value: a.native_activity || 'unknown' }]}/>
         <p class="bd-note">Historical detail is ${error ? 'unavailable' : 'loading'} from Kusto. Runtime presence does not establish historical queryability.</p>

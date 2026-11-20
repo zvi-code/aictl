@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-session-records.schema.json",
+  "title": "DetailSessionRecords",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "node_id": {"type": "string"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "total": {"type": "integer"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ts": {"type": "number"},
+              "kind": {"type": "string"},
+              "tool": {"type": "string"},
+              "seq": {"type": ["integer", "null"]},
+              "detail": {"type": ["string", "null"]}
+            },
+            "required": ["ts", "kind", "tool", "seq", "detail"]
+          }
+        }
+      },
+      "required": ["node_id", "node_scope", "total", "rows"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "node_id": {"type": "string"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "total": {"type": "integer"},
+        "processes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pid": {"type": "integer"},
+              "tool": {"type": ["string", "null"]},
+              "role": {"type": ["string", "null"]},
+              "joined_at": {"type": ["number", "null"]},
+              "left_at": {"type": ["number", "null"]}
+            },
+            "required": ["pid", "tool", "role", "joined_at"]
+          }
+        }
+      },
+      "required": ["node_id", "node_scope", "total", "processes"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "node_id": {"type": "string"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "total_calls": {"type": "integer"},
+        "servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "server_name": {"type": "string"},
+              "call_count": {"type": "integer"},
+              "err_count": {"type": "integer"},
+              "total_duration_ms": {"type": ["number", "null"]},
+              "last_ts": {"type": ["number", "null"]}
+            },
+            "required": ["server_name", "call_count", "err_count", "total_duration_ms", "last_ts"]
+          }
+        }
+      },
+      "required": ["node_id", "node_scope", "total_calls", "servers"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "node_id": {"type": "string"},
+        "node_scope": {"$ref": "node-scope.schema.json"},
+        "calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "session_id": {"type": "string"},
+              "ts": {"type": "number"},
+              "model": {"type": ["string", "null"]},
+              "input_tokens": {"type": ["integer", "null"]},
+              "output_tokens": {"type": ["integer", "null"]},
+              "cache_read_tokens": {"type": ["integer", "null"]},
+              "duration_ms": {"type": ["number", "null"]},
+              "error_type": {"type": ["string", "null"]},
+              "is_error": {"type": ["boolean", "integer", "null"]},
+              "http_status": {"type": ["integer", "null"]},
+              "finish_reason": {"type": ["string", "null"]},
+              "status": {"enum": ["ok", "error"]}
+            },
+            "required": [
+              "session_id",
+              "ts",
+              "model",
+              "input_tokens",
+              "output_tokens",
+              "cache_read_tokens",
+              "duration_ms",
+              "is_error",
+              "http_status",
+              "finish_reason",
+              "status"
+            ]
+          }
+        },
+        "summary": {
+          "type": "object",
+          "properties": {
+            "avg_latency_ms": {"type": ["number", "null"]},
+            "p95_latency_ms": {"type": ["number", "null"]},
+            "total_calls": {"type": "integer"},
+            "total_errors": {"type": "integer"},
+            "by_model": {"type": "object", "additionalProperties": {"type": "integer"}}
+          },
+          "required": ["avg_latency_ms", "p95_latency_ms", "total_calls", "total_errors", "by_model"]
+        }
+      },
+      "required": ["node_id", "node_scope", "calls", "summary"]
+    }
+  ]
+}

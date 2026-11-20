@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-agent-flow.schema.json",
+  "title": "DetailAgentFlow",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "turns": {"type": "array", "items": {"$ref": "flow-event.schema.json"}},
+    "summary": {"$ref": "flow-summary.schema.json"},
+    "capture_mode": {"type": "string"},
+    "node_id": {"type": ["string", "null"]},
+    "session_kql_url": {"type": ["string", "null"]},
+    "node_scope": {"$ref": "node-scope.schema.json"},
+    "scope": {
+      "type": "object",
+      "properties": {
+        "start": {"type": ["number", "null"]},
+        "end": {"type": ["number", "null"]},
+        "matched": {"type": "integer"},
+        "total": {"type": "integer"},
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        },
+        "tools": {"type": "array", "items": {"type": "string"}},
+        "models": {"type": "array", "items": {"type": "string"}},
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+          }
+        }
+      },
+      "required": ["start", "end", "matched", "total", "agents", "tools", "models", "skills"]
+    }
+  },
+  "required": ["session_id", "turns", "summary", "capture_mode", "node_id", "session_kql_url", "scope"]
+}

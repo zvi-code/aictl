@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-latency.schema.json",
+  "title": "BoardLatency",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "what": {"type": "string"},
+      "count": {"type": ["integer", "null"]},
+      "p50_ms": {"type": ["number", "null"]},
+      "p95_ms": {"type": ["number", "null"]},
+      "p99_ms": {"type": ["number", "null"]},
+      "max_ms": {"type": ["number", "null"]}
+    },
+    "required": ["what", "count", "p50_ms", "p95_ms", "p99_ms", "max_ms"]
+  }
+}

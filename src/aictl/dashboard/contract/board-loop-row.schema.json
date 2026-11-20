@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-loop-row.schema.json",
+  "title": "BoardLoopRow",
+  "type": "object",
+  "properties": {
+    "agent_id": {"type": "string"},
+    "title": {"type": "string"},
+    "status": {"type": "string"},
+    "pattern": {"type": "string"},
+    "repeats": {"type": "integer"},
+    "tokens": {"type": ["integer", "null"]},
+    "cost_usd": {"type": ["number", "null"]},
+    "since_ts": {"type": "number"},
+    "at_end": {"type": "boolean"}
+  },
+  "required": [
+    "agent_id",
+    "title",
+    "status",
+    "pattern",
+    "repeats",
+    "tokens",
+    "cost_usd",
+    "since_ts",
+    "at_end"
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-configuration-board.schema.json",
+  "title": "TopicConfigurationBoard",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "settings_at"},
+        "value": {"$ref": "board-settings-at.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "project_prompts_searched"},
+        "value": {"type": "array", "maxItems": 0, "items": false},
+        "collection": {"const": true}
+      },
+      "required": ["scope", "field", "value", "collection"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "project_prompts_searched"},
+        "value": {"type": "string"},
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "skills"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": ["string", "null"]},
+            "path": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "file_tokens": {"type": ["integer", "null"]}
+          },
+          "required": ["scope", "path", "description", "file_tokens"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "project_prompts"},
+        "value": {
+          "type": "object",
+          "properties": {
+            "file": {"type": "string"},
+            "project": {"type": "string"},
+            "configured_only": {"const": true}
+          },
+          "required": ["file", "project", "configured_only"]
+        },
+        "key": {"type": "string"},
+        "order": {"type": "integer"},
+        "merge": {"type": "boolean"}
+      },
+      "required": ["scope", "field", "value", "key", "order"],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/live-entity.schema.json",
+  "title": "LiveEntity",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "catalog.board"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["catalog"]},
+        "data": {"$ref": "topic-catalog-board.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "configuration.board"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["filesystem.config"]},
+        "data": {"$ref": "topic-configuration-board.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "configuration.file"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["filesystem.config"]},
+        "data": {"$ref": "topic-configuration-file.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "configuration.loaded"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.evidence", "runtime.native"]},
+        "data": {"$ref": "topic-configuration-loaded.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "history.board"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["kusto.queryable"]},
+        "data": {"$ref": "topic-history-board.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "runtime.agent"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.collector"]},
+        "data": {"$ref": "topic-runtime-agent.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "runtime.health"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.operational"]},
+        "data": {"$ref": "topic-runtime-health.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "runtime.machine"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.collector"]},
+        "data": {"$ref": "topic-runtime-machine.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "runtime.output"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.native"]},
+        "data": {"$ref": "topic-runtime-output.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "runtime.process"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.collector"]},
+        "data": {"$ref": "topic-runtime-process.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "topic": {"const": "source.status"},
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1},
+        "source": {"enum": ["runtime.operational"]},
+        "data": {"$ref": "topic-source-status.schema.json"}
+      },
+      "required": ["topic", "id", "revision", "source", "data"]
+    }
+  ]
+}

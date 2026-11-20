@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-tool-labels.schema.json",
+  "title": "BoardToolLabels",
+  "type": "object",
+  "additionalProperties": {"type": "string"}
+}

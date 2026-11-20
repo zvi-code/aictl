@@ -1,5 +1,7 @@
 # aictl Dashboard Datapoint Catalog
 
+The catalog below describes the former dashboard and its SQL queries. The current local dashboard uses `/api/live/stream`; fleet and node reports and on-demand details still use REST. For local per-table writer counters, open **Health → Show all metrics → Store details**. Those counters come from `runtime.health` and describe writes, not queryable rows.
+
 > **181** datapoints across **10** tabs.
 > Raw: 79 | Deduced: 38 | Aggregated: 64
 > Generated: 2026-05-17 17:08

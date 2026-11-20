@@ -5,11 +5,11 @@ import BoardScreen from '../src/components/board/BoardScreen.js';
 import TranscriptTab from '../src/components/board/agent/TranscriptTab.js';
 import Drawer from '../src/components/board/Drawer.js';
 import { useBoardData } from '../src/components/board/useBoardData.js';
-import { LiveProvider } from '../src/live/context.js';
-import { createLiveController } from '../src/live/controller.js';
-import { canonicalScope } from '../src/live/model.js';
+import { LiveProvider } from '../src/live/context.ts';
+import { createLiveClient } from '../src/data/live.ts';
+import { canonicalScope } from '../src/data/store.ts';
 import { boardFixture, machineFixture, NOW } from './fixtures/board.fixture.js';
-import { ControlledEventSource, liveBootstrap, liveCapabilities, liveEntity, liveEnvelope, liveField } from './fixtures/live.fixture.js';
+import { ControlledEventSource, liveBootstrap, liveEntity, liveEnvelope, liveField } from './fixtures/live.fixture.js';
 
 const json = body => new Response(JSON.stringify(body), { status: 200 });
 const queryOf = source => canonicalScope(new URL(source.url, 'http://x').search.slice(1));
@@ -21,8 +21,8 @@ const runtime = () => [
   runtimeStatus,
 ];
 
-function controller(capabilities = liveCapabilities) {
-  return createLiveController({ getCapabilities: async () => capabilities, EventSourceClass: ControlledEventSource });
+function controller() {
+  return createLiveClient({ frames: { request: queueMicrotask } });
 }
 async function sourceOf() {
   await waitFor(() => expect(ControlledEventSource.instances.length).toBeGreaterThan(0));
@@ -70,7 +70,7 @@ describe('Kusto incremental board integration', () => {
         : [liveEntity(topic, 'current', { configured_only: true, tool_configs: [] }, 2)];
     await act(async () => source.emit('change', liveEnvelope(2, { upserts }, query)));
     expect(source.closed).toBe(true);
-    expect(client.getState().topics.get(topic)?.size).toBeGreaterThan(0);
+    expect(client.store.topic(topic)?.size).toBeGreaterThan(0);
     expect(calls.some(url => url.startsWith('/api/board?'))).toBe(false);
     expect(ControlledEventSource.instances).toHaveLength(1);
   });
@@ -81,9 +81,14 @@ describe('Kusto incremental board integration', () => {
     const view = render(html`<${BoardScreen} liveController=${controller()}/>`);
     const source = await sourceOf();
     const query = queryOf(source);
-    await bootstrap(source, [...runtime(), historyStatus(query, false)]);
+    const now = Date.now() / 1000;
+    await bootstrap(source, [...runtime(), historyStatus(query, false),
+      liveEntity('source.status', 'collector', { ...runtimeStatus.data, observed_at: now }, 2),
+      liveEntity('runtime.health', 'local', { resources: { host: { active_sessions: 1, activity_at: now } } }),
+    ]);
     await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody').textContent).toContain('Live native agent'));
     expect(view.container.textContent).toContain('missing history is not zero usage');
+    expect(view.container.textContent).toContain('Agent lists reported by 1 of 1 node');
     const tokens = () => [...view.container.querySelectorAll('.bd-kpi')].find(kpi => kpi.querySelector('.bd-l')?.textContent === 'Tokens').querySelector('.bd-v').textContent;
     expect(tokens()).toBe('n/a');
     await act(async () => source.emit('change', liveEnvelope(2, { upserts: [
@@ -101,6 +106,7 @@ describe('Kusto incremental board integration', () => {
     expect(tokens()).toBe('10');
     expect(calls.some(url => url.startsWith('/api/board?'))).toBe(false);
     expect(calls.some(url => url.startsWith('/api/board/machine'))).toBe(false);
+    expect(calls.some(url => url.includes('view=runtime'))).toBe(false);
     expect(calls.some(url => url.startsWith('/api/hooks-status') || url.startsWith('/api/otel-status'))).toBe(false);
     expect(ControlledEventSource.instances.filter(instance => !instance.closed)).toHaveLength(1);
   });
@@ -197,22 +203,17 @@ describe('Kusto incremental board integration', () => {
     expect(ControlledEventSource.instances).toHaveLength(1);
   });
 
-  it('keeps SQLite on its existing stream-triggered REST behavior', async () => {
-    const calls = [];
-    vi.stubGlobal('fetch', vi.fn(async url => {
-      calls.push(String(url));
-      if (String(url).startsWith('/api/board/machine')) return json(machineFixture());
-      if (String(url).startsWith('/api/board?')) return json(boardFixture());
-      return json({});
-    }));
-    const view = render(html`<${BoardScreen} liveController=${controller({ ...liveCapabilities, enabled: false })}/>`);
-    await waitFor(() => expect(view.container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
-    const source = ControlledEventSource.instances.at(-1);
-    expect(source.url).toBe('/api/stream');
-    const before = calls.filter(url => url.startsWith('/api/board?')).length;
-    await act(async () => { source.open(); source.onmessage({ data: '{}' }); });
-    expect(calls.filter(url => url.startsWith('/api/board?'))).toHaveLength(before + 1);
-    expect(ControlledEventSource.instances).toHaveLength(1);
+  it('reports an initial stream failure without a capability probe or local snapshot GET', async () => {
+    const fetch = vi.fn(async () => json({}));
+    vi.stubGlobal('fetch', fetch);
+    const view = render(html`<${BoardScreen} liveController=${controller()}/>`);
+    const attempted = await sourceOf();
+    await act(async () => attempted.fail());
+    await view.findByText(/Live subscription disconnected/);
+    expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/live/capabilities');
+    expect(fetch.mock.calls.every(([url]) => !/^\/api\/board(?:\?|\/(?:machine|health))/.test(url))).toBe(true);
+    expect(attempted.closed).toBe(true);
+    expect(ControlledEventSource.instances.every(source => source.url.startsWith('/api/live/stream'))).toBe(true);
   });
 
   it('shares Health operational data without history requests and preserves DM/queryable disclosures', async () => {

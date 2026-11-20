@@ -1,16 +1,18 @@
 import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
-import { useLiveState } from '../../../live/context.js';
-import { nativeOutput } from '../../../live/model.js';
+import { useLiveState } from '../../../live/context.ts';
+import { orderedNativeOutput } from '../../../data/store.ts';
 import { clock } from './common.js';
+
+const TOPICS = ['runtime.output'];
 
 /** Native text is never folded into historical turn, token, cost or tool-call totals. */
 export default function NativeOutput({ a, captureMode }) {
-  const { state } = useLiveState();
+  const { client, state } = useLiveState(TOPICS);
   const sessionId = a.session_id || a.native_session_id || a.parent_id || a.id;
   const output = state.topics?.get('runtime.output');
-  const entries = useMemo(() => nativeOutput({ entities: output }, sessionId), [output, sessionId]);
-  if (state.mode !== 'incremental') return null;
+  const entries = useMemo(() => orderedNativeOutput(output?.values(), sessionId), [output, sessionId]);
+  if (!client) return null;
   const mode = state.capabilities?.capture_mode ?? captureMode;
   const withheld = mode != null && mode !== 'full';
   return html`<section class="bd-panel bd-ag-top" id="dr-native-output" aria-label="Live native output">

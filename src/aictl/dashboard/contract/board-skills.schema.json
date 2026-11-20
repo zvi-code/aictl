@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-skills.schema.json",
+  "title": "BoardSkills",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "name": {"type": "string"},
+      "uses": {"type": "integer"},
+      "tokens": {"type": ["integer", "null"]},
+      "agents": {"type": "integer"},
+      "scope": {"type": ["string", "null"]},
+      "path": {"type": ["string", "null"]},
+      "description": {"type": ["string", "null"]},
+      "file_tokens": {"type": ["integer", "null"]}
+    },
+    "required": ["name", "uses", "tokens", "agents"]
+  }
+}

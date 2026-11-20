@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-project-prompts.schema.json",
+  "title": "BoardProjectPrompts",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "file": {"type": "string"},
+      "project": {"type": "string"},
+      "uses": {"type": "integer"},
+      "last_ts": {"type": ["number", "null"]},
+      "node_id": {"type": "string"}
+    },
+    "required": ["file", "project", "uses", "last_ts"]
+  }
+}

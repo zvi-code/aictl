@@ -9,6 +9,7 @@ import { normalizeHealth, useBoardHealth } from '../src/components/board/useBoar
 import { updateTrend } from '../src/components/board/HealthMeasurements.js';
 import { freshUi, LS_KEY, sanitizeLayout } from '../src/components/board/layout.js';
 import { boardFixture, machineFixture, NOW } from './fixtures/board.fixture.js';
+import { boardEventSource, ControlledEventSource, liveBootstrap, liveEntity, liveEnvelope } from './fixtures/live.fixture.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
 function fixture() {
@@ -27,9 +28,10 @@ function fixture() {
     },
   };
 }
-class FakeES { close() {} }
 beforeEach(() => {
-  vi.stubGlobal('EventSource', FakeES);
+  ControlledEventSource.instances = [];
+  vi.stubGlobal('EventSource', boardEventSource({ board: () => boardFixture(), machine: () => machineFixture(), health: fixture }));
+  vi.stubGlobal('fetch', vi.fn(async () => json({})));
   window.history.replaceState(null, '', '/?screen=health');
 });
 afterEach(() => {
@@ -41,20 +43,14 @@ afterEach(() => {
 
 describe('live Health screen', () => {
   it('loads independently of history with one overview and expandable pipeline details, not machine CPU panels', async () => {
-    const calls = [];
-    vi.stubGlobal('fetch', vi.fn(async url => {
-      calls.push(String(url));
-      if (String(url) === '/api/live/capabilities') return json({ enabled: false, protocol: 1 });
-      if (String(url) === '/api/board/health') return json(fixture());
-      return new Promise(() => {});
-    }));
     const { container, findByRole, getByRole } = render(html`<${BoardScreen}/>`);
     await findByRole('heading', { name: 'aictl Health', level: 1 });
     await waitFor(() => expect(container.querySelector('#health-overview').textContent).toContain('kusto'));
     expect(container.querySelector('#health-store-details')).toBeNull();
     expect(container.querySelector('#health-overview').textContent).not.toContain('n/a');
     fireEvent.click(getByRole('checkbox', { name: 'Show all metrics' }));
-    expect(calls).toEqual(['/api/live/capabilities', '/api/board/health']);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(new URL(ControlledEventSource.instances.at(-1).url, location.href).searchParams.get('history')).toBe('0');
     for (const id of ['self', 'sources', 'collectors', 'quality']) expect(container.querySelector('#p-' + id)).toBeTruthy();
     for (const id of ['cpu', 'procs', 'daemon', 'agentsT']) expect(container.querySelector('#p-' + id)).toBeNull();
     expect(container.querySelector('a[href="?screen=health"]').getAttribute('aria-current')).toBe('page');
@@ -78,12 +74,6 @@ describe('live Health screen', () => {
   });
 
   it('keeps Health discoverable from the board and returns through section links', async () => {
-    vi.stubGlobal('fetch', vi.fn(async url => {
-      if (String(url) === '/api/board/health') return json(fixture());
-      if (String(url).startsWith('/api/board/machine')) return json(machineFixture());
-      if (String(url).startsWith('/api/board?')) return json(boardFixture());
-      return json({});
-    }));
     window.history.replaceState(null, '', '/');
     const { container } = render(html`<${BoardScreen}/>`);
     await waitFor(() => expect(container.querySelector('#p-agentsT tbody tr')).toBeTruthy());
@@ -98,36 +88,45 @@ describe('live Health screen', () => {
     expect(container.querySelector('#p-collectors')).toBeNull();
   });
 
-  it('reports an older daemon endpoint as unavailable, not healthy or zero', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'Not found' }, 404)));
-    const { container, findByRole } = render(html`<${BoardScreen}/>`);
-    const alert = await findByRole('alert');
-    expect(alert.textContent).toContain('does not provide /api/board/health');
+  it('reports an unavailable live Health source, not healthy or zero', async () => {
+    vi.stubGlobal('EventSource', ControlledEventSource);
+    const { container, findByText } = render(html`<${BoardScreen}/>`);
+    await waitFor(() => expect(ControlledEventSource.instances.length).toBeGreaterThan(0));
+    const source = ControlledEventSource.instances.at(-1);
+    await act(async () => {
+      source.open();
+      source.emit('bootstrap', liveBootstrap([
+        liveEntity('source.status', 'health', { ready: false, pending: false, error: 'Health source unavailable' }),
+      ], new URL(source.url, location.href).search));
+    });
+    const alert = await findByText(/Health source unavailable/);
+    expect(alert.getAttribute('role')).toBe('alert');
     expect(container.querySelector('#health-stages')).toBeNull();
     expect(container.querySelector('#health-overview').textContent).toContain('Unavailable');
     expect(container.querySelector('#main-area .bd-good')).toBeNull();
   });
 
-  it('never overlaps reads, pauses while hidden or paused, and aborts on unmount', async () => {
+  it('never overlaps scoped Health reads, pauses while hidden or paused, and aborts on unmount', async () => {
     vi.useFakeTimers();
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
     const pending = [];
     vi.stubGlobal('fetch', vi.fn((url, opts) => new Promise(resolve => pending.push({ resolve, signal: opts.signal }))));
-    const Probe = ({ live }) => { useBoardHealth({ enabled: true, live }); return null; };
+    const response = () => json({ view: 'health', scope: 'fleet', fleet_available: true, rows: [] });
+    const Probe = ({ live }) => { useBoardHealth({ enabled: true, live, scope: 'fleet' }); return null; };
     const view = render(html`<${Probe} live=${true}/>`);
-    await act(async () => { vi.advanceTimersByTime(15000); });
+    await act(async () => { vi.advanceTimersByTime(60000); });
     expect(pending).toHaveLength(1);
-    await act(async () => { pending[0].resolve(json(fixture())); });
+    await act(async () => { pending[0].resolve(response()); });
     hidden.mockReturnValue(true);
     fireEvent(document, new Event('visibilitychange'));
-    await act(async () => { vi.advanceTimersByTime(15000); });
+    await act(async () => { vi.advanceTimersByTime(60000); });
     expect(pending).toHaveLength(1);
     hidden.mockReturnValue(false);
     fireEvent(document, new Event('visibilitychange'));
     expect(pending).toHaveLength(2);
-    await act(async () => { pending[1].resolve(json(fixture())); });
+    await act(async () => { pending[1].resolve(response()); });
     view.rerender(html`<${Probe} live=${false}/>`);
-    await act(async () => { vi.advanceTimersByTime(15000); });
+    await act(async () => { vi.advanceTimersByTime(60000); });
     expect(pending).toHaveLength(2);
     view.rerender(html`<${Probe} live=${true}/>`);
     expect(pending).toHaveLength(3);
@@ -146,12 +145,6 @@ describe('live Health screen', () => {
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),
     });
-    vi.stubGlobal('fetch', vi.fn(async url => {
-      if (String(url) === '/api/board/health') return json(fixture());
-      if (String(url).startsWith('/api/board/machine')) return json(machineFixture());
-      if (String(url).startsWith('/api/board?')) return json(boardFixture());
-      return json({});
-    }));
     const { container } = render(html`<${BoardScreen}/>`);
     fireEvent.click(await within(container).findByRole('checkbox', { name: 'Show all metrics' }));
     await waitFor(() => expect(container.querySelector('#p-collectors')).toBeTruthy());
@@ -172,7 +165,6 @@ describe('live Health screen', () => {
   });
 
   it('passes the non-visual accessibility rules with closed and expanded details', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => json(fixture())));
     const { container } = render(html`<${BoardScreen}/>`);
     await waitFor(() => expect(container.querySelector('.bd-healthledger')?.textContent).toContain('90'));
     const rules = { 'color-contrast': { enabled: false }, region: { enabled: false }, 'landmark-unique': { enabled: false }, 'scrollable-region-focusable': { enabled: false } };
@@ -182,6 +174,36 @@ describe('live Health screen', () => {
     fireEvent.click(container.querySelector('#health-source-details > summary'));
     expect((await axe.run(container, { rules })).violations.map(item => item.id)).toEqual([]);
   }, 30000);
+
+  it('shows per-table writer counters from the stream and tolerates a null writer', async () => {
+    const data = fixture();
+    data.store.writer = { tables: {
+      Trace: { mode: 'streaming', queue_depth: 0, in_flight: 2, rows_sent: 12345, rows_dropped: 3, lost_at_exit: 4, last_error: 'Write timed out' },
+      Sessions: { mode: 'queued', queue_depth: 5, in_flight: 0, rows_sent: 9, rows_dropped: 0, lost_at_exit: null, last_error: null },
+    } };
+    vi.stubGlobal('EventSource', boardEventSource({ health: () => data }));
+    const view = render(html`<${BoardScreen}/>`);
+    fireEvent.click(await view.findByRole('checkbox', { name: 'Show all metrics' }));
+    const details = await waitFor(() => {
+      const element = view.container.querySelector('#health-store-details > summary');
+      expect(element).not.toBeNull();
+      return element;
+    });
+    fireEvent.click(details);
+    const table = await view.findByRole('table', { name: 'Writer counters by table' });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent.trim())).toEqual([
+      'Table', 'Mode', 'Queue depth', 'In flight', 'Rows sent', 'Rows dropped', 'Lost at exit', 'Last error',
+    ]);
+    const cells = name => within(within(table).getByRole('row', { name })).getAllByRole('cell').map(cell => cell.textContent.trim());
+    expect(cells(/^Trace/)).toEqual(['Trace', 'streaming', '0', '2', '12,345', '3', '4', 'Write timed out']);
+    expect(cells(/^Sessions/)).toEqual(['Sessions', 'queued', '5', '0', '9', '0', 'n/a', 'None reported']);
+    const source = ControlledEventSource.instances.at(-1);
+    await act(async () => source.emit('change', liveEnvelope(2, {
+      upserts: [liveEntity('runtime.health', 'local', { ...data, store: { ...data.store, writer: null } }, 2)],
+    }, new URL(source.url, location.href).search)));
+    await waitFor(() => expect(view.queryByRole('table', { name: 'Writer counters by table' })).toBeNull());
+    expect(details.parentElement.open).toBe(true);
+  });
 });
 
 describe('health data and status', () => {

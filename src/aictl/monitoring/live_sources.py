@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..dashboard.board_api import mask_secrets
-from ..dashboard.live_protocol import stable_id
+from ..dashboard.live.protocol import stable_id
 from ..observe.collect import capture_mode as storage_capture_mode
 from .collectors.process import classify_process
 from .native_sessions import NativeSessionTail

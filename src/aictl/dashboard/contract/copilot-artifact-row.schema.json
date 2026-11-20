@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/copilot-artifact-row.schema.json",
+  "title": "CopilotArtifactRow",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string"},
+    "name": {"type": "string"},
+    "type": {"type": "string"},
+    "size": {"type": "integer"},
+    "modified_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "readable": {"type": "boolean"},
+    "symlink": {"type": "boolean"},
+    "checkpoint": {"type": "integer"}
+  },
+  "required": ["path", "name", "type", "size", "modified_at", "readable"]
+}

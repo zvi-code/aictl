@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-self.schema.json",
+  "title": "BoardSelf",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "cpu_percent": {"type": ["number", "null"]},
+        "memory_rss_bytes": {"type": ["integer", "null"]},
+        "history_bytes": {"type": ["integer", "null"]},
+        "history_live_bytes": {"type": ["integer", "null"]},
+        "history_limit_bytes": {"type": ["integer", "null"]},
+        "retention_days": {"type": ["integer", "null"]},
+        "children": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pid": {"type": "integer"},
+              "name": {"type": "string"},
+              "cpu_percent": {"type": ["number", "null"]},
+              "memory_rss_bytes": {"type": ["integer", "null"]}
+            },
+            "required": ["pid", "name", "cpu_percent", "memory_rss_bytes"]
+          }
+        }
+      },
+      "required": [
+        "cpu_percent",
+        "memory_rss_bytes",
+        "history_bytes",
+        "history_live_bytes",
+        "history_limit_bytes",
+        "retention_days",
+        "children"
+      ]
+    },
+    {"type": "null"}
+  ]
+}
