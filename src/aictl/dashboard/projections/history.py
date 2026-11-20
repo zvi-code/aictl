@@ -154,10 +154,21 @@ class HistoryScope:
 
     def read(self, view: str, *, sid: str = "", limit: int = 20_000, page: bool = False, **params) -> list[dict]:
         node, sid = self.split(sid) if sid else (self.node, "")
-        result = self.require_reader().read(view, {
-            **node_scope(node), **({"requested_session": sid} if sid else {}), **params, "limit": limit,
-        })
-        return self.identify(result.rows if page else complete_rows(result))
+        query = {**node_scope(node), **({"requested_session": sid} if sid else {}), **params, "limit": limit}
+        reader = self.require_reader()
+        result = reader.read(view, query)
+        if page or not result.truncated:
+            return self.identify(result.rows)
+        rows = list(result.rows)
+        seen: set[str] = set()
+        while result.truncated:
+            cursor = result.next_page
+            if not cursor or not result.rows or cursor in seen:
+                raise StoreError(f"History result for {view} is incomplete: no advancing continuation")
+            seen.add(cursor)
+            result = reader.read(view, {**query, "after_row": cursor})
+            rows.extend(result.rows)
+        return self.identify(rows)
 
     def identify(self, rows: list[dict]) -> list[dict]:
         if not self.qualified:

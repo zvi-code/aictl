@@ -1,6 +1,7 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
     requested_tool:string='', requested_path:string='', requested_paths:dynamic=dynamic([]),
-    inventory_mode:string='all', row_limit:long);
+    inventory_mode:string='all', after_row:string='', row_limit:long);
+let cursor_row = parse_json(after_row);
 files
 | where all_nodes or node_id == requested_node
 | extend deleted=column_ifexists('_deleted',false)
@@ -14,6 +15,14 @@ files
 | where inventory_mode != 'session' or scope in ('global','user')
     or (isnotempty(requested_path) and (replace_string(path,@'\','/') =~ requested_path
        or replace_string(path,@'\','/') startswith strcat(requested_path,'/')))
-| order by last_changed desc,node_id asc,path asc
+// Null change times sort last. Use the complete versioned identity to break ties.
+| where isempty(after_row) or case(
+    isnull(last_changed) != isnull(cursor_row[0]), isnull(last_changed),
+    last_changed != toreal(cursor_row[0]), last_changed < toreal(cursor_row[0]),
+    node_id != tostring(cursor_row[1]), strcmp(node_id,tostring(cursor_row[1])) > 0,
+    path != tostring(cursor_row[2]), strcmp(path,tostring(cursor_row[2])) > 0,
+    strcmp(['project'],tostring(cursor_row[3])) > 0)
+| order by last_changed desc nulls last,node_id asc,path asc,['project'] asc
 | take row_limit
-| project node_id,path,tool,category,scope,size_bytes,tokens,lines,mtime,meta,last_changed
+| project node_id,path,tool,category,scope,size_bytes,tokens,lines,mtime,meta,last_changed,
+    _page_cursor=tostring(pack_array(last_changed,node_id,path,['project']))

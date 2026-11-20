@@ -114,7 +114,7 @@ _VIEWS = {
         "node_id session_id started_at ended_at input_tokens output_tokens files_modified cost_usd",
     ),
     "tools.activity_rows": (
-        f"{_TIME} requested_session kind_filter session_keys",
+        f"{_TIME} requested_session kind_filter session_keys after_row",
         f"{_BOARD_ID} ts tool_name target is_error exit_code duration_ms confirm confirm_wait_ms result_summary input_signature",
     ),
     "board.previous": (
@@ -184,7 +184,7 @@ _VIEWS = {
         "node_id path project_path session_id edits agents added removed last_ts tool",
     ),
     "files.inventory": (
-        f"{_TIME} requested_tool requested_path requested_paths inventory_mode",
+        f"{_TIME} requested_tool requested_path requested_paths inventory_mode after_row",
         "node_id path tool category scope size_bytes tokens lines mtime meta last_changed",
     ),
     "files.session_inventory": ("all_nodes requested_node requested_tool requested_path", "path"),
@@ -259,6 +259,7 @@ _FAILURE_COOLDOWN_S = 5.0
 _CACHE_SIZE = 64
 # These views had lower measured peaks with reduced fanout; other reads keep the service default.
 _LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
+_PAGED_VIEWS = {"files.inventory", "tools.activity_rows"}
 
 
 @dataclass
@@ -499,7 +500,7 @@ class KustoReader:
                 raise StoreError("Kusto returned an incomplete result")
             tables = response.primary_results
             if not tables:
-                if view in _CACHE_TTL_S or view.startswith("health.sample_"):
+                if view in _CACHE_TTL_S or view in _PAGED_VIEWS or view.startswith("health.sample_"):
                     raise StoreError("Kusto returned no result table")
                 return ReadResult([])
             table = tables[0]
@@ -510,7 +511,13 @@ class KustoReader:
                  else value for name, value in zip(names, row, strict=True)}
                 for row in islice(table, limit + 1)
             ]
-            return ReadResult(rows[:limit], truncated=len(rows) > limit)
+            more = len(rows) > limit
+            page = rows[:limit]
+            cursor = None
+            if view in _PAGED_VIEWS:
+                for row in page:
+                    cursor = row.pop("_page_cursor", None)
+            return ReadResult(page, truncated=more, next_page=cursor if more else None)
         except Exception as exc:  # noqa: BLE001 - treat SDK and transport errors as read failures
             error = f"{exc} (client request ID: {props.client_request_id})"
             raise StoreError(f"Kusto view {view} failed: {error}") from exc

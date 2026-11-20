@@ -37,6 +37,7 @@ class ReadResult:
     rows: list[Row]
     truncated: bool = False
     stale: bool = False
+    next_page: str | None = None
 
 
 class Reader(Protocol):

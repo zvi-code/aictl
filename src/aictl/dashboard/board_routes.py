@@ -190,6 +190,9 @@ class BoardRoutes:
         except UnresolvedObservationsError as exc:
             self._json_response(exc.to_dict(), status=409)
             return
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
         except Exception as exc:  # noqa: BLE001 — make the error visible in the panel
             logger.exception("Board context route failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)

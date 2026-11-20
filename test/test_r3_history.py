@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+import pytest
 
 from aictl.dashboard.board_filters import Filters
 from aictl.dashboard.board_projection import _resource_series
@@ -17,6 +18,7 @@ from aictl.dashboard.projections.metrics import (
 )
 from aictl.dashboard.scoped_history import _reported_machine
 from aictl.stores import Store
+from aictl.stores.base import ReadResult, StoreError
 from aictl.stores.kusto.maintenance import _logical_sample_count
 
 
@@ -127,6 +129,33 @@ def test_full_session_event_page_resolves_winners_before_selecting_text(kusto_st
     assert {row["kind"]: json.loads(row["detail"]) for row in page.rows} == {
         "direct": {}, "inline": {"session_id": "wanted"}, "retained": {"session_id": "wanted"},
     }
+
+
+@pytest.mark.parametrize(("view", "params"), [
+    ("files.inventory", {}),
+    ("tools.activity_rows", {"kind_filter": "loops", "since": 99, "until": 101}),
+])
+def test_complete_history_continues_across_equal_keys_and_nulls(kusto_store, view, params):
+    seed = kusto_store.insert
+    for project in ("p", "q"):
+        for i, stamp in enumerate((100.125, 100.125, None)):
+            seed("files", project=project, path=f"/file{i}", last_changed=stamp, meta=project)
+            seed("tool_invocations", project=project, id=1, ts=100.00000023841858, tool_name=f"{project}{i}",
+                 session_id="s", dedup_key=f"k{i}")
+    seed("files", node_id="another-node", path="/other-node")
+    history = HistoryScope(kusto_store.history_store.reader, kusto_store.facts.node)
+    expected = history.read(view, **params, limit=10)
+    assert len(expected) == 6 and all("_page_cursor" not in row for row in expected)
+    assert history.read(view, **params, limit=2) == expected
+    assert history.read(view, **params, limit=2, page=True) == expected[:2]
+
+
+def test_continuation_failure_never_returns_a_partial_projection():
+    class Reader:
+        def read(self, _view, _params):
+            return ReadResult([{"path": "/first"}], truncated=True, next_page="same")
+    with pytest.raises(StoreError, match="files.inventory.*continuation"):
+        HistoryScope(Reader(), None).read("files.inventory", limit=1)
 
 
 def test_health_exposes_per_table_writer_counters_and_missing_store():

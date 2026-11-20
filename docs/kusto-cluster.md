@@ -315,6 +315,10 @@ The Flow event query narrows scans using bounded integer hashes, then checks the
 winning event's full identity, time, session and filters. It does not send an
 all-history list of event keys as a Kusto `in` argument.
 Historical dashboard reads also limit scan fan-out and batch concurrency.
+The history projection follows continuation keys when a tool-activity or file
+inventory read exceeds one page. The per-request row limit still applies.
+An explicitly limited list returns only its requested page. A failed page
+does not publish an incomplete board or substitute an empty inventory.
 Long ranges read bounded, non-overlapping time slices and combine their
 current facts before computing totals and percentiles. The same filtered
 session set is used for tool and error drill-downs. File history shows the
