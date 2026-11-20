@@ -4,7 +4,7 @@
   "tree": [
     { "id": "top", "title": "Overview", "bands": [[{"id":"kpis","height":260}]] },
     { "id": "usage", "title": "Usage and cost", "bands": [[{"id":"tokens","span":7,"height":336,"params":{"compact":true}},{"id":"cacheRate","span":5,"height":336,"params":{"compact":true}}], [{"id":"cost","span":6},{"id":"messages","span":6}], [{"id":"projects"}]] },
-    { "id": "agents", "title": "Agents", "bands": [[{"id":"attention","height":72}], [{"id":"agentsT"}], [{"id":"byModel","span":8},{"id":"byRole","span":4}]] },
+    { "id": "agents", "title": "Agents", "bands": [[{"id":"agentActivity","height":296}], [{"id":"attention","height":72}], [{"id":"agentsT"}], [{"id":"byModel","span":8},{"id":"byRole","span":4}]] },
     { "id": "sessions", "title": "Sessions", "bands": [[{"id":"sessionsT","height":496}]] },
     { "id": "prompts", "title": "Prompts and skills", "bands": [[{"id":"promptsL","span":6,"height":552},{"id":"pprompts","span":3},{"id":"skills","span":3}], [{"id":"workflows","height":448}]] },
     { "id": "context", "title": "Context", "bands": [[{"id":"budget"}], [{"id":"tokenSplit","span":6},{"id":"ctxMap","span":6}], [{"id":"memory","span":6},{"id":"dailyModels","span":6}], [{"id":"inventory","height":416}], [{"id":"lifetime"}]] },

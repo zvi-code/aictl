@@ -5,12 +5,14 @@
   min-inline-size: 0;
   font-variant-numeric: tabular-nums;
   --meter-fill: var(--color-accent);
-  --meter-height: var(--space-4);
+  --meter-height: var(--meter-track-size, var(--space-4));
 }
 .meter[data-tone="warning"] { --meter-fill: var(--color-warning); }
 .meter[data-tone="positive"] { --meter-fill: var(--color-success); }
 .meter[data-tone="danger"] { --meter-fill: var(--color-danger); }
 .readout { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); }
+.exact, .meter:is(:hover, :focus-within) .short { display: none; }
+.meter:is(:hover, :focus-within) .exact { display: inline; }
 .track { block-size: var(--meter-height); }
 .track meter {
   display: block;

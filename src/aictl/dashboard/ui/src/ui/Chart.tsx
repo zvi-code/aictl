@@ -59,6 +59,7 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
           series: [{}, ...series.map((item, index) => ({
             label: item.label,
             show: item.visible !== false,
+            width: parseFloat(color('--chart-line-width')) || 1,
             stroke: () => color(colors[item.color ?? index % colors.length]),
             ...(props.stack && index === 0 ? { fill: () => `${color(colors[item.color ?? 0])}55` } : {}),
             ...(item.paths ? { paths: item.paths } : {}),
@@ -67,7 +68,7 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
             // uPlot needs the computed pixel size to scale text for the device.
             font: `${Math.round(parseFloat(style.fontSize))}px ${style.fontFamily}`,
             stroke: () => color('--color-muted'),
-            grid: { stroke: () => color('--color-border') },
+            grid: { stroke: () => color('--chart-grid-color') || color('--color-border'), width: parseFloat(color('--chart-grid-width')) || 2 },
             ticks: { stroke: () => color('--color-border') },
             ...(index === 1 && unit ? { values: (_plot: uPlot, ticks: number[]) => ticks.map(tick => `${tick}${unit}`) } : {}),
           })),

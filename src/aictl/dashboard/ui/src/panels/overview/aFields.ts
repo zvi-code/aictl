@@ -7,4 +7,6 @@ export const count = (path: string, label: string, key = 'board.kpi.messages') =
 export const cost = (path = 'cost_usd', label = 'Cost') => field(path, label, 'board.kpi.cost_usd')
 export const stamp = (path: string, label: string) => field(path, label, undefined, 'timestamp')
 export const bucketAxis = { field: 'range', path: 'bucket_starts', wholeRange: true } as const
+export const messageRoles = ['user', 'assistant', 'tool'] as const
+export const messageColumns = messageRoles.map(role => field(role, role[0].toUpperCase() + role.slice(1), 'board.series.messages'))
 export const missing = 'Not available from this source'

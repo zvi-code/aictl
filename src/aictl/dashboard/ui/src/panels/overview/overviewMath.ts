@@ -1,10 +1,16 @@
-import type { ContextLocal } from '../../data/contract.gen'
+import type { BoardRange, BoardSeries, ContextLocal } from '../../data/contract.gen'
 import type { Row } from '../types'
+import { messageRoles } from './aFields'
 
 type Sample = number | null
 type Series = { key: string; label: string; values: Sample[] }
 const total = (list: readonly Sample[]) => list.reduce<number>((sum, value) => sum + (value ?? 0), 0)
 const sample = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null
+
+export function messageBuckets(range?: BoardRange, messages?: BoardSeries['messages']) {
+  return range?.bucket_starts?.flatMap((x, i) => Number.isFinite(x)
+    ? [{ x, values: messageRoles.map(role => sample(messages?.[role]?.[i])) }] : []) ?? []
+}
 
 export function rankedSeries(map: Row | undefined, strictOther = false): Series[] {
   if (!map) return []

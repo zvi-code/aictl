@@ -1,6 +1,6 @@
 import type { PanelDef } from '../types'
 import { loadRows, loadSeries } from '../kinds/adapters'
-import { bucketAxis, cost, count, field, stamp, tokens } from './aFields'
+import { bucketAxis, cost, count, field, messageColumns, stamp, tokens } from './aFields'
 
 const flow = { kind: 'agent', field: 'id', tab: 'flow' } as const
 const context = (path: string) => ({ route: '/api/board/context', path }) as const
@@ -8,6 +8,13 @@ const share = (path = 'cached_share', label = 'Cached share') => field(path, lab
 const agentMetric = (path: string, label: string, key: string) => field(path, label, `board.agent.${key}`)
 
 export const overviewA: readonly PanelDef[] = [
+  {
+    // The time series, ranked totals and failure rate share a scope, not an axis or row identity.
+    id: 'agentActivity', title: 'Recorded agent activity', kind: 'custom', defaultSize: 'medium', requiredCapabilities: [],
+    sources: [{ field: 'series', path: 'messages' }, { field: 'range' }, { field: 'by_model' }, { field: 'scope' }, { field: 'kpis' }],
+    columns: messageColumns, actions: [{ kind: 'filter', field: 'model', filter: 'model', label: 'Filter by model' }],
+    load: () => import('./AgentActivity'),
+  },
   {
     id: 'agentsT', title: 'Agents and subagents', kind: 'table', defaultSize: 'large', requiredCapabilities: [],
     sources: [{ field: 'agents' }, { topic: 'runtime.agent' }, { field: 'scope' }, { field: 'tool_labels' }, { route: '/api/board/nodes' }],
@@ -106,7 +113,7 @@ export const overviewA: readonly PanelDef[] = [
   {
     id: 'messages', title: 'Messages', kind: 'chart', defaultSize: 'large', requiredCapabilities: [],
     sources: [{ field: 'series', path: 'messages', wholeRange: true }, { field: 'kpis' }, { field: 'scope' }],
-    columns: ['user', 'assistant', 'tool'].map(path => field(path, path[0].toUpperCase() + path.slice(1), 'board.series.messages')),
+    columns: messageColumns,
     actions: [], empty: 'No message samples.', load: () => loadSeries(import('./usageOptions').then(m => m.messagesOptions)),
     chart: { x: bucketAxis, description: 'Messages by role per time bucket.', time: true, stack: true, select: true, namedControls: true },
   },

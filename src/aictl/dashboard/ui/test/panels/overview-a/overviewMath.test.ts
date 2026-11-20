@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { ContextLocal } from '../../../src/data/contract.gen'
-import { dailyValues, knownSum, modelAllocation, rankedSeries } from '../../../src/panels/overview/overviewMath'
+import { dailyValues, knownSum, messageBuckets, modelAllocation, rankedSeries } from '../../../src/panels/overview/overviewMath'
 
 describe('Overview usage projection', () => {
+  it('aligns message counts to the returned starts without filling missing roles, gaps or tail samples', () => {
+    const range = { since: 10, until: 41, bucket_s: 10, bucket_starts: [10, 20, 40], partial_bucket: 2 }
+    expect(messageBuckets(range, { user: [0, null], assistant: [], tool: [3, 5, 0, 7] })).toEqual([
+      { x: 10, values: [0, null, 3] }, { x: 20, values: [null, null, 5] }, { x: 40, values: [null, null, 0] },
+    ])
+    expect(messageBuckets(undefined, { user: [0], assistant: [0], tool: [0] })).toEqual([])
+  })
+
   it('does not assign a multi-model agent’s totals to one model', () => {
     const usage = { input: 5, output: 1, cache_read: 0, cache_write: 0, cost_usd: 0 }
     expect(modelAllocation({ ...usage, models: ['a', 'b'] }, 'a')).toEqual({})
