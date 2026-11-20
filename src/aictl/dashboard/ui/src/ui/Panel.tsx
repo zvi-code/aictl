@@ -8,6 +8,7 @@ export function Panel(props: {
   size?: 'small' | 'medium' | 'large'
   active?: boolean
   observeViewport?: boolean
+  fill?: boolean
   actions?: JSX.Element
   children: JSX.Element
 }) {
@@ -25,7 +26,7 @@ export function Panel(props: {
     return () => observer.disconnect()
   })
 
-  return <section ref={box} class={styles.panel} data-size={props.size ?? 'medium'} aria-labelledby={title}>
+  return <section ref={box} class={styles.panel} data-size={props.size ?? 'medium'} data-fill={props.fill ? '' : undefined} aria-labelledby={title}>
     <header class={styles.header}>
       <h3 id={title} class={styles.title}>{props.title}</h3>
       {props.actions}

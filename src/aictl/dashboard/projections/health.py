@@ -30,6 +30,9 @@ def store_health(store):
     if "status" not in health:
         health["status"] = (health["writer"] or health["reader"])["status"]
     reader = health.get("reader")
+    if reader is not None and "query_cpu" in reader:
+        health["reader"] = reader = dict(reader)
+        health["query_cpu"] = reader.pop("query_cpu")
     if reader and reader.get("last_error"):
         reader["last_error"] = mask_secrets(str(reader["last_error"]))
     writer = health.get("writer")

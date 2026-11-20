@@ -1,7 +1,6 @@
 // ─── Constants (injected by Python into window at serve-time) ───
 export const COLORS = window.COLORS ?? {};
 
-export const THEMES = ['auto','dark','light'];
 
 // ─── Number formatting (max 3 display digits, compact units) ──
 

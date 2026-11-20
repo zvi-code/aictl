@@ -3,7 +3,7 @@
 // A subagent shares the session of its main agent.
 import { html } from 'htm/preact';
 import { useState } from 'preact/hooks';
-import { NA, isLive } from '../format.js';
+import { NA } from '../../../design/format.ts';
 
 /** The session id of a board agent: its own id, or its parent's for a subagent. */
 export const sessionIdOf = a => a.parent_id || a.id;
@@ -16,7 +16,6 @@ export function windowOf(a, now = Date.now() / 1000) {
 
 /** Running, looping or waiting: the agent still writes to its session. */
 export const isActive = st => st === 'running' || st === 'looping' || st === 'waiting';
-export { isLive };
 
 const pad = n => String(n).padStart(2, '0');
 /** "14:20:05" for a time in seconds. */

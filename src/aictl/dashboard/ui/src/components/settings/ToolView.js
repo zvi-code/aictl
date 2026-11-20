@@ -95,7 +95,7 @@ function SettingRow({ row, w, scopes }) {
 }
 
 /** The tool's configuration layers in precedence order; a chip filters the table to the rows set at that layer. */
-export function ScopeStrip({ w, entry }) {
+function ScopeStrip({ w, entry }) {
   const scopes = entry.scopes || [];
   if (!scopes.length) return null;
   const rows = entry.rows.filter(w.pass);

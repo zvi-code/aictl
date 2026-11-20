@@ -7,9 +7,9 @@
 import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
 import { FixedPanel } from '../Drawer.js';
-import { Stats } from '../Panel.js';
-import { NA, fmtCredits, fmtMs, fmtN, fmtShare, stamp } from '../format.js';
-import Table from '../Table.js';
+import { Stats } from '../drawerParts.js';
+import { NA, fmtCredits, fmtMs, fmtN, fmtShare, stamp } from '../../../design/format.ts';
+import Table from '../IslandTable.js';
 
 const OTEL_TIP = 'From OpenTelemetry: the spans the tool sent to aictl';
 const HASH_CHARS = 8;

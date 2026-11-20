@@ -5,9 +5,9 @@ import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, Pending, useDetail } from '../Drawer.js';
-import { NA, fmtBytes, fmtCpu, fmtMem, fmtN, stamp } from '../format.js';
-import { Stats } from '../Panel.js';
-import Table from '../Table.js';
+import { NA, fmtBytes, fmtCpu, fmtMem, fmtN, stamp } from '../../../design/format.ts';
+import { Stats } from '../drawerParts.js';
+import Table from '../IslandTable.js';
 import { Failed, SessionNote, isActive, sessionIdOf } from './common.js';
 
 const INDENT = 16;

@@ -5,10 +5,10 @@
 import { html } from 'htm/preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
-import Chart from '../Chart.js';
+import Chart from '../DrawerChart.js';
 import { FixedPanel, Pending, useDetail } from '../Drawer.js';
-import { NA, fmtDur, fmtN, stamp } from '../format.js';
-import Table from '../Table.js';
+import { NA, fmtDur, fmtN, stamp } from '../../../design/format.ts';
+import Table from '../IslandTable.js';
 import { Failed, isActive, sessionIdOf, windowOf } from './common.js';
 
 export { OtelOverview, OtelSources } from './OtelPanels.js';

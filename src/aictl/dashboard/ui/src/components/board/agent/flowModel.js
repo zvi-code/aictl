@@ -1,7 +1,7 @@
 // ─── Session flow — events, lanes and totals from /api/board/agent/flow ──
 // The route also gives each event its running token totals and the summary of every
 // event in the range; a legacy /api/session-flow answer has neither, so both are counted here.
-import { fmtMs, fmtN } from '../format.js';
+import { fmtMs, fmtN } from '../../../design/format.ts';
 import { clip, slotColor } from './common.js';
 
 const ROUTE = {
@@ -39,7 +39,7 @@ export const LANE_COLOR = {
 };
 
 /** The most telling argument of a tool call. */
-export function toolArgs(params) {
+function toolArgs(params) {
   if (!params) return '';
   let parsed = params;
   if (typeof params === 'string') {
@@ -339,18 +339,4 @@ export function outputOf(ev) {
   if (ev.type === 'error') return ev.error_message || '';
   if (ev.type === 'hook') return ev.hook_output || '';
   return '';
-}
-
-/** Rows for the shared tooltip. */
-export function tipOf(ev, color) {
-  const tok = ev.tokens || {};
-  const d = describe(ev);
-  const rows = [{ c: color, label: 'Time', value: new Date(ev.ts * 1000).toLocaleTimeString() }];
-  if (ev.model) rows.push({ c: 'transparent', label: 'Model', value: ev.model });
-  if (tok.input || tok.output) rows.push({ c: 'transparent', label: 'Input / output', value: fmtN(tok.input || 0) + ' / ' + fmtN(tok.output || 0) });
-  if (tok.cache_read) rows.push({ c: 'transparent', label: 'Cache read', value: fmtN(tok.cache_read) });
-  if (ev.duration_ms > 0) rows.push({ c: 'transparent', label: 'Took', value: fmtMs(ev.duration_ms) });
-  if (ev.ttft_ms > 0) rows.push({ c: 'transparent', label: 'First token', value: fmtMs(ev.ttft_ms) });
-  if (d.meta) rows.push({ c: 'transparent', label: 'Detail', value: clip(d.meta, 60) });
-  return { title: clip(d.label, 70), rows };
 }

@@ -114,7 +114,7 @@ function VirtualTable<T extends object>(props: TableProps<T>): JSX.Element {
                 </Show>
               </th>
             }</For>
-            <Show when={props.action}><th scope="col">Actions</th></Show>
+                  <Show when={props.action}><th scope="col">Actions</th></Show>
           </tr>
         </thead>
         <tbody>
@@ -132,9 +132,9 @@ function VirtualTable<T extends object>(props: TableProps<T>): JSX.Element {
                   <td class={styles.cell}>{formatField(field(), row())}</td>
                 }</For>
                 <Show when={props.action}>{action =>
-                  <td class={styles.cell}><button type="button" class={styles.action}
+                  <td class={styles.cell}><Show when={action().label(row())}><button type="button" class={styles.action}
                     onFocus={() => setFocusedRow(item().row.id)} onBlur={() => setFocusedRow(undefined)}
-                    onClick={() => action().run(row())}>{action().label(row())}</button></td>
+                    onClick={() => action().run(row())}>{action().label(row())}</button></Show></td>
                 }</Show>
               </tr>
             </>

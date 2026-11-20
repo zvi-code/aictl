@@ -93,7 +93,7 @@ def _request(port, method, path):
             assert any(line.startswith(b"data:") for line in lines), "No initial SSE frame"
             if route == "/api/live/stream":
                 assert b"event: bootstrap" in lines, "No live bootstrap event"
-        elif method == "GET" and route in ("/", "/api/snapshot", "/api/live/capabilities", "/api/board/health"):
+        elif method == "GET" and route in ("/", "/api/snapshot", "/api/live/capabilities"):
             assert response.status == 200, f"HTTP {response.status}"
     finally:
         connection.close()

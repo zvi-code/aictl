@@ -12,7 +12,7 @@ import { html } from 'htm/preact';
 import { getSettingsFiles } from '../../api.js';
 import { scopeAudit } from '../../utils/auditScope.js';
 import { isFiltered } from '../../utils/toolScope.js';
-import { boardNodeScope, writeUrl } from '../../hooks/urlState.js';
+import { boardNodeScope, writeUrl } from '../../data/urlState.ts';
 import { isTypingTarget } from '../../utils/a11y.js';
 import { ConfigurationEvidence } from '../../live/LoadedConfiguration.js';
 import Icon from '../ui/Icon.js';
@@ -87,7 +87,7 @@ function useFiles(readonly) {
 }
 
 /** The audit state the Findings view reads: loading, error or ready, from the source's findings. */
-export function auditState(findings) {
+function auditState(findings) {
   const f = findings || {};
   const audit = f.audit || null;
   const status = f.loading ? 'loading' : f.error ? 'error' : audit || f.loading === false ? 'ready' : 'loading';

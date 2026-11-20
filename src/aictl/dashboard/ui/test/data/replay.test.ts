@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { gunzipSync } from 'node:zlib'
 import { expect, it } from 'vitest'
-import { createLiveStore, type LiveEntity, type LiveIdentity } from '../../src/data/store'
-import { projectBoard } from '../../src/live/boardProjection'
+import { createLiveStore, type LiveEntity, type LiveIdentity, type LiveStore } from '../../src/data/store'
 import { frameClock } from './harness'
 
 interface TapeEvent {
@@ -16,7 +15,7 @@ interface TapeEvent {
   }
 }
 
-it('projects the same board from recorded changes and a bootstrap at the final sequence', () => {
+it('projects the same contract entities from recorded changes and a bootstrap at the final sequence', () => {
   const file = new URL('../../../../../../test/recordings/busy/main-sse.jsonl.gz', import.meta.url)
   const events = gunzipSync(readFileSync(file)).toString('utf8').trimEnd().split('\n')
     .map(line => JSON.parse(line) as TapeEvent)
@@ -29,11 +28,13 @@ it('projects the same board from recorded changes and a bootstrap at the final s
 
   const clock = frameClock()
   const store = createLiveStore({ query: first.data.scope, frames: clock.frames })
-  let board = projectBoard(store)
-  store.subscribeApplied(applied => { board = projectBoard(store, board, applied) })
+  const topics = new Set(first.data.entities.map(entity => entity.topic))
+  for (const { data } of changes) for (const { topic } of data.upserts ?? []) topics.add(topic)
+  const projection = (current: LiveStore) => [...topics].map(topic =>
+    [...(current.topic(topic)?.values() ?? [])].sort((a, b) => a.id.localeCompare(b.id)))
   expect(store.receive(first.event, first.data)).toBe(true)
   clock.tick()
-  const initialBoard = board
+  const initialBoard = projection(store)
 
   // The tape has only an opening bootstrap. Build the final bootstrap from the
   // wire entities, without using the store or its board projection as the oracle.
@@ -62,6 +63,6 @@ it('projects the same board from recorded changes and a bootstrap at the final s
   clock.tick()
   expect(store.meta.sequence).toBe(last.data.sequence)
   expect(fresh.meta.sequence).toBe(store.meta.sequence)
-  expect(board).not.toEqual(initialBoard)
-  expect(board).toEqual(projectBoard(fresh))
+  expect(projection(store)).not.toEqual(initialBoard)
+  expect(projection(store)).toEqual(projection(fresh))
 })

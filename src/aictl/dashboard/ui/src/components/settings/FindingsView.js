@@ -5,7 +5,7 @@ import { envName, findingGroups, findingTools, isEnvSource, matchFinding, tildeP
 import { RiskDot, NavHead } from './parts.js';
 import { useGrid } from './tableGrid.js';
 
-export const FOLD_FINDINGS = 5;
+const FOLD_FINDINGS = 5;
 
 export function whereText(path, line) {
   if (!path) return '—';

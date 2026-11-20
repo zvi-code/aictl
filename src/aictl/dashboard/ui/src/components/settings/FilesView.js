@@ -13,12 +13,12 @@ import { ScopeChip, LockGlyph } from './Value.js';
 import { Swatch, NavHead, ToolChip } from './parts.js';
 import { useGrid } from './tableGrid.js';
 
-export const FOLD_FILES = 8;
+const FOLD_FILES = 8;
 const DAY_S = 86400;
 const COLS = 8;
 
 /** The active Files filters, from the URL state. */
-export function fileFilters(st) {
+function fileFilters(st) {
   const cell = st.cell ? st.cell.split(':') : null;
   return {
     loc: listOf(st.sec), tools: listOf(st.tool), purpose: listOf(st.purpose), scope: listOf(st.fscope), git: listOf(st.git),
@@ -38,7 +38,7 @@ function passes(f, F, skip, now) {
 }
 
 /** The files the view shows: the search and every filter, but the one named by `skip` (for its counts). */
-export function visibleFiles(w, skip = null, now = Date.now() / 1000) {
+function visibleFiles(w, skip = null, now = Date.now() / 1000) {
   const F = fileFilters(w.st);
   return w.files.filter(f => matchFile(f, w.q) && passes(f, F, skip, now));
 }
@@ -162,7 +162,7 @@ function FileRow({ f, w }) {
 }
 
 /** Absent managed locations the view lists last: search and "Read by" applied, hidden while a location is picked. */
-export function visibleAbsent(w) {
+function visibleAbsent(w) {
   const F = fileFilters(w.st);
   if (F.loc.length || F.purpose.length || F.scope.length || F.git.length || F.recent || F.cell) return [];
   const q = w.q.trim().toLowerCase();
@@ -190,7 +190,7 @@ function AbsentGroup({ w, items }) {
 }
 
 /** The tree's groups: by location root or by purpose, then the watched folders. */
-export function treeGroups(files, by) {
+function treeGroups(files, by) {
   const plain = files.filter(f => !f.is_dir);
   const dirs = files.filter(f => f.is_dir);
   const out = by === 'purpose'

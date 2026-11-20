@@ -15,14 +15,14 @@ const BUCKETS = [
 ];
 
 /** The server's own message from an api error ("HTTP 409 /api/…: message"). */
-export function serverMessage(err) {
+function serverMessage(err) {
   const m = String(err?.message || err || '');
   return m.replace(/^HTTP \d+ \S+: /, '') || 'The request failed';
 }
 
 const textsOf = cfg => Object.fromEntries(BUCKETS.map(b => [b.id, listToText(cfg?.permissions?.[b.id])]));
 
-export function DiffChips({ title, diff }) {
+function DiffChips({ title, diff }) {
   const changed = diff.added.length || diff.removed.length;
   return html`<div class="st-diff" data-bucket=${title}>
     <span class="st-diff__name">${title}</span>

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/preact';
 import { html } from 'htm/preact';
 import Drawer, { breakdownModel, largestResults, reportModel } from '../src/components/board/Drawer.js';
-import { instructionsByTool } from '../src/components/board/findings.js';
+import { instructionsByTool } from '../src/panels/overview/b/findings.ts';
 import { getContextAudit } from '../src/api.js';
 import { NOW, agentDetailFixture, boardFixture } from './fixtures/board.fixture.js';
 

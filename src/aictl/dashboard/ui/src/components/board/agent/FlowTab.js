@@ -1,16 +1,15 @@
 // ─── Agent drawer: Flow — the session as a sequence of events ─────
 // Timeline lists the events down one spine; Swim-lane draws each event as an
 // arrow between the user, the tool, the model, tools, subagents and hooks.
-// A click opens the event in place; hover shows it in the shared tooltip.
+// A click opens the event in place.
 import { html } from 'htm/preact';
 import { useEffect, useId, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, useDetail } from '../Drawer.js';
-import { NA, fmtMs, fmtN, stamp } from '../format.js';
-import { Stats } from '../Panel.js';
-import { hideTip, showTip } from '../tip.js';
+import { NA, fmtMs, fmtN, stamp } from '../../../design/format.ts';
+import { Stats } from '../drawerParts.js';
 import { Wait, Seg, SessionNote, clock, isActive, pretty, usePref } from './common.js';
-import { LANE, LANE_COLOR, describe, flowModel, inputOf, outputOf, skillPhase, swimLayout, tipOf } from './flowModel.js';
+import { LANE, LANE_COLOR, describe, flowModel, inputOf, outputOf, skillPhase, swimLayout } from './flowModel.js';
 import EvidenceTab from './EvidenceTab.js';
 import SessionKql from './SessionKql.js';
 import { parseCustomRange, toLocalISOString } from '../../../utils/customRange.js';
@@ -74,8 +73,6 @@ function Inspector({ ev, sessionId, onClose }) {
     ${kqlSnippet ? html`<div class="bd-ag-sect">Correlated KQL Snippet</div><pre class="bd-ag-pre bd-insp-kql">${kqlSnippet}</pre>` : null}
   </aside>`;
 }
-
-const hoverTip = (ev, color) => e => showTip(e.clientX, e.clientY, tipOf(ev, color));
 
 // An anonymous legacy event is selected only for this response. Its position,
 // timestamp, turn and tool-call IDs do not uniquely identify it on refresh.
@@ -153,7 +150,7 @@ function TimelineList({ events, sel, onSel }) {
         </div>
       </div>`}
       <button type="button" class=${'bd-ag-tlrow' + (on ? ' bd-on' : '') + (isErr ? ' bd-err-row' : '')} aria-expanded=${on ? 'true' : 'false'}
-        onClick=${() => onSel(on ? null : eventKey(ev))} onMouseMove=${hoverTip(ev, c)} onMouseLeave=${hideTip}>
+        onClick=${() => onSel(on ? null : eventKey(ev))}>
         <span class="bd-ag-when">${clock(ev.ts)}${ev._cum ? html`<em>${fmtN(ev._cum) + ' total' + (ev._rt ? ', ' + fmtN(ev._rt) + ' this turn' : '')}</em>` : null}</span>
         <span class="bd-ag-body-actor">
           <span class="bd-ag-dot" style=${{ borderColor: c, background: ln.kind === 'reply' || ln.kind === 'marker' ? c : 'transparent' }}></span>
@@ -214,7 +211,7 @@ function SwimLanes({ events, participants: all, filtered, groupLanes, sel, onSel
           <button type="button" class=${'bd-flow-stream-row' + (on ? ' bd-on' : '')}
             style=${{ gridTemplateColumns: `68px repeat(${agentStreams.length}, minmax(210px, 1fr))` }}
             aria-expanded=${on ? 'true' : 'false'} aria-label=${clock(ev.ts) + ' ' + d.label}
-            onClick=${() => onSel(on ? null : eventKey(ev))} onMouseMove=${hoverTip(ev, c)} onMouseLeave=${hideTip}>
+            onClick=${() => onSel(on ? null : eventKey(ev))}>
             <span class="bd-flow-stream-ts">${clock(ev.ts)}</span>
             ${agentStreams.map(aid => html`<span key=${aid} class="bd-flow-stream-cell">
               ${aid === activeStream ? html`<span class=${'bd-flow-stream-card' + (isErr ? ' bd-err' : ev.type === 'skill_event' ? ' bd-skill' : '')}>
@@ -258,7 +255,7 @@ function SwimLanes({ events, participants: all, filtered, groupLanes, sel, onSel
       }
       return html`<div key=${ev.step_key || ev.event_id || idx} role="listitem">
         <button type="button" class=${'bd-ag-slrow' + (on ? ' bd-on' : '')} aria-expanded=${on ? 'true' : 'false'} aria-label=${clock(ev.ts) + ' ' + d.label}
-          onClick=${() => onSel(on ? null : eventKey(ev))} onMouseMove=${hoverTip(ev, c)} onMouseLeave=${hideTip}>
+          onClick=${() => onSel(on ? null : eventKey(ev))}>
           <span>${ev._cum ? fmtN(ev._cum) : ''}</span><span>${ev._rt ? fmtN(ev._rt) : ''}</span><span>${clock(ev.ts)}</span>
           <span class="bd-ag-slarea">${mark}</span>
         </button>

@@ -116,7 +116,7 @@ if scratch := os.environ.get("AICTL_TEST_SESSION_SCRATCH"):
     sessions = (REAL_HOME / ".copilot" / "session-state").resolve()
     relative = candidate.relative_to(sessions)
     if (len(relative.parts) != 3 or relative.parts[1] != "files"
-            or relative.parts[2] not in {"r2-scratch", "r3-scratch", "sd-scratch"}):
+            or relative.parts[2] not in {"r2-scratch", "r3-scratch", "p3be-scratch", "sd-scratch"}):
         raise ValueError("Use the session's designated scratch directory under files")
     _SESSION_SCRATCH = os.path.normcase(str(candidate))
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND

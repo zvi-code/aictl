@@ -2,8 +2,8 @@
 import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
 import { FixedPanel } from '../Drawer.js';
-import { NA, fmtN, stamp } from '../format.js';
-import Table from '../Table.js';
+import { NA, fmtN, stamp } from '../../../design/format.ts';
+import Table from '../IslandTable.js';
 
 const STATE = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
 

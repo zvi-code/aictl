@@ -6,24 +6,36 @@ import { html } from 'htm/preact';
 import { loadChunk } from './lazy.js';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from '../../api.js';
-import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, estTokens, estTokensFromSize, isLive, sparkPath, stamp, statusMeta } from './format.js';
+import { NA, NO_MODEL, errorLabel, colorFor, projectName, fmtBytes, fmtCpu, fmtDur, fmtLines, fmtMem, fmtMs, fmtN, fmtShare, fmtUsd, estTokens, estTokensFromSize, isLive, sparkPath, stamp, statusMeta } from '../../design/format.ts';
 import { Ico, PATHS } from './icons.js';
-import { Actions, Stats } from './Panel.js';
-import { reportingNode, statusCell } from './panels.js';
-import Table from './Table.js';
+import { Actions, Stats } from './drawerParts.js';
+import Table from './IslandTable.js';
 import TextView from '../ui/TextView.js';
 import { scopeAudit } from '../../utils/auditScope.js';
-import { instructionsByTool } from './findings.js';
+import { instructionsByTool } from '../../panels/overview/b/findings.ts';
 import FileEditor from './FileEditor.js';
-import { normalizeAgentDetail } from './useBoardData.js';
 import { useLiveState } from '../../live/context.ts';
-import { liveProcessTree, mergeRuntimeAgents } from '../../live/selectors.js';
+import { liveProcessTree, mergeRuntimeAgents } from '../../live/selectors.ts';
 import NativeOutput from './agent/NativeOutput.js';
 import ContextHistory from './agent/ContextHistory.js';
 import LoadedConfiguration from '../../live/LoadedConfiguration.js';
 
+function reportingNode(id) {
+  if (typeof id !== 'string' || id[0] !== '[') return null;
+  try { const parts = JSON.parse(id); return Array.isArray(parts) && parts.length === 2 ? parts[0] : null; } catch { return null; }
+}
+
+function statusCell(a, stopped) {
+  const st = stopped && stopped[a.id] ? 'stopped' : a.status;
+  const processOnly = a.running === true && st === 'unknown';
+  const s = statusMeta(processOnly ? 'running' : st);
+  const p = a.pending;
+  const wait = p && st === 'waiting' ? 'Waits for confirmation of ' + p.name + ': ' + p.target : s.label;
+  return { v: s.label, sub: processOnly ? 'Activity unknown' : undefined, dot: s.dot, title: processOnly ? 'A running process is present; native work or idle state is not reported.' : wait };
+}
+
 // A new `tick` fetches again at most once per DETAIL_REFRESH_MS.
-export const DETAIL_REFRESH_MS = 5000;
+const DETAIL_REFRESH_MS = 5000;
 
 /** Fetch on open. A new `tick` fetches again and keeps the old data on screen meanwhile.
  * A tick does not abort a fetch on its way: it is remembered, and fetched once that one ends.
@@ -96,7 +108,7 @@ export function FixedPanel({ id, title, sub, span = 12, go, children }) {
 
 // The width of the drawer, set by dragging its left edge, is kept in this browser.
 const DRAWER_W_KEY = 'aictl.drawerWidth';
-export const DRAWER_MIN_PX = 320;
+const DRAWER_MIN_PX = 320;
 const BOARD_MIN_PX = 360;
 const DRAWER_STEP_PX = 20;
 const loadDrawerWidth = () => { try { return parseInt(localStorage.getItem(DRAWER_W_KEY), 10) || null; } catch { return null; } };
@@ -183,8 +195,7 @@ const AGENT_TOPICS = ['runtime.agent', 'runtime.process'];
 
 function AgentDrawer({ d, ctx, frame, act }) {
   const { client, state: subscription } = useLiveState(AGENT_TOPICS);
-  const { data: raw, error } = useDetail(opts => api.getBoardAgent(d.id, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'agent:' + d.id);
-  const historical = useMemo(() => normalizeAgentDetail(raw), [raw]);
+  const { data: historical, error } = useDetail(opts => api.getBoardAgent(d.id, { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId }), 'agent:' + d.id);
   const listed = ctx.data.agents.find(a => a.id === d.id);
   const a = useMemo(() => {
     const fallback = listed || { id: d.id, title: d.id };
@@ -217,7 +228,7 @@ function AgentDrawer({ d, ctx, frame, act }) {
     ['sep1'],
     ['changes', 'Changes', data ? (data.files || []).length : null],
     ['artifacts', 'Artifacts', data ? data.artifacts_total : null],
-    ['commits', 'Commits', data ? data.commits.length : null],
+    ['commits', 'Commits', data?.commits?.length ?? null],
     ['sep2'],
     ['events', 'Events'],
     ['team', 'Team'],
@@ -415,7 +426,7 @@ const TIMELINE_LANES = 8;
 const LANE_COLORS = ['var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)'];
 
 /** The agents of the session over its time: one lane each, with the prompts, failures and compactions of the main agent as ticks. */
-export function timelineModel(a, data, now = Date.now() / 1000) {
+function timelineModel(a, data, now = Date.now() / 1000) {
   if (!a.started_at) return null;
   const end = a.ended_at || now;
   const span = Math.max(1, end - a.started_at);
@@ -436,7 +447,7 @@ export function timelineModel(a, data, now = Date.now() / 1000) {
 }
 
 /** True when the session has more to draw than the main agent's bar alone. */
-export const hasTimeline = m => !!m && (m.lanes.length > 1 || m.ticks.length > 0);
+const hasTimeline = m => !!m && (m.lanes.length > 1 || m.ticks.length > 0);
 
 function AgentTimeline({ m, act, span = 12 }) {
   if (!hasTimeline(m)) return null;
@@ -478,7 +489,7 @@ function Anomalies({ data, act }) {
 }
 
 /** The files of the repository that apply to the session folder, one row per folder, names as chips that open the file. */
-export function groupContextFiles(files, gitRoot) {
+function groupContextFiles(files, gitRoot) {
   const root = gitRoot ? gitRoot.replace(/\/+$/, '') + '/' : '';
   const byDir = new Map();
   for (const f of files) {
@@ -531,7 +542,7 @@ const LOAD_TIP = {
 const REPORTS_LOADS = ['claude-code', 'copilot-cli'];
 
 /** One row per loaded file; a file loaded in two ways shows both. */
-export function loadedRows(loaded) {
+function loadedRows(loaded) {
   const by = new Map();
   for (const x of loaded || []) {
     const r = by.get(x.path) || { path: x.path, name: x.name, ts: x.ts, hows: [], tips: [] };
@@ -714,7 +725,7 @@ function ContextTab({ a, data, act }) {
 const OUTPUT_ROWS = 5;
 
 /** The Overview card: what the session left behind, changed files first, then the files it wrote. */
-export function outputRows(data) {
+function outputRows(data) {
   const changed = (data.files || []).slice().sort((x, y) => ((y.lines_added || 0) + (y.lines_removed || 0)) - ((x.lines_added || 0) + (x.lines_removed || 0)))
     .map(f => ({ path: f.path, name: f.path.split('/').pop(), kind: 'Changed', value: fmtLines(f.lines_added, f.lines_removed), ts: null }));
   const arts = (data.artifacts || []).slice().sort((x, y) => (x.kind === 'written' ? 0 : 1) - (y.kind === 'written' ? 0 : 1) || (y.mtime || 0) - (x.mtime || 0))

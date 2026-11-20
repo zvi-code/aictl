@@ -28,7 +28,7 @@ def test_the_real_package_is_read(monkeypatch):
     assert code_age._newest_change() > 0
 
 
-def test_the_machine_payload_carries_it(monkeypatch):
+def test_the_health_payload_carries_it(monkeypatch):
     monkeypatch.setattr(code_age, "code_changed_at", lambda now=None: 123.0)
-    me = board_api.compute_machine(None, SimpleNamespace(snapshot=None))["pipeline"]["self"]
+    me = board_api.compute_health(None, SimpleNamespace(snapshot=None))["pipeline"]["self"]
     assert me["code_changed_at"] == 123.0 and me["started_at"] == code_age.STARTED_AT

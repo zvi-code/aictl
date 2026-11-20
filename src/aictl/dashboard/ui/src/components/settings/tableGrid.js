@@ -1,7 +1,7 @@
 // ─── Sort and column widths shared by every settings table ─
 import { html } from 'htm/preact';
 import { useState } from 'preact/hooks';
-import { nextSort } from '../board/tableModel.js';
+import { nextSort } from '../ui/tableSort';
 import { useColumnWidths } from '../board/colWidths.js';
 
 // A column is {k, l, get, n?, cls?}: k its key, l its header, get(row) the value

@@ -1,0 +1,23 @@
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--panel-sm), 1fr));
+  gap: var(--space-4);
+}
+.stats a { color: var(--color-accent); text-decoration: none; }
+.stats a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
+.kpiStats { gap: var(--space-3) var(--space-4); font-size: var(--text-sm); line-height: var(--leading-tight); }
+.kpiStats dl { gap: 0; }
+.kpiStats dd:first-of-type { font-size: var(--text-lg); }
+.kpiDetail { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-2); }
+.kpiDetail .spark { inline-size: calc(var(--space-7) * 2); aspect-ratio: 60 / 18; }
+.spark { display: block; inline-size: calc(var(--space-8) * 2); color: var(--color-chart-1); }
+.chartTools { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; }
+.chartTools > span { flex-basis: 100%; min-block-size: 1lh; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.button { composes: button focus from "../../ui/control.module.css"; }
+.chartBucket { font-variant-numeric: tabular-nums; min-inline-size: var(--overlay-sm); }
+.staleNotice[aria-hidden="true"] { visibility: hidden; }
+.chartTools.compactChart { gap: var(--space-1) var(--space-3); font-size: var(--text-sm); }
+.compactChart .chartBucket { min-inline-size: 0; }
+.compactChart .button { padding-inline: var(--space-3); }
+.compactPlot { block-size: max(var(--panel-sm), calc(100% - var(--panel-sm))); }
+.treeCell { display: flex; align-items: center; gap: var(--space-1); min-inline-size: 0; }

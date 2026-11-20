@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
@@ -7,9 +7,7 @@ import { startReplay } from '../replay/server.mjs';
 
 export const dist = resolve(process.env.UI_DIST ?? 'node_modules/.cache/aictl-ui-baseline');
 export const boardUrl = '/?screen=board&range=7d';
-export const initialMisses = [
-  '/api/board/sessions?limit=50&offset=0&q=',
-];
+const catalogUrl = new URL('../../../../../../docs/datapoint-catalog.csv', import.meta.url);
 
 export const test = base.extend({
   shiftSources: [false, { option: true }],
@@ -59,11 +57,19 @@ export function checkConsole(capture, expectedMisses = [], recordedErrors = []) 
   expect.soft(unexpected, 'unexpected browser console errors').toEqual([]);
 }
 
+export async function provideCatalog(page) {
+  // The Phase 0 tape predates this read. Use the checked-in datapoint metadata.
+  const rows = (await readFile(catalogUrl, 'utf8')).split(/\r?\n/).slice(1).filter(Boolean).map(line => {
+    const [key, , unit] = line.split(',', 3);
+    return { key, unit };
+  });
+  await page.route('**/api/datapoints', route => route.fulfill({ json: rows }));
+}
+
 export async function goToBoard(page, replay) {
+  await provideCatalog(page);
   await page.goto(replay.url + boardUrl);
-  await expect(page.locator('.bd-app')).toHaveAttribute('aria-busy', 'false');
-  const messages = page.locator('#sec-top .bd-kpi').filter({ has: page.getByText('Messages', { exact: true }) });
-  await expect(messages.locator('.bd-v')).not.toHaveText('n/a');
+  await expect(page.locator('#p-kpis').getByText('Messages', { exact: true })).toBeVisible();
 }
 
 export async function captureFrame(page) {

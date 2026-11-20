@@ -4,7 +4,7 @@ import { html } from 'htm/preact';
 import { useRef, useState } from 'preact/hooks';
 
 const KEY = 'aictl.colw.';
-export const MIN_COL_PX = 40;
+const MIN_COL_PX = 40;
 const STEP_PX = 10;
 
 function load(id) {

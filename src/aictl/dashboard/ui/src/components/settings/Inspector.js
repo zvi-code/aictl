@@ -48,7 +48,7 @@ function changeHint(row, scopes) {
 }
 
 /** For a knob no file sets: its default and the file a person would set it in. */
-export function unsetText(row, scopes) {
+function unsetText(row, scopes) {
   const target = writableScope(scopes);
   return `Not set in any file. Default: ${plainValue(row.value)}.`
     + (target ? ` Set it in ${tildePath(target.path)} (${target.label}).` : '');

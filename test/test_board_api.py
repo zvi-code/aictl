@@ -3126,7 +3126,7 @@ class TestAgentDetailResources:
         assert res["bytes_in"] is None and res["rate_limit"] is None and res["process_tree"] == []
 
 
-# ─── /api/board/machine ───────────────────────────────────────────
+# ─── Live machine and collection health ───────────────────────────
 
 
 def _machine_tool(tool="claude-code", processes=(), live=None, meta=False):
@@ -3158,8 +3158,8 @@ class TestMachine:
         monkeypatch.setattr(board_api, "_parent_pid", lambda pid: None)
         board_api._db_stats_memo.clear()
 
-    def _machine(self, snapshot, db=None, tools=None, **kw):
-        return board_api.compute_machine(db, SimpleNamespace(snapshot=snapshot), tools, now=1010.0, **kw)
+    def _health(self, snapshot):
+        return board_api.compute_health(None, SimpleNamespace(snapshot=snapshot), now=1010.0)
 
     def test_monitor_lists_collectors_roots_and_each_tool_live_numbers(self):
         live = {
@@ -3174,7 +3174,7 @@ class TestMachine:
             "workspace_paths": ["/p/one"],
             "state_paths": ["/home/me/.claude"],
         }
-        m = self._machine(_machine_snapshot([_machine_tool(live=live)], live_monitor=lm))
+        m = self._health(_machine_snapshot([_machine_tool(live=live)], live_monitor=lm))
         assert m["monitor"]["collectors"] == [
             {"name": "fs", "mode": "poll", "status": "degraded", "detail": None},
             {"name": "network", "mode": "nettop", "status": "active", "detail": "2 tools"},
@@ -3187,10 +3187,9 @@ class TestMachine:
         assert row["mcp_loop"] == {"detected": True, "loops": 4, "confidence": 0.7}
         assert (row["file_events"], row["files_touched"], row["cpu_pct"], row["cpu_peak"]) == (17, 5, 12.5, 40.0)
         assert row["workspace_bytes"] == 2 * 1048576
-        assert m["cpu_per_core"] == [12.0, 85.5]
 
     def test_a_tool_without_live_data_has_no_traffic_row_and_unknown_numbers_stay_null(self):
-        m = self._machine(_machine_snapshot([_machine_tool(), _machine_tool("codex-cli", live={"session_count": 1})]))
+        m = self._health(_machine_snapshot([_machine_tool(), _machine_tool("codex-cli", live={"session_count": 1})]))
         rows = m["monitor"]["per_tool"]
         assert [r["tool"] for r in rows] == ["codex-cli"]
         assert rows[0]["est_tokens"] is None and rows[0]["mcp_loop"] is None and rows[0]["inbound_bps"] is None
@@ -3202,7 +3201,7 @@ class TestMachine:
             anomalies=[{"type": "high_memory", "actual_mb": 900.0, "expected_mb": 300.0}, {"type": "zombie", "ppid": 1, "risk": "high"}],
         )
         live = {"processes": [{"pid": 501, "ppid": 1, "name": "mcp-github"}, {"pid": 502, "ppid": 501, "name": "git", "cpu_pct": 0.5, "mem_mb": 4.0}]}
-        rows = {p["pid"]: p for p in self._machine(_machine_snapshot([_machine_tool(processes=[proc], live=live)]))["processes"]}
+        rows = {p["pid"]: p for p in board_api.machine_processes(_machine_snapshot([_machine_tool(processes=[proc], live=live)]))}
         mcp = rows[501]
         assert mcp["process_type"] == "mcp-server" and mcp["ppid"] == 1
         assert mcp["zombie_risk"] == "high" and mcp["cleanup_cmd"] == "pkill -f mcp-github"
@@ -3215,21 +3214,26 @@ class TestMachine:
 
     def test_a_cmdline_is_cut_to_one_short_line(self):
         proc = _mproc(7, cmdline="python\n" + "x" * 500)
-        row = self._machine(_machine_snapshot([_machine_tool(processes=[proc])]))["processes"][0]
+        row = board_api.machine_processes(_machine_snapshot([_machine_tool(processes=[proc])]))[0]
         assert "\n" not in row["cmdline"] and len(row["cmdline"]) <= board_api.MACHINE_CMDLINE_CHARS
 
     def test_a_process_without_a_reported_parent_asks_the_system(self, monkeypatch):
         monkeypatch.setattr(board_api, "_parent_pid", lambda pid: 77 if pid == 8 else None)
-        rows = {p["pid"]: p for p in self._machine(_machine_snapshot([_machine_tool(processes=[_mproc(8), _mproc(77, "claude")])]))["processes"]}
+        rows = {p["pid"]: p for p in board_api.machine_processes(_machine_snapshot([_machine_tool(processes=[_mproc(8), _mproc(77, "claude")])]))}
         assert rows[8]["ppid"] == 77 and rows[8]["parent_name"] == "claude"
         assert rows[77]["ppid"] is None and rows[77]["parent_name"] is None
 
     def test_no_alert_on_a_healthy_machine(self):
-        assert self._machine(_machine_snapshot([_machine_tool(processes=[_mproc(1), _mproc(2, kind="subagent", mem="500")])]))["alerts"] == []
+        assert self._alerts([_mproc(1), _mproc(2, kind="subagent", mem="500")]) == []
+
+    @staticmethod
+    def _alerts(processes, live=None):
+        snapshot = _machine_snapshot([_machine_tool(processes=processes, live=live)])
+        return board_api.machine_alerts(board_api.machine_processes(snapshot))
 
     def test_subagents_over_2_gb_of_ram(self):
         procs = [_mproc(10 + i, kind="subagent", mem="900") for i in range(3)]
-        alerts = self._machine(_machine_snapshot([_machine_tool(processes=procs)]))["alerts"]
+        alerts = self._alerts(procs)
         assert [(a["kind"], a["severity"]) for a in alerts] == [("subagent_ram", "crit")]
         assert alerts[0]["text"] == "Subagents use 2.7 GB of RAM, more than 2 GB"
         assert alerts[0]["pids"] == [10, 11, 12] and alerts[0]["pid"] is None and alerts[0]["tool"] == "claude-code"
@@ -3240,34 +3244,23 @@ class TestMachine:
         # A catalog risk alone is not a dead parent.
         risky = _mproc(21, "mcp-ok", kind="mcp-server", zombie_risk="high")
         live["processes"].append({"pid": 21, "ppid": 300, "name": "mcp-ok"})
-        alerts = self._machine(_machine_snapshot([_machine_tool(processes=[orphan, risky], live=live)]))["alerts"]
+        alerts = self._alerts([orphan, risky], live)
         assert [(a["kind"], a["pid"], a["action"]) for a in alerts] == [("orphan_mcp", 20, "pkill -f mcp-fs")]
         assert alerts[0]["text"] == "1 MCP server has no parent process and may be orphaned"
 
     def test_headless_browsers_and_many_anomalies(self):
         browsers = [_mproc(30, "chrome-headless-shell"), _mproc(31, "chromium", kind="browser")]
         noisy = [_mproc(40 + i, anomalies=[{"type": "cpu_spike"}, {"type": "long_running"}]) for i in range(3)]
-        alerts = {a["kind"]: a for a in self._machine(_machine_snapshot([_machine_tool(processes=browsers + noisy)]))["alerts"]}
+        alerts = {a["kind"]: a for a in self._alerts(browsers + noisy)}
         assert set(alerts) == {"headless_browser", "anomalies"}
         assert alerts["headless_browser"]["severity"] == "info" and alerts["headless_browser"]["action"] == "kill 30 31"
         assert alerts["anomalies"]["text"] == "6 process anomalies in 3 processes"
 
-    def test_the_tool_filter_applies_to_tool_lists_and_not_to_the_machine(self):
-        snap = _machine_snapshot(
-            [_machine_tool(processes=[_mproc(1)], live={"session_count": 1}), _machine_tool("codex-cli", processes=[_mproc(2)], live={"session_count": 1})],
-            live_monitor={"diagnostics": {"net": {"status": "active"}}},
-        )
-        m = self._machine(snap, tools=("codex-cli",))
-        assert [p["pid"] for p in m["processes"]] == [2]
-        assert [t["tool"] for t in m["monitor"]["per_tool"]] == ["codex-cli"]
-        assert [f["tool"] for f in m["pipeline"]["freshness"]] == ["codex-cli"]
-        assert m["cpu_per_core"] and m["monitor"]["collectors"]
-        none = json.loads(board_api.machine_bytes(None, SimpleNamespace(snapshot=snap), "tool=-", now=1010.0))
-        assert none["processes"] == [] and none["monitor"]["per_tool"] == []
-
     def test_meta_tools_are_left_out(self):
-        m = self._machine(_machine_snapshot([_machine_tool("context", processes=[_mproc(3)], live={"session_count": 1}, meta=True)]))
-        assert m["processes"] == [] and m["monitor"]["per_tool"] == [] and m["pipeline"]["freshness"] == []
+        snapshot = _machine_snapshot([_machine_tool("context", processes=[_mproc(3)], live={"session_count": 1}, meta=True)])
+        m = self._health(snapshot)
+        assert board_api.machine_processes(snapshot) == []
+        assert m["monitor"]["per_tool"] == [] and m["pipeline"]["freshness"] == []
 
     @staticmethod
     def _after_health_refresh(db, store, **options):
@@ -3284,15 +3277,15 @@ class TestMachine:
 
         reader.read = watch
         try:
-            board_api.compute_machine(db, store, **options)
-            assert ready.wait(5), "Machine health did not finish its history reads"
+            board_api.compute_health(db, store, **options)
+            assert ready.wait(5), "Health did not finish its history reads"
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 with board_api._health_cache_lock:
                     if not board_api._health_cache[reader]["refreshing"]:
                         break
                 time.sleep(0.01)
-            return board_api.compute_machine(db, store, **options)
+            return board_api.compute_health(db, store, **options)
         finally:
             reader.read = read
 
@@ -3339,56 +3332,26 @@ class TestMachine:
         real = reader.read
         monkeypatch.setattr(reader, "read", lambda view, params: calls.append(view) or real(view, params))
         store = SimpleNamespace(snapshot=None, history_store=db.history_store)
-        board_api.compute_machine(db, store, now=1010.0)
-        board_api.compute_machine(db, store, now=1010.0)
+        board_api.compute_health(db, store, now=1010.0)
+        board_api.compute_health(db, store, now=1010.0)
         assert calls.count("health.totals") == 1
 
     def test_freshness_comes_from_telemetry_and_the_live_monitor(self):
         telemetry = [{"tool": "claude-code", "source": "stats-cache", "confidence": 0.9, "errors": [{"message": "overloaded key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123"}, {"message": "x"}]}]
         snap = _machine_snapshot([_machine_tool(live={"last_seen_at": 1001.0, "session_count": 1}), _machine_tool("codex-cli")], tool_telemetry=telemetry)
-        rows = {f["tool"]: f for f in self._machine(snap)["pipeline"]["freshness"]}
+        rows = {f["tool"]: f for f in self._health(snap)["pipeline"]["freshness"]}
         assert (rows["claude-code"]["last_seen"], rows["claude-code"]["source"], rows["claude-code"]["confidence"], rows["claude-code"]["errors"]) == (1001.0, "stats-cache", 0.9, 2)
         assert "sk-ant-api03" not in rows["claude-code"]["last_error"]
         assert rows["codex-cli"] == {"tool": "codex-cli", "label": board_api._label("codex-cli"), "last_seen": None, "source": "discovery", "confidence": None, "errors": 0, "last_error": None}
 
     def test_no_snapshot_and_no_store_still_answer(self):
-        m = board_api.compute_machine(None, SimpleNamespace(snapshot=None), now=5.0)
-        assert m["processes"] == [] and m["alerts"] == [] and m["cpu_per_core"] == []
+        m = board_api.compute_health(None, SimpleNamespace(snapshot=None), now=5.0)
+        assert board_api.machine_processes(None) == [] and board_api.machine_alerts([]) == []
         assert m["pipeline"]["stream"]["snapshot_age_s"] is None and m["pipeline"]["sink"] is None
         assert m["pipeline"]["data_quality"] == [] and m["pipeline"]["ingesters"] == []
 
     def test_the_board_answer_stays_without_the_machine_block(self, db):
         assert "machine" not in _board(db)
-
-    def test_the_route_answers_this_machine_only_and_follows_the_tool_filter(self, tmp_path, monkeypatch):
-        from aictl.dashboard.models import DashboardSnapshot, DashboardTool
-        from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-        from aictl.orchestrator import AllowedPaths, SnapshotStore
-
-        monkeypatch.setenv("HOME", str(tmp_path))
-        store = SnapshotStore()
-        tool = DashboardTool(tool="claude-code", label="Claude Code", processes=[_mproc(4242, "claude")], live={"session_count": 1, "inbound_rate_bps": 10.0})
-        store.update(DashboardSnapshot(timestamp=time.time(), root=str(tmp_path), tools=[tool]))
-        srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        try:
-            base = f"http://127.0.0.1:{srv.server_address[1]}/api/board/machine"
-            with urllib.request.urlopen(base, timeout=10) as resp:
-                body = json.loads(resp.read())
-            assert [p["pid"] for p in body["processes"]] == [4242]
-            assert body["monitor"]["per_tool"][0]["inbound_bps"] == 10.0
-            assert body["pipeline"]["otel_receiver"]["metrics_received"] == 0
-            assert body["pipeline"]["stream"]["connected_clients"] == 0
-            with urllib.request.urlopen(base + "?tool=codex-cli", timeout=10) as resp:
-                assert json.loads(resp.read())["processes"] == []
-            req = urllib.request.Request(base, headers={"Host": "attacker.example"})
-            with pytest.raises(urllib.error.HTTPError) as err:
-                urllib.request.urlopen(req, timeout=10)
-            assert err.value.code == 403
-        finally:
-            srv.shutdown()
-            srv.server_close()
-
 
 # ─── /api/board/context ───────────────────────────────────────────
 

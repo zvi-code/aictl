@@ -14,7 +14,7 @@ export function hookStatusOf(hooks, toolId) {
   return tools[toolId] || tools[HOOK_TOOL[toolId]] || null;
 }
 
-export function hookStatusLabel(status) {
+function hookStatusLabel(status) {
   return {
     active: 'active',
     configured: 'configured',
@@ -26,7 +26,7 @@ export function hookStatusLabel(status) {
 }
 
 /** The settings line that turns a host-disabled hook location back on, when the warning names one. */
-export function warningConfig(warning) {
+function warningConfig(warning) {
   const m = warning?.message || '';
   if (m.includes('~/.copilot/hooks')) return '"chat.hookFilesLocations": { "~/.copilot/hooks": true }';
   if (m.includes('.github/hooks')) return '"chat.hookFilesLocations": { ".github/hooks": true }';

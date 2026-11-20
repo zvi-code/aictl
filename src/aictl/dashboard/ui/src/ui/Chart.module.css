@@ -17,3 +17,4 @@
 .second { background: var(--color-chart-2); }
 .third { background: var(--color-chart-3); }
 .fourth { background: var(--color-chart-4); }
+.toggle { composes: button focus from "./control.module.css"; }

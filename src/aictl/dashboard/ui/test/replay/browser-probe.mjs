@@ -35,7 +35,7 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
   }
   const afterFrame = callback => requestAnimationFrame(() => requestAnimationFrame(() => callback(performance.now())));
   const result = {
-    firstBoardPaint: null, messages: { eligible: 0, superseded: 0, samples: [] },
+    firstBoardPaint: null, messages: { eligible: 0, superseded: 0, samples: [], commitSamples: [] },
     interactions: [], bootstraps: 0, changes: 0,
     snapshot() {
       for (const [observer, record] of observers) record(observer.takeRecords());
@@ -47,6 +47,8 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
         entries, supported: PerformanceObserver.supportedEntryTypes, assets,
         firstBoardPaint: result.firstBoardPaint,
         firstContentfulPaint: performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? null,
+        // The live reducer flushes DOM mutations in its rAF. Keep the legacy
+        // two-rAF result too, so old reports remain comparable.
         endMs: performance.now(), messages: result.messages, interactions: result.interactions,
         bootstraps: result.bootstraps, changes: result.changes,
         overflow: Math.max(document.documentElement.scrollWidth - document.documentElement.clientWidth, 0),
@@ -58,8 +60,9 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
   if (!measureBoard) return;
 
   const board = new MutationObserver(() => {
-    const message = document.querySelector('#sec-top a:nth-of-type(2) .bd-v')?.textContent;
-    if (!message || message === 'n/a') return;
+    const message = [...document.querySelectorAll('#p-kpis dt')]
+      .find(node => node.textContent === 'Messages')?.nextElementSibling?.textContent;
+    if (!message || !/\d/.test(message)) return;
     board.disconnect();
     afterFrame(now => {
       result.firstBoardPaint = now;
@@ -68,12 +71,14 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
   });
   board.observe(document, { subtree: true, childList: true, characterData: true });
 
-  const stats = '#p-daemon .bd-stats';
+  const stats = '#p-daemon dl';
   let pending;
   let lastExpected;
   const matches = (element, expected) => {
-    const values = element?.querySelectorAll('.bd-v');
-    return expected.every((value, index) => values?.[index]?.textContent === value);
+    if (!element) return false;
+    const next = element.nextElementSibling;
+    return element.querySelector('dt')?.textContent === 'CPU' && next?.querySelector('dt')?.textContent === 'RAM' &&
+      [element, next].every((stat, index) => stat.querySelector('dd')?.textContent === expected[index]);
   };
   const visible = node => {
     if (!node?.isConnected || document.visibilityState !== 'visible') return false;
@@ -82,6 +87,10 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
   };
   const changed = () => {
     if (!pending || pending.frame) return;
+    const element = document.querySelector(stats);
+    if (pending.committed == null && matches(element, pending.expected)) {
+      pending.committed = performance.now();
+    }
     pending.frame = true;
     requestAnimationFrame(() => {
       if (!pending) return;
@@ -90,6 +99,11 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
       const element = document.querySelector(stats);
       if (!matches(element, next.expected) || !visible(element)) return;
       pending = null;
+      if (next.committed != null) {
+        const now = performance.now();
+        result.messages.commitSamples.push({ startTime: next.arrived,
+          commitDuration: next.committed - next.arrived, duration: now - next.arrived });
+      }
       requestAnimationFrame(() => result.messages.samples.push({ startTime: next.arrived,
         duration: performance.now() - next.arrived }));
     });
@@ -134,14 +148,14 @@ export function installProbe({ measureBoard = false, statFrames = {}, shiftSourc
       removeEventListener('keydown', opened, true);
       const startTime = event.timeStamp;
       const observer = new MutationObserver(() => {
-        const dialog = document.querySelector('[aria-label="Command palette"][role="dialog"]');
+        const dialog = document.querySelector('dialog[open] [aria-label="Search commands"]')?.closest('dialog');
         if (!dialog) return;
         observer.disconnect();
         afterFrame(now => {
           if (visible(dialog)) result.interactions.push({ startTime, duration: now - startTime });
         });
       });
-      observer.observe(document.body, { childList: true, subtree: true });
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
     }, true);
   };
 }

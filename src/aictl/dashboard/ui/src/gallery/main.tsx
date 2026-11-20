@@ -10,6 +10,7 @@ import { Drawer } from '../ui/Drawer'
 import { Icon } from '../ui/Icon'
 import { Markdown } from '../ui/Markdown'
 import { Menu } from '../ui/Menu'
+import { Meter } from '../ui/Meter'
 import { Panel } from '../ui/Panel'
 import { PanelState, type PanelStatus } from '../ui/PanelState'
 import { Popover } from '../ui/Popover'
@@ -154,7 +155,21 @@ function Gallery() {
           </Panel>
         </State>}</For>
       </GallerySection>
-      <GallerySection name="Stat">
+      <GallerySection name="meter">
+        <State name="default"><Meter label="Quiet CPU, core 0" value={fixture.quiet.cpu.at(-1)?.values[0]} /></State>
+        <State name="positive"><Meter label="Busy CPU, core 0" value={fixture.busy.cpu.at(-1)?.values[0]} tone="positive" /></State>
+        <State name="warning"><Meter label="Busy CPU, core 1" value={fixture.busy.cpu.at(-1)?.values[1]} tone="warning" /></State>
+        <State name="danger"><Meter label="Busy CPU, core 1" value={fixture.busy.cpu.at(-1)?.values[1]} tone="danger" /></State>
+        <State name="stale"><Meter label="Quiet CPU, core 1" value={fixture.quiet.cpu.at(-1)?.values[1]} stale /></State>
+        <State name="missing"><Meter label="Unreported core" value={fixture.quiet.cpu.at(-1)?.values[2]} /></State>
+        <State name="zero"><Meter label="Recorded negative CPU samples" value={fixture.quiet.cpu.filter(point => point.values.some(value => value < 0)).length} max={fixture.quiet.cpu.length} /></State>
+        <State name="compact"><Meter compact label="Quiet CPU samples" value={fixture.quiet.cpu.length}
+          max={fixture.quiet.cpu.length + fixture.busy.cpu.length} /></State>
+        <State name="over-range"><Meter label="Sample count against core count" value={fixture.busy.cpu.length}
+          max={fixture.busy.cpu.at(-1)?.values.length} /></State>
+      </GallerySection>
+
+      <GallerySection name="stat">
         <State name="default"><Stat label="Input tokens" value={fixture.busy.agents[0].input} unit="tokens" /></State>
         <State name="positive"><Stat label="Recorded CPU samples" value={fixture.quiet.cpu.length} tone="positive" /></State>
         <State name="warning"><Stat label="Last sample, core 0" value={fixture.busy.cpu.at(-1)?.values[0]} unit="%" tone="warning" /></State>

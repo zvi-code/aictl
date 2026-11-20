@@ -2,6 +2,8 @@ import { Show } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import styles from './Stat.module.css'
 
+const number = new Intl.NumberFormat()
+
 export function Stat(props: {
   label: string
   value?: string | number | null
@@ -9,7 +11,6 @@ export function Stat(props: {
   detail?: JSX.Element
   tone?: 'neutral' | 'positive' | 'warning'
 }) {
-  const number = new Intl.NumberFormat()
   return <dl class={styles.stat} data-tone={props.tone ?? 'neutral'}>
     <dt>{props.label}</dt>
     <dd class={styles.value}>

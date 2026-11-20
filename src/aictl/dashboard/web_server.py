@@ -557,9 +557,12 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def _do_GET(self) -> None:
-        path = urlparse(self.path).path
+        url = urlparse(self.path)
+        path = url.path
+        node_query = parse_qs(url.query, keep_blank_values=True) if path == "/api/board/nodes" else {}
+        local_health = node_query.get("view") == ["health"] and node_query.get("scope", ["local"]) == ["local"]
         # The page and its files need no snapshot: they load at once and the page says it is starting.
-        if not (path in _SERVED_WHILE_STARTING or path.startswith("/assets/")) and not self._wait_ready():
+        if not (local_health or path in _SERVED_WHILE_STARTING or path.startswith("/assets/")) and not self._wait_ready():
             return
         if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
@@ -567,7 +570,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if path.startswith("/api/") and path != "/api/board/nodes":
             from .history_scope import ScopeError, identity_parts, parse_scope
 
-            params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            params = parse_qs(url.query, keep_blank_values=True)
             scoped = "node_id" in params or any(v in {"node", "fleet"} for v in params.get("scope", ()))
             if scoped:
                 try:
@@ -636,7 +639,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
             try:
                 reader = configured_reader(self.server.store)
-                body = node_view(self._db, parse_qs(urlparse(self.path).query, keep_blank_values=True),
+                body = node_view(self._db, node_query,
                                  reader=reader,
                                  local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time(), reader),
                                  local_inventory=lambda: agent_inventory(getattr(self.server.store, "live_hub", None), time.time()))
@@ -648,10 +651,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                 self._json_response({"error": "Could not read node data from the configured store"}, status=503)
                 return
             self._send_body(json.dumps(body).encode("utf-8"), "application/json", cache_control="no-store", cors=False)
-        elif path == "/api/board/machine":
-            self._serve_board_machine()
-        elif path == "/api/board/health":
-            self._serve_board_health()
         elif path == "/api/board/context":
             self._serve_board_context()
         elif path == "/api/board/agent/flow":
@@ -1367,29 +1366,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             return
         self._json_response_raw(body, status=status)
 
-    def _serve_board_machine(self) -> None:
-        """Machine, process and data-pipeline health for the board."""
-        from .board_api import machine_bytes
-
-        try:
-            body = machine_bytes(
-                self._db,
-                self.server.store,
-                urlparse(self.path).query,
-                otel=getattr(self.server, "otel_receiver", None),
-                ingesters=getattr(self.server, "ingesters", None),
-                stream_clients=live_stream.client_count(),
-                port=int(self.server.server_address[1]),
-            )
-        except Exception as exc:  # any failure must reach the panel's error state
-            logger.exception("Board machine route failed")
-            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-            return
-        self._json_response_raw(body)
-
-    def _serve_board_health(self) -> None:
-        self._json_response(self._board_health())
-
     def _board_health(self) -> dict:
         from .board_api import compute_health
 
@@ -1537,7 +1513,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 # served at once, every other request waits for the snapshot up to READY_WAIT_S.
 _TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
 _SERVED_WHILE_STARTING = frozenset({
-    "/", "/index.html", "/favicon.ico", "/api/board/health", "/api/live/capabilities", "/api/live/stream",
+    "/", "/index.html", "/favicon.ico", "/api/live/capabilities", "/api/live/stream",
     "/api/board/agent/flow", "/api/session-evidence",
 })
 # Under the handler's 30 s socket timeout, so the client gets the answer.

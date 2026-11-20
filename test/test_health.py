@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from aictl.dashboard import board_api
-from aictl.health import ObservedKustoClient, OperationStats
+from aictl.health import ObservedKustoClient, OperationStats, node_transport_counters
 from aictl.kusto import KustoSettings
 from aictl.stores import Store
 from aictl.stores.kusto.client import KustoClientFactory
@@ -114,6 +114,41 @@ def test_kusto_health_uses_existing_clients_without_discovery(cached_health, mon
     assert store["ingestion_capacity"]["status"] == "pending" and store["ingestion_capacity"]["total"] is None
     assert store["volume"]["bytes"] is None
     assert "not cluster-wide" in store["health"]["scope"]
+
+
+def test_query_cpu_in_health_counts_query_attempts_once_and_samples_without_io(cached_health, monkeypatch):
+    from aictl.stores.kusto import diagnostics
+
+    node = {"EventTypeName": "QueryResourceConsumption",
+            "Payload": {"resource_usage": {"cpu": {"total cpu": "00:00:00.6250000"}}}}
+    class Completion(list):
+        table_kind = "QueryCompletionInformation"
+
+    response = SimpleNamespace(primary_results=[], errors_count=0, tables=[Completion([SimpleNamespace(to_dict=lambda: node)])])
+    partial = SimpleNamespace(**(vars(response) | {"errors_count": 1}))
+    attempts = []
+
+    def execute(_db, text, *_):
+        attempts.append(text)
+        if text == "failed":
+            raise RuntimeError("no response")
+        return partial if text == "partial" else response
+
+    monkeypatch.setattr(diagnostics, "log_failure", lambda *_args, **_kwargs: None)
+    observed = ObservedKustoClient(SimpleNamespace(execute_query=execute, execute=execute, execute_mgmt=execute))
+    settings = KustoSettings("https://cluster.kusto.windows.net")
+    reader = KustoReader(observed, settings.database, settings=settings)
+    reader.read("health.nodes", {})
+    observed.execute(settings.database, "partial")
+    with pytest.raises(RuntimeError, match="no response"):
+        observed.execute_query(settings.database, "failed")
+    observed.execute_mgmt(settings.database, ".show tables")
+
+    store = Store(reader=reader)
+    cpu = board_api.compute_health(store, store)["store"]["query_cpu"]
+    assert cpu == {"started_at": cpu["started_at"], "queries": 3, "failed": 2, "reported": 2, "total_cpu_s": 1.25}
+    assert node_transport_counters(reader.transport_diagnostics(None))["query_cpu"] == cpu
+    assert len(attempts) == 4  # Snapshots, including the node sample, never query the cluster.
 
 
 def test_health_objects_do_not_wait_for_client_initialization():
@@ -255,7 +290,7 @@ def test_native_inventory_distinguishes_empty_zero_unknown_stale_and_recovery(mo
     assert (empty["status"], empty["tables"], empty["last_error"], empty["checked_at"]) == ("cached", [], None, clock[0])
 
 
-def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeypatch):
+def test_health_shares_background_adx_probes_and_logical_scan(monkeypatch):
     from test_kusto_connection import response
 
     from aictl.stores.base import ReadResult
@@ -280,7 +315,6 @@ def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeyp
 
     settings = KustoSettings("https://cluster.kusto.windows.net", database="selected_db")
     db = SimpleNamespace(_path=settings.uri)
-    machine_db = SimpleNamespace(**vars(db))
     inv = ".show tables details"
     cap = ".show capacity ingestions"
     inventory_calls = []
@@ -323,9 +357,8 @@ def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeyp
     try:
         first = board_api.compute_health(db, store)
         assert first["store"]["table_inventory"]["status"] == "pending" and entered.wait(2)
-        machine = board_api.compute_machine(machine_db, store)
-        assert machine["pipeline"]["self"]["db_rows"] is None
         again = board_api.compute_health(db, store)
+        assert again["pipeline"]["self"]["db_rows"] is None
         assert again["resources"]["cluster"] == cluster and again["store"]["volume"]["rows"] is None
         inv_sample = again["store"]["table_inventory"]
         assert inv_sample["tables"][0] == {
@@ -341,7 +374,7 @@ def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeyp
     assert volume["tables"] == {"sessions": 7} and volume["rows"] == 7 and volume["bytes"] is None
     assert volume["refresh_interval_s"] >= 300 and inv_sample["refresh_interval_s"] >= 300
     clock[0] += 65
-    board_api.compute_machine(machine_db, store)
+    board_api.compute_health(db, store)
     wait_refresh()
     assert [name for name, _ in calls].count("logical") == 1
     assert [name for name, _ in calls].count(cap) == 2  # independent 60-second slot probe
@@ -445,16 +478,22 @@ def test_health_route_is_local_and_works_before_first_snapshot(tmp_path, cached_
     server.ready.clear()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/api/board/health"
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    url = base + "/api/board/nodes?view=health&scope=local"
     try:
         with urllib.request.urlopen(url, timeout=3) as response:
-            data = json.loads(response.read())
+            data = json.loads(response.read())["local_runtime"]
         assert set(data) == {"generated_at", "pipeline", "resources", "monitor", "store"}
         assert data["store"]["reads"]["in_flight"] == 1
         request = urllib.request.Request(url, headers={"Host": "attacker.example"})
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request, timeout=3)
         assert error.value.code == 403
+        server.ready.set()
+        for path in ("/api/board/health", "/api/board/machine?scope=local"):
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(base + path, timeout=3)
+            assert error.value.code == 404
     finally:
         server.shutdown()
         server.server_close()

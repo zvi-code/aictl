@@ -296,7 +296,13 @@ def _query(view: str) -> str:
 
 class KustoReader:
     def __init__(self, client: Any, database: str, *, settings=None) -> None:
+        from ...health import ObservedKustoClient
+        from .query_cpu import QueryCpuStats
+
         self._client = client
+        # The daemon client also sees live polling queries. Count each attempt once.
+        self._observed = isinstance(client, ObservedKustoClient)
+        self._query_cpu = client.query_cpu if self._observed else QueryCpuStats()
         self._database = database
         self._settings = settings
         self._lock = threading.Lock()
@@ -344,6 +350,7 @@ class KustoReader:
         return {
             "reads": getattr(self._client, "reads", None),
             "commands": getattr(self._client, "commands", None),
+            "query_cpu": self._query_cpu.snapshot(),
             "ingester": getattr(writer, "_ingester", None),
             "client_limits": {
                 "inline_max_bytes": INLINE_MAX_BYTES,
@@ -395,7 +402,11 @@ class KustoReader:
         error = None
         try:
             text = _query(view)
-            response = retrying(lambda: self._client.execute_query(self._database, text, props), f"read {view}")
+
+            def execute():
+                return self._client.execute_query(self._database, text, props)
+
+            response = retrying(execute if self._observed else lambda: self._query_cpu.call(execute), f"read {view}")
             if getattr(response, "errors_count", 0):
                 raise StoreError("Kusto returned an incomplete result")
             tables = response.primary_results
@@ -428,6 +439,7 @@ class KustoReader:
                 "status": "unavailable" if self._error is not None else "ready" if self._queries else "not checked",
                 "queries": self._queries,
                 "query_failures": self._failures,
+                "query_cpu": self._query_cpu.snapshot(),
                 "last_latency_ms": self._last_latency_ms,
                 "last_error": self._error,
             }

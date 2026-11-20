@@ -91,6 +91,32 @@ def test_reader_binds_parameters_and_limits_returned_rows():
         reader.read("health.nodes", {"row_limit": 123})
 
 
+@pytest.mark.parametrize(("payloads", "expected"), [
+    ((json.dumps({"resource_usage": {"cpu": {"total cpu": "01:02:03.1234567"}}}),), 3723.1234567),
+    (({"resource_usage": {"cpu": {"total cpu": "00:00:00"}}},), 0.0),
+    ((), None),
+    (("{malformed json", {"resource_usage": []}, {"resource_usage": {"cpu": {"total cpu": "01:60:00"}}}), None),
+])
+def test_reader_counts_cpu_reported_in_v2_query_responses(payloads, expected):
+    from azure.kusto.data.response import KustoResponseDataSetV2
+
+    sdk_result = KustoResponseDataSetV2([
+        {"FrameType": "DataTable", "TableId": 0, "TableName": "PrimaryResult", "TableKind": "PrimaryResult",
+         "Columns": [{"ColumnName": "node_id", "ColumnType": "string"}], "Rows": [["test-node"]]},
+        {"FrameType": "DataTable", "TableId": 1, "TableName": "QueryCompletionInformation",
+         "TableKind": "QueryCompletionInformation",
+         "Columns": [{"ColumnName": name, "ColumnType": kind}
+                     for name, kind in (("EventTypeName", "string"), ("Payload", "dynamic"), ("Level", "int"))],
+         "Rows": [["QueryInfo", "finished", 4]] +
+                 [["QueryResourceConsumption", payload, 4] for payload in payloads]},
+    ])
+    reader = KustoReader(SimpleNamespace(execute_query=lambda *_: sdk_result), "db")
+    assert reader.read("health.nodes", {}).rows == [{"node_id": "test-node"}]
+    stats = reader.health()["query_cpu"]
+    assert stats == {"started_at": stats["started_at"], "queries": 1, "failed": 0,
+                     "reported": int(expected is not None), "total_cpu_s": expected}
+
+
 def test_schema_widens_tables_then_falls_back_when_streaming_policy_denied():
     sent = []
 

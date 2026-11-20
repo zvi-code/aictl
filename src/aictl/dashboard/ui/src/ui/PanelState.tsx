@@ -19,8 +19,9 @@ export function PanelState(props: {
   message?: string
   onRetry?: () => void
   children?: JSX.Element
+  inline?: boolean
 }) {
-  return <div class={styles.box} data-status={props.state}>
+  return <div class={styles.box} data-status={props.state} data-inline={props.inline ? '' : undefined}>
     <div class={styles.notice} role={props.state === 'error' ? 'alert' : 'status'}>
       <Icon data={states[props.state].icon} />
       <span>{props.message ?? states[props.state].label}</span>

@@ -3,7 +3,7 @@
 
 let _baseUrl = '';
 
-export function withNodeScope(query, scope = 'local', nodeId = null) {
+function withNodeScope(query, scope = 'local', nodeId = null) {
   if (scope === 'local') return query;
   const params = new URLSearchParams(query);
   params.set('scope', scope);
@@ -174,10 +174,6 @@ export async function getOtelStatus(opts) {
   return fetchJson('/api/otel-status', opts);
 }
 
-export async function getHooksStatus(opts) {
-  return fetchJson('/api/hooks-status', opts);
-}
-
 /** The editable settings file of a tool; `scope` picks it (project by default, or project-local). */
 export async function getToolConfig(tool, scope = '') {
   return fetchJson('/api/tool-config/' + encodeURIComponent(tool) + (scope ? '?scope=' + encodeURIComponent(scope) : ''));
@@ -206,65 +202,10 @@ export async function killSession(sessionId, signal = 'TERM') {
 
 // ─── Board ─────────────────────────────────────────────────────
 
-export function boardNodePath({ view, scope, nodeId, sessionId, since, until }) {
-  const p = new URLSearchParams({ view, scope });
-  if (scope === 'node') {
-    if (!nodeId) throw new Error('Choose a node ID to read its reports.');
-    p.set('node_id', nodeId);
-  }
-  if (view === 'session') {
-    if (scope !== 'node' || !sessionId) throw new Error('Session detail requires a node ID and a session ID.');
-    p.set('session_id', sessionId);
-  }
-  if (view === 'overview') {
-    if (since != null) p.set('since', since);
-    if (until != null) p.set('until', until);
-  }
-  return '/api/board/nodes?' + p;
-}
-
-/** Only accept the requested projection, never a broader scope or another session's rows. */
-export async function getBoardNodeView(request, opts) {
-  const { view, scope, nodeId, sessionId } = request;
-  const d = await fetchJson(boardNodePath(request), opts);
-  const inScope = r => typeof r?.node_id === 'string' && r.node_id.length > 0
-    && (scope !== 'node' || r.node_id === nodeId);
-  if (d?.view !== view || d.scope !== scope || !Array.isArray(d.rows) || !d.rows.every(inScope)
-      || (view === 'session' && !d.rows.every(r => r.session_id === sessionId))
-      || (view === 'overview' && (!Array.isArray(d.sessions)
-        || !d.sessions.every(r => inScope(r) && typeof r.session_id === 'string' && r.session_id)))) {
-    throw new Error('The server did not return the requested node view.');
-  }
-  return d;
-}
-
-/** GET /api/board. Returns {status: 304} when the etag still matches. */
-export async function getBoard(query, { signal, etag } = {}) {
-  const opts = {};
-  if (signal) opts.signal = signal;
-  if (etag) opts.headers = { 'If-None-Match': etag };
-  const r = await fetch(url('/api/board?' + query), opts);
-  if (r.status === 304) return { status: 304 };
-  if (!r.ok) throw await responseError(r, '/api/board');
-  const params = new URLSearchParams(query);
-  return { status: r.status, etag: r.headers.get('ETag'), data: confirmHistory(await r.json(), params.get('scope'), params.get('node_id')) };
-}
-
 export const getBoardAgent = (id, opts) => historyJson('/api/board/agent?id=' + encodeURIComponent(id), opts);
-export const getBoardContext = (query, opts) => historyJson('/api/board/context?' + query, opts);
-export const getBoardMachine = (query, opts) => historyJson('/api/board/machine?' + query, opts);
 export const getRecordedSession = (sid, part, ctx, opts) => historyJson('/api/board/session/records?' +
   new URLSearchParams({ session_id: sid, part }), { ...opts, nodeScope: ctx.nodeScope, nodeId: ctx.nodeId });
 /** The session flow of a board agent: events from the store, with hook and OTel events merged in. `query` is `since=..&until=..`. */
-/** Session search over all time: {q, tool (list of ids, or [] for none), limit, offset}. */
-export function getBoardSessions({ q = '', tool = null, limit = 50, offset = 0, scope = 'local', nodeId = null } = {}, opts) {
-  const p = new URLSearchParams();
-  p.set('q', q);
-  if (tool) p.set('tool', tool.length ? tool.join(',') : '-');
-  p.set('limit', String(limit));
-  p.set('offset', String(offset));
-  return historyJson('/api/board/sessions?' + p.toString(), { ...opts, nodeScope: scope, nodeId });
-}
 export const getBoardAgentFlow = (id, query = '', opts) => historyJson('/api/board/agent/flow?id=' + encodeURIComponent(id) + (query ? '&' + query : ''), opts);
 /** The transcript of a board agent's session: each prompt with its reply, actions and tokens. */
 export const getBoardAgentTranscript = (id, opts) => historyJson('/api/board/agent/transcript?id=' + encodeURIComponent(id), opts);
@@ -276,15 +217,6 @@ export const getBoardSkill = (name, query = '', opts) => historyJson('/api/board
 export const getBoardExcerpt = (path, line, opts) => fetchJson('/api/board/excerpt?path=' + encodeURIComponent(path) + '&line=' + encodeURIComponent(line), opts);
 export const getBoardFile = (path, query = '', opts) => historyJson('/api/board/file?path=' + encodeURIComponent(path) + (query ? '&' + query : ''), opts);
 export const getBoardPrompt = (ts, sessionId, opts) => historyJson('/api/board/prompt?ts=' + encodeURIComponent(ts) + '&session_id=' + encodeURIComponent(sessionId), opts);
-
-/** Run one command the dialog has shown to the user. */
-export async function boardAction(action, args = {}) {
-  return fetchJson('/api/board/action', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, args, confirm: true }),
-  });
-}
 
 /** The text of one settings file aictl has found, for the editor. Secret-shaped values arrive masked. */
 export async function getSettingsFile(path) {
@@ -305,7 +237,12 @@ export async function getSettingsFiles(opts) {
   return fetchJson('/api/settings/files', opts);
 }
 
-/** The hidden-context scan. It runs on the server's own thread, so this asks how far it is. */
+/**
+ * The hidden-context scan. It runs on the server's own thread, so this asks how far it is.
+ * @param {boolean} [refresh]
+ * @param {((progress: unknown) => void) | null} [onProgress]
+ * @param {{ pollMs?: number, maxMs?: number, project?: string | null, signal?: AbortSignal }} [options]
+ */
 export async function getContextAudit(refresh = false, onProgress = null, { pollMs = 2000, maxMs = 600000, project = null, signal } = {}) {
   const started = Date.now();
   const base = '/api/context-audit?nowait=1' + (project ? '&project=' + encodeURIComponent(project) : '');

@@ -67,5 +67,3 @@ export function LockGlyph({ label = '' }) {
     ? html`<span class="st-lock" role="img" aria-label=${label} title=${label}><${Icon} name="lock" size="11"/></span>`
     : html`<span class="st-lock" aria-hidden="true"><${Icon} name="lock" size="11"/></span>`;
 }
-
-export default Value;

@@ -189,7 +189,7 @@ function proxyUpgrade(req, socket, head, origin) {
 export async function startReplay({
   directory = resolve(recordings, 'busy'), source = 'main', phase = 'start', speed = 1,
   loop = false, dist, vite, port = 0, supplemental = false, boardWindow = false, bootstrapOnly = false,
-  onApi = () => {},
+  onApi = () => {}, mapBootstrap = data => data,
   log = message => console.error(message),
 } = {}) {
   if (!Number.isFinite(speed) || speed <= 0) throw new Error('Replay speed must be positive.');
@@ -206,7 +206,8 @@ export async function startReplay({
   const tape = jsonl(file('sse')).filter(record => record.kind === 'sse' && (!bootstrapOnly || record.event === 'bootstrap'));
   if (tape[0]?.event !== 'bootstrap') throw new Error('The stream tape must start with a bootstrap.');
   const [history, runtime] = [true, false].map(includeHistory => tape.map(record => {
-    const data = record.data && { ...record.data };
+    const data = record.data && (record.event === 'bootstrap' ?
+      mapBootstrap({ ...record.data }) : { ...record.data });
     if (data && !includeHistory) {
       for (const field of ['entities', 'upserts', 'removals']) {
         if (data[field]) data[field] = data[field].filter(runtimeOnly);

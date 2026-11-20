@@ -1,0 +1,63 @@
+.toolbar, .heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
+.heading { justify-content: space-between; }
+.heading > h2 { margin: 0; font-size: var(--text-lg); }
+.button { composes: button focus from "../ui/control.module.css"; }
+.section { margin-block: var(--space-7); scroll-margin-top: calc(var(--control-size) * 3); }
+.toolbar + .section { margin-block-start: var(--space-3); }
+.toolbar + .section, .toolbar + .section + .section { margin-block-end: var(--space-3); }
+.section:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
+.dock, .dockContent, .split, .group, .slot { min-inline-size: 0; block-size: 100%; }
+.dock { position: relative; margin-block-start: var(--space-2); --dock-tab-height: calc(var(--control-size) + var(--space-2) - var(--border-size)); }
+.dockContent { contain: content; }
+.split { display: grid; position: relative; }
+.cell { min-inline-size: 0; min-block-size: 0; }
+.group { display: grid; grid-template-rows: var(--dock-tab-height) minmax(0, 1fr); overflow: hidden; }
+.tabs { display: flex; overflow: auto hidden; scrollbar-width: none; background: var(--color-raised); }
+.tab {
+  composes: focus from "../ui/control.module.css";
+  display: flex;
+  align-items: flex-start;
+  flex: 0 0 auto;
+  position: relative;
+  padding: var(--space-2) var(--space-6) 0;
+  border: 0;
+  background: var(--color-raised);
+  color: var(--color-muted);
+  font: inherit;
+  font-size: calc(var(--text-sm) + var(--border-size));
+  cursor: grab;
+  white-space: nowrap;
+}
+.tab + .tab::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  inline-size: var(--border-size);
+  background: var(--color-border);
+  pointer-events: none;
+}
+.tab[data-selected] { background: var(--color-surface); color: var(--color-text); }
+.tab:focus-visible { outline-offset: calc(-1 * var(--focus-size)); }
+.sash {
+  composes: focus from "../ui/control.module.css";
+  position: absolute;
+  z-index: 1;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  touch-action: none;
+}
+.sash[data-axis="HORIZONTAL"] {
+  inset-block: 0;
+  inline-size: var(--space-2);
+  translate: calc(-50% + var(--sash-delta, 0px)) 0;
+  cursor: col-resize;
+}
+.sash[data-axis="VERTICAL"] {
+  inset-inline: 0;
+  block-size: var(--space-2);
+  translate: 0 calc(-50% + var(--sash-delta, 0px));
+  cursor: row-resize;
+}
+.sash:hover, .sash:active, .sash:focus-visible { background: var(--color-accent); }
+.empty { color: var(--color-muted); margin: var(--space-2) 0; }

@@ -5,9 +5,9 @@ import { html } from 'htm/preact';
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, Pending, useDetail } from '../Drawer.js';
-import { NA, fmtBytes, fmtN, stamp } from '../format.js';
-import { Actions, Stats } from '../Panel.js';
-import Table from '../Table.js';
+import { NA, fmtBytes, fmtN, stamp } from '../../../design/format.ts';
+import { Actions, Stats } from '../drawerParts.js';
+import Table from '../IslandTable.js';
 import TextView from '../../ui/TextView.js';
 
 export const whereOf = x => (x.kind === 'written' ? 'Written' : (x.folder || 'Session folder'));

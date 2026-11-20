@@ -372,16 +372,16 @@ export function permissionMatrices(entries) {
 }
 
 // ─── Editing Claude Code permissions ─────────────────────────────
-export const EDITABLE_SCOPES = ['project', 'project-local'];
+const EDITABLE_SCOPES = ['project', 'project-local'];
 const CLAUDE_PERMISSION_KEYS = new Set(['permissions', 'permissions.allow', 'permissions.deny', 'permissions.ask', 'project_permissions']);
 export const NOT_SUPPORTED = 'No form for this value. Open the file and use Edit file';
 
-export function isPermissionRow(row) {
+function isPermissionRow(row) {
   return !!row && row.tool === 'claude-code' && CLAUDE_PERMISSION_KEYS.has(row.key);
 }
 
 /** The scope whose value wins for a row: the winning chain entry, else the row's own scope. */
-export function winningScope(row) {
+function winningScope(row) {
   return row?.chain?.[row.wins]?.scope || row?.scope || 'default';
 }
 

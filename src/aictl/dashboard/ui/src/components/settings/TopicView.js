@@ -10,7 +10,7 @@ import { permissionMatrices } from './permissions.js';
 import { TopicPermissionMatrix } from './PermissionMatrix.js';
 
 /** The section a topic view shows: the one in the URL, else autonomy, else the first one any tool has. */
-export function topicSection(w) {
+function topicSection(w) {
   if (w.st.sec && SECTION_ORDER.includes(w.st.sec)) return w.st.sec;
   const has = id => w.entries.some(e => e.rows.some(r => r.sec === id));
   return has('autonomy') ? 'autonomy' : (SECTION_ORDER.find(has) || 'autonomy');

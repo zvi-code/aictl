@@ -1,4 +1,4 @@
-import { createStore, flush, type StoreSetter } from 'solid-js'
+import { createSignal, createStore, flush, type Accessor, type Setter } from 'solid-js'
 
 export const MAX_REMOVAL_REVISIONS = 4096
 const boardTopics = ['catalog.board', 'configuration.board', 'history.board']
@@ -11,35 +11,36 @@ interface ValueIndex<T> {
   readonly size: number
 }
 
-// Keep the index outside Solid. Each value has a fixed-size store slot, so a
-// write cannot copy the other slots in its topic or field.
+// Each payload is an immutable wire value. Track replacements, not its
+// nested properties, and keep the other slots out of the write path.
 function createIndex<T>() {
-  type Slot = { value: T | undefined }
-  const slots = new Map<string, [Slot, StoreSetter<Slot>]>()
-  const [keys, setKeys] = createStore({ version: 0 })
-  const changedKeys = () => setKeys(draft => { draft.version++ })
+  type Slot = { value: T } | undefined
+  const slots = new Map<string, [Accessor<Slot>, Setter<Slot>]>()
+  const [keys, setKeys] = createSignal(0)
+  let version = 0
+  const changedKeys = () => setKeys(++version)
   return Object.freeze({
     get(key: string) {
       const slot = slots.get(key)
-      if (slot) return slot[0].value
-      void keys.version
+      if (slot) return slot[0]()?.value
+      keys()
     },
     *values() {
-      void keys.version
+      keys()
       for (const [slot] of slots.values()) {
-        const value = slot.value
-        if (value !== undefined) yield value
+        const entry = slot()
+        if (entry) yield entry.value
       }
     },
-    get size() { void keys.version; return slots.size },
+    get size() { keys(); return slots.size },
     set(key: string, value: T) {
       const slot = slots.get(key)
       if (slot) {
         slots.delete(key)
         slots.set(key, slot)
-        slot[1](draft => { draft.value = value })
+        slot[1]({ value })
       } else {
-        slots.set(key, createStore<Slot>({ value }))
+        slots.set(key, createSignal<Slot>({ value }))
         changedKeys()
       }
     },
@@ -47,7 +48,7 @@ function createIndex<T>() {
       const slot = slots.get(key)
       if (!slot) return
       slots.delete(key)
-      slot[1](draft => { draft.value = undefined })
+      slot[1](undefined)
       changedKeys()
     },
   })
@@ -69,7 +70,7 @@ type Change =
   | { readonly kind: 'remove'; readonly entity: LiveIdentity }
 
 export type AppliedLiveChange = Change & { readonly previous?: LiveEntity }
-export type AppliedListener = (changes: readonly AppliedLiveChange[]) => void
+type AppliedListener = (changes: readonly AppliedLiveChange[]) => void
 
 interface StreamState {
   scope: string

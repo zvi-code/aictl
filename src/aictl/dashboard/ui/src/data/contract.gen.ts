@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 5462809e21799b6caf38436f12225aa031e0d3ff15e93ba24b9977be4099117c
+// Schema digest: 22ec47a4a88342a41f5cb4c231046424d1b643f66bed4751c18a11f01afcfe12
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -977,8 +977,6 @@ export type DetailFile = {
   }> | null;
 };
 
-export type DetailHealth = HealthLocal;
-
 export type DetailHooksStatus = {
   generated_at: number;
   window_seconds: number;
@@ -1218,7 +1216,14 @@ export type DetailNodes = {
       total: number;
       rows: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
     } | null;
-    client_sample?: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null> | null;
+    client_sample?: {
+      at?: number;
+      pid?: number;
+      store?: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null> & {
+        query_cpu?: QueryCpu;
+      };
+      runtime?: Record<string, unknown>;
+    } | null;
   }>;
   shared_kusto: {
     scope: string;
@@ -1747,6 +1752,11 @@ export type HealthLocal = {
       attempted_at: number | null;
       last_error: string | null;
       refresh_interval_s: number;
+      monitor_status?: string;
+      samples?: Record<string, {
+        value: number;
+        at: number;
+      }>;
       native?: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null | null>;
     } | null;
   };
@@ -1766,6 +1776,7 @@ export type HealthStore = {
   storage_budget_bytes?: number | null;
   queued_history_rows_unconfirmed?: number | null;
   table_inventory?: TableInventory | null;
+  query_cpu?: QueryCpu;
   reader?: {
     status: string;
     queries?: number;
@@ -2171,6 +2182,14 @@ export type PendingConfirmation = {
   name: string;
   target: string | null;
   since_ts: number;
+};
+
+export type QueryCpu = {
+  started_at: number;
+  queries: number;
+  failed: number;
+  reported: number;
+  total_cpu_s: number | null;
 };
 
 export type SessionEvidenceRow = {
@@ -3027,7 +3046,6 @@ export interface DetailResponses {
   "/api/board/error": DetailError;
   "/api/board/excerpt": DetailExcerpt;
   "/api/board/file": DetailFile;
-  "/api/board/health": DetailHealth;
   "/api/board/machine": DetailMachine;
   "/api/board/nodes": DetailNodes;
   "/api/board/prompt": DetailPrompt;

@@ -279,5 +279,3 @@ export function Markdown({ text }) {
     ${blocksOf(body)}
   </div>`;
 }
-
-export default Markdown;

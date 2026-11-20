@@ -1,0 +1,29 @@
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block-end: var(--space-2); }
+.button { composes: button focus from "../../ui/control.module.css"; }
+.input {
+  composes: focus from "../../ui/control.module.css";
+  min-inline-size: min(100%, var(--overlay-sm));
+  min-block-size: var(--control-size);
+  padding-inline: var(--space-3);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font: inherit;
+}
+.note { margin-block: 0 var(--space-2); color: var(--color-muted); }
+.measures { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-block: 0 var(--space-2); }
+.measures div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.measures dd { margin: 0; font-variant-numeric: tabular-nums; }
+.bar { display: flex; align-items: stretch; min-block-size: var(--space-4); gap: var(--space-1); }
+.bar button { padding: 0; min-block-size: var(--space-4); min-inline-size: var(--space-2); background: var(--color-chart-1); }
+.bar button:nth-child(2n) { background: var(--color-chart-2); }
+.bar button:nth-child(3n) { background: var(--color-chart-3); }
+.bar button[aria-pressed="true"] { outline: var(--focus-size) solid var(--color-focus); }
+.group { margin-block-end: var(--space-3); }
+.preview { margin-block: var(--space-3); overflow-wrap: anywhere; }
+.mapTrack { background: var(--color-raised); }
+.mapBar { display: flex; block-size: var(--space-3); }
+.mapBar span { background: var(--color-chart-1); }
+.mapBar span:nth-child(2n) { background: var(--color-chart-2); }
+.mapBar span:nth-child(3n) { background: var(--color-chart-3); }

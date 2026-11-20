@@ -10,7 +10,7 @@ import { byName, recordedTree } from '../src/components/board/agent/ProcessesTab
 import { treeOrder } from '../src/components/board/agent/TeamTab.js';
 import { entityOf, slotsOf } from '../src/components/board/agent/TimelineTab.js';
 import { flowToTranscript, isFlow } from '../src/components/board/agent/transcriptModel.js';
-import { agentLinkOf, listenSelectSession, redirectOf } from '../src/root.js';
+import { agentLinkOf, redirectOf } from '../src/data/urlState.ts';
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -31,7 +31,7 @@ const agent = (o = {}) => ({
 
 const detail = (a = agent(), o = {}) => ({
   agent: a, by_model: [], subagents: [], process: {}, turns: [{ ts: NOW - 500, text: 'Fix it', input: 100, output: 20 }], tool_calls: [], tool_totals: [], files: [{ path: 'a.py' }],
-  tests: [], loop: null, errors: [],
+  tests: [], loop: null, errors: [], commits: [],
   git: { branch: 'main', commit: 'abc1234def', commits_in_session: 2 },
   runs: [
     { session_id: 'sess-1', ended_at: NOW - 60, duration_s: 540, tokens: 1200, file_churn: 1, current: true, tokens_ratio: 1.2 },
@@ -672,21 +672,6 @@ describe('legacy explorer links', () => {
     expect(agentLinkOf('?tab=live', 'x y')).toBe('?agent=x+y');
   });
 
-  it('send the select-session bus to the board', () => {
-    window.history.replaceState(null, '', '/?tab=overview');
-    vi.useFakeTimers();
-    const go = vi.fn();
-    const stop = listenSelectSession(go);
-    document.dispatchEvent(new CustomEvent('aictl:select-session', { detail: { sessionId: 'abc', tool: 'claude-code' } }));
-    expect(go).not.toHaveBeenCalled();
-    vi.runAllTimers();
-    expect(go).toHaveBeenCalledWith('/?agent=abc');
-    stop();
-    document.dispatchEvent(new CustomEvent('aictl:select-session', { detail: { sessionId: 'def' } }));
-    vi.runAllTimers();
-    expect(go).toHaveBeenCalledTimes(1);
-    window.history.replaceState(null, '', '/');
-  });
 });
 
 describe('run trend', () => {

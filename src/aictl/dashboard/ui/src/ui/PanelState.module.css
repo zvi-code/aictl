@@ -1,5 +1,6 @@
 .box { display: grid; align-content: center; justify-items: center; gap: var(--space-4); min-block-size: 100%; }
 .box[data-status="stale"] { align-content: start; justify-items: stretch; }
+.box[data-inline] { min-block-size: 0; margin-block-end: var(--space-3); }
 .notice {
   display: flex;
   align-items: center;

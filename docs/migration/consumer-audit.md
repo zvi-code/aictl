@@ -9,6 +9,12 @@ This audit covers the checked-out source and tests, not traffic to a running dae
 | 3 | Old UI only. Keep the payload in Phase S. Remove the old code when the named surface is replaced (board 3, drawer 4, settings 5). A replacement can still supply the same data. |
 | 4 | Phase 6 legacy list. The six routes named in the plan take precedence over their current UI/CLI use. Migrate those callers before removal. |
 
+### Phase 3 disposition
+
+- **Removed:** local `GET /api/board/machine` and its `compute_machine`, `machine_bytes`, and `_serve_board_machine` functions. Keep the route for `scope=node` and `scope=fleet`: Solid Overview reads it for machine reports. Keep `machine_processes` and `machine_alerts`: `runtime.machine` still uses them.
+- **Removed:** `GET /api/board/health`, `_serve_board_health`, and the `DetailHealth` alias. Keep `compute_health` and its shared schema: `runtime.health` and `/api/board/nodes?view=health` use them. The local node Health view still works before the first snapshot.
+- **Kept:** `/api/board` and its payload builders for Solid scoped history, the brush chart, and live projection; `/api/board/context`, `/api/board/sessions`, and `/api/board/action` for Solid panels and shell. Keep drawer and settings routes until their island migrations.
+
 Counts before deletion: 37 main-board field entries (36 root keys and one separately classified child) and 54 method/route pairs. Totals by class: **15 keep, 2 Phase 0 deletions, 68 old-UI items, 6 Phase 6 routes**. The detailed row-key tables explain these entries; they are not counted again.
 
 `rg -n --no-heading` checks covered URL fragments and wrapper calls, JavaScript member/bracket access, destructuring and templates, Python calls and dictionary keys, tests, and documented examples. A test location below is an entry point for parity coverage; it is not necessarily the only test. Generic transport is not proof that a field is read: `board_entities` iterates the payload (`C:\OSS\aictl\src\aictl\dashboard\live_projection.py:39–105`) and the browser restores fields by name (`C:\OSS\aictl\src\aictl\dashboard\ui\src\live\model.js:100–128`). Explicit normalization or use as a row identity is a dependency. The audit cannot identify out-of-repository callers.

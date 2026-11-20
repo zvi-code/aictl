@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "screen": "health",
+  "tree": [
+    {
+      "id": "health", "title": "Health highlights",
+      "bands": [
+        [{"id":"healthHighlights"}],
+        [{"id":"healthDiagnostics"}],
+        [{"id":"storeHealth"}],
+        [{"id":"ingestionTraffic"}],
+        [{"id":"hostResources"}]
+      ]
+    },
+    {
+      "id": "health-metrics", "title": "All metrics",
+      "bands": [
+        [{"id":"tableInventory"}],
+        [{"id":"self"}],
+        [{"id":"sources"}],
+        [{"id":"collectors"}],
+        [{"id":"quality"}]
+      ]
+    }
+  ]
+}

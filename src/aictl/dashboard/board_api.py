@@ -5809,10 +5809,7 @@ def handle_get(
     return status, json.dumps(payload).encode("utf-8")
 
 
-# ─── /api/board/machine ───────────────────────────────────────────
-# The live state of this machine and of aictl's own data pipeline. It changes on
-# every monitor cycle and reads the server's receivers, so it has its own route:
-# /api/board stays keyed by the store version and keeps answering 304.
+# ─── Live machine and collection health ───────────────────────────
 
 MACHINE_CMDLINE_CHARS = 200
 SUBAGENT_RAM_ALERT_MB = 2048.0
@@ -6070,20 +6067,13 @@ def _process_row(proc: Any, tool_id: str, live: dict | None) -> dict:
     }
 
 
-def _machine_tools(snapshot: Any, selected: set[str] | None) -> list[Any]:
-    out = []
-    for tool in getattr(snapshot, "tools", None) or []:
-        if getattr(tool, "meta", False):
-            continue
-        if selected is not None and getattr(tool, "tool", "") not in selected:
-            continue
-        out.append(tool)
-    return out
+def _machine_tools(snapshot: Any) -> list[Any]:
+    return [tool for tool in getattr(snapshot, "tools", None) or [] if not getattr(tool, "meta", False)]
 
 
-def machine_processes(snapshot: Any, selected: set[str] | None = None) -> list[dict]:
+def machine_processes(snapshot: Any) -> list[dict]:
     """Every AI-tool process the scan and the live monitor report, with its parent and its anomalies."""
-    tools = _machine_tools(snapshot, selected)
+    tools = _machine_tools(snapshot)
     live_by_pid: dict[int, dict] = {}
     for tool in tools:
         for p in (getattr(tool, "live", None) or {}).get("processes") or []:
@@ -6193,7 +6183,7 @@ def _cleanup_of(processes: list[dict]) -> str:
     return "kill " + " ".join(str(p["pid"]) for p in processes)
 
 
-def _monitor_section(snapshot: Any, selected: set[str] | None) -> dict:
+def _monitor_section(snapshot: Any) -> dict:
     lm = getattr(snapshot, "live_monitor", None) or {}
     collectors = [
         {
@@ -6208,7 +6198,7 @@ def _monitor_section(snapshot: Any, selected: set[str] | None) -> dict:
     roots = [{"kind": "workspace", "path": p} for p in lm.get("workspace_paths") or []]
     roots += [{"kind": "state", "path": p} for p in lm.get("state_paths") or []]
     per_tool = []
-    for tool in _machine_tools(snapshot, selected):
+    for tool in _machine_tools(snapshot):
         live = getattr(tool, "live", None)
         if not live:
             continue
@@ -6426,10 +6416,10 @@ def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
     return out
 
 
-def _freshness(snapshot: Any, selected: set[str] | None) -> list[dict]:
+def _freshness(snapshot: Any) -> list[dict]:
     telemetry = {t.get("tool"): t for t in getattr(snapshot, "tool_telemetry", None) or [] if isinstance(t, dict)}
     out = []
-    for tool in _machine_tools(snapshot, selected):
+    for tool in _machine_tools(snapshot):
         if tool.tool in _NO_FRESHNESS_TOOLS:
             continue
         live = getattr(tool, "live", None) or {}
@@ -6498,26 +6488,21 @@ def _otel_setup(port: int | None) -> dict:
 def _collection_health(
     db: Any,
     store: Any,
-    tools: tuple[str, ...] | None = None,
-    otel: Any = None,
-    ingesters: Any = None,
-    stream_clients: int | None = None,
-    now: float | None = None,
-    port: int | None = None,
     *,
-    cached: dict | None = None,
-    include_resources: bool = False,
+    otel: Any,
+    ingesters: Any,
+    stream_clients: int | None,
+    now: float,
+    port: int | None,
+    cached: dict,
 ) -> dict:
-    """The shared collection-health projection used by Machine and Health."""
-    now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
-    selected = set(stored_ids_for(tools)) if tools is not None else None
     usage = _self_usage()
     reader = HistoryScope.local(store).reader
-    sample = cached.get("volume", {}) if cached is not None else _db_stats_sample(db, reader)
+    sample = cached.get("volume", {})
     stats = sample.get("stats", {})
     counts = {k[: -len("_count")]: v for k, v in stats.items() if k.endswith("_count") and isinstance(v, int)}
-    quality = cached.get("quality", []) if cached is not None else _quality_rows(reader)
+    quality = cached.get("quality", [])
     try:
         otel_status = otel.status() if otel is not None else None
     except Exception:  # noqa: BLE001 - the receiver is optional
@@ -6525,7 +6510,7 @@ def _collection_health(
     snap_ts = _as_number(getattr(snapshot, "timestamp", None)) if snapshot is not None else None
     payload = {
         "generated_at": now,
-        "monitor": _monitor_section(snapshot, selected),
+        "monitor": _monitor_section(snapshot),
         "pipeline": {
             "self": {
                 "pid": os.getpid(),
@@ -6544,10 +6529,10 @@ def _collection_health(
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
             "otel_setup": _otel_setup(port),
-            "hooks": cached.get("hooks", {}) if cached is not None else _hooks_by_tool(reader, now),
+            "hooks": cached.get("hooks", {}),
             "ingesters": _ingester_rows(ingesters, quality),
             "data_quality": quality,
-            "freshness": _freshness(snapshot, selected),
+            "freshness": _freshness(snapshot),
             "stream": {
                 "connected_clients": stream_clients,
                 "snapshot_ts": snap_ts,
@@ -6555,38 +6540,10 @@ def _collection_health(
             },
         },
     }
-    if include_resources:
-        payload["resources"] = _health_resources(snapshot, usage, cached.get("cluster_resources") if cached else None)
-        settings = reader_feature(reader, "connection_info")
-        if settings is not None:
-            payload["resources"]["host"]["node_id"] = settings.node_id
-    return payload
-
-
-def compute_machine(
-    db: Any,
-    store: Any,
-    tools: tuple[str, ...] | None = None,
-    otel: Any = None,
-    ingesters: Any = None,
-    stream_clients: int | None = None,
-    now: float | None = None,
-    port: int | None = None,
-) -> dict:
-    """Everything ``GET /api/board/machine`` returns, with the original tool filter."""
-    now = time.time() if now is None else now
-    # Machine and Health can be open together. Neither should start or await its own ADX scan.
-    cached = _cached_health_data(db, now, HistoryScope.local(store).reader)
-    payload = _collection_health(db, store, tools, otel, ingesters, stream_clients, now, port, cached=cached)
-    snapshot = getattr(store, "snapshot", None)
-    selected = set(stored_ids_for(tools)) if tools is not None else None
-    processes = machine_processes(snapshot, selected)
-    payload.update(
-        processes=processes,
-        cpu_per_core=[round(float(v), 1) for v in getattr(snapshot, "cpu_per_core", None) or []],
-        cpu_cores=getattr(snapshot, "cpu_cores", None) or None,
-        alerts=machine_alerts(processes),
-    )
+    payload["resources"] = _health_resources(snapshot, usage, cached.get("cluster_resources"))
+    settings = reader_feature(reader, "connection_info")
+    if settings is not None:
+        payload["resources"]["host"]["node_id"] = settings.node_id
     return payload
 
 
@@ -6611,7 +6568,7 @@ def compute_health(
     cached = _cached_health_data(db, now, reader)
     payload = _collection_health(
         db, store, otel=otel, ingesters=ingesters, stream_clients=stream_clients,
-        now=now, port=port, cached=cached, include_resources=True,
+        now=now, port=port, cached=cached,
     )
     settings = reader_feature(reader, "connection_info")
     path = str(getattr(db, "_path", ":memory:"))
@@ -6742,23 +6699,6 @@ def compute_health(
         },
     }
     return payload
-
-
-def machine_bytes(
-    db: Any,
-    store: Any,
-    query: str,
-    otel: Any = None,
-    ingesters: Any = None,
-    stream_clients: int | None = None,
-    now: float | None = None,
-    port: int | None = None,
-) -> bytes:
-    """The answer for ``/api/board/machine``. ``tool`` takes the same values as on ``/api/board``."""
-    qs = parse_qs(query, keep_blank_values=True)
-    tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
-    payload = compute_machine(db, store, tools, otel, ingesters, stream_clients, now, port)
-    return json.dumps(payload).encode("utf-8")
 
 
 # ─── Actions ──────────────────────────────────────────────────────

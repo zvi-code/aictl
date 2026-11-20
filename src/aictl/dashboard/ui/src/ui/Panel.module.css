@@ -13,6 +13,7 @@
 }
 .panel[data-size="small"] { block-size: var(--panel-sm); }
 .panel[data-size="large"] { block-size: var(--panel-lg); }
+.panel[data-fill] { block-size: 100%; }
 .header {
   display: flex;
   justify-content: space-between;

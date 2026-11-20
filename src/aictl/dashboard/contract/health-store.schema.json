@@ -17,6 +17,7 @@
     "storage_budget_bytes": {"type": ["integer", "null"]},
     "queued_history_rows_unconfirmed": {"type": ["integer", "null"]},
     "table_inventory": {"anyOf": [{"$ref": "table-inventory.schema.json"}, {"type": "null"}]},
+    "query_cpu": {"$ref": "query-cpu.schema.json"},
     "reader": {
       "type": ["object", "null"],
       "properties": {

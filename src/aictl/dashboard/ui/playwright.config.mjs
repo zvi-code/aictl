@@ -20,6 +20,8 @@ export default defineConfig({
   },
   projects: [
     { name: 'legacy', testMatch: ['**/legacy.spec.mjs', '**/replay.spec.mjs'] },
+    { name: 'board', testMatch: ['**/shell.spec.mjs', '**/board-a.spec.mjs', '**/board-b.spec.mjs', '**/health.spec.mjs'] },
+    { name: 'dock-layout', testDir: './test/replay', testMatch: '**/dock-layout.spec.mjs' },
     { name: 'gallery', testMatch: '**/gallery.spec.mjs' },
     ...process.env.UI_LEGACY_QUALITY === '1' ? [{ name: 'legacy-quality', testMatch: '**/legacy-quality.spec.mjs' }] : [],
     ...process.env.UI_SPIKES === '1' ? [{ name: 'spikes', testMatch: '**/spikes.spec.mjs' }] : [],

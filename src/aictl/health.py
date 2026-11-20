@@ -291,7 +291,7 @@ def ingestion_traffic(
 
 
 def node_transport_counters(transport: dict) -> dict:
-    """Keep only numeric transport measurements in stored health reports."""
+    """Keep only counters (not request or error text) in stored health reports."""
     operations = getattr(transport.get("ingester"), "operations", None)
     fields = ("total", "successful_requests", "in_flight", "failed", "recent_completed", "recent_avg_ms", "avg_ms",
               "rate_per_s", "rows", "rows_per_s", "bytes", "bytes_per_s", "last_success_at", "last_error_at")
@@ -300,6 +300,8 @@ def node_transport_counters(transport: dict) -> dict:
         return {key: stats[key] for key in fields if isinstance(stats.get(key), (int, float))}
 
     result = {}
+    if transport.get("query_cpu") is not None:
+        result["query_cpu"] = transport["query_cpu"]
     for key, op in (("reads", transport.get("reads")), ("commands", transport.get("commands")),
                     ("writes", operations)):
         if op is not None:
@@ -320,10 +322,13 @@ class ObservedKustoClient:
     """Count SDK attempts and log complete failed requests and responses."""
 
     def __init__(self, client: Any, *, cluster: str | None = None) -> None:
+        from .stores.kusto.query_cpu import QueryCpuStats
+
         self.client = client
         self.cluster = cluster or getattr(client, "_kusto_cluster", "unknown")
         self.reads = OperationStats()
         self.commands = OperationStats()
+        self.query_cpu = QueryCpuStats()
         self._responses = threading.local()
         session = getattr(client, "_session", None)
         if session is not None:
@@ -379,26 +384,19 @@ class ObservedKustoClient:
             self._responses.value = None
 
     def execute(self, database: str, query: str, *args: Any, **kwargs: Any) -> Any:
-        client_request_id = self._prepare_request_id(args, kwargs)
-        return self.reads.call(
-            lambda: self._call(
-                lambda: self.client.execute(database, query, *args, **kwargs),
-                database,
-                kql=query,
-                client_request_id=client_request_id,
-            )
-        )
+        return self._read(self.client.execute, database, query, args, kwargs)
 
     def execute_query(self, database: str, query: str, *args: Any, **kwargs: Any) -> Any:
+        return self._read(self.client.execute_query, database, query, args, kwargs)
+
+    def _read(self, execute, database: str, query: str, args: tuple, kwargs: dict) -> Any:
         client_request_id = self._prepare_request_id(args, kwargs)
-        return self.reads.call(
-            lambda: self._call(
-                lambda: self.client.execute_query(database, query, *args, **kwargs),
-                database,
-                kql=query,
-                client_request_id=client_request_id,
-            )
-        )
+
+        def call():
+            return self._call(lambda: execute(database, query, *args, **kwargs), database,
+                              kql=query, client_request_id=client_request_id)
+
+        return self.reads.call(call if query.lstrip().startswith(".") else lambda: self.query_cpu.call(call))
 
     def execute_mgmt(self, database: str, command: str, *args: Any, **kwargs: Any) -> Any:
         client_request_id = self._prepare_request_id(args, kwargs)

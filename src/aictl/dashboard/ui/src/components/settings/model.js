@@ -44,7 +44,7 @@ function lastSegment(key) {
   return parts[parts.length - 1];
 }
 
-export function normKey(key) {
+function normKey(key) {
   return String(key || '').replace(/^github\.copilot\./, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
@@ -53,11 +53,11 @@ function shortKey(key) {
   return normKey(parts[parts.length - 1]);
 }
 
-export function normText(s) {
+function normText(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-export function humanize(key) {
+function humanize(key) {
   const s = String(key || '')
     .replace(/^github\.copilot\./, '')
     .replace(/^chat\./, '')
@@ -121,7 +121,7 @@ function makeRow(key, value, extra = {}) {
 }
 
 /** The `sections` shape built from the fields an older server sends. */
-export function buildSections(cfg) {
+function buildSections(cfg) {
   const files = cfg.config_files || [];
   const src = files[0] || '';
   const buckets = Object.fromEntries(SECTION_ORDER.map(id => [id, []]));
@@ -198,7 +198,7 @@ export function getSections(cfg) {
 const HOME_RE = /^(\/Users\/[^/]+|\/home\/[^/]+|\/root|[A-Za-z]:\/Users\/[^/]+)(?=\/|$)/i;
 
 /** Forward slashes, no trailing slash. One character per character, so indexes map back. */
-export function normPath(p) {
+function normPath(p) {
   return String(p || '').replace(/\\/g, '/').replace(/(.)\/+$/, '$1');
 }
 
@@ -223,7 +223,7 @@ export function envName(source) {
 }
 
 /** A source that is a file on disk: not a variable and not a bare layer name. */
-export function isFileSource(source) {
+function isFileSource(source) {
   const s = String(source || '');
   return !!s && !isEnvSource(s) && !SCOPE_RANK.includes(s) && s !== 'default';
 }
@@ -266,7 +266,7 @@ function envRecord(v, tool) {
  * The tool's environment variables, set ones first: the record's `env_vars`,
  * plus a variable a row names in its source that the list lacks.
  */
-export function toolEnvVars(cfg, rows) {
+function toolEnvVars(cfg, rows) {
   const out = (Array.isArray(cfg?.env_vars) ? cfg.env_vars : []).filter(v => v && v.name).map(v => envRecord(v, cfg.tool));
   for (const r of rows || []) {
     for (const src of [r.source, ...(r.chain || []).map(c => c.source)]) {
@@ -290,7 +290,7 @@ export function matchEnv(v, q) {
 }
 
 /** The home folder a path is in, in the path's own spelling, or ''. */
-export function homeOf(p) {
+function homeOf(p) {
   const s = String(p || '');
   if (s.startsWith('~')) return '~';
   const m = HOME_RE.exec(normPath(s));
@@ -325,8 +325,6 @@ export function projectRoots(snap) {
 }
 
 // ─── Scope and override chain ────────────────────────────────────
-export const SCOPES = ['default', 'user', 'project', 'workspace', 'env', 'policy', 'managed'];
-
 export const SCOPE_LABELS = {
   default: 'Default', system: 'System', managed: 'Managed', policy: 'Policy', user: 'User', profile: 'Profile',
   project: 'Project', 'project-local': 'Project local', workspace: 'Workspace', env: 'Env', cli: 'CLI',
@@ -347,7 +345,7 @@ export function scopeLabel(id, scopes = []) {
  * `scopes`, or, without them, the scopes its rows carry. Each layer has the
  * files it was seen in (`paths`). Empty when the record has neither.
  */
-export function toolScopes(cfg, rows) {
+function toolScopes(cfg, rows) {
   const given = (rows || []).filter(r => r.scopeGiven && r.scope !== 'default');
   if (Array.isArray(cfg?.scopes) && cfg.scopes.length) {
     return cfg.scopes.filter(s => s && s.id).map(s => ({
@@ -401,11 +399,11 @@ export function deriveScope(source, roots = []) {
   return 'project';
 }
 
-export function rowScope(row, roots = []) {
+function rowScope(row, roots = []) {
   return row && typeof row.scope === 'string' && row.scope ? row.scope : deriveScope(row?.source, roots);
 }
 
-export function rowLine(row) {
+function rowLine(row) {
   const n = Number(row?.line);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
@@ -459,7 +457,7 @@ export function whyWins(chain, wins) {
 }
 
 // ─── Values ──────────────────────────────────────────────────────
-export function valueText(v) {
+function valueText(v) {
   if (v === null || v === undefined || v === '') return '';
   if (v === true) return 'on true';
   if (v === false) return 'off false';
@@ -514,7 +512,7 @@ export function labelOf(id, snap) {
 }
 
 /** One row with everything the views need: scope, line, chain, risk and help text. */
-export function enrichRow(row, tool, section, roots) {
+function enrichRow(row, tool, section, roots) {
   const scope = rowScope(row, roots);
   const agent = row.agent && typeof row.agent === 'object' ? row.agent : null;
   const { chain, wins } = rowChain(row, scope);
@@ -670,7 +668,7 @@ export function aictlEntry(snap) {
 }
 
 // ─── Filters ─────────────────────────────────────────────────────
-export function matchRow(row, q) {
+function matchRow(row, q) {
   if (!q) return true;
   const parts = [row.label, row.key, valueText(row.value), baseName(row.source)];
   const a = row.agent;
@@ -772,7 +770,7 @@ export function gitRisk(f) {
 
 const CONFIG_DIRS = new Set(['.claude', '.github', '.vscode', '.cursor', '.codex', '.gemini', '.copilot', '.windsurf']);
 
-export function dirOf(s) {
+function dirOf(s) {
   const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
   return i > 0 ? s.slice(0, i) : s;
 }
@@ -921,9 +919,9 @@ export function fileGroups(files) {
 }
 
 // ─── Findings ────────────────────────────────────────────────────
-export const SEVERITY_RANK = { high: 0, medium: 1, low: 2, info: 3 };
+const SEVERITY_RANK = { high: 0, medium: 1, low: 2, info: 3 };
 
-export function findingId(f) {
+function findingId(f) {
   return [f.rule || '', f.path || '', f.line || 0, f.tool || '', f.session_id || ''].join('|');
 }
 
@@ -975,7 +973,7 @@ export function findingGroups(findings) {
 // sec is a section id (by tool, by topic), a location (files) or a rule (findings);
 // row is a setting key, a file path or a finding id; tool is the "Read by" filter in files;
 // scope filters By tool to the rows set at one layer; unset shows the knobs no file sets.
-export const PIVOTS = ['tool', 'topic', 'files', 'findings'];
+const PIVOTS = ['tool', 'topic', 'files', 'findings'];
 
 // In Files, tool and sec are comma lists (Read by, Location), and these narrow it further:
 // group (location | purpose), purpose, fscope, git (comma lists), recent (changed in 24 h)
@@ -1022,4 +1020,4 @@ export function settingsParams(st) {
 export const listOf = s => (s ? String(s).split(',').filter(Boolean) : []);
 export const listParam = a => a.join(',');
 
-export { CLEAR_SETTINGS_PARAMS as CLEAR_PARAMS } from '../../hooks/urlState.js';
+export { CLEAR_SETTINGS_PARAMS as CLEAR_PARAMS } from '../../data/urlState.ts';

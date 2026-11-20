@@ -152,6 +152,21 @@ describe('live store', () => {
     expect(h.store.boardField('agents')).toEqual({ present: true, rowKeys: [], value: [] })
   })
 
+  it('shares each immutable wire payload between the topic and board-field reads', () => {
+    const h = storeHarness()
+    const first = { tokens: 10 }
+    const next = { tokens: 20 }
+    h.bootstrap([liveField('kpis', first)])
+    h.tick()
+    expect(h.store.boardField('kpis').value).toBe(first)
+    expect(dataOf(h.store, 'history.board', 'kpis:')?.value).toBe(first)
+    h.change(2, [liveField('kpis', next, '', 2)])
+    expect(h.store.boardField('kpis').value).toBe(first)
+    h.tick()
+    expect(h.store.boardField('kpis').value).toBe(next)
+    expect(dataOf(h.store, 'history.board', 'kpis:')?.value).toBe(next)
+  })
+
   it('merges complementary configuration and history in source order without losing the row key', () => {
     const h = storeHarness()
     const config = liveEntity('configuration.board', 'skill-config', {

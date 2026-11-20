@@ -1,0 +1,42 @@
+.stack {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+.stack p { margin: 0; overflow-wrap: anywhere; }
+.metrics, .actions, .cores {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--space-2);
+}
+.fixedMetrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--overlay-sm)), 1fr));
+  gap: var(--space-2);
+}
+.fixedMetrics > dl { min-inline-size: 0; overflow-wrap: anywhere; }
+.actions button, .stack summary {
+  font: inherit;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+.actions button {
+  border: var(--border-size) solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+.stack summary { cursor: pointer; }
+.stack details {
+  padding: var(--space-2);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.stack details[open] > summary { margin-bottom: var(--space-2); }
+.cores label { display: grid; font-size: var(--text-xs); }
+.cores meter { inline-size: var(--space-8); }
+.note { color: var(--color-muted); font-size: var(--text-sm); }
+.previewPath { font-family: var(--font-mono); }
+.resourceChart { min-width: 0; }
+.resourceChart figure { min-block-size: var(--panel-lg); }

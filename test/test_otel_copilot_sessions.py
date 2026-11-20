@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from aictl.dashboard import board_api
-from aictl.dashboard.board_api import agent_detail, agent_flow, compute_machine
+from aictl.dashboard.board_api import agent_detail, agent_flow, compute_health
 from aictl.dashboard.otel_receiver import OtelReceiver
 from aictl.dashboard.projections.history import HistoryScope
 from aictl.ingesters.call_facts import copilot_call_key
@@ -387,9 +387,9 @@ class TestCopilotCliEndpoint:
         if "COPILOT_OTEL_ENDPOINT" in env:
             assert "ignores" in got["text"]
 
-    def test_the_machine_payload_reports_it(self, monkeypatch, kusto_store):
+    def test_the_health_payload_reports_it(self, monkeypatch, kusto_store):
         monkeypatch.setattr(board_api, "_otel_setup", lambda port: {"copilot-cli": copilot_cli_otel_endpoint(port, {})})
-        payload = compute_machine(kusto_store, None, now=NOW, port=8597)
+        payload = compute_health(kusto_store, None, now=NOW, port=8597)
         assert payload["pipeline"]["otel_setup"]["copilot-cli"]["status"] == "missing"
 
     def test_the_settings_catalog_says_copilot_cli_ignores_it(self):

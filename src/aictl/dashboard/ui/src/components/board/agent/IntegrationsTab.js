@@ -7,9 +7,9 @@ import { useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import TextView from '../../ui/TextView.js';
 import { FixedPanel, Pending, useDetail } from '../Drawer.js';
-import { NA, NO_MODEL, baseName, fmtBytes, fmtMs, fmtN, stamp } from '../format.js';
-import { Actions, Stats } from '../Panel.js';
-import Table from '../Table.js';
+import { NA, NO_MODEL, baseName, fmtBytes, fmtMs, fmtN, stamp } from '../../../design/format.ts';
+import { Actions, Stats } from '../drawerParts.js';
+import Table from '../IslandTable.js';
 import { Failed, SessionNote, clock, isActive, sessionIdOf } from './common.js';
 
 export const API_CALL_LIMIT = 200;

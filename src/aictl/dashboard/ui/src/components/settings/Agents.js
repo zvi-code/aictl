@@ -7,7 +7,7 @@ import { agentInherits, pinWins, scopeLabel } from './model.js';
 import { LockGlyph } from './Value.js';
 import { SetIn, Swatch } from './parts.js';
 
-export const AGENT_TOOLS_SHOWN = 4;
+const AGENT_TOOLS_SHOWN = 4;
 
 const AGENT_COLS = (w, withTool, withContext) => [
   withTool && { k: 'tool', l: 'Tool', get: r => w.labelOf(r.tool) },
@@ -102,7 +102,7 @@ function modelOf(r) {
 }
 
 /** Agent rows across tools in the order a sort key asks for. */
-export function sortAgents(rows, key, w) {
+function sortAgents(rows, key, w) {
   return [...rows].sort((SORTS[key] || SORTS.tool)(w));
 }
 

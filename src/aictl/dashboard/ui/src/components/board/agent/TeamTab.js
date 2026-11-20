@@ -5,8 +5,8 @@ import { html } from 'htm/preact';
 import { useMemo } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, subagentDef, useDetail } from '../Drawer.js';
-import { NA, fmtDur, fmtN, stamp } from '../format.js';
-import Table from '../Table.js';
+import { NA, fmtDur, fmtN, stamp } from '../../../design/format.ts';
+import Table from '../IslandTable.js';
 import { Wait, SessionNote, isActive, sessionIdOf } from './common.js';
 
 const STATE = {

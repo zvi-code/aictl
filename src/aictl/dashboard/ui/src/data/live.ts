@@ -22,7 +22,7 @@ interface LiveOptions extends Partial<LiveRequest> {
   maxRetryMs?: number
 }
 
-export function requestedBaselinesReady(store: LiveStore, requiredTopics: readonly string[]) {
+function requestedBaselinesReady(store: LiveStore, requiredTopics: readonly string[]) {
   if (!store.meta.ready) return false
   const statuses = [...(store.topic('source.status')?.values() ?? [])]
     .filter(({ data }) => !data.scope || data.scope === store.meta.scope)

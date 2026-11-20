@@ -7,9 +7,8 @@ import { html } from 'htm/preact';
 import { useMemo, useState } from 'preact/hooks';
 import * as api from '../../../api.js';
 import { FixedPanel, useDetail } from '../Drawer.js';
-import { fmtDur, fmtMs, fmtN } from '../format.js';
-import { hideTip, showTip } from '../tip.js';
-import { Wait, Seg, SessionNote, clip, clock, isActive, slotColor } from './common.js';
+import { fmtDur, fmtN } from '../../../design/format.ts';
+import { Wait, Seg, SessionNote, clock, isActive, slotColor } from './common.js';
 
 const KINDS = new Set(['user_message', 'api_call', 'api_response', 'tool_use', 'compaction', 'subagent', 'error', 'hook']);
 export const GAP_S = 30;
@@ -66,19 +65,6 @@ export default function TimelineTab({ a, st, ctx }) {
   });
   const max = Math.max(1, ...shown.map(b => tokensFor(b, mode)));
   const slots = slotsOf(shown);
-  const tip = (b, e) => {
-    const tok = b.tokens || {};
-    const rows = [{ c: colors[entityOf(b)], label: 'Time', value: clock(b.ts) }];
-    if (tok.input || tok.output) rows.push({ c: 'transparent', label: 'Input / output', value: fmtN(tok.input || 0) + ' / ' + fmtN(tok.output || 0) });
-    if (tok.cache_read || tok.cache_creation) rows.push({ c: 'transparent', label: 'Cache read / write', value: fmtN(tok.cache_read || 0) + ' / ' + fmtN(tok.cache_creation || 0) });
-    if (b.duration_ms > 0) rows.push({ c: 'transparent', label: 'Took', value: fmtMs(b.duration_ms) });
-    if (b.type === 'user_message' && b.message) rows.push({ c: 'transparent', label: 'Prompt', value: clip(b.message, 60) });
-    if (b.type === 'error') rows.push({ c: 'transparent', label: 'Error', value: clip((b.error_type || '') + ' ' + (b.error_message || ''), 60) });
-    if (b.agent_name) rows.push({ c: 'transparent', label: 'Agent', value: b.agent_name });
-    if (b.type === 'tool_use' && b.target) rows.push({ c: 'transparent', label: 'Target', value: clip(b.target, 60) });
-    if (b.type === 'tool_use' && b.success === false) rows.push({ c: 'transparent', label: 'Result', value: 'Failed' });
-    showTip(e.clientX, e.clientY, { title: entityOf(b), rows });
-  };
   return html`<${SessionNote} a=${a}/>
     <${FixedPanel} id="agtl" title="Timeline" sub=${shown.length + ' of ' + bars.length + ' events. Pauses over 30 s are folded.' + (data.summary?.omitted_events ? ' The ' + fmtN(data.summary.omitted_events) + ' oldest events are left out.' : '')}>
       ${!bars.length ? html`<div class="bd-empty">No timeline data for this session: aictl has no prompt, model call or tool call of it, and no hook or OpenTelemetry event.</div>` : html`
@@ -96,8 +82,7 @@ export default function TimelineTab({ a, st, ctx }) {
             const tok = tokensFor(b, mode);
             const h = Math.max(4, Math.max(0.06, Math.log1p(tok) / Math.log1p(max)) * BAR_H);
             const split = mode === 'all' && fresh(b) + cached(b) > 0 ? cached(b) / (fresh(b) + cached(b)) : 0;
-            return html`<div key=${i} class="bd-ag-slot" role="listitem" tabindex="0" data-entity=${ent} aria-label=${ent + ' at ' + clock(b.ts) + ', ' + fmtN(tok) + ' tokens'}
-              onMouseMove=${e => tip(b, e)} onMouseLeave=${hideTip} onFocus=${e => { const r = e.currentTarget.getBoundingClientRect(); tip(b, { clientX: r.left, clientY: r.top }); }} onBlur=${hideTip}>
+            return html`<div key=${i} class="bd-ag-slot" role="listitem" tabindex="0" data-entity=${ent} aria-label=${ent + ' at ' + clock(b.ts) + ', ' + fmtN(tok) + ' tokens'}>
               <span class="bd-ag-col" style=${{ height: BAR_H + 'px' }}><b style=${{ height: h + 'px', background: colors[ent] }}>${split > 0 ? html`<u style=${{ height: split * 100 + '%' }}></u>` : null}</b></span>
             </div>`;
           })}

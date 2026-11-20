@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/query-cpu.schema.json",
+  "title": "QueryCpu",
+  "description": "Completed Kusto query attempts on one daemon since started_at; CPU is the sum of reported values only.",
+  "type": "object",
+  "properties": {
+    "started_at": {"type": "number"},
+    "queries": {"type": "integer", "minimum": 0},
+    "failed": {"type": "integer", "minimum": 0},
+    "reported": {"type": "integer", "minimum": 0},
+    "total_cpu_s": {"type": ["number", "null"], "minimum": 0}
+  },
+  "required": ["started_at", "queries", "failed", "reported", "total_cpu_s"]
+}

@@ -6,11 +6,8 @@ import { render, waitFor } from '@testing-library/preact';
 import { html } from 'htm/preact';
 import Drawer from '../src/components/board/Drawer.js';
 import { OtelOverview, OtelSources, inContextModel, otelCallsDef, otelContextText, serverLabel, sourcesLine, sourcesNote } from '../src/components/board/agent/OtelPanels.js';
-import { parseFilters } from '../src/components/board/filters.js';
-import { stamp } from '../src/components/board/format.js';
-import { buildPanel } from '../src/components/board/panels.js';
-import { normalizeBoard } from '../src/components/board/useBoardData.js';
-import { NOW, agentDetailFixture, boardFixture, machineFixture } from './fixtures/board.fixture.js';
+import { stamp } from '../src/design/format.ts';
+import { NOW, agentDetailFixture, boardFixture } from './fixtures/board.fixture.js';
 
 // The shape /api/board/agent returns for the Copilot CLI session of the real OTel sample.
 const OTEL = {
@@ -115,39 +112,5 @@ describe('the OTel-only values', () => {
     const { container } = openAgent('context', { otel: { ...OTEL, context: null }, sources: SOURCES });
     await waitFor(() => expect(container.querySelector('#dr-actx')).toBeTruthy());
     expect(container.querySelector('[data-testid="ctx-otel"]')).toBeNull();
-  });
-});
-
-describe('Copilot CLI endpoint in the Sources panel', () => {
-  const sources = machine => {
-    const board = boardFixture();
-    const data = normalizeBoard({ ...board, sources: [...board.sources, { tool: 'copilot-cli', label: 'Copilot CLI', data_from: 'Session files', locations: [], last_data_ts: NOW }], machine });
-    const ctx = { data, series: {}, range: data.range, chartRange: data.range, sel: null, filters: parseFilters(''), tools: null, toolIds: [], settingToolIds: [], toolName: x => x, nowS: NOW, stopped: {}, findings: { list: [], settings: [] }, actions: {}, query: '' };
-    return buildPanel('sources', ctx, { mode: (k, d) => d, tableView: false, folded: {}, setFold() {} }, { id: 'sources' }).table.rows.find(r => r.id === 'copilot-cli');
-  };
-  const withSetup = setup => { const m = machineFixture(); m.pipeline.otel_setup = { 'copilot-cli': setup }; return m; };
-
-  it('keeps a local config warning separate from receiver traffic for this tool', () => {
-    const machine = withSetup({ status: 'missing', variable: 'OTEL_EXPORTER_OTLP_ENDPOINT', text: 'Copilot CLI sends no OTel to aictl.' });
-    let row = sources(machine);
-    expect(row.cells.config).toMatchObject({ v: 'missing', cls: 'warn' });
-    expect(row.cells.config.title).toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
-    expect(row.cells.o.v).toBe('None');
-    machine.pipeline.otel_receiver.by_tool['copilot-cli'] = { events: 0, metrics: 30, last_at: NOW - 10 };
-    row = sources(machine);
-    expect(row.cells.config).toMatchObject({ v: 'missing', cls: 'dim' });
-    expect(row.cells.config.title).not.toContain('sends no OTel');
-    expect(row.cells.o).toMatchObject({ v: '30', sub: '10 s ago' });
-  });
-
-  it('says Elsewhere when it points to another address', () => {
-    const row = sources(withSetup({ status: 'elsewhere', text: 'Copilot CLI sends its OTel to http://localhost:4318, not to aictl' }));
-    expect(row.cells.config.v).toBe('elsewhere');
-    expect(row.cells.o.v).toBe('None');
-  });
-
-  it('keeps None when the variable is right and nothing came yet', () => {
-    const row = sources(withSetup({ status: 'ok', text: 'ok' }));
-    expect(row.cells.o.v).toBe('None');
   });
 });

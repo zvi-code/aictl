@@ -319,7 +319,17 @@
                 "anyOf": [
                   {
                     "type": "object",
-                    "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                    "properties": {
+                      "at": {"type": "number"},
+                      "pid": {"type": "integer"},
+                      "store": {
+                        "allOf": [
+                          {"type": "object", "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}},
+                          {"type": "object", "properties": {"query_cpu": {"$ref": "query-cpu.schema.json"}}}
+                        ]
+                      },
+                      "runtime": {"type": "object"}
+                    }
                   },
                   {"type": "null"}
                 ]

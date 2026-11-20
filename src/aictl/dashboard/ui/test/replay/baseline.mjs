@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { gunzipSync } from 'node:zlib';
 import { chromium } from '@playwright/test';
-import { fmtBytes, fmtCpu } from '../../src/components/board/format.js';
+import { fmtBytes } from '../../src/design/format.ts';
 import { installProbe, layoutShift } from './browser-probe.mjs';
+import { provideCatalog } from './catalog.mjs';
 import { startReplay } from './server.mjs';
 
 const recordings = fileURLToPath(new URL('../../../../../../test/recordings/', import.meta.url));
@@ -17,6 +18,7 @@ const repetitions = Number(process.env.UI_BASELINE_RUNS ?? 5);
 const duration = Number(process.env.UI_BASELINE_SECONDS ?? 60) * 1000;
 const modes = (process.env.UI_BASELINE_WINDOWS ?? 'quiet,busy').split(',');
 const speeds = (process.env.UI_BASELINE_SPEEDS ?? '1,10').split(',').map(Number);
+const profile = process.env.UI_REPLAY_PROFILE === '1';
 if (!Number.isInteger(repetitions) || repetitions < 1 || duration < 6000 || !Number.isFinite(duration)) {
   throw new Error('Use a positive run count and a window of at least six seconds.');
 }
@@ -31,7 +33,7 @@ async function statFrames(directory) {
     const health = record.data.upserts?.find(entity => entity.topic === 'runtime.health' && entity.id === 'local');
     const self = health?.data.pipeline?.self;
     if (!self || !Number.isFinite(self.cpu) || !Number.isFinite(self.rss)) continue;
-    frames[record.data.sequence] = [fmtCpu(self.cpu), fmtBytes(self.rss)];
+    frames[record.data.sequence] = [`${cpuFormat.format(self.cpu)}%`, fmtBytes(self.rss)];
   }
   return frames;
 }
@@ -39,6 +41,7 @@ async function statFrames(directory) {
 async function traceTasks(cdp) {
   const tasks = [];
   const marks = new Map();
+  const detail = [];
   const end = new Promise(ok => cdp.once('Tracing.tracingComplete', ok));
   cdp.on('Tracing.dataCollected', ({ value }) => {
     for (const entry of value) {
@@ -46,17 +49,33 @@ async function traceTasks(cdp) {
       if (entry.ph === 'X' && entry.name === 'ThreadControllerImpl::RunTask' && entry.dur > 16_000) {
         tasks.push(entry);
       }
+      if (profile && (entry.ph === 'X' || entry.name === 'LayoutShift')) detail.push(entry);
     }
   });
-  await cdp.send('Tracing.start', { categories: 'toplevel,blink.user_timing', transferMode: 'ReportEvents' });
+  await cdp.send('Tracing.start', { categories: 'toplevel,blink.user_timing' +
+    (profile ? ',devtools.timeline,v8,disabled-by-default-devtools.timeline' : ''), transferMode: 'ReportEvents' });
   return async () => {
     await cdp.send('Tracing.end');
     await end;
     const start = marks.get('aictl-replay-start');
     const cutoff = marks.get('aictl-replay-end');
     if (!start || !cutoff) throw new Error('Chromium trace is missing the replay window marks');
-    return tasks.filter(task => task.pid === start.pid && task.tid === start.tid &&
+    const mainTasks = tasks.filter(task => task.pid === start.pid && task.tid === start.tid &&
       task.ts >= start.ts && task.ts < cutoff.ts).map(task => (task.dur / 1000));
+    if (!profile) return { mainTasks };
+    const paint = marks.get('aictl-first-board-paint');
+    const onMain = entry => entry.pid === start.pid && entry.tid === start.tid &&
+      entry.ts >= paint.ts && entry.ts < cutoff.ts;
+    const slow = tasks.filter(task => onMain(task) && task.dur >= 16_667);
+    const attribution = slow.map(task => ({
+      sincePaint: (task.ts - paint.ts) / 1000,
+      duration: task.dur / 1000,
+      children: detail.filter(entry => onMain(entry) && entry.ts >= task.ts &&
+        entry.ts + entry.dur <= task.ts + task.dur && entry.dur >= 1000 && entry !== task)
+        .map(({ name, dur, args }) => ({ name, duration: dur / 1000, data: args.data ?? args.beginData })),
+    }));
+    return { mainTasks, attribution,
+      traceShifts: detail.filter(entry => onMain(entry) && entry.name === 'LayoutShift') };
   };
 }
 
@@ -75,13 +94,15 @@ async function measure(browser, replay, frames) {
   try {
     const page = await context.newPage();
     const requests = requestLog(page, replay.url);
-    await page.addInitScript(installProbe, { measureBoard: true, statFrames: frames });
+    await provideCatalog(page);
+    await page.addInitScript(installProbe, { measureBoard: true, statFrames: frames, shiftSources: true });
     const cdp = await context.newCDPSession(page);
     const stopTrace = await traceTasks(cdp);
     const navigation = performance.now();
     await page.goto(replay.url + boardUrl);
     await page.waitForFunction(() => window.__replayProbe.firstBoardPaint != null, null, { timeout: 75_000 });
-    await page.locator('#p-daemon .bd-stats').scrollIntoViewIfNeeded();
+    await page.locator('#p-daemon').scrollIntoViewIfNeeded();
+    await page.locator('#p-daemon dl').first().scrollIntoViewIfNeeded();
     const startMs = await page.evaluate(() => {
       window.__replayProbe.trackStats();
       return performance.getEntriesByName('aictl-replay-start')[0].startTime;
@@ -102,7 +123,7 @@ async function measure(browser, replay, frames) {
       performance.mark('aictl-replay-end');
       return window.__replayProbe.snapshot();
     });
-    const mainTasks = await stopTrace();
+    const trace = await stopTrace();
     const bytes = Object.fromEntries(['js', 'css'].map(ext => {
       const assets = result.assets.filter(asset => asset.path.endsWith(`.${ext}`) && asset.responseEnd <= result.firstBoardPaint);
       return [ext, Object.fromEntries(['transferSize', 'encodedBodySize', 'decodedBodySize'].map(field =>
@@ -110,7 +131,7 @@ async function measure(browser, replay, frames) {
     }));
     const longTasks = result.entries.longtask.filter(entry => entry.startTime >= result.firstBoardPaint);
     return {
-      ...result, bytes, mainTasks, longTasks, startMs,
+      ...result, bytes, ...trace, longTasks, startMs,
       layout: layoutShift(result.entries['layout-shift'], result.firstBoardPaint),
       requestsFirstMinute: duration >= 60_000 ? requests.filter(record => record.time < navigation + 60_000).length : null,
       requestsDuringReplay: requests.filter(record => record.time >= start && record.time < start + duration).length,
@@ -125,6 +146,7 @@ const report = { platform: process.platform, os: release(), cpu: cpus()[0]?.mode
   date: new Date().toISOString(), duration, cases: [] };
 await mkdir(dirname(output), { recursive: true });
 const browser = await chromium.launch();
+const cpuFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 try {
   report.chromium = browser.version();
   for (const mode of modes) {

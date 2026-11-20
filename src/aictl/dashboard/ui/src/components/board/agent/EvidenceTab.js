@@ -3,7 +3,7 @@ import { html } from 'htm/preact';
 import { useState } from 'preact/hooks';
 import { getSessionEvidence } from '../../../api.js';
 import { FixedPanel, useDetail } from '../Drawer.js';
-import { stamp } from '../format.js';
+import { stamp } from '../../../design/format.ts';
 import { SessionNote, Wait } from './common.js';
 
 const UNKNOWN = 'Not reported';

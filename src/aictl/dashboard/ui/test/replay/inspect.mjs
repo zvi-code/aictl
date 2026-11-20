@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from '@playwright/test';
+import { boardReady, prepareBoard } from './catalog.mjs';
 import { startReplay } from './server.mjs';
 
 const dist = resolve(process.env.UI_DIST ?? 'node_modules/.cache/aictl-ui-baseline');
@@ -23,8 +24,9 @@ async function assets(page) {
   await cdp.send('Debugger.enable');
   await cdp.send('DOM.enable');
   await cdp.send('CSS.enable');
+  await prepareBoard(page);
   await page.goto(replay.url + boardUrl);
-  await ready(page);
+  await boardReady(page);
   const js = await Promise.all([...scripts].map(async ([url, scriptId]) => {
     const { scriptSource } = await cdp.send('Debugger.getScriptSource', { scriptId });
     return { path: new URL(url).pathname, parsedSourceBytes: Buffer.byteLength(scriptSource) };
@@ -34,10 +36,6 @@ async function assets(page) {
     return { path: new URL(url).pathname, parsedSourceBytes: Buffer.byteLength(text) };
   }));
   return { js, css };
-}
-
-function ready(page) {
-  return page.waitForFunction(() => document.querySelector('.bd-app[aria-busy="false"] #sec-top .bd-kpi'));
 }
 
 async function requestRates(pages) {
@@ -53,8 +51,9 @@ async function requestRates(pages) {
   });
   const start = performance.now();
   await Promise.all(pages.map(async page => {
+    await prepareBoard(page);
     await page.goto(replay.url + boardUrl);
-    await ready(page);
+    await boardReady(page);
   }));
   await sleep(Math.max(0, start + 3 * minute - performance.now()));
   return byPage.map(records => {

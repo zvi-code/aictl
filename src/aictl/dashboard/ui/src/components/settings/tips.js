@@ -34,7 +34,7 @@ export const TIPS = {
 };
 
 // Flat fallback — setting keys whose meaning is unambiguous across groups.
-export const TIPS_FLAT = {
+const TIPS_FLAT = {
   // Agent Mode
   autoFix:              'When on, the agent automatically attempts to fix errors it detects during a run without asking.',
   editorContext:        'Ensures the agent always includes your active editor file as primary context for every request.',
@@ -117,7 +117,7 @@ export const TIPS_FLAT = {
   livePreview:          'Enables the live preview pane that shows rendered output during Code mode tasks.',
 };
 
-export function tip(key, group) {
+function tip(key, group) {
   return (group && TIPS[group] && TIPS[group][key]) || TIPS_FLAT[key] || '';
 }
 

@@ -69,6 +69,15 @@
                 "attempted_at": {"type": ["number", "null"]},
                 "last_error": {"type": ["string", "null"]},
                 "refresh_interval_s": {"type": "number"},
+                "monitor_status": {"type": "string"},
+                "samples": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {"value": {"type": "number"}, "at": {"type": "number"}},
+                    "required": ["value", "at"]
+                  }
+                },
                 "native": {
                   "type": "object",
                   "additionalProperties": {
