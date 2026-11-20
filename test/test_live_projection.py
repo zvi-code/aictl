@@ -56,11 +56,11 @@ def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority()
 
 
 def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch, kusto_store):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import board_filters, board_projection, skill_inventory
     from aictl.dashboard.live.projection import _ProjectionDB
 
-    monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
-    monkeypatch.setattr(board_api, "_skill_file", lambda *_: {"scope": None, "path": None, "description": None})
+    monkeypatch.setattr(board_projection, "_prompt_files_on_disk", lambda _: ([], []))
+    monkeypatch.setattr(skill_inventory, "_skill_file", lambda *_: {"scope": None, "path": None, "description": None})
     db = kusto_store
     fields = {"session_id": "s", "tool": "copilot-cli", "project_path": "project"}
     db.insert("sessions", **fields, started_at=100, ended_at=190)
@@ -69,9 +69,9 @@ def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch
     call = db.insert("tool_invocations", **fields, ts=140, tool_name="Bash")
     db.insert("tool_invocations_text", dedup_key=call["dedup_key"], target="pytest tests")
     db.insert("session_prompts", **fields, ts=110, text="prompt", prompt_file="example.prompt.md")
-    filters = board_api.Filters(90, 200, buckets=4)
-    expected = board_api.compute_board(db, filters, now=200)
-    actual = board_api.compute_board(_ProjectionDB(db, "offline"), filters, now=200)
+    filters = board_filters.Filters(90, 200, buckets=4)
+    expected = board_projection.compute_board(db, filters, now=200)
+    actual = board_projection.compute_board(_ProjectionDB(db, "offline"), filters, now=200)
     assert actual["kpis"] == expected["kpis"]
     assert actual["agents"] == expected["agents"]
     assert actual["series"] == expected["series"]
@@ -80,17 +80,17 @@ def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch
 
 
 def test_equal_timestamp_prompts_use_native_ids_not_list_positions(monkeypatch, kusto_store):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import board_filters, board_projection
     from aictl.dashboard.live.projection import _ProjectionDB
 
-    monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
+    monkeypatch.setattr(board_projection, "_prompt_files_on_disk", lambda _: ([], []))
     db = kusto_store
     db.insert("sessions", session_id="s", tool="copilot-cli", started_at=100, ended_at=190)
     for prompt in ("first", "second"):
         db.insert("session_prompts", ts=110, session_id="s", tool="copilot-cli", text=prompt)
-    filters = board_api.Filters(90, 200, buckets=4)
+    filters = board_filters.Filters(90, 200, buckets=4)
     live_db = _ProjectionDB(db, "offline-prompts")
-    payload = board_api.compute_board(live_db, filters, now=200)
+    payload = board_projection.compute_board(live_db, filters, now=200)
     assert len({row["id"] for row in payload["prompts"]}) == 2
     identities = {
         data["value"]["id"]: entity_id
@@ -98,21 +98,21 @@ def test_equal_timestamp_prompts_use_native_ids_not_list_positions(monkeypatch, 
         if data["field"] == "prompts" and data.get("key")
     }
     assert len(identities) == 2
-    assert all("id" not in row for row in board_api.compute_board(db, filters, now=200)["prompts"])
+    assert all("id" not in row for row in board_projection.compute_board(db, filters, now=200)["prompts"])
 
 
 def test_live_status_filter_selects_queryable_usage_by_runtime_not_hook_activity(monkeypatch, kusto_store):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import board_filters, board_projection
 
-    monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
+    monkeypatch.setattr(board_projection, "_prompt_files_on_disk", lambda _: ([], []))
     db = kusto_store
     db.insert("sessions", session_id="s", tool="copilot-cli", started_at=100)
     db.insert("requests", ts=120, session_id="s", tool="copilot-cli", model="gpt-5",
               input_tokens=7, output_tokens=3)
-    legacy = board_api.Filters(90, 200, status="idle", buckets=4)
-    current = board_api.Filters(90, 200, status="idle", buckets=4, runtime_statuses=(("s", "idle"),))
-    assert board_api.compute_board(db, legacy, now=200)["kpis"]["tokens"] == 0
-    payload = board_api.compute_board(db, current, now=200)
+    legacy = board_filters.Filters(90, 200, status="idle", buckets=4)
+    current = board_filters.Filters(90, 200, status="idle", buckets=4, runtime_statuses=(("s", "idle"),))
+    assert board_projection.compute_board(db, legacy, now=200)["kpis"]["tokens"] == 0
+    payload = board_projection.compute_board(db, current, now=200)
     assert payload["kpis"]["tokens"] == 10
     assert payload["agents"][0]["status"] == "running"  # Still the historical status, not a copied runtime fact.
 
@@ -156,7 +156,7 @@ def wait_for(predicate):
 
 
 def test_history_poll_emits_only_diffs_without_a_change_feed(monkeypatch):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import board_projection
     from aictl.stores import Store
     from aictl.stores.testing import FixtureReader
 
@@ -165,7 +165,7 @@ def test_history_poll_emits_only_diffs_without_a_change_feed(monkeypatch):
     store = Store(reader=reader)
     assert not reader.capabilities()["change_feed"]
     monkeypatch.setattr(
-        board_api,
+        board_projection,
         "compute_board",
         lambda _db, _filters, *, history, **_: {"agents": history.read("board.agents")},
     )
@@ -334,7 +334,7 @@ def test_unresolved_cutover_does_not_start_reader_or_compute_history(caplog):
 
 
 def test_unresolved_history_is_not_retried_after_clock_or_source_changes(monkeypatch, caplog):
-    from aictl.dashboard.board_api import Filters
+    from aictl.dashboard.board_filters import Filters
     from aictl.kusto.observations import UnresolvedObservationsError
 
     hub = LiveHub()

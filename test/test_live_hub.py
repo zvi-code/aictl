@@ -170,7 +170,7 @@ def test_data_is_frozen_at_publish_and_wire_cursor_matches_the_frame():
 
 
 def test_canonical_scope_preserves_empty_tools_instead_of_broadening_to_all_tools():
-    from aictl.dashboard.board_api import parse_filters
+    from aictl.dashboard.board_filters import parse_filters
 
     empty = canonical_scope("until=2&tool=&since=1&cursor=&history=1")
     all_tools = canonical_scope("until=2&since=1")

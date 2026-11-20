@@ -64,8 +64,9 @@ def server(tmp_path):
 
 @pytest.fixture
 def metrics_server(kusto_store, tmp_path, monkeypatch):
-    from aictl.dashboard import hooks_status
     from types import SimpleNamespace
+
+    from aictl.dashboard import hooks_status
 
     monkeypatch.setattr(hooks_status, "time", SimpleNamespace(time=lambda: 100_000.0))
     for ts, metric, value, tags in (
@@ -179,10 +180,7 @@ def _post_json(url, payload):
 
 @pytest.fixture()
 def config_server(tmp_path):
-    from aictl.dashboard.web_server import (
-        _DashboardHandler,
-        _DashboardHTTPServer,
-    )
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 
     root = tmp_path / "project"
     root.mkdir()
@@ -286,10 +284,7 @@ class TestObservabilitySubstrateAPI:
         """Samples endpoint with no DB returns []."""
         from pathlib import Path
 
-        from aictl.dashboard.web_server import (
-            _DashboardHandler,
-            _DashboardHTTPServer,
-        )
+        from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 
         # SnapshotStore with no DB
         store = SnapshotStore()
@@ -347,20 +342,20 @@ class TestSessionKillAPI:
         import os
         import signal
 
-        import aictl.dashboard.api_handlers as ah
+        from aictl.dashboard import session_routes
 
         # Simulate the Windows signal module (no SIGKILL attribute).
         monkeypatch.delattr(signal, "SIGKILL", raising=False)
         sent: list[int] = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(sig))
 
-        result = ah._kill_session_pids([999999], "KILL")
+        result = session_routes._kill_session_pids([999999], "KILL")
 
         assert sent == [signal.SIGTERM]
         assert result["signaled"] == [999999]
 
     def test_kill_signals_tracked_pids(self, server, monkeypatch):
-        import aictl.dashboard.api_handlers as ah
+        from aictl.dashboard import session_routes
 
         calls = {}
 
@@ -370,7 +365,7 @@ class TestSessionKillAPI:
             return {"signaled": list(pids), "failed": []}
 
         # Module global resolved at call time → patch is seen by server thread.
-        monkeypatch.setattr(ah, "_kill_session_pids", fake_kill)
+        monkeypatch.setattr(session_routes, "_kill_session_pids", fake_kill)
         status, body = _post_json(
             f"{server}/api/session-kill",
             {"session_id": "live-001", "confirm": True},
@@ -382,27 +377,26 @@ class TestSessionKillAPI:
         assert body["signaled"] == [1234]
 
     def test_kill_that_reaches_no_process_is_an_error(self, server, monkeypatch):
-        import aictl.dashboard.api_handlers as ah
+        from aictl.dashboard import session_routes
 
-        monkeypatch.setattr(ah, "_kill_session_pids", lambda pids, sig: {"signaled": [], "failed": list(pids)})
+        monkeypatch.setattr(session_routes, "_kill_session_pids", lambda pids, sig: {"signaled": [], "failed": list(pids)})
         status, body = _post_json(f"{server}/api/session-kill", {"session_id": "live-001", "confirm": True})
         assert status == 409
         assert "could be stopped" in body["error"]
 
     def test_kill_of_an_agent_with_no_process_is_not_found(self, server, monkeypatch):
-        import aictl.dashboard.api_handlers as ah
-        import aictl.dashboard.board_api as board_api
+        from aictl.dashboard import session_details, session_routes
 
-        monkeypatch.setattr(board_api, "live_pids_of", lambda *a: [])
-        monkeypatch.setattr(ah, "_kill_session_pids", lambda *a: pytest.fail("should not signal"))
+        monkeypatch.setattr(session_details, "live_pids_of", lambda *a: [])
+        monkeypatch.setattr(session_routes, "_kill_session_pids", lambda *a: pytest.fail("should not signal"))
         status, body = _post_json(f"{server}/api/session-kill", {"session_id": "stored-id", "confirm": True})
         assert status == 404
         assert "no running process" in body["error"]
 
     def test_kill_requires_confirm(self, server, monkeypatch):
-        import aictl.dashboard.api_handlers as ah
+        from aictl.dashboard import session_routes
 
-        monkeypatch.setattr(ah, "_kill_session_pids", lambda *a: pytest.fail("should not kill"))
+        monkeypatch.setattr(session_routes, "_kill_session_pids", lambda *a: pytest.fail("should not kill"))
         status, body = _post_json(
             f"{server}/api/session-kill",
             {"session_id": "live-001"},
@@ -518,10 +512,7 @@ class TestContextTomlAllowlist:
         discovered resource set' — see new-ui/captured/SHAPES.md finding #3."""
         from pathlib import Path
 
-        from aictl.dashboard.web_server import (
-            _DashboardHandler,
-            _DashboardHTTPServer,
-        )
+        from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 
         ctx = tmp_path / ".context.toml"
         ctx_body = "# project context\n[plugin]\nname = 'demo'\n"
@@ -870,7 +861,7 @@ class TestHookCallsTable:
         ],
     )
     def test_the_decision_of_a_wrapped_hook(self, stdout, exit_code, decision):
-        from aictl.dashboard.web_server import _hook_decision
+        from aictl.dashboard.ingest_http import _hook_decision
 
         assert _hook_decision(stdout, exit_code) == decision
 
@@ -938,7 +929,7 @@ class TestEventsAPI:
 @pytest.fixture()
 def api_calls_server(recorded_server):
     """Replay OTel API request and error rows with real OTel attribute names."""
-    from aictl.dashboard.api_handlers import API_ERROR_EVENTS, API_REQUEST_EVENTS
+    from aictl.dashboard.otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS
 
     events = []
     now = time.time()
@@ -1374,8 +1365,6 @@ class TestSettingsToolsAPI:
             assert keys == ["model", "effortLevel"]
             assert data["monitor"]["workspace_paths"] == [str(tmp_path)]
             assert data["monitor"]["diagnostics"]["process:psutil"]["status"] == "active"
-            snap_keys = [r["key"] for sec in _get_json(f"{url}/api/snapshot")["tool_configs"][0]["sections"] for r in sec["rows"]]
-            assert snap_keys == ["model"]
         finally:
             srv.shutdown()
             srv.server_close()

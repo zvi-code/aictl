@@ -9,8 +9,8 @@ import pytest
 # One clock: iso() counts back from test_board_facts.NOW, so the expected times must too.
 from test_board_facts import NOW, claude_path, copilot_events, ev, iso, make_ingester, write_lines
 
-from aictl.dashboard import board_api
-from aictl.dashboard.board_api import _agent_record, _session_context_files
+from aictl.dashboard import session_details
+from aictl.dashboard.session_details import _agent_record, _session_context_files
 from aictl.ingesters import loaded_files, loaded_files_backfill
 from aictl.ingesters.loaded_files import claude_attachment, custom_agent_file, in_system_prompt, system_prompt_files
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
@@ -306,4 +306,4 @@ def test_how_values_are_the_api_values():
     assert {loaded_files.INSTRUCTIONS, loaded_files.NESTED_MEMORY, loaded_files.SKILL, loaded_files.CUSTOM_AGENT, loaded_files.SYSTEM_PROMPT} == {
         "instructions", "nested_memory", "skill", "custom_agent", "system_prompt"
     }
-    assert board_api._loaded_files.__doc__
+    assert session_details._loaded_files.__doc__

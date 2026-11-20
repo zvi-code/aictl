@@ -155,7 +155,6 @@ def capabilities() -> dict:
         "stream": STREAM_PATH,
         "source_policy": SOURCE_POLICY,
         "topics": TOPICS,
-        "legacy_stream": "/api/stream",
         "datapoint_catalog": "/api/datapoints",
         "history": "queryable Kusto only",
         "configuration": "configured-on-disk is not evidence of loaded configuration",

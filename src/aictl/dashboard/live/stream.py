@@ -20,7 +20,7 @@ def client_count() -> int:
 
 @contextmanager
 def client_slot():
-    """Share one connection limit across the live and legacy SSE routes."""
+    """Reserve one live SSE connection."""
     global _client_count
     with _client_lock:
         accepted = _client_count < MAX_SSE_CLIENTS
@@ -44,7 +44,7 @@ def serve_capabilities(request) -> None:
 
 def serve_stream(request) -> None:
     """Send one scoped baseline followed by entity changes."""
-    from ..board_api import BoardRequestError
+    from ..board_filters import BoardRequestError
 
     with client_slot() as accepted:
         if not accepted:

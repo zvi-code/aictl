@@ -121,7 +121,7 @@ def session_context_files(folder: str, loaded: list[dict], tool: str = "", *, hi
                                             requested_tool=tool)}
     loaded_paths = {row["path"] for row in loaded}
     paths.update(loaded_paths)
-    from .board_api import MAX_LIST_ROWS, _basename
+    from .projection_utils import MAX_LIST_ROWS, _basename
 
     return {
         "git_root": folder or None,

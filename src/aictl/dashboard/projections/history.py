@@ -189,7 +189,7 @@ def typed_rows(rows: list[dict]) -> dict[str, list[tuple]]:
 
 
 def scoped_records(history: HistoryScope, sid: str, part: str) -> dict:
-    from .. import board_api as board
+    from .. import projection_utils
 
     reader = history.require_reader()
     scope = node_scope(history.node)
@@ -198,7 +198,7 @@ def scoped_records(history: HistoryScope, sid: str, part: str) -> dict:
         total, = complete_rows(reader.read("events.count", {**params, "limit": 1}))
         rows = reader.read("events.page", {**params, "limit": 500}).rows
         columns = ("ts", "kind", "tool", "seq")
-        return {"total": total["count"], "rows": [_fields(r, columns) | {"detail": board.mask_secrets(r["detail"])} for r in rows]}
+        return {"total": total["count"], "rows": [_fields(r, columns) | {"detail": projection_utils.mask_secrets(r["detail"])} for r in rows]}
     if part == "processes":
         body = session_processes(sid, reader.read("sessions.processes", {**scope, "requested_session": sid, "limit": 20_000}))
         return {"total": body["total"], "processes": body["processes"]}
@@ -208,7 +208,7 @@ def scoped_records(history: HistoryScope, sid: str, part: str) -> dict:
         observed: dict[str, dict] = {}
         tool_history = HistoryScope(reader, history.node)
         for row in tool_history.read("tools.totals", sid=sid):
-            server = board.mcp_server_of(row["tool_name"])
+            server = projection_utils.mcp_server_of(row["tool_name"])
             if not server:
                 continue
             data = observed.setdefault(server, {
@@ -237,7 +237,7 @@ def scoped_records(history: HistoryScope, sid: str, part: str) -> dict:
                 "total_errors": sum(r["errors"] for r in totals),
                 "by_model": {r["model"]: r["calls"] for r in totals},
                 "avg_latency_ms": sum(times) / len(times) if times else None,
-                "p95_latency_ms": board._percentile(times, 0.95),
+                "p95_latency_ms": projection_utils._percentile(times, 0.95),
             },
         }
     raise ValueError(f"Unknown session record type: {part}")

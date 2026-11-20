@@ -7,6 +7,7 @@ from collections import Counter
 from ..ingesters.call_facts import skill_of_path
 from .projections.history import HistoryScope, typed_rows
 
+
 def skill_events(db, sid, lo, hi, *, live_end, history=None):
     history = history or HistoryScope.local(db)
     facts = typed_rows(history.read("sequence.skills", sid=sid, since=lo, until=hi))

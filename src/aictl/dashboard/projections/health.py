@@ -24,7 +24,7 @@ def logical_stats(reader):
 
 
 def store_health(store):
-    from ..board_api import mask_secrets
+    from ..projection_utils import mask_secrets
 
     health = {"reader": None, "writer": None, **store_for(store).health()}
     if "status" not in health:

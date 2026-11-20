@@ -1,11 +1,9 @@
 import json
-import re
 import threading
 import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
-from typing import Any
 from urllib.parse import urlencode
 
 import pytest
@@ -13,6 +11,8 @@ from click.testing import CliRunner
 
 from aictl.cli import main
 from aictl.dashboard.node_views import NodeViewError, node_view
+
+
 def project(**extra):
     return SimpleNamespace(current_history=True, **extra)
 
@@ -92,8 +92,9 @@ def test_session_and_totals_use_node_qualified_keys_and_bound_session_identifier
 
 
 def test_health_sample_uses_only_current_process_counters_and_shared_resource_scope(node_reader, monkeypatch):
-    from aictl.health import node_transport_counters
     from test_contract import validate_detail
+
+    from aictl.health import node_transport_counters
 
     writer = node_transport_counters({}, {"status": "active", "warning": "private",
         "tables": {"events": {"queue_depth": 0, "rows_sent": 9, "ingest_failures": 1, "last_error": "private"}}})
@@ -175,7 +176,7 @@ def test_local_runtime_inventory_does_not_export_paths_and_deduplicates_sessions
 
 @pytest.fixture
 def history(monkeypatch, kusto_store):
-    from aictl.dashboard import board_api, session_record
+    from aictl.dashboard import board_projection, board_routes, runtime_health, session_record
 
     sid = "eaf2c622-9bed-4cf3-88af-f9ebac09b7de"
     calls = []
@@ -288,8 +289,10 @@ def history(monkeypatch, kusto_store):
         pytest.fail("Scoped history tried to access serving-node data")
 
     monkeypatch.setattr(session_record, "time", SimpleNamespace(time=lambda: 4000, monotonic=time.monotonic))
-    for fn in ("_prompt_files_on_disk", "_skill_file", "_self_usage", "project_root"):
-        monkeypatch.setattr(board_api, fn, no_local)
+    monkeypatch.setattr(board_projection, "_prompt_files_on_disk", no_local)
+    monkeypatch.setattr(board_projection, "_skill_file", no_local)
+    monkeypatch.setattr(runtime_health, "_self_usage", no_local)
+    monkeypatch.setattr(board_projection, "project_root", no_local)
     monkeypatch.setattr("aictl.dashboard.session_record._stat", no_local)
     monkeypatch.setattr("aictl.dashboard.session_record.PR_FINDER.lookup", no_local)
     db = project(_conn=no_local)
@@ -301,7 +304,7 @@ def history(monkeypatch, kusto_store):
 
             return 200, json.loads(read_board(kusto_store, query, now=now))
         path = endpoint if endpoint.startswith("/api/") else "/api/board" + endpoint
-        status, body = board_api.handle_get(path, query, db, kusto_store, now=now)
+        status, body = board_routes.handle_get(path, query, db, kusto_store, now=now)
         return status, json.loads(body)
 
     yield SimpleNamespace(call=call, sid=sid, calls=calls, add=add)
@@ -375,7 +378,7 @@ def test_tool_drawer_uses_the_same_session_scope_as_the_summary(history):
 
 
 def test_file_fallback_diff_never_uses_a_later_version(kusto_store):
-    from aictl.dashboard.board_api import file_detail
+    from aictl.dashboard.artifact_details import file_detail
     from aictl.dashboard.projections.history import HistoryScope
 
     history = HistoryScope(kusto_store.history_store.reader, "host-a", qualified=True)
@@ -439,7 +442,7 @@ def test_scoped_drilldowns_and_search_pagination(history):
 def test_context_machine_and_session_records_keep_colliding_paths_and_pids_separate(history, monkeypatch):
     from aictl.dashboard.history_scope import identity
 
-    monkeypatch.setattr("aictl.dashboard.board_api._file_sessions", lambda: pytest.fail("No local discovery"))
+    monkeypatch.setattr("aictl.dashboard.context_projection._file_sessions", lambda: pytest.fail("No local discovery"))
     for n, value in (("host-a", 7), ("host-b", 19)):
         history.add("files", n, "f", path="/s/memory.md", tool="copilot-cli", scope="global", category="memory",
                     tokens=value, size_bytes=100, content="private-body", meta='{"sent_to_llm":"yes","loaded_when":"every-call"}')
@@ -463,9 +466,10 @@ def test_context_machine_and_session_records_keep_colliding_paths_and_pids_separ
 
 
 def test_history_errors_do_not_become_empty_or_local(monkeypatch, kusto_store):
+    from test_live_routes import handler
+
     from aictl.dashboard.history_board import serve
     from aictl.stores.base import StoreError
-    from test_live_routes import handler
 
     def request(query, store=None):
         req = handler("/api/history/board?" + query)

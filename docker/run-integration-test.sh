@@ -166,11 +166,11 @@ else
     fail "dashboard returns HTTP $HTTP_CODE"
 fi
 
-API_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8484/api/snapshot)
+API_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8484/api/live/capabilities)
 if [ "$API_CODE" = "200" ]; then
-    pass "API /api/snapshot returns 200"
+    pass "API /api/live/capabilities returns 200"
 else
-    fail "API /api/snapshot returns $API_CODE"
+    fail "API /api/live/capabilities returns $API_CODE"
 fi
 
 # ── 4. Deploy .context.toml ──────────────────────────────────────

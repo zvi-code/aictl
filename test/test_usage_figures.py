@@ -16,7 +16,8 @@ from datetime import datetime, timedelta
 import pytest
 
 from aictl.dashboard.analytics import _compute_response_time, compute_usage_summary, window_sessions
-from aictl.dashboard.board_api import Filters, compute_board
+from aictl.dashboard.board_filters import Filters
+from aictl.dashboard.board_projection import compute_board
 from aictl.ingesters.transcript_usage import local_day
 from aictl.stores import Store
 from aictl.stores.testing import FixtureReader

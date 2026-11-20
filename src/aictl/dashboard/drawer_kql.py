@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import math
 import re
-from typing import Mapping
-
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 _VERSION = "_v:datetime _deleted:bool"
 _SESSION = "session_id:string ts:real"

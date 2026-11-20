@@ -223,7 +223,7 @@ def _read_settings_text(p: Path) -> str:
 
 def load_settings_file(path: object, is_allowed: Any = None) -> dict[str, Any]:
     """The text of a settings file for editing, with secret-shaped values masked."""
-    from .board_api import mask_secrets
+    from .projection_utils import mask_secrets
 
     p = _editable_path(path, is_allowed)
     text = _read_settings_text(p)
@@ -288,7 +288,7 @@ def save_settings_file(path: object, payload: dict[str, Any], is_allowed: Any = 
                 raise ToolConfigEditError(409, "The file changed since it was loaded. Reload it and make the change again.")
         except (TypeError, ValueError) as exc:
             raise ToolConfigEditError(400, "expected_mtime must be a number") from exc
-    from .board_api import mask_secrets
+    from .projection_utils import mask_secrets
 
     current = _read_settings_text(p)
     new_text = restore_masked(current, mask_secrets(current), text)

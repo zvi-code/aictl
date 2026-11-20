@@ -47,8 +47,8 @@ arguments, not every filter or session. The recorder chooses recent session,
 agent and file arguments from responses where available. If no suitable
 argument is available, it uses a placeholder. Some requests returned an
 error, timed out or found no data. Many start requests on the isolated daemon
-got HTTP 503 while it started. The legacy `/api/stream` is represented by its
-first frame at each boundary, not by a second continuous feed.
+got HTTP 503 while it started. These archived tapes include the first frame of
+the retired `/api/stream` at some boundaries. New captures use `/api/live/stream`.
 
 A recorder argument error skipped `/api/board/tool` and `/api/board/skill`
 at the boundaries. The script now sends both requests. The two HTTP 200

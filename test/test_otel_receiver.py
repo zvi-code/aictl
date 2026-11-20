@@ -10,21 +10,10 @@ import urllib.request
 
 import pytest
 
-from aictl.dashboard.web_server import (
-    METRIC_MAP,
-    OtelReceiver,
-    _nano_to_epoch,
-    _promote_session_id,
-)
-from aictl.dashboard.web_server import (
-    _extract_otel_data_points as _extract_data_points,
-)
-from aictl.dashboard.web_server import (
-    _extract_otel_value as _extract_value,
-)
-from aictl.dashboard.web_server import (
-    _parse_otel_attributes as _parse_attributes,
-)
+from aictl.dashboard.otel_receiver import METRIC_MAP, OtelReceiver, _nano_to_epoch, _promote_session_id
+from aictl.dashboard.otel_receiver import _extract_otel_data_points as _extract_data_points
+from aictl.dashboard.otel_receiver import _extract_otel_value as _extract_value
+from aictl.dashboard.otel_receiver import _parse_otel_attributes as _parse_attributes
 from aictl.records import EventRow, Sample
 
 # ── Unit tests: OTLP JSON parsing helpers ────────────────────────
@@ -441,10 +430,7 @@ def otel_server(tmp_path, kusto_store):
     from pathlib import Path
 
     from aictl.dashboard.models import DashboardSnapshot
-    from aictl.dashboard.web_server import (
-        _DashboardHandler,
-        _DashboardHTTPServer,
-    )
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore
     from aictl.sink import SampleSink
     from aictl.stores import Store

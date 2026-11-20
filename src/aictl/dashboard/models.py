@@ -41,7 +41,7 @@ def _slim_agent_teams(teams: list[dict]) -> list[dict]:
 
 
 def tools_revision(tools: list) -> str:
-    """A short digest of the per-tool lists a client only learns from /api/snapshot.
+    """A short digest of the per-tool inventory lists.
 
     It covers which files, processes and MCP servers each tool has, not their
     changing numbers (CPU, memory), so it moves only when a client's copy of
@@ -231,7 +231,7 @@ class DashboardSnapshot:
     def to_dict_slim(self) -> dict:
         """Serialisable dict with agent_teams stripped of per-agent detail.
 
-        Used for /api/snapshot and SSE — keeps team-level summaries
+        Used for compact CLI JSON output — keeps team-level summaries
         (session_id, agent_count, tokens, models, tools_used) but drops
         the nested ``agents`` array which can be multi-MB.
         """
@@ -244,13 +244,9 @@ class DashboardSnapshot:
     def to_json(self, indent: int | None = None) -> str:
         return json.dumps(self.to_dict(), indent=indent)
 
-    def to_json_slim(self) -> str:
-        """Compact JSON with slim agent_teams (no per-agent detail)."""
-        return json.dumps(self.to_dict_slim())
-
     @classmethod
     def from_dict(cls, d: dict) -> DashboardSnapshot:
-        """Reconstruct from a dict (e.g. from /api/snapshot JSON)."""
+        """Reconstruct from a serialized snapshot."""
         from ..tools import McpServerInfo, MemoryEntry, ResourceFile
 
         tools = []

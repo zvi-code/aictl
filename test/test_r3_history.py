@@ -1,13 +1,21 @@
 import json
 from types import SimpleNamespace
 
-from aictl.dashboard.board_api import Filters, _resource_series
-from aictl.dashboard.scoped_history import _reported_machine
+from aictl.dashboard.board_filters import Filters
+from aictl.dashboard.board_projection import _resource_series
 from aictl.dashboard.hooks_status import _activity, _hook_event_counts, _post_tool_use_usage, _subagent_usage
 from aictl.dashboard.node_views import node_view
 from aictl.dashboard.projections.health import logical_stats, store_health
 from aictl.dashboard.projections.history import HistoryScope
-from aictl.dashboard.projections.metrics import catalog_entries, sample_metrics, sample_page, sample_series, system_history, tool_history
+from aictl.dashboard.projections.metrics import (
+    catalog_entries,
+    sample_metrics,
+    sample_page,
+    sample_series,
+    system_history,
+    tool_history,
+)
+from aictl.dashboard.scoped_history import _reported_machine
 from aictl.stores import Store
 
 

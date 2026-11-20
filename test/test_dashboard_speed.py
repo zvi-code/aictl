@@ -8,21 +8,16 @@ import gzip
 import io
 import json
 import threading
-import urllib.request
 from email.message import Message
 from pathlib import Path
 
 import pytest
 
-from aictl.dashboard import web_server
+from aictl.dashboard import http_assets, http_response
 from aictl.dashboard.audit_cache import AuditCache
+from aictl.dashboard.http_response import _accepts_gzip
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool, tools_revision
-from aictl.dashboard.web_server import (
-    _accepts_gzip,
-    _DashboardHandler,
-    _DashboardHTTPServer,
-)
-from aictl.orchestrator import AllowedPaths, SnapshotStore
+from aictl.dashboard.web_server import _DashboardHandler
 from aictl.tools import ResourceFile
 
 # ── Data ──────────────────────────────────────────────────────────
@@ -112,7 +107,7 @@ def test_tools_rev_moves_with_the_lists_not_with_the_numbers():
     gone = _snapshot(0)
     gone.tools[1].mcp_servers = []
     assert tools_revision(gone.tools) != base
-    assert json.loads(_snapshot(0).to_json_slim())["tools_rev"] == base
+    assert _snapshot(0).to_dict_slim()["tools_rev"] == base
 
 
 def test_to_dict_slim_does_not_mutate_snapshot_in_place():
@@ -199,7 +194,7 @@ def test_a_304_does_not_compress_the_body(monkeypatch):
     def fail(*_args, **_kwargs):
         raise AssertionError("compressed a body that a 304 does not send")
 
-    monkeypatch.setattr("aictl.dashboard.web_server._gzip_bytes", fail)
+    monkeypatch.setattr("aictl.dashboard.http_response._gzip_bytes", fail)
     again = _Recorder("gzip")
     again.headers["If-None-Match"] = etag
     again._json_response_raw(BIG)
@@ -235,10 +230,10 @@ def test_static_assets_are_compressed_once_and_cached_by_name(tmp_path, monkeypa
     source = ("export const a = 1;\n" * 400).encode()
     (dist / "assets" / "index-AbCd1234.js").write_bytes(source)
     (dist / "assets" / "logo.js").write_bytes(source)
-    monkeypatch.setattr(web_server, "_static_dist_candidates", lambda: [dist])
+    monkeypatch.setattr(http_assets, "_static_dist_candidates", lambda: [dist])
     calls = []
-    real = web_server._gzip_bytes
-    monkeypatch.setattr(web_server, "_gzip_bytes", lambda b, level=6: calls.append(1) or real(b, level))
+    real = http_response._gzip_bytes
+    monkeypatch.setattr(http_response, "_gzip_bytes", lambda b, level=6: calls.append(1) or real(b, level))
 
     for _ in range(3):
         h = _Recorder("gzip")
@@ -277,7 +272,7 @@ def test_static_assets_use_the_accepted_sidecar(header, encoding, tmp_path, monk
     (assets / "index-AbCd1234.css").write_bytes(css)
     (assets / "index-AbCd1234.css.br").write_bytes(brotli)
     (assets / "index-AbCd1234.css.gz").write_bytes(packed)
-    monkeypatch.setattr(web_server, "_static_dist_candidates", lambda: [tmp_path])
+    monkeypatch.setattr(http_assets, "_static_dist_candidates", lambda: [tmp_path])
 
     h = _Recorder(header)
     h._serve_static("/assets/index-AbCd1234.css")
@@ -294,72 +289,13 @@ def test_static_font_uses_woff2_mime_type(tmp_path, monkeypatch):
     assets = tmp_path / "assets"
     assets.mkdir()
     (assets / "inter-AbCd1234.woff2").write_bytes(b"font data")
-    monkeypatch.setattr(web_server, "_static_dist_candidates", lambda: [tmp_path])
+    monkeypatch.setattr(http_assets, "_static_dist_candidates", lambda: [tmp_path])
 
     h = _Recorder("gzip, br")
     h._serve_static("/assets/inter-AbCd1234.woff2")
     assert h.sent_headers["Content-Type"] == "font/woff2"
     assert "Content-Encoding" not in h.sent_headers
     assert h.wfile.getvalue() == b"font data"
-
-
-def _serve(snapshot: DashboardSnapshot, tmp_path):
-    store = SnapshotStore()
-    store.update(snapshot)
-    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, store
-
-
-def _get(url: str, **headers):
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.headers, resp.read()
-
-
-def test_snapshot_over_http_with_and_without_gzip(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    srv, _store = _serve(_snapshot(0), tmp_path)
-    try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/api/snapshot"
-        # urllib sends no Accept-Encoding, so this is the client without gzip.
-        plain_headers, plain = _get(url)
-        assert "Content-Encoding" not in plain_headers
-        packed_headers, packed = _get(url, **{"Accept-Encoding": "gzip"})
-        assert packed_headers["Content-Encoding"] == "gzip"
-        assert len(packed) < len(plain) / 4
-        assert gzip.decompress(packed) == plain
-        assert packed_headers["ETag"] != plain_headers["ETag"]
-    finally:
-        srv.shutdown()
-        srv.server_close()
-
-
-def test_a_tick_over_the_wire_is_small(tmp_path, monkeypatch):
-    """Through the real handler: a message is a timestamp and a version, nothing more."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    srv, store = _serve(_snapshot(0), tmp_path)
-    try:
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/stream", timeout=10)
-
-        def message() -> bytes:
-            lines = []
-            while True:
-                line = resp.readline()
-                if line in (b"\n", b""):
-                    return b"".join(lines)
-                lines.append(line)
-
-        first = message()
-        store.update(_snapshot(1))
-        second = message()
-        assert second.startswith(b"data: ") and len(second) < 200
-        assert set(json.loads(second[6:])) == {"timestamp", "version"}
-        assert json.loads(second[6:])["version"] == json.loads(first[6:])["version"] + 1
-        resp.close()
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
 # ── Audit is kept ─────────────────────────────────────────────────
@@ -534,40 +470,3 @@ def test_an_audit_past_its_time_budget_returns_and_lists_what_it_skipped(tmp_pat
     assert steps == []
     assert "project tree" in result["incomplete"]
     assert "models in force" in result["incomplete"]
-
-
-def test_an_update_while_the_first_message_is_sent_is_not_missed(tmp_path, monkeypatch):
-    """An update that lands between the first message and the wait still reaches the client."""
-    from aictl.dashboard import web_server
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    srv, store = _serve(_snapshot(0), tmp_path)
-    real = web_server.DashboardHandler._write_sse if hasattr(web_server, "DashboardHandler") else None
-    handler_cls = srv.RequestHandlerClass
-    real = handler_cls._write_sse
-    sent = []
-
-    def write_then_update(self, snap, *args):
-        real(self, snap, *args)
-        if not sent:
-            sent.append(1)
-            store.update(_snapshot(1))  # lands before the handler starts to wait
-
-    monkeypatch.setattr(handler_cls, "_write_sse", write_then_update)
-    try:
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/stream", timeout=5)
-
-        def message() -> bytes:
-            lines = []
-            while True:
-                line = resp.readline()
-                if line in (b"\n", b""):
-                    return b"".join(lines)
-                lines.append(line)
-
-        message()
-        assert message().startswith(b"data: ")  # the update, not a 30 s keepalive
-        resp.close()
-    finally:
-        srv.shutdown()
-        srv.server_close()

@@ -9,8 +9,8 @@ from contextlib import nullcontext
 import psutil
 import pytest
 
-from aictl.dashboard import web_server
-from aictl.dashboard.web_server import _copilot_surface, _copilot_surface_of_process, _tool_from_hook_source
+from aictl.dashboard import ingest_http
+from aictl.dashboard.ingest_http import _copilot_surface, _copilot_surface_of_process, _tool_from_hook_source
 
 
 class FakeProcess:
@@ -70,7 +70,7 @@ def test_a_vanished_process_is_unknown_and_does_not_raise() -> None:
 
 
 def test_shared_hook_source_uses_the_detected_surface(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(web_server, "_copilot_surface_of_process", lambda pid: "copilot-desktop")
+    monkeypatch.setattr(ingest_http, "_copilot_surface_of_process", lambda pid: "copilot-desktop")
     data = {"source": "root.vscode-user", "pid": 123}
     assert _tool_from_hook_source(data) == "copilot-desktop"
 

@@ -54,7 +54,7 @@ class Dashboard:
         self.scrubber = scrubber
         self.recent_session = None
 
-    def read(self, path, name, phase, writer, *, event_stream=False):
+    def read(self, path, name, phase, writer):
         """Return the raw parsed body only to choose the next GET. Never follow redirects."""
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         label = self.scrubber.route(name.split("#")[0]) + ("#" + name.split("#")[1] if "#" in name else "")
@@ -66,18 +66,14 @@ class Dashboard:
             with conn.getresponse() as res:
                 content_type = res.getheader("Content-Type", "").split(";")[0]
                 record.update(status=res.status, content_type=content_type)
-                if event_stream and content_type == "text/event-stream":
-                    result = next((f for f in frames(res) if "data" in f), None)
+                body = res.read(BODY_LIMIT + 1)
+                if len(body) > BODY_LIMIT:
+                    record["capture_error"] = "body_limit"
+                elif "json" in content_type or body.startswith((b"{", b"[")):
+                    result = json.loads(body)
                     record["body"] = self.scrubber.scrub(result)
                 else:
-                    body = res.read(BODY_LIMIT + 1)
-                    if len(body) > BODY_LIMIT:
-                        record["capture_error"] = "body_limit"
-                    elif "json" in content_type or body.startswith((b"{", b"[")):
-                        result = json.loads(body)
-                        record["body"] = self.scrubber.scrub(result)
-                    else:
-                        record["body"] = self.scrubber.string(body.decode("utf-8", "replace"), "body")
+                    record["body"] = self.scrubber.string(body.decode("utf-8", "replace"), "body")
                 if etag := res.getheader("ETag"):
                     record["etag"] = self.scrubber.string(etag)
         except (OSError, ValueError, http.client.HTTPException) as exc:
@@ -92,7 +88,7 @@ class Dashboard:
         def get(route_label, **params):
             route = route_label.split("#")[0]
             path = route + ("?" + urlencode(params) if params else "")
-            return self.read(path, route_label, phase, writer, event_stream=route == "/api/stream")
+            return self.read(path, route_label, phase, writer)
 
         with ThreadPoolExecutor(max_workers=3) as pool:
             sessions = pool.submit(get, "/api/board/sessions", q="", limit=20, offset=0)
@@ -103,7 +99,6 @@ class Dashboard:
             base = [pool.submit(get, name) for name in (
                 "/api/live/capabilities", "/api/board/context",
                 "/api/settings/tools", "/api/effective-models", "/api/otel-status", "/api/hooks-status",
-                "/api/stream",
             )]
             base += [
                 pool.submit(get, "/api/context-audit", nowait=1),

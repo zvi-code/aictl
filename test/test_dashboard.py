@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
-
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool
-from aictl.dashboard.web_server import _DashboardHandler
+from aictl.dashboard.session_flow import attribute_api_to_turns
 from aictl.orchestrator import collect
 from aictl.records import EventRow
 from aictl.tools import ResourceFile, ToolResources
@@ -385,7 +383,7 @@ class TestAttributeApiToTurns:
             ),
             EventRow(ts=5.0, tool="claude-code", kind="otel:user_prompt", detail={"prompt": "hello"}),
         ]
-        _DashboardHandler._attribute_api_to_turns([turn], events)
+        attribute_api_to_turns([turn], events)
         assert turn["tokens"]["input"] == 100
         assert turn["tokens"]["output"] == 50
         assert turn["api_calls"] == 1  # only api_request counted
@@ -402,7 +400,7 @@ class TestAttributeApiToTurns:
                 detail={"input_tokens": 200, "output_tokens": 80},
             ),
         ]
-        _DashboardHandler._attribute_api_to_turns([turn], events)
+        attribute_api_to_turns([turn], events)
         assert turn["tokens"]["input"] == 200
         assert turn["api_calls"] == 1
 

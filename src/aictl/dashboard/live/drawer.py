@@ -4,8 +4,9 @@ from typing import Any
 
 
 def project_agent(db: Any, store: Any, watch: tuple[str, str]) -> tuple[int, dict]:
-    from ..board_api import agent_detail, agent_flow, agent_transcript
+    from ..flow_projection import agent_flow, agent_transcript
     from ..projections.history import HistoryScope
+    from ..session_details import agent_detail
 
     view, agent_id = watch
     history = HistoryScope.local(store)

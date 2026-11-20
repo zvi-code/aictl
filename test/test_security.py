@@ -28,7 +28,6 @@ from kusto_replay import NOW
 
 from aictl.dashboard.models import DashboardSnapshot
 from aictl.orchestrator import AllowedPaths, SnapshotStore
-from aictl.records import Sample
 
 # ── Harness ───────────────────────────────────────────────────────
 
@@ -47,10 +46,10 @@ def _make_snapshot(sessions=None):
 @pytest.fixture()
 def server(kusto_store, monkeypatch):
     """Real HTTP server on a random port with one live session, yields base URL."""
-    from aictl.dashboard import board_api
+    from aictl.dashboard import session_details
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-    pids_of = board_api.live_pids_of
-    monkeypatch.setattr(board_api, "live_pids_of", lambda store, snap, sid: pids_of(store, snap, sid, now=NOW))
+    pids_of = session_details.live_pids_of
+    monkeypatch.setattr(session_details, "live_pids_of", lambda store, snap, sid: pids_of(store, snap, sid, now=NOW))
 
     kusto_store.insert("metrics", ts=NOW, metric="mem.total", value=8192, tags='{"tool":"claude-code"}')
     store = SnapshotStore(history_store=kusto_store.history_store)
@@ -133,14 +132,14 @@ class TestStaticPathTraversal:
     @pytest.fixture()
     def static_dist(self, tmp_path, monkeypatch):
         """Temp dist dir with one asset, plus a secret file OUTSIDE it."""
-        import aictl.dashboard.web_server as ws
+        from aictl.dashboard import http_assets
 
         dist = tmp_path / "dist"
         (dist / "assets").mkdir(parents=True)
         (dist / "assets" / "app.js").write_text("console.log('ok')\n")
         (tmp_path / "secret.txt").write_text("TOP SECRET\n")
         # Module global resolved at call time → patch is seen by server thread.
-        monkeypatch.setattr(ws, "_static_dist_candidates", lambda: [dist])
+        monkeypatch.setattr(http_assets, "_static_dist_candidates", lambda: [dist])
         return dist
 
     def test_normal_asset_is_served(self, server, static_dist):
@@ -206,9 +205,9 @@ class TestCorsLoopbackOnly:
 
 class TestCsrfOriginGuard:
     def test_session_kill_with_evil_origin_is_403(self, server, monkeypatch):
-        import aictl.dashboard.api_handlers as ah
+        from aictl.dashboard import session_routes
 
-        monkeypatch.setattr(ah, "_kill_session_pids", lambda *a: pytest.fail("must not signal"))
+        monkeypatch.setattr(session_routes, "_kill_session_pids", lambda *a: pytest.fail("must not signal"))
         status, _, _ = _request(
             f"{server}/api/session-kill",
             method="POST",

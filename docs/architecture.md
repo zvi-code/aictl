@@ -110,7 +110,7 @@ aictl/
 │
 ├── dashboard/              # All visualization renderers
 │   ├── models.py           #   DashboardTool + DashboardSnapshot dataclasses
-│   ├── web_server.py       #   ThreadingHTTPServer — routing and static assets
+│   ├── web_server.py       #   ThreadingHTTPServer lifecycle and route tables
 │   ├── live/
 │   │   ├── protocol.py     #     Source authority, stable IDs, and wire capabilities
 │   │   ├── hub.py          #     Bounded entity state, replay, and client backpressure
@@ -119,8 +119,13 @@ aictl/
 │   ├── contract/           #   JSON Schemas for live topics and HTTP details
 │   ├── projections/       #   Dashboard projections over named store views
 │   ├── history_board.py    #   Scoped panel and whole-window chart reads
-│   ├── queryable_context.py #  Context inventory and file details
-│   ├── api_handlers.py     #   REST handlers for details and actions
+│   ├── board_projection.py #   Board history aggregation
+│   ├── context_projection.py # Context inventory, budget, and growth
+│   ├── runtime_health.py   #   Machine and collection health
+│   ├── session_details.py, flow_projection.py, artifact_details.py
+│   ├── *_routes.py        #   Board, session, settings, and metrics HTTP handlers
+│   ├── ingest_http.py     #   Hook and OTLP receivers
+│   ├── http_*.py          #   Request guards, asset serving, and responses
 │   ├── tool_config_editor.py #  Read/write tool config edits (audited)
 │   ├── tui.py              #   Textual TUI app
 │   ├── html_report.py      #   Self-contained static HTML report
@@ -454,7 +459,8 @@ class DashboardSnapshot:
 
 ### Web Dashboard (`dashboard/web_server.py` + `dashboard/ui/`)
 
-`web_server.py` serves the Vite assets and dispatches HTTP routes. The Solid
+`web_server.py` starts the server and dispatches its route tables. `http_assets.py`
+serves the Vite assets; the route handlers call the relevant projections. The Solid
 shell presents the board, Health and Settings. `ui/src/data/` applies the live
 baseline and changes to a keyed store and caches on-demand detail requests.
 Panels consume typed sources through `panels/data.ts`. See
@@ -476,8 +482,8 @@ whole displayed range through a separate historical read. The browser checks the
 returned scope before using that read. Remote Health reports node writer
 counters only from fresh samples for the reported daemon process; shared Kusto
 inventory (including retention when known) is not attributed to those nodes.
-The snapshot endpoints `/api/snapshot` and `/api/stream` remain in use by
-integration or recording tools; they are not the Solid board data path.
+Recording also uses the live stream; the Docker smoke test checks live
+capabilities. No HTTP endpoint serializes the daemon's whole snapshot.
 
 **Python clients** — The CLI and TUI check `/api/live/capabilities` before
 opening `/api/live/stream`. They use live entities for process and session
@@ -711,7 +717,7 @@ start_server(root, port, interval)
 Main Thread
 ├── HTTP Server (ThreadingHTTPServer — eight pooled worker threads keep their history connections; a thread per request beyond them)
 │   ├── Request handler threads (REST API, SSE clients)
-│   └── SSE push on snapshot version change
+│   └── Live SSE bootstrap and topic updates from the live hub
 │
 ├── RefreshLoop Thread
 │   └── Periodic collect() + snapshot update

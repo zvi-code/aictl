@@ -94,7 +94,6 @@ ignore = [
 "src/aictl/dashboard/tui.py" = ["S110", "BLE001"]
 "src/aictl/dashboard/web_server.py" = ["S110", "BLE001"]
 "src/aictl/dashboard/html_report.py" = ["S110", "BLE001"]
-"src/aictl/dashboard/api_handlers.py" = ["S110", "BLE001"]
 # Monitoring collectors use optional imports (psutil/watchdog) inside try-blocks
 # that ruff can't statically follow; F401/F821 are known false positives here.
 "src/aictl/monitoring/**" = ["S110", "BLE001", "F401", "F821", "F841"]

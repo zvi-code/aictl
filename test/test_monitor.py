@@ -988,7 +988,7 @@ def test_self_usage_counts_child_processes():
 
     import pytest
 
-    from aictl.dashboard.api_handlers import self_usage
+    from aictl.dashboard.runtime_health import self_usage
 
     child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
     try:
@@ -1013,7 +1013,7 @@ def test_self_usage_measures_cpu_since_the_previous_call(monkeypatch):
 
     import psutil
 
-    from aictl.dashboard import api_handlers
+    from aictl.dashboard import runtime_health
 
     class _Proc:
         made: list[int] = []
@@ -1039,10 +1039,10 @@ def test_self_usage_measures_cpu_since_the_previous_call(monkeypatch):
         def memory_info(self):
             return types.SimpleNamespace(rss=self.pid * 10)
 
-    monkeypatch.setattr(api_handlers, "_SELF_PROCS", {})
+    monkeypatch.setattr(runtime_health, "_SELF_PROCS", {})
     monkeypatch.setattr(psutil, "Process", lambda pid: _Proc(pid, kids=[4243]))
-    first = api_handlers.self_usage(4242)
-    second = api_handlers.self_usage(4242)
+    first = runtime_health.self_usage(4242)
+    second = runtime_health.self_usage(4242)
 
     assert first["cpu_percent"] == 0.0
     assert second["daemon_cpu_percent"] == 5.0

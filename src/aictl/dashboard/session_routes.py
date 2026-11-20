@@ -1,10 +1,6 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""REST API endpoint handler methods for the dashboard.
-
-Provides _APIHandlersMixin which is mixed into _DashboardHandler to
-supply all /api/* endpoint implementations.
-"""
+"""HTTP handlers for session details, evidence, and local process actions."""
 
 from __future__ import annotations
 
@@ -15,7 +11,6 @@ import os
 import re
 import time
 from collections import Counter
-from pathlib import Path
 
 from ..data.token_usage import TokenUsage
 from ..stores import store_for
@@ -31,7 +26,6 @@ from .projections.history import (
     session_processes,
     session_row,
 )
-from .projections.metrics import catalog_entries, sample_metrics, sample_page, sample_series
 
 # Synthesized process-based session_id format: "tool:pid:timestamp".
 # Used by copilot-vscode (and other tools that don't emit their own ids)
@@ -41,84 +35,6 @@ from .projections.metrics import catalog_entries, sample_metrics, sample_page, s
 # of these, we fall back to matching on tool + the session's time window.
 _SYNTHETIC_SESSION_RE = re.compile(r"^[a-z][a-z0-9-]*:\d+:\d+$")
 
-# psutil measures CPU between two calls on the same Process object, so the
-# objects must outlive one request. Keyed by pid; dead pids are dropped.
-_SELF_PROCS: dict[int, object] = {}
-
-
-def self_usage(pid: int | None = None) -> dict:
-    """CPU and memory of this process plus its child processes.
-
-    ``cpu_percent`` and ``memory_rss_bytes`` are the totals. The daemon share is
-    ``daemon_*`` and every child is listed in ``children`` so a costly helper
-    is visible instead of hidden behind a quiet parent.
-    """
-    import os
-
-    import psutil
-
-    pid = os.getpid() if pid is None else pid
-    parent = _SELF_PROCS.get(pid) or psutil.Process(pid)
-    _SELF_PROCS[pid] = parent
-    procs = [parent]
-    try:
-        procs += parent.children(recursive=True)
-    except psutil.Error:
-        pass
-    live = {p.pid for p in procs}
-    for stale in [k for k in _SELF_PROCS if k not in live]:
-        del _SELF_PROCS[stale]
-
-    rows = []
-    for proc in procs:
-        proc = _SELF_PROCS.setdefault(proc.pid, proc)
-        try:
-            rows.append(
-                {
-                    "pid": proc.pid,
-                    "name": proc.name(),
-                    "cpu_percent": round(proc.cpu_percent(interval=0), 1),
-                    "memory_rss_bytes": proc.memory_info().rss,
-                }
-            )
-        except psutil.Error:
-            continue
-    daemon = rows[0] if rows and rows[0]["pid"] == pid else {"cpu_percent": 0.0, "memory_rss_bytes": 0}
-    children = [r for r in rows if r["pid"] != pid]
-    return {
-        "cpu_percent": round(sum(r["cpu_percent"] for r in rows), 1),
-        "memory_rss_bytes": sum(r["memory_rss_bytes"] for r in rows),
-        "daemon_cpu_percent": daemon["cpu_percent"],
-        "daemon_memory_rss_bytes": daemon["memory_rss_bytes"],
-        "children": children,
-    }
-
-
-def _one_row_per_session(rows: list[dict]) -> list[dict]:
-    """Drop extra rows for a session recorded under several ids (in place order).
-
-    A hook row and a correlator ``tool:pid:<uuid>`` row share a UUID, so both
-    resolve to one transcript and would each report its full totals. The first
-    row stays (a live row keeps its live fields) and takes the transcript's
-    numbers if another row has them.
-    """
-    from ..records import _USAGE_PROFILE_KEYS, _session_uuid
-
-    kept: dict[str, dict] = {}
-    out: list[dict] = []
-    for row in rows:
-        uuid = _session_uuid(row.get("session_id", ""))
-        if uuid is None:
-            out.append(row)
-            continue
-        first = kept.get(uuid)
-        if first is None:
-            kept[uuid] = row
-            out.append(row)
-        elif row.get("tokens_source") == "transcript" and first.get("tokens_source") != "transcript":
-            first.update({k: row[k] for k in _USAGE_PROFILE_KEYS if k in row})
-    return out
-
 
 def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     """Send SIGTERM/SIGKILL to the given PIDs and their child trees.
@@ -127,7 +43,6 @@ def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     server itself, but a kill on ourselves would take down the very dashboard
     issuing the command). Returns ``{signaled, failed}`` lists of PIDs.
     """
-    import os
     import signal as _signal
 
     # SIGKILL does not exist on Windows; fall back to SIGTERM so the kill
@@ -146,7 +61,7 @@ def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
             for child in psutil.Process(pid).children(recursive=True):
                 if child.pid != own:
                     targets.append(child.pid)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             # psutil missing / process gone / access denied — still attempt
             # the parent below; child discovery is best-effort.
             pass
@@ -161,334 +76,27 @@ def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
     return {"signaled": signaled, "failed": failed}
 
 
-# ─── Budget cache ────────────────────────────────────────────────
+class SessionRoutes:
+    def _serve_copilot_sessions(self, path: str) -> None:
+        from .copilot_sessions_api import handle
 
+        status, payload = handle(path, self._qs)
+        self._json_response(payload, status=status)
 
+    def _serve_session_evidence(self) -> None:
+        from .session_evidence import EvidenceInputError, session_evidence
 
-# ─── Settings files: every file aictl reads, grouped by location ──
-
-SETTINGS_FILE_KINDS = ("settings", "instructions", "agents", "skills", "prompts", "hooks", "mcp", "memory", "other")
-_AUDIT_KINDS = {
-    "agent": "agents",
-    "skill": "skills",
-    "prompt": "prompts",
-    "hook": "hooks",
-    "instruction": "instructions",
-}
-
-
-def _file_kind(path: str, audit_kind: str = "") -> str:
-    """Kind of a file: the audit's kind when it names one, else from the file name."""
-    kind = _AUDIT_KINDS.get(audit_kind, audit_kind)
-    if kind in SETTINGS_FILE_KINDS:
-        return kind
-    low = path.replace("\\", "/").lower()
-    name = low.rsplit("/", 1)[-1]
-    if "mcp" in name:
-        return "mcp"
-    if "/hooks/" in low or name.startswith("hooks."):
-        return "hooks"
-    if "/skills/" in low or name == "skill.md":
-        return "skills"
-    if "/agents/" in low or name.endswith(".agent.md"):
-        return "agents"
-    if "/prompts/" in low or name.endswith(".prompt.md"):
-        return "prompts"
-    if "memory" in name:
-        return "memory"
-    if name.endswith(".md"):
-        return "instructions"
-    if name.endswith((".json", ".jsonc", ".toml", ".yaml", ".yml")):
-        return "settings"
-    return "other"
-
-
-def _tool_home_roots() -> list[str]:
-    """Folders that hold a tool's own files, longest first."""
-    from .. import platforms, tool_homes
-
-    roots: list[Path] = []
-    for fn_name in (
-        "claude_global_dir",
-        "codex_global_dir",
-        "copilot_global_dir",
-        "gemini_global_dir",
-        "windsurf_global_dir",
-        "cursor_user_dir",
-    ):
-        fn = getattr(platforms, fn_name, None)
-        if fn is not None:
-            try:
-                roots.append(fn())
-            except Exception:  # noqa: BLE001 - one unknown home must not hide the others
-                continue
-    try:
-        roots += [h.path for h in tool_homes.homes()]
-    except Exception:  # noqa: BLE001
-        pass
-    out = {os.path.normpath(str(r)) for r in roots}
-    return sorted(out, key=len, reverse=True)
-
-
-def _location(path: str, root: str, home: str, vscode_user: str, tool_roots: list[str]) -> tuple[str, str]:
-    """(location, location_root) of a normalized path."""
-
-    def under(folder: str) -> bool:
-        return bool(folder) and (path == folder or path.startswith(folder.rstrip(os.sep) + os.sep))
-
-    if under(root):
-        return "project", root
-    if under(vscode_user):
-        return "vscode-user", vscode_user
-    for folder in tool_roots:
-        if under(folder):
-            return "tool-home", folder
-    if under(home):
-        rel = os.path.relpath(path, home).split(os.sep)
-        if len(rel) > 1 and rel[0].startswith("."):
-            return "tool-home", os.path.join(home, rel[0])
-        return "home", home
-    return "other", os.path.dirname(path)
-
-
-def settings_files(
-    root: str | Path,
-    tool_configs: list[dict],
-    audit_sources: list[dict] | None = None,
-    monitor_paths: list[str] | None = None,
-) -> dict:
-    """Every file aictl reads for the settings view, merged by path.
-
-    Sources are each tool's config files and row sources, the hidden-context
-    audit's file rows, and the live monitor's folders (``is_dir``). No file is
-    opened: each entry carries only stat facts, its git state and how many
-    setting rows read it. A path that cannot be stat'ed has ``exists: false``.
-    """
-    from ..context_audit import _git_states, _path_key
-    from ..monitoring.tool_config import setting_scope
-
-    root_s = os.path.normpath(str(root))
-    entries: dict[str, dict] = {}
-
-    def entry(path: str) -> dict | None:
-        if not path or not os.path.isabs(os.path.expanduser(path)):
-            return None
-        norm = os.path.normpath(os.path.expanduser(path))
-        key = _path_key(norm)
-        if key not in entries:
-            entries[key] = {"path": norm, "tools": [], "settings": 0, "audit": None, "is_dir": False}
-        return entries[key]
-
-    def add_tool(e: dict, tool: str) -> None:
-        if tool and tool not in e["tools"]:
-            e["tools"].append(tool)
-
-    for cfg in tool_configs or []:
-        tool = str(cfg.get("tool", ""))
-        for f in cfg.get("config_files") or []:
-            if (e := entry(str(f))) is not None:
-                add_tool(e, tool)
-        for section in cfg.get("sections") or []:
-            for row in section.get("rows") or []:
-                if (e := entry(str(row.get("source") or ""))) is not None:
-                    add_tool(e, tool)
-                    e["settings"] += 1
-    for src in audit_sources or []:
-        if src.get("scope") == "dynamic" or src.get("readable") is False:
-            continue  # a label, not a file
-        if (e := entry(str(src.get("path") or ""))) is not None:
-            add_tool(e, str(src.get("tool", "")))
-            if e["audit"] is None:
-                e["audit"] = src
-    for folder in monitor_paths or []:
-        if (e := entry(str(folder))) is not None:
-            e["is_dir"] = True
-
-    home = os.path.normpath(str(Path.home()))
-    try:
-        from ..platforms import vscode_user_dir
-
-        vscode_user = os.path.normpath(str(vscode_user_dir()))
-    except Exception:  # noqa: BLE001
-        vscode_user = ""
-    tool_roots = _tool_home_roots()
-
-    def in_project(path: str) -> bool:
-        return path == root_s or path.startswith(root_s.rstrip(os.sep) + os.sep)
-
-    project_paths = sorted({e["path"] for e in entries.values() if in_project(e["path"])})
-    states = _git_states(Path(root_s), project_paths) if project_paths else {}
-
-    files: list[dict] = []
-    for e in entries.values():
-        path = e["path"]
-        audit = e["audit"] or {}
-        location, location_root = _location(path, root_s, home, vscode_user, tool_roots)
+        history = HistoryScope.local(self.server.store)
         try:
-            st = os.stat(path)
-            exists, size, mtime = True, int(st.st_size), float(st.st_mtime)
-        except OSError:
-            exists, size, mtime = False, 0, 0.0
-        git_state = states.get(path, "outside-repo") if in_project(path) else "outside-repo"
-        if git_state == "unknown":
-            git_state = ""
-        audit_scope = str(audit.get("scope") or "")
-        scope = "managed" if audit_scope == "managed" else setting_scope(path, root_s)
-        files.append(
-            {
-                "path": path,
-                "name": os.path.basename(path),
-                "location": location,
-                "location_root": location_root,
-                "scope": scope,
-                "kind": "other" if e["is_dir"] else _file_kind(path, str(audit.get("kind") or "")),
-                "tools": sorted(e["tools"]),
-                "settings": e["settings"],
-                "bytes": 0 if e["is_dir"] else size,
-                "mtime": mtime,
-                "git_state": git_state,
-                "loading": str(audit.get("loading") or ""),
-                "exists": exists,
-                "is_dir": e["is_dir"],
-            }
-        )
-    files.sort(key=lambda f: (f["location"], f["location_root"], f["path"]))
-    return {"files": files, "generated_at": time.time()}
-
-
-class _APIHandlersMixin:
-    """REST API endpoint handler methods.
-
-    Mixed into _DashboardHandler to keep endpoint logic in a separate module.
-    Methods access ``self.server``, ``self._db``, ``self._qs_get``, etc.
-    which are defined on the actual handler class.
-    """
-
-    def _serve_settings_files(self) -> None:
-        """Every file aictl reads, grouped by location. Never starts an audit scan."""
-        from ..monitoring.config import MonitorConfig
-        from .audit_cache import AUDIT_CACHE
-
-        root = self.server.root
-        snap = self.server.store.snapshot
-        tool_configs = list(getattr(snap, "tool_configs", None) or [])
-        if not tool_configs:
-            from ..monitoring.tool_config import collect_tool_configs
-
-            tool_configs = [c.to_dict() for c in collect_tool_configs(Path(root))]
-        audit = AUDIT_CACHE._fresh(AUDIT_CACHE._key(root, None, HistoryScope.local(self.server.store))) or {}
-        live = getattr(snap, "live_monitor", None) or {}
-        if "workspace_paths" in live or "state_paths" in live:
-            folders = [*live.get("workspace_paths", []), *live.get("state_paths", [])]
-        else:
-            monitor = MonitorConfig.for_root(Path(root))
-            folders = [str(p) for p in (*monitor.workspace_paths, *monitor.state_paths)]
-        self._json_response(settings_files(root, tool_configs, audit.get("sources") or [], folders))
-
-    def _serve_settings_tools(self) -> None:
-        """Every tool's complete settings records, with the knobs no file sets, for the settings screen."""
-        from .. import orchestrator
-
-        snap = self.server.store.snapshot
-        tool_configs = orchestrator.full_tool_configs() or list(getattr(snap, "tool_configs", None) or [])
-        if not tool_configs:
-            from ..monitoring.tool_config import collect_tool_configs
-
-            tool_configs = [c.to_dict() for c in collect_tool_configs(Path(self.server.root))]
-        tools = []
-        for t in getattr(snap, "tools", None) or []:
-            tool_id = t.get("tool") if isinstance(t, dict) else getattr(t, "tool", None)
-            label = t.get("label") if isinstance(t, dict) else getattr(t, "label", None)
-            if tool_id:
-                tools.append({"tool": tool_id, "label": label or tool_id})
-        live = getattr(snap, "live_monitor", None) or {}
-        monitor = {
-            "diagnostics": live.get("diagnostics") or {},
-            "workspace_paths": list(live.get("workspace_paths") or []),
-            "state_paths": list(live.get("state_paths") or []),
-        }
-        self._json_response({"generated_at": time.time(), "tools": tools, "tool_configs": tool_configs, "monitor": monitor})
-
-    def _tool_name_from_config_path(self) -> str:
-        from urllib.parse import unquote
-
-        return unquote(self.path.split("/api/tool-config/", 1)[-1].split("?", 1)[0])
-
-    def _serve_tool_config_get(self) -> None:
-        """Return an editable tool config payload; ``?scope=project-local`` picks the local file."""
-        from urllib.parse import parse_qs, urlparse
-
-        from .tool_config_editor import ToolConfigEditError, load_editable_tool_config
-
-        scope = (parse_qs(urlparse(self.path).query).get("scope") or [None])[0]
-        try:
-            payload = load_editable_tool_config(self.server.root, self._tool_name_from_config_path(), scope)
-        except ToolConfigEditError as exc:
-            self._json_response({"error": exc.message}, status=exc.status)
-            return
-        self._json_response(payload)
-
-    def _serve_tool_config_put(self) -> None:
-        """Persist editable tool config fields at the payload's ``scope`` (project by default)."""
-        from .tool_config_editor import ToolConfigEditError, save_editable_tool_config
-
-        content_length = self._content_length()
-        if content_length is None:
-            return
-        if content_length > 200_000:
-            self.send_error(413, "Payload too large")
-            return
-        try:
-            body = self.rfile.read(content_length)
-            data = json.loads(body or b"{}")
-        except (json.JSONDecodeError, OSError):
-            self._json_response({"error": "Invalid JSON"}, status=400)
-            return
-        if not isinstance(data, dict):
-            self._json_response({"error": "Request body must be a JSON object"}, status=400)
-            return
-        if self._reject_scoped_action(data):
-            return
-        try:
-            payload = save_editable_tool_config(self.server.root, self._tool_name_from_config_path(), data)
-        except ToolConfigEditError as exc:
-            self._json_response({"error": exc.message}, status=exc.status)
-            return
-        self._json_response(payload)
-
-    def _serve_settings_file_get(self) -> None:
-        """The text of one settings file aictl has found, for the editor."""
-        from .tool_config_editor import ToolConfigEditError, load_settings_file
-
-        try:
-            self._json_response(load_settings_file(self._qs.get("path", [None])[0], self.server.allowed.is_allowed))
-        except ToolConfigEditError as exc:
-            self._json_response({"error": exc.message}, status=exc.status)
-
-    def _serve_settings_file_put(self) -> None:
-        """Write the text of one settings file. The body carries path, text and expected_mtime."""
-        from .tool_config_editor import ToolConfigEditError, save_settings_file
-
-        content_length = self._content_length()
-        if content_length is None:
-            return
-        if content_length > 1_200_000:
-            self.send_error(413, "Payload too large")
-            return
-        try:
-            data = json.loads(self.rfile.read(content_length) or b"{}")
-        except (json.JSONDecodeError, OSError):
-            self._json_response({"error": "Invalid JSON"}, status=400)
-            return
-        if not isinstance(data, dict):
-            self._json_response({"error": "Request body must be a JSON object"}, status=400)
-            return
-        if self._reject_scoped_action(data):
-            return
-        try:
-            self._json_response(save_settings_file(data.get("path"), data, self.server.allowed.is_allowed))
-        except ToolConfigEditError as exc:
-            self._json_response({"error": exc.message}, status=exc.status)
+            body = json.dumps(session_evidence(self._db, self._qs, history=history)).encode("utf-8")
+            self._send_body(body, "application/json", cache_control="no-store", cors=False)
+        except EvidenceInputError as exc:
+            self._json_response({"error": str(exc)}, status=400)
+        except StoreConfigurationError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+        except StoreError:
+            logging.getLogger(__name__).exception("Could not read session execution evidence")
+            self._json_response({"error": "Session evidence query failed"}, status=503)
 
     def _serve_board_agent_flow(self) -> None:
         """The session flow of a board agent, from the store with hook and OTel events merged in.
@@ -497,7 +105,7 @@ class _APIHandlersMixin:
         A subagent id gives the whole session of its main agent. ``limit`` is how many of the
         newest events to return; the summary counts them all.
         """
-        from .board_api import agent_flow
+        from .flow_projection import agent_flow
 
         agent_id = self._qs_get("id")
         if not agent_id:
@@ -538,7 +146,7 @@ class _APIHandlersMixin:
         Without ``turn`` the turns are brief: previews, counts and tokens. ``turn`` returns one
         turn whole, with its actions and texts; ``full=1`` returns every turn whole.
         """
-        from .board_api import agent_transcript
+        from .flow_projection import agent_transcript
 
         agent_id = self._qs_get("id")
         if not agent_id:
@@ -571,23 +179,6 @@ class _APIHandlersMixin:
         if sink is not None:
             # What reached the cluster's OTel tables, what waits and what was dropped.
             status["kusto"] = sink.stats()
-        self._json_response(status)
-
-    def _serve_hooks_status(self) -> None:
-        """Return installed hook health and recent hook activity."""
-        from .hooks_status import collect_hooks_status
-
-        # Pass the serving port so hooks installed against another port are
-        # flagged instead of showing as "configured" with 0 events forever.
-        try:
-            server_port = int(self.server.server_address[1])
-        except (AttributeError, IndexError, TypeError, ValueError):
-            server_port = None
-        try:
-            status = collect_hooks_status(configured_reader(self.server.store), self.server.root, server_port=server_port)
-        except StoreError as exc:
-            self._json_response({"error": str(exc)}, status=503)
-            return
         self._json_response(status)
 
     def _serve_session_mcp_usage(self) -> None:
@@ -786,105 +377,6 @@ class _APIHandlersMixin:
 
         self._json_response({"calls": calls[:limit], "summary": summary})
 
-    def _serve_samples(self) -> None:
-        """Serve universal samples.
-
-        Params: ?metric=X&prefix=X&since=<ts>&tag.tool=X&limit=N
-        Or: ?list=1&prefix=X  to list distinct metric names.
-        Or: ?series=X&since=<ts>  to get a single metric as time-series.
-        """
-        reader = configured_reader(self.server.store)
-
-        qs = self._qs
-        try:
-            prefix = self._qs_get("prefix", "")
-            if "list" in qs:
-                result = sample_metrics(reader, metric_prefix=prefix)
-            elif "series" in qs:
-                result = sample_series(reader, requested_metric=qs["series"][0],
-                                       since=self._qs_float("since", time.time() - 3600))
-            else:
-                limit = min(int(self._qs_get("limit", "1000")), 20_000)
-                result = sample_page(
-                    reader, requested_metric=self._qs_get("metric"), metric_prefix=prefix,
-                    since=self._qs_float("since", time.time() - 3600), limit=limit,
-                    tags={k[4:]: v[0] for k, v in qs.items() if k.startswith("tag.")},
-                )
-        except ValueError as exc:
-            self._json_response({"error": str(exc)}, status=400)
-            return
-        except StoreConfigurationError:
-            self._json_response([])
-            return
-        except StoreError as exc:
-            self._json_response({"error": str(exc)}, status=503)
-            return
-
-        self._json_response(result)
-
-    # ── Analytics endpoint ─────────────────────────────────────────
-
-    def _serve_events(self) -> None:
-        """Serve a bounded page of recent events.
-
-        Params: ?since=<unix_ts>&until=<unix_ts>&tool=<name>&kind=<type>&session_id=<id>&limit=<n>
-        """
-        reader = configured_reader(self.server.store)
-        limit = max(1, min(int(self._qs_get("limit", "200")), 2000))
-        try:
-            rows = event_rows(reader.read("events.page", {**self._event_filters(), "limit": limit}))
-        except StoreError as exc:
-            self._json_response({"error": str(exc)}, status=503)
-            return
-        self._json_response(rows)
-
-    def _event_filters(self) -> dict:
-        kind = self._qs_get("kind")
-        return {
-            **local_scope(),
-            **event_params(since=self._qs_float("since", time.time() - 3600),
-                           until=self._qs_float_opt("until"), tool=self._qs_get("tool"),
-                           kinds=[kind] if kind else [], session_id=self._qs_get("session_id")),
-        }
-
-    def _serve_events_count(self) -> None:
-        """Serve the true number of events for the filters of ``/api/events`` (no limit).
-
-        Params: ?since=<unix_ts>&until=<unix_ts>&tool=<name>&kind=<type>&session_id=<id>
-        Returns ``{count: int}``; ``count`` is ``null`` when there is no store.
-        """
-        reader = configured_reader(self.server.store)
-        try:
-            count = reader.read("events.count", {**self._event_filters(), "limit": 1}).rows[0]["count"]
-        except StoreConfigurationError:
-            self._json_response({"count": None})
-            return
-        except StoreError as exc:
-            self._json_response({"error": str(exc)}, status=503)
-            return
-        self._json_response({"count": count})
-
-    def _serve_datapoint_catalog(self) -> None:
-        """Serve the datapoint catalog.
-
-        Params: ?tab=<tab>&key=<key>&source_type=<raw|deduced|aggregated>
-        """
-        tab = self._qs_get("tab")
-        key = self._qs_get("key")
-        source_type = self._qs_get("source_type")
-
-        entries = []
-        reader = configured_reader(self.server.store)
-        try:
-            entries = catalog_entries(reader, tab=tab, key=key, source_type=source_type)
-        except StoreConfigurationError:
-            pass
-        except StoreError as exc:
-            self._json_response({"error": str(exc)}, status=503)
-            return
-
-        self._json_response(entries)
-
     def _serve_session_processes(self) -> None:
         """Serve the persisted process genealogy for a session.
 
@@ -959,7 +451,7 @@ class _APIHandlersMixin:
             pids = [int(p) for p in (session.get("pids") or []) if int(p) > 0]
         else:
             # The dashboard names an agent by its stored id, not by the monitor's.
-            from .board_api import live_pids_of
+            from .session_details import live_pids_of
 
             try:
                 pids = live_pids_of(self.server.store, snap, session_id)
@@ -984,9 +476,8 @@ class _APIHandlersMixin:
                                  "signaled": result["signaled"], "failed": result["failed"]},
                          session_id=session_id),
             ], source="dashboard")
-        except Exception:
-            # Audit logging must not block the control action.
-            pass
+        except Exception:  # noqa: BLE001 — audit logging must not block the control action
+            logging.getLogger(__name__).exception("Could not record session kill")
         # A stop that reached no process is a failure, whatever the reason.
         status = 200 if result["signaled"] else 409
         payload = {"session_id": session_id, "signal": "SIG" + sig_name, **result}
@@ -1094,4 +585,3 @@ class _APIHandlersMixin:
                 "commits": out,
             }
         )
-

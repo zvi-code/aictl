@@ -139,7 +139,7 @@ def test_terminal_detail_contracts(tmp_path):
     from types import SimpleNamespace
     from urllib.parse import urlencode
 
-    from aictl.dashboard.board_api import handle_get
+    from aictl.dashboard.board_routes import handle_get
     from aictl.dashboard.models import DashboardSnapshot, DashboardTool
     from aictl.stores import Store
     from aictl.stores.testing import FixtureReader
@@ -260,17 +260,17 @@ def kusto_tape():
 def check_history_projections(store):
     from test_board_api import DAY, NOW, seed
 
-    from aictl.dashboard import board_api
+    from aictl.dashboard import artifact_details, board_filters, board_projection, session_details
     seed(store, NOW)
-    board = board_api.compute_board(store, board_api.Filters(since=NOW - 7 * DAY, until=NOW), now=NOW)
+    board = board_projection.compute_board(store, board_filters.Filters(since=NOW - 7 * DAY, until=NOW), now=NOW)
     validate_board(board)
     assert board["agents"] and board["prompts"]
     cases = (
-        ("/api/board/agent", board_api.agent_detail(store, "done", now=NOW)),
-        ("/api/board/tool", board_api.tool_detail(store, "Edit", now=NOW)),
-        ("/api/board/error", board_api.error_detail(store, "tool:Bash:No such file #", now=NOW)),
-        ("/api/board/file", board_api.file_detail(store, "/p/alpha/src/a.py", now=NOW)),
-        ("/api/board/prompt", board_api.prompt_detail(store, NOW - 2 * DAY + 25, "done", now=NOW)),
+        ("/api/board/agent", session_details.agent_detail(store, "done", now=NOW)),
+        ("/api/board/tool", artifact_details.tool_detail(store, "Edit", now=NOW)),
+        ("/api/board/error", artifact_details.error_detail(store, "tool:Bash:No such file #", now=NOW)),
+        ("/api/board/file", artifact_details.file_detail(store, "/p/alpha/src/a.py", now=NOW)),
+        ("/api/board/prompt", artifact_details.prompt_detail(store, NOW - 2 * DAY + 25, "done", now=NOW)),
     )
     for path, (status, body) in cases:
         assert status == 200, path

@@ -3,12 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from aictl.dashboard.api_handlers import _APIHandlersMixin
-from aictl.dashboard.board_api import handle_get
+from aictl.dashboard.board_routes import handle_get
 from aictl.dashboard.history_scope import Scope, identity
-from aictl.dashboard.scoped_history import route
+from aictl.dashboard.metrics_routes import MetricsRoutes
 from aictl.dashboard.node_views import NodeViewError, node_view
 from aictl.dashboard.projections.history import HistoryScope, event_rows, node_overview, session_processes
+from aictl.dashboard.scoped_history import route
+from aictl.dashboard.session_routes import SessionRoutes
 from aictl.stores import Store
 from aictl.stores.base import ReadResult, StoreError
 from aictl.stores.kusto.reader import KustoReader
@@ -69,7 +70,7 @@ def test_qualified_scope_retains_node_identity_and_refuses_incomplete_totals():
         scope.read("board.sessions", session_keys=keys)
 
 
-class EventHandler(_APIHandlersMixin):
+class EventHandler(MetricsRoutes, SessionRoutes):
     def __init__(self, reader=None):
         self.server = SimpleNamespace(store=SimpleNamespace(history_store=Store(reader=reader)))
         self.messages = []

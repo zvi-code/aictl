@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 200b054f82bdd7ee7eb27a7c762a5b899cf8a30dc17c019fb4d42661f77f2b7c
+// Schema digest: 1d5d19a667e611746942f8231150ad2f7272bac7e36af46df219fb909f873ed2
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2051,7 +2051,6 @@ export type LiveCapabilities = {
   contract_version: number;
   stream: string | null;
   source_policy: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>;
-  legacy_stream: string;
   datapoint_catalog: string;
   history: string;
   configuration: string;

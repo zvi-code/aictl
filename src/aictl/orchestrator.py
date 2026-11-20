@@ -27,14 +27,14 @@ from .monitoring.pace import PACE  # noqa: E402
 log = logging.getLogger(__name__)
 
 from . import stores
+from .collection_status import CollectionStatus, DatapointCatalog
 from .dashboard.models import DashboardSnapshot, DashboardTool
 from .data.schema import metric_name as M
 from .file_inventory import FileInventory, inventory_row
 from .monitoring.tool_config import collect_tool_configs
 from .monitoring.tool_telemetry import collect_tool_telemetry, scan_agent_teams
-from .session_facts import SessionFacts
-from .collection_status import CollectionStatus, DatapointCatalog
 from .session_evidence import SessionEvidence
+from .session_facts import SessionFacts
 from .state_file import StateFile, TextWatermark, restart_directory
 from .tool_calls import ToolCalls, call_key
 from .tools import (
@@ -967,7 +967,6 @@ def start_server(
 
 # ── SnapshotStore / AllowedPaths ────────────────────────────────────
 
-import json as _json
 import os as _os
 import threading as _threading
 import time as _time
@@ -1004,19 +1003,16 @@ HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
 
 
 class SnapshotState:
-    """Version-tracked snapshot with change notification."""
+    """Current snapshot and the version used to invalidate local detail caches."""
 
     def __init__(self) -> None:
         self._snap: _DashboardSnapshot | None = None
-        self._snap_json_bytes: bytes | None = b""
-        self._serializer: SnapshotSerializer | None = None
         self._version: int = 0
         self._lock = _threading.Lock()
-        self._condition = _threading.Condition(self._lock)
 
-    def update(self, snap: _DashboardSnapshot, serializer: SnapshotSerializer) -> list[tuple]:
+    def update(self, snap: _DashboardSnapshot) -> list[tuple]:
         """Publish the new snapshot and return per-tool samples for storage."""
-        with self._condition:
+        with self._lock:
             self._snap = snap
             self._version += 1
             tool_rows: list[tuple] = []
@@ -1031,19 +1027,7 @@ class SnapshotState:
                     traffic = float(t.live.get("outbound_rate_bps", 0)) + float(t.live.get("inbound_rate_bps", 0))
                 tool_rows.append((t.tool, cpu, mem, tok, traffic))
 
-            # Serialize on first read, once per version: with no client attached
-            # the 2.7 MB snapshot JSON is never built at all.
-            self._serializer = serializer
-            self._snap_json_bytes = None
-
-            self._condition.notify_all()
         return tool_rows
-
-    def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
-        """Block until a new version is available or timeout."""
-        with self._condition:
-            self._condition.wait_for(lambda: self._version > known_version, timeout=timeout)
-            return self._snap, self._version
 
     @property
     def snapshot(self) -> _DashboardSnapshot | None:
@@ -1051,28 +1035,9 @@ class SnapshotState:
             return self._snap
 
     @property
-    def snapshot_json_bytes(self) -> bytes:
-        """Compact JSON snapshot (slim agent_teams), built once per version."""
-        with self._lock:
-            if self._snap_json_bytes is None:
-                self._snap_json_bytes = self._serializer.serialize_snapshot(self._snap)
-            return self._snap_json_bytes
-
-    @property
     def version(self) -> int:
         with self._lock:
             return self._version
-
-class SnapshotSerializer:
-    """Serialize a snapshot to JSON."""
-
-    @staticmethod
-    def serialize_snapshot(snap: _DashboardSnapshot) -> bytes:
-        """Compact JSON bytes from a DashboardSnapshot."""
-        try:
-            return snap.to_json_slim().encode("utf-8")
-        except Exception:
-            return b""
 
 # Minimum seconds between file-store sync passes. The ~5s refresh cadence
 # never pays file-sync cost more than once a minute.
@@ -1425,7 +1390,6 @@ class SnapshotStore:
         trim_before=lambda: 0.0,
     ) -> None:
         self._state = SnapshotState()
-        self._serializer = SnapshotSerializer()
         self.history_store = history_store or stores.Store()
         self.tool_calls = ToolCalls(self.history_store.writer, keeps_text=keeps_text)
         self.restart_dir = restart_dir
@@ -1457,7 +1421,7 @@ class SnapshotStore:
         self.refresh_requested = _threading.Event()
 
     def update(self, snap: _DashboardSnapshot) -> None:
-        tool_rows = self._state.update(snap, self._serializer)
+        tool_rows = self._state.update(snap)
         self._persistence.persist(snap, tool_rows)
 
     def request_refresh(self) -> None:
@@ -1468,18 +1432,9 @@ class SnapshotStore:
         if PACE.watched():
             self.refresh_requested.set()
 
-    def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
-        """Block until a new version is available or timeout."""
-        return self._state.wait_for_update(known_version, timeout)
-
     @property
     def snapshot(self) -> _DashboardSnapshot | None:
         return self._state.snapshot
-
-    @property
-    def snapshot_json_bytes(self) -> bytes:
-        """Pre-serialized compact JSON snapshot (slim agent_teams)."""
-        return self._state.snapshot_json_bytes
 
     @property
     def version(self) -> int:

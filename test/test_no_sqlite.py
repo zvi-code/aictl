@@ -45,42 +45,59 @@ def test_daemon_and_cli_without_sqlite(tmp_path):
 
 
 def _dashboard_requests(root):
-    removed = {"/api/board", "/api/budget", "/api/history", "/api/self-status", "/api/board/health"}
-    paths = {}
+    from aictl.dashboard.web_server import GET_ROUTES, POST_ROUTES, PUT_ROUTES, _route_key
+
+    removed = {
+        "/api/board", "/api/budget", "/api/history", "/api/self-status", "/api/board/health",
+        "/api/snapshot", "/api/stream",
+    }
+    recorded = {}
     for tape in (RECORDINGS / "quiet" / "isolated-rest.jsonl.gz", RECORDINGS / "supplemental-main-rest.jsonl.gz"):
         with gzip.open(tape, "rt", encoding="utf-8") as file:
             for record in map(json.loads, file):
-                if record["route"] not in removed:
-                    paths[record["route"]] = record["path"]
-    paths.update(
-        {
-            path: path
-            for path in (
-                "/",
-                "/api/snapshot",
-                "/api/datapoints",
-                "/api/copilot-sessions",
-                "/api/live/capabilities",
-                "/api/live/stream?history=1",
-                "/api/history/board?since=1795130000&until=1795135200&view=charts",
-                "/api/history/board?since=1795130000&until=1795135200&scope=fleet",
-                "/api/board/terminal/events",
-                "/api/board/terminal/file",
-                "/api/board/terminal/metrics",
-                "/api/board/terminal/resources",
-                "/api/board/terminal/sessions",
-            )
-        }
-    )
-    paths["/api/board/machine"] = "/api/board/machine?scope=fleet"
+                recorded[_route_key(urlsplit(record["path"]).path)] = record["path"]
     asset = next((root / "src" / "aictl" / "dashboard" / "dist" / "assets").glob("*.js"), None)
-    paths["asset"] = "/assets/" + (asset.name if asset else "no-sqlite-probe.js")
-    for path in paths.values():
+    reads = {
+        "/": "/",
+        "/assets/{name}": "/assets/" + (asset.name if asset else "no-sqlite-probe.js"),
+        "/api/live/capabilities": "/api/live/capabilities",
+        "/api/live/stream": "/api/live/stream?history=1",
+        "/api/history/board": "/api/history/board?since=1795130000&until=1795135200&view=charts",
+        "/api/copilot-sessions": "/api/copilot-sessions",
+        "/api/copilot-sessions/{id}": "/api/copilot-sessions/capture-missing-session",
+        "/api/board/nodes": "/api/board/nodes?view=health&scope=fleet",
+        "/api/board/machine": "/api/board/machine?scope=fleet",
+        "/api/board/agent/kql": "/api/board/agent/kql",
+        "/api/board/terminal/events": "/api/board/terminal/events",
+        "/api/board/terminal/file": "/api/board/terminal/file",
+        "/api/board/terminal/metrics": "/api/board/terminal/metrics",
+        "/api/board/terminal/resources": "/api/board/terminal/resources",
+        "/api/board/terminal/sessions": "/api/board/terminal/sessions",
+        "/api/datapoints": "/api/datapoints",
+        **{route: recorded[route] for route in (
+            "/api/api-calls", "/api/board/agent", "/api/board/agent/flow", "/api/board/agent/transcript",
+            "/api/board/context", "/api/board/error", "/api/board/excerpt", "/api/board/file",
+            "/api/board/prompt", "/api/board/session/records", "/api/board/sessions", "/api/board/skill",
+            "/api/board/tool", "/api/context-audit", "/api/copilot-sessions/{id}/artifact",
+            "/api/copilot-sessions/{id}/artifacts", "/api/effective-models", "/api/events",
+            "/api/events/count", "/api/file", "/api/hooks-status", "/api/otel-status", "/api/samples",
+            "/api/session-commits", "/api/session-evidence", "/api/session-mcp-usage",
+            "/api/session-processes", "/api/session-stats", "/api/settings/file", "/api/settings/files",
+            "/api/settings/tools", "/api/tool-config/{tool}",
+        )},
+    }
+    posts = {"/api/hooks", "/api/session-kill", "/api/board/action", "/v1/metrics", "/v1/logs", "/v1/traces"}
+    puts = {"/api/tool-config/{tool}": "/api/tool-config/copilot-cli", "/api/settings/file": "/api/settings/file"}
+    assert reads.keys() == GET_ROUTES.keys()
+    assert posts == POST_ROUTES.keys()
+    assert puts.keys() == PUT_ROUTES.keys()
+    for path in reads.values():
         yield "GET", path
-    for path in ("/api/hooks", "/api/session-kill", "/api/board/action", "/v1/metrics", "/v1/logs", "/v1/traces"):
-        yield "POST", path
-    for path in ("/api/tool-config/copilot-cli", "/api/settings/file"):
-        yield "PUT", path
+    yield "GET", "/api/history/board?since=1795130000&until=1795135200&scope=fleet"
+    for view in ("identity", "overview", "nodes", "runtime", "settings"):
+        yield "GET", f"/api/board/nodes?view={view}&scope={'local' if view == 'identity' else 'fleet'}"
+    yield from (("POST", path) for path in sorted(posts))
+    yield from (("PUT", path) for path in puts.values())
     for path in sorted(removed):
         yield "ABSENT", path
 
@@ -97,7 +114,7 @@ def _request(port, method, path):
         response = connection.getresponse()
         assert response.status < 500, f"HTTP {response.status}: {response.read(300)!r}"
         route = urlsplit(path).path
-        if route in ("/api/stream", "/api/live/stream"):
+        if route == "/api/live/stream":
             assert response.status == 200 and "text/event-stream" in response.getheader("Content-Type", "")
             lines = []
             while line := response.readline(65_536).strip():
@@ -105,9 +122,8 @@ def _request(port, method, path):
                 if line.startswith(b"data:"):
                     break
             assert any(line.startswith(b"data:") for line in lines), "No initial SSE frame"
-            if route == "/api/live/stream":
-                assert b"event: bootstrap" in lines, "No live bootstrap event"
-        elif method == "GET" and route in ("/", "/api/snapshot", "/api/live/capabilities", "/api/history/board"):
+            assert b"event: bootstrap" in lines, "No live bootstrap event"
+        elif method == "GET" and route in ("/", "/api/live/capabilities", "/api/history/board"):
             assert response.status == 200, f"HTTP {response.status}"
     finally:
         connection.close()
@@ -328,7 +344,8 @@ def _sqlite_name(path):
 def _exercise_daemon(root, inputs, store_dir, step):
     from aictl import orchestrator
     from aictl.dashboard import ingester_runner, web_server
-    from aictl.monitoring import config as monitor_config, runtime
+    from aictl.monitoring import config as monitor_config
+    from aictl.monitoring import runtime
 
     orchestrator._kill_stale_server = lambda _port: None
     monitor_config.default_state_paths = lambda _root: (inputs,)
@@ -430,9 +447,18 @@ def _exercise_daemon(root, inputs, store_dir, step):
 
         step("collector cycles", collector_cycles)
     finally:
+        # Reset runs next. No ingester or daemon shutdown flush should still be
+        # writing restart files (deleting an open file also fails on Windows).
+        for handle in handles.values():
+            handle.stop_event.set()
         if servers:
             servers[0].shutdown()
-        worker.join(timeout=5)
+        worker.join(timeout=30)
+        assert not worker.is_alive(), "The B6 daemon did not finish shutting down"
+        for handle in handles.values():
+            if handle.thread is not None:
+                handle.thread.join(timeout=5)
+                assert not handle.thread.is_alive(), f"Ingester {handle.name} did not stop"
 
 
 if __name__ == "__main__":

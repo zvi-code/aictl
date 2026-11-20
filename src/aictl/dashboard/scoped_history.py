@@ -21,14 +21,14 @@ _aux_cache: dict[str, dict[tuple, tuple[float, bytes]]] = {name: {} for name in 
 
 
 def _reported_context(history, tools, now):
-    from . import board_api as board
+    from . import context_projection
     from .queryable_context import inventory_rows, inventory_snapshot, telemetry_rows
 
     inventory = history.read("files.inventory")
     telemetry = history.read("context.telemetry")
-    daily = board._read_context_daily(history, tools, now)
-    growth = history.read("context.growth", since=now - board.CONTEXT_GROWTH_S, until=now,
-                          growth_points=board.CONTEXT_GROWTH_POINTS, calendar_bins=True)
+    daily = context_projection._read_context_daily(history, tools, now)
+    growth = history.read("context.growth", since=now - context_projection.CONTEXT_GROWTH_S, until=now,
+                          growth_points=context_projection.CONTEXT_GROWTH_POINTS, calendar_bins=True)
     nodes = {r["node_id"] for rows in (inventory, telemetry, daily, growth) for r in rows}
     parts = []
     for node in sorted(nodes, key=lambda n: (label(n) == "legacy", label(n))):
@@ -37,8 +37,8 @@ def _reported_context(history, tools, now):
             report["as_of"] = datetime.fromtimestamp(report["ts"], timezone.utc).isoformat(timespec="seconds")
         snapshot = inventory_snapshot(inventory_rows([r for r in inventory if r["node_id"] == node]), reports, reported=True)
         snapshot.agent_memory = [r for r in snapshot.agent_memory if is_selected(r["tool"], tools)]
-        data = board._context_from_snapshot(snapshot, tools, now, True, {
-            "daily": board._daily_from_rows([r for r in daily if r["node_id"] == node], now),
+        data = context_projection._context_from_snapshot(snapshot, tools, now, True, {
+            "daily": context_projection._daily_from_rows([r for r in daily if r["node_id"] == node], now),
             "growth": [{k: r[k] for k in ("ts", "mem_tokens", "memory_entries")}
                        for r in growth if r["node_id"] == node],
         }, global_budget=True)
@@ -69,7 +69,13 @@ def _reported_machine(history, tools, now):
 
 
 def route(db, scope, path, query, params, now, *, reader=None):
-    from . import board_api as board
+    from . import (
+        artifact_details,
+        board_filters,
+        flow_projection,
+        projection_utils,
+        session_details,
+    )
     from .session_record import _reader_search
 
     def one(name):
@@ -148,10 +154,10 @@ def route(db, scope, path, query, params, now, *, reader=None):
             name = one("name" if endpoint == "tool" else "key")
             if not name:
                 raise ScopeError("Missing detail identifier")
-            filters = board.parse_filters(query, now)
+            filters = board_filters.parse_filters(query, now)
             if abs(filters.until - now) <= 10:
-                filters = board._clock_range(filters)
-            detail = board.tool_detail if endpoint == "tool" else board.error_detail
+                filters = board_filters._clock_range(filters)
+            detail = artifact_details.tool_detail if endpoint == "tool" else artifact_details.error_detail
             return result(*detail(db, name, now, filters=filters, history=history))
         if endpoint == "sessions":
             tools = selected()
@@ -164,13 +170,13 @@ def route(db, scope, path, query, params, now, *, reader=None):
             ts = number("ts")
             if ts is None:
                 raise ScopeError("Missing ts")
-            return result(*board.prompt_detail(db, ts, identity(node, raw), now,
+            return result(*artifact_details.prompt_detail(db, ts, identity(node, raw), now,
                                                history=HistoryScope(reader, node, qualified=True)))
         if endpoint == "skill":
             name = one("name")
             if not name:
                 raise ScopeError("Missing detail identifier")
-            return result(*board.skill_detail(db, name, now, lo, hi, selected(), history=history))
+            return result(*artifact_details.skill_detail(db, name, now, lo, hi, selected(), history=history))
         if endpoint == "file":
             name = one("path")
             if not name:
@@ -182,7 +188,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
                     raise ScopeError("The record does not match the requested path")
             elif node is None:
                 raise ScopeError("A fleet file detail requires a node-qualified record")
-            return result(*board.file_detail(db, name, now, since=lo, until=hi,
+            return result(*artifact_details.file_detail(db, name, now, since=lo, until=hi,
                                              history=HistoryScope(reader, node, qualified=True)))
         if endpoint in {"agent", "agent/flow", "agent/transcript", "/api/session-evidence"}:
             is_agent = endpoint.startswith("agent")
@@ -190,24 +196,24 @@ def route(db, scope, path, query, params, now, *, reader=None):
             history = HistoryScope(reader, node, qualified=True)
             aid = identity(node, raw)
             if is_agent:
-                session_key, _ = board._resolve_agent(history, aid)
+                session_key, _ = projection_utils._resolve_agent(history, aid)
                 if not history.split(session_key)[1]:
                     return result(404, {"error": "No such agent"})
             reported = SimpleNamespace(_reported_history=True, capture="full", _keeps_text=lambda: True)
             if endpoint == "agent":
-                return result(*board.agent_detail(reported, aid, now=now, history=history))
+                return result(*session_details.agent_detail(reported, aid, now=now, history=history))
             if endpoint == "agent/flow":
                 failed = one("failed")
                 if failed not in {"", "0", "1"}:
                     raise ScopeError("failed must be 0 or 1")
-                status, body = board.agent_flow(
-                    reported, aid, lo, hi, now=now, limit=integer("limit", board.FLOW_DEFAULT_EVENTS, board.MAX_FLOW_EVENTS),
+                status, body = flow_projection.agent_flow(
+                    reported, aid, lo, hi, now=now, limit=integer("limit", flow_projection.FLOW_DEFAULT_EVENTS, flow_projection.MAX_FLOW_EVENTS),
                     failed=failed == "1", history=history,
                     **{k: one(k) for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
                 )
                 return result(status, {**body, "node_id": label(node)})
             if endpoint == "agent/transcript":
-                return result(*board.agent_transcript(
+                return result(*flow_projection.agent_transcript(
                     reported, aid, now=now, turn=number("turn"), brief=one("full") not in {"1", "true", "yes"}, history=history,
                 ))
             return result(200, session_evidence(reported, params, history=history))
@@ -216,7 +222,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
         raise ScopeError(str(exc)) from exc
     except StoreError as exc:
         raise ScopeError(str(exc), 503, "query_failed") from exc
-    except (ScopeError, UnresolvedObservationsError, board.BoardRequestError):
+    except (ScopeError, UnresolvedObservationsError, board_filters.BoardRequestError):
         raise
     except Exception as exc:
         logger.exception("Historical dashboard query failed")

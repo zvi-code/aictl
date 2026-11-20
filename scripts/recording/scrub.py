@@ -54,7 +54,7 @@ METRIC = re.compile(
     r"(?:\.[a-zA-Z0-9_]+){1,5}\Z"
 )
 PROTOCOL_VALUES = frozenset("""
-    /api/live/stream /api/stream /api/datapoints source.status runtime.process runtime.agent
+    /api/live/stream /api/datapoints source.status runtime.process runtime.agent
     runtime.machine runtime.health runtime.output configuration.file configuration.loaded
     configuration.board history.board catalog.board runtime.collector runtime.operational
     runtime.native filesystem.config runtime.evidence kusto.queryable catalog

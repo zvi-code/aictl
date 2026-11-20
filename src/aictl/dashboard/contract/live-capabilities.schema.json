@@ -12,7 +12,6 @@
       "type": "object",
       "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
     },
-    "legacy_stream": {"type": "string"},
     "datapoint_catalog": {"type": "string"},
     "history": {"type": "string"},
     "configuration": {"type": "string"},
@@ -36,7 +35,6 @@
     "contract_version",
     "stream",
     "source_policy",
-    "legacy_stream",
     "datapoint_catalog",
     "history",
     "configuration",

@@ -84,7 +84,7 @@ def board_entities(scope: str, payload: dict) -> list[tuple[str, str, dict, str]
                 raise ValueError(f"No native row identity defined for board field {field!r}")
             identity = tuple(item.get(name) for name in keys)
             if field == "project_prompts":
-                from ..board_api import _basename
+                from ..projection_utils import _basename
 
                 identity = (item.get("project"), _basename(item.get("_history_file") or item.get("file") or ""))
             if all(part is None for part in identity):
@@ -210,7 +210,7 @@ class LiveDashboard:
         )
 
     def subscribe(self, query: str, *, history: bool = True, cursor: str | None = None) -> _DashboardSubscription:
-        from ..board_api import CLOCK_RANGE_SLACK_S, parse_filters
+        from ..board_filters import CLOCK_RANGE_SLACK_S, parse_filters
 
         scope = canonical_scope(query)
         watch = parse_agent_watch(query)
@@ -294,7 +294,7 @@ class LiveDashboard:
             return
         consumer_gap = batch.kind == "resync" and batch.reason in {"subscriber_overflow", "subscriber_error"}
         if batch.kind in {"bootstrap", "changes", "resync"}:
-            from ..board_api import _facts_lock, _facts_memo, _sources_memo
+            from ..board_projection import _facts_lock, _facts_memo, _sources_memo
 
             with _facts_lock:
                 for memo in (_facts_memo, _sources_memo):
@@ -415,12 +415,12 @@ class LiveDashboard:
 
     @staticmethod
     def _safe_reason(reason: Any) -> str | None:
-        from ..board_api import mask_secrets
+        from ..projection_utils import mask_secrets
 
         return mask_secrets(str(reason))[:600] if reason else None
 
     def _filters_now(self, entry: _Scope, now: float) -> Any:
-        from ..board_api import _clock_range
+        from ..board_filters import _clock_range
 
         filters = entry.filters
         if entry.rolling:
@@ -450,7 +450,7 @@ class LiveDashboard:
         return filters
 
     def _history_loop(self) -> None:
-        from ..board_api import compute_board
+        from ..board_projection import compute_board
         from ..projections.history import HistoryScope
 
         compute = self._compute or (

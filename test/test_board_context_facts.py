@@ -13,7 +13,7 @@ import pytest
 from kusto_replay import NOW
 
 import aictl.context_audit as ca
-from aictl.dashboard.board_api import agent_detail
+from aictl.dashboard.session_details import agent_detail
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.session_facts import SessionFacts
 from aictl.stores.testing import MemoryWriter

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aictl.dashboard import board_api, session_record
+from aictl.dashboard import board_filters, board_projection, context_projection, flow_projection, session_record
 from aictl.dashboard.queryable_context import session_context_files
 from aictl.stores import Store
 from aictl.stores.testing import FixtureReader
@@ -28,8 +28,8 @@ def test_context_inventory_and_usage_ignore_native_snapshot_values(kusto_store, 
         tool_telemetry=[{"tool": "copilot-cli", "input_tokens": 999999, "output_tokens": 999999}],
         agent_memory=[{"file": "C:/pending-memory.md", "tokens": 999999}],
     )
-    monkeypatch.setattr(board_api, "_file_sessions", lambda: pytest.fail("Native inventory was consulted"))
-    result = board_api.compute_context(kusto_store, SimpleNamespace(snapshot=snapshot), now=1_700_000_000)
+    monkeypatch.setattr(context_projection, "_file_sessions", lambda: pytest.fail("Native inventory was consulted"))
+    result = context_projection.compute_context(kusto_store, SimpleNamespace(snapshot=snapshot), now=1_700_000_000)
     files = [file for tool in result["files"] for file in tool["files"]]
     assert {file["path"] for file in files} == {"C:/recorded/instructions.md", "C:/recorded/custom.data"}
     assert result["telemetry"][0]["input"] == 7 and result["telemetry"][0]["output"] == 3
@@ -44,19 +44,19 @@ def test_context_inventory_and_usage_ignore_native_snapshot_values(kusto_store, 
 def test_unresolved_daily_usage_does_not_hide_queryable_context_inventory(kusto_store, monkeypatch):
     from aictl.kusto.observations import UnresolvedObservationsError
 
-    board_api._context_db_memo.clear()
+    context_projection._context_db_memo.clear()
     calls = []
 
     def unresolved(*_args):
         calls.append(True)
         raise UnresolvedObservationsError(("requests",))
 
-    monkeypatch.setattr(board_api, "_read_context_daily", unresolved)
+    monkeypatch.setattr(context_projection, "_read_context_daily", unresolved)
     kusto_store.insert("files", path="C:/recorded/instructions.md", tool="copilot-cli", category="instructions", tokens=200)
     kusto_store.insert("system_snapshots", ts=1_699_999_990, mem_tokens=200, memory_entries=1)
     try:
         store = SimpleNamespace(snapshot=None)
-        result = board_api.compute_context(kusto_store, store, now=1_700_000_000)
+        result = context_projection.compute_context(kusto_store, store, now=1_700_000_000)
         assert result["daily"]["available"] is False
         assert result["daily"]["incomplete"] is True
         assert result["daily"]["retryable"] is False
@@ -65,10 +65,10 @@ def test_unresolved_daily_usage_does_not_hide_queryable_context_inventory(kusto_
         assert result["files"][0]["files"][0]["path"] == "C:/recorded/instructions.md"
         assert result["memory"]["growth"] == [{"ts": 1_699_999_990, "mem_tokens": 200, "memory_entries": 1}]
         assert result["source"] == "kusto.queryable"
-        board_api.compute_context(kusto_store, store, now=1_700_000_001)
+        context_projection.compute_context(kusto_store, store, now=1_700_000_001)
         assert calls == [True]
     finally:
-        board_api._context_db_memo.clear()
+        context_projection._context_db_memo.clear()
 
 
 def test_session_file_inventory_uses_stored_paths_and_loaded_evidence_only():
@@ -76,7 +76,7 @@ def test_session_file_inventory_uses_stored_paths_and_loaded_evidence_only():
         assert params["requested_path"] == "C:/p_one" and params["requested_tool"] == "copilot-cli"
         return [{"path": "C:/p_one/a.md"}, {"path": "C:/global/current.md"}]
 
-    history = board_api.HistoryScope.local(Store(reader=FixtureReader({"files.session_inventory": inventory})))
+    history = board_projection.HistoryScope.local(Store(reader=FixtureReader({"files.session_inventory": inventory})))
     result = session_context_files("C:/p_one", [{"path": "C:/loaded/instructions.md", "how": "recorded"}],
                                    "copilot-cli", history=history)
     assert {row["path"] for row in result["files"]} == {
@@ -87,9 +87,9 @@ def test_session_file_inventory_uses_stored_paths_and_loaded_evidence_only():
 
 
 def test_kusto_historical_transcript_never_merges_analyzer_pending_output(monkeypatch):
-    monkeypatch.setattr(board_api, "_session_flow", lambda *_: ("session", [], "store"))
+    monkeypatch.setattr(flow_projection, "_session_flow", lambda *_: ("session", [], "store"))
     store = SimpleNamespace(_reported_history=True, capture="full")
-    status, payload = board_api.agent_transcript(
+    status, payload = flow_projection.agent_transcript(
         store, "session", legacy_transcript=lambda _: pytest.fail("Pending analyzer payload was used")
     )
     assert status == 200 and payload["turns"] == [] and payload["is_live"] is False
@@ -97,8 +97,8 @@ def test_kusto_historical_transcript_never_merges_analyzer_pending_output(monkey
 
 def test_kusto_flow_rejects_an_explicit_native_fallback():
     store = SimpleNamespace(_reported_history=True, capture="full")
-    history = board_api.HistoryScope.local(Store(reader=FixtureReader({"agents.resolve": [], "sequence.flow": []})))
-    result = board_api._session_flow(store, "session", 0, 100, lambda *_: pytest.fail("Native fallback used"), history)
+    history = board_projection.HistoryScope.local(Store(reader=FixtureReader({"agents.resolve": [], "sequence.flow": []})))
+    result = flow_projection._session_flow(store, "session", 0, 100, lambda *_: pytest.fail("Native fallback used"), history)
     assert result is None
 
 
@@ -106,7 +106,7 @@ def test_kusto_artifacts_use_indexed_metadata_not_local_stat(monkeypatch):
     store = Store(reader=FixtureReader({"files.artifacts": [
         dict(row_type="index", session_id="session", values=["C:/remote/output.txt", "files", 123, 100]),
     ]}))
-    history = board_api.HistoryScope.local(store)
+    history = board_projection.HistoryScope.local(store)
     monkeypatch.setattr(session_record.os, "stat", lambda *_: pytest.fail("Local historical file was stat'ed"))
     artifacts, count, size = session_record.session_artifacts(["session"], "", history=history)
     assert count == 1 and size == 123 and artifacts[0]["size_bytes"] == 123
@@ -118,8 +118,8 @@ def test_kusto_commit_read_never_attributes_local_git_or_looks_up_prs(monkeypatc
 
     monkeypatch.setattr(session_record.PR_FINDER, "lookup", lambda *_: pytest.fail("GitHub lookup supplied history"))
     db = kusto_store
-    local = board_api.HistoryScope.local(db)
-    history = board_api.HistoryScope(local.reader, local.node, qualified=True)
+    local = board_projection.HistoryScope.local(db)
+    history = board_projection.HistoryScope(local.reader, local.node, qualified=True)
     sid = identity(local.node, "session")
     commits, note = session_record.session_commits(
         db, {"session_id": sid, "project_path": "C:/project", "started_at": 1, "ended_at": 2}, sid, history=history
@@ -133,12 +133,12 @@ def test_live_prompt_and_skill_helpers_cannot_leak_disk_only_history(monkeypatch
     calls = []
     local = "C:/recorded/.github/prompts/local.prompt.md"
     monkeypatch.setattr(
-        board_api,
+        board_projection,
         "_prompt_files_on_disk",
         lambda roots: calls.append(("prompts", roots)) or ([("C:/recorded", local)], ["C:/recorded/.github/prompts"]),
     )
     monkeypatch.setattr(
-        board_api,
+        board_projection,
         "_skill_file",
         lambda *_: (
             calls.append(("skill",))
@@ -156,9 +156,9 @@ def test_live_prompt_and_skill_helpers_cannot_leak_disk_only_history(monkeypatch
     db.insert("requests", **fields, ts=120, model="gpt-5", input_tokens=7, output_tokens=3)
     db.insert("session_prompts", **fields, ts=110, prompt_file="recorded.prompt.md")
     db.insert("skill_uses", **fields, ts=115, name="example")
-    filters = board_api.Filters(90, 200, buckets=4)
+    filters = board_filters.Filters(90, 200, buckets=4)
     live_db = _ProjectionDB(db, "offline-provenance")
-    payload = board_api.compute_board(live_db, filters, now=200)
+    payload = board_projection.compute_board(live_db, filters, now=200)
     entities = board_entities("scope", payload)
     history = [
         data for topic, _, data, _ in entities if topic == "history.board" and isinstance(data["value"], dict)
@@ -177,11 +177,11 @@ def test_live_prompt_and_skill_helpers_cannot_leak_disk_only_history(monkeypatch
     assert all("uses" not in row["value"] for row in configured)
     assert calls and any(call[0] == "skill" for call in calls)
     monkeypatch.setattr(
-        board_api,
+        board_projection,
         "_skill_file",
         lambda *_: {"scope": None, "path": None, "description": None, "file_tokens": None},
     )
-    missing = board_entities("scope", board_api.compute_board(live_db, filters, now=200))
+    missing = board_entities("scope", board_projection.compute_board(live_db, filters, now=200))
     missing_skills = next(
         data["value"]
         for topic, _, data, _ in missing

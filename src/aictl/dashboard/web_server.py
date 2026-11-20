@@ -1,509 +1,137 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Live web dashboard server with REST + SSE API.
-
-Serves a self-contained HTML dashboard at / with real-time updates via
-Server-Sent Events, plus REST endpoints for snapshot data, file content
-inspection, and token budget analysis.
-
-The frontend is built with Vite from ui/src/ into dist/.
-
-Implementation is split across focused modules:
-- otel_receiver: OTel protobuf parsing and metric mapping
-- session_flow: session timeline reconstruction
-- api_handlers: REST endpoint handler methods
-"""
+"""Dashboard HTTP server startup and route dispatch."""
 
 from __future__ import annotations
 
-import email.utils
-import gzip
-import hashlib
-import ipaddress
 import json
-import logging
-import math
 import queue
-import re
 import sys
 import threading
-import time
-import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from ..orchestrator import AllowedPaths, SnapshotStore
 from ..platforms import IS_WINDOWS
-from ..records import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvocationRow
 from ..sink import OtelMetricGate
-from .api_handlers import _APIHandlersMixin
+from .board_routes import BoardRoutes
+from .http_assets import AssetRoutes
+from .http_request import RequestMethods, _local_request
+from .http_response import ResponseMethods
+from .ingest_http import IngestRoutes
 from .live import stream as live_stream
-from .models import DashboardSnapshot
+from .metrics_routes import MetricsRoutes
+from .otel_receiver import OtelReceiver
+from .runtime_health import live_health_and_machine, node_runtime_sample
+from .session_routes import SessionRoutes
+from .settings_routes import SettingsRoutes
 
-# ── Re-exports for backward compatibility ────────────────────────
-# Other modules (tests, orchestrator) import these from web_server.
-from .otel_receiver import (  # noqa: F401 — re-exports
-    METRIC_MAP,
-    OtelReceiver,
-    OtelStats,
-    _extract_otel_data_points,
-    _extract_otel_value,
-    _load_otlp_proto,
-    _nano_to_epoch,
-    _num,
-    _parse_otel_attributes,
-    _promote_session_id,
-)
-
-logger = logging.getLogger(__name__)
-_log = logger  # alias used by _serve_static
-
-# ─── Safe file reading ───────────────────────────────────────────
-
-_MAX_FILE_SIZE = 200_000
-
-
-def _read_file_safe(path_str: str) -> str | None:
-    """Read file content with safety limits."""
-    try:
-        p = Path(path_str)
-        if not p.is_file():
-            return None
-        size = p.stat().st_size
-        if size > _MAX_FILE_SIZE:
-            with open(p, errors="replace", encoding="utf-8") as f:
-                f.seek(max(0, size - _MAX_FILE_SIZE))
-                f.readline()  # skip partial line
-                tail = f.read()
-            return f"[... truncated, showing last {len(tail)} chars of {size} ...]\n{tail}"
-        return p.read_text(errors="replace", encoding="utf-8")
-    except OSError:
-        return None
-
-
-def _static_dist_candidates() -> list[Path]:
-    """Directories static assets may be served from (module-level for tests)."""
-    return [
-        Path(__file__).parent / "dist",
-        Path(__file__).parent / "ui" / "dist",
-    ]
-
-
-# ─── Response compression ────────────────────────────────────────
-
-# Bodies at or below this size are sent as they are: gzip saves nothing there.
-_GZIP_MIN_BYTES = 1024
-# File names that carry a content hash (Vite writes name-HASH.ext), so a cached
-# copy can never be stale and may be kept for a year.
-_HASHED_ASSET = re.compile(r"-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|png|svg|jpg|webp)$")
-_COMPRESSIBLE_TYPES = ("text/", "application/json", "application/javascript", "image/svg+xml")
-
-
-def _accepts_gzip(header: str | None) -> bool:
-    """True when an Accept-Encoding value allows gzip (a ``gzip;q=0`` refuses it)."""
-    for part in (header or "").split(","):
-        name, _, params = part.strip().partition(";")
-        if name.strip().lower() in ("gzip", "x-gzip"):
-            q = re.search(r"q\s*=\s*([0-9.]+)", params)
-            try:
-                return float(q.group(1)) > 0 if q else True
-            except ValueError:
-                return False
-    return False
-
-
-def _static_encodings(header: str) -> list[str]:
-    """Return accepted static encodings in preference order. Prefer Brotli on a tie."""
-    weights: dict[str, float] = {}
-    for part in header.split(","):
-        name, _, params = part.lower().partition(";")
-        name = name.strip()
-        if name == "x-gzip":
-            name = "gzip"
-        weight = 1.0
-        key, _, value = params.partition("=")
-        if key.strip() == "q":
-            try:
-                weight = float(value)
-            except ValueError:
-                weight = 0.0
-        weights[name] = weight if 0 <= weight <= 1 else 0.0
-
-    def quality(name: str) -> float:
-        return weights.get(name, weights.get("*", 0.0))
-
-    return [name for name in sorted(("br", "gzip"), key=quality, reverse=True) if quality(name) > 0]
-
-
-def _gzip_bytes(body: bytes, level: int = 6) -> bytes:
-    # mtime=0 keeps the output identical for identical input.
-    return gzip.compress(body, compresslevel=level, mtime=0)
-
-
-class _GzipMemo:
-    """The compressed form of the last body seen for each key.
-
-    The snapshot and the static files are served many times unchanged; this
-    keeps them from being compressed again on every request.
-    """
-
-    def __init__(self, max_keys: int = 64) -> None:
-        self._lock = threading.Lock()
-        self._items: dict[str, tuple[object, bytes]] = {}
-        self._max_keys = max_keys
-
-    def get(self, key: str, token: object, body: bytes) -> bytes:
-        with self._lock:
-            hit = self._items.get(key)
-            if hit and hit[0] == token:
-                return hit[1]
-        packed = _gzip_bytes(body)
-        with self._lock:
-            if len(self._items) >= self._max_keys and key not in self._items:
-                self._items.pop(next(iter(self._items)))
-            self._items[key] = (token, packed)
-        return packed
-
-
-_GZIP_MEMO = _GzipMemo()
-
-
-_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
 _LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/session-evidence", "/api/context-audit", "/api/effective-models", "/api/board/", "/api/history/board", "/api/live", "/api/settings/file", "/api/settings/tools")
 
+_SCOPED_BOARD_ROUTES = frozenset({
+    "/api/board/agent", "/api/board/agent/flow", "/api/board/agent/transcript",
+    "/api/board/context", "/api/board/error", "/api/board/file", "/api/board/machine",
+    "/api/board/prompt", "/api/board/session/records", "/api/board/sessions",
+    "/api/board/skill", "/api/board/tool", "/api/session-evidence",
+})
 
-def _local_request(client_host: str, host_header: str | None) -> bool:
-    """True for a request from this machine that is addressed to a loopback name.
+GET_ROUTES = {
+    "/": "_serve_html",
+    "/assets/{name}": "_serve_static",
+    "/api/file": "_serve_file",
+    "/api/live/capabilities": "capabilities",
+    "/api/live/stream": "stream",
+    "/api/history/board": "history_board",
+    "/api/copilot-sessions": "_serve_copilot_sessions",
+    "/api/copilot-sessions/{id}": "_serve_copilot_sessions",
+    "/api/copilot-sessions/{id}/artifacts": "_serve_copilot_sessions",
+    "/api/copilot-sessions/{id}/artifact": "_serve_copilot_sessions",
+    "/api/effective-models": "_serve_effective_models",
+    "/api/session-evidence": "_serve_session_evidence",
+    "/api/board/nodes": "_serve_board_nodes",
+    "/api/board/context": "_serve_board_context",
+    "/api/board/agent/kql": "_serve_board_agent_kql",
+    "/api/board/agent/flow": "_serve_board_agent_flow",
+    "/api/board/agent/transcript": "_serve_board_agent_transcript",
+    **dict.fromkeys((
+        "/api/board/agent", "/api/board/error", "/api/board/excerpt", "/api/board/file",
+        "/api/board/machine", "/api/board/prompt", "/api/board/session/records", "/api/board/sessions",
+        "/api/board/skill", "/api/board/tool", "/api/board/terminal/events", "/api/board/terminal/file",
+        "/api/board/terminal/metrics", "/api/board/terminal/resources", "/api/board/terminal/sessions",
+    ), "_serve_board"),
+    "/api/samples": "_serve_samples",
+    "/api/context-audit": "_serve_context_audit",
+    "/api/settings/files": "_serve_settings_files",
+    "/api/settings/file": "_serve_settings_file_get",
+    "/api/settings/tools": "_serve_settings_tools",
+    "/api/session-processes": "_serve_session_processes",
+    "/api/session-commits": "_serve_session_commits",
+    "/api/session-stats": "_serve_session_stats",
+    "/api/session-mcp-usage": "_serve_session_mcp_usage",
+    "/api/otel-status": "_serve_otel_status",
+    "/api/hooks-status": "_serve_hooks_status",
+    "/api/tool-config/{tool}": "_serve_tool_config_get",
+    "/api/api-calls": "_serve_api_calls",
+    "/api/events/count": "_serve_events_count",
+    "/api/events": "_serve_events",
+    "/api/datapoints": "_serve_datapoint_catalog",
+}
 
-    The client check holds when the dashboard is bound to another interface. The
-    Host check stops a web page that rebinds its own name to 127.0.0.1.
-    """
-    try:
-        client = ipaddress.ip_address(client_host)
-    except ValueError:
-        return False
-    client = getattr(client, "ipv4_mapped", None) or client
-    return client.is_loopback and _loopback_origin(f"http://{host_header or ''}") is not None
+PUT_ROUTES = {
+    "/api/tool-config/{tool}": "_serve_tool_config_put",
+    "/api/settings/file": "_serve_settings_file_put",
+}
 
-
-def _names_another_machine(path: str) -> bool:
-    """True for a UNC path. Testing one for existence opens a network connection."""
-    return PureWindowsPath(path).drive.startswith("\\\\")
-
-
-def _loopback_origin(origin: str | None) -> str | None:
-    """Return *origin* if it is an http(s) loopback origin, else None.
-
-    The dashboard binds to loopback only, so cross-origin access is granted
-    solely to loopback origins (any port) — e.g. a Vite dev server on
-    http://localhost:5173 — never to arbitrary websites.
-    """
-    if not origin:
-        return None
-    try:
-        parsed = urlparse(origin)
-        host = (parsed.hostname or "").lower()
-    except ValueError:  # e.g. malformed IPv6 brackets
-        return None
-    if parsed.scheme not in ("http", "https"):
-        return None
-    if host in _LOOPBACK_HOSTS:
-        return origin
-    return None
-
-
-# ─── One hook_calls row per hook call ────────────────────────────
-
-# Keys the hook handler always sets on the payload; the keys it set only when the
-# tool left them out are listed in ``aictl_hook.added`` (format version 1).
-_HOOK_ADDED_KEYS = ("event", "aictl_hook", "_aictl_truncated")
-
-
-def _sane_ts(value: object) -> float | None:
-    """*value* as a time stamp when it is a finite positive number, else None."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    ts = float(value)
-    return ts if math.isfinite(ts) and ts > 0 else None
-
-
-def _first_str(data: dict, *keys: str) -> str:
-    """The first of *keys* that holds a non-empty string (Claude snake_case, Copilot camelCase)."""
-    for key in keys:
-        value = data.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
-
-
-def _int_of(value: object) -> int:
-    try:
-        return int(value) if not isinstance(value, bool) else 0
-    except (TypeError, ValueError):
-        return 0
-
-
-def _hook_decision(stdout: object, exit_code: int | None) -> str:
-    """What a wrapped hook told the tool: its JSON decision, else ``block`` for exit 2."""
-    parsed: object = None
-    if isinstance(stdout, str) and stdout.strip():
-        try:
-            parsed = json.loads(stdout)
-        except ValueError:
-            parsed = None
-    if isinstance(parsed, dict):
-        specific = parsed.get("hookSpecificOutput")
-        if isinstance(specific, dict) and isinstance(specific.get("permissionDecision"), str):
-            return specific["permissionDecision"]
-        if isinstance(parsed.get("decision"), str):
-            return parsed["decision"]
-        if parsed.get("continue") is False:
-            return "stop"
-    return "block" if exit_code == 2 else ""
-
-
-def _hook_call_row(
-    data: dict, *, tool: str, event: str, session_id: str, cwd: str, pid: int, received_at: float
-) -> HookCallRow:
-    """The ``hook_calls`` row of one hook POST: the envelope's fields typed, the tool's payload as it sent it.
-
-    A POST without the v1 envelope (an older wrapper, another client) gets format
-    version 0 and a call id derived from its body, so an identical retry is stored once.
-    """
-    meta = data.get("aictl_hook")
-    meta = meta if isinstance(meta, dict) else {}
-    version = _int_of(meta.get("v"))
-    call_id = meta.get("call_id")
-    if not isinstance(call_id, str) or not call_id or len(call_id) > 128:
-        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
-        call_id = "body:" + hashlib.sha256(canonical.encode("utf-8", "surrogatepass")).hexdigest()[:32]
-    ts = _sane_ts(meta.get("ts")) or _sane_ts(data.get("ts")) or received_at
-    added = meta.get("added") if isinstance(meta.get("added"), list) else []
-    drop = {*_HOOK_ADDED_KEYS, *(k for k in added if isinstance(k, str))}
-    payload = {k: v for k, v in data.items() if k not in drop}
-    wrapped = meta.get("wrapped")
-    row = HookCallRow(
-        call_id=call_id,
-        ts=ts,
-        received_at=received_at,
-        format_version=version,
-        tool=tool,
-        event=event,
-        hook_event_name=_first_str(data, "hook_event_name", "hookEventName"),
-        source=str(meta.get("source") or data.get("source") or ""),
-        session_id=session_id,
-        agent_id=_first_str(data, "agent_id", "agentId"),
-        project_path=cwd,
-        pid=pid,
-        hook_pid=_int_of(meta.get("pid")),
-        hook_ppid=_int_of(meta.get("ppid")),
-        tool_name=_first_str(data, "tool_name", "toolName"),
-        tool_use_id=_first_str(data, "tool_use_id", "toolUseId", "toolCallId"),
-        permission_mode=_first_str(data, "permission_mode", "permissionMode"),
-        payload_bytes=_int_of(meta.get("payload_bytes")),
-        truncated=1 if meta.get("truncated") is True or data.get("_aictl_truncated") is True else 0,
-        payload=payload,
-    )
-    if isinstance(wrapped, dict):
-        command = wrapped.get("command") if isinstance(wrapped.get("command"), str) else ""
-        exit_code = wrapped.get("exit_code")
-        exit_code = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
-        stdout = wrapped.get("stdout")
-        row.wrapped = 1
-        row.command = command
-        row.command_hash = hashlib.sha256(command.encode("utf-8", "surrogatepass")).hexdigest()[:16]
-        row.exit_code = exit_code
-        row.duration_ms = float(_sane_ts(wrapped.get("duration_ms")) or 0.0)
-        row.overhead_ms = float(_sane_ts(wrapped.get("overhead_ms")) or 0.0)
-        row.stdout_bytes = _int_of(wrapped.get("stdout_bytes"))
-        row.stderr_bytes = _int_of(wrapped.get("stderr_bytes"))
-        row.decision = _hook_decision(stdout, exit_code)
-        row.output = stdout if isinstance(stdout, str) else ""
-    return row
-
-
-# ─── Claude memory snapshot helper ───────────────────────────────
-
-
-def _is_claude_hook(data: dict) -> bool:
-    """True when the hook payload came from a Claude Code user/project hook."""
-    sources: list[str] = []
-    src = data.get("source")
-    if isinstance(src, str):
-        sources.append(src)
-    meta = data.get("aictl_hook") or {}
-    if isinstance(meta, dict):
-        inner = meta.get("source")
-        if isinstance(inner, str):
-            sources.append(inner)
-    return any(s.endswith((".claude-user", ".claude-project")) for s in sources)
-
-
-def _tool_from_hook_source(data: dict) -> str:
-    meta = data.get("aictl_hook") or {}
-    source = data.get("source") or (meta.get("source") if isinstance(meta, dict) else "") or ""
-    if source.endswith((".claude-user", ".claude-project")):
-        return "claude-code"
-    if source.endswith((".gemini-user", ".gemini-project")):
-        return "gemini-cli"
-    if source.endswith((".vscode-user", ".vscode-project", ".copilot-user", ".copilot-project")):
-        return _copilot_surface(data) or "copilot-vscode"
-    return ""
-
-
-_COPILOT_SURFACES = frozenset({"copilot-cli", "copilot-desktop", "copilot-vscode"})
-
-
-def _copilot_surface(data: dict) -> str:
-    """Which Copilot surface sent a hook. They share one hook file, so the file's
-    location says nothing: read the transcript path, then the calling processes."""
-    transcript = str(data.get("transcript_path") or data.get("transcriptPath") or "")
-    transcript = transcript.replace("\\", "/").lower()
-    if "github.copilot-chat" in transcript or "/workspacestorage/" in transcript:
-        return "copilot-vscode"
-    pid = data.get("pid")
-    return _copilot_surface_of_process(int(pid)) if pid else ""
-
-
-def _copilot_surface_of_process(pid: int, max_depth: int = 6) -> str:
-    """Nearest Copilot surface among a process and its ancestors; "" when unknown."""
-    try:
-        import psutil
-
-        from ..monitoring.collectors.process import classify_process
-        from ..monitoring.session import ProcessInfo
-
-        process = psutil.Process(pid)
-        for _ in range(max_depth):
-            if process is None:
-                break
-            with process.oneshot():
-                info = ProcessInfo(
-                    pid=process.pid,
-                    ppid=process.ppid(),
-                    name=process.name(),
-                    exe=process.exe(),
-                    cmdline=tuple(process.cmdline()),
-                )
-            tool = classify_process(info).tool
-            if tool in _COPILOT_SURFACES:
-                return tool
-            process = process.parent()
-    except Exception:  # noqa: BLE001 — attribution is best-effort; never fail a hook
-        logger.debug("Could not classify hook process %s", pid, exc_info=True)
-    return ""
-
-
-def _derive_claude_project_hash(cwd: str) -> str | None:
-    """Locate the Claude projects/<hash> dir for ``cwd``; return the hash."""
-    if not cwd:
-        return None
-    try:
-        from ..memory import _find_project_dir
-
-        p = _find_project_dir(Path(cwd))
-        return p.name if p else None
-    except Exception:  # noqa: BLE001 — best-effort; never crash hooks
-        return None
-
-
-def _snapshot_worker(evidence, session_id: str, project_hash: str | None, phase: str, ts: float, cwd: str) -> None:
-    """Read memory files and hand off a snapshot."""
-    try:
-        evidence.memory(session_id, project_hash, phase, ts, cwd)
-    except Exception as exc:  # noqa: BLE001 — best-effort; never crash hooks
-        logger.debug("memory snapshot (%s) failed for %s: %s", phase, session_id, exc)
-
-
-def _maybe_snapshot_claude_memory(evidence, data: dict, session_id: str, cwd: str, phase: str, ts: float) -> None:
-    """Spawn a background thread to snapshot Claude memory for this session.
-
-    No-op unless the hook payload came from a Claude user/project hook.
-    """
-    if evidence.writer is None or not session_id or not _is_claude_hook(data):
-        return
-    project_hash = _derive_claude_project_hash(cwd)
-    threading.Thread(
-        target=_snapshot_worker,
-        args=(evidence, session_id, project_hash, phase, ts, cwd),
-        daemon=True,
-        name=f"mem-snap-{phase}-{session_id[:8]}",
-    ).start()
-
-
-_WRITE_TOOL_OPERATIONS = {
-    "Write": "write",
-    "Edit": "edit",
-    "MultiEdit": "multi_edit",
-    "NotebookEdit": "edit",
+POST_ROUTES = {
+    "/api/hooks": "_receive_hook",
+    "/api/session-kill": "_serve_session_kill",
+    "/api/board/action": "_serve_board_action",
+    "/v1/metrics": "_receive_otel_metrics",
+    "/v1/logs": "_receive_otel_logs",
+    "/v1/traces": "_receive_otel_traces",
 }
 
 
-def _normalise_write_path(raw_path: str, cwd: str) -> str:
-    path = Path(raw_path)
-    if not path.is_absolute() and cwd:
-        path = Path(cwd) / path
-    return str(path)
+def _route_key(path: str) -> str:
+    if path.startswith("/assets/"):
+        return "/assets/{name}"
+    if path.startswith("/api/tool-config/"):
+        return "/api/tool-config/{tool}"
+    if path.startswith("/api/copilot-sessions/"):
+        parts = path.removeprefix("/api/copilot-sessions/").strip("/").split("/")
+        if parts[0]:
+            return "/api/copilot-sessions/{id}" + ("/" + "/".join(parts[1:]) if len(parts) > 1 else "")
+        return "/api/copilot-sessions"
+    return path
 
 
-def _extract_file_write_row(
-    *,
-    ts: float,
-    session_id: str,
-    tool: str,
-    tool_name: str,
-    detail: dict,
-    tool_input: object,
-) -> FileWriteRow | None:
-    operation = _WRITE_TOOL_OPERATIONS.get(tool_name)
-    if not operation:
-        return None
-    input_data = tool_input if isinstance(tool_input, dict) else {}
-    raw_path = input_data.get("file_path") or input_data.get("path") or detail.get("file_path") or detail.get("path")
-    if not raw_path:
-        return None
-    content = input_data.get("content") or input_data.get("new_string") or input_data.get("text") or ""
-    content_hash = ""
-    size_bytes = 0
-    if isinstance(content, str) and content:
-        content_bytes = content.encode("utf-8", errors="replace")
-        content_hash = hashlib.sha256(content_bytes).hexdigest()[:16]
-        size_bytes = len(content_bytes)
-    cwd = str(detail.get("cwd", ""))
-    return FileWriteRow(
-        ts=ts,
-        session_id=session_id,
-        tool=tool,
-        tool_name=tool_name,
-        operation=operation,
-        path=_normalise_write_path(str(raw_path), cwd),
-        project_path=cwd,
-        pid=int(detail.get("pid", 0) or 0),
-        source_event_kind="hook:PostToolUse",
-        source_event_id=str(detail.get("tool_use_id", "")),
-        content_hash=content_hash,
-        size_bytes=size_bytes,
-        detail={"tool_use_id": detail.get("tool_use_id", ""), "input_keys": sorted(input_data.keys())},
-    )
+# While the daemon collects its first snapshot, its port is already open: these routes are
+# served at once, every other request waits for the snapshot up to READY_WAIT_S.
+_TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
 
 
-# ─── HTTP handler ────────────────────────────────────────────────
+_SERVED_WHILE_STARTING = frozenset({
+    "/", "/index.html", "/favicon.ico", "/api/live/capabilities", "/api/live/stream",
+    "/api/board/agent/flow", "/api/session-evidence",
+})
 
 
-class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
-    """Routes requests to the appropriate handler.
+# Under the handler's 30 s socket timeout, so the client gets the answer.
+READY_WAIT_S = 20.0
 
-    REST API endpoint implementations live in _APIHandlersMixin
-    (api_handlers.py).  This class provides routing, SSE, HTML serving,
-    OTel ingestion, and shared helper methods.
-    """
 
-    # Re-export for backward compatibility (tests call this as a classmethod)
-    from .session_flow import attribute_api_to_turns as _attribute_api_to_turns
+# Requests run on four threads that live as long as the server: a thread's first read
+# of the history attaches and copies the project stores, 150 ms here, and a thread per
+# request paid that on every request. A request that finds no idle worker when the
+# pool is full gets a thread of its own, so streaming clients never hold the others up.
+HTTP_WORKERS = 4
 
+
+class _DashboardHandler(SessionRoutes, SettingsRoutes, MetricsRoutes, RequestMethods, ResponseMethods, AssetRoutes, IngestRoutes, BoardRoutes, BaseHTTPRequestHandler):
     server: _DashboardHTTPServer  # type hint for IDE
+
     timeout = 30  # per-connection socket timeout (read by StreamRequestHandler.setup)
 
     def handle_one_request(self) -> None:
@@ -512,11 +140,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             super().handle_one_request()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
-
-    @property
-    def _qs(self) -> dict[str, list[str]]:
-        """Parsed query-string parameters for the current request."""
-        return parse_qs(urlparse(self.path).query)
 
     def _wait_ready(self) -> bool:
         """Hold a data request until the first snapshot is ready; answer a short 503 when it takes longer.
@@ -566,7 +189,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
             return
-        if path == "/api/history/board":
+        endpoint = GET_ROUTES.get(_route_key(path))
+        if endpoint == "history_board":
             from .history_board import serve
 
             serve(self, url.query)
@@ -583,13 +207,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     self._json_response({"error": str(exc), "reason": exc.reason}, status=exc.status)
                     return
                 if scope.kind != "local":
-                    history = path in {
-                        "/api/board/sessions", "/api/board/agent", "/api/board/agent/flow",
-                        "/api/board/agent/transcript", "/api/board/prompt", "/api/board/tool", "/api/board/error",
-                        "/api/board/skill", "/api/board/file", "/api/board/context", "/api/board/machine",
-                        "/api/board/session/records", "/api/session-evidence",
-                    }
-                    if history:
+                    if path in _SCOPED_BOARD_ROUTES:
                         self._serve_board(path)
                     else:
                         self._json_response({"error": "Available only on This node", "reason": "local_only"}, status=422)
@@ -597,112 +215,18 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             if any(identity_parts(value) for key in ("id", "session_id") for value in params.get(key, ())):
                 self._json_response({"error": "A node-qualified record requires a historical scope"}, status=400)
                 return
-        if path == "/":
-            self._serve_html()
-        elif path == "/api/snapshot":
-            self._serve_snapshot()
-        elif path == "/api/file":
-            self._serve_file()
-        elif path == "/api/stream":
-            self._serve_sse()
-        elif path == "/api/live/capabilities":
+        if endpoint == "capabilities":
             live_stream.serve_capabilities(self)
-        elif path == "/api/live/stream":
+        elif endpoint == "stream":
             live_stream.serve_stream(self)
-        elif path == "/api/copilot-sessions" or path.startswith("/api/copilot-sessions/"):
-            from .copilot_sessions_api import handle
-
-            status, payload = handle(path, self._qs)
-            self._json_response(payload, status=status)
-        elif path == "/api/effective-models":
-            self._serve_effective_models()
-        elif path == "/api/session-evidence":
-            from ..stores.base import StoreConfigurationError, StoreError
-            from .projections.history import HistoryScope
-            from .session_evidence import EvidenceInputError, session_evidence
-
-            history = HistoryScope.local(self.server.store)
-            try:
-                body = json.dumps(session_evidence(self._db, self._qs, history=history)).encode("utf-8")
-                self._send_body(body, "application/json", cache_control="no-store", cors=False)
-            except EvidenceInputError as exc:
-                self._json_response({"error": str(exc)}, status=400)
-            except StoreConfigurationError as exc:
-                self._json_response({"error": str(exc)}, status=503)
-            except StoreError:
-                logger.exception("Could not read session execution evidence")
-                self._json_response({"error": "Session evidence query failed"}, status=503)
-        elif path == "/api/board/nodes":
-            from .board_api import _cached_health_data
-            from .node_views import NodeViewError, agent_inventory, node_view
-            from .projections.history import configured_reader
-
-            try:
-                reader = configured_reader(self.server.store)
-                body = node_view(self._db, node_query,
-                                 reader=reader,
-                                 local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time(), reader),
-                                 local_inventory=lambda: agent_inventory(getattr(self.server.store, "live_hub", None), time.time()))
-            except NodeViewError as exc:
-                self._json_response({"error": str(exc)}, status=exc.status)
-                return
-            except Exception:
-                logger.exception("Could not read the node board")
-                self._json_response({"error": "Could not read node data from the configured store"}, status=503)
-                return
-            self._send_body(json.dumps(body).encode("utf-8"), "application/json", cache_control="no-store", cors=False)
-        elif path == "/api/board/context":
-            self._serve_board_context()
-        elif path == "/api/board/agent/kql":
-            from .drawer_kql import kql_templates
-
-            keys = ("preset", "session", "reporting_node", "model", "tool", "keyword", "since", "until", "include_all_sessions")
-            try:
-                body = kql_templates({key: self._qs_get(key, "") for key in keys})
-            except ValueError as exc:
-                self._json_response({"error": str(exc)}, status=400)
-            else:
-                self._json_response(body)
-        elif path == "/api/board/agent/flow":
-            self._serve_board_agent_flow()
-        elif path == "/api/board/agent/transcript":
-            self._serve_board_agent_transcript()
+        elif endpoint == "_serve_board_nodes":
+            self._serve_board_nodes(node_query)
+        elif endpoint in ("_serve_board", "_serve_copilot_sessions", "_serve_static"):
+            getattr(self, endpoint)(path)
+        elif endpoint:
+            getattr(self, endpoint)()
         elif path.startswith("/api/board/"):
-            self._serve_board(path)
-        elif path.startswith("/api/samples"):
-            self._serve_samples()
-        elif path == "/api/context-audit":
-            self._serve_context_audit()
-        elif path == "/api/settings/files":
-            self._serve_settings_files()
-        elif path == "/api/settings/file":
-            self._serve_settings_file_get()
-        elif path == "/api/settings/tools":
-            self._serve_settings_tools()
-        elif path.startswith("/api/session-processes"):
-            self._serve_session_processes()
-        elif path.startswith("/api/session-commits"):
-            self._serve_session_commits()
-        elif path.startswith("/api/session-stats"):
-            self._serve_session_stats()
-        elif path.startswith("/api/session-mcp-usage"):
-            self._serve_session_mcp_usage()
-        elif path.startswith("/api/otel-status"):
-            self._serve_otel_status()
-        elif path.startswith("/api/hooks-status"):
-            self._serve_hooks_status()
-        elif path.startswith("/api/tool-config/"):
-            self._serve_tool_config_get()
-        elif path.startswith("/api/api-calls"):
-            self._serve_api_calls()
-        elif path.startswith("/api/events/count"):
-            self._serve_events_count()
-        elif path.startswith("/api/events"):
-            self._serve_events()
-        elif path.startswith("/api/datapoints"):
-            self._serve_datapoint_catalog()
-        elif path.startswith("/assets/"):
-            self._serve_static(path)
+            self._json_response({"error": "No such route"}, status=404)
         else:
             self.send_error(404)
 
@@ -712,13 +236,13 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if self._reject_scoped_action():
             return
-        if path.startswith("/api/tool-config/"):
-            self._serve_tool_config_put()
-        elif path == "/api/settings/file":
-            if not _local_request(self.client_address[0], self.headers.get("Host")):
-                self._json_response({"error": "This route answers requests from this machine only."}, status=403)
-            else:
-                self._serve_settings_file_put()
+        endpoint = PUT_ROUTES.get(_route_key(path))
+        if endpoint == "_serve_settings_file_put" and not _local_request(
+            self.client_address[0], self.headers.get("Host")
+        ):
+            self._json_response({"error": "This route answers requests from this machine only."}, status=403)
+        elif endpoint:
+            getattr(self, endpoint)()
         else:
             self.send_error(404)
 
@@ -734,793 +258,23 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         # Hooks and telemetry need only the stores and are taken at once; the rest waits.
         if path not in _TAKEN_WHILE_STARTING and not self._wait_ready():
             return
-        if path == "/api/hooks":
-            self._receive_hook()
-        elif path == "/api/session-kill":
-            self._serve_session_kill()
-        elif path == "/api/board/action":
-            self._serve_board_action()
-        elif path == "/v1/metrics":
-            self._receive_otel_metrics()
-        elif path == "/v1/logs":
-            self._receive_otel_logs()
-        elif path == "/v1/traces":
-            self._receive_otel_traces()
+        endpoint = POST_ROUTES.get(path)
+        if endpoint:
+            getattr(self, endpoint)()
         else:
             self.send_error(404)
-
-    def _reject_scoped_action(self, data=None) -> bool:
-        params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
-        body_scope = isinstance(data, dict) and ("node_id" in data or data.get("scope") in ("node", "fleet"))
-        if body_scope or "node_id" in params or any(v in ("node", "fleet") for v in params.get("scope", ())):
-            self._json_response({"error": "Fleet and named-node views are read-only"}, status=403)
-            return True
-        return False
-
-    def _receive_hook(self) -> None:
-        """Receive Claude Code hook events via HTTP POST.
-
-        Stores them as history events and forwards to SSE clients.
-        Expected body: JSON with at minimum {event, session_id} plus
-        event-specific fields from the Claude Code hook system.
-        """
-        content_length = self._content_length()
-        if content_length is None:
-            return
-        if content_length > 1_000_000:
-            self.send_error(413, "Payload too large")
-            return
-        try:
-            body = self.rfile.read(content_length)
-            data = json.loads(body)
-        except (json.JSONDecodeError, OSError):
-            self.send_error(400, "Invalid JSON")
-            return
-
-        event_name = data.get("event") or data.get("hook_event_name") or "unknown"
-        session_id = data.get("session_id", "")
-        cwd = data.get("cwd", "")
-
-        if data.get("_aictl_verify"):
-            # `aictl hooks verify` pings every event with a synthetic payload
-            # (session_id "aictl-verify"). It only needs the HTTP round-trip;
-            # persisting it would create a phantom session in every session
-            # list and skew analytics.
-            logger.debug("Hook verify ping received: %s", event_name)
-            self._json_response_raw(b'{"ok":true,"verify":true}')
-            return
-
-        received_at = time.time()
-        # Derive tool from explicit field, or session_id pattern "tool:pid:ts",
-        # or fall back to "claude-code" (the most common hook source).
-        tool = data.get("tool", "") or _tool_from_hook_source(data)
-        if not tool and session_id and ":" in session_id:
-            tool = session_id.split(":")[0]
-        if not tool:
-            tool = "claude-code"
-        ts = _sane_ts(data.get("ts")) or received_at
-
-        hook_pid = int(data.get("pid", 0) or 0)
-        facts = self.server.store.session_facts
-        evidence = self.server.store.session_evidence
-        hook_call = _hook_call_row(
-            data, tool=tool, event=event_name, session_id=session_id, cwd=cwd, pid=hook_pid, received_at=received_at
-        )
-        ts = facts.hook_time(hook_call.call_id, ts)
-        meta = data.get("aictl_hook")
-        if isinstance(meta, dict) and isinstance(meta.get("wrapped"), dict):
-            # A user's own hook, run through the wrapper: aictl's hook on the same
-            # event reports the event itself, so only the call is stored.
-            facts.hook(hook_call)
-            self._json_response_raw(b'{"ok":true}')
-            return
-        _HOOK_SKIP = {"event", "hook_event_name", "session_id", "tool", "cwd", "ts", "pid"}
-        detail = {"session_id": session_id, "cwd": cwd, **{k: v for k, v in data.items() if k not in _HOOK_SKIP}}
-        if hook_pid:
-            detail["pid"] = hook_pid
-
-        event_record = {"ts": ts, "tool": tool, "kind": f"hook:{event_name}", "detail": detail}
-
-        facts.events([EventRow(ts, tool, event_record["kind"], detail, session_id, hook_pid)],
-                     source="hook", source_key=hook_call.call_id)
-        facts.hook(hook_call)
-        if event_name in ("Init", "SessionStart"):
-            facts.session(SessionRow(session_id, tool, hook_pid, cwd, model=detail.get("model", ""),
-                                     started_at=ts, source="hook"), activity=ts)
-            facts.link(session_id, hook_pid, tool, ts, "lead", cwd)
-            _maybe_snapshot_claude_memory(evidence, data, session_id, cwd, "start", ts)
-        elif event_name in ("Stop", "SessionEnd"):
-            terminal = event_name == "SessionEnd"
-            started_at = facts.started_at(session_id)
-            facts.session(SessionRow(
-                session_id, tool, project_path=cwd, model=detail.get("model", ""),
-                started_at=started_at or ts, ended_at=ts if terminal else None, source="hook",
-                input_tokens=int(detail.get("input_tokens", 0) or 0),
-                output_tokens=int(detail.get("output_tokens", 0) or 0),
-                cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),
-                cache_creation_tokens=int(detail.get("cache_creation_tokens", 0) or 0),
-                cost_usd=float(detail.get("cost_usd", 0) or 0),
-            ), activity=ts, terminal=terminal)
-            _maybe_snapshot_claude_memory(evidence, data, session_id, cwd, "end", ts)
-            if evidence.writer is not None and terminal and cwd and started_at:
-                threading.Thread(
-                    target=evidence.commits, args=(session_id, cwd, started_at, ts),
-                    daemon=True, name=f"git-attr-{session_id[:8]}",
-                ).start()
-        if event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
-            tool_name = detail.get("tool_name", "")
-            if tool_name:
-                start = event_name == "PreToolUse"
-                failed = event_name == "PostToolUseFailure" or bool(detail.get("is_error"))
-                raw_result = detail.get("tool_response") or detail.get("result") or detail.get("error") or ""
-                input_val = self.server.store.tool_calls.hook(
-                    ToolInvocationRow(
-                        ts=ts, session_id=session_id, tool=tool, tool_name=tool_name, pid=hook_pid,
-                        project_path=cwd, is_error=int(not start and failed),
-                        input=detail.get("input", detail.get("tool_input", {})),
-                        result_summary=str(raw_result)[:500] if not start else "",
-                        source="hook", source_event_id=detail.get("tool_use_id") or "",
-                    ),
-                    start=start,
-                )
-                if not start and not failed:
-                    file_write = _extract_file_write_row(
-                        ts=ts, session_id=session_id, tool=tool, tool_name=tool_name,
-                        detail=detail, tool_input=input_val,
-                    )
-                    if file_write:
-                        facts.file_writes([file_write], transcript=False)
-
-        # Feed into entity state tracker
-        self.server.entity_tracker.process_event(event_record)
-
-        logger.debug("Hook event received: %s session=%s", event_name, session_id)
-
-        # Respond with success
-        self.server.store.request_refresh()
-        self._json_response_raw(b'{"ok":true}')
-
-    # ── OTel OTLP receivers ──────────────────────────────────────
-
-    def _read_chunked_body(self, max_size: int) -> bytes:
-        """Read a chunked Transfer-Encoding body."""
-        buf = bytearray()
-        while True:
-            line = self.rfile.readline(65537)
-            chunk_size = int(line.strip(), 16)
-            if chunk_size == 0:
-                self.rfile.readline()  # trailing CRLF
-                break
-            if len(buf) + chunk_size > max_size:
-                raise ValueError("Payload too large")
-            buf.extend(self.rfile.read(chunk_size))
-            self.rfile.readline()  # CRLF after chunk data
-        return bytes(buf)
-
-    def _read_post_otlp(self, signal: str, max_size: int = 2_000_000) -> dict | None:
-        """Read OTLP POST body, auto-detecting JSON vs protobuf."""
-        transfer_encoding = self.headers.get("Transfer-Encoding", "")
-        try:
-            if "chunked" in transfer_encoding.lower():
-                body = self._read_chunked_body(max_size)
-            else:
-                # Shared validator: a negative/garbage Content-Length is a 400,
-                # not an rfile.read(-N) that blocks until the socket timeout.
-                content_length = self._content_length()
-                if content_length is None:
-                    return None
-                if content_length > max_size:
-                    self.send_error(413, "Payload too large")
-                    return None
-                body = self.rfile.read(content_length)
-        except ValueError:
-            self.send_error(413, "Payload too large")
-            return None
-        except OSError:
-            self.server.otel_receiver.stats.errors += 1
-            self.send_error(400, "Read error")
-            return None
-
-        # OTLP exporters honour OTEL_EXPORTER_OTLP_COMPRESSION=gzip (often set
-        # org-wide); a compressed body used to fail json.loads and be dropped
-        # as a 400, or worse decode as an empty protobuf and return 200.
-        encoding = self.headers.get("Content-Encoding", "").lower()
-        if "gzip" in encoding or "deflate" in encoding:
-            try:
-                decoder = gzip.decompress if "gzip" in encoding else zlib.decompress
-                body = decoder(body)
-            except (OSError, EOFError, zlib.error):
-                self.server.otel_receiver.stats.errors += 1
-                self.send_error(400, "Bad Content-Encoding payload")
-                return None
-            if len(body) > max_size:
-                self.send_error(413, "Payload too large")
-                return None
-
-        content_type = self.headers.get("Content-Type", "")
-
-        # ── Protobuf ──
-        if "protobuf" in content_type or "grpc" in content_type:
-            proto_classes = _load_otlp_proto()
-            if not proto_classes:
-                logger.error(
-                    "OTel protobuf payload received but opentelemetry-proto "
-                    "not installed. Run: pip install 'aictl[otel]'",
-                )
-                self.server.otel_receiver.stats.errors += 1
-                self.send_error(
-                    415,
-                    "Install opentelemetry-proto: pip install 'aictl[otel]'",
-                )
-                return None
-            cls = proto_classes.get(signal)
-            if cls is None:
-                self.server.otel_receiver.stats.errors += 1
-                self.send_error(400, f"Unknown OTLP signal: {signal}")
-                return None
-            try:
-                from google.protobuf.json_format import MessageToDict
-
-                msg = cls()
-                msg.ParseFromString(body)
-                return MessageToDict(msg)
-            except Exception as exc:
-                logger.warning("OTel protobuf decode error: %s", exc)
-                self.server.otel_receiver.stats.errors += 1
-                self.send_error(400, "Protobuf decode error")
-                return None
-
-        # ── Try JSON, fall back to protobuf auto-detect ──
-        try:
-            return json.loads(body)
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Body wasn't valid JSON — try protobuf before giving up
-        proto_classes = _load_otlp_proto()
-        cls = proto_classes.get(signal) if proto_classes else None
-        if cls is not None:
-            try:
-                from google.protobuf.json_format import MessageToDict
-
-                msg = cls()
-                msg.ParseFromString(body)
-                return MessageToDict(msg)
-            except Exception as exc:
-                logger.debug("Protobuf parse failed: %s", exc)
-
-        logger.warning(
-            "OTel: invalid body (Content-Type: %s, %d bytes)",
-            content_type,
-            len(body),
-        )
-        self.server.otel_receiver.stats.errors += 1
-        self.send_error(400, "Invalid JSON")
-        return None
-
-    def _capture_otlp(self, signal: str, data: dict) -> bool:
-        """Acknowledge exports accepted by the writer queue."""
-        store = self.server.store
-        sink = store.history_store.otlp
-        if sink is None:
-            return True
-        try:
-            sink.ingest(signal, data, keep_text=store.session_facts.keeps_text(),
-                        admit_metrics=self.server.raw_otel_metrics.accept)
-        except ValueError:
-            logger.exception("Kusto rejected malformed OTel %s data", signal)
-            self.send_error(400, "Invalid OTel export")
-            return False
-        except Exception:
-            logger.exception("Kusto did not accept the OTel %s export", signal)
-            self.send_error(503, "Kusto ingestion unavailable; retry the export")
-            return False
-        return True
-
-    def _receive_otel_metrics(self) -> None:
-        self._receive_otel("metrics")
-
-    def _receive_otel_logs(self) -> None:
-        self._receive_otel("logs")
-
-    def _receive_otel_traces(self) -> None:
-        self._receive_otel("traces")
-
-    def _receive_otel(self, signal: str) -> None:
-        data = self._read_post_otlp(signal)
-        if data is None or not self._capture_otlp(signal, data):
-            return
-        store = self.server.store
-        receiver = self.server.otel_receiver
-        facts = store.session_facts
-
-        def samples_received(samples):
-            sink = store._sink
-            if sink is not None:
-                sink.emit_otel(samples)
-
-        try:
-            if signal == "metrics":
-                receiver.ingest_metrics(data, samples_received)
-            else:
-                if signal == "traces":
-                    samples, events = receiver.parse_traces(data)
-                    samples_received(samples)
-                else:
-                    events = receiver.parse_logs(data)
-                    store.tool_calls.record(receiver.extract_tool_invocations(events))
-                facts.events(events, source=signal)
-                requests = receiver.extract_requests(events)
-                facts.requests(requests)
-                for request in requests:
-                    sid, ts = request.session_id, request.source_ts or request.ts
-                    if sid:
-                        facts.session(SessionRow(sid, request.tool, request.pid, started_at=ts, source="otel"))
-                        facts.link(sid, request.pid, request.tool, ts, "lead")
-                links = receiver.take_trace_links()
-                try:
-                    facts.trace_links(links)
-                except Exception:
-                    receiver.restore_trace_links(links)
-                    raise
-                if signal == "logs" and events:
-                    store.request_refresh()
-        except Exception:
-            logger.exception("Error processing OTel %s", signal)
-            self.server.otel_receiver.stats.errors += 1
-            self.send_error(503 if facts.writer is not None else 500, "OTel processing failed; retry the export")
-            return
-        self._json_response_raw(b'{"ok":true}')
-
-    def _serve_html(self) -> None:
-        html = _load_template()
-        html = html.replace("%%TOOL_COLORS_JS%%", _make_js_colors())
-        html = html.replace("%%TOOL_ICONS_JS%%", _make_js_icons())
-        html = html.replace("%%TAXONOMY_JS%%", _make_js_taxonomy())
-        self._send_body(html.encode("utf-8"), "text/html; charset=utf-8", cache_control="no-cache", cors=False)
-
-    def _serve_static(self, path: str) -> None:
-        """Serve static assets from the dist/ directory."""
-        import mimetypes
-
-        rel = path.lstrip("/")
-        candidates = _static_dist_candidates()
-        file_path = None
-        root = None
-        for dist_dir in candidates:
-            # Resolve and confine to the dist dir — a path with ".." segments
-            # must never escape it (path traversal).
-            root = dist_dir.resolve()
-            full = (root / rel).resolve()
-            if not full.is_relative_to(root) or full.suffix in (".br", ".gz"):
-                continue
-            if full.is_file():
-                file_path = full
-                break
-        if file_path is None or root is None:
-            checked = [str(d / rel) for d in candidates]
-            _log.warning("Static 404: %s — checked: %s", path, checked)
-            self.send_error(404, "Not found")
-            return
-        suffix = file_path.suffix.lower()
-        mime, _ = mimetypes.guess_type(str(file_path))
-        mime = "font/woff2" if suffix == ".woff2" else mime or "application/octet-stream"
-        stat = file_path.stat()
-        # A hashed name never changes content, so browsers keep it for a year.
-        # Any other file is revalidated with its ETag.
-        hashed = bool(_HASHED_ASSET.search(file_path.name))
-        compressible = mime.startswith(_COMPRESSIBLE_TYPES)
-        supports_sidecars = suffix in (".js", ".css")
-        accepted = _static_encodings(", ".join(self.headers.get_all("Accept-Encoding", [])))
-        served_path = file_path
-        encoding = None
-        if supports_sidecars:
-            for name in accepted:
-                extension = ".br" if name == "br" else ".gz"
-                sidecar = file_path.with_name(file_path.name + extension).resolve()
-                if sidecar.is_relative_to(root) and sidecar.is_file():
-                    served_path, encoding = sidecar, name
-                    break
-        dynamic_gzip = encoding is None and compressible and stat.st_size > _GZIP_MIN_BYTES and "gzip" in accepted
-        if dynamic_gzip:
-            encoding = "gzip"
-        etag = None
-        if hashed:
-            cache_control = "public, max-age=31536000, immutable"
-        else:
-            cache_control = "no-cache"
-            selected = stat if served_path == file_path else served_path.stat()
-            variant = "-gz" if dynamic_gzip else f"-{encoding}-file" if encoding else ""
-            etag = f'"{selected.st_mtime_ns:x}-{selected.st_size:x}{variant}"'
-            if self._check_etag(etag):
-                return
-        body = served_path.read_bytes()
-        if dynamic_gzip:
-            body = _GZIP_MEMO.get(str(file_path), (stat.st_mtime_ns, stat.st_size), body)
-        self.send_response(200)
-        self.send_header("Content-Type", mime)
-        self.send_header("Cache-Control", cache_control)
-        if encoding:
-            self.send_header("Content-Encoding", encoding)
-        if compressible or supports_sidecars:
-            self.send_header("Vary", "Accept-Encoding")
-        if etag:
-            self.send_header("ETag", etag)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _serve_snapshot(self) -> None:
-        snap_bytes = self.server.store.snapshot_json_bytes
-        if not snap_bytes:
-            self.send_error(503, "No data yet")
-            return
-        version = self.server.store.version
-        gz = len(snap_bytes) > _GZIP_MIN_BYTES and self._wants_gzip()
-        etag = f'"{version}-gz"' if gz else f'"{version}"'
-        if self._check_etag(etag):
-            return
-        self._send_body(
-            snap_bytes,
-            "application/json",
-            etag=etag,
-            memo_key="snapshot",
-            memo_token=(version, len(snap_bytes)),
-        )
-
-    def _serve_file(self) -> None:
-        qs = self._qs
-        file_path = qs.get("path", [None])[0]
-        if not file_path:
-            self.send_error(400, "Missing path parameter")
-            return
-        if not self.server.allowed.is_allowed(file_path):
-            # A session's artifact: a file in a tool's session folder, or a file a session wrote.
-            from ..stores.base import StoreError
-            from .projections.history import HistoryScope
-            from .session_record import is_recorded_artifact, is_text_file
-
-            try:
-                recorded = is_recorded_artifact(self._db, file_path, history=HistoryScope.local(self.server.store))
-            except StoreError:
-                self._json_response({"error": "Artifact inventory unavailable"}, status=503)
-                return
-            if not recorded:
-                self.send_error(403, "Path not in discovered resource set")
-                return
-            if Path(file_path).is_file() and not is_text_file(file_path):
-                self.send_error(415, "Binary file: not shown as text")
-                return
-        p = Path(file_path)
-        try:
-            mtime = p.stat().st_mtime
-        except OSError:
-            self.send_error(404, "File not readable")
-            return
-        etag = f'"{int(mtime)}"'
-        if self._check_etag(etag):
-            return
-        content = _read_file_safe(file_path)
-        if content is None:
-            self.send_error(404, "File not readable")
-            return
-        body = content.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("ETag", etag)
-        self.send_header("Last-Modified", email.utils.formatdate(mtime, usegmt=True))
-        self.send_header("Cache-Control", "no-cache")
-        self._send_cors_header()
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _serve_sse(self) -> None:
-        with live_stream.client_slot() as accepted:
-            if not accepted:
-                logger.warning("SSE client limit reached (%d), rejecting connection", live_stream.MAX_SSE_CLIENTS)
-                self.send_error(503, "Too many SSE clients")
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self._send_cors_header()
-            self.end_headers()
-
-            # The version is read before the snapshot. Read after, an update that lands
-            # while the first message is written would count as sent, and this client
-            # would miss it until the next one. Read before, it is at worst sent twice.
-            version = self.server.store.version
-            snap = self.server.store.snapshot
-            if snap:
-                self._write_sse(snap, version)
-
-            while True:
-                try:
-                    snap, version = self.server.store.wait_for_update(version, timeout=30.0)
-                    if snap:
-                        self._write_sse(snap, version)
-                    else:
-                        self.wfile.write(b": keepalive\n\n")
-                        self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break
-
-    def _write_sse(self, snap: DashboardSnapshot, version: int = 0) -> None:
-        """One small notification per snapshot for the recording tool."""
-        self.wfile.write(f'data: {{"timestamp": {snap.timestamp}, "version": {version}}}\n\n'.encode())
-        self.wfile.flush()
-
-    # ── Shared helpers (used by _APIHandlersMixin and core) ──
 
     @property
     def _db(self):
         """Runtime owner of the configured history store."""
         return self.server.store
 
-    def _check_etag(self, etag: str) -> bool:
-        """Send 304 if client ETag matches. Returns True when 304 was sent."""
-        if self.headers.get("If-None-Match") == etag:
-            self.send_response(304)
-            self.send_header("ETag", etag)
-            self.send_header("Vary", "Accept-Encoding")
-            self.end_headers()
-            return True
-        return False
-
-    def _cors_origin(self) -> str | None:
-        """The request's Origin header, if (and only if) it is loopback."""
-        return _loopback_origin(self.headers.get("Origin"))
-
-    def _content_length(self) -> int | None:
-        """Parse the Content-Length header; send 400 and return None if malformed."""
-        try:
-            content_length = int(self.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            content_length = -1
-        if content_length < 0:
-            self.send_error(400, "Invalid Content-Length")
-            return None
-        return content_length
-
-    def _send_cors_header(self) -> None:
-        """Emit Access-Control-Allow-Origin for loopback origins only.
-
-        Same-origin requests carry no Origin header and need no ACAO header;
-        non-loopback origins get nothing (the browser blocks the read).
-        """
-        origin = self._cors_origin()
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
-
-    def _reject_cross_origin(self) -> bool:
-        """CSRF guard for state-changing requests (POST/PUT).
-
-        Rejects any request whose Origin header is present and neither
-        loopback nor same-origin (Origin host:port matching the request's
-        Host header — covers dashboards deliberately served on a
-        non-loopback interface). Non-browser clients (aictl's own hook
-        handler, OTLP exporters) send no Origin header and pass through.
-        Returns True when rejected.
-        """
-        origin = self.headers.get("Origin")
-        if not origin:
-            return False
-        if _loopback_origin(origin):
-            return False
-        try:
-            origin_netloc = urlparse(origin).netloc.lower()
-        except ValueError:
-            origin_netloc = ""
-        if origin_netloc and origin_netloc == (self.headers.get("Host") or "").lower():
-            return False
-        self.send_error(403, "Cross-origin request rejected")
-        return True
-
-    def _qs_get(self, key: str, default=None):
-        """Return the first value for *key* in the query-string, or *default*."""
-        v = self._qs.get(key)
-        return v[0] if v else default
-
-    def _serve_context_audit(self) -> None:
-        """Hidden-context audit of the served project, or of ?project= when given.
-
-        The answer is kept for a few minutes; ``?refresh=1`` runs it again.
-        With ``?nowait=1`` a scan runs in the background and the answer says how far it is.
-        """
-        from .audit_cache import AUDIT_CACHE
-        from .projections.history import HistoryScope
-
-        wanted = self._qs_get("project")
-        project = wanted if wanted and not _names_another_machine(wanted) and Path(wanted).is_dir() else self.server.root
-        try:
-            refresh = self._qs_get("refresh") in ("1", "true")
-            lookup = AUDIT_CACHE.poll if self._qs_get("nowait") == "1" else AUDIT_CACHE.get
-            history = HistoryScope.local(getattr(self.server, "store", None))
-            self._json_response(lookup(project, self._qs_get("tool") or None, refresh=refresh, history=history))
-        except Exception as exc:  # any failure must reach the panel's error state
-            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-
-    def _serve_effective_models(self) -> None:
-        """The model in force for each Copilot tool and for Claude Code in the served project."""
-        from ..effective_config import CLAUDE_TOOL, COPILOT_TOOLS, model_summary
-
-        try:
-            self._json_response({tool: model_summary(self.server.root, tool) for tool in (*COPILOT_TOOLS, CLAUDE_TOOL)})
-        except Exception as exc:  # any failure must reach the panel's error state
-            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-
-    def _serve_board(self, path: str) -> None:
-        """The panel dashboard and its detail routes."""
-        from ..stores import UnresolvedObservationsError
-        from .board_api import BoardRequestError, handle_get
-
-        try:
-            status, body = handle_get(path, urlparse(self.path).query, self._db, self.server.store, is_allowed=self.server.allowed.is_allowed)
-        except BoardRequestError as exc:
-            self._json_response({"error": str(exc)}, status=400)
-            return
-        except UnresolvedObservationsError as exc:
-            self._json_response(exc.to_dict(), status=409)
-            return
-        except Exception as exc:  # any failure must reach the panel's error state
-            logger.exception("Board route failed")
-            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-            return
-        self._json_response_raw(body, status=status)
-
-    def _board_health(self) -> dict:
-        from .board_api import compute_health
-
-        return compute_health(
-            self._db,
-            self.server.store,
-            otel=getattr(self.server, "otel_receiver", None),
-            ingesters=getattr(self.server, "ingesters", None),
-            stream_clients=live_stream.client_count(),
-            port=int(self.server.server_address[1]),
-            http_reads=self.server.health_reads,
-            http_writes=self.server.health_writes,
-        )
-
-    def _serve_board_context(self) -> None:
-        """Context-window budget, files, memory and lifetime telemetry for the board."""
-        from ..stores import UnresolvedObservationsError
-        from .board_api import context_bytes
-
-        try:
-            body = context_bytes(self._db, self.server.store, urlparse(self.path).query)
-        except UnresolvedObservationsError as exc:
-            self._json_response(exc.to_dict(), status=409)
-            return
-        except Exception as exc:  # any failure must reach the panel's error state
-            logger.exception("Board context route failed")
-            self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-            return
-        self._json_response_raw(body)
-
-    def _serve_board_action(self) -> None:
-        """Run one maintenance action of the panel dashboard. This machine only."""
-        from .board_api import run_action
-
-        if not _local_request(self.client_address[0], self.headers.get("Host")):
-            self._json_response({"error": "This route answers requests from this machine only."}, status=403)
-            return
-        content_length = self._content_length()
-        if content_length is None:
-            return
-        if content_length > 100_000:
-            self.send_error(413, "Payload too large")
-            return
-        try:
-            data = json.loads(self.rfile.read(content_length) or b"{}")
-        except (json.JSONDecodeError, OSError):
-            self._json_response({"error": "Invalid JSON"}, status=400)
-            return
-        if self._reject_scoped_action(data):
-            return
-        status, payload = run_action(self._db, self.server.root, data, self.server.server_address[1])
-        self._json_response(payload, status=status)
-
-    def _json_response(self, data, indent=None, status: int = 200) -> None:
-        """Send a JSON response."""
-        self._json_response_raw(json.dumps(data, indent=indent).encode("utf-8"), status=status)
-
-
-    def _qs_float(self, key: str, default: float) -> float:
-        """Parse a float from query string, returning default if absent."""
-        v = self._qs_get(key)
-        return float(v) if v else default
-
-    def _qs_float_opt(self, key: str) -> float | None:
-        """Parse an optional float from query string, returning None if absent."""
-        v = self._qs_get(key)
-        return float(v) if v else None
-
-    def _json_response_raw(self, body: bytes, status: int = 200) -> None:
-        """Send pre-encoded JSON bytes as a response, gzipped when the client allows it."""
-        self._send_body(body, "application/json", status=status)
-
-    def _wants_gzip(self) -> bool:
-        return _accepts_gzip(self.headers.get("Accept-Encoding"))
-
-    def _send_body(
-        self,
-        body: bytes,
-        content_type: str,
-        *,
-        status: int = 200,
-        cache_control: str | None = None,
-        etag: str | None = None,
-        memo_key: str | None = None,
-        memo_token: object = None,
-        cors: bool = True,
-    ) -> None:
-        """Write a whole body with Content-Length, gzipped for clients that accept it.
-
-        With *memo_key* the compressed form is reused until *memo_token* changes.
-        """
-        gz = len(body) > _GZIP_MIN_BYTES and self._wants_gzip()
-        if (
-            etag is None
-            and cache_control != "no-store"
-            and status == 200
-            and content_type == "application/json"
-            and len(body) > _GZIP_MIN_BYTES
-            and getattr(self, "command", "") == "GET"
-        ):
-            # A polled endpoint whose answer did not change costs a 304, not the body.
-            etag = '"' + hashlib.blake2b(body, digest_size=12).hexdigest() + ("-gz" if gz else "") + '"'
-            if self._check_etag(etag):
-                return
-        packed = None
-        if gz:
-            packed = _GZIP_MEMO.get(memo_key, memo_token, body) if memo_key else _gzip_bytes(body, 5)
-        payload = packed if packed is not None else body
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        if packed is not None:
-            self.send_header("Content-Encoding", "gzip")
-        origin = self._cors_origin() if cors else None
-        self.send_header("Vary", "Origin, Accept-Encoding" if origin else "Accept-Encoding")
-        self.send_header("Content-Length", str(len(payload)))
-        if etag:
-            self.send_header("ETag", etag)
-        if cache_control:
-            self.send_header("Cache-Control", cache_control)
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-        self.end_headers()
-        self.wfile.write(payload)
-
     def log_message(self, fmt, *args) -> None:
         # The stream and the telemetry posts arrive every few seconds; a log line each is noise.
         msg = fmt % args if args else fmt
-        if "/api/stream" in str(msg) or '"POST /v1/' in str(msg) or '"POST /api/hooks' in str(msg):
+        if '"GET /api/live/stream' in str(msg) or '"POST /v1/' in str(msg) or '"POST /api/hooks' in str(msg):
             return
         print(f"  {msg}", file=sys.stderr)
-
-
-# ─── HTTP server ─────────────────────────────────────────────────
-
-
-# While the daemon collects its first snapshot, its port is already open: these routes are
-# served at once, every other request waits for the snapshot up to READY_WAIT_S.
-_TAKEN_WHILE_STARTING = frozenset({"/api/hooks", "/v1/metrics", "/v1/logs", "/v1/traces"})
-_SERVED_WHILE_STARTING = frozenset({
-    "/", "/index.html", "/favicon.ico", "/api/live/capabilities", "/api/live/stream",
-    "/api/board/agent/flow", "/api/session-evidence",
-})
-# Under the handler's 30 s socket timeout, so the client gets the answer.
-READY_WAIT_S = 20.0
-
-
-# Requests run on four threads that live as long as the server: a thread's first read
-# of the history attaches and copies the project stores, 150 ms here, and a thread per
-# request paid that on every request. A request that finds no idle worker when the
-# pool is full gets a thread of its own, so streaming clients never hold the others up.
-HTTP_WORKERS = 4
 
 
 class _DashboardHTTPServer(ThreadingHTTPServer):
@@ -1576,23 +330,7 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
             persistence.runtime_sample = self._node_runtime_sample
 
     def _node_runtime_sample(self) -> dict:
-        """Only report operational measurements; paths, command lines and error text stay local."""
-        from .board_api import _ingester_rows, _self_usage, _sink_section
-        from .node_views import agent_inventory
-
-        usage = _self_usage()
-        otel = self.otel_receiver.status()
-        diagnostics = (getattr(self.store.snapshot, "live_monitor", None) or {}).get("diagnostics", {})
-        return {
-            "agents": agent_inventory(getattr(self.store, "live_hub", None), time.time()),
-            "daemon": {"cpu_percent": usage.get("daemon_cpu_percent"), "rss_bytes": usage.get("daemon_memory_rss_bytes"),
-                       "threads": usage.get("threads"), "uptime_s": usage.get("uptime_s")},
-            "sink": _sink_section(self.store),
-            "otel_receiver": {k: otel.get(k) for k in ("metrics_received", "events_received", "errors", "dropped", "last_receive_at", "active")},
-            "collectors": [{"name": name, "status": d.get("status"), "mode": d.get("mode")}
-                           for name, d in diagnostics.items() if isinstance(d, dict)],
-            "ingesters": [{k: row.get(k) for k in ("name", "status", "last_ok", "last_poll")} for row in _ingester_rows(self.ingesters, [])],
-        }
+        return node_runtime_sample(self.store, self.otel_receiver, self.ingesters)
 
     def attach_live_ingesters(self) -> None:
         sources = getattr(self.store, "live_sources", None)
@@ -1602,10 +340,7 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
             sources.attach_ingester(ingester)
 
     def _live_health(self) -> tuple[dict, dict]:
-        from .board_api import compute_health, machine_alerts, machine_processes
-
-        health = compute_health(
-            self.store,
+        return live_health_and_machine(
             self.store,
             otel=self.otel_receiver,
             ingesters=self.ingesters,
@@ -1614,32 +349,6 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
             http_reads=self.health_reads,
             http_writes=self.health_writes,
         )
-        # A monitor's token/file estimates are not queryable historical activity.
-        monitor = health.get("monitor") or {}
-        monitor["per_tool"] = [
-            {
-                key: value
-                for key, value in row.items()
-                if key in {
-                    "tool", "label", "sessions", "pids", "inbound_bps", "outbound_bps",
-                    "cpu_pct", "cpu_peak", "workspaces", "last_seen",
-                }
-            }
-            for row in monitor.get("per_tool") or []
-        ]
-        snapshot = self.store.snapshot
-        processes = machine_processes(snapshot)
-        for process in processes:
-            process["cmdline"] = process["cleanup_cmd"] = None
-        machine = {
-            "generated_at": health["generated_at"],
-            "monitor": monitor,
-            "processes": processes,
-            "cpu_per_core": list(getattr(snapshot, "cpu_per_core", None) or []),
-            "cpu_cores": getattr(snapshot, "cpu_cores", None),
-            "alerts": machine_alerts(processes),
-        }
-        return health, machine
 
     def process_request(self, request, client_address) -> None:
         """Hand the request to an idle worker, a new worker while the pool has room, else a thread."""
@@ -1686,91 +395,3 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         for _ in range(idle):
             self._requests.put(None)
         super().server_close()
-
-
-# ─── Inline HTML dashboard ───────────────────────────────────────
-
-import json as _json
-
-from ..tools import (
-    HOST_LABELS as _REG_HOST_LABELS,
-)
-from ..tools import (
-    TOOL_COLORS as _REG_COLORS,
-)
-from ..tools import (
-    TOOL_ICONS as _REG_ICONS,
-)
-from ..tools import (
-    TOOL_RELATIONSHIPS as _REG_RELATIONSHIPS,
-)
-from ..tools import (
-    TOOL_VENDORS as _REG_TOOL_VENDORS,
-)
-from ..tools import (
-    VENDOR_COLORS as _REG_VENDOR_COLORS,
-)
-from ..tools import (
-    VENDOR_LABELS as _REG_VENDOR_LABELS,
-)
-
-
-def _make_js_colors() -> str:
-    """Generate the JavaScript COLORS const from the registry."""
-    return f"window.COLORS = {_json.dumps(_REG_COLORS)};"
-
-
-def _make_js_icons() -> str:
-    """Generate the JavaScript ICONS const from the registry."""
-    return f"window.ICONS = {_json.dumps(_REG_ICONS)};"
-
-
-def _make_js_taxonomy() -> str:
-    """Generate vendor/host label and color constants."""
-    return (
-        f"window.VENDOR_LABELS = {_json.dumps(_REG_VENDOR_LABELS)};\n"
-        f"window.VENDOR_COLORS = {_json.dumps(_REG_VENDOR_COLORS)};\n"
-        f"window.HOST_LABELS = {_json.dumps(_REG_HOST_LABELS)};\n"
-        f"window.TOOL_VENDORS = {_json.dumps(_REG_TOOL_VENDORS)};\n"
-        f"window.TOOL_RELATIONSHIPS = {_json.dumps(_REG_RELATIONSHIPS)};"
-    )
-
-
-_TEMPLATE_CACHE: str | None = None
-_TEMPLATE_MTIME: float = 0.0
-_DEV_MODE: bool = False
-
-
-def _load_template() -> str:
-    """Load the HTML template from dist/index.html (built Vite output).
-
-    Auto-builds if npm is available and dist/ is missing.
-    Automatically reloads when the file changes on disk (after rebuild).
-    """
-    global _TEMPLATE_CACHE, _TEMPLATE_MTIME
-    ui_dist_path = Path(__file__).parent / "ui" / "dist" / "index.html"
-    dist_path = Path(__file__).parent / "dist" / "index.html"
-
-    # Pick whichever exists (prefer dist_path in prod, ui_dist_path in dev)
-    if _DEV_MODE and ui_dist_path.exists():
-        tpl_path = ui_dist_path
-    elif dist_path.exists():
-        tpl_path = dist_path
-    elif ui_dist_path.exists():
-        tpl_path = ui_dist_path
-    else:
-        tpl_path = None
-
-    # The server never builds: a build rewrites tracked files and blocks the request.
-    if tpl_path is None:
-        raise FileNotFoundError(
-            "Dashboard not found. Run 'aictl build-ui'."
-        )
-
-    # Reload if file changed on disk (one stat() call — negligible cost)
-    mtime = tpl_path.stat().st_mtime
-    if _TEMPLATE_CACHE is None or mtime != _TEMPLATE_MTIME:
-        _TEMPLATE_CACHE = tpl_path.read_text(encoding="utf-8")
-        _TEMPLATE_MTIME = mtime
-
-    return _TEMPLATE_CACHE

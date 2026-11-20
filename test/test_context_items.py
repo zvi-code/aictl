@@ -20,7 +20,7 @@ from test_board_facts import (
     write_lines,
 )
 
-from aictl.dashboard import board_api
+from aictl.dashboard import session_details
 from aictl.ingesters import context_items, context_items_backfill
 from aictl.ingesters.context_items import Item, claude_attachment, copilot_system_prompt
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
@@ -69,7 +69,7 @@ def _context_facts(db, sid, until=float("inf")):
 
 
 def _agent_context(db, sid, agent, root):
-    return board_api._agent_context(None, sid, agent, root, facts=_context_facts(db, sid))
+    return session_details._agent_context(None, sid, agent, root, facts=_context_facts(db, sid))
 
 
 def attachment(ago: float, att: dict, **extra) -> dict:
@@ -263,7 +263,7 @@ class TestClaudeIngest:
     def test_before_the_compaction_the_older_items_count(self, db, tmp_path):
         _claude_session(tmp_path)
         _ingest(db, tmp_path)
-        rows = board_api._context_item_rows(None, SESSION, "", True, NOW - 880, facts=_context_facts(db, SESSION, NOW - 880))
+        rows = session_details._context_item_rows(None, SESSION, "", True, NOW - 880, facts=_context_facts(db, SESSION, NOW - 880))
         assert ("skills", "backlog", "", rows[[r[1] for r in rows].index("backlog")][3]) in rows
         assert ("mcp_instructions", "beta", "", 20) in rows
 
@@ -437,7 +437,7 @@ def _breakdown(db, sid="s", tool="claude-code", at_ts=1e9, total=None, **kw):
     if total is None:
         total = facts["call"][-1][1]
     args = {"limit": None, "tool_tokens": None, "split": None, **kw}
-    return board_api._context_breakdown(None, sid, "", True, tool=tool, at_ts=at_ts,
+    return session_details._context_breakdown(None, sid, "", True, tool=tool, at_ts=at_ts,
                                         total=total, facts=facts, **args)
 
 
@@ -549,14 +549,14 @@ def test_the_upsert_keeps_the_newest_record(db):
 
 
 def test_kinds_are_the_api_values():
-    assert board_api._CLAUDE_PARTS["memory_file"] == ("memory_files", "Memory files")
+    assert session_details._CLAUDE_PARTS["memory_file"] == ("memory_files", "Memory files")
     assert {
         context_items.MEMORY_FILE,
         context_items.SKILLS,
         context_items.MCP_INSTRUCTIONS,
         context_items.CUSTOM_AGENTS,
         context_items.TOOLS_LISTED,
-    } == set(board_api._CLAUDE_PARTS)
+    } == set(session_details._CLAUDE_PARTS)
     from aictl.utils import BYTES_PER_TOKEN, estimate_tokens, estimate_tokens_from_size
 
     assert BYTES_PER_TOKEN == 4 and estimate_tokens_from_size(9) == 3 == estimate_tokens("é" * 4 + "x")
@@ -703,7 +703,7 @@ def test_the_latest_report_is_served_and_gives_the_limit(db, tmp_path):
     assert [i["tokens"] for i in parts["mcp_tools"]["items"]] == [1100, 156]
     # The model of the report is not the model of the calls: its limit is not used.
     assert b["limit"] is None
-    b = board_api._context_breakdown(
+    b = session_details._context_breakdown(
         None,
         SESSION,
         "",

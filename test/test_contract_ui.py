@@ -14,7 +14,7 @@ def ui_fixtures():
     if not shutil.which("node"):
         pytest.skip("Node is required to load the dashboard's JavaScript fixtures")
     data = subprocess.run(
-        ["node", "--experimental-strip-types", r"scripts\contract-fixtures.mjs"],
+        ["node", "--experimental-strip-types", str(UI / "scripts" / "contract-fixtures.mjs")],
         cwd=UI,
         check=True,
         capture_output=True,
@@ -86,7 +86,7 @@ def test_synthetic_live_fixtures(ui_fixtures):
     _check_fixture(
         VALIDATORS["shared"]["live-capabilities"], capabilities,
         missing=(
-            "$.contract_version", "$.legacy_stream", "$.datapoint_catalog",
+            "$.contract_version", "$.datapoint_catalog",
             "$.history", "$.configuration", "$.sequence",
         ),
     )

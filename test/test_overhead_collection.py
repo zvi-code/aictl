@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aictl.monitoring.pace import ACTIVITY_WINDOW_S, IDLE_FACTOR, Pace
-from aictl.orchestrator import SnapshotPersistence, SnapshotSerializer, SnapshotState, _cached
+from aictl.orchestrator import SnapshotPersistence, _cached
 from aictl.platforms import _DEFAULT_TOML, AictlConfig, cap_log_file, load_config
 
 
@@ -104,39 +104,6 @@ def test_agent_file_cache_validates_by_stat_and_returns_copies(tmp_path, monkeyp
     f.write_text("{}\n{}\n")
     tt._parse_agent_file_cached(f)
     assert len(calls) == 2
-
-
-def test_snapshot_serialized_only_when_read():
-    """With no client the 2.7 MB snapshot must not be built every refresh."""
-    built = []
-
-    class Counting(SnapshotSerializer):
-        @staticmethod
-        def serialize_snapshot(snap):
-            built.append(snap)
-            return b"{}"
-
-    state = SnapshotState()
-    snap = SimpleNamespace(
-        timestamp=1.0,
-        total_files=0,
-        total_tokens=0,
-        total_cpu=0,
-        total_mem_mb=0,
-        total_mcp_servers=0,
-        total_memory_tokens=0,
-        total_memory_entries=0,
-        total_live_sessions=0,
-        total_live_estimated_tokens=0,
-        total_live_inbound_rate_bps=0,
-        total_live_outbound_rate_bps=0,
-        tools=[],
-    )
-    state.update(snap, Counting())
-    assert built == []
-    assert state.snapshot_json_bytes == b"{}"
-    assert state.snapshot_json_bytes == b"{}"
-    assert len(built) == 1
 
 
 def test_identical_telemetry_is_not_stored_again():
@@ -333,9 +300,10 @@ def _copilot_source(path: Path, rows: int) -> None:
 
 
 def test_copilot_store_ingest_is_batched_and_resumes_after_restart(tmp_path):
+    from core_store_fakes import message_facts, written
+
     from aictl.ingesters.copilot_session_store import POLL_BATCH_ROWS, CopilotSessionStoreIngester
     from aictl.state_file import StateFile
-    from core_store_fakes import message_facts, written
 
     source = tmp_path / "session-store.db"
     _copilot_source(source, POLL_BATCH_ROWS + 5)
@@ -350,8 +318,9 @@ def test_copilot_store_ingest_is_batched_and_resumes_after_restart(tmp_path):
 
 
 def test_copilot_store_ingest_copies_no_text_in_metadata_mode(tmp_path):
-    from aictl.ingesters.copilot_session_store import CopilotSessionStoreIngester
     from core_store_fakes import message_facts, written
+
+    from aictl.ingesters.copilot_session_store import CopilotSessionStoreIngester
 
     source = tmp_path / "session-store.db"
     _copilot_source(source, 3)

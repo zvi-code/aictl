@@ -8,7 +8,8 @@ from urllib.parse import parse_qs
 
 from ..stores import UnresolvedObservationsError, has_history
 from ..stores.base import StoreError
-from .board_api import BoardRequestError, compute_board, parse_filters
+from .board_filters import BoardRequestError, parse_filters
+from .board_projection import compute_board
 from .history_scope import ScopeError, label, parse_scope
 from .projections.history import HistoryScope
 

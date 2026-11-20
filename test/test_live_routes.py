@@ -31,7 +31,7 @@ def test_live_capabilities_are_cheap_and_always_enabled():
     request._do_GET()
     value = json.loads(request.wfile.getvalue())
     assert request.status == 200 and value["enabled"] is True
-    assert value["stream"] == "/api/live/stream" and value["legacy_stream"] == "/api/stream"
+    assert value["stream"] == "/api/live/stream" and "legacy_stream" not in value
 
 
 def test_incremental_sse_writes_baseline_frames_and_forwards_resume_controls():
@@ -77,14 +77,14 @@ def test_live_payloads_keep_existing_loopback_access_rule():
 
 @pytest.mark.parametrize("route", ["context", "board"])
 def test_unresolved_history_is_a_structured_conflict_not_a_server_error(monkeypatch, caplog, route):
-    from aictl.dashboard import board_api, history_board
+    from aictl.dashboard import context_projection, history_board
     from aictl.kusto.observations import UnresolvedObservationsError
 
     def unresolved(*_args, **_kwargs):
         raise UnresolvedObservationsError(("requests",))
 
     if route == "context":
-        monkeypatch.setattr(board_api, "context_bytes", unresolved)
+        monkeypatch.setattr(context_projection, "context_bytes", unresolved)
     else:
         monkeypatch.setattr(history_board, "read_board", unresolved)
     request = handler("/api/board/context" if route == "context" else "/api/history/board")
@@ -104,12 +104,12 @@ def test_unresolved_history_is_a_structured_conflict_not_a_server_error(monkeypa
 
 
 def test_context_still_reports_unexpected_errors_as_server_errors(monkeypatch):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import context_projection
 
     def failed(*_args, **_kwargs):
         raise RuntimeError("unexpected context failure")
 
-    monkeypatch.setattr(board_api, "context_bytes", failed)
+    monkeypatch.setattr(context_projection, "context_bytes", failed)
     request = handler("/api/board/context")
     request.server.store = SimpleNamespace(_db=object())
     request._serve_board_context()

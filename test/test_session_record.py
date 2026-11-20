@@ -17,8 +17,9 @@ import pytest
 from kusto_replay import NOW
 from test_board_facts import c_assistant, c_tool_result, c_tool_use, claude_path, write_lines
 
-from aictl.dashboard import board_api, session_record
-from aictl.dashboard.board_api import agent_detail, handle_get
+from aictl.dashboard import board_projection, session_record
+from aictl.dashboard.board_routes import handle_get
+from aictl.dashboard.session_details import agent_detail
 from aictl.dashboard.session_record import PullRequestFinder, is_recorded_artifact, is_text_file, search_sessions
 from aictl.ingesters import session_artifacts, tool_size_backfill
 from aictl.ingesters.session_artifacts import SessionArtifactIndexer, scan_folder
@@ -43,9 +44,9 @@ def _fresh_memos(monkeypatch):
     session_record._attributed.clear()
     # No test may run the real gh: an answer from a fake finder only.
     monkeypatch.setattr(session_record, "PR_FINDER", PullRequestFinder(which=lambda name: None, background=False))
-    for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo):
+    for memo in (board_projection._facts_memo, board_projection._sources_memo, board_projection._disk_prompts_memo):
         memo.clear()
-    monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
+    monkeypatch.setattr(board_projection, "_process_start", lambda pid: 0.0)
     monkeypatch.setattr(session_record, "time", SimpleNamespace(time=lambda: NOW, monotonic=time.monotonic))
 
 

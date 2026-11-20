@@ -43,7 +43,7 @@ def test_native_process_snapshot_includes_our_parent():
 
 
 def test_board_parent_lookups_share_one_windows_snapshot(windows, monkeypatch):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import runtime_health
 
     calls = []
 
@@ -52,14 +52,14 @@ def test_board_parent_lookups_share_one_windows_snapshot(windows, monkeypatch):
         return {10: 1, 20: 10}
 
     monkeypatch.setattr(P, "windows_process_parents", parents)
-    monkeypatch.setattr(board_api, "_parent_pid_snapshot", None)
-    monkeypatch.setattr(board_api, "time", types.SimpleNamespace(monotonic=lambda: 10.0))
-    assert board_api._parent_pid(10) == 1
-    assert board_api._parent_pid(20) == 10
-    assert board_api._parent_pid(30) is None
+    monkeypatch.setattr(runtime_health, "_parent_pid_snapshot", None)
+    monkeypatch.setattr(runtime_health, "time", types.SimpleNamespace(monotonic=lambda: 10.0))
+    assert runtime_health._parent_pid(10) == 1
+    assert runtime_health._parent_pid(20) == 10
+    assert runtime_health._parent_pid(30) is None
     assert len(calls) == 1
-    monkeypatch.setattr(board_api, "time", types.SimpleNamespace(monotonic=lambda: 10.0 + board_api.PARENT_PID_TTL_S))
-    assert board_api._parent_pid(20) == 10
+    monkeypatch.setattr(runtime_health, "time", types.SimpleNamespace(monotonic=lambda: 10.0 + runtime_health.PARENT_PID_TTL_S))
+    assert runtime_health._parent_pid(20) == 10
     assert len(calls) == 2
 
 

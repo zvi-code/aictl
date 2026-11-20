@@ -56,12 +56,12 @@ def test_the_board_waits_for_the_first_snapshot_then_answers(starting, monkeypat
     base, srv, store = starting
     monkeypatch.setattr(web_server, "READY_WAIT_S", 0)
     with pytest.raises(urllib.error.HTTPError) as err:
-        urllib.request.urlopen(base + "/api/snapshot", timeout=5)
+        urllib.request.urlopen(base + "/api/board/terminal/resources", timeout=5)
     assert err.value.code == 503 and err.value.headers["Retry-After"] == "2"
     assert json.loads(err.value.read())["starting"] is True  # the board says it is starting
     store.update(DashboardSnapshot(timestamp=time.time(), root="/tmp", tools=[], sessions=[]))
     srv.ready.set()
-    with urllib.request.urlopen(base + "/api/snapshot", timeout=5) as resp:
+    with urllib.request.urlopen(base + "/api/board/terminal/resources", timeout=5) as resp:
         assert resp.status == 200
 
 
@@ -78,12 +78,12 @@ def test_the_wait_stays_under_the_socket_timeout():
 
 
 def test_session_history_does_not_wait_for_machine_snapshot(starting, monkeypatch):
-    from aictl.dashboard import board_api, session_evidence
+    from aictl.dashboard import board_projection, session_evidence
 
     base, _, _store = starting
     monkeypatch.setattr(web_server, "READY_WAIT_S", 0)
     clock = SimpleNamespace(**(vars(time) | {"time": lambda: 1_800_000_000.0}))
-    monkeypatch.setattr(board_api, "time", clock)
+    monkeypatch.setattr(board_projection, "time", clock)
     monkeypatch.setattr(session_evidence, "time", clock)
     from aictl.stores import Store
     from aictl.stores.testing import FixtureReader

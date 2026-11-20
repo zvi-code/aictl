@@ -26,19 +26,9 @@ from typing import Any
 from ..platforms import IS_WINDOWS
 from ..records import _session_uuid
 from ..stores.base import StoreError
-from .board_api import (
-    MAX_DETAIL_ROWS,
-    SPARK_POINTS,
-    TITLE_CHARS,
-    Filters,
-    _activity_facts,
-    _basename,
-    _Board,
-    _fallback_rows,
-    _label,
-    _one_line,
-    _short,
-)
+from .board_filters import SPARK_POINTS, Filters
+from .board_projection import _activity_facts, _Board, _fallback_rows
+from .projection_utils import MAX_DETAIL_ROWS, TITLE_CHARS, _basename, _label, _one_line, _short
 from .projections.history import HistoryScope
 
 log = logging.getLogger(__name__)
@@ -405,7 +395,7 @@ def session_commits(db: Any, session: dict, sid: str, *, history: HistoryScope |
 def _artifact_sids(sid: str, session: dict) -> list[str]:
     """The ids whose artifacts are a session's: its own, its stored id and its tool UUID."""
     if sid.startswith("["):
-        from .board_api import _session_uuid as scoped_uuid
+        from .projection_utils import _session_uuid as scoped_uuid
 
         uuid = scoped_uuid(sid)
     else:

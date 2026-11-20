@@ -13,12 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from aictl.dashboard.web_server import (
-    _LOCAL_ONLY_ROUTES,
-    _DashboardHandler,
-    _local_request,
-    _names_another_machine,
-)
+from aictl.dashboard.http_request import _local_request, _names_another_machine
+from aictl.dashboard.web_server import _LOCAL_ONLY_ROUTES, _DashboardHandler
 from aictl.health import OperationStats
 from aictl.observe.sessions import ArtifactRefused, confine
 

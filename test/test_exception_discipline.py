@@ -269,7 +269,6 @@ EXPECTED_BLE_S110_IGNORED_FILES = frozenset(
         "src/aictl/dashboard/tui.py",
         "src/aictl/dashboard/web_server.py",
         "src/aictl/dashboard/html_report.py",
-        "src/aictl/dashboard/api_handlers.py",
         "src/aictl/monitoring/**",
         "src/aictl/client.py",
         "src/aictl/memory.py",

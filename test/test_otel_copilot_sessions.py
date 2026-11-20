@@ -17,10 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from aictl.dashboard import board_api
-from aictl.dashboard.board_api import agent_detail, agent_flow, compute_health
+from aictl.dashboard import board_projection, runtime_health
+from aictl.dashboard.flow_projection import agent_flow
 from aictl.dashboard.otel_receiver import OtelReceiver
 from aictl.dashboard.projections.history import HistoryScope
+from aictl.dashboard.runtime_health import compute_health
+from aictl.dashboard.session_details import agent_detail
 from aictl.ingesters.call_facts import copilot_call_key
 from aictl.monitoring.tool_config import copilot_cli_otel_endpoint
 from aictl.stores import Store
@@ -388,14 +390,14 @@ class TestCopilotCliEndpoint:
             assert "ignores" in got["text"]
 
     def test_the_health_payload_reports_it(self, monkeypatch, kusto_store):
-        monkeypatch.setattr(board_api, "_otel_setup", lambda port: {"copilot-cli": copilot_cli_otel_endpoint(port, {})})
+        monkeypatch.setattr(runtime_health, "_otel_setup", lambda port: {"copilot-cli": copilot_cli_otel_endpoint(port, {})})
         payload = compute_health(kusto_store, None, now=NOW, port=8597)
         assert payload["pipeline"]["otel_setup"]["copilot-cli"]["status"] == "missing"
 
     def test_the_settings_catalog_says_copilot_cli_ignores_it(self):
         import yaml
 
-        catalog = yaml.safe_load((Path(board_api.__file__).parents[1] / "data" / "settings-catalog.yaml").read_text(encoding="utf-8"))
+        catalog = yaml.safe_load((Path(board_projection.__file__).parents[1] / "data" / "settings-catalog.yaml").read_text(encoding="utf-8"))
         entries = [
             e
             for tool in catalog["tools"].values()

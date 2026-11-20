@@ -15,22 +15,27 @@ from types import SimpleNamespace
 import pytest
 from kusto_replay import NOW, SeededStore
 
-from aictl.dashboard import board_api
-from aictl.dashboard.board_api import (
-    Filters,
-    agent_detail,
-    compute_board,
-    coverage_rows,
-    error_detail,
-    file_detail,
-    find_loops,
-    is_test_command,
-    mask_secrets,
-    parse_filters,
-    prompt_detail,
-    run_action,
-    tool_detail,
+import aictl.data.model_pricing as model_pricing
+import aictl.ingesters._common as _common
+from aictl.dashboard import (
+    artifact_details,
+    board_actions,
+    board_filters,
+    board_projection,
+    board_routes,
+    context_projection,
+    flow_projection,
+    projection_utils,
+    runtime_health,
+    session_details,
+    skill_inventory,
 )
+from aictl.dashboard.artifact_details import error_detail, file_detail, prompt_detail, tool_detail
+from aictl.dashboard.board_actions import run_action
+from aictl.dashboard.board_filters import Filters, parse_filters
+from aictl.dashboard.board_projection import compute_board, coverage_rows, find_loops, is_test_command
+from aictl.dashboard.projection_utils import mask_secrets
+from aictl.dashboard.session_details import agent_detail
 from aictl.data.model_pricing import cost_usd, request_cost_usd
 
 DAY = 86400.0
@@ -214,28 +219,28 @@ def seed(db: SeededStore, now: float) -> None:
 def _no_state_from_other_tests():
     """The module keeps short-lived answers. No test may see one from another test."""
     for memo in (
-        board_api._facts_memo,
-        board_api._sources_memo,
-        board_api._disk_prompts_memo,
+        board_projection._facts_memo,
+        board_projection._sources_memo,
+        board_projection._disk_prompts_memo,
     ):
         memo.clear()
-    board_api._self_memo[:] = [0.0, None]
+    runtime_health._self_memo[:] = [0.0, None]
 
 
 @pytest.fixture(autouse=True)
 def _no_real_process_times(monkeypatch):
     """The process ids in these tests may be real processes of this machine."""
-    monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
+    monkeypatch.setattr(board_projection, "_process_start", lambda pid: 0.0)
 
 
 @pytest.fixture(autouse=True)
 def board_clock(monkeypatch):
-    from aictl.dashboard import history_board, web_server
+    from aictl.dashboard import history_board
 
     frozen = SimpleNamespace(**(vars(time) | {"time": lambda: NOW}))
-    monkeypatch.setattr(board_api, "time", frozen)
-    monkeypatch.setattr(history_board, "time", frozen)
-    monkeypatch.setattr(web_server, "time", frozen)
+    for module in (artifact_details, board_projection, board_routes, context_projection,
+                   flow_projection, history_board, runtime_health, session_details):
+        monkeypatch.setattr(module, "time", frozen)
     monkeypatch.setitem(globals(), "time", frozen)
     return frozen
 
@@ -293,7 +298,7 @@ class TestTotals:
     def test_saved_usd(self, db):
         payload = _board(db)
         sonnet = 2400 * (3.0 - 0.3) / 1e6
-        gpt_rate = board_api.resolve_pricing(GPT)[1]
+        gpt_rate = model_pricing.resolve_pricing(GPT)[1]
         gpt_saved = 60 * (gpt_rate.input_per_m - gpt_rate.cache_read_per_m) / 1e6
         assert payload["saved_usd"] == pytest.approx(sonnet + gpt_saved, abs=1e-5)
 
@@ -521,7 +526,7 @@ class TestFilters:
         assert len(payload["prompts"]) == 3
         assert payload["skills"][0]["uses"] == 3
         assert payload["changes"]["totals"]["edits"] == 3
-        options = [p for p in payload["options"]["projects"] if board_api.project_key(p["id"]) == "c:/review/repo"]
+        options = [p for p in payload["options"]["projects"] if _common.project_key(p["id"]) == "c:/review/repo"]
         assert len(options) == 1 and options[0]["agents"] == 3
 
     def test_windows_project_filter_also_applies_to_previous_window(self, db):
@@ -601,11 +606,11 @@ class TestFilters:
         f = parse_filters("since=10&until=20&tool=a,b&project=x&model=m&status=active&q=hi&buckets=5", 100.0)
         assert (f.since, f.until, f.tools, f.project, f.model, f.status, f.q, f.buckets) == (10.0, 20.0, ("a", "b"), "x", "m", "active", "hi", 5)
         assert parse_filters("", 100.0).until == 100.0
-        assert parse_filters("buckets=9999", 100.0).buckets == board_api.MAX_BUCKETS
+        assert parse_filters("buckets=9999", 100.0).buckets == board_filters.MAX_BUCKETS
 
     @pytest.mark.parametrize("query", ["since=abc", "status=nope", "since=20&until=10", "buckets=0", "since=nan"])
     def test_parse_rejects(self, query):
-        with pytest.raises(board_api.BoardRequestError):
+        with pytest.raises(board_filters.BoardRequestError):
             parse_filters(query, 100.0)
 
 
@@ -625,7 +630,7 @@ class TestNulls:
         conn = db
         _request(conn, NOW - 3 * DAY, "quiet", "claude-code", "/p/alpha", SONNET, i=1)
 
-        board_api._facts_memo.clear()
+        board_projection._facts_memo.clear()
         row = _agent(_board(db), "quiet")
         assert row["tool_calls"] == 0
         assert row["failures"] == 0
@@ -733,7 +738,7 @@ class TestRowMeaning:
         _request(conn, NOW - 3 * DAY, "perm", "copilot-desktop", "/p/x", SONNET, i=1)
         _call(conn, NOW - 3 * DAY, "perm", "copilot-desktop", "/p/x", "permission:read", "x", confirm="approved")
 
-        board_api._facts_memo.clear()
+        board_projection._facts_memo.clear()
         payload = _board(db)
         assert payload["coverage"]["rows"][19]["key"] == "tool_calls"
         assert payload["coverage"]["rows"][19]["cells"]["copilot-desktop"]["state"] == "No data"
@@ -787,7 +792,7 @@ class TestUnreportedFields:
         _prompt(conn, NOW - 3 * DAY, "other", "copilot-desktop", "/p/d", text="hi")
         _insert(conn, "session_usage", session_id="app", tool="copilot-desktop", input_tokens=500, output_tokens=50, last_activity_at=NOW - 3 * DAY, project_path="/p/d")
 
-        board_api._facts_memo.clear()
+        board_projection._facts_memo.clear()
         payload = _board(db)
         row = _agent(payload, "app")
         assert row["estimated"] is True
@@ -963,11 +968,11 @@ class TestSelfMemo:
         def broken():
             raise OSError("no process table")
 
-        monkeypatch.setattr(board_api, "self_usage", broken)
+        monkeypatch.setattr(runtime_health, "self_usage", broken)
         assert _board(db)["self"]["memory_rss_bytes"] is None
         monkeypatch.undo()
         assert _board(db)["self"]["memory_rss_bytes"] is None
-        board_api._self_memo[0] -= board_api.SELF_TTL_S
+        runtime_health._self_memo[0] -= runtime_health.SELF_TTL_S
         assert _board(db)["self"]["memory_rss_bytes"] > 0
 
 
@@ -1275,7 +1280,7 @@ class TestStatusRules:
 
 
 def _calls(*spec) -> list:
-    return [board_api._Call(float(i), name, target, err, code) for i, (name, target, err, code) in enumerate(spec)]
+    return [board_projection._Call(float(i), name, target, err, code) for i, (name, target, err, code) in enumerate(spec)]
 
 
 BASH_FAIL = ("Bash", "ls /x", 1, 1)
@@ -1567,8 +1572,8 @@ class TestCoverage:
         assert rows[0]["cells"]["aider"]["state"] == "Not checked"
 
     def test_covers_all_survey_rows(self):
-        assert len(board_api._COVERAGE_TABLE) == 27
-        assert all(len(row[3]) == len(board_api._COVERAGE_TOOLS) for row in board_api._COVERAGE_TABLE)
+        assert len(board_projection._COVERAGE_TABLE) == 27
+        assert all(len(row[3]) == len(board_projection._COVERAGE_TOOLS) for row in board_projection._COVERAGE_TABLE)
 
 
 # ─── Detail routes ────────────────────────────────────────────────
@@ -1686,7 +1691,7 @@ class TestActions:
     @pytest.mark.parametrize("confirm", [None, False, "true", 1])
     def test_needs_confirm_true(self, db, monkeypatch, confirm):
         ran = []
-        monkeypatch.setattr(board_api, "_run_cli", lambda *a: ran.append(a))
+        monkeypatch.setattr(board_actions, "_run_cli", lambda *a: ran.append(a))
         status, payload = run_action(db, "/", {"action": "hooks-repair", "confirm": confirm})
         assert status == 400
         assert "confirm" in payload["error"]
@@ -1705,14 +1710,14 @@ class TestActions:
     )
     def test_cli_actions_call_the_cli_command(self, db, monkeypatch, action, argv):
         ran = []
-        monkeypatch.setattr(board_api, "_run_cli", lambda *a: ran.append(a) or {"ok": True, "exit_code": 0, "output": ""})
+        monkeypatch.setattr(board_actions, "_run_cli", lambda *a: ran.append(a) or {"ok": True, "exit_code": 0, "output": ""})
         status, payload = run_action(db, "/", {"action": action, "confirm": True}, 8610)
         assert status == 200
         assert payload["ok"] is True
         assert ran == [argv]
 
     def test_cli_failure_is_an_error_status(self, db, monkeypatch):
-        monkeypatch.setattr(board_api, "_run_cli", lambda *a: {"ok": False, "exit_code": 1, "output": "bad"})
+        monkeypatch.setattr(board_actions, "_run_cli", lambda *a: {"ok": False, "exit_code": 1, "output": "bad"})
         assert run_action(db, "/", {"action": "hooks-repair", "confirm": True})[0] == 500
 
     def test_cli_runs_this_interpreter_without_a_shell(self, monkeypatch):
@@ -1723,9 +1728,9 @@ class TestActions:
             seen["kw"] = kw
             return SimpleNamespace(returncode=0, stdout="token=abcd1234secret", stderr="")
 
-        monkeypatch.setattr(board_api.subprocess, "run", fake_run)
-        result = board_api._run_cli("hooks", "repair")
-        assert seen["argv"][0] == board_api.sys.executable
+        monkeypatch.setattr(board_actions.subprocess, "run", fake_run)
+        result = board_actions._run_cli("hooks", "repair")
+        assert seen["argv"][0] == board_actions.sys.executable
         assert seen["argv"][-2:] == ["hooks", "repair"]
         assert "shell" not in seen["kw"]
         assert "abcd1234secret" not in result["output"]
@@ -1845,7 +1850,8 @@ class TestHttp:
         ],
     )
     def test_detail_routes(self, server, path, code):
-        assert _http(server + path)[0] == code
+        status, body, _ = _http(server + path)
+        assert status == code, body
 
     def test_routes_answer_only_this_machine(self, server):
         for path in ("/api/history/board", "/api/board/agent?id=done"):
@@ -2046,7 +2052,7 @@ class TestSkillDetail:
         monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
         project = self._project_skill(tmp_path)
         self._use(db, project)
-        status, payload = board_api.skill_detail(db, "checker", now=2000.0)
+        status, payload = artifact_details.skill_detail(db, "checker", now=2000.0)
         assert status == 200
         assert payload["uses"] == 1 and payload["total_uses"] == 1
         assert payload["calls"][0]["trigger"] == "agent-invoked"
@@ -2061,19 +2067,19 @@ class TestSkillDetail:
     def test_the_time_range_limits_uses_but_not_the_total(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         self._use(db, tmp_path, ts=1000.0)
-        status, payload = board_api.skill_detail(db, "checker", now=2000.0, since=1500.0, until=2000.0)
+        status, payload = artifact_details.skill_detail(db, "checker", now=2000.0, since=1500.0, until=2000.0)
         assert status == 200
         assert (payload["uses"], payload["total_uses"], payload["calls"]) == (0, 1, [])
 
     def test_a_skill_with_no_file_still_reports_its_uses(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         self._use(db, tmp_path, name="gone")
-        _status, payload = board_api.skill_detail(db, "gone", now=2000.0)
+        _status, payload = artifact_details.skill_detail(db, "gone", now=2000.0)
         assert payload["locations"] == [] and payload["uses"] == 1
 
     @pytest.mark.parametrize("name", ["../../etc/passwd", "..", "a/b", "a\\b", "plugin:../x"])
     def test_a_name_cannot_leave_the_skill_folders(self, name):
-        assert board_api.skill_locations(name, ["/tmp"]) == []
+        assert skill_inventory.skill_locations(name, ["/tmp"]) == []
 
 
 class TestFileExcerpt:
@@ -2087,7 +2093,7 @@ class TestFileExcerpt:
         path = tmp_path / "settings.json"
         path.write_text('{\n"a": 1,\n"b": 2,\n"token": "ghp_abcdefghijklmnopqrstuvwxyz123456",\n"model": "x",\n"c": 3,\n"d": 4,\n"e": 5,\n"f": 6\n}\n')
         self._found(monkeypatch, path)
-        status, payload = board_api.file_excerpt(str(path), 5)
+        status, payload = artifact_details.file_excerpt(str(path), 5)
         assert status == 200
         assert [row["n"] for row in payload["lines"]] == [2, 3, 4, 5, 6, 7, 8]
         assert 'ghp_abcdefghijklmnopqrstuvwxyz123456' not in json.dumps(payload)
@@ -2096,14 +2102,14 @@ class TestFileExcerpt:
         path = tmp_path / "secret.md"
         path.write_text("x")
         self._found(monkeypatch)
-        assert board_api.file_excerpt(str(path), 1)[0] == 403
+        assert artifact_details.file_excerpt(str(path), 1)[0] == 403
 
     @pytest.mark.parametrize("name", ["data.db", "state.vscdb", "key.pem", "noext"])
     def test_a_database_or_other_file_is_refused_even_if_found(self, tmp_path, monkeypatch, name):
         path = tmp_path / name
         path.write_text("x")
         self._found(monkeypatch, path)
-        assert board_api.file_excerpt(str(path), 1)[0] == 403
+        assert artifact_details.file_excerpt(str(path), 1)[0] == 403
 
 
 @pytest.mark.parametrize(
@@ -2116,35 +2122,35 @@ class TestFileExcerpt:
     ],
 )
 def test_who_can_start_a_skill(front, expected):
-    assert board_api._skill_starter(f"---\nname: x\n{front}---\nBody\n").startswith(expected)
+    assert artifact_details._skill_starter(f"---\nname: x\n{front}---\nBody\n").startswith(expected)
 
 
 class TestLoopInputs:
     def test_failures_with_different_inputs_and_no_target_are_not_a_loop(self):
-        calls = [board_api._Call(float(i), "start_session", "", 1, None, f'{{"n": {i}}}') for i in range(8)]
-        assert board_api.find_loops(calls) == []
+        calls = [board_projection._Call(float(i), "start_session", "", 1, None, f'{{"n": {i}}}') for i in range(8)]
+        assert board_projection.find_loops(calls) == []
 
     def test_the_same_failing_input_is_a_loop(self):
-        calls = [board_api._Call(float(i), "start_session", "", 1, None, '{"n": 1}') for i in range(4)]
-        assert board_api.find_loops(calls)[0]["repeats"] == 4
+        calls = [board_projection._Call(float(i), "start_session", "", 1, None, '{"n": 1}') for i in range(4)]
+        assert board_projection.find_loops(calls)[0]["repeats"] == 4
 
 
 def test_the_tool_drawer_keeps_to_the_time_range(db):
     for i in range(5):
         db.insert("tool_invocations", ts=100.0 + i, session_id="w", tool="copilot-cli", tool_name="windowed",
                   dedup_key=f"w{i}")
-    _status, inside = board_api.tool_detail(db, "windowed", 1000.0, 100.0, 103.0)
+    _status, inside = artifact_details.tool_detail(db, "windowed", 1000.0, 100.0, 103.0)
     assert inside["total"] == 3 and len(inside["calls"]) == 3
-    assert board_api.tool_detail(db, "windowed", 1000.0, 500.0, 600.0)[1]["total"] == 0
+    assert artifact_details.tool_detail(db, "windowed", 1000.0, 500.0, 600.0)[1]["total"] == 0
 
 
 def test_cost_uses_the_stored_per_call_figure(db):
     """Repricing the summed tokens lost the cache tier: Claude read $765 against $821."""
     db.insert("requests", ts=1500.0, session_id="priced", tool="claude-code", dedup_key="priced1",
               model="claude-opus-5-5", input_tokens=10, cache_creation_tokens=1000, cost_usd=7.5)
-    payload = board_api.compute_board(db, board_api.parse_filters("since=1000&until=2000&buckets=10&tool=claude-code", 2500.0), None, 2500.0)
+    payload = board_projection.compute_board(db, board_filters.parse_filters("since=1000&until=2000&buckets=10&tool=claude-code", 2500.0), None, 2500.0)
     assert payload["kpis"]["cost_usd"] == 7.5
-    assert board_api.agent_detail(db, "priced", None, 2500.0)[1]["by_model"][0]["cost_usd"] == 7.5
+    assert session_details.agent_detail(db, "priced", None, 2500.0)[1]["by_model"][0]["cost_usd"] == 7.5
 
 
 class TestProjectRoot:
@@ -2199,19 +2205,19 @@ class TestAgentSkillsAndContext:
 
     def test_a_main_agent_lists_its_and_its_subagents_skills(self, db):
         self._seed(db)
-        assert {s["name"]: s["uses"] for s in board_api._agent_skills(board_api.HistoryScope.local(db), "ctx", "ctx", True)} == {"alpha": 2, "beta": 1}
+        assert {s["name"]: s["uses"] for s in session_details._agent_skills(board_projection.HistoryScope.local(db), "ctx", "ctx", True)} == {"alpha": 2, "beta": 1}
 
     def test_a_subagent_lists_only_its_own_skills(self, db):
         self._seed(db)
-        assert {s["name"]: s["uses"] for s in board_api._agent_skills(board_api.HistoryScope.local(db), "ctx", "kid", False)} == {"alpha": 1, "beta": 1}
+        assert {s["name"]: s["uses"] for s in session_details._agent_skills(board_projection.HistoryScope.local(db), "ctx", "kid", False)} == {"alpha": 1, "beta": 1}
 
     def test_context_is_per_call_and_leaves_out_subagents(self, db):
         from aictl.dashboard.projections.history import typed_rows
 
         self._seed(db)
-        history = board_api.HistoryScope.local(db)
+        history = board_projection.HistoryScope.local(db)
         facts = typed_rows(history.read("sequence.context", sid="ctx"))
-        ctx = board_api._agent_context(db, "ctx", "ctx", True, facts=facts)
+        ctx = session_details._agent_context(db, "ctx", "ctx", True, facts=facts)
         assert (ctx["first"], ctx["last"], ctx["peak"], ctx["calls"], ctx["drops"]) == (1000, 2000, 9000, 4, 1)
 
     def test_context_by_agent_summarises_the_main_agent_and_each_subagent(self, db):
@@ -2221,26 +2227,26 @@ class TestAgentSkillsAndContext:
         for i, size in enumerate((12000, 28000, 20000)):
             db.insert("requests", ts=1010.0 + i, session_id="ctx", agent_id="a-sub", tool="copilot-cli",
                       dedup_key=f"a{i}", model="m", input_tokens=10, cache_read_tokens=size - 10)
-        history = board_api.HistoryScope.local(db)
+        history = board_projection.HistoryScope.local(db)
         facts = typed_rows(history.read("sequence.context", sid="ctx"))
-        ctx = board_api._agent_context(db, "ctx", "ctx", True, facts=facts)
+        ctx = session_details._agent_context(db, "ctx", "ctx", True, facts=facts)
         # The seed gives the main agent 1000, 5000, 9000, 2000 and "kid" one call of 77777.
         assert ctx["by_agent"] == [
             {"agent_id": "", "calls": 4, "first": 1000, "last": 2000, "peak": 9000},
             {"agent_id": "a-sub", "calls": 3, "first": 12000, "last": 20000, "peak": 28000},
             {"agent_id": "kid", "calls": 1, "first": 77777, "last": 77777, "peak": 77777},
         ]
-        assert "by_agent" not in board_api._agent_context(db, "ctx", "a-sub", False, facts=facts)
+        assert "by_agent" not in session_details._agent_context(db, "ctx", "a-sub", False, facts=facts)
 
     def test_skill_agents_count_subagents_not_sessions(self, db):
         self._seed(db)
         conn = db
-        skill = board_api.skill_detail(db, "alpha", 2000.0)[1]
+        skill = artifact_details.skill_detail(db, "alpha", 2000.0)[1]
         assert skill["agents"] == 2 and conn is not None
 
     def test_a_plugin_skill_is_found_by_its_short_name(self, db):
         db.insert("skill_uses", dedup_key="p", ts=1.0, session_id="s", tool="claude-code", name="plug:deep")
-        assert board_api.skill_detail(db, "deep", 2.0)[1]["uses"] == 1
+        assert artifact_details.skill_detail(db, "deep", 2.0)[1]["uses"] == 1
 
 
 class TestAgentStatus:
@@ -2263,7 +2269,7 @@ class TestAgentStatus:
         assert _agent(_board(db), "s")["status"] == "running"
 
     def test_an_idle_session_with_no_process_ends_after_the_active_window(self, db):
-        self._session_with(db, "end_turn", board_api.ACTIVE_WINDOW_S + 60)
+        self._session_with(db, "end_turn", board_projection.ACTIVE_WINDOW_S + 60)
         assert _agent(_board(db), "s")["status"] == "ended"
 
     def test_idle_is_a_live_row_but_not_a_running_one(self, db):
@@ -2315,10 +2321,10 @@ class TestProcessOwnership:
         assert not [a for a in payload["agents"] if a["id"].startswith("live:")]
 
     def test_a_process_is_as_old_as_the_operating_system_says(self, monkeypatch):
-        monkeypatch.setattr(board_api, "_process_start", lambda pid: 500.0)
-        assert board_api._earlier_start(900.0, 7) == 500.0
-        monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
-        assert board_api._earlier_start(900.0, 7) == 900.0
+        monkeypatch.setattr(board_projection, "_process_start", lambda pid: 500.0)
+        assert board_projection._earlier_start(900.0, 7) == 500.0
+        monkeypatch.setattr(board_projection, "_process_start", lambda pid: 0.0)
+        assert board_projection._earlier_start(900.0, 7) == 900.0
 
     def test_no_row_for_a_process_in_the_home_folder(self, db):
         snapshot = SimpleNamespace(sessions=[_live("codex-cli:4:1", "codex-cli", str(Path.home()), [4])], tools=[])
@@ -2339,18 +2345,18 @@ class TestStopTargets:
         _request(conn, NOW - 100, "s", "aider", "/p/stop", SONNET, i=1)
 
         snapshot = SimpleNamespace(sessions=[_live("aider:8:1", "aider", "/p/stop", [8, 9], 2000.0)], tools=[])
-        assert board_api.live_pids_of(db, snapshot, "s", NOW) == [8, 9]
+        assert session_details.live_pids_of(db, snapshot, "s", NOW) == [8, 9]
 
     def test_a_placeholder_row_gives_its_processes(self, db):
         snapshot = SimpleNamespace(sessions=[_live("codex-cli:4:1", "codex-cli", "/p/only", [4])], tools=[])
-        assert board_api.live_pids_of(db, snapshot, "live:codex-cli:/p/only", NOW) == [4]
+        assert session_details.live_pids_of(db, snapshot, "live:codex-cli:/p/only", NOW) == [4]
 
     def test_an_ended_session_gives_none(self, db):
         conn = db
         _session(conn, "gone", "aider", "/p/stop", NOW - 3000)
         _request(conn, NOW - 100, "gone", "aider", "/p/stop", SONNET, i=1)
 
-        assert board_api.live_pids_of(db, SimpleNamespace(sessions=[], tools=[]), "gone", NOW) == []
+        assert session_details.live_pids_of(db, SimpleNamespace(sessions=[], tools=[]), "gone", NOW) == []
 
 
 class TestPipedTests:
@@ -2382,13 +2388,13 @@ class TestAgentToolTotals:
         conn = db
         _session(conn, "tt", "aider", "/p/tt", NOW - 3000)
         _request(conn, NOW - 2900, "tt", "aider", "/p/tt", SONNET, i=1)
-        extra = board_api.MAX_DETAIL_ROWS + 5
+        extra = projection_utils.MAX_DETAIL_ROWS + 5
         for k in range(extra):
             _call(conn, NOW - 2000 + k, "tt", "aider", "/p/tt", "Bash", f"echo {k}", duration=10.0)
         _call(conn, NOW - 100, "tt", "aider", "/p/tt", "Read", "a.py", is_error=1)
 
         detail = agent_detail(db, "tt", None, NOW)[1]
-        assert len(detail["tool_calls"]) == board_api.MAX_DETAIL_ROWS
+        assert len(detail["tool_calls"]) == projection_utils.MAX_DETAIL_ROWS
         bash = detail["tool_totals"][0]
         assert (bash["name"], bash["calls"], bash["failed"], bash["total_ms"]) == ("Bash", extra, 0, extra * 10.0)
         assert detail["tool_totals"][1]["failed"] == 1
@@ -2413,10 +2419,10 @@ class TestAgentToolTotals:
 
 
 def test_mcp_server_names_come_from_the_tool_name():
-    assert board_api.mcp_server_of("mcp__github__get_issue") == "github"
-    assert board_api.mcp_server_of("kusto/query") == "kusto"
-    assert board_api.mcp_server_of("mcp_github_get_issue") == ""  # an MCP tool whose server the name cannot tell
-    assert board_api.mcp_server_of("Bash") is None
+    assert projection_utils.mcp_server_of("mcp__github__get_issue") == "github"
+    assert projection_utils.mcp_server_of("kusto/query") == "kusto"
+    assert projection_utils.mcp_server_of("mcp_github_get_issue") == ""  # an MCP tool whose server the name cannot tell
+    assert projection_utils.mcp_server_of("Bash") is None
 
 
 class TestPromptFilesSearch:
@@ -2448,7 +2454,7 @@ class TestPromptFilesSearch:
         (repo / ".github" / "prompts" / "top.prompt.md").write_text("x")
         (project / ".claude" / "commands" / "sub").mkdir(parents=True)
         (project / ".claude" / "commands" / "sub" / "run.md").write_text("x")
-        files, _searched = board_api._prompt_files_on_disk([str(project)])
+        files, _searched = board_projection._prompt_files_on_disk([str(project)])
         assert {(p, Path(f).name) for p, f in files} >= {(str(project), "deep.prompt.md"), (str(project), "top.prompt.md"), (str(project), "run.md")}
 
     def test_no_parent_folder_above_the_repository_is_searched(self, db, tmp_path, home):
@@ -2456,7 +2462,7 @@ class TestPromptFilesSearch:
         (tmp_path / "outer" / ".github" / "prompts" / "outer.prompt.md").write_text("x")
         project = tmp_path / "outer" / "inner"
         (project / ".git").mkdir(parents=True)
-        files, _searched = board_api._prompt_files_on_disk([str(project)])
+        files, _searched = board_projection._prompt_files_on_disk([str(project)])
         assert "outer.prompt.md" not in {Path(f).name for _p, f in files}
 
     def test_skill_files_are_not_prompt_files(self, db, tmp_path, home):
@@ -2533,7 +2539,7 @@ class TestSkillFileReads:
     def test_a_read_is_counted_apart_from_the_uses(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         self._seed(db, tmp_path)
-        _status, payload = board_api.skill_detail(db, "checker", now=1000.0)
+        _status, payload = artifact_details.skill_detail(db, "checker", now=1000.0)
         assert payload["uses"] == 1
         assert payload["file_reads"] == 1
         assert [r["ts"] for r in payload["reads"]] == [520.0]
@@ -2541,13 +2547,13 @@ class TestSkillFileReads:
     def test_the_time_range_limits_reads(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         self._seed(db, tmp_path)
-        _status, payload = board_api.skill_detail(db, "checker", now=1000.0, since=0.0, until=300.0)
+        _status, payload = artifact_details.skill_detail(db, "checker", now=1000.0, since=0.0, until=300.0)
         assert payload["file_reads"] == 0 and payload["uses"] == 1
 
     def test_a_plugin_skill_name_finds_the_file_read(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         self._seed(db, tmp_path)
-        _status, payload = board_api.skill_detail(db, "plug:checker", now=1000.0)
+        _status, payload = artifact_details.skill_detail(db, "plug:checker", now=1000.0)
         assert payload["file_reads"] == 2  # no use is stored under this name, so no read is the start of one
 
 
@@ -2597,7 +2603,7 @@ def test_sources_name_the_folders_found_for_each_tool(monkeypatch):
     from aictl import tool_homes
 
     monkeypatch.setattr(tool_homes, "homes", lambda tool=None: [tool_homes.ToolHome("copilot", Path("/x/home"), "process environment")])
-    rows = board_api._sources([("copilot-cli", "events", 1.0)], ["copilot-cli"], None)
+    rows = board_projection._sources([("copilot-cli", "events", 1.0)], ["copilot-cli"], None)
     assert rows[0]["locations"] == [{"path": "/x/home", "found_by": "process environment"}]
 
 
@@ -2763,7 +2769,7 @@ class TestAgentDetailResources:
 
 
 def _machine_tool(tool="claude-code", processes=(), live=None, meta=False):
-    return SimpleNamespace(tool=tool, label=board_api._label(tool), meta=meta, processes=list(processes), live=live)
+    return SimpleNamespace(tool=tool, label=projection_utils._label(tool), meta=meta, processes=list(processes), live=live)
 
 
 def _mproc(pid, name="node", kind="cli", mem="10", cpu="1.0", **extra):
@@ -2788,11 +2794,11 @@ class TestMachine:
     @pytest.fixture(autouse=True)
     def _no_real_parents(self, monkeypatch):
         """The pids in these tests may be real processes of this machine."""
-        monkeypatch.setattr(board_api, "_parent_pid", lambda pid: None)
-        board_api._db_stats_memo.clear()
+        monkeypatch.setattr(runtime_health, "_parent_pid", lambda pid: None)
+        runtime_health._db_stats_memo.clear()
 
     def _health(self, snapshot):
-        return board_api.compute_health(None, SimpleNamespace(snapshot=snapshot), now=1010.0)
+        return runtime_health.compute_health(None, SimpleNamespace(snapshot=snapshot), now=1010.0)
 
     def test_monitor_lists_collectors_roots_and_each_tool_live_numbers(self):
         live = {
@@ -2834,7 +2840,7 @@ class TestMachine:
             anomalies=[{"type": "high_memory", "actual_mb": 900.0, "expected_mb": 300.0}, {"type": "zombie", "ppid": 1, "risk": "high"}],
         )
         live = {"processes": [{"pid": 501, "ppid": 1, "name": "mcp-github"}, {"pid": 502, "ppid": 501, "name": "git", "cpu_pct": 0.5, "mem_mb": 4.0}]}
-        rows = {p["pid"]: p for p in board_api.machine_processes(_machine_snapshot([_machine_tool(processes=[proc], live=live)]))}
+        rows = {p["pid"]: p for p in runtime_health.machine_processes(_machine_snapshot([_machine_tool(processes=[proc], live=live)]))}
         mcp = rows[501]
         assert mcp["process_type"] == "mcp-server" and mcp["ppid"] == 1
         assert mcp["zombie_risk"] == "high" and mcp["cleanup_cmd"] == "pkill -f mcp-github"
@@ -2847,12 +2853,12 @@ class TestMachine:
 
     def test_a_cmdline_is_cut_to_one_short_line(self):
         proc = _mproc(7, cmdline="python\n" + "x" * 500)
-        row = board_api.machine_processes(_machine_snapshot([_machine_tool(processes=[proc])]))[0]
-        assert "\n" not in row["cmdline"] and len(row["cmdline"]) <= board_api.MACHINE_CMDLINE_CHARS
+        row = runtime_health.machine_processes(_machine_snapshot([_machine_tool(processes=[proc])]))[0]
+        assert "\n" not in row["cmdline"] and len(row["cmdline"]) <= runtime_health.MACHINE_CMDLINE_CHARS
 
     def test_a_process_without_a_reported_parent_asks_the_system(self, monkeypatch):
-        monkeypatch.setattr(board_api, "_parent_pid", lambda pid: 77 if pid == 8 else None)
-        rows = {p["pid"]: p for p in board_api.machine_processes(_machine_snapshot([_machine_tool(processes=[_mproc(8), _mproc(77, "claude")])]))}
+        monkeypatch.setattr(runtime_health, "_parent_pid", lambda pid: 77 if pid == 8 else None)
+        rows = {p["pid"]: p for p in runtime_health.machine_processes(_machine_snapshot([_machine_tool(processes=[_mproc(8), _mproc(77, "claude")])]))}
         assert rows[8]["ppid"] == 77 and rows[8]["parent_name"] == "claude"
         assert rows[77]["ppid"] is None and rows[77]["parent_name"] is None
 
@@ -2862,7 +2868,7 @@ class TestMachine:
     @staticmethod
     def _alerts(processes, live=None):
         snapshot = _machine_snapshot([_machine_tool(processes=processes, live=live)])
-        return board_api.machine_alerts(board_api.machine_processes(snapshot))
+        return runtime_health.machine_alerts(runtime_health.machine_processes(snapshot))
 
     def test_subagents_over_2_gb_of_ram(self):
         procs = [_mproc(10 + i, kind="subagent", mem="900") for i in range(3)]
@@ -2892,7 +2898,7 @@ class TestMachine:
     def test_meta_tools_are_left_out(self):
         snapshot = _machine_snapshot([_machine_tool("context", processes=[_mproc(3)], live={"session_count": 1}, meta=True)])
         m = self._health(snapshot)
-        assert board_api.machine_processes(snapshot) == []
+        assert runtime_health.machine_processes(snapshot) == []
         assert m["monitor"]["per_tool"] == [] and m["pipeline"]["freshness"] == []
 
     @staticmethod
@@ -2910,15 +2916,15 @@ class TestMachine:
 
         reader.read = watch
         try:
-            board_api.compute_health(db, store, **options)
+            runtime_health.compute_health(db, store, **options)
             assert ready.wait(5), "Health did not finish its history reads"
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                with board_api._health_cache_lock:
-                    if not board_api._health_cache[reader]["refreshing"]:
+                with runtime_health._health_cache_lock:
+                    if not runtime_health._health_cache[reader]["refreshing"]:
                         break
                 time.sleep(0.01)
-            return board_api.compute_health(db, store, **options)
+            return runtime_health.compute_health(db, store, **options)
         finally:
             reader.read = read
 
@@ -2965,8 +2971,8 @@ class TestMachine:
         real = reader.read
         monkeypatch.setattr(reader, "read", lambda view, params: calls.append(view) or real(view, params))
         store = SimpleNamespace(snapshot=None, history_store=db.history_store)
-        board_api.compute_health(db, store, now=1010.0)
-        board_api.compute_health(db, store, now=1010.0)
+        runtime_health.compute_health(db, store, now=1010.0)
+        runtime_health.compute_health(db, store, now=1010.0)
         assert calls.count("health.totals") == 1
 
     def test_freshness_comes_from_telemetry_and_the_live_monitor(self):
@@ -2975,11 +2981,11 @@ class TestMachine:
         rows = {f["tool"]: f for f in self._health(snap)["pipeline"]["freshness"]}
         assert (rows["claude-code"]["last_seen"], rows["claude-code"]["source"], rows["claude-code"]["confidence"], rows["claude-code"]["errors"]) == (1001.0, "stats-cache", 0.9, 2)
         assert "sk-ant-api03" not in rows["claude-code"]["last_error"]
-        assert rows["codex-cli"] == {"tool": "codex-cli", "label": board_api._label("codex-cli"), "last_seen": None, "source": "discovery", "confidence": None, "errors": 0, "last_error": None}
+        assert rows["codex-cli"] == {"tool": "codex-cli", "label": projection_utils._label("codex-cli"), "last_seen": None, "source": "discovery", "confidence": None, "errors": 0, "last_error": None}
 
     def test_no_snapshot_and_no_store_still_answer(self):
-        m = board_api.compute_health(None, SimpleNamespace(snapshot=None), now=5.0)
-        assert board_api.machine_processes(None) == [] and board_api.machine_alerts([]) == []
+        m = runtime_health.compute_health(None, SimpleNamespace(snapshot=None), now=5.0)
+        assert runtime_health.machine_processes(None) == [] and runtime_health.machine_alerts([]) == []
         assert m["pipeline"]["stream"]["snapshot_age_s"] is None and m["pipeline"]["sink"] is None
         assert m["pipeline"]["data_quality"] == [] and m["pipeline"]["ingesters"] == []
 
@@ -2996,7 +3002,7 @@ def _cfile(path, kind="instructions", tokens=100, scope="project", sent="yes", w
 
 
 def _ctool(tool="claude-code", files=()):
-    return SimpleNamespace(tool=tool, label=board_api._label(tool), files=list(files))
+    return SimpleNamespace(tool=tool, label=projection_utils._label(tool), files=list(files))
 
 
 def _csnap(tools, **extra):
@@ -3015,8 +3021,8 @@ class TestContext:
 
     @pytest.fixture(autouse=True)
     def _fresh_memo(self):
-        board_api._context_memo.clear()
-        board_api._context_db_memo.clear()
+        context_projection._context_memo.clear()
+        context_projection._context_db_memo.clear()
 
     @pytest.fixture
     def fixed_calendar(self, monkeypatch):
@@ -3030,10 +3036,10 @@ class TestContext:
             def timestamp(self):
                 return datetime.timestamp(self.replace(tzinfo=timezone.utc))
 
-        monkeypatch.setattr(board_api, "datetime", UTCDateTime)
+        monkeypatch.setattr(context_projection, "datetime", UTCDateTime)
 
     def _ctx(self, snapshot, db=None, tools=None):
-        return board_api.compute_context(db, SimpleNamespace(snapshot=snapshot), tools, now=self.NOW)
+        return context_projection.compute_context(db, SimpleNamespace(snapshot=snapshot), tools, now=self.NOW)
 
     def _tools(self):
         claude = _ctool(
@@ -3061,7 +3067,7 @@ class TestContext:
         assert cc["largest_project"] == "alpha" and cc["never_sent_files"] == 1
         assert [(p["project"], p["tokens"], p["estimate"]) for p in cc["projects"]] == [("alpha", 160, 360), ("beta", 40, 240)]
         cx = rows["codex-cli"]
-        assert cx["model"] is None and cx["window"] == board_api.DEFAULT_CONTEXT_WINDOW and cx["window_assumed"] is True
+        assert cx["model"] is None and cx["window"] == context_projection.DEFAULT_CONTEXT_WINDOW and cx["window_assumed"] is True
         assert (cx["always"], cx["conditional"]) == (0, 70)
 
     def test_each_file_names_the_live_sessions_it_can_affect(self, monkeypatch):
@@ -3098,7 +3104,7 @@ class TestContext:
     def test_map_items_keep_the_largest_and_sum_the_rest(self):
         many = _ctool("claude-code", [_cfile(f"/r/alpha/rules/r{i:02d}.md", kind="rules", tokens=100 + i) for i in range(20)])
         items = [i for i in self._ctx(_csnap([many]))["map"]["items"] if i["project"] == "alpha"]
-        assert len(items) == board_api.CONTEXT_MAP_ITEMS + 1
+        assert len(items) == context_projection.CONTEXT_MAP_ITEMS + 1
         assert items[0]["name"] == "r19" and items[-1] == {"project": "alpha", "kind": "rules", "name": "(other)", "tokens": sum(100 + i for i in range(5))}
 
     def test_files_carry_every_field_and_a_recent_change(self):
@@ -3113,7 +3119,7 @@ class TestContext:
         assert rows["/home/me/.claude/CLAUDE.md"]["mtime"] is None, "no mtime is not known, not 1970"
 
     def test_a_long_file_list_is_cut_and_says_so(self, monkeypatch):
-        monkeypatch.setattr(board_api, "CONTEXT_MAX_FILES", 2)
+        monkeypatch.setattr(context_projection, "CONTEXT_MAX_FILES", 2)
         f = self._ctx(_csnap(self._tools()))["files"][0]
         assert (f["count"], f["truncated"], len(f["files"])) == (5, True, 2)
 
@@ -3148,7 +3154,7 @@ class TestContext:
         assert cp["cost_usd"] is None, "a cost of 0 with no price source is not known"
         assert (cp["premium_requests"], cp["quota"]["api_duration_ms"], cp["quota"]["lines_added"], cp["as_of"]) == (12, 9000, 5, "2026-11-07")
         assert cp["by_model"] == [{"model": "gpt-5", "input": 1000, "output": 200, "cache_read": 0, "cache_write": 0, "requests": 7, "cost_usd": None}]
-        assert len(cp["errors"]) == board_api.CONTEXT_ERRORS
+        assert len(cp["errors"]) == context_projection.CONTEXT_ERRORS
         assert cp["errors"][0]["ts"] >= cp["errors"][-1]["ts"], "newest first"
         assert (rows["claude-code"]["cost_usd"], rows["claude-code"]["cost_quality"]) == (1.25, "reported")
 
@@ -3192,20 +3198,20 @@ class TestContext:
         assert none["budget"]["tools"] == [] and none["telemetry"] == [] and none["files"] == []
 
     def test_no_snapshot_still_answers(self):
-        out = board_api.compute_context(None, SimpleNamespace(snapshot=None), now=self.NOW)
+        out = context_projection.compute_context(None, SimpleNamespace(snapshot=None), now=self.NOW)
         assert out["budget"]["tools"] == [] and out["memory"]["entries"] == [] and out["map"]["total"] == 0
         assert len(out["daily"]["days"]) == 7 and out["daily"]["rows"] == []
 
     def test_the_answer_is_kept_for_each_snapshot_version(self, monkeypatch):
         calls = []
-        real = board_api.compute_context
-        monkeypatch.setattr(board_api, "compute_context", lambda *a, **k: calls.append(1) or real(*a, **k))
+        real = context_projection.compute_context
+        monkeypatch.setattr(context_projection, "compute_context", lambda *a, **k: calls.append(1) or real(*a, **k))
         store = SimpleNamespace(snapshot=_csnap(self._tools()), version=3)
-        a = board_api.context_bytes(None, store, "")
-        assert board_api.context_bytes(None, store, "") == a and len(calls) == 1
-        board_api.context_bytes(None, store, "tool=codex-cli")
+        a = context_projection.context_bytes(None, store, "")
+        assert context_projection.context_bytes(None, store, "") == a and len(calls) == 1
+        context_projection.context_bytes(None, store, "tool=codex-cli")
         store.version = 4
-        board_api.context_bytes(None, store, "")
+        context_projection.context_bytes(None, store, "")
         assert len(calls) == 3
 
     def test_the_route_answers_this_machine_only_and_follows_the_tool_filter(self, tmp_path, monkeypatch):
@@ -3282,21 +3288,21 @@ class TestAgentFlow:
         for sid in ("flow-s", "other"):
             _insert(conn, "session_loaded_files", session_id=sid, path=r"C:\repo\testing\SKILL.md", how="skill", ts=t)
 
-        _, page = board_api.agent_flow(db, "flow-s", now=NOW, category="skills")
+        _, page = flow_projection.agent_flow(db, "flow-s", now=NOW, category="skills")
         assert [(r["name"], r["phase"]) for r in page["turns"]] == [
             ("testing", "invoked"), ("testing", "loaded"), ("document", "resolved")]
         assert page["scope"]["skills"] == ["document", "testing"]
-        _, filtered = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_name="TESTING", skill_phase="loaded", limit=1)
+        _, filtered = flow_projection.agent_flow(db, "flow-s", now=NOW, category="skills", skill_name="TESTING", skill_phase="loaded", limit=1)
         assert filtered["scope"]["matched"] == 1 and filtered["turns"][0]["source"] == "session_loaded_files"
-        _, later = board_api.agent_flow(db, "flow-s", since=t+1, until=NOW, category="skills")
+        _, later = flow_projection.agent_flow(db, "flow-s", since=t+1, until=NOW, category="skills")
         assert [r["phase"] for r in later["turns"]] == ["resolved"]
 
         for i in range(8):
             db.insert("OTELTraces", SessionId="flow-s", TraceID="trace", SpanID=str(i), RowKey=f"skill:{i}",
                       StartTime=datetime.fromtimestamp(t + (i % 4), timezone.utc),
                       EndTime=datetime.fromtimestamp(t + 4, timezone.utc), ReportedContext={"skills": ["testing"]})
-        _, spans = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="reported")
-        _, invoked = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="invoked")
+        _, spans = flow_projection.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="reported")
+        _, invoked = flow_projection.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="invoked")
         assert len(spans["turns"]) == 1 and spans["turns"][0]["reported_spans"] == 8
         assert len(invoked["turns"]) == 1
 
@@ -3311,28 +3317,28 @@ class TestAgentFlow:
             db.insert("session_steps", step_key=key, ts=ts, session_id="flow-s", kind=kind,
                       source=f"{role}.message", role=role, text_status="captured")
             db.insert("session_step_text", step_key=key, ts=ts, session_id="flow-s", text=text)
-        _, result = board_api.agent_flow(db, "flow-s", now=NOW, category="prompts", legacy_flow=_no_legacy)
+        _, result = flow_projection.agent_flow(db, "flow-s", now=NOW, category="prompts", legacy_flow=_no_legacy)
         assert [(r["step_key"], r["message"]) for r in result["turns"]] == [("p", "Actual question about Kusto")]
         db.capture = "metadata"
-        _, result = board_api.agent_flow(db, "flow-s", now=NOW, category="prompts", q="Kusto", legacy_flow=_no_legacy)
+        _, result = flow_projection.agent_flow(db, "flow-s", now=NOW, category="prompts", q="Kusto", legacy_flow=_no_legacy)
         assert result["turns"] == []
 
     def test_combined_filters_precede_event_limit_but_do_not_shrink_totals(self, db):
         _seed_flow(db, NOW - DAY)
-        _, flow = board_api.agent_flow(db, "flow-s", now=NOW, category="tools", q="parser", limit=1)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, category="tools", q="parser", limit=1)
         assert flow["scope"]["matched"] == 0 and flow["summary"]["total_tool_uses"] == 2
-        _, flow = board_api.agent_flow(db, "flow-s", now=NOW, q="ls src", tool_name="Bash", limit=1)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, q="ls src", tool_name="Bash", limit=1)
         assert [e["to"] for e in flow["turns"]] == ["Bash"]
         assert flow["scope"]["matched"] == 1 and flow["scope"]["total"] == 12
         assert flow["scope"]["agents"] == ["sub-f"] and flow["scope"]["tools"] == ["Bash", "Read"]
-        _, flow = board_api.agent_flow(db, "flow-s", now=NOW, failed=True, limit=1)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, failed=True, limit=1)
         assert flow["scope"]["matched"] == 2 and flow["summary"]["omitted_events"] == 1
         assert flow["session_kql_url"] is None
 
     def test_the_store_alone_gives_the_turns_and_the_summary(self, db):
         t = NOW - DAY
         _seed_flow(db, t)
-        status, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        status, flow = flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert status == 200
         kinds = [e["type"] for e in flow["turns"]]
         assert kinds == [
@@ -3375,7 +3381,7 @@ class TestAgentFlow:
 
     def test_a_field_the_store_does_not_know_stays_absent(self, db):
         _seed_flow(db, NOW - DAY)
-        _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW)
         read = next(e for e in flow["turns"] if e.get("to") == "Read")
         assert "params" not in read and "result_summary" not in read and "input_preview" not in read
         assert not any(e["type"] == "api_response" for e in flow["turns"])
@@ -3390,7 +3396,7 @@ class TestAgentFlow:
         _event(conn, t + 200.5, "flow-s", "hook:UserPromptSubmit", {"prompt": "Now the tests"})
         _event(conn, t + 400, "flow-s", "hook:UserPromptSubmit", {"prompt": "One more thing"})
 
-        _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW)
         prompts = [e for e in flow["turns"] if e["type"] == "user_message"]
         assert [p["message"] for p in prompts] == ["Fix the parser", "Now the tests", "One more thing"]
         assert prompts[1]["redacted"] is False and prompts[1]["source"] == "store+hooks"
@@ -3400,31 +3406,31 @@ class TestAgentFlow:
 
     def test_a_subagent_id_gives_the_session_of_its_main_agent(self, db):
         _seed_flow(db, NOW - DAY)
-        _, main = board_api.agent_flow(db, "flow-s", now=NOW)
-        status, sub = board_api.agent_flow(db, "sub-f", now=NOW)
+        _, main = flow_projection.agent_flow(db, "flow-s", now=NOW)
+        status, sub = flow_projection.agent_flow(db, "sub-f", now=NOW)
         assert status == 200 and sub["session_id"] == "flow-s"
         assert sub["turns"] == main["turns"]
 
     def test_the_range_and_the_event_limit(self, db, monkeypatch):
         t = NOW - DAY
         _seed_flow(db, t)
-        _, part = board_api.agent_flow(db, "flow-s", since=t + 100, until=t + 300, now=NOW)
+        _, part = flow_projection.agent_flow(db, "flow-s", since=t + 100, until=t + 300, now=NOW)
         assert [e["type"] for e in part["turns"]] == ["compaction", "user_message", "api_call", "tool_use"]
-        monkeypatch.setattr(board_api, "MAX_FLOW_EVENTS", 3)
-        _, cut = board_api.agent_flow(db, "flow-s", now=NOW)
+        monkeypatch.setattr(flow_projection, "MAX_FLOW_EVENTS", 3)
+        _, cut = flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert [e["type"] for e in cut["turns"]] == ["api_call", "tool_use", "session_end"]
         assert cut["summary"]["omitted_events"] == 9 and cut["summary"]["event_count"] == 12
         assert cut["summary"]["cumulative_tokens"] == 195 and cut["turns"][0]["cum_tokens"] == 195
 
     def test_an_unknown_agent_is_404(self, db):
-        assert board_api.agent_flow(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
-        assert board_api.agent_transcript(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
+        assert flow_projection.agent_flow(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
+        assert flow_projection.agent_transcript(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
 
 
 class TestAgentTranscript:
     def test_without_reply_text_the_turns_say_the_text_is_not_kept(self, db):
         _seed_flow(db, NOW - DAY)
-        status, tr = board_api.agent_transcript(db, "flow-s", now=NOW, brief=False)
+        status, tr = flow_projection.agent_transcript(db, "flow-s", now=NOW, brief=False)
         assert status == 200
         assert tr["replies_kept"] is False and tr["reply_note"] == "The reply text is not kept"
         first, second = tr["turns"]
@@ -3440,40 +3446,40 @@ class TestAgentTranscript:
 
     def test_the_turns_are_brief_until_one_is_asked_for_whole(self, db):
         _seed_flow(db, NOW - DAY, reply="Done. **Fixed** the parser. " + "x" * 300)
-        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW)
+        _, tr = flow_projection.agent_transcript(db, "flow-s", now=NOW)
         first = tr["turns"][0]
         assert first["actions"] == [] and first["detail"] is True
-        assert first["response"] == ("Done. **Fixed** the parser. " + "x" * 300)[: board_api.FLOW_PREVIEW_CHARS]
+        assert first["response"] == ("Done. **Fixed** the parser. " + "x" * 300)[: flow_projection.FLOW_PREVIEW_CHARS]
         assert first["tool_use_count"] == 1 and first["api_calls"] == 2 and first["tokens"]["total"] == 135
         assert tr["summary"]["total_tool_uses"] == 2 and tr["replies_kept"] is True
-        status, one = board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["ts"])
+        status, one = flow_projection.agent_transcript(db, "flow-s", now=NOW, turn=first["ts"])
         assert status == 200 and "turns" not in one
         assert one["turn"]["response"].endswith("x" * 300)
         kinds = [a["kind"] for a in one["turn"]["actions"]]
         assert kinds.count("tool_use") == 1 and kinds.count("api_call") == 2 and "api_response" in kinds and "compaction" in kinds
-        assert board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["ts"] + 5)[0] == 404
+        assert flow_projection.agent_transcript(db, "flow-s", now=NOW, turn=first["ts"] + 5)[0] == 404
 
     def test_the_flow_is_built_once_until_the_session_changes(self, db, monkeypatch):
         t = NOW - DAY
         _seed_flow(db, t)
         builds = []
-        real = board_api._session_flow_build
-        monkeypatch.setattr(board_api, "_session_flow_build", lambda *a, **kw: (builds.append(1), real(*a, **kw))[1])
-        _, first = board_api.agent_transcript(db, "flow-s", now=NOW)
-        board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["turns"][0]["ts"])
-        board_api.agent_flow(db, "flow-s", now=NOW)
+        real = flow_projection._session_flow_build
+        monkeypatch.setattr(flow_projection, "_session_flow_build", lambda *a, **kw: (builds.append(1), real(*a, **kw))[1])
+        _, first = flow_projection.agent_transcript(db, "flow-s", now=NOW)
+        flow_projection.agent_transcript(db, "flow-s", now=NOW, turn=first["turns"][0]["ts"])
+        flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert len(builds) == 1
         _prompt(db, t + 900, "flow-s", "claude-code", "/p", text="One more")
-        _, again = board_api.agent_transcript(db, "flow-s", now=NOW)
+        _, again = flow_projection.agent_transcript(db, "flow-s", now=NOW)
         assert len(builds) == 2 and again["summary"]["total_turns"] == first["summary"]["total_turns"] + 1
 
     def test_stored_reply_text_is_the_turns_response(self, db):
         _seed_flow(db, NOW - DAY, reply="Done. **Fixed** the parser.")
-        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, brief=False)
+        _, tr = flow_projection.agent_transcript(db, "flow-s", now=NOW, brief=False)
         assert tr["replies_kept"] is True and tr["reply_note"] is None
         assert tr["turns"][0]["response"] == "Done. **Fixed** the parser."
         assert tr["turns"][1]["response"] == ""
-        _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert [e["response"] for e in flow["turns"] if e["type"] == "api_response"] == ["Done. **Fixed** the parser."]
 
     def test_the_history_transcript_ignores_pending_analyzer_output(self, db):
@@ -3491,7 +3497,7 @@ class TestAgentTranscript:
                 {"ts": t + 500, "prompt": "Asked later", "response": "", "actions": []},
             ],
         }
-        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live, brief=False)
+        _, tr = flow_projection.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live, brief=False)
         assert [x["prompt"] for x in tr["turns"]] == ["Fix the parser", "Now the tests"]
         first = tr["turns"][0]
         assert first["response"] == "" and tr["replies_kept"] is False
@@ -3499,8 +3505,7 @@ class TestAgentTranscript:
         assert tr["is_live"] is False
 
     def test_the_routes_answer_this_machine_only(self, server, db, monkeypatch):
-        monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: NOW, monotonic=time.monotonic))
-        monkeypatch.setattr(board_api, "text_floor", lambda _owner, _now: 0.0)
+        monkeypatch.setattr(flow_projection, "text_floor", lambda _owner, _now: 0.0)
         _seed_flow(db, NOW - DAY)
         status, body, _ = _http(f"{server}/api/board/agent/flow?id=sub-f")
         assert status == 200, body

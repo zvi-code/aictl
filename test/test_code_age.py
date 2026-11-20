@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from aictl import code_age
-from aictl.dashboard import board_api
+from aictl.dashboard import runtime_health
 
 
 def test_code_changed_after_start_is_reported_and_checked_once_a_minute(monkeypatch):
@@ -30,5 +30,5 @@ def test_the_real_package_is_read(monkeypatch):
 
 def test_the_health_payload_carries_it(monkeypatch):
     monkeypatch.setattr(code_age, "code_changed_at", lambda now=None: 123.0)
-    me = board_api.compute_health(None, SimpleNamespace(snapshot=None))["pipeline"]["self"]
+    me = runtime_health.compute_health(None, SimpleNamespace(snapshot=None))["pipeline"]["self"]
     assert me["code_changed_at"] == 123.0 and me["started_at"] == code_age.STARTED_AT
