@@ -107,6 +107,28 @@ def test_sequence_and_tool_pages_prune_keys_without_resurrecting_old_versions(ku
     assert not tools.truncated and [row["result_summary"] for row in tools.rows] == ["kept"]
 
 
+def test_full_session_event_page_resolves_winners_before_selecting_text(kusto_store):
+    seed = kusto_store.insert
+    reader = kusto_store.history_store.reader
+    for key in ("direct", "inline", "retained", "reassigned", "overridden", "moved"):
+        sid = "wanted" if key in ("direct", "moved") else "other"
+        detail = '{"session_id":"wanted"}' if key in ("inline", "overridden") else "{}"
+        seed("events", source_key=key, ts=100, kind=key, project="p", session_id=sid, detail=detail)
+    seed("events", source_key="moved", ts=100, project="p", session_id="other", _v="2026-01-03")
+    for key in ("retained", "reassigned"):
+        seed("events_text", source_key=key, project="p", detail='{"session_id":"wanted"}')
+    for key in ("reassigned", "overridden"):
+        seed("events_text", source_key=key, project="p", detail='{"session_id":"other"}', _v="2026-01-03")
+    # Identical keys in other projects and nodes cannot supply this event's text.
+    seed("events_text", source_key="direct", project="foreign", detail='{"note":"wrong project"}')
+    seed("events_text", source_key="direct", project="p", node_id="elsewhere", detail='{"note":"wrong node"}')
+    page = reader.read("sequence.event_log", {"since": 0.0, "until": 1e10, "requested_session": "wanted", "limit": 4})
+    assert not page.truncated
+    assert {row["kind"]: json.loads(row["detail"]) for row in page.rows} == {
+        "direct": {}, "inline": {"session_id": "wanted"}, "retained": {"session_id": "wanted"},
+    }
+
+
 def test_health_exposes_per_table_writer_counters_and_missing_store():
     assert store_health(SimpleNamespace(history_store=Store()))["status"] == "no store configured"
     counters = {"queue_depth": 7, "rows_sent": 9, "rows_dropped": 3, "last_error": "Ingestion failed"}

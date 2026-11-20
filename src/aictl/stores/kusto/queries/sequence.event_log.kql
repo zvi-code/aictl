@@ -11,45 +11,58 @@ let matches_filters = (event_ts:real, event_tool:string, event_pid:long, event_k
     and (requested_pid == 0 or event_pid == requested_pid)
     and (array_length(requested_kinds) == 0 or event_kind in (requested_kinds))
 };
-// Filter keys before deduplication, but keep out-of-window versions of these keys.
-let candidate_keys = raw_events() | where matches_filters(ts,tool,pid,kind) | distinct event_key;
+let retained = () { union isfuzzy=true
+    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:string,_deleted:bool)[]),
+    (events_text | project ['project'],node_id,source_key,_v,detail,_deleted=column_ifexists('_deleted',false))
+    | where (all_nodes or node_id == requested_node) and isnotempty(source_key)
+};
+// A correction can move an event out of the window or change its session.
+// Find possible identities first, then resolve their winners across all versions.
+// Only send bounded integer buckets to scan predicates. A collision may read
+// extra rows, but never selects a winner or joins payloads: those use full keys.
+let bucket = (key:string) { hash(key, 262144) };
+let possible = union
+    (raw_events()
+     | where matches_filters(ts,tool,pid,kind)
+     | where isempty(requested_session) or session_id == requested_session or tostring(parse_json(detail).session_id) == requested_session
+     | project b=bucket(event_key)),
+    (retained()
+     | where isnotempty(requested_session) and tostring(parse_json(detail).session_id) == requested_session
+     | project b=bucket(source_key))
+    | distinct b;
 let candidates = materialize(raw_events()
-    | where event_key in (candidate_keys)
+    | where bucket(event_key) in (possible)
     | extend inline_match=iff(isnotempty(requested_session), tostring(parse_json(detail).session_id) == requested_session, false)
     | summarize arg_max(_v,deleted,ts,tool,kind,seq,session_id,pid,inline_match,source_key)
         by ['project'],node_id,event_key
     | where not(deleted) and matches_filters(ts,tool,pid,kind)
     | project-away deleted);
-let retained = () { union isfuzzy=true
-    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:string,_deleted:bool)[]),
-    (events_text | project ['project'],node_id,source_key,_v,detail,_deleted=column_ifexists('_deleted',false))
-    | where (all_nodes or node_id == requested_node) and source_key in (candidates | project source_key)
-};
 let retained_matches = retained()
     | where isnotempty(requested_session)
+    | where bucket(source_key) in (candidates | distinct b=bucket(source_key))
     | extend has_detail=isnotempty(detail), matches=tostring(parse_json(detail).session_id) == requested_session
     | summarize arg_max(_v,_deleted,has_detail,matches) by ['project'],node_id,source_key
     | where not(_deleted)
-    | project ['project'],node_id,event_key=source_key,has_detail,matches;
+    | project ['project'],node_id,source_key,has_detail,matches;
 let page = materialize(candidates
-    | join kind=leftouter retained_matches on ['project'],node_id,event_key
+    | join kind=leftouter retained_matches on ['project'],node_id,source_key
     | where isempty(requested_session) or session_id == requested_session or iff(has_detail, matches, inline_match)
     | order by ts desc,node_id asc,seq asc,tool asc,kind asc,event_key asc
     | take row_limit
-    | project ['project'],node_id,event_key,_v,ts,tool,kind,seq,session_id,pid);
+    | project ['project'],node_id,event_key,source_key,_v,ts,tool,kind,seq,session_id,pid);
 let inline_text = raw_events()
-    | where ts between (since .. until) and event_key in (page | project event_key)
+    | where ts between (since .. until) and hash(event_key) in (page | distinct b=hash(event_key))
     | project ['project'],node_id,event_key,_v,detail
     | summarize take_any(detail) by ['project'],node_id,event_key,_v;
 let retained_text = retained()
-    | where source_key in (page | project event_key)
+    | where hash(source_key) in (page | distinct b=hash(source_key))
     | summarize arg_max(_v,_deleted,detail) by ['project'],node_id,source_key
     | where not(_deleted)
-    | project ['project'],node_id,event_key=source_key,retained_detail=detail;
+    | project ['project'],node_id,source_key,retained_detail=detail;
 page
 | join kind=leftouter inline_text on ['project'],node_id,event_key,_v
 | project-away ['project1'],node_id1,event_key1,_v1
-| join kind=leftouter retained_text on ['project'],node_id,event_key
+| join kind=leftouter retained_text on ['project'],node_id,source_key
 | extend detail=coalesce(retained_detail,detail)
 | order by ts desc,node_id asc,seq asc,tool asc,kind asc,event_key asc
 | project ts,tool,kind,detail,session_id,pid

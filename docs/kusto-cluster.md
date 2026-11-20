@@ -306,10 +306,14 @@ snapshot every 30 seconds; no extra ingestion request is needed. Older daemons
 still report host metrics. Cluster capacity, diagnostics and physical table
 sizes describe the shared destination and are shown once, not summed per node.
 A sample older than five minutes is marked stale; no sample means unknown, not down.
-Kusto node-report reads limit scan-thread fan-out to 1% per node under the
-existing 128 MiB per-node query budget. This does not exclude any nodes or
-shorten history. If a read still fails for lack of memory, the API returns
-HTTP 503 with the Kusto client request ID (`aictl.NodeView;…`), not empty data.
+Kusto node-report reads limit scan-thread fan-out to 1% per node and use the
+service's memory limit. This does not exclude any nodes or shorten history.
+A failed cold read returns HTTP 503 with the Kusto client request ID
+(`aictl.nodes.reports;…`), not empty data. For the live cursor worker's
+separate limits see [the live reader](kusto-live-reader.md#work-limits-and-isolation).
+The Flow event query narrows scans using bounded integer hashes, then checks the
+winning event's full identity, time, session and filters. It does not send an
+all-history list of event keys as a Kusto `in` argument.
 Historical dashboard reads also limit scan fan-out and batch concurrency.
 Long ranges read bounded, non-overlapping time slices and combine their
 current facts before computing totals and percentiles. The same filtered
