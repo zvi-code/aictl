@@ -1,8 +1,7 @@
-"""The instruction files each session loaded: Claude attachments, Copilot events, v35, the backfill, the API."""
+"""The instruction files each session loaded: attachments, events, backfill, and API."""
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -15,24 +14,29 @@ from aictl.dashboard.board_api import _agent_record, _session_context_files
 from aictl.ingesters import loaded_files, loaded_files_backfill
 from aictl.ingesters.loaded_files import claude_attachment, custom_agent_file, in_system_prompt, system_prompt_files
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.project_stores import ProjectStores, store_key
-from aictl.storage import CallFacts, HistoryDB, LoadedFileRow
+from aictl.records import CallFacts, LoadedFileRow
+from aictl.session_facts import SessionFacts
+from aictl.stores.testing import MemoryWriter
 
 SESSION = "11111111-1111-4111-8111-111111111111"
 COPILOT_SID = "22222222-2222-4222-8222-222222222222"
 
 
 @pytest.fixture
-def db(tmp_path):
-    store = HistoryDB(tmp_path / "history.db", flush_interval=0)
-    yield store
-    store.close()
+def db():
+    return SessionFacts(MemoryWriter(), content_days=36500)
 
 
 def loaded(db, sid: str) -> list[tuple]:
-    return db._conn().execute(
-        "SELECT path, how, detail, agent_id FROM session_loaded_files WHERE session_id = ? ORDER BY path, how", (sid,)
-    ).fetchall()
+    return sorted({tuple(r[k] for k in ("path", "how", "detail", "agent_id"))
+                   for r in db.writer.written("session_loaded_files") if r["session_id"] == sid})
+
+
+def _ingest(db, root):
+    ingester = make_ingester(None, root, fact_target=db, backfill_days=36500)
+    ingester.poll()
+    ingester.facts.flush()
+    return ingester
 
 
 def attachment(ago: float, att: dict, **extra) -> dict:
@@ -74,22 +78,27 @@ class TestClaudeAttachments:
             claude_path(tmp_path),
             [attachment(500, INSTRUCTIONS), attachment(300, INSTRUCTIONS), attachment(100, INSTRUCTIONS)],
         )
-        make_ingester(db, tmp_path).poll()
+        ingester = _ingest(db, tmp_path)
         assert loaded(db, SESSION) == [
             ("/home/u/.claude/CLAUDE.md", "instructions", "User", ""),
             ("/work/proj/AGENTS.md", "instructions", "Project", ""),
         ]
-        ts = db._conn().execute("SELECT MIN(ts), MAX(ts) FROM session_loaded_files").fetchone()
-        assert ts[0] == pytest.approx(NOW - 500, abs=1) and ts[1] == pytest.approx(NOW - 500, abs=1)
-        # A later poll that reads the repeat again keeps the first time.
+        original = db.writer.written("session_loaded_files")
+        assert [r["ts"] for r in original] == pytest.approx([NOW - 500] * 2, abs=1)
+        # A later poll can send another observation of the same files.
         write_lines(claude_path(tmp_path), [attachment(50, INSTRUCTIONS)])
-        make_ingester(db, tmp_path).poll()
-        assert db._conn().execute("SELECT MAX(ts) FROM session_loaded_files").fetchone()[0] == pytest.approx(NOW - 500, abs=1)
+        ingester.poll()
+        ingester.facts.flush()
+        rows = db.writer.written("session_loaded_files")
+        for row in original:
+            matching = [r for r in rows if (r["path"], r["how"]) == (row["path"], row["how"])]
+            assert min(r["ts"] for r in matching) == row["ts"]
+            assert {r["session_id"] for r in matching} == {SESSION}
 
     def test_a_sidechain_line_carries_its_agent(self, db, tmp_path):
         nested = {"type": "nested_memory", "path": "/work/proj/sub/CLAUDE.md"}
         write_lines(claude_path(tmp_path), [attachment(100, nested, isSidechain=True, agentId="agent-1")])
-        make_ingester(db, tmp_path).poll()
+        _ingest(db, tmp_path)
         assert loaded(db, SESSION) == [("/work/proj/sub/CLAUDE.md", "nested_memory", "", "agent-1")]
 
 
@@ -150,7 +159,7 @@ class TestCopilotRules:
                 ev("skill.invoked", 390, {"name": "builtin", "path": "builtin:x"}),
             ],
         )
-        make_ingester(db, tmp_path).poll()
+        _ingest(db, tmp_path)
         agent = str(repo / ".github" / "agents" / "Intake.agent.md")
         assert loaded(db, COPILOT_SID) == [
             (str(repo / ".github" / "agents" / "Intake.agent.md"), "custom_agent", "", ""),
@@ -159,64 +168,21 @@ class TestCopilotRules:
             (str(skill), "skill", "", ""),
         ]
         # The skill use itself is still recorded.
-        assert db._conn().execute("SELECT name FROM skill_uses ORDER BY name").fetchall() == [("builtin",), ("method",)]
+        assert sorted(r["name"] for r in db.writer.written("skill_uses")) == ["builtin", "method"]
         # No column keeps the text of the system prompt.
-        assert not db._conn().execute("SELECT 1 FROM session_loaded_files WHERE detail LIKE '%rule number%'").fetchall()
+        assert all("rule number" not in r["detail"] for r in db.writer.written("session_loaded_files"))
 
 
 # ── Schema v35, project stores, backfill ─────────────────────────────
 
 
-def test_a_v34_store_gets_the_table_and_a_rerun_changes_nothing(tmp_path):
-    from aictl.storage_migrations import CURRENT_VERSION, m035_session_loaded_files
-
-    path = tmp_path / "old.db"
-    HistoryDB(db_path=str(path), flush_interval=0).close()
-    conn = sqlite3.connect(path)
-    conn.execute("DROP TABLE session_loaded_files")
-    conn.execute("DELETE FROM schema_version WHERE version > 34")
-    conn.commit()
-    conn.close()
-    store = HistoryDB(db_path=str(path), flush_interval=0)
-    try:
-        conn = store._conn()
-        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'session_loaded_files'").fetchone()
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == CURRENT_VERSION >= 35
-        m035_session_loaded_files.apply(conn)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(session_loaded_files)")]
-        assert cols == ["session_id", "path", "how", "detail", "ts", "tool", "agent_id"]
-    finally:
-        store.close()
-
-
-def test_the_upsert_keeps_the_first_time_and_agent(db):
+def test_loaded_file_observations_keep_their_time_and_agent(db):
     row = LoadedFileRow(session_id="s", path="/a/AGENTS.md", how="instructions", ts=200.0, detail="Project", tool="claude-code", agent_id="late")
     db.write_call_facts(CallFacts(loaded_files=[row]))
     first = LoadedFileRow(session_id="s", path="/a/AGENTS.md", how="instructions", ts=100.0, detail="Project", tool="claude-code")
     db.write_call_facts(CallFacts(loaded_files=[first]))
     db.write_call_facts(CallFacts(loaded_files=[LoadedFileRow(session_id="s", path="/a/AGENTS.md", how="instructions", ts=300.0)]))
-    assert db._conn().execute("SELECT ts, agent_id, detail, tool FROM session_loaded_files").fetchall() == [(100.0, "", "Project", "claude-code")]
-
-
-def test_project_stores_write_the_rows_to_the_session_store(tmp_path):
-    from aictl.storage import SessionRow
-
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-    try:
-        stores.upsert_session(SessionRow(session_id="s", tool="claude-code", project_path=str(repo), started_at=NOW - 200))
-        stores.write_call_facts(
-            CallFacts(loaded_files=[LoadedFileRow(session_id="s", path=str(repo / "AGENTS.md"), how="instructions", ts=NOW - 100, project_path=str(repo))])
-        )
-        conn = sqlite3.connect(stores._file_of(store_key(str(repo))))
-        try:
-            assert conn.execute("SELECT session_id, how FROM session_loaded_files").fetchall() == [("s", "instructions")]
-        finally:
-            conn.close()
-        assert stores._conn().execute("SELECT path FROM session_loaded_files").fetchall() == [(str(repo / "AGENTS.md"),)]
-    finally:
-        stores.close()
+    assert [r["ts"] for r in db.writer.written("session_loaded_files")] == [row.ts, first.ts, 300.0]
 
 
 def _factory(root: Path):
@@ -234,7 +200,11 @@ def _factory(root: Path):
 
 
 class TestBackfill:
-    def test_old_sessions_get_their_rows_once_and_nothing_else(self, db, tmp_path):
+    def test_old_sessions_get_their_rows_once_and_nothing_else(self, tmp_path):
+        from aictl.session_facts import SessionFacts
+        from aictl.state_file import StateFile
+        from aictl.stores.testing import MemoryWriter
+
         # Older than the live reader's 30-day window.
         old = {"type": "attachment", "timestamp": iso(90 * 86400), "sessionId": SESSION, "attachment": INSTRUCTIONS}
         path = claude_path(tmp_path)
@@ -243,26 +213,37 @@ class TestBackfill:
         import os
 
         os.utime(path, (stamp, stamp))
-        assert loaded_files_backfill.run(db, _factory(tmp_path)) is True
-        assert [r[0] for r in loaded(db, SESSION)] == ["/home/u/.claude/CLAUDE.md", "/work/proj/AGENTS.md"]
-        assert db._conn().execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-        assert db.state_value(loaded_files_backfill.STATE_KEY) is not None
+        writer = MemoryWriter()
+        target = SessionFacts(writer)
+        state = StateFile(tmp_path / "loaded.json")
+        assert loaded_files_backfill.run(target, state, _factory(tmp_path)) is True
+        [(op, table, rows)] = writer.operations
+        assert (op, table) == ("append", "session_loaded_files")
+        assert {r["path"] for r in rows} == {"/home/u/.claude/CLAUDE.md", "/work/proj/AGENTS.md"}
+        assert state.read().get(loaded_files_backfill.STATE_KEY)
 
         def never(target):
             raise AssertionError("the backfill ran twice")
 
-        assert loaded_files_backfill.run(db, never) is True
+        assert loaded_files_backfill.run(target, state, never) is True
 
-    def test_a_write_that_keeps_failing_runs_again(self, db, tmp_path, monkeypatch):
+    def test_a_write_that_keeps_failing_runs_again(self, tmp_path):
+        from aictl.session_facts import SessionFacts
+        from aictl.state_file import StateFile
+        from aictl.stores.base import StoreError
+        from aictl.stores.testing import MemoryWriter
+
         write_lines(claude_path(tmp_path), [attachment(100, INSTRUCTIONS)])
-        monkeypatch.setattr(loaded_files_backfill, "LOCK_RETRY_S", 0.0)
+        writer = MemoryWriter()
+        target = SessionFacts(writer)
+        state = StateFile(tmp_path / "loaded.json")
 
-        def locked(facts):
-            raise sqlite3.OperationalError("database is locked")
+        def disconnected(table, rows):
+            raise StoreError("offline")
 
-        monkeypatch.setattr(db, "write_call_facts", locked)
-        assert loaded_files_backfill.run(db, _factory(tmp_path)) is False
-        assert db.state_value(loaded_files_backfill.STATE_KEY) is None
+        writer.append = disconnected
+        assert loaded_files_backfill.run(target, state, _factory(tmp_path)) is False
+        assert not state.read()
 
 
 # ── API ───────────────────────────────────────────────────────────────
@@ -270,46 +251,54 @@ class TestBackfill:
 
 class TestApi:
     def _seed(self, db, project: str) -> None:
-        rows = [
-            LoadedFileRow(session_id="s", path=f"{project}/AGENTS.md", how="instructions", ts=20.0, detail="Project"),
-            LoadedFileRow(session_id="s", path="/home/u/.claude/CLAUDE.md", how="instructions", ts=10.0, detail="User"),
-            LoadedFileRow(session_id="s", path=f"{project}/sub/CLAUDE.md", how="nested_memory", ts=30.0, agent_id="sub-1"),
-        ]
-        db.write_call_facts(CallFacts(loaded_files=rows))
+        db.insert("session_loaded_files", session_id="s", path=f"{project}/AGENTS.md", how="instructions",
+                  ts=20.0, detail="Project")
+        db.insert("session_loaded_files", session_id="s", path="/home/u/.claude/CLAUDE.md", how="instructions",
+                  ts=10.0, detail="User")
+        db.insert("session_loaded_files", session_id="s", path=f"{project}/sub/CLAUDE.md", how="nested_memory",
+                  ts=30.0, agent_id="sub-1")
 
-    def test_loaded_is_sorted_by_time_and_marks_files(self, db, monkeypatch):
-        from aictl import tree_walk
+    def _record(self, db, project, agent, root):
+        from aictl.dashboard.projections.history import HistoryScope, typed_rows
 
+        history = HistoryScope.local(db)
+        facts = typed_rows(history.read("sequence.context", sid="s"))
+        return _agent_record(db, None, {"project_path": project}, "s", {"id": agent}, root,
+                             history, context_facts=facts)
+
+    def test_loaded_is_sorted_by_time_and_marks_files(self, kusto_store, monkeypatch):
+        db = kusto_store
         project = "/work/proj"
         self._seed(db, project)
+        instructions = f"{project}/.github/copilot-instructions.md"
+        db.insert("files", path=instructions, tool="copilot-cli", scope="project")
         monkeypatch.setattr(
-            tree_walk, "files_for_folder",
-            lambda folder: {"git_root": project, "read": True, "files": [f"{project}/AGENTS.md", f"{project}/.github/copilot-instructions.md"]},
+            "aictl.tree_walk.files_for_folder", lambda _: pytest.fail("The historical inventory was not used")
         )
-        cf = _agent_record(db, db._conn(), {"project_path": project}, "s", {"id": "s"}, True)["context_files"]
+        cf = self._record(db, project, "s", True)["context_files"]
         assert [(e["path"], e["how"], e["detail"], e["ts"]) for e in cf["loaded"]] == [
             ("/home/u/.claude/CLAUDE.md", "instructions", "User", 10.0),
             (f"{project}/AGENTS.md", "instructions", "Project", 20.0),
             (f"{project}/sub/CLAUDE.md", "nested_memory", "", 30.0),
         ]
         assert cf["loaded"][0]["name"] == "CLAUDE.md"
-        assert cf["files"] == [
-            {"path": f"{project}/AGENTS.md", "name": "AGENTS.md", "loaded": True},
-            {"path": f"{project}/.github/copilot-instructions.md", "name": "copilot-instructions.md"},
-        ]
+        assert cf["source"] == "kusto.queryable"
+        assert {file["path"] for file in cf["files"] if file.get("loaded")} == {row["path"] for row in cf["loaded"]}
+        assert {"path": instructions, "name": "copilot-instructions.md"} in cf["files"]
 
-    def test_a_subagent_gets_its_own_rows_else_the_main_agents(self, db, monkeypatch):
+    def test_a_subagent_gets_its_own_rows_else_the_main_agents(self, kusto_store, monkeypatch):
         from aictl import tree_walk
 
+        db = kusto_store
         self._seed(db, "/work/proj")
         monkeypatch.setattr(tree_walk, "files_for_folder", lambda folder: {"git_root": None, "read": False, "files": []})
-        own = _agent_record(db, db._conn(), {"project_path": "/work/proj"}, "s", {"id": "sub-1"}, False)
+        own = self._record(db, "/work/proj", "sub-1", False)
         assert [e["path"] for e in own["context_files"]["loaded"]] == ["/work/proj/sub/CLAUDE.md"]
         assert own["artifacts"] == []
-        other = _agent_record(db, db._conn(), {"project_path": "/work/proj"}, "s", {"id": "sub-2"}, False)
+        other = self._record(db, "/work/proj", "sub-2", False)
         assert [e["path"] for e in other["context_files"]["loaded"]] == ["/home/u/.claude/CLAUDE.md", "/work/proj/AGENTS.md"]
 
-    def test_no_rows_and_no_folder(self, db):
+    def test_no_rows_and_no_folder(self):
         assert _session_context_files("") == {"git_root": None, "read": False, "files": [], "total": 0, "loaded": []}
 
 

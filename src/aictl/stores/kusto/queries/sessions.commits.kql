@@ -1,0 +1,11 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_project:string = '', requested_session:string, row_limit:long
+);
+session_commits
+| where session_id == requested_session and (all_nodes or node_id == requested_node)
+    and (isempty(requested_project) or ['project'] == requested_project)
+| summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| order by ts asc, sha asc
+| take row_limit
+| project sha, author_name, author_email, ts, subject

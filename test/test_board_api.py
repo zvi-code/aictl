@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from kusto_replay import NOW, SeededStore
 
 from aictl.dashboard import board_api
 from aictl.dashboard.board_api import (
@@ -31,9 +32,7 @@ from aictl.dashboard.board_api import (
     tool_detail,
 )
 from aictl.data.model_pricing import cost_usd, request_cost_usd
-from aictl.storage import HistoryDB
 
-NOW = time.time()
 DAY = 86400.0
 SONNET = "claude-sonnet-4-5"
 HAIKU = "claude-haiku-4-5"
@@ -41,9 +40,20 @@ GPT = "gpt-5"
 
 
 def _insert(conn, table: str, **values) -> None:
-    columns = ", ".join(values)
-    marks = ", ".join("?" for _ in values)
-    conn.execute(f"INSERT INTO {table} ({columns}) VALUES ({marks})", tuple(values.values()))
+    text_fields = {
+        "agents": ("task",), "tool_invocations": ("input", "result_summary", "target"),
+        "file_history": ("content",), "files": ("content",),
+    }.get(table, ())
+    text = {key: values.pop(key) for key in text_fields if key in values}
+    row = conn.facts.insert(table, **values)
+    if text:
+        fields = ("agent_id",) if table == "agents" else ("dedup_key",) if table == "tool_invocations" else (
+            ("path", "ts") if table == "file_history" else ("path",))
+        retained = {k: row[k] for k in fields}
+        if table == "agents":
+            retained["ts"] = row.get("started_at", 0)
+        conn.facts.insert(table + "_text", **retained, **text)
+
 
 
 def _request(conn, ts, sid, tool, project, model, i=0, o=0, cr=0, cw=0, duration=0.0, aid="", **extra):
@@ -101,7 +111,16 @@ def _session(conn, sid, tool, project, started, ended=None):
     _insert(conn, "sessions", session_id=sid, tool=tool, project_path=project, started_at=started, ended_at=ended)
 
 
-def seed(db: HistoryDB, now: float) -> None:
+def _insert_many(db, table, columns, rows):
+    for row in rows:
+        _insert(db, table, **dict(zip(columns.split(), row, strict=True)))
+
+
+def _snapshot_store(db, version=1, snapshot=None):
+    return SimpleNamespace(version=version, snapshot=snapshot, history_store=db.history_store)
+
+
+def seed(db: SeededStore, now: float) -> None:
     """Five sessions, with hand-countable numbers.
 
     done:     claude-code in /p/alpha, ended, a subagent, 3 + 1 model calls.
@@ -110,7 +129,7 @@ def seed(db: HistoryDB, now: float) -> None:
     looper:   claude-code in /p/alpha, active, its last 3 calls are the same failure.
     waiter:   claude-code in /p/beta, active, one pending confirmation.
     """
-    conn = db._conn()
+    conn = db
     t = now - 2 * DAY
     _session(conn, "done", "claude-code", "/p/alpha", t, t + 300)
     _request(conn, t + 10, "done", "claude-code", "/p/alpha", SONNET, i=100, o=50, cr=800, cw=50, duration=1000)
@@ -133,7 +152,9 @@ def seed(db: HistoryDB, now: float) -> None:
     _prompt(conn, t + 5, "done", "claude-code", "/p/alpha", text="Fix the parser token=abcd1234secret", prompt_file="fix.prompt.md")
     _prompt(conn, t + 25, "done", "claude-code", "/p/alpha", text="Now add a test")
     _call(conn, t + 12, "done", "claude-code", "/p/alpha", "Bash", "pytest test/", duration=4000, confirm="approved", confirm_wait_ms=2000, exit_code=0)
-    _call(conn, t + 22, "done", "claude-code", "/p/alpha", "Edit", "src/a.py", duration=100, confirm="auto")
+    _call(conn, t + 22, "done", "claude-code", "/p/alpha", "Edit", "src/a.py", duration=100, confirm="auto",
+          source_event_id="edit-1",
+          input=json.dumps({"old_string": "api_key=oldsecretvalue\nb", "new_string": "api_key=newsecretvalue\nb2\nc"}))
     _call(conn, t + 32, "done", "claude-code", "/p/alpha", "Bash", "pytest test/", is_error=1, duration=6000, confirm="denied", exit_code=1)
     _call(conn, t + 42, "done", "claude-code", "/p/alpha", "Read", "src/a.py", duration=10, aid="sub-1")
     _call(conn, t + 43, "done", "claude-code", "/p/alpha", "mcp__db__query", "select", is_error=1, duration=20, aid="sub-1", result_summary="Timeout after 30s")
@@ -150,10 +171,6 @@ def seed(db: HistoryDB, now: float) -> None:
         project_path="/p/alpha",
         source_event_id="edit-1",
         detail=json.dumps({"lines_added": 2, "lines_removed": 1}),
-    )
-    conn.execute(
-        "UPDATE tool_invocations SET source_event_id = 'edit-1', input = ? WHERE session_id = 'done' AND tool_name = 'Edit'",
-        (json.dumps({"old_string": "api_key=oldsecretvalue\nb", "new_string": "api_key=newsecretvalue\nb2\nc"}),),
     )
 
     t2 = now - 1 * DAY
@@ -195,7 +212,6 @@ def seed(db: HistoryDB, now: float) -> None:
     _insert(conn, "process_snapshots", ts=now - 100, pid=11, tool="claude-code", cpu_percent=10.0, memory_rss_mb=100.0)
     _insert(conn, "process_snapshots", ts=now - 100, pid=12, tool="claude-code", cpu_percent=5.0, memory_rss_mb=50.0)
     _insert(conn, "process_snapshots", ts=now - 100, pid=21, tool="copilot-vscode", cpu_percent=1.0, memory_rss_mb=9.0)
-    conn.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -222,15 +238,23 @@ def _no_real_process_times(monkeypatch):
     monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
 
 
+@pytest.fixture(autouse=True)
+def board_clock(monkeypatch):
+    from aictl.dashboard import web_server
+
+    frozen = SimpleNamespace(**(vars(time) | {"time": lambda: NOW}))
+    monkeypatch.setattr(board_api, "time", frozen)
+    monkeypatch.setattr(web_server, "time", frozen)
+    monkeypatch.setitem(globals(), "time", frozen)
+    return frozen
+
+
 @pytest.fixture()
-def db(tmp_path):
-    # Routes that read the clock must see this seed as recent, however long the run has taken.
-    global NOW
-    NOW = time.time()
-    store = HistoryDB(db_path=str(tmp_path / "board.db"), flush_interval=0)
-    seed(store, NOW)
-    yield store
-    store.close()
+def db(kusto_store):
+    seed(kusto_store, NOW)
+    return kusto_store
+
+
 
 
 def _filters(**kw) -> Filters:
@@ -367,10 +391,10 @@ class TestAgents:
         assert ids[:2] == ["waiter", "looper"]
 
     def test_row_cap_keeps_every_root_first(self, db):
-        conn = db._conn()
+        conn = db
         for k in range(250):
             _request(conn, NOW - 3 * DAY + k, f"many-{k}", "claude-code", "/p/many", SONNET, i=1)
-        conn.commit()
+
         payload = _board(db)
         assert len(payload["agents"]) == 200
         assert payload["scope"]["shown_agents"] == 255 + 1
@@ -396,9 +420,9 @@ class TestAgents:
         # By tokens: claude-code, copilot-vscode, codex-cli.
         assert [t["id"] for t in payload["options"]["tools"]] == ["claude-code", "copilot-vscode", "codex-cli"]
         assert list(payload["series"]["cost"]["by_tool"]) == ["claude-code", "copilot-vscode", "codex-cli"]
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 3600, "codex-big", "codex-cli", "/p/gamma", GPT, i=999999)
-        conn.commit()
+
         assert [t["id"] for t in _board(db)["options"]["tools"]][0] == "codex-cli"
 
 
@@ -421,9 +445,9 @@ class TestFallback:
         assert payload["series"]["tokens"]["input"][index] == 300 + 2000 + 200 + 10
 
     def test_session_with_requests_uses_no_fallback(self, db):
-        conn = db._conn()
+        conn = db
         _insert(conn, "session_usage", session_id="vsc", tool="copilot-vscode", input_tokens=5_000_000, last_activity_at=NOW - 1000)
-        conn.commit()
+
         assert _agent(_board(db), "vsc")["input"] == 2000
 
     def test_fallback_outside_window_absent(self, db):
@@ -431,28 +455,28 @@ class TestFallback:
         assert all(a["id"] != "usage" for a in payload["agents"])
 
     def test_bad_models_json_uses_the_total(self, db):
-        conn = db._conn()
-        conn.execute("UPDATE session_usage SET models_json = 'not json' WHERE session_id = 'usage'")
-        conn.commit()
+        conn = db
+        db.replace("session_usage", where={"session_id": "usage"}, models_json="not json")
+
         models = {m["model"] for m in _board(db)["by_model"]}
         assert GPT in models
 
 
 class TestPricing:
     def test_request_over_a_length_tier_is_priced_per_request(self, db):
-        conn = db._conn()
+        conn = db
         model = "claude-haiku-5-5"
         ts = NOW - 3 * DAY
         _request(conn, ts, "tier", "claude-code", "/p/alpha", model, i=150_000, o=10)
         _request(conn, ts + 1, "tier", "claude-code", "/p/alpha", model, i=10, o=10)
-        conn.commit()
+
         expected = request_cost_usd(model, 150_000, 10, ts=ts) + request_cost_usd(model, 10, 10, ts=ts + 1)
         assert _agent(_board(db), "tier")["cost_usd"] == pytest.approx(expected, abs=1e-6)
 
     def test_unknown_model_cost_is_null_and_tokens_stay(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 3 * DAY, "mystery", "claude-code", "/p/alpha", "no-such-model", i=7)
-        conn.commit()
+
         payload = _board(db)
         row = _agent(payload, "mystery")
         assert row["input"] == 7 and row["cost_usd"] is None
@@ -480,7 +504,7 @@ class TestFilters:
         assert [p["project"] for p in payload["projects"]] == ["/p/beta"]
 
     def test_windows_project_spellings_keep_sessions_and_their_facts(self, db):
-        conn = db._conn()
+        conn = db
         spellings = [r"C:\Review\Repo", r"c:\review\repo", "C:/Review/Repo"]
         for i, project in enumerate(spellings):
             sid = f"windows-{i}"
@@ -499,7 +523,7 @@ class TestFilters:
                 path=project + r"\a.py",
                 project_path=project,
             )
-        conn.commit()
+
         payload = _board(db, project=spellings[0])
         assert self._ids(payload) == {"windows-0", "windows-1", "windows-2"}
         assert payload["kpis"]["tokens"] == 30
@@ -510,10 +534,10 @@ class TestFilters:
         assert len(options) == 1 and options[0]["agents"] == 3
 
     def test_windows_project_filter_also_applies_to_previous_window(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 2 * DAY, "windows-old", "copilot-cli", r"c:\review\repo", GPT, i=12)
         _prompt(conn, NOW - 2 * DAY, "windows-old", "copilot-cli", "C:/Review/Repo", text="Earlier")
-        conn.commit()
+
         payload = compute_board(db, _filters(since=NOW - 1.5 * DAY, project=r"C:\Review\Repo"), None, NOW)
         assert payload["kpis"]["prev"]["tokens"] == 12
         assert payload["kpis"]["prev"]["messages"] == 2
@@ -607,9 +631,9 @@ class TestNulls:
         assert row["confirms_asked"] is None
 
     def test_tool_with_tool_rows_is_zero(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 3 * DAY, "quiet", "claude-code", "/p/alpha", SONNET, i=1)
-        conn.commit()
+
         board_api._facts_memo.clear()
         row = _agent(_board(db), "quiet")
         assert row["tool_calls"] == 0
@@ -631,8 +655,8 @@ class TestNulls:
         assert series["tokens"]["input"][0] == 0
         assert series["failures"]["tool"][0] == 0
 
-    def test_empty_store(self, tmp_path):
-        store = HistoryDB(db_path=str(tmp_path / "empty.db"), flush_interval=0)
+    def test_empty_store(self, kusto_store):
+        store = kusto_store
         payload = compute_board(store, _filters(), None, NOW)
         k = payload["kpis"]
         assert k["tokens"] == 0
@@ -645,18 +669,17 @@ class TestNulls:
         assert payload["saved_usd"] is None
         assert payload["confirms"]["asked"] is None
         assert all(r["count"] == 0 and r["p95_ms"] is None for r in payload["latency"])
-        store.close()
 
     def test_missing_durations_are_excluded(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 3 * DAY, "nodur", "claude-code", "/p/alpha", SONNET, i=1, duration=0.0)
-        conn.commit()
+
         assert _board(db)["latency"][0]["count"] == 7
 
     def test_lines_unknown_are_null(self, db):
-        conn = db._conn()
+        conn = db
         _insert(conn, "file_write_events", ts=NOW - 3 * DAY, session_id="done", tool="claude-code", path="/p/alpha/b.py", project_path="/p/alpha")
-        conn.commit()
+
         files = {f["path"]: f for f in _board(db)["changes"]["files"]}
         assert files["/p/alpha/b.py"]["lines_added"] is None
         assert files["/p/alpha/b.py"]["edits"] == 1
@@ -670,9 +693,9 @@ class TestRowMeaning:
     """What the writers put in the fact tables, as stated in the contract."""
 
     def test_a_subagent_task_prompt_is_not_a_person_prompt(self, db):
-        conn = db._conn()
+        conn = db
         _prompt(conn, NOW - 2 * DAY + 36, "done", "claude-code", "/p/alpha", text="Look around", prompt_file="task.md", aid="sub-1")
-        conn.commit()
+
         payload = _board(db)
         assert payload["kpis"]["messages"] == 12 + 3 + 2 + 15
         done = _agent(payload, "done")
@@ -686,11 +709,11 @@ class TestRowMeaning:
         assert [t["text"] for t in agent_detail(db, "done", None, NOW)[1]["turns"]] == ["Now add a test", "Fix the parser token=<redacted>"]
 
     def test_a_permission_row_is_a_confirmation_and_not_a_tool_call(self, db):
-        conn = db._conn()
+        conn = db
         ts = NOW - 2 * DAY + 50
         for _ in range(3):
             _call(conn, ts, "done", "claude-code", "/p/alpha", "permission:url", "x", is_error=1, confirm="denied", confirm_wait_ms=9000)
-        conn.commit()
+
         payload = _board(db)
         assert payload["kpis"]["tool_calls"] == 15
         assert payload["kpis"]["failures"] == 5
@@ -715,10 +738,10 @@ class TestRowMeaning:
         assert detail["turns"][0]["tools"] == 3
 
     def test_a_tool_with_only_permission_rows_has_no_tool_call_data(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 3 * DAY, "perm", "copilot-desktop", "/p/x", SONNET, i=1)
         _call(conn, NOW - 3 * DAY, "perm", "copilot-desktop", "/p/x", "permission:read", "x", confirm="approved")
-        conn.commit()
+
         board_api._facts_memo.clear()
         payload = _board(db)
         assert payload["coverage"]["rows"][19]["key"] == "tool_calls"
@@ -727,35 +750,32 @@ class TestRowMeaning:
 
 
 class TestUnreportedFields:
-    def test_ttft_of_a_tool_that_has_none_is_null(self, tmp_path):
-        store = HistoryDB(db_path=str(tmp_path / "t.db"), flush_interval=0)
-        conn = store._conn()
+    def test_ttft_of_a_tool_that_has_none_is_null(self, kusto_store):
+        store = kusto_store
+        conn = store
         _request(conn, NOW - DAY, "cc", "claude-code", "/p", SONNET, i=1, duration=100)
-        conn.commit()
+
         row = next(r for r in compute_board(store, _filters(), None, NOW)["latency"] if r["what"] == "Time to first token")
         assert row == {"what": "Time to first token", "count": None, "p50_ms": None, "p95_ms": None, "p99_ms": None, "max_ms": None}
-        store.close()
 
-    def test_ttft_of_a_tool_that_reports_it_counts_zero(self, tmp_path):
-        store = HistoryDB(db_path=str(tmp_path / "t.db"), flush_interval=0)
-        conn = store._conn()
+    def test_ttft_of_a_tool_that_reports_it_counts_zero(self, kusto_store):
+        store = kusto_store
+        conn = store
         _request(conn, NOW - DAY, "cx", "codex-cli", "/p", GPT, i=1, duration=100)
-        conn.commit()
+
         row = next(r for r in compute_board(store, _filters(), None, NOW)["latency"] if r["what"] == "Time to first token")
         assert row["count"] == 0
         assert row["p50_ms"] is None
-        store.close()
 
-    def test_confirm_wait_of_a_tool_that_has_none_is_null(self, tmp_path):
-        store = HistoryDB(db_path=str(tmp_path / "t.db"), flush_interval=0)
-        conn = store._conn()
+    def test_confirm_wait_of_a_tool_that_has_none_is_null(self, kusto_store):
+        store = kusto_store
+        conn = store
         _call(conn, NOW - DAY, "cc", "claude-code", "/p", "Bash", "ls", confirm="approved")
-        conn.commit()
+
         confirms = compute_board(store, _filters(), None, NOW)["confirms"]
         assert confirms["approved"] == 1
         assert confirms["p95_wait_s"] is None
         assert confirms["by_tool"][0]["median_wait_s"] is None
-        store.close()
 
     def test_cache_write_of_vscode_is_null_everywhere(self, db):
         payload = _board(db, tools=("copilot-vscode",))
@@ -770,12 +790,12 @@ class TestUnreportedFields:
 
     def test_app_totals_only_session(self, db):
         """A desktop session known only by its totals: no model split and no counts."""
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 3 * DAY, "other", "copilot-desktop", "/p/d", SONNET, i=1)
         _call(conn, NOW - 3 * DAY, "other", "copilot-desktop", "/p/d", "Bash", "ls")
         _prompt(conn, NOW - 3 * DAY, "other", "copilot-desktop", "/p/d", text="hi")
         _insert(conn, "session_usage", session_id="app", tool="copilot-desktop", input_tokens=500, output_tokens=50, last_activity_at=NOW - 3 * DAY, project_path="/p/d")
-        conn.commit()
+
         board_api._facts_memo.clear()
         payload = _board(db)
         row = _agent(payload, "app")
@@ -838,9 +858,9 @@ class TestSections:
         assert "ls /missing" in kinds["loop"]["detail"]
 
     def test_stale_pending_on_an_ended_session_is_not_waiting(self, db):
-        conn = db._conn()
+        conn = db
         _call(conn, NOW - 3 * DAY, "done", "claude-code", "/p/alpha", "Write", "x", confirm="pending")
-        conn.commit()
+
         row = _agent(_board(db), "done")
         assert row["status"] != "waiting"
         assert row["pending"] is None
@@ -868,9 +888,9 @@ class TestSections:
         assert "abcd1234secret" not in done[-1]["text"]
 
     def test_metadata_capture_keeps_text_empty(self, db):
-        conn = db._conn()
-        conn.execute("UPDATE session_prompts SET text = ''")
-        conn.commit()
+        conn = db
+        db.replace("session_prompts", where={}, text="")
+
         payload = _board(db)
         assert all(p["text"] == "" for p in payload["prompts"])
         assert _agent(payload, "done")["title"] == "Claude Code · alpha"
@@ -885,11 +905,11 @@ class TestSections:
         folder.mkdir(parents=True)
         (folder / "used.prompt.md").write_text("x", encoding="utf-8")
         (folder / "unused.prompt.md").write_text("x", encoding="utf-8")
-        conn = db._conn()
+        conn = db
         ts = NOW - 3 * DAY
         _prompt(conn, ts, "disk", "claude-code", str(project), text="x", prompt_file="used.prompt.md")
         _request(conn, ts, "disk", "claude-code", str(project), SONNET, i=1)
-        conn.commit()
+
         rows = {r["file"]: r for r in _board(db)["project_prompts"] if r["project"] == str(project)}
         assert rows[".github/prompts/used.prompt.md"]["uses"] == 1
         assert rows[".github/prompts/unused.prompt.md"]["uses"] == 0
@@ -908,7 +928,7 @@ class TestSections:
         assert beta["api_errors"] == 1
 
     def test_memory_files(self, db):
-        conn = db._conn()
+        conn = db
         _insert(conn, "files", path="/p/alpha/CLAUDE.md", tool="claude-code", category="memory", scope="project", tokens=120, last_changed=NOW - 50)
         _insert(conn, "files", path="/p/alpha/other.md", tool="claude-code", category="instructions")
         _insert(
@@ -920,7 +940,7 @@ class TestSections:
             path="/p/alpha/CLAUDE.md",
             detail=json.dumps({"lines_added": 1, "lines_removed": 0}),
         )
-        conn.commit()
+
         rows = _board(db)["memory_files"]
         assert [r["path"] for r in rows] == ["/p/alpha/CLAUDE.md", "/p/alpha/other.md"]
         assert rows[0]["tokens"] == 120
@@ -933,30 +953,18 @@ class TestSections:
         assert rows["claude-code"]["data_from"] == "test"
         assert rows["codex-cli"]["last_data_ts"] == pytest.approx(NOW - DAY + 500)
 
-    def test_self(self, db):
+    def test_self(self, db, monkeypatch):
+        monkeypatch.setattr(db, "storage_status", lambda: pytest.fail("Read the legacy store for size"))
+        monkeypatch.setattr(db, "_retention_days", 30)
         section = _board(db)["self"]
         assert section["memory_rss_bytes"] > 0
-        assert section["history_bytes"] > 0
-        assert section["history_limit_bytes"] > 0
+        assert section["history_bytes"] is None
+        assert section["history_live_bytes"] is None
+        assert section["history_limit_bytes"] is None
         assert section["retention_days"] == 30
 
     def test_capture_mode(self, db):
         assert _board(db)["capture_mode"] == db.capture
-
-
-class TestRunningWrites:
-    def test_the_machine_route_names_the_writes_that_run_now(self, db):
-        import threading
-        from types import SimpleNamespace
-
-        db._writers[threading.get_ident() + 1] = [("flush", time.monotonic() - 249.0)]
-        try:
-            writes = board_api.compute_machine(db, SimpleNamespace(snapshot=None))["pipeline"]["self"]["writes"]
-        finally:
-            db._writers.clear()
-        assert [w["name"] for w in writes] == ["flush"]
-        assert writes[0]["age_s"] == pytest.approx(249.0, abs=2.0)
-        assert board_api.compute_machine(db, SimpleNamespace(snapshot=None))["pipeline"]["self"]["writes"] == []
 
 
 class TestSelfMemo:
@@ -1027,11 +1035,11 @@ class TestLive:
         assert _board(db, snapshot=self._snapshot(), tools=("codex-cli",))["processes"] == []
 
     def test_one_process_marks_only_the_newest_session_of_its_project(self, db):
-        conn = db._conn()
+        conn = db
         for sid, ts in (("old-a", NOW - 2000), ("old-b", NOW - 1900)):
             _session(conn, sid, "aider", "/p/x", NOW - 3000)
             _request(conn, ts, sid, "aider", "/p/x", SONNET, i=1)
-        conn.commit()
+
         snapshot = SimpleNamespace(sessions=[_live("aider:1:1", "aider", "/p/x", [1], 3000.0)], tools=[])
         payload = _board(db, snapshot=snapshot)
         assert _agent(payload, "old-b")["status"] == "idle"
@@ -1060,18 +1068,12 @@ class TestLiveProcessSessions:
 
     def _real_only(self, db):
         """One real session, recent enough to overlap the processes and old enough not to be active."""
-        conn = db._conn()
-        conn.execute("DELETE FROM requests")
-        conn.execute("DELETE FROM tool_invocations")
-        conn.execute("DELETE FROM session_prompts")
-        conn.execute("DELETE FROM session_usage")
-        conn.execute("DELETE FROM file_write_events")
-        conn.execute("DELETE FROM skill_uses")
-        conn.execute("DELETE FROM agents")
-        conn.execute("DELETE FROM sessions")
+        conn = db
+        db.facts.clear("requests", "tool_invocations", "session_prompts", "session_usage",
+                       "file_write_events", "skill_uses", "agents", "sessions")
         _session(conn, "real", "claude-code", "/p/one", NOW - 7200)
         _request(conn, NOW - 3600, "real", "claude-code", "/p/one", SONNET, i=100, o=10)
-        conn.commit()
+
 
     def test_several_process_rows_merge_into_the_one_real_session(self, db):
         self._real_only(db)
@@ -1095,9 +1097,9 @@ class TestLiveProcessSessions:
 
     def test_a_known_pid_link_merges_whatever_the_project_says(self, db):
         self._real_only(db)
-        conn = db._conn()
+        conn = db
         _insert(conn, "session_processes", session_id="real", pid=555, tool="claude-code")
-        conn.commit()
+
         snapshot = SimpleNamespace(sessions=[_live("claude-code:555:1", "claude-code", "/other", [555], 7000.0)], tools=[])
         payload = _board(db, snapshot=snapshot)
         assert [a["id"] for a in payload["agents"]] == ["real"]
@@ -1106,9 +1108,9 @@ class TestLiveProcessSessions:
     def test_a_process_first_seen_just_now_merges_into_a_session_active_minutes_ago(self, db):
         # The monitor dates a process from when it first saw it, so after a restart
         # every process looks newer than the last request of an idle session.
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 300, "idle", "claude-code", "/p/two", "m", i=10, o=5)
-        conn.commit()
+
         snapshot = SimpleNamespace(sessions=[_live("claude-code:8:1", "claude-code", "/p/two", [8], 30.0, 3.0)], tools=[])
         row = _agent(_board(db, snapshot=snapshot), "idle")
         assert row["status"] == "running"
@@ -1116,9 +1118,9 @@ class TestLiveProcessSessions:
         assert row["pids"] == [8]
 
     def test_cpu_comes_from_the_current_process_samples(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 300, "busy", "claude-code", "/p/two", "m", i=10, o=5)
-        conn.commit()
+
         procs = [{"pid": 8, "name": "n", "cpu_pct": 1.5, "mem_mb": 10.0}, {"pid": 9, "name": "n", "cpu_pct": 2.0, "mem_mb": 20.0}]
         snapshot = SimpleNamespace(
             sessions=[_live("claude-code:8:1", "claude-code", "/p/two", [8, 9], 30.0, 0.0)],
@@ -1128,9 +1130,9 @@ class TestLiveProcessSessions:
         assert (row["cpu_percent"], row["mem_mb"]) == (3.5, 30.0)
 
     def test_an_agent_worktree_counts_as_its_project(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 300, "wt", "claude-code", "/p/repo/.claude/worktrees/agent-1", "m", i=10, o=5)
-        conn.commit()
+
         payload = _board(db)
         assert _agent(payload, "wt")["project"] == "/p/repo"
         assert "/p/repo" in [p["project"] for p in payload["projects"]]
@@ -1225,10 +1227,10 @@ class TestLiveProcessSessions:
 
     def test_detail_of_an_old_session_does_not_take_the_process(self, db):
         self._real_only(db)
-        conn = db._conn()
+        conn = db
         _session(conn, "older", "claude-code", "/p/one", NOW - 7500)
         _request(conn, NOW - 7000, "older", "claude-code", "/p/one", SONNET, i=1)
-        conn.commit()
+
         snapshot = SimpleNamespace(sessions=[_live("claude-code:9:1", "claude-code", "/p/one", [9], 7400.0)], tools=[])
         assert agent_detail(db, "older", snapshot, NOW)[1]["agent"]["status"] == "ended"
         assert agent_detail(db, "real", snapshot, NOW)[1]["agent"]["status"] == "idle"
@@ -1236,7 +1238,7 @@ class TestLiveProcessSessions:
 
 class TestRangeKey:
     def test_a_client_clock_that_moves_keeps_one_answer(self, db, monkeypatch):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
         runs = []
         real = board_api.compute_board
@@ -1248,13 +1250,13 @@ class TestRangeKey:
 
     def test_old_rows_stay_in_their_buckets_while_the_clock_moves(self, db):
         """The range moves in steps, so an answer with no new data does not change."""
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         step = 30 * DAY / 48 / 4
         when = int(NOW / step) * step + 1.0  # just after a step line
-        conn = db._conn()
+        conn = db
         for k in range(2000):
             _request(conn, when - 20 * DAY + k * 60, "bulk", "claude-code", "/p/alpha", SONNET, i=1)
-        conn.commit()
+
         first = board_api.board_bytes(db, store, f"since={when - 30 * DAY}&until={when}", when)
         later = when + 3 * board_api.MEMO_TTL_S
         again = board_api.board_bytes(db, store, f"since={later - 30 * DAY}&until={later}", later)
@@ -1264,7 +1266,7 @@ class TestRangeKey:
         assert 0 <= rng["until"] - when <= step
 
     def test_a_range_in_the_past_keeps_its_own_key(self, db, monkeypatch):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = NOW
         one = json.loads(board_api.board_bytes(db, store, f"since={when - 3 * DAY}&until={when - DAY}", when))
         two = json.loads(board_api.board_bytes(db, store, f"since={when - 4 * DAY}&until={when - 2 * DAY}", when))
@@ -1281,11 +1283,11 @@ class TestRefreshBehind:
             board_api._refresh_thread.join(10)
 
     def test_a_poll_answers_from_memory_and_the_next_one_has_the_new_data(self, db):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         first = board_api.board_bytes(db, store, "", time.time(), background=True)
-        conn = db._conn()
+        conn = db
         _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-        conn.commit()
+
         # Computed moments ago: the old answer stays and no refresh starts.
         assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
         key = next(iter(board_api._COMPUTED_AT))
@@ -1299,7 +1301,7 @@ class TestRefreshBehind:
         """Two polls on a slow store compute once: the second takes the answer that finished while it waited."""
         import threading
 
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         real = board_api.compute_board
         calls = []
         computing, release, second_waits = threading.Event(), threading.Event(), threading.Event()
@@ -1352,42 +1354,42 @@ class TestRefreshBehind:
         assert out["a"] == out["b"]
 
     def test_a_locked_store_answers_with_the_last_board(self, db, monkeypatch):
-        import sqlite3
+        from aictl.stores.base import StoreError
 
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         first = board_api.board_bytes(db, store, "", time.time(), background=True)
 
         def locked(*_a, **_k):
-            raise sqlite3.OperationalError("database is locked")
+            raise StoreError("database is locked")
 
         monkeypatch.setattr(board_api, "_store_version", locked)
         assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(StoreError):
             board_api.board_bytes(db, store, "tool=codex-cli", time.time(), background=True)
 
     def test_an_answer_too_old_is_not_served(self, db):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         first = board_api.board_bytes(db, store, "", time.time(), background=True)
-        conn = db._conn()
+        conn = db
         _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-        conn.commit()
+
         key = next(iter(board_api._COMPUTED_AT))
         board_api._COMPUTED_AT[key] -= board_api.MAX_STALE_S
         assert board_api.board_bytes(db, store, "", time.time(), background=True) != first
 
     def test_a_new_filter_is_answered_for_that_filter(self, db):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         board_api.board_bytes(db, store, "", time.time(), background=True)
         payload = json.loads(board_api.board_bytes(db, store, "tool=codex-cli", time.time(), background=True))
         assert [a["id"] for a in payload["agents"]] == ["usage"]
 
     def test_a_failed_refresh_leaves_the_answer(self, db, monkeypatch):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         first = board_api.board_bytes(db, store, "", time.time(), background=True)
         monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: 1 / 0)
-        conn = db._conn()
+        conn = db
         _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-        conn.commit()
+
         key = next(iter(board_api._COMPUTED_AT))
         board_api._COMPUTED_AT[key] -= board_api.REFRESH_MIN_S
         assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
@@ -1401,7 +1403,7 @@ class TestUnchangedAnswers:
         return int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
 
     def test_a_recompute_with_the_same_data_returns_the_same_bytes(self, db):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = self._when()
         first = board_api.board_bytes(db, store, f"since={when - DAY}&until={when + 900}", when)
         again = board_api.board_bytes(db, store, f"since={when - DAY}&until={when + 900}", when + board_api.MEMO_TTL_S)
@@ -1423,7 +1425,7 @@ class TestUnchangedAnswers:
 
         when = end(self._when()) - board_api.MEMO_TTL_S
         assert end(when) == end(when + board_api.MEMO_TTL_S)
-        store = SimpleNamespace(version=1, snapshot=snapshot(1.0))
+        store = _snapshot_store(db, snapshot=snapshot(1.0))
         first = board_api.board_bytes(db, store, f"since={when - DAY}", when)
         store.snapshot = snapshot(50.0)
         store.version = 2
@@ -1431,16 +1433,16 @@ class TestUnchangedAnswers:
 
     def test_new_data_changes_the_bytes(self, db, monkeypatch):
         monkeypatch.setattr(board_api, "time", SimpleNamespace(time=time.time, monotonic=lambda: 100.0))
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = self._when()
         first = board_api.board_bytes(db, store, f"since={when - DAY}", when)
-        conn = db._conn()
+        conn = db
         _request(conn, when - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-        conn.commit()
+
         assert board_api.board_bytes(db, store, f"since={when - DAY}", when + 1) != first
 
     def test_the_bytes_are_sent_anew_after_a_while(self, db):
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = self._when()
         query = f"since={when - DAY}&until={when + 900}"
         first = json.loads(board_api.board_bytes(db, store, query, when))
@@ -1461,38 +1463,38 @@ class TestStatusRules:
 
     def test_recent_activity_wins_over_a_stored_end_time(self, db):
         """A Stop hook can close a session that is still working."""
-        conn = db._conn()
-        conn.execute("UPDATE sessions SET ended_at = ? WHERE session_id = 'waiter'", (NOW - 10,))
-        conn.commit()
+        conn = db
+        db.replace("sessions", where={"session_id": "waiter"}, ended_at=NOW - 10)
+
         assert _agent(_board(db), "waiter")["status"] == "waiting"
 
     def test_activity_older_than_15_minutes_is_ended(self, db):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - 16 * 60, "old", "claude-code", "/p/alpha", SONNET, i=1)
-        conn.commit()
+
         assert _agent(_board(db), "old")["status"] == "ended"
-        conn.execute("UPDATE requests SET ts = ? WHERE session_id = 'old'", (NOW - 14 * 60,))
-        conn.commit()
+        db.replace("requests", where={"session_id": "old"}, ts=NOW - 14 * 60)
+
         assert _agent(_board(db), "old")["status"] == "running"
 
     def test_failed_needs_the_last_call_to_fail(self, db):
-        conn = db._conn()
+        conn = db
         ts = NOW - DAY
         _call(conn, ts, "ok", "claude-code", "/p/alpha", "Bash", "a", is_error=1)
         _call(conn, ts + 1, "ok", "claude-code", "/p/alpha", "Bash", "b")
         _call(conn, ts, "bad", "claude-code", "/p/alpha", "Bash", "a")
         _call(conn, ts + 1, "bad", "claude-code", "/p/alpha", "Bash", "b", is_error=1)
-        conn.commit()
+
         payload = _board(db)
         assert _agent(payload, "ok")["status"] == "ended"
         assert _agent(payload, "bad")["status"] == "failed"
 
     def test_finished_subagent_of_an_active_session_is_ended(self, db):
-        conn = db._conn()
+        conn = db
         _insert(conn, "agents", agent_id="s2", session_id="looper", tool="claude-code", task="Plan", is_sidechain=1, started_at=NOW - 100, ended_at=NOW - 90, completed=1)
         _insert(conn, "agents", agent_id="s3", session_id="looper", tool="claude-code", task="Plan", is_sidechain=1, started_at=NOW - 80)
         _request(conn, NOW - 70, "looper", "claude-code", "/p/alpha", SONNET, i=1, aid="s3")
-        conn.commit()
+
         payload = _board(db)
         assert _agent(payload, "s2")["status"] == "ended"
         assert _agent(payload, "s3")["status"] == "running"
@@ -1560,12 +1562,12 @@ class TestLoopRule:
 
     def test_loops_are_found_per_agent(self, db):
         """Calls of two agents interleave in one session, and each agent's run counts."""
-        conn = db._conn()
+        conn = db
         ts = NOW - 3 * DAY
         for k in range(3):
             _call(conn, ts + k * 2, "mix", "claude-code", "/p/alpha", "Bash", "a", is_error=1, aid="m-1")
             _call(conn, ts + k * 2 + 1, "mix", "claude-code", "/p/alpha", "Read", "b")
-        conn.commit()
+
         loops = [loop for loop in _board(db)["loops"] if loop["agent_id"] == "m-1"]
         assert len(loops) == 1
 
@@ -1577,20 +1579,20 @@ class TestLoopRule:
         assert loop["tokens"] is None  # no model call inside the loop
 
     def test_loop_tokens_cover_the_calls_inside_it(self, db):
-        conn = db._conn()
+        conn = db
         t3 = NOW - 120
         _request(conn, t3 + 11, "looper", "claude-code", "/p/alpha", SONNET, i=40, o=2)
-        conn.commit()
+
         loop = next(row for row in _board(db)["loops"] if row["agent_id"] == "looper")
         assert loop["tokens"] == 42
         assert loop["cost_usd"] == pytest.approx(cost_usd(SONNET, 40, 2), abs=1e-6)
 
     def test_ended_session_with_loop_at_end_does_not_loop(self, db):
-        conn = db._conn()
+        conn = db
         ts = NOW - DAY
         for k in range(3):
             _call(conn, ts + k, "gone", "claude-code", "/p/alpha", "Bash", "a", is_error=1)
-        conn.commit()
+
         payload = _board(db)
         assert _agent(payload, "gone")["status"] == "failed"
         assert all(a["agent_id"] != "gone" for a in payload["attention"])
@@ -1659,18 +1661,18 @@ class TestTestClassification:
         assert not is_test_command(command)
 
     def test_only_command_tools_count(self, db):
-        conn = db._conn()
+        conn = db
         _call(conn, NOW - DAY, "t", "claude-code", "/p/alpha", "Read", "pytest")
-        conn.commit()
+
         assert [t["command"] for t in _board(db)["tests"]] == ["pytest test/"]
 
     def test_test_rows_and_state(self, db):
-        conn = db._conn()
+        conn = db
         ts = NOW - DAY
         _call(conn, ts, "t", "claude-code", "/p/alpha", "Bash", "go test", duration=100, exit_code=0)
         _call(conn, ts + 1, "t", "claude-code", "/p/alpha", "Bash", "go test", duration=300)  # exit_code null passes
         _call(conn, ts, "t", "claude-code", "/p/alpha", "Bash", "cargo test", exit_code=101)  # exit code alone fails
-        conn.commit()
+
         rows = {t["command"]: t for t in _board(db)["tests"]}
         assert rows["pytest test/"]["state"] == "Flaky"
         assert rows["pytest test/"]["runs"] == 2
@@ -1718,11 +1720,11 @@ class TestMasking:
         assert mask_secrets(None) == ""
 
     def test_target_on_every_route_is_masked(self, db):
-        conn = db._conn()
+        conn = db
         ts = NOW - 300
         _call(conn, ts, "leak", "claude-code", "/p/alpha", "Bash", "curl -H 'token=abcd1234secret' x", confirm="pending", is_error=1, result_summary="bad token=abcd1234secret")
         _request(conn, ts, "leak", "claude-code", "/p/alpha", SONNET, i=1)
-        conn.commit()
+
         board_text = json.dumps(_board(db))
         assert "abcd1234secret" not in board_text
         _status, detail = agent_detail(db, "leak", None, NOW)
@@ -1856,10 +1858,10 @@ class TestDetails:
         assert d["calls"][0]["title"].startswith("Fix the parser")
 
     def test_tool_row_limit(self, db):
-        conn = db._conn()
+        conn = db
         for k in range(205):
             _call(conn, NOW - 500 + k, "many", "claude-code", "/p/alpha", "Many")
-        conn.commit()
+
         assert len(tool_detail(db, "Many", NOW)[1]["calls"]) == 200
 
     def test_error_tool_and_api(self, db):
@@ -1882,18 +1884,18 @@ class TestDetails:
         assert {"kind": "add", "n": 3, "text": "c"} in d["diff"]
 
     def test_file_diff_from_history(self, db):
-        conn = db._conn()
+        conn = db
         _insert(conn, "file_history", path="/h.py", ts=1.0, content="a\nb\n")
         _insert(conn, "file_history", path="/h.py", ts=2.0, content="a\nc\n")
-        conn.commit()
+
         diff = file_detail(db, "/h.py", NOW)[1]["diff"]
         assert {"kind": "del", "n": 2, "text": "b"} in diff
         assert {"kind": "add", "n": 2, "text": "c"} in diff
 
     def test_file_without_stored_text_has_null_diff(self, db):
-        conn = db._conn()
+        conn = db
         _insert(conn, "file_write_events", ts=NOW, session_id="done", path="/nothing.py", tool="claude-code")
-        conn.commit()
+
         assert file_detail(db, "/nothing.py", NOW)[1]["diff"] is None
 
     def test_prompt(self, db):
@@ -1980,18 +1982,17 @@ class TestActions:
         run_action(db, tmp_path, {"action": "baseline-update", "confirm": True, "args": {"project": "\\\\host\\share"}})
         assert seen["project"] == tmp_path
 
-    def test_db_compact_runs_the_store_compaction(self, db, monkeypatch):
+    def test_db_compact_reports_retention_without_compaction(self, dashboard_store, monkeypatch):
         calls = []
-        monkeypatch.setattr(db, "compact", lambda: calls.append(1) or {"events_deleted": 2})
-        status, payload = run_action(db, "/", {"action": "db-compact", "confirm": True})
-        assert status == 200
-        assert payload["removed"] == {"events_deleted": 2}
-        assert calls == [1]
+        monkeypatch.setattr(dashboard_store, "compact", lambda: calls.append(1) or {"events_deleted": 2}, raising=False)
+        status, payload = run_action(dashboard_store, "/", {"action": "db-compact", "confirm": True})
+        assert status == 400
+        assert "retention policies replace local compaction" in payload["error"]
+        assert calls == []
 
-    def test_action_is_audited(self, db, monkeypatch):
-        monkeypatch.setattr(db, "compact", lambda: {})
-        run_action(db, "/", {"action": "db-compact", "confirm": True})
-        kinds = [r[0] for r in db._conn().execute("SELECT kind FROM events")]
+    def test_action_is_audited(self, dashboard_store, monkeypatch):
+        run_action(dashboard_store, "/", {"action": "db-compact", "confirm": True})
+        kinds = [r["kind"] for r in dashboard_store.history_store.writer.facts.rows["events"]]
         assert "action:db_compact" in kinds
 
 
@@ -2004,7 +2005,7 @@ def server(db):
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore
 
-    store = SnapshotStore(db=db)
+    store = SnapshotStore(db=db, history_store=db.history_store)
     store.update(DashboardSnapshot(timestamp=NOW, root="/tmp", tools=[]))
     srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/tmp"))
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -2157,7 +2158,7 @@ class TestHttp:
 class TestMemo:
     def test_same_key_and_version_reuse_the_answer(self, db, monkeypatch):
         board_api._MEMO._entries.clear()
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         runs = []
         real = board_api.compute_board
         monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: runs.append(1) or real(*a, **k))
@@ -2170,21 +2171,21 @@ class TestMemo:
 
     def test_new_rows_refresh_at_once_and_merged_rows_within_the_ttl(self, db):
         board_api._MEMO._entries.clear()
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
         board_api.board_bytes(db, store, "", when)
-        conn = db._conn()
+        conn = db
         _request(conn, when - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-        conn.commit()
+
         assert b'"fresh"' in board_api.board_bytes(db, store, "", when)
-        conn.execute("UPDATE requests SET input_tokens = 6 WHERE session_id = 'fresh'")
-        conn.commit()
+        db.replace("requests", where={"session_id": "fresh"}, input_tokens=6)
+
         payload = json.loads(board_api.board_bytes(db, store, "", when + board_api.MEMO_TTL_S))
         assert _agent(payload, "fresh")["input"] == 6
 
     def test_a_new_monitor_cycle_alone_does_not_recompute(self, db, monkeypatch):
         board_api._MEMO._entries.clear()
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
         first = board_api.board_bytes(db, store, "", when)
         store.version = 2
@@ -2195,7 +2196,7 @@ class TestMemo:
         board_api._MEMO._entries.clear()
         board_api._BASE_MEMO._entries.clear()
         board_api._BASE_TIMES.clear()
-        store = SimpleNamespace(version=1, snapshot=None)
+        store = _snapshot_store(db)
         reads = []
         real = board_api._Board._load_cells
         monkeypatch.setattr(board_api._Board, "_load_cells", lambda self: reads.append(1) or real(self))
@@ -2215,13 +2216,12 @@ class TestMemo:
         assert one_tool["kpis"]["cost_usd"] == fresh["kpis"]["cost_usd"]
 
     def test_percentiles_of_a_large_set_use_a_sample_and_keep_thin_groups(self, db, monkeypatch):
-        monkeypatch.setattr(board_api, "MAX_LATENCY_VALUES", 4)
-        conn = db._conn()
+        conn = db
         ts = NOW - 3 * DAY
         for k in range(100):
             _request(conn, ts + k, "wide", "claude-code", "/p/wide", SONNET, i=1, duration=float(k + 1))
         _request(conn, ts, "rare", "claude-code", "/p/rare", "claude-opus-4-5", i=1, duration=7777.0)
-        conn.commit()
+
         payload = _board(db)
         row = next(r for r in payload["latency"] if r["what"] == "Model reply")
         # Count and maximum stay exact.
@@ -2242,10 +2242,9 @@ class TestMemo:
 
 
 def seed_budget_store(
-    db: HistoryDB, now: float, rng: random.Random, sessions: int = 1000, requests: int = 100_000, days: int = 30
+    db: SeededStore, now: float, rng: random.Random, sessions: int = 1000, requests: int = 100_000, days: int = 30
 ) -> dict:
     """Many sessions over some days, in tens of projects, with subagents and tool calls."""
-    conn = db._conn()
     tools = ["claude-code", "copilot-cli", "copilot-vscode", "codex-cli"]
     models = [SONNET, HAIKU, GPT, "claude-opus-4-5"]
     names = ["Bash", "Read", "Edit", "Grep", "Write", "mcp__db__query", "Glob", "Task"]
@@ -2314,38 +2313,21 @@ def seed_budget_store(
                 write_rows.append((ts + 2, sid, tool, "Edit", "edit", f"{project}/src/mod_{r % 40}.py", project, '{"lines_added":3,"lines_removed":1}'))
             if r % 50 == 0:
                 skill_rows.append((ts + 3, sid, tool, project, f"skill-{r % 5}"))
-    conn.executemany(
-        "INSERT INTO sessions(session_id, tool, project_path, model, started_at, ended_at) VALUES (?,?,?,?,?,?)", session_rows
-    )
-    conn.executemany(
-        "INSERT INTO agents(agent_id, session_id, tool, task, is_sidechain, started_at, ended_at, completed) VALUES (?,?,?,?,?,?,?,?)",
-        agent_rows,
-    )
-    conn.executemany(
-        "INSERT INTO requests(ts, session_id, agent_id, tool, project_path, model, input_tokens, output_tokens, cache_read_tokens,"
-        " cache_creation_tokens, duration_ms, ttft_ms, is_error, source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        request_rows,
-    )
-    conn.executemany(
-        "INSERT INTO tool_invocations(ts, session_id, agent_id, tool, project_path, tool_name, target, is_error, duration_ms,"
-        " confirm, confirm_wait_ms, exit_code, result_summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        call_rows,
-    )
-    conn.executemany(
-        "INSERT INTO session_prompts(ts, session_id, agent_id, tool, project_path, text) VALUES (?,?,?,?,?,?)", prompt_rows
-    )
-    conn.executemany(
-        "INSERT INTO file_write_events(ts, session_id, tool, tool_name, operation, path, project_path, detail) VALUES (?,?,?,?,?,?,?,?)",
-        write_rows,
-    )
-    conn.executemany("INSERT INTO skill_uses(ts, session_id, tool, project_path, name) VALUES (?,?,?,?,?)", skill_rows)
+    _insert_many(db, "sessions", "session_id tool project_path model started_at ended_at", session_rows)
+    _insert_many(db, "agents", "agent_id session_id tool task is_sidechain started_at ended_at completed", agent_rows)
+    _insert_many(db, "requests", "ts session_id agent_id tool project_path model input_tokens output_tokens "
+                 "cache_read_tokens cache_creation_tokens duration_ms ttft_ms is_error source", request_rows)
+    _insert_many(db, "tool_invocations", "ts session_id agent_id tool project_path tool_name target is_error duration_ms "
+                 "confirm confirm_wait_ms exit_code result_summary", call_rows)
+    _insert_many(db, "session_prompts", "ts session_id agent_id tool project_path text", prompt_rows)
+    _insert_many(db, "file_write_events", "ts session_id tool tool_name operation path project_path detail", write_rows)
+    _insert_many(db, "skill_uses", "ts session_id tool project_path name", skill_rows)
     snapshots = [
         (start + i * 600.0, 1000 + j, tools[j % len(tools)], rng.random() * 50, 100 + rng.random() * 500)
         for i in range(int(days * DAY / 600))
         for j in range(4)
     ]
-    conn.executemany("INSERT INTO process_snapshots(ts, pid, tool, cpu_percent, memory_rss_mb) VALUES (?,?,?,?,?)", snapshots)
-    conn.commit()
+    _insert_many(db, "process_snapshots", "ts pid tool cpu_percent memory_rss_mb", snapshots)
     return {
         "sessions": len(session_rows),
         "requests": len(request_rows),
@@ -2362,9 +2344,9 @@ class TestBudget:
         rng = compute_board(db, Filters(since=NOW - 30 * DAY, until=NOW), None, NOW)["range"]
         assert rng["since"] == pytest.approx(NOW - 30 * DAY)
 
-    def test_big_store_stays_within_a_generous_budget(self, tmp_path):
-        store = HistoryDB(db_path=str(tmp_path / "big.db"), flush_interval=0)
-        now = time.time()
+    def test_big_store_stays_within_a_generous_budget(self, kusto_store):
+        store = kusto_store
+        now = NOW
         counts = seed_budget_store(store, now, random.Random(7), days=7)
         assert counts["sessions"] == 1000
         assert counts["requests"] >= 100_000
@@ -2376,7 +2358,6 @@ class TestBudget:
         assert payload["kpis"]["tokens"] > 0
         assert len(payload["agents"]) == 200
         assert payload["kpis"]["tokens"] == sum(m["tokens"] for m in payload["by_model"])
-        store.close()
 
 
 @pytest.mark.parametrize(
@@ -2405,12 +2386,8 @@ class TestSkillDetail:
         return tmp_path / "proj"
 
     def _use(self, db, project, name="checker", ts=1000.0):
-        conn = db._conn()
-        conn.execute(
-            "INSERT INTO skill_uses(ts, session_id, tool, project_path, name, trigger) VALUES (?,?,?,?,?,?)",
-            (ts, "s1", "copilot-cli", str(project), name, "agent-invoked"),
-        )
-        conn.commit()
+        db.insert("skill_uses", ts=ts, session_id="s1", tool="copilot-cli", project_path=str(project),
+                  name=name, trigger="agent-invoked")
 
     def test_shows_scope_usage_and_masked_text(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -2496,14 +2473,16 @@ def test_a_slow_board_refreshes_less_often(db, monkeypatch):
     monkeypatch.setattr(board_api, "_refresh_behind", lambda *a: refreshes.append(a))
     query = "since=1000&until=2000&buckets=10"
     filters = board_api.parse_filters(query, 5000.0)
-    board_api.board_bytes(db, None, query, 5000.0, background=True)
-    key = (str(db._path), filters)
+    store = _snapshot_store(db)
+    board_api.board_bytes(db, store, query, 5000.0, background=True)
+    history = board_api.HistoryScope.local(store)
+    key = ((history.reader, history.node), filters)
     board_api._COMPUTE_TOOK[key] = 2.0
     board_api._COMPUTED_AT[key] = 5000.0
     monkeypatch.setattr(board_api, "_store_version", lambda *_a: ("changed",))
-    board_api.board_bytes(db, None, query, 5015.0, background=True)
+    board_api.board_bytes(db, store, query, 5015.0, background=True)
     assert refreshes == []
-    board_api.board_bytes(db, None, query, 5021.0, background=True)
+    board_api.board_bytes(db, store, query, 5021.0, background=True)
     assert len(refreshes) == 1
 
 
@@ -2518,12 +2497,9 @@ class TestLoopInputs:
 
 
 def test_the_tool_drawer_keeps_to_the_time_range(db):
-    conn = db._conn()
-    conn.executemany(
-        "INSERT INTO tool_invocations(ts, session_id, tool, tool_name, dedup_key) VALUES(?,?,?,?,?)",
-        [(100.0 + i, "w", "copilot-cli", "windowed", f"w{i}") for i in range(5)],
-    )
-    conn.commit()
+    for i in range(5):
+        db.insert("tool_invocations", ts=100.0 + i, session_id="w", tool="copilot-cli", tool_name="windowed",
+                  dedup_key=f"w{i}")
     _status, inside = board_api.tool_detail(db, "windowed", 1000.0, 100.0, 103.0)
     assert inside["total"] == 3 and len(inside["calls"]) == 3
     assert board_api.tool_detail(db, "windowed", 1000.0, 500.0, 600.0)[1]["total"] == 0
@@ -2531,12 +2507,8 @@ def test_the_tool_drawer_keeps_to_the_time_range(db):
 
 def test_cost_uses_the_stored_per_call_figure(db):
     """Repricing the summed tokens lost the cache tier: Claude read $765 against $821."""
-    conn = db._conn()
-    conn.execute(
-        "INSERT INTO requests(ts, session_id, tool, dedup_key, model, input_tokens, cache_creation_tokens, cost_usd) VALUES(?,?,?,?,?,?,?,?)",
-        (1500.0, "priced", "claude-code", "priced1", "claude-opus-5-5", 10, 1000, 7.5),
-    )
-    conn.commit()
+    db.insert("requests", ts=1500.0, session_id="priced", tool="claude-code", dedup_key="priced1",
+              model="claude-opus-5-5", input_tokens=10, cache_creation_tokens=1000, cost_usd=7.5)
     payload = board_api.compute_board(db, board_api.parse_filters("since=1000&until=2000&buckets=10&tool=claude-code", 2500.0), None, 2500.0)
     assert payload["kpis"]["cost_usd"] == 7.5
     assert board_api.agent_detail(db, "priced", None, 2500.0)[1]["by_model"][0]["cost_usd"] == 7.5
@@ -2581,72 +2553,69 @@ class TestProjectRoot:
 
 class TestAgentSkillsAndContext:
     def _seed(self, db):
-        conn = db._conn()
         for i, size in enumerate((1000, 5000, 9000, 2000)):
-            conn.execute(
-                "INSERT INTO requests(ts, session_id, tool, dedup_key, model, input_tokens, cache_read_tokens) VALUES(?,?,?,?,?,?,?)",
-                (1000.0 + i, "ctx", "copilot-cli", f"c{i}", "m", 10, size - 10),
-            )
-        conn.execute(
-            "INSERT INTO requests(ts, session_id, agent_id, tool, dedup_key, model, input_tokens) VALUES(?,?,?,?,?,?,?)",
-            (1001.5, "ctx", "kid", "copilot-cli", "k1", "m", 77777),
-        )
-        conn.executemany(
-            "INSERT INTO skill_uses(dedup_key, ts, session_id, agent_id, tool, project_path, name, trigger) VALUES(?,?,?,?,?,?,?,?)",
-            [("s1", 1000.0, "ctx", "", "copilot-cli", "/p", "alpha", "user"), ("s2", 1001.0, "ctx", "kid", "copilot-cli", "/p", "alpha", "agent-invoked"), ("s3", 1002.0, "ctx", "kid", "copilot-cli", "/p", "beta", "agent-invoked")],
-        )
-        conn.commit()
+            db.insert("requests", ts=1000.0 + i, session_id="ctx", tool="copilot-cli", dedup_key=f"c{i}",
+                      model="m", input_tokens=10, cache_read_tokens=size - 10)
+        db.insert("requests", ts=1001.5, session_id="ctx", agent_id="kid", tool="copilot-cli",
+                  dedup_key="k1", model="m", input_tokens=77777)
+        for i, (agent, name, trigger) in enumerate((
+            ("", "alpha", "user"), ("kid", "alpha", "agent-invoked"), ("kid", "beta", "agent-invoked"),
+        )):
+            db.insert("skill_uses", dedup_key=f"s{i + 1}", ts=1000.0 + i, session_id="ctx", agent_id=agent,
+                      tool="copilot-cli", project_path="/p", name=name, trigger=trigger)
 
     def test_a_main_agent_lists_its_and_its_subagents_skills(self, db):
         self._seed(db)
-        assert {s["name"]: s["uses"] for s in board_api._agent_skills(db._conn(), "ctx", "ctx", True)} == {"alpha": 2, "beta": 1}
+        assert {s["name"]: s["uses"] for s in board_api._agent_skills(board_api.HistoryScope.local(db), "ctx", "ctx", True)} == {"alpha": 2, "beta": 1}
 
     def test_a_subagent_lists_only_its_own_skills(self, db):
         self._seed(db)
-        assert {s["name"]: s["uses"] for s in board_api._agent_skills(db._conn(), "ctx", "kid", False)} == {"alpha": 1, "beta": 1}
+        assert {s["name"]: s["uses"] for s in board_api._agent_skills(board_api.HistoryScope.local(db), "ctx", "kid", False)} == {"alpha": 1, "beta": 1}
 
     def test_context_is_per_call_and_leaves_out_subagents(self, db):
+        from aictl.dashboard.projections.history import typed_rows
+
         self._seed(db)
-        ctx = board_api._agent_context(db._conn(), "ctx", "ctx", True)
+        history = board_api.HistoryScope.local(db)
+        facts = typed_rows(history.read("sequence.context", sid="ctx"))
+        ctx = board_api._agent_context(db, "ctx", "ctx", True, facts=facts)
         assert (ctx["first"], ctx["last"], ctx["peak"], ctx["calls"], ctx["drops"]) == (1000, 2000, 9000, 4, 1)
 
     def test_context_by_agent_summarises_the_main_agent_and_each_subagent(self, db):
+        from aictl.dashboard.projections.history import typed_rows
+
         self._seed(db)
-        conn = db._conn()
         for i, size in enumerate((12000, 28000, 20000)):
-            conn.execute(
-                "INSERT INTO requests(ts, session_id, agent_id, tool, dedup_key, model, input_tokens, cache_read_tokens) VALUES(?,?,?,?,?,?,?,?)",
-                (1010.0 + i, "ctx", "a-sub", "copilot-cli", f"a{i}", "m", 10, size - 10),
-            )
-        conn.commit()
-        ctx = board_api._agent_context(conn, "ctx", "ctx", True)
+            db.insert("requests", ts=1010.0 + i, session_id="ctx", agent_id="a-sub", tool="copilot-cli",
+                      dedup_key=f"a{i}", model="m", input_tokens=10, cache_read_tokens=size - 10)
+        history = board_api.HistoryScope.local(db)
+        facts = typed_rows(history.read("sequence.context", sid="ctx"))
+        ctx = board_api._agent_context(db, "ctx", "ctx", True, facts=facts)
         # The seed gives the main agent 1000, 5000, 9000, 2000 and "kid" one call of 77777.
         assert ctx["by_agent"] == [
             {"agent_id": "", "calls": 4, "first": 1000, "last": 2000, "peak": 9000},
             {"agent_id": "a-sub", "calls": 3, "first": 12000, "last": 20000, "peak": 28000},
             {"agent_id": "kid", "calls": 1, "first": 77777, "last": 77777, "peak": 77777},
         ]
-        assert "by_agent" not in board_api._agent_context(conn, "ctx", "a-sub", False)
+        assert "by_agent" not in board_api._agent_context(db, "ctx", "a-sub", False, facts=facts)
 
     def test_skill_agents_count_subagents_not_sessions(self, db):
         self._seed(db)
-        conn = db._conn()
+        conn = db
         skill = board_api.skill_detail(db, "alpha", 2000.0)[1]
         assert skill["agents"] == 2 and conn is not None
 
     def test_a_plugin_skill_is_found_by_its_short_name(self, db):
-        conn = db._conn()
-        conn.execute("INSERT INTO skill_uses(dedup_key, ts, session_id, tool, name) VALUES('p', 1.0, 's', 'claude-code', 'plug:deep')")
-        conn.commit()
+        db.insert("skill_uses", dedup_key="p", ts=1.0, session_id="s", tool="claude-code", name="plug:deep")
         assert board_api.skill_detail(db, "deep", 2.0)[1]["uses"] == 1
 
 
 class TestAgentStatus:
     def _session_with(self, db, reason, age):
-        conn = db._conn()
+        conn = db
         _session(conn, "s", "claude-code", "/p/idle", NOW - 3000)
         _request(conn, NOW - age, "s", "claude-code", "/p/idle", SONNET, i=1, finish_reason=reason)
-        conn.commit()
+
 
     def test_a_finished_turn_is_idle_after_a_quiet_time(self, db):
         self._session_with(db, "end_turn", 300)
@@ -2674,11 +2643,11 @@ class TestAgentStatus:
 
 class TestProcessOwnership:
     def _two_sessions(self, db):
-        conn = db._conn()
+        conn = db
         for sid, ts in (("older", NOW - 200), ("newer", NOW - 100)):
             _session(conn, sid, "aider", "/p/two", NOW - 3000)
             _request(conn, ts, sid, "aider", "/p/two", SONNET, i=1)
-        conn.commit()
+
 
     def test_each_session_takes_one_process_of_its_project(self, db):
         self._two_sessions(db)
@@ -2732,10 +2701,10 @@ class TestProcessOwnership:
 
 class TestStopTargets:
     def test_a_session_gives_its_processes(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "s", "aider", "/p/stop", NOW - 3000)
         _request(conn, NOW - 100, "s", "aider", "/p/stop", SONNET, i=1)
-        conn.commit()
+
         snapshot = SimpleNamespace(sessions=[_live("aider:8:1", "aider", "/p/stop", [8, 9], 2000.0)], tools=[])
         assert board_api.live_pids_of(db, snapshot, "s", NOW) == [8, 9]
 
@@ -2744,47 +2713,47 @@ class TestStopTargets:
         assert board_api.live_pids_of(db, snapshot, "live:codex-cli:/p/only", NOW) == [4]
 
     def test_an_ended_session_gives_none(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "gone", "aider", "/p/stop", NOW - 3000)
         _request(conn, NOW - 100, "gone", "aider", "/p/stop", SONNET, i=1)
-        conn.commit()
+
         assert board_api.live_pids_of(db, SimpleNamespace(sessions=[], tools=[]), "gone", NOW) == []
 
 
 class TestPipedTests:
     def test_a_pass_behind_a_pipe_is_counted_as_unsure(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "t", "aider", "/p/t", NOW - 3000)
         _request(conn, NOW - 100, "t", "aider", "/p/t", SONNET, i=1)
         _call(conn, NOW - 90, "t", "aider", "/p/t", "Bash", "pytest -q | tail -5")
         _call(conn, NOW - 80, "t", "aider", "/p/t", "Bash", "set -o pipefail; pytest -q | tail -5")
         _call(conn, NOW - 70, "t", "aider", "/p/t", "Bash", "pytest -q")
-        conn.commit()
+
         assert _board(db)["tests_piped"] == 1
 
 
 class TestPrimaryModel:
     def test_the_model_with_the_most_tokens_is_primary(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "m", "aider", "/p/m", NOW - 3000)
         _request(conn, NOW - 200, "m", "aider", "/p/m", "a-small", i=10)
         _request(conn, NOW - 100, "m", "aider", "/p/m", "z-large", i=1000)
         _request(conn, NOW - 90, "m", "aider", "/p/m", "", i=5000)
-        conn.commit()
+
         row = _agent(_board(db), "m")
         assert row["primary_model"] == "z-large"
 
 
 class TestAgentToolTotals:
     def test_totals_count_every_call_past_the_row_cap(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "tt", "aider", "/p/tt", NOW - 3000)
         _request(conn, NOW - 2900, "tt", "aider", "/p/tt", SONNET, i=1)
         extra = board_api.MAX_DETAIL_ROWS + 5
         for k in range(extra):
             _call(conn, NOW - 2000 + k, "tt", "aider", "/p/tt", "Bash", f"echo {k}", duration=10.0)
         _call(conn, NOW - 100, "tt", "aider", "/p/tt", "Read", "a.py", is_error=1)
-        conn.commit()
+
         detail = agent_detail(db, "tt", None, NOW)[1]
         assert len(detail["tool_calls"]) == board_api.MAX_DETAIL_ROWS
         bash = detail["tool_totals"][0]
@@ -2792,12 +2761,12 @@ class TestAgentToolTotals:
         assert detail["tool_totals"][1]["failed"] == 1
 
     def test_totals_give_run_time_and_input_and_output_size_per_tool(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "ts", "claude-code", "/p/ts", NOW - 3000)
         for k, (ms, inb, outb) in enumerate([(100.0, 10, 1000), (200.0, 20, 3000), (900.0, 30, 5000), (0.0, None, None)]):
             _call(conn, NOW - 2000 + k, "ts", "claude-code", "/p/ts", "Bash", "ls", duration=ms, input_bytes=inb, output_bytes=outb)
         _call(conn, NOW - 1000, "ts", "claude-code", "/p/ts", "mcp__kusto__query", "q", duration=50.0, input_bytes=5, output_bytes=70)
-        conn.commit()
+
         detail = agent_detail(db, "ts", None, NOW)[1]
         by = {t["name"]: t for t in detail["tool_totals"]}
         bash = by["Bash"]
@@ -2831,10 +2800,10 @@ class TestPromptFilesSearch:
         return {r["file"]: r for r in _board(db)["project_prompts"] if r["project"] in (str(project), "")}
 
     def _seed_project(self, db, project):
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - DAY, "pp", "copilot-vscode", str(project), SONNET, i=1)
         _prompt(conn, NOW - DAY, "pp", "copilot-vscode", str(project), text="x")
-        conn.commit()
+
 
     def test_parent_folders_up_to_the_repository_and_nested_files(self, db, tmp_path, home):
         repo = tmp_path / "repo"
@@ -2885,20 +2854,20 @@ class TestPromptFilesSearch:
         project = tmp_path / "proj"
         (project / ".github" / "prompts").mkdir(parents=True)
         (project / ".github" / "prompts" / "used.prompt.md").write_text("x")
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - DAY, "pu", "copilot-vscode", str(project), SONNET, i=1)
         _prompt(conn, NOW - DAY, "pu", "copilot-vscode", str(project), text="x", prompt_file="used.prompt.md")
-        conn.commit()
+
         assert self._files(db, project)[".github/prompts/used.prompt.md"]["uses"] == 1
 
     def test_a_skill_started_from_a_prompt_is_not_listed_as_a_prompt_file(self, db, tmp_path, home):
         project = tmp_path / "proj"
         project.mkdir()
-        conn = db._conn()
+        conn = db
         _request(conn, NOW - DAY, "sk", "claude-code", str(project), SONNET, i=1)
         skill = str(project / ".claude" / "skills" / "review" / "SKILL.md")
         _prompt(conn, NOW - DAY, "sk", "claude-code", str(project), text="/review", prompt_file=skill)
-        conn.commit()
+
         assert not [r for r in _board(db)["project_prompts"] if r["file"].endswith("SKILL.md")]
 
     def test_the_payload_names_the_folders_it_searched(self, db, tmp_path, home):
@@ -2917,7 +2886,7 @@ class TestSkillFileReads:
         folder.mkdir(parents=True)
         path = folder / "SKILL.md"
         path.write_text("---\nname: checker\n---\nbody\n")
-        conn = db._conn()
+        conn = db
         for ts in (100.0, 500.0):
             _prompt(conn, ts, "s1", "claude-code", "/p", text="go")
         _insert(conn, "skill_uses", ts=110.0, session_id="s1", tool="claude-code", project_path="/p", name="checker", trigger="agent-invoked")
@@ -2926,7 +2895,7 @@ class TestSkillFileReads:
         _call(conn, 520.0, "s1", "claude-code", "/p", "Read", str(path))
         _call(conn, 530.0, "s1", "claude-code", "/p", "Read", str(folder / "other.md"))
         _call(conn, 540.0, "s1", "claude-code", "/p", "Bash", f"cat {path}")
-        conn.commit()
+
 
     def test_a_read_is_counted_apart_from_the_uses(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -2963,12 +2932,12 @@ class TestCoverageLimits:
 
 class TestSubagentsInTheWindow:
     def _session_with_subagents(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "long", "aider", "/p/long", NOW - 10 * DAY)
         _request(conn, NOW - 100, "long", "aider", "/p/long", SONNET, i=1)
         for aid, start, end in (("old-sub", NOW - 9 * DAY, NOW - 9 * DAY + 60), ("new-sub", NOW - 200, NOW - 100)):
             _insert(conn, "agents", agent_id=aid, session_id="long", tool="aider", task=aid, started_at=start, ended_at=end, completed=1)
-        conn.commit()
+
 
     def test_a_subagent_that_ended_before_the_window_has_no_row(self, db):
         self._session_with_subagents(db)
@@ -2984,10 +2953,10 @@ class TestSubagentsInTheWindow:
 
 class TestActiveNowFilter:
     def test_an_idle_session_is_active_now(self, db):
-        conn = db._conn()
+        conn = db
         _session(conn, "i", "aider", "/p/i", NOW - 3000)
         _request(conn, NOW - 300, "i", "aider", "/p/i", SONNET, i=1, finish_reason="end_turn")
-        conn.commit()
+
         assert "i" in [a["id"] for a in _board(db, status="active")["agents"]]
 
 
@@ -3023,34 +2992,29 @@ def _run(conn, sid, project, started, ended, i=0, o=0, files=0, tool="claude-cod
 
 class TestAgentDetailGit:
     def test_branch_commit_and_the_commits_attributed_to_the_session(self, db):
-        conn = db._conn()
-        conn.execute("UPDATE sessions SET git_branch = 'main', git_commit = 'abc1234' WHERE session_id = 'done'")
+        db.replace("sessions", where={"session_id": "done"}, git_branch="main", git_commit="abc1234")
         for sha, ts in (("a" * 40, NOW - DAY), ("b" * 40, NOW - DAY + 10)):
-            _insert(conn, "session_commits", session_id="done", sha=sha, ts=ts, subject="Fix")
-        conn.commit()
+            db.insert("session_commits", session_id="done", sha=sha, ts=ts, subject="Fix")
         assert agent_detail(db, "done", None, NOW)[1]["git"] == {"branch": "main", "commit": "abc1234", "commits_in_session": 2}
 
     def test_nothing_known_is_null_and_zero(self, db):
         assert agent_detail(db, "looper", None, NOW)[1]["git"] == {"branch": None, "commit": None, "commits_in_session": 0}
 
     def test_a_subagent_shows_the_git_state_of_its_session(self, db):
-        conn = db._conn()
-        conn.execute("UPDATE sessions SET git_branch = 'feature' WHERE session_id = 'done'")
-        conn.commit()
+        db.replace("sessions", where={"session_id": "done"}, git_branch="feature")
         assert agent_detail(db, "sub-1", None, NOW)[1]["git"]["branch"] == "feature"
 
 
 class TestAgentDetailRuns:
     def _seed_runs(self, db):
-        conn = db._conn()
-        conn.execute("UPDATE sessions SET input_tokens = 900, output_tokens = 100, files_modified = 4 WHERE session_id = 'done'")
+        db.replace("sessions", where={"session_id": "done"}, input_tokens=900, output_tokens=100, files_modified=4)
+        conn = db
         _run(conn, "r1", "/p/alpha", NOW - 5 * DAY, NOW - 5 * DAY + 100, i=400, o=100, files=1)
         _run(conn, "r2", "/p/alpha", NOW - 4 * DAY, NOW - 4 * DAY + 300, i=1500, o=500, files=3)
         _run(conn, "r3", "/p/alpha", NOW - 3 * DAY, NOW - 3 * DAY + 200, i=900, o=100, files=2)
         _run(conn, "old", "/p/alpha", NOW - 40 * DAY, NOW - 40 * DAY + 100, i=1, o=1)
         _run(conn, "elsewhere", "/p/beta", NOW - 3 * DAY, NOW - 3 * DAY + 100, i=1, o=1)
         _run(conn, "other-tool", "/p/alpha", NOW - 3 * DAY, NOW - 3 * DAY + 100, i=1, o=1, tool="codex-cli")
-        conn.commit()
 
     def test_ended_runs_of_the_same_tool_and_project_in_30_days_newest_first(self, db):
         self._seed_runs(db)
@@ -3070,9 +3034,9 @@ class TestAgentDetailRuns:
         assert runs["r1"]["tokens_ratio"] == 0.5
 
     def test_a_median_of_zero_gives_no_ratio(self, db):
-        conn = db._conn()
+        conn = db
         _run(conn, "z", "/p/alpha", NOW - 3 * DAY, NOW - 3 * DAY + 100)
-        conn.commit()
+
         done = next(r for r in agent_detail(db, "done", None, NOW)[1]["runs"] if r["current"])
         assert done["tokens_ratio"] is None
         assert done["churn_ratio"] is None
@@ -3135,10 +3099,10 @@ class TestAgentDetailResources:
         assert payload["resources"]["tool_calls_per_min"] == round(a["tool_calls"] / max(minutes, 1), 2)
 
     def test_the_newest_rate_limit_report(self, db):
-        conn = db._conn()
+        conn = db
         _event(conn, NOW - 500, "done", "hook:Stop", {"rate_limits": {"5h": {"used_pct": 10.0}}})
         _event(conn, NOW - 100, "done", "hook:Stop", {"rate_limits": {"5h": {"used_percentage": 42.5, "resets_at": "18:00"}, "7d": {"used_pct": 7}}}, seq=1)
-        conn.commit()
+
         rl = agent_detail(db, "done", None, NOW)[1]["resources"]["rate_limit"]
         assert rl["ts"] == NOW - 100
         assert rl["windows"] == [{"window": "5h", "used_pct": 42.5, "resets_at": "18:00"}, {"window": "7d", "used_pct": 7.0, "resets_at": None}]
@@ -3147,10 +3111,10 @@ class TestAgentDetailResources:
         assert agent_detail(db, "done", None, NOW)[1]["resources"]["rate_limit"] is None
 
     def test_language_model_tokens_by_extension(self, db):
-        conn = db._conn()
+        conn = db
         _event(conn, NOW - 50, "vsc", "otel:language_model.usage", {"extension.id": "ext.a", "input_tokens": 10, "output_tokens": 5}, tool="copilot-vscode")
         _event(conn, NOW - 40, "vsc", "otel:language_model.usage", {"extension.id": "ext.b", "input_tokens": 100, "output_tokens": 50}, tool="copilot-vscode", seq=1)
-        conn.commit()
+
         rows = agent_detail(db, "vsc", None, NOW)[1]["resources"]["lm_by_extension"]
         assert [(r["extension"], r["total_tokens"], r["calls"]) for r in rows] == [("ext.b", 150, 1), ("ext.a", 15, 1)]
 
@@ -3305,19 +3269,47 @@ class TestMachine:
         m = self._machine(_machine_snapshot([_machine_tool("context", processes=[_mproc(3)], live={"session_count": 1}, meta=True)]))
         assert m["processes"] == [] and m["monitor"]["per_tool"] == [] and m["pipeline"]["freshness"] == []
 
+    @staticmethod
+    def _after_health_refresh(db, store, **options):
+        ready = threading.Event()
+        reader = db.history_store.reader
+        read = reader.read
+
+        def watch(view, params):
+            try:
+                return read(view, params)
+            finally:
+                if view == "hooks.activity":
+                    ready.set()
+
+        reader.read = watch
+        try:
+            board_api.compute_machine(db, store, **options)
+            assert ready.wait(5), "Machine health did not finish its history reads"
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                with board_api._health_cache_lock:
+                    if not board_api._health_cache[reader]["refreshing"]:
+                        break
+                time.sleep(0.01)
+            return board_api.compute_machine(db, store, **options)
+        finally:
+            reader.read = read
+
     def test_pipeline_reads_the_sink_the_receiver_the_ingesters_and_data_quality(self, db):
         from aictl.dashboard.ingester_runner import IngesterHandle
 
-        db.record_data_quality("ingester:cursor", "failed", kind="ingester", severity="error", message="poll raised", detail={"error": "disk gone"}, ts=990.0)
-        db.record_data_quality("sink", "ok", kind="sink", message="fine", ts=995.0)
+        db.insert("data_quality_status", component="ingester:cursor", status="failed", kind="ingester",
+                  severity="error", message="poll raised", detail='{"error":"disk gone"}', updated_at=990.0)
+        db.insert("data_quality_status", component="sink", status="ok", kind="sink", message="fine", updated_at=995.0)
         sink = SimpleNamespace(stats=lambda: {"total_emitted": 120, "total_flushed": 100, "total_dropped": 20, "is_flooding": True, "flood_drop_count": 3, "buffer_size": 0, "metrics_tracked": 9})
         otel = SimpleNamespace(status=lambda: {"metrics_received": 5, "events_received": 6, "api_calls_total": 7, "api_errors_total": 1, "errors": 0, "dropped": 2, "last_receive_at": 1000.0, "active": True})
         ingesters = {
             "cursor": IngesterHandle(name="cursor", enabled=True, source_path=Path("/x/cursor.db"), source_exists=True, ingester=SimpleNamespace(last_poll_ts=980.0, last_poll_inserted=4)),
             "copilot": IngesterHandle(name="copilot", enabled=False, source_path=Path("/x/c.db"), source_exists=False, ingester=None),
         }
-        store = SimpleNamespace(snapshot=_machine_snapshot([]), _sink=sink)
-        m = board_api.compute_machine(db, store, None, otel=otel, ingesters=ingesters, stream_clients=2, now=1010.0)
+        store = SimpleNamespace(snapshot=_machine_snapshot([]), _sink=sink, history_store=db.history_store)
+        m = self._after_health_refresh(db, store, otel=otel, ingesters=ingesters, stream_clients=2, now=1010.0)
         pipe = m["pipeline"]
         assert pipe["sink"] == {"emitted": 120, "flushed": 100, "dropped": 20, "flood": True, "flood_drops": 3, "buffered": 0, "tracked": 9}
         assert pipe["otel_receiver"]["api_calls_total"] == 7 and pipe["otel_receiver"]["active"] is True
@@ -3328,32 +3320,28 @@ class TestMachine:
         assert [q["component"] for q in pipe["data_quality"]] == ["sink", "ingester:cursor"]  # newest first
         assert pipe["data_quality"][1]["severity"] == "error" and pipe["data_quality"][1]["text"] == "poll raised"
         assert pipe["stream"] == {"connected_clients": 2, "snapshot_ts": 1000.0, "snapshot_age_s": 10.0}
-        assert pipe["self"]["db_bytes"] > 0 and pipe["self"]["db_rows"] == sum(pipe["self"]["db_tables"].values())
+        assert pipe["self"]["db_bytes"] is None
+        assert pipe["self"]["db_rows"] == sum(pipe["self"]["db_tables"].values())
 
     def test_pipeline_counts_each_tools_hook_events_of_the_last_day(self, db):
-        from aictl.storage import EventRow
-
-        db.append_events(
-            [
-                EventRow(ts=1000.0, tool="copilot-cli", kind="hook:PreToolUse"),
-                EventRow(ts=1005.0, tool="copilot-cli", kind="hook:Stop"),
-                EventRow(ts=1010.0 - 90000, tool="claude-code", kind="hook:Stop"),  # older than a day
-                EventRow(ts=1001.0, tool="claude-code", kind="file_modified"),  # not a hook
-                EventRow(ts=1002.0, tool="claude-code", kind="hook:Stop", detail={"_aictl_verify": 1}),  # aictl's own check
-            ]
-        )
-        db.flush()
-        hooks = board_api.compute_machine(db, SimpleNamespace(snapshot=None), now=1010.0)["pipeline"]["hooks"]
+        db.insert("events", ts=1000.0, tool="copilot-cli", kind="hook:PreToolUse")
+        db.insert("events", ts=1005.0, tool="copilot-cli", kind="hook:Stop")
+        db.insert("events", ts=1010.0 - 90000, tool="claude-code", kind="hook:Stop")  # older than a day
+        db.insert("events", ts=1001.0, tool="claude-code", kind="file_modified")  # not a hook
+        db.insert("events", ts=1002.0, tool="claude-code", kind="hook:Stop", detail='{"_aictl_verify":1}')
+        store = SimpleNamespace(snapshot=None, history_store=db.history_store)
+        hooks = self._after_health_refresh(db, store, now=1010.0)["pipeline"]["hooks"]
         assert hooks == {"copilot-cli": {"count": 2, "last_fire_ts": 1005.0}}
 
     def test_history_counts_are_read_once_a_minute(self, db, monkeypatch):
         calls = []
-        real = db.stats
-        monkeypatch.setattr(db, "stats", lambda: calls.append(1) or real())
-        store = SimpleNamespace(snapshot=None)
-        board_api.compute_machine(db, store)
-        board_api.compute_machine(db, store)
-        assert len(calls) == 1
+        reader = db.history_store.reader
+        real = reader.read
+        monkeypatch.setattr(reader, "read", lambda view, params: calls.append(view) or real(view, params))
+        store = SimpleNamespace(snapshot=None, history_store=db.history_store)
+        board_api.compute_machine(db, store, now=1010.0)
+        board_api.compute_machine(db, store, now=1010.0)
+        assert calls.count("health.totals") == 1
 
     def test_freshness_comes_from_telemetry_and_the_live_monitor(self):
         telemetry = [{"tool": "claude-code", "source": "stats-cache", "confidence": 0.9, "errors": [{"message": "overloaded key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123"}, {"message": "x"}]}]
@@ -3433,6 +3421,20 @@ class TestContext:
     def _fresh_memo(self):
         board_api._context_memo.clear()
         board_api._context_db_memo.clear()
+
+    @pytest.fixture
+    def fixed_calendar(self, monkeypatch):
+        from datetime import datetime, timezone
+
+        class UTCDateTime(datetime):
+            @classmethod
+            def fromtimestamp(cls, timestamp, tz=timezone.utc):
+                return super().fromtimestamp(timestamp, tz)
+
+            def timestamp(self):
+                return datetime.timestamp(self.replace(tzinfo=timezone.utc))
+
+        monkeypatch.setattr(board_api, "datetime", UTCDateTime)
 
     def _ctx(self, snapshot, db=None, tools=None):
         return board_api.compute_context(db, SimpleNamespace(snapshot=snapshot), tools, now=self.NOW)
@@ -3519,23 +3521,19 @@ class TestContext:
         f = self._ctx(_csnap(self._tools()))["files"][0]
         assert (f["count"], f["truncated"], len(f["files"])) == (5, True, 2)
 
-    def test_memory_entries_and_their_growth_from_the_history(self, tmp_path):
+    def test_memory_entries_and_their_growth_from_the_history(self, kusto_store, fixed_calendar):
         from aictl.tools import MemoryEntry
 
-        db = HistoryDB(db_path=str(tmp_path / "ctx.db"), flush_interval=0)
-        try:
-            conn = db._conn()
-            for i, (mt, me) in enumerate([(100, 1), (150, 2), (400, 3)]):
-                _insert(conn, "system_snapshots", ts=self.NOW - 3000 + i * 1000, mem_tokens=mt, memory_entries=me)
-            _insert(conn, "system_snapshots", ts=self.NOW - 30 * 86400, mem_tokens=1, memory_entries=1)
-            mem = [MemoryEntry(source="claude-user-memory", profile="global", file="/home/me/.claude/CLAUDE.md", tokens=12, lines=4, mtime=self.NOW - 10)]
-            out = self._ctx(_csnap(self._tools(), agent_memory=mem), db=db)["memory"]
-        finally:
-            db.close()
+        for i, (mt, me) in enumerate([(100, 1), (150, 2), (400, 3)]):
+            kusto_store.insert("system_snapshots", ts=self.NOW - 3000 + i * 1000, mem_tokens=mt, memory_entries=me)
+        kusto_store.insert("system_snapshots", ts=self.NOW - 30 * 86400, mem_tokens=1, memory_entries=1)
+        mem = [MemoryEntry(source="claude-user-memory", profile="global", file="/home/me/.claude/CLAUDE.md", tokens=12, lines=4, mtime=self.NOW - 10)]
+        out = self._ctx(_csnap(self._tools(), agent_memory=mem))["memory"]
         e = out["entries"][0]
         assert (e["name"], e["source_label"], e["profile"], e["tokens"], e["lines"], e["recent"]) == ("CLAUDE.md", "Claude user memory", "global", 12, 4, True)
         assert out["tokens"] == 12
-        assert [(g["mem_tokens"], g["memory_entries"]) for g in out["growth"]] == [(100, 1), (150, 2), (400, 3)], "older than 7 days is left out"
+        growth = self._ctx(_csnap([]), db=kusto_store)["memory"]["growth"]
+        assert [(g["mem_tokens"], g["memory_entries"]) for g in growth] == [(100, 1), (150, 2), (400, 3)], "older than 7 days is left out"
 
     def test_lifetime_telemetry_keeps_quota_as_of_and_the_newest_errors(self):
         errors = [{"timestamp": f"2026-11-0{1 + i % 7}T00:00:{i:02d}", "type": "rate_limit", "message": f"e{i}"} for i in range(25)]
@@ -3558,20 +3556,18 @@ class TestContext:
         assert cp["errors"][0]["ts"] >= cp["errors"][-1]["ts"], "newest first"
         assert (rows["claude-code"]["cost_usd"], rows["claude-code"]["cost_quality"]) == (1.25, "reported")
 
-    def test_daily_usage_by_model_for_the_last_seven_days(self, tmp_path):
-        db = HistoryDB(db_path=str(tmp_path / "ctx.db"), flush_interval=0)
-        try:
-            conn = db._conn()
-            _request(conn, self.NOW - 60, "s1", "claude-code", "/r/alpha", SONNET, i=100, o=50)
-            _request(conn, self.NOW - 120, "s1", "claude-code", "/r/alpha", SONNET, i=10, o=5, cost_usd=0.5)
-            _request(conn, self.NOW - 90, "s2", "copilot-cli", "/r/alpha", "no-such-model", i=7)
-            _request(conn, self.NOW - 10 * 86400, "s3", "claude-code", "/r/alpha", SONNET, i=999)
-            daily = self._ctx(_csnap([]), db=db)["daily"]
-            board_api._context_db_memo.clear()
-            only = self._ctx(_csnap([]), db=db, tools=("claude-code",))["daily"]
-        finally:
-            db.close()
-        assert len(daily["days"]) == 7 and daily["days"][-1] == time.strftime("%Y-%m-%d", time.localtime(self.NOW))
+    def test_daily_usage_by_model_for_the_last_seven_days(self, kusto_store, fixed_calendar):
+        for i, (ago, sid, tool, model, inp, out, cost) in enumerate([
+            (60, "s1", "claude-code", SONNET, 100, 50, 0),
+            (120, "s1", "claude-code", SONNET, 10, 5, 0.5),
+            (90, "s2", "copilot-cli", "no-such-model", 7, 0, 0),
+            (10 * 86400, "s3", "claude-code", SONNET, 999, 0, 0),
+        ]):
+            kusto_store.insert("requests", id=i + 1, ts=self.NOW - ago, session_id=sid, tool=tool,
+                               model=model, input_tokens=inp, output_tokens=out, cost_usd=cost, project_path="/r/alpha")
+        daily = self._ctx(_csnap([]), db=kusto_store)["daily"]
+        only = self._ctx(_csnap([]), db=kusto_store, tools=("claude-code",))["daily"]
+        assert len(daily["days"]) == 7 and daily["days"][-1] == time.strftime("%Y-%m-%d", time.gmtime(self.NOW))
         rows = {r["model"]: r for r in daily["rows"]}
         son = rows[SONNET]
         assert (son["requests"], son["input"], son["output"], son["tokens"]) == (2, 110, 55, 165)
@@ -3649,10 +3645,10 @@ class TestContext:
 # ─── /api/board/agent/flow and /api/board/agent/transcript ────────
 
 
-def _seed_flow(db: HistoryDB, t: float, reply: str | None = None, second_prompt: str = "Now the tests") -> None:
+def _seed_flow(db: SeededStore, t: float, reply: str | None = None, second_prompt: str = "Now the tests") -> None:
     """A session read from the tool's own files: prompts, model calls, tool calls, a subagent and
     a compaction, and no hook or OpenTelemetry event."""
-    conn = db._conn()
+    conn = db
     _session(conn, "flow-s", "claude-code", "/p/flow", t, t + 600)
     _prompt(conn, t + 10, "flow-s", "claude-code", "/p/flow", text="Fix the parser")
     _prompt(conn, t + 50, "flow-s", "claude-code", "/p/flow", text="Explore the code", aid="sub-f")
@@ -3668,7 +3664,7 @@ def _seed_flow(db: HistoryDB, t: float, reply: str | None = None, second_prompt:
     )
     if reply is not None:
         _insert(conn, "copilot_session_messages", session_id="flow-s", source_row_id=1, source_table="t", role="assistant", content=reply, ts=t + 13)
-    conn.commit()
+
 
 
 def _no_legacy(sid, since, until):
@@ -3677,20 +3673,19 @@ def _no_legacy(sid, since, until):
 
 class TestAgentFlow:
     def test_skill_evidence_separates_file_load_invocation_and_reported_context(self, db, monkeypatch):
-        from aictl.dashboard import flow_skills
-        from aictl.storage import CallFacts, SessionStepRow
+        from datetime import datetime, timezone
 
         t = NOW - 60
         _seed_flow(db, NOW - DAY)
-        db.write_call_facts(CallFacts(steps=[
-            SessionStepRow("inv", t, "flow-s", "skill", name="testing", phase="invoked", source="skill.invoked"),
-            SessionStepRow("res", t + 2, "flow-s", "skill", name="document", phase="resolved", source="session.skills_loaded"),
-        ]))
-        conn = db._conn()
+        db.insert("session_steps", step_key="inv", ts=t, session_id="flow-s", kind="skill",
+                  name="testing", phase="invoked", source="skill.invoked")
+        db.insert("session_steps", step_key="res", ts=t + 2, session_id="flow-s", kind="skill",
+                  name="document", phase="resolved", source="session.skills_loaded")
+        conn = db
         _insert(conn, "skill_uses", dedup_key="old", ts=t, session_id="flow-s", name="testing", trigger="agent-invoked")
         for sid in ("flow-s", "other"):
             _insert(conn, "session_loaded_files", session_id=sid, path=r"C:\repo\testing\SKILL.md", how="skill", ts=t)
-        conn.commit()
+
         _, page = board_api.agent_flow(db, "flow-s", now=NOW, category="skills")
         assert [(r["name"], r["phase"]) for r in page["turns"]] == [
             ("testing", "invoked"), ("testing", "loaded"), ("document", "resolved")]
@@ -3700,28 +3695,26 @@ class TestAgentFlow:
         _, later = board_api.agent_flow(db, "flow-s", since=t+1, until=NOW, category="skills")
         assert [r["phase"] for r in later["turns"]] == ["resolved"]
 
-        monkeypatch.setattr(type(db), "streams_observations", property(lambda _: True))
-        otel_calls = []
-        def reported(_conn, sid, lo, hi):
-            otel_calls.append(sid)
-            return [{"type": "skill_event", "name": "testing", "ts": t, "phase": "reported", "source": "otel",
-                     "step_key": "span-skill:testing", "reported_spans": 8, "last_ts": t+3}]
-        monkeypatch.setattr(flow_skills, "_otel", reported)
+        for i in range(8):
+            db.insert("OTELTraces", SessionId="flow-s", TraceID="trace", SpanID=str(i), RowKey=f"skill:{i}",
+                      StartTime=datetime.fromtimestamp(t + (i % 4), timezone.utc),
+                      EndTime=datetime.fromtimestamp(t + 4, timezone.utc), ReportedContext={"skills": ["testing"]})
         _, spans = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="reported")
         _, invoked = board_api.agent_flow(db, "flow-s", now=NOW, category="skills", skill_phase="invoked")
         assert len(spans["turns"]) == 1 and spans["turns"][0]["reported_spans"] == 8
-        assert len(invoked["turns"]) == 1 and otel_calls == ["flow-s"]
+        assert len(invoked["turns"]) == 1
 
     def test_user_prompt_filter_prefers_authored_messages_and_never_uses_delegation_text(self, db):
-        from aictl.storage import CallFacts, SessionStepRow
-
         t = NOW - 10
         _seed_flow(db, NOW - DAY)
-        db.write_call_facts(CallFacts(steps=[
-            SessionStepRow("p", t, "flow-s", "message", source="user.message", role="user", text="Actual question about Kusto"),
-            SessionStepRow("a", t+1, "flow-s", "message", source="assistant.message", role="assistant", text="Assistant output"),
-            SessionStepRow("d", t+2, "flow-s", "agent_prompt", source="user.message", role="user", text="Internal assignment"),
-        ]))
+        for key, ts, kind, role, text in (
+            ("p", t, "message", "user", "Actual question about Kusto"),
+            ("a", t + 1, "message", "assistant", "Assistant output"),
+            ("d", t + 2, "agent_prompt", "user", "Internal assignment"),
+        ):
+            db.insert("session_steps", step_key=key, ts=ts, session_id="flow-s", kind=kind,
+                      source=f"{role}.message", role=role, text_status="captured")
+            db.insert("session_step_text", step_key=key, ts=ts, session_id="flow-s", text=text)
         _, result = board_api.agent_flow(db, "flow-s", now=NOW, category="prompts", legacy_flow=_no_legacy)
         assert [(r["step_key"], r["message"]) for r in result["turns"]] == [("p", "Actual question about Kusto")]
         db.capture = "metadata"
@@ -3794,13 +3787,13 @@ class TestAgentFlow:
     def test_hook_events_merge_without_duplicates(self, db):
         t = NOW - DAY
         _seed_flow(db, t, second_prompt="")
-        conn = db._conn()
+        conn = db
         _event(conn, t + 10.4, "flow-s", "hook:UserPromptSubmit", {"prompt": "Fix the parser"})
         _event(conn, t + 12.2, "flow-s", "hook:PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "ls src"}})
         _event(conn, t + 12.3, "flow-s", "hook:PostToolUse", {"tool_name": "Bash", "tool_response": "a.py"})
         _event(conn, t + 200.5, "flow-s", "hook:UserPromptSubmit", {"prompt": "Now the tests"})
         _event(conn, t + 400, "flow-s", "hook:UserPromptSubmit", {"prompt": "One more thing"})
-        conn.commit()
+
         _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
         prompts = [e for e in flow["turns"] if e["type"] == "user_message"]
         assert [p["message"] for p in prompts] == ["Fix the parser", "Now the tests", "One more thing"]
@@ -3869,15 +3862,12 @@ class TestAgentTranscript:
         _seed_flow(db, t)
         builds = []
         real = board_api._session_flow_build
-        monkeypatch.setattr(board_api, "_session_flow_build", lambda *a: (builds.append(1), real(*a))[1])
+        monkeypatch.setattr(board_api, "_session_flow_build", lambda *a, **kw: (builds.append(1), real(*a, **kw))[1])
         _, first = board_api.agent_transcript(db, "flow-s", now=NOW)
         board_api.agent_transcript(db, "flow-s", now=NOW, turn=first["turns"][0]["ts"])
         board_api.agent_flow(db, "flow-s", now=NOW)
         assert len(builds) == 1
-        db._conn().execute(
-            "INSERT INTO session_prompts (ts, session_id, agent_id, tool, project_path, text) VALUES (?, 'flow-s', '', 'claude-code', '/p', 'One more')", (t + 900,)
-        )
-        db._conn().commit()
+        _prompt(db, t + 900, "flow-s", "claude-code", "/p", text="One more")
         _, again = board_api.agent_transcript(db, "flow-s", now=NOW)
         assert len(builds) == 2 and again["summary"]["total_turns"] == first["summary"]["total_turns"] + 1
 
@@ -3890,7 +3880,7 @@ class TestAgentTranscript:
         _, flow = board_api.agent_flow(db, "flow-s", now=NOW)
         assert [e["response"] for e in flow["turns"] if e["type"] == "api_response"] == ["Done. **Fixed** the parser."]
 
-    def test_the_live_transcript_merges_into_the_same_turn(self, db):
+    def test_the_history_transcript_ignores_pending_analyzer_output(self, db):
         t = NOW - DAY
         _seed_flow(db, t)
         live = {
@@ -3905,18 +3895,20 @@ class TestAgentTranscript:
                 {"ts": t + 500, "prompt": "Asked later", "response": "", "actions": []},
             ],
         }
-        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live if sid == "flow-s" else None, brief=False)
-        assert [x["prompt"] for x in tr["turns"]] == ["Fix the parser", "Now the tests", "Asked later"]
+        _, tr = board_api.agent_transcript(db, "flow-s", now=NOW, legacy_transcript=lambda sid: live, brief=False)
+        assert [x["prompt"] for x in tr["turns"]] == ["Fix the parser", "Now the tests"]
         first = tr["turns"][0]
-        assert first["response"] == "From the live analyzer" and tr["replies_kept"] is True
+        assert first["response"] == "" and tr["replies_kept"] is False
         assert [a["kind"] for a in first["actions"]].count("tool_use") == 1
-        assert [a["name"] for a in first["actions"] if a["kind"] == "hook"] == ["PreToolUse"]
-        assert tr["is_live"] is True
+        assert tr["is_live"] is False
 
-    def test_the_routes_answer_this_machine_only(self, server, db):
+    def test_the_routes_answer_this_machine_only(self, server, db, monkeypatch):
+        monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: NOW, monotonic=time.monotonic))
+        monkeypatch.setattr(board_api, "text_floor", lambda _owner, _now: 0.0)
         _seed_flow(db, NOW - DAY)
         status, body, _ = _http(f"{server}/api/board/agent/flow?id=sub-f")
-        assert status == 200 and json.loads(body)["summary"]["total_turns"] == 2
+        assert status == 200, body
+        assert json.loads(body)["summary"]["total_turns"] == 2
         status, body, _ = _http(f"{server}/api/board/agent/transcript?id=flow-s")
         assert status == 200 and json.loads(body)["reply_note"] == "The reply text is not kept"
         assert json.loads(body)["turns"][0]["actions"] == []

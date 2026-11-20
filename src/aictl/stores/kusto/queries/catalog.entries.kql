@@ -1,0 +1,12 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', requested_tab:string = '',
+                         requested_key:string = '', requested_source_type:string = '', row_limit:long);
+datapoint_catalog
+| where (all_nodes or node_id == requested_node) and (isempty(requested_key) or key == requested_key)
+| summarize arg_max(_v, *) by node_id, ['project'], key
+| where not(coalesce(_deleted, false))
+| where (isempty(requested_tab) or tab == requested_tab)
+    and (isempty(requested_source_type) or source_type == requested_source_type)
+| order by tab asc, section asc, key asc, node_id asc, ['project'] asc
+| take row_limit
+| project key, label, tab, section, explanation, source_static, source_type, unit, update_freq, otel_metric,
+          dynamic_source, source_dynamic, query, calc, updated_at

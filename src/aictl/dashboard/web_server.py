@@ -25,7 +25,6 @@ import logging
 import math
 import queue
 import re
-import sqlite3
 import sys
 import threading
 import time
@@ -36,7 +35,8 @@ from urllib.parse import parse_qs, urlparse
 
 from ..orchestrator import AllowedPaths, SnapshotStore
 from ..platforms import IS_WINDOWS
-from ..storage import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvocationRow
+from ..records import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvocationRow
+from ..sink import OtelMetricGate
 from ..tool_scope import parse_tools_param
 from .api_handlers import _APIHandlersMixin
 from .models import DashboardSnapshot
@@ -120,6 +120,29 @@ def _accepts_gzip(header: str | None) -> bool:
             except ValueError:
                 return False
     return False
+
+
+def _static_encodings(header: str) -> list[str]:
+    """Return accepted static encodings in preference order. Prefer Brotli on a tie."""
+    weights: dict[str, float] = {}
+    for part in header.split(","):
+        name, _, params = part.lower().partition(";")
+        name = name.strip()
+        if name == "x-gzip":
+            name = "gzip"
+        weight = 1.0
+        key, _, value = params.partition("=")
+        if key.strip() == "q":
+            try:
+                weight = float(value)
+            except ValueError:
+                weight = 0.0
+        weights[name] = weight if 0 <= weight <= 1 else 0.0
+
+    def quality(name: str) -> float:
+        return weights.get(name, weights.get("*", 0.0))
+
+    return [name for name in sorted(("br", "gzip"), key=quality, reverse=True) if quality(name) > 0]
 
 
 def _gzip_bytes(body: bytes, level: int = 6) -> bytes:
@@ -382,17 +405,6 @@ def _copilot_surface_of_process(pid: int, max_depth: int = 6) -> str:
     return ""
 
 
-def _tie_late_traces(receiver, db) -> None:
-    """Spans stored before their trace named its session get that session now."""
-    late = receiver.take_late_traces()
-    if late and db is not None and hasattr(db, "tie_otel_traces"):
-        try:
-            db.tie_otel_traces(late)
-        except Exception:
-            receiver.restore_late_traces(late)
-            raise
-
-
 def _derive_claude_project_hash(cwd: str) -> str | None:
     """Locate the Claude projects/<hash> dir for ``cwd``; return the hash."""
     if not cwd:
@@ -406,28 +418,25 @@ def _derive_claude_project_hash(cwd: str) -> str | None:
         return None
 
 
-def _snapshot_worker(db, session_id: str, project_hash: str | None, phase: str, ts: float) -> None:
-    """Thread target: open a fresh DB connection and record the snapshot."""
+def _snapshot_worker(evidence, session_id: str, project_hash: str | None, phase: str, ts: float, cwd: str) -> None:
+    """Read memory files and hand off a snapshot."""
     try:
-        from ..memory_snapshot import record_snapshot
-
-        conn = db._conn()  # per-thread sqlite connection  # noqa: SLF001
-        record_snapshot(conn, session_id, project_hash, phase, ts=ts)
+        evidence.memory(session_id, project_hash, phase, ts, cwd)
     except Exception as exc:  # noqa: BLE001 — best-effort; never crash hooks
         logger.debug("memory snapshot (%s) failed for %s: %s", phase, session_id, exc)
 
 
-def _maybe_snapshot_claude_memory(db, data: dict, session_id: str, cwd: str, phase: str, ts: float) -> None:
+def _maybe_snapshot_claude_memory(evidence, data: dict, session_id: str, cwd: str, phase: str, ts: float) -> None:
     """Spawn a background thread to snapshot Claude memory for this session.
 
     No-op unless the hook payload came from a Claude user/project hook.
     """
-    if db is None or not session_id or not _is_claude_hook(data):
+    if evidence.writer is None or not session_id or not _is_claude_hook(data):
         return
     project_hash = _derive_claude_project_hash(cwd)
     threading.Thread(
         target=_snapshot_worker,
-        args=(db, session_id, project_hash, phase, ts),
+        args=(evidence, session_id, project_hash, phase, ts, cwd),
         daemon=True,
         name=f"mem-snap-{phase}-{session_id[:8]}",
     ).start()
@@ -564,7 +573,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
             return
         if path.startswith("/api/") and path != "/api/board/nodes":
-            from .board_history import ScopeError, identity_parts, parse_scope
+            from .history_scope import ScopeError, identity_parts, parse_scope
 
             params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             scoped = "node_id" in params or any(v in {"node", "fleet"} for v in params.get("scope", ()))
@@ -615,26 +624,31 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         elif path == "/api/effective-models":
             self._serve_effective_models()
         elif path == "/api/session-evidence":
+            from ..stores.base import StoreConfigurationError, StoreError
+            from .projections.history import HistoryScope
             from .session_evidence import EvidenceInputError, session_evidence
 
-            if self._db is None:
-                self._json_response({"error": "History store unavailable"}, status=503)
-                return
+            history = HistoryScope.local(self.server.store)
             try:
-                body = json.dumps(session_evidence(self._db, self._qs)).encode("utf-8")
+                body = json.dumps(session_evidence(self._db, self._qs, history=history)).encode("utf-8")
                 self._send_body(body, "application/json", cache_control="no-store", cors=False)
             except EvidenceInputError as exc:
                 self._json_response({"error": str(exc)}, status=400)
-            except sqlite3.Error:
+            except StoreConfigurationError as exc:
+                self._json_response({"error": str(exc)}, status=503)
+            except StoreError:
                 logger.exception("Could not read session execution evidence")
                 self._json_response({"error": "Session evidence query failed"}, status=503)
         elif path == "/api/board/nodes":
             from .board_api import _cached_health_data
             from .node_views import NodeViewError, agent_inventory, node_view
+            from .projections.history import configured_reader
 
             try:
+                reader = configured_reader(self.server.store)
                 body = node_view(self._db, parse_qs(urlparse(self.path).query, keep_blank_values=True),
-                                 local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time()),
+                                 reader=reader,
+                                 local_health=self._board_health, shared_health=lambda: _cached_health_data(self._db, time.time(), reader),
                                  local_inventory=lambda: agent_inventory(getattr(self.server.store, "live_hub", None), time.time()))
             except NodeViewError as exc:
                 self._json_response({"error": str(exc)}, status=exc.status)
@@ -749,7 +763,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
     def _receive_hook(self) -> None:
         """Receive Claude Code hook events via HTTP POST.
 
-        Stores them as events in HistoryDB and forwards to SSE clients.
+        Stores them as history events and forwards to SSE clients.
         Expected body: JSON with at minimum {event, session_id} plus
         event-specific fields from the Claude Code hook system.
         """
@@ -787,19 +801,20 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             tool = session_id.split(":")[0]
         if not tool:
             tool = "claude-code"
-        ts = data.get("ts") or time.time()
+        ts = _sane_ts(data.get("ts")) or received_at
 
         hook_pid = int(data.get("pid", 0) or 0)
-        db = self._db
+        facts = self.server.store.session_facts
+        evidence = self.server.store.session_evidence
         hook_call = _hook_call_row(
             data, tool=tool, event=event_name, session_id=session_id, cwd=cwd, pid=hook_pid, received_at=received_at
         )
+        ts = facts.hook_time(hook_call.call_id, ts)
         meta = data.get("aictl_hook")
         if isinstance(meta, dict) and isinstance(meta.get("wrapped"), dict):
             # A user's own hook, run through the wrapper: aictl's hook on the same
             # event reports the event itself, so only the call is stored.
-            if db:
-                db.append_hook_call(hook_call)
+            facts.hook(hook_call)
             self._json_response_raw(b'{"ok":true}')
             return
         _HOOK_SKIP = {"event", "hook_event_name", "session_id", "tool", "cwd", "ts", "pid"}
@@ -809,188 +824,55 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
         event_record = {"ts": ts, "tool": tool, "kind": f"hook:{event_name}", "detail": detail}
 
-        # Store as event in the database
-        if db:
-            db.append_event(
-                EventRow(
-                    ts=ts,
-                    tool=tool,
-                    kind=f"hook:{event_name}",
-                    detail=detail,
-                    session_id=session_id,
-                    pid=hook_pid,
-                )
-            )
-            db.append_hook_call(hook_call)
-
-            # Also write to structured tables
-            if event_name in ("Init", "SessionStart"):
-                db.upsert_session(
-                    SessionRow(
-                        session_id=session_id,
-                        tool=tool,
-                        pid=hook_pid,
-                        project_path=cwd,
-                        model=detail.get("model", ""),
-                        started_at=ts,
-                        source="hook",
-                    )
-                )
-                db.link_session_process(session_id, hook_pid, tool=tool)
-                _maybe_snapshot_claude_memory(db, data, session_id, cwd, "start", ts)
-            elif event_name == "Stop":
-                # Stop fires after EVERY agent response — record per-turn
-                # stats but never mark the session ended (only SessionEnd is
-                # terminal; a Stop-stamped ended_at made every open session
-                # look finished and spawn duplicate timeline rows).
-                db.update_session_stats(
-                    session_id,
-                    ts=ts,
-                    tool=tool,
-                    project_path=cwd,
-                    model=detail.get("model", ""),
-                    source="hook",
-                    input_tokens=int(detail.get("input_tokens", 0) or 0),
-                    output_tokens=int(detail.get("output_tokens", 0) or 0),
-                    cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),
-                    cache_creation_tokens=int(detail.get("cache_creation_tokens", 0) or 0),
-                    cost_usd=float(detail.get("cost_usd", 0) or 0),
-                )
-                _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
-            elif event_name == "SessionEnd":
-                db.update_session_end(
-                    session_id,
-                    ended_at=ts,
-                    tool=tool,
-                    project_path=cwd,
-                    model=detail.get("model", ""),
-                    source="hook",
-                    input_tokens=int(detail.get("input_tokens", 0) or 0),
-                    output_tokens=int(detail.get("output_tokens", 0) or 0),
-                    cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),
-                    cache_creation_tokens=int(detail.get("cache_creation_tokens", 0) or 0),
-                    cost_usd=float(detail.get("cost_usd", 0) or 0),
-                )
-                _maybe_snapshot_claude_memory(db, data, session_id, cwd, "end", ts)
-                # Best-effort git commit attribution in a background
-                # thread — never block the hook response.
-                from ..kusto.observations import retains_unresolved_facts
-
-                if event_name == "SessionEnd" and session_id and cwd and not retains_unresolved_facts(db):
-                    _started_at = 0.0
-                    try:
-                        _sess_row = db.get_session(session_id)
-                        if _sess_row:
-                            _started_at = float(_sess_row.get("started_at", 0.0) or 0.0)
-                    except Exception:  # noqa: BLE001 — best-effort
-                        pass
-                    if _started_at > 0:
-                        from ..analysis.git_attribution import attribute_session
-
-                        threading.Thread(
-                            target=attribute_session,
-                            args=(db, session_id, cwd, _started_at, ts),
-                            daemon=True,
-                            name=f"git-attr-{session_id[:8]}",
-                        ).start()
-            elif event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
-                # Claude Code fires PostToolUse only on success; failures
-                # arrive as PostToolUseFailure with an ``error`` field.
-                tool_name = detail.get("tool_name", "")
-                tool_use_id = detail.get("tool_use_id", "")
+        facts.events([EventRow(ts, tool, event_record["kind"], detail, session_id, hook_pid)],
+                     source="hook", source_key=hook_call.call_id)
+        facts.hook(hook_call)
+        if event_name in ("Init", "SessionStart"):
+            facts.session(SessionRow(session_id, tool, hook_pid, cwd, model=detail.get("model", ""),
+                                     started_at=ts, source="hook"), activity=ts)
+            facts.link(session_id, hook_pid, tool, ts, "lead", cwd)
+            _maybe_snapshot_claude_memory(evidence, data, session_id, cwd, "start", ts)
+        elif event_name in ("Stop", "SessionEnd"):
+            terminal = event_name == "SessionEnd"
+            started_at = facts.started_at(session_id)
+            facts.session(SessionRow(
+                session_id, tool, project_path=cwd, model=detail.get("model", ""),
+                started_at=started_at or ts, ended_at=ts if terminal else None, source="hook",
+                input_tokens=int(detail.get("input_tokens", 0) or 0),
+                output_tokens=int(detail.get("output_tokens", 0) or 0),
+                cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),
+                cache_creation_tokens=int(detail.get("cache_creation_tokens", 0) or 0),
+                cost_usd=float(detail.get("cost_usd", 0) or 0),
+            ), activity=ts, terminal=terminal)
+            _maybe_snapshot_claude_memory(evidence, data, session_id, cwd, "end", ts)
+            if evidence.writer is not None and terminal and cwd and started_at:
+                threading.Thread(
+                    target=evidence.commits, args=(session_id, cwd, started_at, ts),
+                    daemon=True, name=f"git-attr-{session_id[:8]}",
+                ).start()
+        if event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+            tool_name = detail.get("tool_name", "")
+            if tool_name:
+                start = event_name == "PreToolUse"
                 failed = event_name == "PostToolUseFailure" or bool(detail.get("is_error"))
-                if tool_name:
-                    if event_name == "PreToolUse":
-                        # Store the invocation (duration unknown yet).
-                        # tool_use_id anchors the dedup key so identical
-                        # repeats (same tool, same input) persist as
-                        # separate rows — see flush() in storage.py.
-                        db.append_tool_invocation(
-                            ToolInvocationRow(
-                                ts=ts,
-                                source_ts=0,
-                                session_id=session_id,
-                                tool=tool,
-                                tool_name=tool_name,
-                                is_error=0,
-                                duration_ms=0,
-                                input=detail.get("input", detail.get("tool_input", {})),
-                                result_summary="",
-                                source="hook",
-                                source_event_id=tool_use_id,
-                            )
-                        )
-                        # Cache pre-event info so PostToolUse can compute duration.
-                        if tool_use_id:
-                            # Compute dedup key matching what flush() will produce.
-                            # flush() uses _dedup_key(session_id, tool_name,
-                            # source_event_id, source) when source_event_id is set,
-                            # so each invocation updates ITS OWN row.
-                            input_val = detail.get("input", detail.get("tool_input", {}))
-                            from ..storage import _dedup_key
-
-                            dk = _dedup_key(session_id, tool_name, tool_use_id, "hook")
-                            # Evict stale entries (older than 10 minutes)
-                            cutoff = time.time() - 600
-                            with self.server.pending_tool_use_lock:
-                                self.server.pending_tool_use[tool_use_id] = (ts, dk, input_val)
-                                stale = [k for k, (t, _, _) in self.server.pending_tool_use.items() if t < cutoff]
-                                for k in stale:
-                                    del self.server.pending_tool_use[k]
-                    else:
-                        # PostToolUse / PostToolUseFailure: compute duration
-                        # and update the existing row.
-                        is_err = 1 if failed else 0
-                        raw_result = detail.get("tool_response") or detail.get("result") or detail.get("error") or ""
-                        result = str(raw_result)[:500]
-                        pending = None
-                        if tool_use_id:
-                            with self.server.pending_tool_use_lock:
-                                pending = self.server.pending_tool_use.pop(tool_use_id, None)
-                        if pending is not None:
-                            pre_ts, dk, input_val = pending
-                            duration_ms = (ts - pre_ts) * 1000
-                            db.update_tool_invocation_duration(dk, duration_ms, is_err, result)
-                            if not is_err:
-                                file_write = _extract_file_write_row(
-                                    ts=ts,
-                                    session_id=session_id,
-                                    tool=tool,
-                                    tool_name=tool_name,
-                                    detail=detail,
-                                    tool_input=input_val,
-                                )
-                                if file_write:
-                                    db.record_file_write(file_write)
-                        else:
-                            # No matching Pre — store as standalone invocation.
-                            input_val = detail.get("input", detail.get("tool_input", {}))
-                            db.append_tool_invocation(
-                                ToolInvocationRow(
-                                    ts=ts,
-                                    source_ts=0,
-                                    session_id=session_id,
-                                    tool=tool,
-                                    tool_name=tool_name,
-                                    is_error=is_err,
-                                    duration_ms=0,
-                                    input=input_val,
-                                    result_summary=result,
-                                    source="hook",
-                                    source_event_id=tool_use_id,
-                                )
-                            )
-                            if not is_err:
-                                file_write = _extract_file_write_row(
-                                    ts=ts,
-                                    session_id=session_id,
-                                    tool=tool,
-                                    tool_name=tool_name,
-                                    detail=detail,
-                                    tool_input=input_val,
-                                )
-                                if file_write:
-                                    db.record_file_write(file_write)
+                raw_result = detail.get("tool_response") or detail.get("result") or detail.get("error") or ""
+                input_val = self.server.store.tool_calls.hook(
+                    ToolInvocationRow(
+                        ts=ts, session_id=session_id, tool=tool, tool_name=tool_name, pid=hook_pid,
+                        project_path=cwd, is_error=int(not start and failed),
+                        input=detail.get("input", detail.get("tool_input", {})),
+                        result_summary=str(raw_result)[:500] if not start else "",
+                        source="hook", source_event_id=detail.get("tool_use_id") or "",
+                    ),
+                    start=start,
+                )
+                if not start and not failed:
+                    file_write = _extract_file_write_row(
+                        ts=ts, session_id=session_id, tool=tool, tool_name=tool_name,
+                        detail=detail, tool_input=input_val,
+                    )
+                    if file_write:
+                        facts.file_writes([file_write], transcript=False)
 
         # Feed into entity state tracker
         self.server.entity_tracker.process_event(event_record)
@@ -1119,13 +1001,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.send_error(400, "Invalid JSON")
         return None
 
-    def _otel_to_kusto(self, signal: str, data: dict) -> bool:
-        """Acknowledge only exports accepted by the selected native ingestion backend."""
-        sink = getattr(self._db, "otel_sink", None)
+    def _capture_otlp(self, signal: str, data: dict) -> bool:
+        """Acknowledge exports accepted by the writer queue."""
+        store = self.server.store
+        sink = store.history_store.otlp
         if sink is None:
             return True
         try:
-            sink.ingest(signal, data)
+            sink.ingest(signal, data, keep_text=store.session_facts.keeps_text(),
+                        admit_metrics=self.server.raw_otel_metrics.accept)
         except ValueError:
             logger.exception("Kusto rejected malformed OTel %s data", signal)
             self.send_error(400, "Invalid OTel export")
@@ -1137,86 +1021,57 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         return True
 
     def _receive_otel_metrics(self) -> None:
-        """Receive OTLP metrics (JSON or protobuf)."""
-        self._receive_otel_signal("metrics", "parse_metrics", "append_samples", "samples")
+        self._receive_otel("metrics")
 
     def _receive_otel_logs(self) -> None:
-        """Receive OTLP logs/events (JSON or protobuf).
-
-        In addition to writing events, also extracts RequestRow and
-        ToolInvocationRow objects from API request and hook events.
-        """
-        data = self._read_post_otlp("logs")
-        if data is None:
-            return
-        if not self._otel_to_kusto("logs", data):
-            return
-        try:
-            receiver = self.server.otel_receiver
-            events = receiver.parse_logs(data)
-            db = self._db
-            requests: list = []
-            invocations: list = []
-            if db and events:
-                db.append_events(events)
-                # Extract and persist structured request/invocation data
-                requests = receiver.extract_requests(events)
-                for r in requests:
-                    db.append_request(r)
-                invocations = receiver.extract_tool_invocations(events)
-                for inv in invocations:
-                    db.append_tool_invocation(inv)
-                # Batch-link sessions and PIDs (one commit instead of N*2)
-                db.batch_link_sessions(
-                    [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel") for r in requests if r.session_id]
-                )
-            _tie_late_traces(receiver, db)
-            logger.debug(
-                "OTel logs received: %d events, %d requests, %d invocations",
-                len(events),
-                len(requests),
-                len(invocations),
-            )
-        except Exception:
-            logger.exception("Error processing OTel logs")
-            self.server.otel_receiver.stats.errors += 1
-            status = 503 if getattr(self._db, "streams_observations", False) is True else 500
-            self.send_error(status, "OTel processing failed; retry the export")
-            return
-        if events:
-            self.server.store.request_refresh()
-        self._json_response_raw(b'{"ok":true}')
+        self._receive_otel("logs")
 
     def _receive_otel_traces(self) -> None:
-        """Receive OTLP traces/spans (JSON or protobuf)."""
-        data = self._read_post_otlp("traces")
-        if data is None:
+        self._receive_otel("traces")
+
+    def _receive_otel(self, signal: str) -> None:
+        data = self._read_post_otlp(signal)
+        if data is None or not self._capture_otlp(signal, data):
             return
-        if not self._otel_to_kusto("traces", data):
-            return
+        store = self.server.store
+        receiver = self.server.otel_receiver
+        facts = store.session_facts
+
+        def samples_received(samples):
+            sink = store._sink
+            if sink is not None:
+                sink.emit_otel(samples)
+
         try:
-            receiver = self.server.otel_receiver
-            samples, events = receiver.parse_traces(data)
-            db = self._db
-            if db and samples:
-                db.append_samples(samples)
-            if db and events:
-                db.append_events(events)
-                # Extract requests from trace events too
+            if signal == "metrics":
+                receiver.ingest_metrics(data, samples_received)
+            else:
+                if signal == "traces":
+                    samples, events = receiver.parse_traces(data)
+                    samples_received(samples)
+                else:
+                    events = receiver.parse_logs(data)
+                    store.tool_calls.record(receiver.extract_tool_invocations(events))
+                facts.events(events, source=signal)
                 requests = receiver.extract_requests(events)
-                for r in requests:
-                    db.append_request(r)
-                # Batch-link sessions and PIDs (one commit instead of N*2)
-                db.batch_link_sessions(
-                    [(r.session_id, r.tool, r.pid, r.source_ts or r.ts, "otel") for r in requests if r.session_id]
-                )
-            _tie_late_traces(receiver, db)
-            logger.debug("OTel traces received: %d samples, %d events", len(samples), len(events))
+                facts.requests(requests)
+                for request in requests:
+                    sid, ts = request.session_id, request.source_ts or request.ts
+                    if sid:
+                        facts.session(SessionRow(sid, request.tool, request.pid, started_at=ts, source="otel"))
+                        facts.link(sid, request.pid, request.tool, ts, "lead")
+                links = receiver.take_trace_links()
+                try:
+                    facts.trace_links(links)
+                except Exception:
+                    receiver.restore_trace_links(links)
+                    raise
+                if signal == "logs" and events:
+                    store.request_refresh()
         except Exception:
-            logger.exception("Error processing OTel traces")
+            logger.exception("Error processing OTel %s", signal)
             self.server.otel_receiver.stats.errors += 1
-            status = 503 if getattr(self._db, "streams_observations", False) is True else 500
-            self.send_error(status, "OTel processing failed; retry the export")
+            self.send_error(503 if facts.writer is not None else 500, "OTel processing failed; retry the export")
             return
         self._json_response_raw(b'{"ok":true}')
 
@@ -1234,55 +1089,69 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         rel = path.lstrip("/")
         candidates = _static_dist_candidates()
         file_path = None
+        root = None
         for dist_dir in candidates:
             # Resolve and confine to the dist dir — a path with ".." segments
             # must never escape it (path traversal).
-            full = (dist_dir / rel).resolve()
-            if not full.is_relative_to(dist_dir.resolve()):
+            root = dist_dir.resolve()
+            full = (root / rel).resolve()
+            if not full.is_relative_to(root) or full.suffix in (".br", ".gz"):
                 continue
             if full.is_file():
                 file_path = full
                 break
-        if file_path is None:
+        if file_path is None or root is None:
             checked = [str(d / rel) for d in candidates]
             _log.warning("Static 404: %s — checked: %s", path, checked)
             self.send_error(404, "Not found")
             return
+        suffix = file_path.suffix.lower()
         mime, _ = mimetypes.guess_type(str(file_path))
-        mime = mime or "application/octet-stream"
+        mime = "font/woff2" if suffix == ".woff2" else mime or "application/octet-stream"
         stat = file_path.stat()
         # A hashed name never changes content, so browsers keep it for a year.
         # Any other file is revalidated with its ETag.
         hashed = bool(_HASHED_ASSET.search(file_path.name))
         compressible = mime.startswith(_COMPRESSIBLE_TYPES)
-        gz = compressible and stat.st_size > _GZIP_MIN_BYTES and self._wants_gzip()
+        supports_sidecars = suffix in (".js", ".css")
+        accepted = _static_encodings(", ".join(self.headers.get_all("Accept-Encoding", [])))
+        served_path = file_path
+        encoding = None
+        if supports_sidecars:
+            for name in accepted:
+                extension = ".br" if name == "br" else ".gz"
+                sidecar = file_path.with_name(file_path.name + extension).resolve()
+                if sidecar.is_relative_to(root) and sidecar.is_file():
+                    served_path, encoding = sidecar, name
+                    break
+        dynamic_gzip = encoding is None and compressible and stat.st_size > _GZIP_MIN_BYTES and "gzip" in accepted
+        if dynamic_gzip:
+            encoding = "gzip"
         etag = None
         if hashed:
             cache_control = "public, max-age=31536000, immutable"
         else:
             cache_control = "no-cache"
-            etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}{"-gz" if gz else ""}"'
+            selected = stat if served_path == file_path else served_path.stat()
+            variant = "-gz" if dynamic_gzip else f"-{encoding}-file" if encoding else ""
+            etag = f'"{selected.st_mtime_ns:x}-{selected.st_size:x}{variant}"'
             if self._check_etag(etag):
                 return
-        body = file_path.read_bytes()
-        if not compressible:
-            # Images and fonts are already compressed: send them as they are.
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Cache-Control", cache_control)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self._send_body(
-            body,
-            mime,
-            cache_control=cache_control,
-            etag=etag,
-            memo_key=str(file_path),
-            memo_token=(stat.st_mtime_ns, stat.st_size),
-            cors=False,
-        )
+        body = served_path.read_bytes()
+        if dynamic_gzip:
+            body = _GZIP_MEMO.get(str(file_path), (stat.st_mtime_ns, stat.st_size), body)
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Cache-Control", cache_control)
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+        if compressible or supports_sidecars:
+            self.send_header("Vary", "Accept-Encoding")
+        if etag:
+            self.send_header("ETag", etag)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_snapshot(self) -> None:
         snap_bytes = self.server.store.snapshot_json_bytes
@@ -1310,9 +1179,16 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             return
         if not self.server.allowed.is_allowed(file_path):
             # A session's artifact: a file in a tool's session folder, or a file a session wrote.
+            from ..stores.base import StoreError
+            from .projections.history import HistoryScope
             from .session_record import is_recorded_artifact, is_text_file
 
-            if not is_recorded_artifact(self._db, file_path):
+            try:
+                recorded = is_recorded_artifact(self._db, file_path, history=HistoryScope.local(self.server.store))
+            except StoreError:
+                self._json_response({"error": "Artifact inventory unavailable"}, status=503)
+                return
+            if not recorded:
                 self.send_error(403, "Path not in discovered resource set")
                 return
             if Path(file_path).is_file() and not is_text_file(file_path):
@@ -1453,8 +1329,8 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
     @property
     def _db(self):
-        """Shortcut to the HistoryDB instance (may be None if not yet initialised)."""
-        return self.server.store._db
+        """Runtime owner of the configured history store."""
+        return self.server.store
 
     def _check_etag(self, etag: str) -> bool:
         """Send 304 if client ETag matches. Returns True when 304 was sent."""
@@ -1528,13 +1404,15 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         With ``?nowait=1`` a scan runs in the background and the answer says how far it is.
         """
         from .audit_cache import AUDIT_CACHE
+        from .projections.history import HistoryScope
 
         wanted = self._qs_get("project")
         project = wanted if wanted and not _names_another_machine(wanted) and Path(wanted).is_dir() else self.server.root
         try:
             refresh = self._qs_get("refresh") in ("1", "true")
             lookup = AUDIT_CACHE.poll if self._qs_get("nowait") == "1" else AUDIT_CACHE.get
-            self._json_response(lookup(project, self._qs_get("tool") or None, refresh=refresh))
+            history = HistoryScope.local(getattr(self.server, "store", None))
+            self._json_response(lookup(project, self._qs_get("tool") or None, refresh=refresh, history=history))
         except Exception as exc:  # any failure must reach the panel's error state
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 
@@ -1549,7 +1427,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
     def _serve_board(self, path: str) -> None:
         """The panel dashboard and its detail routes."""
-        from ..kusto.observations import UnresolvedObservationsError
+        from ..stores import UnresolvedObservationsError
         from .board_api import BoardRequestError, handle_get
 
         try:
@@ -1605,7 +1483,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
 
     def _serve_board_context(self) -> None:
         """Context-window budget, files, memory and lifetime telemetry for the board."""
-        from ..kusto.observations import UnresolvedObservationsError
+        from ..stores import UnresolvedObservationsError
         from .board_api import context_bytes
 
         try:
@@ -1646,12 +1524,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Send a JSON response."""
         self._json_response_raw(json.dumps(data, indent=indent).encode("utf-8"), status=status)
 
-    def _require_db(self, empty=None):
-        """Return db if available; otherwise send an empty JSON response and return None."""
-        db = self._db
-        if not db:
-            self._json_response([] if empty is None else empty)
-        return db
 
     def _qs_float(self, key: str, default: float) -> float:
         """Parse a float from query string, returning default if absent."""
@@ -1727,38 +1599,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _receive_otel_signal(
-        self,
-        signal: str,
-        parse_method: str,
-        append_method: str,
-        log_unit: str,
-    ) -> None:
-        """Shared boilerplate for single-type OTel signal receivers."""
-        data = self._read_post_otlp(signal)
-        if data is None:
-            return
-        if not self._otel_to_kusto(signal, data):
-            return
-        try:
-            receiver = self.server.otel_receiver
-            db = self._db
-            if parse_method == "parse_metrics" and hasattr(receiver, "ingest_metrics"):
-                writer = getattr(db, append_method) if db else None
-                items = receiver.ingest_metrics(data, writer)
-            else:
-                items = getattr(receiver, parse_method)(data)
-                if db and items:
-                    getattr(db, append_method)(items)
-            logger.debug("OTel %s received: %d %s", signal, len(items), log_unit)
-        except Exception:
-            logger.exception("Error processing OTel %s", signal)
-            self.server.otel_receiver.stats.errors += 1
-            status = 503 if getattr(self._db, "streams_observations", False) is True else 500
-            self.send_error(status, "OTel processing failed; retry the export")
-            return
-        self._json_response_raw(b'{"ok":true}')
-
     def log_message(self, fmt, *args) -> None:
         # The stream and the telemetry posts arrive every few seconds; a log line each is noise.
         msg = fmt % args if args else fmt
@@ -1816,36 +1656,30 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         self.entity_tracker: EntityStateTracker = EntityStateTracker()
         # OTel OTLP receiver for Claude Code telemetry
         self.otel_receiver: OtelReceiver = OtelReceiver()
+        self.raw_otel_metrics = OtelMetricGate()
         # Session analyzer — independent live transcript builder
         from ..analysis.analyzer import SessionAnalyzer
 
         self.session_analyzer: SessionAnalyzer = SessionAnalyzer()
+        self.store.session_facts.event_listener = self.session_analyzer.ingest_event
         # Periodic local-store ingesters (Slice 3.2 Copilot, 3.3 Cursor).
         from .ingester_runner import start_ingesters
 
         # start_server starts them after the first snapshot, so their backfills do not slow it.
         self.ingesters = start_ingesters(store) if start_ingesters_now else {}
-        # In-memory cache for matching PreToolUse → PostToolUse by tool_use_id.
-        # Maps tool_use_id → (pre_ts, dedup_key, tool_input). Entries auto-expire on access.
-        # Guarded by pending_tool_use_lock: hook requests are handled on
-        # concurrent per-request threads (ThreadingHTTPServer), and the
-        # stale-eviction scan must not iterate while another thread mutates.
-        self.pending_tool_use: dict[str, tuple[float, str, object]] = {}
-        self.pending_tool_use_lock: threading.Lock = threading.Lock()
         self.live_dashboard = None
         self._owns_live_hub = False
-        db = getattr(store, "_db", None)
-        if getattr(db, "_kusto", None) is not None:
-            from .live_hub import LiveHub
-            from .live_projection import LiveDashboard
+        from .live_hub import LiveHub
+        from .live_projection import LiveDashboard
 
-            hub = getattr(store, "live_hub", None)
-            if hub is None:
-                hub = store.live_hub = LiveHub()
-                self._owns_live_hub = True
-            self.live_dashboard = LiveDashboard(hub, db, store, health_provider=self._live_health)
-            self.attach_live_ingesters()
-            getattr(db, "machine", db).node_runtime_sample = self._node_runtime_sample
+        hub = getattr(store, "live_hub", None)
+        if hub is None:
+            hub = store.live_hub = LiveHub()
+            self._owns_live_hub = True
+        self.live_dashboard = LiveDashboard(hub, store, store, health_provider=self._live_health)
+        self.attach_live_ingesters()
+        if persistence := getattr(store, "_persistence", None):
+            persistence.runtime_sample = self._node_runtime_sample
 
     def _node_runtime_sample(self) -> dict:
         """Only report operational measurements; paths, command lines and error text stay local."""
@@ -1877,7 +1711,7 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         from .board_api import compute_health, machine_alerts, machine_processes
 
         health = compute_health(
-            self.store._db,
+            self.store,
             self.store,
             otel=self.otel_receiver,
             ingesters=self.ingesters,
@@ -1942,10 +1776,9 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
 
     def server_close(self) -> None:
         if self.live_dashboard is not None:
-            db = getattr(self.store, "_db", None)
-            machine = getattr(db, "machine", db)
-            if getattr(machine, "node_runtime_sample", None) == self._node_runtime_sample:
-                machine.node_runtime_sample = None
+            persistence = getattr(self.store, "_persistence", None)
+            if getattr(persistence, "runtime_sample", None) == self._node_runtime_sample:
+                persistence.runtime_sample = None
             self.live_dashboard.close()
             if self._owns_live_hub:
                 self.store.live_hub.close()

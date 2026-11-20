@@ -1,4 +1,4 @@
-"""The background writer of the OTel tables (aictl.kusto.otel_sink), against fakes."""
+"""Test the background writer for OTel tables with fake ingestion."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ import threading
 
 import pytest
 
-from aictl.kusto import KustoSettings, connection, otel, otel_sink
-from aictl.kusto.otel_sink import OtelSink
+from aictl.kusto import KustoSettings
+from aictl.stores.base import StoreConfigurationError
+from aictl.stores.kusto import client, open_store, otel, otel_sink
+from aictl.stores.kusto.otel_sink import OtelSink
 
 T1 = 1_700_000_012_123_456_700
 
@@ -117,7 +119,7 @@ def settings(**kw) -> KustoSettings:
 def no_waiting(monkeypatch):
     """Retries wait on a condition, never on the clock."""
     monkeypatch.setattr(otel_sink, "RETRY_WAIT_S", (0.0,))
-    monkeypatch.setattr(connection, "RETRY_DELAYS_S", ())
+    monkeypatch.setattr(client, "RETRY_DELAYS_S", ())
 
 
 def make(ingester=None, client=None, **kw) -> tuple[OtelSink, Ingester, Client]:
@@ -148,20 +150,24 @@ def test_direct_ingestion_failure_reaches_the_sender():
     sink.close()
 
 
-def test_http_does_not_acknowledge_a_failed_kusto_export():
+def test_http_does_not_acknowledge_a_failed_queue_handoff():
     from types import SimpleNamespace
 
     from aictl.dashboard.web_server import _DashboardHandler
 
-    def fail(_signal, _body):
+    def fail(_signal, _body, **_policy):
         raise RuntimeError("unavailable")
 
     errors = []
     handler = SimpleNamespace(
-        _db=SimpleNamespace(otel_sink=SimpleNamespace(ingest=fail)),
+        server=SimpleNamespace(
+            store=SimpleNamespace(history_store=SimpleNamespace(otlp=SimpleNamespace(ingest=fail)),
+                                  session_facts=SimpleNamespace(keeps_text=lambda: False)),
+            raw_otel_metrics=SimpleNamespace(accept=None),
+        ),
         send_error=lambda status, message: errors.append((status, message)),
     )
-    assert _DashboardHandler._otel_to_kusto(handler, "logs", logs("one")) is False
+    assert _DashboardHandler._capture_otlp(handler, "logs", logs("one")) is False
     assert errors[0][0] == 503
 
 
@@ -404,16 +410,7 @@ def test_close_sends_what_is_waiting():
 
 
 def test_an_otel_table_may_have_its_own_ingestion_mode():
-    tables = connection._default_tables()
-
-    class NoCluster:
-        def execute_mgmt(self, *a):
-            raise RuntimeError("no cluster")
-
-        execute = execute_mgmt
-
-    # The name is accepted, so the connection goes on to the cluster, which this one does not have.
-    with pytest.raises(connection.KustoStoreError):
-        connection.connect(settings(table_ingestion={otel.LOGS: "inline"}), tables=tables, client=NoCluster())
-    with pytest.raises(ValueError, match="OTELLog"):
-        connection.connect(settings(table_ingestion={"OTELLog": "inline"}), tables=tables, client=NoCluster())
+    valid = settings(table_ingestion={otel.LOGS: "inline"})
+    assert valid.ingestion_mode(otel.LOGS) == "inline"
+    with pytest.raises(StoreConfigurationError, match="OTELLog"):
+        open_store(settings=settings(table_ingestion={"OTELLog": "inline"}))

@@ -11,7 +11,7 @@ A value the data cannot supply is ``None``, never 0. Costs are list-price
 estimates from :mod:`aictl.data.model_pricing`; the amount a tool reports is not
 used, because not every tool reports dollars.
 
-SQL does the aggregation. Python only rolls up small result sets, so the cost
+Store views do the aggregation. Python only rolls up bounded result sets, so the cost
 of a request grows with the number of sessions and not with the number of calls.
 The exception is latency: a percentile needs the values themselves.
 """
@@ -19,18 +19,14 @@ The exception is latency: a percentile needs the values themselves.
 from __future__ import annotations
 
 import bisect
-import contextlib
 import difflib
 import functools
 import hashlib
-import inspect
 import json
 import logging
 import math
 import os
 import re
-import shutil
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -47,15 +43,18 @@ from ..context_audit import _git_states, _path_key, _redact, skill_description, 
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..health import host_memory as _host_memory
 from ..ingesters._common import project_key, project_root
-from ..storage import EventRow
-from ..storage import _session_uuid as _raw_session_uuid
+from ..records import EventRow
+from ..records import _session_uuid as _raw_session_uuid
+from ..stores import reader_feature, store_for
+from ..stores.base import StoreConfigurationError, StoreError
 from ..tool_scope import is_unattributed, normalize_selection, stored_ids_for
 from ..tools import TOOL_LABELS
 from ..utils import estimate_tokens_from_size
 from .analytics import _day_span
 from .api_handlers import self_usage
-from .board_history import ScopeError, identity, identity_parts, parse_scope
-from .board_history import label as node_label
+from .history_scope import ScopeError, identity, identity_parts, parse_scope
+from .history_scope import label as node_label
+from .projections.history import HistoryScope, capture_mode, exact_values, node_scope, project_usage, session_events, session_row, text_floor
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +78,6 @@ ACTIVE_STATUSES = ("running", "looping", "waiting")
 LIVE_STATUSES = (*ACTIVE_STATUSES, "idle")
 _TURN_ENDED_REASONS = ("end_turn", "stop", "stop_sequence")
 IDLE_AFTER_S = 120.0
-# Percentiles look at no more than about this many values. The sample is every
-# k-th row by id, and a group the sample leaves thin is read in full.
-MAX_LATENCY_VALUES = 10_000
-MIN_GROUP_SAMPLE = 20
 MAX_TURN_SAMPLE = 500
 SELF_TTL_S = 10.0
 # An answer that differs only in clock-driven or live load numbers is served again for this long.
@@ -122,8 +117,6 @@ _NO_TTFT = frozenset({"claude-code"})
 _SUPPORT_PROCESS_TYPES = frozenset({"helper", "mcp-server", "daemon", "app"})
 # A process that an agent started, such as an MCP server. It belongs to that agent and is never one.
 _STARTED_BY_AGENT_TYPES = frozenset({"child", "browser", "mcp-server"})
-# A row with this name is a confirmation with no tool call, such as an extension asking for access.
-_IS_CALL_SQL = "substr(tool_name, 1, 11) <> 'permission:'"
 
 
 class BoardRequestError(ValueError):
@@ -305,13 +298,6 @@ def _names_another_machine(path: str) -> bool:
     return PureWindowsPath(path).drive.startswith("\\\\")
 
 
-def _project_predicate(path: str) -> tuple[str, str]:
-    key = project_key(path)
-    if PureWindowsPath(key).drive:
-        return r"rtrim(replace(lower(project_path), '\', '/'), '/') = ?", key
-    return "project_path = ?", path
-
-
 # ─── Pricing ──────────────────────────────────────────────────────
 
 _cost_rates: dict[str, Any] = {}
@@ -395,7 +381,6 @@ _TEST_TWO_WORDS = {
     ("gradle", "test"),
     ("gradlew", "test"),
 }
-_TEST_LIKE_SQL = "(target LIKE '%test%' OR target LIKE '%jest%' OR target LIKE '%tox%')"
 
 
 @functools.lru_cache(maxsize=65536)
@@ -674,23 +659,24 @@ class _Board:
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         filters: Filters,
         now: float,
         snapshot: Any = None,
         only_session: str | None = None,
         facts: dict[str, set[str]] | None = None,
+        history: HistoryScope | None = None,
     ) -> None:
         self.conn = conn
         self.f = filters
         self.now = now
         self.snapshot = snapshot
         self.only_session = only_session
+        self.history = history or HistoryScope.local(None)
         self.narrowed = filters.narrowed or only_session is not None
         self.b_of = [g * filters.buckets // filters.grid for g in range(filters.grid)]
         self.s_of = [g * SPARK_POINTS // filters.grid for g in range(filters.grid)]
         self.failure_rows: list[tuple] = []
-        self.spans: dict[str, tuple[float | None, float | None]] = {}
         self.live_sessions: list[dict] = list(getattr(snapshot, "sessions", None) or [])
         self.cells: list[_Cell] = []
         self.tool_agg: dict[tuple[str, str], _ToolAgg] = {}
@@ -714,61 +700,22 @@ class _Board:
         self.tools_with_confirms = {tool for tool, kinds in facts.items() if "confirms" in kinds}
         self.tools_with_prompts = {tool for tool, kinds in facts.items() if "prompts" in kinds}
 
-    # ── SQL fragments ──────────────────────────────────────────
-
-    def _window(self) -> tuple[str, list]:
-        sql = "ts >= ? AND ts <= ? AND session_id <> ''"
-        params: list[Any] = [self.f.since, self.f.until]
-        if self.only_session is not None:
-            sql += " AND session_id = ?"
-            params.append(self.only_session)
-        return sql, params
-
-    def _scoped(self) -> tuple[str, list]:
-        """The window plus the sessions that passed the filters."""
-        sql, params = self._window()
-        if self.narrowed and self.only_session is None:
-            sql += " AND session_id IN (SELECT value FROM json_each(?))"
-            params.append(json.dumps(sorted(self.scope)))
-        return sql, params
-
-    def _source(self, table: str) -> str:
-        """The table for a scan over the window.
-
-        A window that holds most of a table is read fastest in row order, without
-        the time index. A small set of sessions keeps the planner's choice.
-        """
-        if self.only_session is not None or (self.narrowed and self.scope and len(self.scope) < 50):
-            return table
-        view = _view_body(self.conn, table)
-        span = self.spans.get(table)
-        if span is None:
-            # Per store: MIN and MAX over a view of several stores would read every row.
-            ends = _per_store(self.conn, f"SELECT MIN(ts), MAX(ts) FROM {table}")
-            firsts = [r[0] for r in ends if r[0] is not None]
-            lasts = [r[1] for r in ends if r[1] is not None]
-            span = self.spans[table] = (min(firsts, default=None), max(lasts, default=None))
-        first, last = span
-        if first is None or last is None:
-            return table
-        inside = min(last, self.f.until) - max(first, self.f.since)
-        if inside * 2 < last - first:
-            return table
-        if view is not None:
-            # A view over several stores: each store's table is read in row order.
-            return "(" + _VIEW_PART_RE.sub(r"FROM \1 NOT INDEXED", view) + f") AS {table}"
-        return f"{table} NOT INDEXED"
-
-    def _step(self, column: str = "ts") -> tuple[str, list]:
-        """SQL for a row's step of the time grid."""
-        f = self.f
-        return f"MIN({f.grid - 1}, CAST(({column} - ?) / ? AS INTEGER))", [f.since, (f.until - f.since) / f.grid]
-
     def _bucket_of(self, ts: float) -> int:
         return max(0, min(self.f.buckets - 1, int((ts - self.f.since) / self.f.bucket_s)))
 
     def _spark_of(self, ts: float) -> int:
         return max(0, min(SPARK_POINTS - 1, int((ts - self.f.since) / self.f.spark_s)))
+
+    def _history_window(self, view: str, *, grid: bool = False, **params) -> list[dict]:
+        if grid:
+            params["grid"] = self.f.grid
+        return self.history.read(view, sid=self.only_session or "", since=self.f.since, until=self.f.until, **params)
+
+    def _history_series(self, view: str, **params) -> list[dict]:
+        if not self.scope:
+            return []
+        return self.history.read(view, since=self.f.since, until=self.f.until, grid=self.f.grid,
+                                 session_keys=self.history.keys(self.scope), **params)
 
     # ── Loading ────────────────────────────────────────────────
 
@@ -783,12 +730,7 @@ class _Board:
             for name in _BASE_ATTRS:
                 setattr(self, name, base[name])
         else:
-            self._load_cells()
-            self._load_fallback_cells()
-            self._load_tool_agg()
-            self._load_prompt_agg()
-            self._load_meta()
-            self._resolve_sessions()
+            self._load_identity()
             self._price_cells()
             self._match_live()
             if not counts_only:
@@ -804,26 +746,32 @@ class _Board:
         self._index_pending()
         return self
 
+    def _load_identity(self) -> None:
+        self._load_cells()
+        self._load_fallback_cells()
+        self._load_tool_agg()
+        self._load_prompt_agg()
+        self._load_meta()
+        self._resolve_sessions()
+
     def _load_cells(self) -> None:
-        where, params = self._window()
-        step, idx = self._step()
-        rows = self.conn.execute(
-            f"SELECT session_id, agent_id, model, {step} g, tool, project_path, COUNT(*),"
-            " SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens),"
-            " SUM(is_error), MIN(ts), MAX(ts), MAX(CASE WHEN is_error THEN ts END),"
-            " SUM(duration_ms > 0), MAX(duration_ms), SUM(ttft_ms > 0), MAX(ttft_ms), SUM(cost_usd)"
-            f" FROM {self._source('requests')} WHERE {where} GROUP BY session_id, agent_id, model, g",
-            idx + params,
-        ).fetchall()
+        fields = (
+            "session_id agent_id model g tool project_path calls input_tokens output_tokens cache_read_tokens "
+            "cache_creation_tokens errors first_ts last_ts last_error duration_count max_duration ttft_count max_ttft cost_usd"
+        ).split()
+        rows = self._history_window("requests.cells", grid=True)
         b_of, s_of = self.b_of, self.s_of
-        cells = [_Cell(*row) for row in rows]
+        cells = [_Cell(*(row[k] for k in fields)) for row in rows]
         for c in cells:
             c.b, c.s = b_of[c.g], s_of[c.g]
         self.cells = cells
 
     def _load_fallback_cells(self) -> None:
+        self._add_fallback_cells(_fallback_rows(self.history, self.f.since, self.f.until, self.only_session))
+
+    def _add_fallback_cells(self, rows: Iterable[dict]) -> None:
         grid_s = (self.f.until - self.f.since) / self.f.grid
-        for row in _fallback_rows(self.conn, self.f.since, self.f.until, self.only_session):
+        for row in rows:
             for piece in _fallback_pieces(row, self.f.since, self.f.until):
                 ts = piece["ts"]
                 g = max(0, min(self.f.grid - 1, int((ts - self.f.since) / grid_s)))
@@ -856,56 +804,29 @@ class _Board:
                     first = False
 
     def _load_tool_agg(self) -> None:
-        where, params = self._window()
-        rows = self.conn.execute(
-            f"SELECT session_id, agent_id, SUM({_IS_CALL_SQL}), SUM(is_error AND {_IS_CALL_SQL}),"
-            " SUM(confirm IN ('approved', 'denied', 'pending')), SUM(confirm = 'denied'), SUM(confirm = 'pending'),"
-            f" MIN(ts), MAX(ts), MAX(CASE WHEN is_error AND {_IS_CALL_SQL} THEN ts END), tool, project_path"
-            f" FROM {self._source('tool_invocations')} WHERE {where} GROUP BY session_id, agent_id",
-            params,
-        ).fetchall()
-        for sid, aid, *rest in rows:
-            self.tool_agg[(sid, _agent_key(sid, aid))] = _ToolAgg(*rest)
+        fields = "calls failures asked denied pending first_ts last_ts last_error tool project_path".split()
+        for row in self._history_window("tools.agent_totals"):
+            sid, aid = row["session_id"], row["agent_id"]
+            self.tool_agg[(sid, _agent_key(sid, aid))] = _ToolAgg(*(row[k] for k in fields))
 
     def _load_prompt_agg(self) -> None:
-        where, params = self._window()
-        step, idx = self._step()
-        rows = self.conn.execute(
-            f"SELECT session_id, agent_id, {step} g, COUNT(*), MAX(tool), MAX(project_path)"
-            f" FROM session_prompts WHERE {where} AND agent_id = '' GROUP BY session_id, agent_id, g",
-            idx + params,
-        ).fetchall()
-        self.prompt_rows = [
-            (sid, aid, self.b_of[g], self.s_of[g], n, tool, project) for sid, aid, g, n, tool, project in rows
-        ]
-        for sid, aid, _b, _s, n, _tool, _project in self.prompt_rows:
+        for row in self._history_window("prompts.series", grid=True):
+            sid, aid, g, n = (row[k] for k in ("session_id", "agent_id", "g", "prompts"))
+            if not aid:
+                self.prompt_rows.append((sid, aid, self.b_of[g], self.s_of[g], n, row["tool"], row["project_path"]))
             key = (sid, _agent_key(sid, aid))
             self.prompt_agg[key] = self.prompt_agg.get(key, 0) + n
-        # A subagent's own prompts count on its row, not on its parent's or in the totals.
-        for sid, aid, n in self.conn.execute(
-            f"SELECT session_id, agent_id, COUNT(*) FROM session_prompts WHERE {where} AND agent_id != '' GROUP BY session_id, agent_id",
-            params,
-        ):
-            self.prompt_agg[(sid, _agent_key(sid, aid))] = n
 
     def _load_meta(self) -> None:
         ids = {c.sid for c in self.cells}
         ids.update(sid for sid, _ in self.tool_agg)
         ids.update(sid for sid, _ in self.prompt_agg)
         ids.discard("")
-        payload = json.dumps(sorted(ids))
-        for row in self.conn.execute(
-            "SELECT session_id, tool, project_path, model, pid, started_at, ended_at FROM sessions"
-            " WHERE session_id IN (SELECT value FROM json_each(?))",
-            (payload,),
-        ):
-            self.meta[row[0]] = dict(zip(("session_id", "tool", "project_path", "model", "pid", "started_at", "ended_at"), row))
-        for row in self.conn.execute(
-            "SELECT agent_id, session_id, task, model, started_at, ended_at, completed FROM agents"
-            " WHERE session_id IN (SELECT value FROM json_each(?))",
-            (payload,),
-        ):
-            agent = dict(zip(("agent_id", "session_id", "task", "model", "started_at", "ended_at", "completed"), row))
+        if not ids:
+            return
+        keys = self.history.keys(ids)
+        self.meta = {row["session_id"]: row for row in self.history.read("board.sessions", session_keys=keys)}
+        for agent in self.history.read("board.agents", session_keys=keys):
             # A long session stays in view, but a subagent that ran outside this time does not.
             last = agent["ended_at"] or (agent["started_at"] if agent["completed"] else None)
             ran_outside = self.only_session is None and (
@@ -938,13 +859,13 @@ class _Board:
             meta_tool = meta.get("tool") or ""
             self.session_tool[sid] = meta_tool if not is_unattributed(meta_tool) else tool_seen.get(sid, meta_tool)
             path = meta.get("project_path") or project_seen.get(sid, "")
-            self.session_project[sid] = path if _is_reported_history(self.conn) else project_root(path)
+            self.session_project[sid] = path if self.history.qualified else project_root(path)
         for c in self.cells:
             self.session_tool.setdefault(c.sid, c.tool)
             self.session_project.setdefault(c.sid, c.project)
             if is_unattributed(c.tool):
                 c.tool = self.session_tool[c.sid]
-            c.project = (c.project if _is_reported_history(self.conn) else project_root(c.project)) or self.session_project[c.sid]
+            c.project = (c.project if self.history.qualified else project_root(c.project)) or self.session_project[c.sid]
 
     def _price_cells(self) -> None:
         tiered: dict[str, int] = {}
@@ -961,19 +882,13 @@ class _Board:
 
     def _price_long_requests(self, tiered: dict[str, int]) -> None:
         """A request over a prompt-length tier costs more than its tokens at the base rate."""
-        where, params = self._window()
-        step, idx = self._step()
-        rows = self.conn.execute(
-            f"SELECT session_id, agent_id, model, {step} g, input_tokens, output_tokens, cache_read_tokens,"
-            f" cache_creation_tokens, ts FROM requests WHERE {where}"
-            " AND model IN (SELECT value FROM json_each(?))"
-            " AND input_tokens + cache_read_tokens + cache_creation_tokens > ?",
-            [*idx, *params, json.dumps(sorted(tiered)), min(tiered.values())],
-        ).fetchall()
+        fields = "session_id agent_id model g input_tokens output_tokens cache_read_tokens cache_creation_tokens ts".split()
+        rows = self._history_window("requests.long", grid=True, requested_models=sorted(tiered), min_tokens=min(tiered.values()))
         if not rows:
             return
         cells = {(c.sid, c.aid, c.model, c.g): c for c in self.cells if not c.estimated and not c.stored_cost}
-        for sid, aid, model, g, i, o, cr, cw, ts in rows:
+        for row in rows:
+            sid, aid, model, g, i, o, cr, cw, ts = (row[k] for k in fields)
             if i + cr + cw <= tiered[model]:
                 continue
             cell = cells.get((sid, aid, model, g))
@@ -1093,22 +1008,22 @@ class _Board:
         """Viewing one session alone: only the tool and project's newest session takes a process."""
         if self.only_session is None:
             return True
-        predicate, project = _project_predicate(project)
-        row = self.conn.execute(
-            f"SELECT session_id FROM requests WHERE tool = ? AND {predicate} ORDER BY ts DESC LIMIT 1", (tool, project)
-        ).fetchone()
-        return row is None or row[0] == sid
+        key = project_key(project)
+        folded = bool(PureWindowsPath(key).drive)
+        node, _ = self.history.split(sid)
+        rows = self.history.require_reader().read("requests.live_owner", {
+            **node_scope(node), "requested_tool": tool, "project_path_key": key if folded else project,
+            "fold_project": folded, "limit": 1,
+        }).rows
+        return not rows or self.history.identify(rows)[0]["session_id"] == sid
 
     def _pid_owners(self, sessions: dict[str, float]) -> dict[int, str]:
         pids = {int(p) for live in self.live_sessions for p in live.get("pids") or []}
         pids.update(int(live["root_pid"]) for live in self.live_sessions if live.get("root_pid"))
         owners = {}
-        for sid, pid in self.conn.execute(
-            "SELECT session_id, pid FROM session_processes WHERE pid IN (SELECT value FROM json_each(?))",
-            (json.dumps(sorted(pids)),),
-        ):
-            if sid in sessions:
-                owners[pid] = sid
+        if pids and sessions:
+            for row in self.history.read("sessions.pid_owners", pids=sorted(pids), session_keys=self.history.keys(sessions)):
+                owners[row["pid"]] = row["session_id"]
         for sid, meta in self.meta.items():
             pid = meta.get("pid")
             if pid in pids and sid in sessions:
@@ -1151,12 +1066,8 @@ class _Board:
 
     def _load_tests(self) -> None:
         """Calls that run a test command, with outcome. The prefilter only trims the scan."""
-        where, params = self._window()
-        rows = self.conn.execute(
-            "SELECT session_id, agent_id, ts, tool_name, target, is_error, exit_code, duration_ms"
-            f" FROM {self._source('tool_invocations')} WHERE {where} AND {_TEST_LIKE_SQL}",
-            params,
-        ).fetchall()
+        fields = "session_id agent_id ts tool_name target is_error exit_code duration_ms".split()
+        rows = (tuple(row[k] for k in fields) for row in self._history_window("tools.activity_rows", kind_filter="tests"))
         known: dict[tuple[str, str], bool] = {}
         kept = []
         for row in rows:
@@ -1169,23 +1080,18 @@ class _Board:
         self.test_rows = kept
 
     def _load_confirms(self) -> None:
-        where, params = self._window()
-        self.confirm_rows = self.conn.execute(
-            "SELECT session_id, agent_id, tool_name, target, ts, confirm, confirm_wait_ms"
-            f" FROM {self._source('tool_invocations')} WHERE {where} AND confirm <> ''",
-            params,
-        ).fetchall()
+        fields = "session_id agent_id tool_name target ts confirm confirm_wait_ms".split()
+        self.confirm_rows = [
+            tuple(row[k] for k in fields) for row in self._history_window("tools.activity_rows", kind_filter="confirms")
+        ]
 
     def _load_failures(self) -> None:
-        where, params = self._window()
-        self.failure_rows = self.conn.execute(
-            "SELECT session_id, agent_id, tool_name, target, result_summary, ts"
-            f" FROM {self._source('tool_invocations')} WHERE {where} AND is_error = 1 AND {_IS_CALL_SQL}",
-            params,
-        ).fetchall()
+        fields = "session_id agent_id tool_name target result_summary ts".split()
+        self.failure_rows = [
+            tuple(row[k] for k in fields) for row in self._history_window("tools.activity_rows", kind_filter="failures")
+        ]
 
     def _load_loops(self) -> None:
-        where, params = self._window()
         repeats: dict[tuple, int] = defaultdict(int)
         for sid, aid, name, target, _summary, _ts in self.failure_rows:
             repeats[(sid, aid, name, target)] += 1
@@ -1198,11 +1104,9 @@ class _Board:
         if not candidates:
             return
         streams: dict[tuple[str, str], list[_Call]] = defaultdict(list)
-        for sid, aid, ts, name, target, is_error, exit_code, call_input in self.conn.execute(
-            "SELECT session_id, agent_id, ts, tool_name, target, is_error, exit_code, input FROM tool_invocations"
-            f" WHERE {where} AND {_IS_CALL_SQL} AND session_id IN (SELECT value FROM json_each(?)) ORDER BY ts, id",
-            [*params, json.dumps(sorted(candidates))],
-        ):
+        fields = "session_id agent_id ts tool_name target is_error exit_code input_signature".split()
+        for row in self._history_window("tools.activity_rows", kind_filter="loops", session_keys=self.history.keys(candidates)):
+            sid, aid, ts, name, target, is_error, exit_code, call_input = (row[k] for k in fields)
             streams[(sid, _agent_key(sid, aid))].append(_Call(ts, name, target or "", is_error, exit_code, call_input or ""))
         for (sid, agent), calls in streams.items():
             for loop in find_loops(calls):
@@ -1216,15 +1120,7 @@ class _Board:
         ]
         if not quiet:
             return set()
-        return {
-            sid
-            for sid, _ts, reason in self.conn.execute(
-                "SELECT session_id, MAX(ts), finish_reason FROM requests WHERE agent_id = ''"
-                " AND session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id",
-                (json.dumps(quiet),),
-            )
-            if reason in _TURN_ENDED_REASONS
-        }
+        return {r["session_id"] for r in self.history.read("requests.ended", session_keys=self.history.keys(quiet))}
 
     def _assign_status(self) -> None:
         last_activity: dict[str, float] = {}
@@ -1361,19 +1257,11 @@ class _Board:
             haystack = [sid, self.session_tool.get(sid, ""), self.session_project.get(sid, ""), *models[sid], *roles[sid]]
             if any(needle in (value or "").lower() for value in haystack):
                 hits.add(sid)
-        pattern = "%" + self.f.q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        where, params = self._window()
-        searchable = [("session_prompts", "text"), ("tool_invocations", "target")]
-        if _is_reported_history(self.conn):
-            searchable += [("tool_invocations", "tool_name"), ("file_write_events", "path")]
-        for table, column in searchable:
-            hits.update(
-                r[0]
-                for r in self.conn.execute(
-                    f"SELECT DISTINCT session_id FROM {table} WHERE {where} AND {column} LIKE ? ESCAPE '\\'",
-                    [*params, pattern],
-                )
-            )
+        if scope:
+            hits.update(r["session_id"] for r in self.history.read(
+                "board.search_hits", since=self.f.since, until=self.f.until, session_keys=self.history.keys(scope),
+                search_text=self.f.q, extended=self.history.qualified,
+            ))
         return hits
 
     # ── Rollups ────────────────────────────────────────────────
@@ -1487,14 +1375,12 @@ class _Board:
     def _titles(self, keys: Iterable[tuple[str, str]]) -> dict[tuple[str, str], str]:
         """First prompt of each agent, or the session's label."""
         keys = list(keys)
-        sids = sorted({sid for sid, _ in keys})
-        firsts: dict[tuple[str, str], str] = {}
-        for sid, aid, text, _ts in self.conn.execute(
-            "SELECT session_id, agent_id, text, MIN(ts) FROM session_prompts"
-            " WHERE text <> '' AND session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id, agent_id",
-            (json.dumps(sids),),
-        ):
-            firsts[(sid, _agent_key(sid, aid))] = text
+        if not keys:
+            return {}
+        rows = self.history.read("prompts.titles", session_keys=self.history.keys(sid for sid, _ in keys))
+        return self._format_titles(keys, {(r["session_id"], _agent_key(r["session_id"], r["agent_id"])): r["text"] for r in rows})
+
+    def _format_titles(self, keys: Iterable[tuple[str, str]], firsts: dict[tuple[str, str], str]) -> dict[tuple[str, str], str]:
         titles = {}
         for sid, agent in keys:
             text = firsts.get((sid, agent))
@@ -1712,15 +1598,12 @@ class _Board:
             result[(sid, agent)] = line
         if not sids:
             return result
-        step, idx = self._step()
-        where = "ts >= ? AND ts <= ? AND session_id IN (SELECT value FROM json_each(?))"
-        rows = self.conn.execute(
-            f"SELECT session_id, agent_id, {step} g, COUNT(*) FROM tool_invocations WHERE {where} AND {_IS_CALL_SQL}"
-            " GROUP BY session_id, agent_id, g",
-            [*idx, self.f.since, self.f.until, json.dumps(sids)],
-        ).fetchall()
-        rows = [(sid, aid, self.s_of[g], n) for sid, aid, g, n in rows]
-        for sid, aid, s, n in rows:
+        rows = self.history.read(
+            "tools.activity", since=self.f.since, until=self.f.until, grid=self.f.grid,
+            session_keys=self.history.keys(sids),
+        )
+        for row in rows:
+            sid, aid, s, n = row["session_id"], row["agent_id"], self.s_of[row["g"]], row["calls"]
             agent = _agent_key(sid, aid)
             if (sid, sid) in result:
                 result[(sid, sid)][s] += n
@@ -1750,42 +1633,15 @@ def _as_number(value: Any) -> float | None:
         return None
 
 
-def _fallback_rows(conn: sqlite3.Connection, since: float, until: float, only_session: str | None = None) -> list[dict]:
+def _fallback_rows(history: HistoryScope, since: float, until: float, only_session: str | None = None, *,
+                   session_keys: list[str] | None = None) -> list[dict]:
     """Sessions with usage in session_usage and no requests row at all, active in the window.
 
     A session that spans the window is included: ``_fallback_pieces`` places each
     of its days in the window or leaves it out.
     """
-    sql = (
-        "SELECT session_id, tool, project_path, model, models_json, input_tokens, output_tokens, cache_read_tokens,"
-        " cache_creation_tokens, request_count, tool_call_count, turn_count, started_at, last_activity_at, daily_json"
-        " FROM session_usage su WHERE last_activity_at >= ? AND started_at <= ?"
-        " AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.session_id = su.session_id)"
-    )
-    params: list[Any] = [since, until]
-    if _is_reported_history(conn):
-        sql += " AND NOT EXISTS (SELECT 1 FROM scoped_request_sessions r WHERE r.session_id = su.session_id)"
-    if only_session is not None:
-        sql += " AND session_id = ?"
-        params.append(only_session)
-    names = (
-        "session_id",
-        "tool",
-        "project_path",
-        "model",
-        "models_json",
-        "input_tokens",
-        "output_tokens",
-        "cache_read_tokens",
-        "cache_creation_tokens",
-        "request_count",
-        "tool_call_count",
-        "turn_count",
-        "started_at",
-        "last_activity_at",
-        "daily_json",
-    )
-    return [dict(zip(names, row)) for row in conn.execute(sql, params)]
+    return history.read("usage.sessions", sid=only_session or "", since=since, until=until, without_requests=True,
+                        **({"session_keys": session_keys} if session_keys is not None else {}))
 
 
 def _fallback_models(row: dict) -> dict[str, dict]:
@@ -1819,7 +1675,7 @@ def _fallback_models(row: dict) -> dict[str, dict]:
     return split or {row["model"] or "unknown": total}
 
 
-def _credits_section(db: Any, board: _Board) -> dict | None:
+def _credits_section(board: _Board) -> dict | None:
     """AI credits GitHub Copilot reports for the sessions in view, or None when none is in view.
 
     Credits are stored per session and local day, as the tool reports them: not
@@ -1834,7 +1690,8 @@ def _credits_section(db: Any, board: _Board) -> dict | None:
     by_tool: dict[str, float] = {}
     approximate = False
     seen = False
-    for u in db.query_session_usage(active_since=f.since, active_until=f.until):
+    for row in board.history.read("usage.sessions", since=f.since, until=f.until):
+        u = project_usage(row)
         if not u.get("billing_unit"):
             continue
         if selected is not None and u["tool"] not in selected:
@@ -1936,35 +1793,11 @@ _TOTAL_COLUMNS = {"input": "input_tokens", "output": "output_tokens", "cache_rea
 # ─── The whole board ──────────────────────────────────────────────
 
 
-def _sampled_rows(board: _Board, total: int, columns: str, condition: str, table: str, where: str, params: list) -> tuple[list, int]:
-    """Rows for percentiles: all of them, or every k-th by id once they are many."""
-    k = 1 if _is_reported_history(board.conn) else max(1, math.ceil(total / MAX_LATENCY_VALUES))
-    sample_sql = f" AND id % {k} = 0" if k > 1 else ""
-    rows = board.conn.execute(
-        f"SELECT {columns} FROM {board._source(table)} WHERE {where} AND {condition}{sample_sql}",
-        params,
-    ).fetchall()
-    return rows, k
-
-
 def _latency(board: _Board) -> dict:
-    """Percentiles of model replies per model, project and time bucket, from one pass."""
-    where, params = board._scoped()
-    if board.f.model:
-        where += " AND model = ?"
-        params.append(board.f.model)
+    """Keep the original percentile interpolation over grouped values."""
     timed = sum(c.timed for c in board.cells)
     timed_first = sum(c.timed_first for c in board.cells)
-    step, idx = board._step()
-    rows, k = _sampled_rows(
-        board,
-        max(timed, timed_first),
-        f"session_id, model, {step}, duration_ms, ttft_ms",
-        "(duration_ms > 0 OR ttft_ms > 0)",
-        "requests",
-        where,
-        idx + params,
-    )
+    rows = board._history_series("requests.latency", requested_model=board.f.model or "")
     by_model: dict[str, list[float]] = defaultdict(list)
     by_project: dict[str, list[float]] = defaultdict(list)
     by_bucket: list[list[float]] = [[] for _ in range(board.f.buckets)]
@@ -1974,20 +1807,16 @@ def _latency(board: _Board) -> dict:
     project_of = board.session_project
     b_of, s_of = board.b_of, board.s_of
 
-    def add(sid: str, model: str, g: int, duration: float) -> None:
-        by_model[model].append(duration)
-        by_project[project_of.get(sid, "")].append(duration)
-        by_bucket[b_of[g]].append(duration)
-        by_spark[s_of[g]].append(duration)
-
-    for sid, model, g, duration, ttft in rows:
-        if duration > 0:
-            replies.append(duration)
-            add(sid, model, g, duration)
-        if ttft > 0:
-            firsts.append(ttft)
-    if k > 1:
-        _read_thin_groups(board, where, params, by_model, by_project, by_bucket, by_spark)
+    for row in rows:
+        durations = exact_values(row, "durations", "duration_count")
+        firsts.extend(exact_values(row, "firsts", "first_count"))
+        if durations:
+            g = row["g"]
+            replies.extend(durations)
+            by_model[row["model"]].extend(durations)
+            by_project[project_of.get(row["session_id"], "")].extend(durations)
+            by_bucket[b_of[g]].extend(durations)
+            by_spark[s_of[g]].extend(durations)
     for group in (replies, firsts, *by_model.values(), *by_project.values(), *by_bucket, *by_spark):
         group.sort()
     return {
@@ -2002,80 +1831,6 @@ def _latency(board: _Board) -> dict:
         "by_bucket": by_bucket,
         "by_spark": by_spark,
     }
-
-
-def _read_thin_groups(board: _Board, where: str, params: list, by_model, by_project, by_bucket, by_spark) -> None:
-    """A group the sample left thin is small in truth, so its values are read in full."""
-    f = board.f
-    timed_model: dict[str, int] = defaultdict(int)
-    timed_project: dict[str, int] = defaultdict(int)
-    timed_bucket = [0] * f.buckets
-    timed_spark = [0] * SPARK_POINTS
-    for c in board.cells:
-        if c.timed:
-            timed_model[c.model] += c.timed
-            timed_project[c.project] += c.timed
-            timed_bucket[c.b] += c.timed
-            timed_spark[c.s] += c.timed
-
-    def thin(have: list, timed: int) -> bool:
-        return timed > len(have) and len(have) < MIN_GROUP_SAMPLE
-
-    conn = board.conn
-
-    def by_model_values(model: str) -> list[float]:
-        return [
-            r[0]
-            for r in conn.execute(
-                f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0 AND model = ?", [*params, model]
-            )
-        ]
-
-    def by_project_values(project: str) -> list[float]:
-        sids = json.dumps([sid for sid in board.scope if board.session_project.get(sid, "") == project])
-        return [
-            r[0]
-            for r in conn.execute(
-                f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0"
-                " AND session_id IN (SELECT value FROM json_each(?))",
-                [*params, sids],
-            )
-        ]
-
-    def by_time(start: float, end: float) -> list[float]:
-        return [
-            r[0]
-            for r in conn.execute(
-                f"SELECT duration_ms FROM requests WHERE {where} AND duration_ms > 0 AND ts >= ? AND ts < ?",
-                [*params, start, end],
-            )
-        ]
-
-    # Every thin group is read, side by side on a cluster.
-    targets: list = []
-    calls: list = []
-    for model, timed in timed_model.items():
-        if thin(by_model[model], timed):
-            targets.append((by_model, model))
-            calls.append(lambda model=model: by_model_values(model))
-    for project, timed in timed_project.items():
-        if thin(by_project[project], timed):
-            targets.append((by_project, project))
-            calls.append(lambda project=project: by_project_values(project))
-    for i, timed in enumerate(timed_bucket):
-        if thin(by_bucket[i], timed):
-            start = f.since + i * f.bucket_s
-            end = start + f.bucket_s + (1e-6 if i == f.buckets - 1 else 0.0)
-            targets.append((by_bucket, i))
-            calls.append(lambda start=start, end=end: by_time(start, end))
-    for i, timed in enumerate(timed_spark):
-        if thin(by_spark[i], timed):
-            start = f.since + i * f.spark_s
-            end = start + f.spark_s + (1e-6 if i == SPARK_POINTS - 1 else 0.0)
-            targets.append((by_spark, i))
-            calls.append(lambda start=start, end=end: by_time(start, end))
-    for (into, key), values in zip(targets, _gather(conn, calls), strict=False):
-        into[key] = values
 
 
 _UNSET: Any = object()
@@ -2108,11 +1863,11 @@ def _turns(board: _Board, skill_rows: list[tuple]) -> _Turns:
     A turn runs to the next prompt. Tokens are read for the newest prompts and for
     the turns a skill ran in; lengths come from a sample once there are many turns.
     """
-    where, params = board._scoped()
-    rows = board.conn.execute(
-        f"SELECT session_id, ts FROM session_prompts WHERE {where} AND agent_id = '' ORDER BY session_id, ts",
-        params,
-    ).fetchall()
+    rows = sorted(
+        (r["session_id"], r["ts"])
+        for r in board.history.read("prompts.page", since=board.f.since, until=board.f.until,
+                                    session_keys=board.history.keys(board.scope))
+    ) if board.scope else []
     starts: dict[str, list[float]] = defaultdict(list)
     for sid, ts in rows:
         starts[sid].append(ts)
@@ -2126,54 +1881,26 @@ def _turns(board: _Board, skill_rows: list[tuple]) -> _Turns:
             wanted.add((sid, starts[sid][i]))
     end_of = board.f.until + 1
     triples = []
-    for sid, ts in wanted:
+    for sid, ts in sorted(wanted):
         line = starts[sid]
         i = bisect.bisect_right(line, ts)
-        triples.append((sid, ts, line[i] if i < len(line) else end_of))
-    model_sql = ""
-    model_params: list[Any] = []
-    if board.f.model:
-        model_sql = " AND r.model = ?"
-        model_params = [board.f.model]
+        node, raw = board.history.split(sid)
+        triples.append((node or "", raw, ts, line[i] if i < len(line) else end_of))
     tokens: dict[tuple[str, float], int | None] = {}
     lengths: list[float] = []
-    # Over a view of several stores the join would read every store whole: it runs on
-    # each store's own table, and the turns of a session add up across them.
-    found: dict[tuple[str, float], list] = {}
-    for part in _table_parts(board.conn, "requests"):
-        for sid, ts, end, turn_tokens in board.conn.execute(
-            "WITH w AS (SELECT value ->> 0 sid, value ->> 1 t, value ->> 2 nx FROM json_each(?))"
-            " SELECT w.sid, w.t, MAX(r.ts + r.duration_ms / 1000.0),"
-            " SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens)"
-            f" FROM w LEFT JOIN {part} r ON r.session_id = w.sid AND r.ts >= w.t AND r.ts < w.nx"
-            f"{model_sql} GROUP BY w.sid, w.t",
-            [json.dumps(triples), *model_params],
-        ):
-            seen = found.get((sid, ts))
-            if seen is None:
-                found[(sid, ts)] = [end, turn_tokens]
-                continue
-            if end is not None:
-                seen[0] = end if seen[0] is None else max(seen[0], end)
-            if turn_tokens is not None:
-                seen[1] = turn_tokens if seen[1] is None else seen[1] + turn_tokens
-    for (sid, ts), (end, turn_tokens) in found.items():
-        tokens[(sid, ts)] = turn_tokens
-        if (sid, ts) in sampled and end is not None and end > ts:
-            lengths.append((end - ts) * 1000.0)
+    if triples:
+        for row in board.history.read("requests.intervals", intervals=triples, requested_model=board.f.model or ""):
+            sid, ts, end = row["session_id"], row["start_ts"], row["end_ts"]
+            tokens[(sid, ts)] = row["tokens"]
+            if (sid, ts) in sampled and end is not None and end > ts:
+                lengths.append((end - ts) * 1000.0)
     lengths.sort()
     return _Turns(len(rows), lengths, None, tokens, starts)
 
 
 def _tools_section(board: _Board) -> dict:
-    where, params = board._scoped()
-    step, idx = board._step()
-    rows = board.conn.execute(
-        f"SELECT tool_name, {step} g, COUNT(*), SUM(is_error), MAX(duration_ms), SUM(duration_ms > 0),"
-        " SUM(input_bytes), COUNT(input_bytes), SUM(output_bytes), COUNT(output_bytes)"
-        f" FROM {board._source('tool_invocations')} WHERE {where} AND {_IS_CALL_SQL} GROUP BY tool_name, g",
-        idx + params,
-    ).fetchall()
+    rows = board._history_series("tools.series")
+    fields = "tool_name g calls failures max_duration timed input_bytes input_count output_bytes output_count".split()
     n = board.f.buckets
     calls_bucket = [0] * n
     fail_bucket = [0] * n
@@ -2182,7 +1909,13 @@ def _tools_section(board: _Board) -> dict:
     stats: dict[str, dict] = {}
     longest = 0.0
     timed_total = 0
-    for name, g, count, errs, slowest, timed, in_sum, in_n, out_sum, out_n in rows:
+    values: dict[str, list[float]] = defaultdict(list)
+    overall = []
+    for source in rows:
+        name, g, count, errs, slowest, timed, in_sum, in_n, out_sum, out_n = (source[k] for k in fields)
+        durations = exact_values(source, "durations", "timed")
+        values[name].extend(durations)
+        overall.extend(durations)
         b, s = board.b_of[g], board.s_of[g]
         row = stats.setdefault(
             name, {"calls": 0, "failed": 0, "max": 0.0, "timed": 0, "trend": [0] * SPARK_POINTS, "in": [0, 0], "out": [0, 0]}
@@ -2203,34 +1936,6 @@ def _tools_section(board: _Board) -> dict:
         longest = max(longest, slowest or 0.0)
         timed_total += timed
 
-    samples, k = _sampled_rows(
-        board, timed_total, "tool_name, duration_ms", f"duration_ms > 0 AND {_IS_CALL_SQL}", "tool_invocations", where, params
-    )
-    values: dict[str, list[float]] = defaultdict(list)
-    overall = []
-    for name, duration in samples:
-        values[name].append(duration)
-        overall.append(duration)
-    if k > 1:
-
-        def full_values(name: str) -> list[float]:
-            return [
-                r[0]
-                for r in board.conn.execute(
-                    f"SELECT duration_ms FROM tool_invocations WHERE {where} AND duration_ms > 0 AND tool_name = ?",
-                    [*params, name],
-                )
-            ]
-
-        thin_names = [
-            name
-            for name, row in stats.items()
-            if row["timed"] > len(values[name]) and len(values[name]) < MIN_GROUP_SAMPLE
-        ]
-        for name, full in zip(
-            thin_names, _gather(board.conn, [lambda n=n: full_values(n) for n in thin_names]), strict=False
-        ):
-            values[name] = full
     overall.sort()
 
     out = []
@@ -2347,18 +2052,12 @@ def _errors_section(board: _Board) -> tuple[list[dict], list[int], dict[str, int
         row["count"] += 1
         row["agents"].add(sid)
         row["last_ts"] = max(row["last_ts"], ts)
-    where, params = board._scoped()
-    if board.f.model:
-        where += " AND model = ?"
-        params.append(board.f.model)
-    step, idx = board._step()
     api_bucket = [0] * board.f.buckets
     api_by_project: dict[str, int] = defaultdict(int)
-    for error_type, status, sid, g, n, ts in board.conn.execute(
-        f"SELECT error_type, http_status, session_id, {step} g, COUNT(*), MAX(ts) FROM {board._source('requests')}"
-        f" WHERE {where} AND is_error = 1 GROUP BY error_type, http_status, session_id, g",
-        idx + params,
-    ):
+    for source in board._history_series("requests.error_series", requested_model=board.f.model or ""):
+        error_type, status, sid, g, n, ts = (
+            source[k] for k in ("error_type", "http_status", "session_id", "g", "calls", "last_ts")
+        )
         api_bucket[board.b_of[g]] += n
         api_by_project[board.session_project.get(sid, "")] += n
         key = _api_error_key(error_type, status)
@@ -2381,15 +2080,11 @@ def _errors_section(board: _Board) -> tuple[list[dict], list[int], dict[str, int
 
 
 def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
-    where, params = board._scoped()
-    reported = _is_reported_history(board.conn)
-    node = ", node_id" if reported else ""
-    rows = board.conn.execute(
-        "SELECT path, MAX(project_path), SUM(json_extract(detail, '$.lines_added')),"
-        " SUM(json_extract(detail, '$.lines_removed')), COUNT(*), COUNT(DISTINCT session_id), MAX(ts), MAX(session_id)"
-        f" {node} FROM file_write_events WHERE {where} GROUP BY path{node}",
-        params,
-    ).fetchall()
+    selected = board.narrowed and board.only_session is None
+    fields = ("path", "project_path", "added", "removed", "edits", "agents", "last_ts", "session_id")
+    rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
+            for r in board._history_window("files.changes", restrict_sessions=selected,
+                                           session_keys=board.history.keys(board.scope) if selected else [])]
     files = []
     by_project: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     added_any = removed_any = False
@@ -2480,15 +2175,12 @@ def _loop_rows(board: _Board) -> list[dict]:
         sid, agent = loop["session_id"], loop["agent_id"]
         tokens = None
         cost = None
-        sql = (
-            "SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), MAX(ts), SUM(cost_usd)"
-            " FROM requests WHERE session_id = ? AND ts >= ? AND ts <= ?"
-        )
-        params: list[Any] = [sid, loop["since_ts"], loop["until_ts"]]
-        if agent != sid:
-            sql += " AND agent_id = ?"
-            params.append(agent)
-        for model, i, o, cr, cw, ts, stored in board.conn.execute(sql + " GROUP BY model", params):
+        fields = "model input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd".split()
+        for row in board.history.read(
+            "requests.models", sid=sid, since=loop["since_ts"], until=loop["until_ts"],
+            requested_agent=board.history.split(agent)[1] if agent != sid else "",
+        ):
+            model, i, o, cr, cw, ts, stored = (row[k] for k in fields)
             tokens = (tokens or 0) + i + o + cr + cw
             cell_cost = _cost_of(stored, model, i, o, cr, cw, ts)
             if cell_cost is not None:
@@ -2553,22 +2245,23 @@ def _tokens_of(row: dict) -> int | None:
 
 
 def _prompts_section(board: _Board, turn_tokens: dict[tuple[str, float], int | None]) -> list[dict]:
-    where, params = board._scoped()
     out = []
     historical = _is_reported_history(board.conn)
     native_ids = historical or getattr(board.conn, "_live_projection", False) is True
-    identity_column = "id, " if native_ids else ""
-    for raw in board.conn.execute(
-        f"SELECT {identity_column}ts, session_id, agent_id, project_path, text, prompt_file FROM session_prompts WHERE {where} AND agent_id = ''"
-        f" ORDER BY ts DESC{', node_id, id' if historical else ''} LIMIT {MAX_PROMPTS}",
-        params,
-    ):
-        row = tuple(raw)
-        ts, sid, aid, project, text, prompt_file = row[1:] if native_ids else row
+    if not board.scope:
+        return out
+    result = board.history.require_reader().read("prompts.page", {
+        **node_scope(board.history.node), "since": board.f.since, "until": board.f.until, "preview": True,
+        "session_keys": board.history.keys(board.scope), "limit": MAX_PROMPTS,
+    })
+    for row in board.history.identify(result.rows):
+        ts, sid, aid, project, text, prompt_file = (
+            row[k] for k in ("ts", "session_id", "agent_id", "project_path", "text", "prompt_file")
+        )
         out.append(
             {
-                **({"id": identity(parts[0], str(row[0])), "node_id": node_label(parts[0])} if historical and (parts := identity_parts(sid))
-                   else {"id": str(row[0])} if native_ids else {}),
+                **({"id": identity(row["node_id"], str(row["id"])), "node_id": node_label(row["node_id"])} if historical
+                   else {"id": str(row["id"])} if native_ids else {}),
                 "ts": ts,
                 "session_id": sid,
                 "agent_id": _agent_key(sid, aid),
@@ -2713,22 +2406,22 @@ def _prompt_files_on_disk(projects: list[str]) -> tuple[list[tuple[str, str]], l
 
 
 def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict], list[str]]:
-    where, params = board._scoped()
-    if _is_reported_history(board.conn):
+    reported = board.history.qualified
+    restrict = board.narrowed
+    rows = board.history.read("prompts.files", since=board.f.since, until=board.f.until,
+                              restrict_sessions=restrict, session_keys=board.history.keys(board.scope) if restrict else [],
+                              limit=MAX_LIST_ROWS if reported else 20_000, page=reported)
+    if reported:
         return [
-            {"node_id": node_label(node), "file": path, "project": project or board.session_project.get(sid, ""), "uses": count, "last_ts": ts}
-            for node, path, project, sid, count, ts in board.conn.execute(
-                f"SELECT node_id,prompt_file,project_path,MAX(session_id),COUNT(*),MAX(ts) FROM session_prompts WHERE {where}"
-                " AND agent_id='' AND prompt_file<>'' AND prompt_file NOT LIKE '%SKILL.md' GROUP BY node_id,prompt_file,project_path"
-                " ORDER BY COUNT(*) DESC, MAX(ts) DESC LIMIT ?", [*params, MAX_LIST_ROWS])
+            {"node_id": node_label(r["node_id"]), "file": r["path"],
+             "project": r["project_path"] or board.session_project.get(r["session_id"], ""),
+             "uses": r["uses"], "last_ts": r["last_ts"]}
+            for r in rows
         ], []
     used: dict[tuple[str, str], dict] = {}
     live = getattr(board.conn, "_live_projection", False) is True
-    for prompt_file, project, sid, n, last_ts in board.conn.execute(
-        "SELECT prompt_file, project_path, MAX(session_id), COUNT(*), MAX(ts) FROM session_prompts"
-        f" WHERE {where} AND agent_id = '' AND prompt_file <> '' AND prompt_file NOT LIKE '%SKILL.md' GROUP BY prompt_file, project_path",  # a skill file has its own panel
-        params,
-    ):
+    for r in rows:
+        prompt_file, project, sid, n, last_ts = (r[key] for key in ("path", "project_path", "session_id", "uses", "last_ts"))
         project = project or board.session_project.get(sid, "")
         used[(project, _basename(prompt_file))] = {
             "file": prompt_file, "project": project, "uses": n, "last_ts": last_ts,
@@ -2767,8 +2460,13 @@ def _project_prompts(board: _Board, project_ids: list[str]) -> tuple[list[dict],
 
 
 def _skill_rows(board: _Board) -> list[tuple]:
-    where, params = board._scoped()
-    return board.conn.execute(f"SELECT name, session_id, ts, agent_id FROM skill_uses WHERE {where}", params).fetchall()
+    if not board.scope:
+        return []
+    return [
+        (r["name"], r["session_id"], r["ts"], r["agent_id"])
+        for r in board.history.read("skills.window", since=board.f.since, until=board.f.until,
+                                    session_keys=board.history.keys(board.scope))
+    ]
 
 
 SKILL_FILE_TTL_S = 300.0
@@ -2871,10 +2569,7 @@ def _skill_reach(row: dict, git_state: str) -> str:
     return f"Anyone who works in {row['owner']}."
 
 
-_READ_TOOL_NAMES = ("read", "view", "read_file", "readfile", "view_file", "open_file")
-
-
-def _skill_file_reads(conn: Any, name: str, uses: list[tuple], range_sql: str, range_params: list) -> list[dict]:
+def _skill_file_reads(history: HistoryScope, name: str, params: dict) -> list[dict]:
     """Calls that read ``<skill>/SKILL.md`` with a file-read tool. A real way to use a skill, apart from starting it.
 
     A read in a turn that also started this skill is the skill's own load, so it is left out.
@@ -2882,26 +2577,17 @@ def _skill_file_reads(conn: Any, name: str, uses: list[tuple], range_sql: str, r
     base = name.rsplit(":", 1)[-1]
     if not base:
         return []
-    escaped = base.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-    marks = ",".join("?" * len(_READ_TOOL_NAMES))
-    found = conn.execute(
-        "SELECT ts, session_id, agent_id, tool, project_path, target FROM tool_invocations"
-        f" WHERE lower(tool_name) IN ({marks}) AND (target LIKE ? ESCAPE '!' OR target LIKE ? ESCAPE '!'){range_sql}"
-        " ORDER BY ts DESC LIMIT 2000",
-        [*_READ_TOOL_NAMES, f"%/{escaped}/SKILL.md", "%\\" + escaped + "\\SKILL.md", *range_params],
-    ).fetchall()
-    reads = [r for r in found if [part.lower() for part in re.split(r"[\\/]", r[5])[-2:]] == [base.lower(), "skill.md"]]
+    reads = history.read("tools.detail", limit=2000, page=True, query_mode="skill_reads",
+                         requested_skill=base, inclusive_end=False, **params)
     if not reads:
         return []
-    sessions = sorted({r[1] for r in reads})
+    session_keys = history.keys(r["session_id"] for r in reads if r["session_id"])
     starts: dict[str, list[float]] = defaultdict(list)
-    for chunk in range(0, len(sessions), 500):
-        part = sessions[chunk : chunk + 500]
-        for sid, ts in conn.execute(f"SELECT session_id, ts FROM session_prompts WHERE agent_id = '' AND session_id IN ({','.join('?' * len(part))}) ORDER BY ts", part):
-            starts[sid].append(ts)
+    for row in reversed(history.read("prompts.page", session_keys=session_keys)):
+        starts[row["session_id"]].append(row["ts"])
     started: dict[str, list[float]] = defaultdict(list)
-    for sid, ts in uses:
-        started[sid].append(ts)
+    for row in history.read("skills.detail", requested_skill=name, query_mode="starts", session_keys=session_keys):
+        started[row["session_id"]].append(row["ts"])
 
     def same_turn_started(sid: str, ts: float) -> bool:
         line = starts.get(sid, [])
@@ -2911,47 +2597,37 @@ def _skill_file_reads(conn: Any, name: str, uses: list[tuple], range_sql: str, r
         return any(begin <= used < end for used in started.get(sid, []))
 
     return [
-        {"ts": ts, "session_id": sid, "agent_id": aid, "tool": tool,
-         "project": (project or "") if _is_reported_history(conn) else project_root(project or "")}
-        for ts, sid, aid, tool, project, _target in reads
-        if not same_turn_started(sid, ts)
+        {**r, "project": r["project_path"] if history.qualified else project_root(r["project_path"])}
+        for r in reads if not same_turn_started(r["session_id"], r["ts"])
     ]
 
 
 def skill_detail(
-    db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None, tools: tuple[str, ...] | None = None
+    db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None,
+    tools: tuple[str, ...] | None = None, *, history: HistoryScope | None = None,
 ) -> tuple[int, dict]:
     """Who can see a skill, each use of it, and the text of its files."""
     now = time.time() if now is None else now
-    conn = db._conn()
-    # A plugin skill is stored as plugin:name, and a skill file knows only its name.
-    named = "(name = ? OR name LIKE ?)"
-    names = [name, f"%:{name}"]
-    range_sql, range_params = "", []
+    history = history or HistoryScope.local(db)
+    params: dict = {}
     if since is not None and until is not None:
-        range_sql, range_params = " AND ts >= ? AND ts < ?", [since, until]
+        params |= {"since": since, "until": until}
     if tools is not None:
-        stored = stored_ids_for(tools)
-        range_sql += f" AND tool IN ({','.join('?' * len(stored))})" if stored else " AND 0"
-        range_params += list(stored)
-    rows = conn.execute(
-        f"SELECT ts, session_id, agent_id, tool, project_path, trigger FROM skill_uses WHERE {named}{range_sql} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        [*names, *range_params],
-    ).fetchall()
-    counted = conn.execute(f"SELECT session_id, agent_id FROM skill_uses WHERE {named}{range_sql}", [*names, *range_params]).fetchall()
-    in_range = (len(counted), len({(sid, _agent_key(sid, aid)) for sid, aid in counted}))
-    started_all = [(r[0], r[1]) for r in conn.execute(f"SELECT session_id, ts FROM skill_uses WHERE {named}", names)]
-    file_reads = _skill_file_reads(conn, name, started_all, range_sql, range_params)
+        params |= {"restrict_tools": True, "requested_tools": list(stored_ids_for(tools))}
+    page = history.read("skills.detail", requested_skill=name, limit=MAX_DETAIL_ROWS + 2, page=True, **params)
+    overall = next(r for r in page if r["row_type"] == "all")
+    counts = next(r for r in page if r["row_type"] == "counts")
+    fields = ("ts", "session_id", "agent_id", "tool", "project_path", "trigger")
+    rows = [tuple(r[k] for k in fields) for r in page if r["row_type"] == "item"]
+    file_reads = _skill_file_reads(history, name, params)
     read_pairs = {(r["session_id"], _agent_key(r["session_id"], r["agent_id"])) for r in file_reads[:MAX_DETAIL_ROWS]}
-    total, first, last = conn.execute(f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM skill_uses WHERE {named}", names).fetchone()
-    raw_projects = [r[0] for r in conn.execute(f"SELECT DISTINCT project_path FROM skill_uses WHERE {named} AND project_path != '' LIMIT 50", names)]
-    projects = [] if _is_reported_history(db) else list(dict.fromkeys(p for raw in raw_projects for p in (project_root(raw), raw) if p))
+    projects = [] if history.qualified else list(dict.fromkeys(p for raw in overall["projects"] for p in (project_root(raw), raw) if p))
     pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows} | read_pairs
-    titles = _titles_for(conn, pairs, now)
+    titles = _history_titles(history, pairs, now)
 
     locations = []
     seen_text: dict[str, str] = {}
-    for row in ([] if _is_reported_history(db) else skill_locations(name, projects)):
+    for row in ([] if history.qualified else skill_locations(name, projects)):
         git_state = ""
         if row["scope"] == "project":
             git_state = _git_states(Path(row["owner"]), [row["path"]]).get(row["path"], "outside-repo")
@@ -2976,9 +2652,9 @@ def skill_detail(
         )
     return 200, {
         "name": name,
-        "uses": in_range[0],
-        "agents": in_range[1],
-        "total_uses": total,
+        "uses": counts["uses"],
+        "agents": counts["agents"],
+        "total_uses": overall["total"],
         # Reads of the skill file: a way to use the skill that is counted apart from the uses.
         "file_reads": len(file_reads),
         "reads": [
@@ -2991,8 +2667,8 @@ def skill_detail(
             }
             for r in file_reads[:MAX_DETAIL_ROWS]
         ],
-        "first_ts": first,
-        "last_ts": last,
+        "first_ts": overall["first_ts"],
+        "last_ts": overall["last_ts"],
         "locations": locations,
         "calls": [
             {
@@ -3000,7 +2676,7 @@ def skill_detail(
                 "agent_id": _agent_key(sid, aid),
                 "title": titles.get((sid, _agent_key(sid, aid)), ""),
                 "tool": tool,
-                "project": (project or "") if _is_reported_history(db) else project_root(project or ""),
+                "project": project if history.qualified else project_root(project),
                 "trigger": trigger or None,
             }
             for ts, sid, aid, tool, project, trigger in rows
@@ -3037,10 +2713,9 @@ def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> li
 def _memory_files(board: _Board) -> list[dict]:
     selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
     node = ", node_id" if _is_reported_history(board.conn) else ""
-    rows = board.conn.execute(
-        f"SELECT path, tool, scope, tokens, last_changed{node} FROM files WHERE (category LIKE '%memory%' OR category LIKE '%instruction%')"
-        f" ORDER BY last_changed DESC LIMIT {MAX_LIST_ROWS}"
-    ).fetchall()
+    fields = ("path", "tool", "scope", "tokens", "last_changed")
+    rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
+            for r in board.history.read("files.inventory", inventory_mode="memory", limit=MAX_LIST_ROWS, page=True)]
     rows = [
         r
         for r in rows
@@ -3050,11 +2725,12 @@ def _memory_files(board: _Board) -> list[dict]:
     if not rows:
         return []
     writes: dict[str, tuple] = {}
-    for path, added, removed, tool, ts, *nodes in board.conn.execute(
-        f"SELECT path, SUM(json_extract(detail, '$.lines_added')), SUM(json_extract(detail, '$.lines_removed')), tool, MAX(ts){node}"
-        f" FROM file_write_events WHERE ts >= ? AND ts <= ? AND path IN (SELECT value FROM json_each(?)) GROUP BY path{node}",
-        (board.f.since, board.f.until, json.dumps([r[0] for r in rows])),
-    ):
+    paths = sorted({r[0] for r in rows})
+    fields = ("path", "added", "removed", "tool", "last_ts")
+    write_rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
+                  for r in board.history.read("files.changes", since=board.f.since, until=board.f.until,
+                                              requested_paths=paths)]
+    for path, added, removed, tool, ts, *nodes in write_rows:
         writes[identity(nodes[0], path) if nodes else path] = (added, removed, tool, ts)
     out = []
     for path, tool, scope, tokens, last_changed, *nodes in rows:
@@ -3124,25 +2800,14 @@ def _processes(board: _Board) -> list[dict]:
 def _resource_series(board: _Board) -> tuple[dict, dict]:
     """CPU and memory per tool. Only the tool and time filters apply."""
     f = board.f
-    where = "ts >= ? AND ts <= ?"
-    params: list[Any] = [f.since, f.until]
-    if f.tools is not None:
-        stored = stored_ids_for(f.tools)
-        where += f" AND tool IN ({','.join('?' * len(stored))})" if stored else " AND 0"
-        params.extend(stored)
-    node = ", node_id" if _is_reported_history(board.conn) else ""
-    sql = (
-        f"SELECT tool, MIN({f.buckets - 1}, CAST((ts - ?) / ? AS INTEGER)) b, AVG(cpu) cpu, AVG(mem) mem FROM"
-        f" (SELECT tool, ts{node}, SUM(cpu_percent) cpu, SUM(memory_rss_mb) mem"
-        f" FROM process_snapshots WHERE {where} GROUP BY tool, ts{node}) GROUP BY tool, b{node}"
+    rows = board.history.read(
+        "runtime.resources", since=f.since, until=f.until, grid=f.buckets, restrict_tools=f.tools is not None,
+        requested_tools=list(stored_ids_for(f.tools)) if f.tools is not None else [],
     )
-    rows = board.conn.execute(
-        f"SELECT tool, b, SUM(cpu), SUM(mem) FROM ({sql}) GROUP BY tool,b" if node else sql,
-        [f.since, f.bucket_s, *params],
-    ).fetchall()
     cpu: dict[str, list] = {}
     mem: dict[str, list] = {}
-    for tool, b, avg_cpu, avg_mem in rows:
+    for r in rows:
+        tool, b, avg_cpu, avg_mem = (r[key] for key in ("tool", "b", "cpu", "mem"))
         cpu.setdefault(tool, [None] * f.buckets)[b] = None if avg_cpu is None else round(avg_cpu, 2)
         mem.setdefault(tool, [None] * f.buckets)[b] = None if avg_mem is None else round(avg_mem, 2)
     order = [t for t in board.tool_order if t in cpu] + sorted(t for t in cpu if t not in board.tool_order)
@@ -3152,10 +2817,11 @@ def _resource_series(board: _Board) -> tuple[dict, dict]:
 def _previous(board: _Board) -> dict:
     """The same filters over the window before this one. Null when it holds no data."""
     f = board.f
-    if _is_reported_history(board.conn):
+    if board.history.qualified:
         hi = f.since - 1e-6
         prior = replace(f, since=f.since - (f.until - f.since), until=hi)
-        previous = _Board(board.conn, prior, board.now, None, facts=_store_facts(board.conn, "")).load()
+        previous = _Board(board.conn, prior, board.now, None, facts=_activity_facts(board.history),
+                          history=board.history).load(counts_only=True)
         calls = sum(agg.n for (sid, _), agg in previous.tool_agg.items() if sid in previous.scope)
         calls += sum(previous.fallback_tools.values())
         prompts = sum(previous.fallback_user.values())
@@ -3166,30 +2832,25 @@ def _previous(board: _Board) -> dict:
                 "cost_usd": _usd(previous.total.cost), "tool_calls": calls}
     span = f.until - f.since
     since, until = f.since - span, f.since
-    where = "ts >= ? AND ts < ?"
-    params: list[Any] = [since, until]
-    if f.tools is not None:
-        stored = stored_ids_for(f.tools)
-        where += f" AND tool IN ({','.join('?' * len(stored))})" if stored else " AND 0"
-        params.extend(stored)
-    if f.project:
-        predicate, project = _project_predicate(f.project)
-        where += f" AND {predicate}"
-        params.append(project)
-    if f.status != "all" or f.q:
-        where += " AND session_id IN (SELECT value FROM json_each(?))"
-        params.append(json.dumps(sorted(board.scope)))
-    req_where = where + (" AND model = ?" if f.model else "")
-    req_params = params + ([f.model] if f.model else [])
+    filtered_sessions = f.status != "all" or bool(f.q)
+    folded = bool(f.project and PureWindowsPath(project_key(f.project)).drive)
+    window = board.history.read(
+        "board.previous", since=since, until=until, requested_model=f.model or "",
+        restrict_tools=f.tools is not None, requested_tools=list(stored_ids_for(f.tools)) if f.tools is not None else [],
+        project_path_key=project_key(f.project) if folded else f.project or "", fold_project=folded,
+        restrict_sessions=filtered_sessions, session_keys=board.history.keys(board.scope) if filtered_sessions else [],
+    )
     calls = 0
     tokens = 0
     cost: float | None = None
     seen = False
-    for model, n, i, o, cr, cw, ts, stored in board.conn.execute(
-        "SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),"
-        f" SUM(cache_creation_tokens), MAX(ts), SUM(cost_usd) FROM requests WHERE {req_where} GROUP BY model",
-        req_params,
-    ):
+    tool_calls = prompts = 0
+    fields = "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd".split()
+    for row in window:
+        if row["row_type"] == "counts":
+            tool_calls, prompts = row["tool_calls"], row["prompts"]
+            continue
+        model, n, i, o, cr, cw, ts, stored = (row[k] for k in fields)
         seen = True
         calls += n
         tokens += i + o + cr + cw
@@ -3199,7 +2860,7 @@ def _previous(board: _Board) -> dict:
     selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
     tool_fallback = 0
     user_fallback = 0
-    for row in _fallback_rows(board.conn, since, until - 1e-6):
+    for row in _fallback_rows(board.history, since, until - 1e-6):
         if selected is not None and row["tool"] not in selected:
             continue
         if not f.matches_project(row["project_path"]):
@@ -3219,10 +2880,6 @@ def _previous(board: _Board) -> dict:
             if piece["last"]:
                 tool_fallback += row["tool_call_count"]
                 user_fallback += row["turn_count"]
-    tool_calls = board.conn.execute(
-        f"SELECT COUNT(*) FROM tool_invocations WHERE {where} AND {_IS_CALL_SQL}", params
-    ).fetchone()[0]
-    prompts = board.conn.execute(f"SELECT COUNT(*) FROM session_prompts WHERE {where} AND agent_id = ''", params).fetchone()[0]
     if not (seen or tool_calls or prompts):
         return {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
     return {
@@ -3289,48 +2946,17 @@ _COVERAGE_TABLE: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("turn_duration", "Turn, session duration", "prompts", (E, H, E, N, H, E)),
     ("loops", "Loops", "tool_calls", (S, S, S, N, S, S)),
 )
-_FACTS_SQL = (
-    (
-        "SELECT tool, 'requests', MAX(cache_read_tokens > 0), MAX(cache_creation_tokens > 0), MAX(duration_ms > 0),"
-        " MAX(ttft_ms > 0) FROM requests NOT INDEXED GROUP BY tool",
-        ("requests", "cache_read", "cache_write", "reply_latency", "ttft"),
-    ),
-    (
-        f"SELECT tool, 'tool_rows', MAX({_IS_CALL_SQL}), MAX(confirm <> ''), MAX(duration_ms > 0)"
-        " FROM tool_invocations NOT INDEXED GROUP BY tool",
-        ("tool_rows", "tool_calls", "confirms", "tool_duration"),
-    ),
-    (
-        "SELECT tool, 'prompts', MAX(text <> ''), MAX(prompt_file <> '') FROM session_prompts GROUP BY tool",
-        ("prompts", "prompt_text", "prompt_files"),
-    ),
-    ("SELECT tool, 'skills' FROM skill_uses GROUP BY tool", ("skills",)),
-    ("SELECT tool, 'subagents' FROM agents WHERE is_sidechain = 1 GROUP BY tool", ("subagents",)),
-    ("SELECT tool, 'processes' FROM process_snapshots GROUP BY tool", ("processes",)),
-    ("SELECT tool, 'sessions' FROM sessions GROUP BY tool", ("sessions",)),
-    ("SELECT tool, 'memory_files' FROM files WHERE category LIKE '%memory%' GROUP BY tool", ("memory_files",)),
-    (
-        "SELECT tool, 'file_writes', MAX(json_extract(detail, '$.lines_added') IS NOT NULL) FROM file_write_events GROUP BY tool",
-        ("file_writes", "file_lines"),
-    ),
-    (
-        "SELECT tool, 'requests', MAX(cache_read_tokens > 0), MAX(cache_creation_tokens > 0) FROM session_usage GROUP BY tool",
-        ("requests", "cache_read", "cache_write"),
-    ),
-)
-_facts_memo: dict[str, tuple[float, dict[str, set[str]]]] = {}
-_sources_memo: dict[str, tuple[float, list[tuple]]] = {}
+_facts_memo: dict[tuple, tuple[float, dict[str, set[str]]]] = {}
+_sources_memo: dict[tuple, tuple[float, list[tuple]]] = {}
 _facts_lock = threading.Lock()
 
 
-# Reads of a board run side by side on a store whose answers are a network round trip
-# away (a Kusto cluster, about 0.15 s each); on SQLite they run in order, since a read
-# costs microseconds and a new thread's first read copies the split stores.
+# Run independent reads in parallel when the reader has network latency.
 PARALLEL_READ_WORKERS = 8
 
 
 def _latency_bound(conn: Any) -> bool:
-    return type(conn).__name__ == "KustoConnection" or getattr(conn, "_live_latency_bound", False) is True
+    return getattr(conn, "_live_latency_bound", False) is True
 
 
 def _gather(conn: Any, calls: list) -> list:
@@ -3345,33 +2971,25 @@ def _gather(conn: Any, calls: list) -> list:
         return list(pool.map(lambda call: call(), calls))
 
 
-def _store_facts(conn: sqlite3.Connection, memo_key: str) -> dict[str, set[str]]:
-    """Per tool, which kinds of rows exist in the store. This changes rarely."""
-    historical = _is_reported_history(conn)
-    if historical:
-        cached_facts = getattr(conn, "_reported_facts", None)
-        if cached_facts is not None:
-            return cached_facts
-    else:
-        with _facts_lock:
-            cached = _facts_memo.get(memo_key)
-            if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
-                return cached[1]
+def _activity_facts(history: HistoryScope) -> dict[str, set[str]]:
     facts: dict[str, set[str]] = defaultdict(set)
-    answers = _gather(conn, [lambda sql=sql: _per_store(conn, sql) for sql, _names in _FACTS_SQL])
-    for (_sql, names), rows in zip(_FACTS_SQL, answers, strict=False):
-        for row in rows:
-            tool = row[0]
-            facts[tool].add(names[0])
-            for name, flag in zip(names[1:], row[2:]):
-                if flag:
-                    facts[tool].add(name)
-    result = dict(facts)
-    if historical:
-        conn._reported_facts = result
-    else:
-        with _facts_lock:
-            _facts_memo[memo_key] = (time.monotonic(), result)
+    for row in history.read("board.activity_facts"):
+        facts[row["tool"]].add(row["fact"])
+    return facts
+
+
+def _store_facts(memo_key: str, history: HistoryScope) -> dict[str, set[str]]:
+    """Per tool, which kinds of rows exist in the store. This changes rarely."""
+    key = (memo_key, history.reader, history.node, history.qualified)
+    with _facts_lock:
+        cached = _facts_memo.get(key)
+        if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
+            return cached[1]
+    result = dict(_activity_facts(history))
+    with _facts_lock:
+        _facts_memo[key] = (time.monotonic(), result)
+        if len(_facts_memo) > MEMO_MAX_KEYS:
+            _facts_memo.pop(next(iter(_facts_memo)))
     return result
 
 
@@ -3416,25 +3034,17 @@ def coverage_rows(facts: dict[str, set[str]], tool_ids: list[str]) -> list[dict]
     return rows
 
 
-def _source_rows(conn: sqlite3.Connection, memo_key: str) -> list[tuple]:
-    historical = _is_reported_history(conn)
-    if historical:
-        cached_rows = getattr(conn, "_reported_sources", None)
-        if cached_rows is not None:
-            return cached_rows
-    else:
-        with _facts_lock:
-            cached = _sources_memo.get(memo_key)
-            if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
-                return cached[1]
-    # Rows of a tool and source can repeat, one per store: _sources merges them.
-    rows = _per_store(conn, "SELECT tool, source, MAX(ts) FROM requests NOT INDEXED GROUP BY tool, source")
-    rows += _per_store(conn, "SELECT tool, source, MAX(last_activity_at) FROM session_usage GROUP BY tool, source")
-    if historical:
-        conn._reported_sources = rows
-    else:
-        with _facts_lock:
-            _sources_memo[memo_key] = (time.monotonic(), rows)
+def _source_rows(history: HistoryScope, memo_key: str) -> list[tuple]:
+    key = (memo_key, id(history.reader), history.node)
+    with _facts_lock:
+        cached = _sources_memo.get(key)
+        if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
+            return cached[1]
+    rows = [(r["tool"], r["source"], r["last_ts"]) for r in history.read("board.sources")]
+    with _facts_lock:
+        _sources_memo[key] = (time.monotonic(), rows)
+        if len(_sources_memo) > MEMO_MAX_KEYS:
+            _sources_memo.pop(next(iter(_sources_memo)))
     return rows
 
 
@@ -3546,78 +3156,19 @@ def _self_usage() -> dict:
 
 def _self_section(db: Any) -> dict:
     usage = _self_usage()
-    status = db.storage_status()
     return {
         "cpu_percent": usage.get("cpu_percent"),
         "memory_rss_bytes": usage.get("memory_rss_bytes"),
         "children": usage.get("children", []),
-        "history_bytes": status["storage_bytes"],
-        "history_live_bytes": status.get("storage_live_bytes"),
-        "history_limit_bytes": status["storage_budget_bytes"],
+        "history_bytes": None,
+        "history_live_bytes": None,
+        "history_limit_bytes": None,
         "retention_days": getattr(db, "_retention_days", None),
     }
 
 
-_FROM_TABLE_RE = re.compile(r"\bFROM (\w+)\b")
-_VIEW_PART_RE = re.compile(r"\bFROM (\w+\.\w+)\b")
 
 
-def _view_body(conn: sqlite3.Connection, table: str) -> str | None:
-    """The SELECT of a TEMP VIEW over several stores, or None when *table* is a table."""
-    row = conn.execute("SELECT sql FROM sqlite_temp_master WHERE type = 'view' AND name = ?", (table,)).fetchone()
-    return row[0].split(" AS ", 1)[1] if row else None
-
-
-def _table_parts(conn: sqlite3.Connection, table: str) -> list[str]:
-    """Each store's own table behind a view over several stores, or the table itself."""
-    if _latency_bound(conn):
-        return [table]  # one database, no views over stores
-    view = _view_body(conn, table)
-    return _VIEW_PART_RE.findall(view) if view is not None else [table]
-
-
-def _per_store(conn: sqlite3.Connection, sql: str, params: Any = ()) -> list:
-    """Rows of a query over one table, run on each store's own table when the table is a
-    view over several stores. A scan of each table is faster than one of the view.
-    Rows of different stores are not merged."""
-    table = _FROM_TABLE_RE.search(sql).group(1)  # type: ignore[union-attr]
-    rows: list = []
-    for part in _table_parts(conn, table):
-        rows += conn.execute(_FROM_TABLE_RE.sub(f"FROM {part}", sql, count=1), params).fetchall()
-    return rows
-
-
-def read_scope(db: Any, filters: Filters | None = None, session: str | None = None) -> Any:
-    """The stores a read needs, for a history split by project. A single store needs no scope.
-
-    The board's range reaches back one span for the previous period. A project filter
-    still reads every active store: the filter menus list every choice in the range, as
-    with one store, and a change of project reuses the read of the range.
-    """
-    scope = getattr(db, "read_scope", None)
-    if scope is None:
-        return contextlib.nullcontext()
-    if filters is None:
-        return scope(session=session)
-    span = filters.until - filters.since
-    return scope(since=filters.since - span, until=filters.until)
-
-
-def _in_session_scope(arg: str) -> Callable:
-    """Reads of one session or agent look in the store that holds it, whatever its activity."""
-
-    def wrap(fn: Callable) -> Callable:
-        signature = inspect.signature(fn)
-
-        @functools.wraps(fn)
-        def run(*args: Any, **kwargs: Any) -> Any:
-            bound = signature.bind(*args, **kwargs)
-            with read_scope(bound.arguments["db"], session=str(bound.arguments.get(arg) or "")):
-                return fn(*args, **kwargs)
-
-        return run
-
-    return wrap
 
 
 def compute_board(
@@ -3627,10 +3178,11 @@ def compute_board(
     now: float | None = None,
     base_memo: _BaseMemo | None = None,
     base_key: tuple | None = None,
+    *,
+    history: HistoryScope | None = None,
 ) -> dict:
     """Everything ``GET /api/board`` returns, for one set of filters."""
-    with read_scope(db, filters):
-        return _compute_board(db, filters, snapshot, now, base_memo, base_key)
+    return _compute_board(db, filters, snapshot, now, base_memo, base_key, history or HistoryScope.local(db))
 
 
 def _compute_board(
@@ -3640,14 +3192,17 @@ def _compute_board(
     now: float | None,
     base_memo: _BaseMemo | None,
     base_key: tuple | None,
+    history: HistoryScope,
 ) -> dict:
     now = time.time() if now is None else now
-    conn = db._conn()
-    # The usage cube sorts its rows. In memory, so that a large window never spills to a file.
-    conn.execute("PRAGMA temp_store=MEMORY")
+    history.require_reader()
+    from types import SimpleNamespace
+
+    conn = SimpleNamespace(_reported_history=history.qualified, _live_latency_bound=True,
+                           _live_projection=getattr(db, "_live_projection", False) is True)
     memo_key = str(getattr(db, "_path", "memory"))
-    facts = _store_facts(conn, memo_key)
-    board = _Board(conn, filters, now, snapshot, facts=facts).load(base_memo, base_key)
+    facts = _store_facts(memo_key, history)
+    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load(base_memo, base_key)
     f = filters
 
     agents = board.agents()
@@ -3894,7 +3449,7 @@ def _compute_board(
     }
 
     runs = []
-    historical = _is_reported_history(db)
+    historical = history.qualified
     run_rows = (board._agent_row(sid, aid, "", []) for sid in board.scope for aid in board.agents_by_root[sid]) if historical else agents
     for row in run_rows:
         if row["started_at"] and row["ended_at"] and row["ended_at"] > row["started_at"]:
@@ -3912,7 +3467,6 @@ def _compute_board(
         _latency_row("Agent run", sorted(runs)),
     ]
 
-    _scoped_prompts = board._scoped()
     tool_order = list(board.tool_order)
     options = _options(board)
     option_tools = [o["id"] for o in options["tools"]]
@@ -3925,8 +3479,8 @@ def _compute_board(
     return {
         "generated_at": now,
         # When the settings records last changed: the settings screen reads them again on a new value.
-        "settings_at": None if _is_reported_history(db) else tool_configs_at(),
-        "capture_mode": None if _is_reported_history(db) else getattr(db, "capture", "full"),
+        "settings_at": None if historical else tool_configs_at(),
+        "capture_mode": None if historical else capture_mode(db, default="full"),
         "range": {
             "since": f.since,
             "until": f.until,
@@ -3949,14 +3503,14 @@ def _compute_board(
         "series": series,
         "saved_usd": _usd(board.total.saved),
         "unpriced": _unpriced_section(board),
-        "credits": _credits_section(db, board),
+        "credits": _credits_section(board),
         "projects": projects[:MAX_LIST_ROWS],
         "prompts": _prompts_section(board, turns.tokens),
         "project_prompts": project_prompts,
         "project_prompts_searched": prompts_searched,
         "skills": _skills_section(board, skill_rows, turns),
         "tests_piped": tests_piped,
-        "prompts_total": board.conn.execute(f"SELECT COUNT(*) FROM session_prompts WHERE {_scoped_prompts[0]} AND agent_id = ''", _scoped_prompts[1]).fetchone()[0],
+        "prompts_total": sum(n for sid, _, _, _, n, _, _ in board.prompt_rows if not board.narrowed or sid in board.scope),
         "tools": tool_section["rows"],
         "confirms": _confirms_section(board),
         "errors": errors,
@@ -3968,74 +3522,80 @@ def _compute_board(
         "processes": _processes(board),
         # Names for tools that have processes but no activity in this range.
         "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in _processes(board)} | set(cpu)},
-        "sources": _sources(_source_rows(conn, memo_key), tool_order or option_tools, selected,
-                            reported=_is_reported_history(db)),
+        "sources": _sources(_source_rows(history, memo_key), tool_order or option_tools, selected,
+                            reported=historical),
         "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
-        "self": None if _is_reported_history(db) else _self_section(db),
+        "self": None if historical else _self_section(db),
     }
 
 
 # ─── Detail routes ────────────────────────────────────────────────
 
 
-def _resolve_agent(conn: sqlite3.Connection, agent_id: str) -> tuple[str, str] | None:
+def _resolve_agent(history: HistoryScope, agent_id: str) -> tuple[str, str]:
     """(session id, agent key) of a board agent id."""
-    row = conn.execute("SELECT session_id FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
-    if row and row[0] and row[0] != agent_id:
-        return row[0], agent_id
-    row = conn.execute("SELECT session_id FROM requests WHERE agent_id = ? LIMIT 1", (agent_id,)).fetchone()
-    if row and row[0] and row[0] != agent_id:
-        return row[0], agent_id
-    return (agent_id, agent_id)
+    node, raw = history.split(agent_id)
+    result = history.require_reader().read("agents.resolve", {
+        **node_scope(node), "requested_agent": raw, "limit": 2 if history.qualified else 1,
+    })
+    if not result.rows:
+        return agent_id, agent_id
+    if history.qualified and len(result.rows) > 1 and result.rows[0]["priority"] != 0:
+        raise ScopeError("Agent identity is ambiguous within the selected node", 409, "ambiguous_identity")
+    sid = result.rows[0]["session_id"]
+    return (identity(node or "", sid) if history.qualified else sid), agent_id
 
 
 def _detail_filters(now: float) -> Filters:
     return Filters(since=0.0, until=now + 60.0, buckets=1)
 
 
-@_in_session_scope("agent_id")
-def live_pids_of(db: Any, snapshot: Any, agent_id: str, now: float | None = None) -> list[int]:
+def live_pids_of(store: Any, snapshot: Any, agent_id: str, now: float | None = None,
+                 *, history: HistoryScope | None = None) -> list[int]:
     """The processes of a board agent, for Stop. A subagent has none of its own."""
+    if not getattr(snapshot, "sessions", None):
+        return []
     now = time.time() if now is None else now
-    conn = db._conn()
-    if agent_id.startswith("live:"):
-        board = _Board(conn, _detail_filters(now), now, snapshot).load()
+    history = history or HistoryScope.local(store)
+    only_session = None
+    placeholder = agent_id.startswith("live:")
+    if not placeholder:
+        sid, agent = _resolve_agent(history, agent_id)
+        if agent != sid:
+            return []
+        only_session = sid
+    board = _Board(None, _detail_filters(now), now, snapshot, only_session=only_session, history=history)
+    board._load_identity()
+    board._match_live()
+    if placeholder:
         for group in board.placeholders:
             if f"live:{group['tool']}:{group['project']}" == agent_id:
                 return sorted(group["pids"])
         return []
-    sid, agent = _resolve_agent(conn, agent_id)
-    if agent != sid:
-        return []
-    board = _Board(conn, _detail_filters(now), now, snapshot, only_session=sid).load()
-    return sorted((board.live_by_sid.get(sid) or {}).get("pids", ()))
+    return sorted((board.live_by_sid.get(only_session) or {}).get("pids", ()))
 
 
-def _session_board(db: Any, conn: sqlite3.Connection, sid: str, snapshot: Any, now: float, counts_only: bool = False) -> _Board:
+def _session_board(db: Any, conn: Any, sid: str, snapshot: Any, now: float,
+                   history: HistoryScope, counts_only: bool = False) -> _Board:
     """The board of one session over its whole life, as the agent detail reads it."""
-    first = conn.execute(
-        "SELECT MIN(t) FROM (SELECT MIN(ts) t FROM requests WHERE session_id = ?"
-        " UNION ALL SELECT MIN(ts) FROM tool_invocations WHERE session_id = ?"
-        " UNION ALL SELECT MIN(ts) FROM session_prompts WHERE session_id = ?)",
-        (sid, sid, sid),
-    ).fetchone()[0]
+    first = history.read("sessions.first_activity", sid=sid, limit=1)[0]["first_ts"]
     filters = _detail_filters(now)
     if first and first < filters.until:
         filters = replace(filters, since=first)
-    facts = _store_facts(conn, str(getattr(db, "_path", "memory")))
-    return _Board(conn, filters, now, snapshot, only_session=sid, facts=facts).load(counts_only=counts_only)
+    facts = _activity_facts(history)
+    return _Board(conn, filters, now, snapshot, only_session=sid, facts=facts, history=history).load(counts_only=counts_only)
 
 
-@_in_session_scope("sid")
-def session_numbers(db: Any, sid: str, now: float | None = None) -> dict | None:
+def session_numbers(db: Any, sid: str, now: float | None = None, *, history: HistoryScope | None = None) -> dict | None:
     """Tokens, cost, tool calls and prompts of a main agent, the same as its agent detail.
 
     Read in the session's own read scope, so rows of a session that are in two stores
     (a move that is not done) are all counted. None when the board has no such session.
     """
     now = time.time() if now is None else now
-    conn = db._conn()
-    board = _session_board(db, conn, sid, None, now, counts_only=True)
+    history = history or HistoryScope.local(db)
+    conn = None
+    board = _session_board(db, conn, sid, None, now, history, counts_only=True)
     if sid not in board.scope:
         return None
     row = board._agent_row(sid, sid, "", [0] * SPARK_POINTS)
@@ -4048,12 +3608,13 @@ def session_numbers(db: Any, sid: str, now: float | None = None) -> dict | None:
     }
 
 
-@_in_session_scope("agent_id")
-def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None = None) -> tuple[int, dict]:
+def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None = None,
+                 *, history: HistoryScope | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
-    conn = db._conn()
-    sid, agent = _resolve_agent(conn, agent_id)
-    board = _session_board(db, conn, sid, snapshot, now)
+    history = history or HistoryScope.local(db)
+    conn = None
+    sid, agent = _resolve_agent(history, agent_id)
+    board = _session_board(db, conn, sid, snapshot, now, history)
     if sid not in board.scope:
         return 404, {"error": "No such agent"}
     root = agent == sid
@@ -4066,13 +3627,13 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         if a != sid and root
     ]
 
-    agent_sql, agent_params = ("", []) if root else (" AND agent_id = ?", [agent])
+    requested_agent = "" if root else history.split(agent)[1]
     by_model = []
-    for model, n, i, o, cr, cw, ts, stored in conn.execute(
-        "SELECT model, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), MAX(ts), SUM(cost_usd)"
-        f" FROM requests WHERE session_id = ?{agent_sql} GROUP BY model",
-        [sid, *agent_params],
-    ):
+    for model_row in history.read("requests.models", sid=sid, requested_agent=requested_agent):
+        model, n, i, o, cr, cw, ts, stored = (
+            model_row[k] for k in ("model", "calls", "input_tokens", "output_tokens", "cache_read_tokens",
+                                   "cache_creation_tokens", "last_ts", "cost_usd")
+        )
         cost = _cost_of(stored, model, i, o, cr, cw, ts)
         by_model.append(
             {
@@ -4088,7 +3649,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             }
         )
     if not by_model and root:
-        for fallback in _fallback_rows(conn, 0.0, now + 60.0, sid):
+        for fallback in _fallback_rows(history, 0.0, now + 60.0, sid):
             for model, usage in _fallback_models(fallback).items():
                 cost, _ = _list_cost(
                     model, usage["input"], usage["output"], usage["cache_read"], usage["cache_write"], fallback["last_activity_at"]
@@ -4118,7 +3679,10 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     if live is None:
         process["cpu_percent"] = process["mem_mb"] = None
 
-    turns = _agent_turns(conn, sid, agent_sql, agent_params)
+    turns = _agent_turns(history, sid, requested_agent)
+    detail_scope = {"sid": sid, "requested_agent": requested_agent}
+    page = history.read("tools.detail", limit=MAX_DETAIL_ROWS + 1, page=True, **detail_scope)
+    fields = ("ts", "tool_name", "target", "duration_ms", "is_error", "confirm", "input_bytes", "output_bytes")
     tool_calls = [
         {
             "ts": ts,
@@ -4130,34 +3694,21 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             "input_bytes": in_bytes,
             "output_bytes": out_bytes,
         }
-        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes in conn.execute(
-            "SELECT ts, tool_name, target, duration_ms, is_error, confirm, input_bytes, output_bytes FROM tool_invocations"
-            f" WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-            [sid, *agent_params],
-        )
+        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes
+        in (tuple(r[k] for k in fields) for r in page if r["row_type"] == "item")
     ]
     # The call list above is capped, so the figures per tool come from all calls.
-    tool_totals = _tool_totals(
-        conn.execute(
-            "SELECT tool_name, is_error, duration_ms, input_bytes, output_bytes FROM tool_invocations"
-            f" WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL}",
-            [sid, *agent_params],
-        )
-    )
+    tool_totals = _tool_totals(history.read("tools.totals", **detail_scope))
+    write_summary = history.read("files.changes", sid=sid, limit=MAX_DETAIL_ROWS, page=True) if root else []
     files = [
         {"path": path, "lines_added": _maybe_int(added), "lines_removed": _maybe_int(removed), "edits": edits}
-        for path, added, removed, edits in conn.execute(
-            "SELECT path, SUM(json_extract(detail, '$.lines_added')), SUM(json_extract(detail, '$.lines_removed')), COUNT(*)"
-            f" FROM file_write_events WHERE session_id = ? GROUP BY path ORDER BY MAX(ts) DESC LIMIT {MAX_DETAIL_ROWS}",
-            (sid,),
-        )
-    ] if root else []
+        for path, added, removed, edits in ((r["path"], r["added"], r["removed"], r["edits"]) for r in write_summary)
+    ]
     tests = []
-    for ts, name, target, is_error, exit_code, duration in conn.execute(
-        "SELECT ts, tool_name, target, is_error, exit_code, duration_ms FROM tool_invocations"
-        f" WHERE session_id = ?{agent_sql} AND {_TEST_LIKE_SQL} ORDER BY ts DESC",
-        [sid, *agent_params],
-    ):
+    for r in history.read("tools.detail", query_mode="tests", real_calls=False, **detail_scope):
+        ts, name, target, is_error, exit_code, duration = (
+            r[k] for k in ("ts", "tool_name", "target", "is_error", "exit_code", "duration_ms")
+        )
         if is_command_tool(name) and is_test_command(target):
             tests.append(
                 {
@@ -4170,17 +3721,11 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         if len(tests) >= MAX_DETAIL_ROWS:
             break
     errors = []
-    for ts, name, summary in conn.execute(
-        f"SELECT ts, tool_name, result_summary FROM tool_invocations WHERE session_id = ?{agent_sql} AND is_error = 1 AND {_IS_CALL_SQL}"
-        f" ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        [sid, *agent_params],
-    ):
+    for r in history.read("tools.detail", limit=MAX_DETAIL_ROWS, page=True, query_mode="errors", **detail_scope):
+        ts, name, summary = r["ts"], r["tool_name"], r["result_summary"]
         errors.append({"ts": ts, "key": _tool_error_key(name, summary), "detail": _one_line(summary, 500)})
-    for ts, error_type, status in conn.execute(
-        f"SELECT ts, error_type, http_status FROM requests WHERE session_id = ?{agent_sql} AND is_error = 1"
-        f" ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        [sid, *agent_params],
-    ):
+    for r in history.read("requests.errors", limit=MAX_DETAIL_ROWS, page=True, **detail_scope):
+        ts, error_type, status = r["ts"], r["error_type"], r["http_status"]
         errors.append(
             {
                 "ts": ts,
@@ -4189,8 +3734,12 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             }
         )
     errors.sort(key=lambda e: e["ts"], reverse=True)
-    session = _session_row(db, conn, sid)
-    otel = _agent_otel(conn, sid, root, [t.get("mcp_server") or t["name"] for t in tool_totals])
+    session = _session_row(history, sid)
+    from .projections.history import typed_rows
+
+    otel_facts = typed_rows(history.read("sequence.otel", sid=sid)) if root else {}
+    context_facts = typed_rows(history.read("sequence.context", sid=sid))
+    otel = _agent_otel(conn, sid, root, [t.get("mcp_server") or t["name"] for t in tool_totals], facts=otel_facts)
     own_loops = [loop for loop in board.loops if loop["agent_id"] == agent or (root and loop["session_id"] == sid)]
     loop = None
     if own_loops:
@@ -4208,8 +3757,9 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "by_model": by_model,
         "subagents": subagents,
         "process": process,
-        "skills": _agent_skills(conn, sid, agent, root),
-        "context": _agent_context(conn, sid, agent, root),
+        "skills": _agent_skills(history, sid, agent, root),
+        "context": _agent_context(conn, sid, agent, root, facts=context_facts, raw_agent=history.split(agent)[1],
+                                  raw_sid=history.split(sid)[1]),
         "turns": turns,
         "tool_totals": tool_totals,
         "tool_calls": tool_calls,
@@ -4217,16 +3767,17 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "tests": tests,
         "loop": loop,
         "errors": errors[:MAX_DETAIL_ROWS],
-        "git": _agent_git(db, session, sid),
-        "runs": _agent_runs(db, session, sid, row, now) if root else [],
-        "resources": _agent_resources(db, conn, board, sid, row, root, now),
+        "git": _agent_git(history, session, sid),
+        "runs": _agent_runs(history, session, sid, row, now) if root else [],
+        "resources": _agent_resources(db, conn, board, sid, row, root, now, otel_facts=otel_facts),
         "otel": otel,
-        "sources": _agent_sources(conn, sid, otel) if root else None,
-        **_agent_record(db, conn, session, sid, row, root),
+        "sources": _agent_sources(conn, sid, otel, facts=otel_facts) if root else None,
+        **_agent_record(db, conn, session, sid, row, root, history, context_facts=context_facts),
     }
 
 
-def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, row: dict, root: bool) -> dict:
+def _agent_record(db: Any, conn: Any, session: dict, sid: str, row: dict, root: bool,
+                  history: HistoryScope, *, context_facts=None) -> dict:
     """Artifacts and commits of a main agent's session. A subagent shares its session's, so it has none here.
 
     Both have ``context_files``: a subagent's ``loaded`` holds the files it loaded itself, else its main agent's.
@@ -4235,16 +3786,14 @@ def _agent_record(db: Any, conn: sqlite3.Connection, session: dict, sid: str, ro
 
     project = str(session.get("project_path") or row.get("project") or "")
     agent = "" if root else str(row.get("id") or "")
-    loaded = _loaded_files(conn, sid, agent)
-    if _is_reported_history(db) or getattr(db, "_kusto", None) is not None:
-        from .queryable_context import session_context_files
+    loaded = _loaded_files(conn, history.split(sid)[1], history.split(agent)[1] if agent else "",
+                           facts=context_facts)
+    from .queryable_context import session_context_files
 
-        context_files = session_context_files(conn, project, loaded, session.get("tool") or "")
-    else:
-        context_files = _session_context_files(project, loaded)
+    context_files = session_context_files(project, loaded, session.get("tool") or "", history=history)
     if not root:
         return {**empty_record(), "context_files": context_files}
-    return {**record_section(db, conn, session, sid, project), "context_files": context_files}
+    return {**record_section(db, session, sid, project, history=history), "context_files": context_files}
 
 
 # ─── What OpenTelemetry alone says about a session ────────────────
@@ -4294,13 +3843,11 @@ def _signal(rows: list[tuple[float, dict]]) -> dict:
     return {"count": len(rows), "last_ts": max((ts for ts, _d in rows), default=None)}
 
 
-def _otel_calls(conn: sqlite3.Connection, sid: str, chats: list[tuple[float, dict]]) -> list[dict]:
+def _otel_calls(conn: Any, sid: str, chats: list[tuple[float, dict]], *, facts=None) -> list[dict]:
     """Each chat span of the session, with the OTel-only values, matched to its session-file call."""
     from ..ingesters.call_facts import copilot_call_key
 
-    stored = conn.execute(
-        "SELECT dedup_key, ts, model, output_tokens FROM requests WHERE session_id = ? ORDER BY ts", (sid,)
-    ).fetchall()
+    stored = facts.get("call", [])
     by_key = {key: (ts, model, out) for key, ts, model, out in stored if key}
     taken: set[float] = set()
     seen: set[str] = set()
@@ -4348,7 +3895,7 @@ def _otel_calls(conn: sqlite3.Connection, sid: str, chats: list[tuple[float, dic
     return calls
 
 
-def _agent_otel(conn: sqlite3.Connection, sid: str, root: bool, mcp_names: Iterable[str] = ()) -> dict | None:
+def _agent_otel(conn: Any, sid: str, root: bool, mcp_names: Iterable[str] = (), *, facts=None) -> dict | None:
     """What OpenTelemetry sent for the session: counts per signal, and the values only OTel has.
 
     None for a subagent: the spans name the session, not an agent of it.
@@ -4359,9 +3906,8 @@ def _agent_otel(conn: sqlite3.Connection, sid: str, root: bool, mcp_names: Itera
     span_events: list[tuple[float, dict]] = []
     logs: list[tuple[float, dict]] = []
     by_kind: dict[str, list[tuple[float, dict]]] = defaultdict(list)
-    for ts, kind, raw in conn.execute(
-        "SELECT ts, kind, detail FROM events WHERE session_id = ? AND kind LIKE 'otel:%' ORDER BY ts", (sid,)
-    ):
+    signals = facts.get("signal", [])
+    for ts, kind, raw in signals:
         d = _parse_detail(raw)
         row = (ts, d)
         (spans if "span.name" in d else span_events if "parent_span" in d else logs).append(row)
@@ -4369,7 +3915,7 @@ def _agent_otel(conn: sqlite3.Connection, sid: str, root: bool, mcp_names: Itera
     if not spans and not span_events and not logs:
         return None
     chats = [r for r in spans if str(r[1].get("gen_ai.operation.name") or "") == "chat" or str(r[1].get("span.name") or "").startswith("chat ")]
-    calls = _otel_calls(conn, sid, chats)
+    calls = _otel_calls(conn, sid, chats, facts=facts)
     usage = by_kind.get("github.copilot.session.usage_info") or []
     context = None
     if usage:
@@ -4434,17 +3980,10 @@ def _agent_otel(conn: sqlite3.Connection, sid: str, root: bool, mcp_names: Itera
     }
 
 
-def _agent_sources(conn: sqlite3.Connection, sid: str, otel: dict | None) -> dict:
+def _agent_sources(conn: Any, sid: str, otel: dict | None, *, facts=None) -> dict:
     """How many records of the session came from each source: its session file, OTel, hooks."""
-    one = conn.execute(
-        "SELECT (SELECT COUNT(*) FROM requests WHERE session_id = ? AND source = 'transcript'),"
-        " (SELECT COUNT(*) FROM tool_invocations WHERE session_id = ? AND source = 'transcript'),"
-        " (SELECT COUNT(*) FROM session_prompts WHERE session_id = ?)",
-        (sid, sid, sid),
-    ).fetchone()
-    hooks, hook_ts = conn.execute(
-        "SELECT COUNT(*), MAX(ts) FROM events WHERE session_id = ? AND kind LIKE 'hook:%'", (sid,)
-    ).fetchone()
+    one = facts["source"][0]
+    hooks, hook_ts = facts["hooks"][0]
     otel = otel or {}
     span = otel.get("spans") or {"count": 0, "last_ts": None}
     return {
@@ -4457,17 +3996,12 @@ def _agent_sources(conn: sqlite3.Connection, sid: str, otel: dict | None) -> dic
     }
 
 
-def _loaded_files(conn: sqlite3.Connection, sid: str, agent: str = "") -> list[dict]:
+def _loaded_files(conn: Any, sid: str, agent: str = "", *, facts=None) -> list[dict]:
     """The files the session's own record shows it loaded, oldest first. See ingesters/loaded_files.
 
     For a subagent (*agent* set): its own rows, else the main agent's (rows without an agent).
     """
-    if not _table_exists(conn, "session_loaded_files"):
-        return []
-    rows = conn.execute(
-        "SELECT path, how, detail, ts, agent_id FROM session_loaded_files WHERE session_id = ? ORDER BY ts, path, how",
-        (sid,),
-    ).fetchall()
+    rows = facts.get("loaded", [])
     if agent:
         own = [r for r in rows if r[4] == agent]
         rows = own or [r for r in rows if not r[4] or r[4] == sid]
@@ -4532,40 +4066,27 @@ def _zero_tokens() -> dict:
     return {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
 
 
-def _messages(conn: sqlite3.Connection, sid: str, role: str, since: float, until: float) -> list[tuple[float, str, str]]:
-    """(ts, text, model) of the stored conversation messages of one side, oldest first."""
-    out: list[tuple[float, str, str]] = []
-    for table in _MESSAGE_TABLES:
-        if not _table_exists(conn, table):
-            continue
-        model_sql = "model" if table == "vscode_chat_messages" else "''"
-        out += conn.execute(
-            f"SELECT ts, content, {model_sql} FROM {table} WHERE session_id = ? AND role = ? AND ts >= ? AND ts < ? AND content <> '' ORDER BY ts",
-            (sid, role, since, until),
-        ).fetchall()
-    return sorted(out)
 
 
-def _flow_session_known(conn: sqlite3.Connection, sid: str) -> bool:
-    return any(
-        conn.execute(f"SELECT 1 FROM {table} WHERE session_id = ? LIMIT 1", (sid,)).fetchone()
-        for table in ("sessions", "requests", "session_prompts", "tool_invocations", "events")
-    )
 
 
-def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: float, *, keep_text: bool = True,
-                       text_floor: float = 0.0) -> tuple[list[dict], bool]:
+def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *, keep_text: bool = True,
+                       text_floor: float = 0.0, facts: dict[str, list[tuple]] | None = None) -> tuple[list[dict], bool]:
     """Stored events and whether the native transcript supplied message authorship in this range."""
     from .session_flow import _input_preview
 
-    session = conn.execute("SELECT tool, project_path, started_at, ended_at FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+    def rows(kind):
+        return facts.get(kind, [])
+
+    def one(kind):
+        return next(iter(rows(kind)), None)
+
+    session = one("session")
     tool = (session[0] if session else "") or ""
     if not tool:
-        row = conn.execute("SELECT tool FROM requests WHERE session_id = ? AND tool <> '' LIMIT 1", (sid,)).fetchone()
+        row = one("tool")
         tool = row[0] if row else ""
     events: list[dict] = []
 
@@ -4579,41 +4100,29 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
 
     task_prompts: dict[str, str] = {}
     prompts: list[tuple[float, str]] = []
-    for ts, aid, text in conn.execute(
-        "SELECT ts, agent_id, text FROM session_prompts WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts", (sid, since, until)
-    ):
+    for ts, aid, text in rows("prompt"):
         if aid:
             task_prompts.setdefault(aid, mask_secrets(text))
         else:
             prompts.append((ts, mask_secrets(text)))
     if not prompts:
-        prompts = [(ts, mask_secrets(text)) for ts, text, _model in _messages(conn, sid, "user", since, until)]
+        messages = facts.get("user", [])
+        prompts = [(ts, mask_secrets(text)) for ts, text, _model in messages]
     prompt_info: list[dict] = [{} for _ in prompts]
     native_authorship = False
-    if _table_exists(conn, "session_steps"):
-        # Native author evidence distinguishes user input from delegated/autopilot messages.
-        # Don't union this with the prompt index: those can be two observations of the same turn.
-        retained = "COALESCE(t.text,'')" if keep_text else "''"
-        join = ("LEFT JOIN session_step_text t ON s.step_key=t.step_key AND s.session_id=t.session_id AND t.ts>=?"
-                if keep_text else "")
-        args = (text_floor, sid, since, until) if keep_text else (sid, since, until)
-        native = conn.execute(
-            f"SELECT s.ts,s.kind,s.role,s.step_key,s.turn_id,s.text_status,{retained} AS retained "
-            f"FROM session_steps s {join} WHERE s.session_id=? AND s.ts>=? AND s.ts<? AND s.source='user.message' "
-            "AND s.kind IN ('message','agent_prompt') ORDER BY s.ts,s.source_order", args,
-        ).fetchall()
-        if native:
-            native_authorship = True
-            prompts, prompt_info = [], []
-            for ts, kind, role, key, turn, status, text in native:
-                if kind != "message" or role != "user":
-                    continue
-                prompts.append((ts, text or ""))
-                if not keep_text:
-                    status = "withheld"
-                elif not text and status in ("captured", "truncated"):
-                    status = "expired"
-                prompt_info.append({"step_key": key, "turn_id": turn, "text_status": status, "source": "user.message"})
+    native = rows("native")
+    if native:
+        native_authorship = True
+        prompts, prompt_info = [], []
+        for ts, kind, role, key, turn, status, text in native:
+            if kind != "message" or role != "user":
+                continue
+            prompts.append((ts, text or ""))
+            if not keep_text:
+                status = "withheld"
+            elif not text and status in ("captured", "truncated"):
+                status = "expired"
+            prompt_info.append({"step_key": key, "turn_id": turn, "text_status": status, "source": "user.message"})
     for (ts, text), info in zip(prompts, prompt_info, strict=True):
         if not keep_text or ts < text_floor:
             text = ""
@@ -4637,11 +4146,7 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
             message["prompt_length"] = len(text)
         events.append(message)
 
-    for ts, aid, model, i, o, cr, cw, cost, duration, ttft, finish, is_error, error_type, status in conn.execute(
-        "SELECT ts, agent_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms,"
-        " ttft_ms, finish_reason, is_error, error_type, http_status FROM requests WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY ts",
-        (sid, since, until),
-    ):
+    for ts, aid, model, i, o, cr, cw, cost, duration, ttft, finish, is_error, error_type, status in rows("call"):
         call = {
             "ts": ts,
             "type": "api_call",
@@ -4662,11 +4167,7 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
                 call["http_status"] = status
         events.append(call)
 
-    for ts, aid, name, target, raw_input, result, duration, is_error, exit_code, confirm in conn.execute(
-        "SELECT ts, agent_id, tool_name, target, input, result_summary, duration_ms, is_error, exit_code, confirm FROM tool_invocations"
-        f" WHERE session_id = ? AND ts >= ? AND ts < ? AND {_IS_CALL_SQL} ORDER BY ts",
-        (sid, since, until),
-    ):
+    for ts, aid, name, target, raw_input, result, duration, is_error, exit_code, confirm in rows("use"):
         use = {"ts": ts, "type": "tool_use", "from": tool, "to": name or "tool", "success": not is_error, "duration_ms": duration or 0, "source": "store"}
         if target:
             use["target"] = _one_line(target, FLOW_TARGET_CHARS)
@@ -4685,10 +4186,7 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
                 use[key] = value
         events.append(use)
 
-    for aid, task, model, started, ended, completed in conn.execute(
-        "SELECT agent_id, task, model, started_at, ended_at, completed FROM agents WHERE session_id = ? AND agent_id <> ? ORDER BY started_at",
-        (sid, sid),
-    ):
+    for aid, task, model, started, ended, completed in rows("agent"):
         label = task or "subagent"
         if inside(started):
             start = {"ts": started, "type": "subagent", "from": tool, "to": label, "agent_id": aid, "source": "store"}
@@ -4703,38 +4201,28 @@ def _store_flow_events(conn: sqlite3.Connection, sid: str, since: float, until: 
                 end["duration_ms"] = round((ended - started) * 1000)
             events.append(end)
 
-    if _table_exists(conn, "context_events"):
-        rows = conn.execute(
-            "SELECT ts, agent_id, trigger, before_tokens, after_tokens, duration_ms FROM context_events"
-            " WHERE session_id = ? AND kind = 'compaction' ORDER BY ts",
-            (sid,),
-        ).fetchall()
-        for n, (ts, aid, trigger, before, after, took) in enumerate(rows, 1):
-            if not inside(ts):
-                continue
-            compaction = {"ts": ts, "type": "compaction", "compaction_count": n, "duration_ms": took or 0, "source": "store"}
-            if took:
-                compaction["end_ts"] = ts + took / 1000
-            for key, value in (("trigger", trigger), ("before_tokens", before), ("after_tokens", after), ("agent_id", aid)):
-                if value not in _EMPTY:
-                    compaction[key] = value
-            events.append(compaction)
+    compactions = rows("compaction")
+    numbered = compactions
+    for n, ts, aid, trigger, before, after, took in numbered:
+        if not inside(ts):
+            continue
+        compaction = {"ts": ts, "type": "compaction", "compaction_count": n, "duration_ms": took or 0, "source": "store"}
+        if took:
+            compaction["end_ts"] = ts + took / 1000
+        for key, value in (("trigger", trigger), ("before_tokens", before), ("after_tokens", after), ("agent_id", aid)):
+            if value not in _EMPTY:
+                compaction[key] = value
+        events.append(compaction)
 
-    if _table_exists(conn, "session_steps"):
-        for ts, kind, name, phase, aid, turn_id, used, capacity, before, after, estimated, source in conn.execute(
-            "SELECT ts, kind, name, phase, agent_id, turn_id, context_tokens, context_limit, "
-            "before_tokens, after_tokens, estimated, source FROM session_steps "
-            "WHERE session_id = ? AND ts >= ? AND ts < ? AND kind IN ('session_command','context','skill') "
-            "AND NOT (kind='context' AND source='session.compaction_complete' AND phase='compaction_complete') "
-            "ORDER BY ts, source_order", (sid, since, until),
-        ):
-            event = {"ts": ts, "type": {"context": "context_update", "skill": "skill_event"}.get(kind, kind),
-                     "name": name, "phase": phase, "source": source, "agent_id": aid, "turn_id": turn_id}
-            event.update({k: v for k, v in (("context_tokens", used), ("context_limit", capacity),
-                                            ("before_tokens", before), ("after_tokens", after), ("estimated", estimated)) if v is not None})
-            events.append(event)
+    for ts, kind, name, phase, aid, turn_id, used, capacity, before, after, estimated, source in rows("step"):
+        event = {"ts": ts, "type": {"context": "context_update", "skill": "skill_event"}.get(kind, kind),
+                 "name": name, "phase": phase, "source": source, "agent_id": aid, "turn_id": turn_id}
+        event.update({k: v for k, v in (("context_tokens", used), ("context_limit", capacity),
+                                        ("before_tokens", before), ("after_tokens", after), ("estimated", estimated)) if v is not None})
+        events.append(event)
 
-    for ts, text, model in _messages(conn, sid, "assistant", since, until):
+    messages = facts.get("assistant", [])
+    for ts, text, model in messages:
         reply = mask_secrets(text)
         events.append(
             {
@@ -4903,54 +4391,60 @@ FLOW_MEMO_S = 120.0
 _FLOW_STAMP_TABLES = ("requests", "tool_invocations", "session_prompts", "events", "session_steps")
 
 
-def _flow_stamp(conn: sqlite3.Connection, sid: str) -> tuple:
-    """What the store holds for a session, as cheap counts: a change here means a new flow."""
-    return tuple(conn.execute(f"SELECT COUNT(*), MAX(ts) FROM {table} WHERE session_id = ?", (sid,)).fetchone() for table in _FLOW_STAMP_TABLES)
 
 
-def _session_flow(db: Any, agent_id: str, since: float, until: float, legacy_flow: Callable[[str, float, float], dict] | None) -> tuple[str, list[dict], str] | None:
+def _session_flow(db: Any, agent_id: str, since: float, until: float,
+                  legacy_flow: Callable[[str, float, float], dict] | None,
+                  history: HistoryScope) -> tuple[str, list[dict], str] | None:
     """(session id, merged events, source) of a board agent, or None for an unknown agent.
 
     Building the flow reads every record of the session, so the result is kept on the store
     for FLOW_MEMO_S as long as the session's records have not changed. The flow of one
     session is asked for several times in a row: the flow tab, the transcript, each turn.
     """
-    if getattr(db, "_kusto", None) is not None:
-        legacy_flow = None
-    conn = db._conn()
-    sid, _agent = _resolve_agent(conn, agent_id)
-    cached = legacy_flow is None and isinstance(getattr(db, "__dict__", None), dict)
-    if cached:
-        memo = db.__dict__.setdefault("_flow_memo", {})
-        # An open-ended range ends at "now plus a minute", which differs on every call.
-        key = (sid, since, None if until >= time.time() else until, getattr(db, "capture", "full"), _flow_stamp(conn, sid))
-        hit = memo.get(key)
-        if hit and 0 <= time.time() - hit[0] < FLOW_MEMO_S:
-            return hit[1]
-    found = _session_flow_build(db, conn, sid, since, until, legacy_flow)
-    if cached:
-        memo.clear()
-        memo[key] = (time.time(), found)
+    sid, _agent = _resolve_agent(history, agent_id)
+    node, raw = history.split(sid)
+    # A PID bridge may add events from another session, so it cannot use a session stamp.
+    use_memo = legacy_flow is None and ":" not in raw and hasattr(db, "__dict__")
+    if not use_memo:
+        return _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
+    revision = history.read("sequence.stamp", sid=sid, since=since, until=until, limit=1)[0]
+    memo = db.__dict__.setdefault("_reader_flow_memo", {})
+    key = (history.reader, node, sid, since, until, capture_mode(db, default="full"), *revision.values())
+    hit = memo.get(key)
+    if hit and 0 <= time.monotonic() - hit[0] < FLOW_MEMO_S:
+        return hit[1]
+    found = _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
+    memo.clear()
+    memo[key] = (time.monotonic(), found)
     return found
 
 
-def _session_flow_build(db: Any, conn: sqlite3.Connection, sid: str, since: float, until: float, legacy_flow: Callable[[str, float, float], dict] | None) -> tuple[str, list[dict], str] | None:
-    if _is_reported_history(db):
+def _session_flow_build(db: Any, conn: Any | None, sid: str, since: float, until: float,
+                        legacy_flow: Callable[[str, float, float], dict] | None, *,
+                        history: HistoryScope | None = None) -> tuple[str, list[dict], str] | None:
+    if _is_reported_history(db) or (history is not None and history.qualified):
         legacy_flow = lambda *_args: {}
     elif legacy_flow is None:
-        from .session_flow import build_session_flow
-
         def legacy_flow(session_id: str, lo: float, hi: float) -> dict:
-            return build_session_flow(db, session_id, lo, hi)
+            from .session_flow import reader_session_flow
 
-    keep = getattr(db, "capture", "full") == "full"
-    days = getattr(db, "_content_retention_days", None)
-    floor = time.time() - days * 86400 if days is not None else 0
-    store, native_authorship = _store_flow_events(conn, sid, since, until, keep_text=keep, text_floor=floor)
+            return reader_session_flow(history, session_id, lo, hi)
+
+    keep = capture_mode(db, default="full") == "full"
+    floor = text_floor(db, time.time())
+    facts = None
+    if history is not None:
+        from .projections.history import typed_rows
+
+        facts = typed_rows(history.read("sequence.flow", sid=sid, since=since, until=until,
+                                        keep_text=keep, text_floor=floor))
+    store, native_authorship = _store_flow_events(conn, sid, since, until, keep_text=keep, text_floor=floor, facts=facts)
     legacy, legacy_source = _legacy_flow_events(legacy_flow(sid, since, until) or {})
     if native_authorship:
         legacy = [event for event in legacy if event["type"] != "user_message"]
-    if not store and not legacy and not _flow_session_known(conn, sid):
+    known = bool(facts.get("known"))
+    if not store and not legacy and not known:
         return None
     source = ("store+" + legacy_source if legacy else "store") if store else (legacy_source if legacy else "store")
     merged = _merge_flow(store, legacy)
@@ -4960,7 +4454,6 @@ def _session_flow_build(db: Any, conn: sqlite3.Connection, sid: str, since: floa
     return sid, merged, source
 
 
-@_in_session_scope("agent_id")
 def agent_flow(
     db: Any,
     agent_id: str,
@@ -4972,6 +4465,7 @@ def agent_flow(
     *,
     q: str = "", category: str = "", tool_name: str = "", flow_agent: str = "", failed: bool = False,
     skill_name: str = "", skill_phase: str = "",
+    history: HistoryScope | None = None,
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
@@ -4981,20 +4475,20 @@ def agent_flow(
     MAX_FLOW_EVENTS. The caller asks for more with a larger limit.
     """
     now = time.time() if now is None else now
+    history = history or HistoryScope.local(db)
     lo, hi = since if since is not None else 0.0, until if until is not None else now + 60.0
     from .flow_filters import select_events, session_kql_url
 
     if category == "skills" or skill_name or skill_phase:
         from .flow_skills import skill_events
 
-        conn = db._conn()
-        sid, _ = _resolve_agent(conn, agent_id)
-        events = skill_events(db, sid, lo, hi, live_end=until is None)
-        if not events and not _flow_session_known(conn, sid):
+        sid, _ = _resolve_agent(history, agent_id)
+        events = skill_events(db, sid, lo, hi, live_end=until is None, history=history)
+        if not events and not _session_flow(db, sid, lo, hi, legacy_flow, history):
             return 404, {"error": "No such agent"}
         summary = {"skill_evidence": True, "event_count": len(events)}
     else:
-        found = _session_flow(db, agent_id, lo, hi, legacy_flow)
+        found = _session_flow(db, agent_id, lo, hi, legacy_flow, history)
         if found is None:
             return 404, {"error": "No such agent"}
         sid, records, source = found
@@ -5002,13 +4496,13 @@ def agent_flow(
         cumulative, largest = _aggregate_flow(events)
         summary = _flow_summary(events, source, cumulative, largest)
     keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
-    capture = getattr(db, "capture", "full")
+    capture = capture_mode(db, default="full")
     matches, scope = select_events(events, q=q, category=category, tool_name=tool_name, flow_agent=flow_agent,
                                    failed=failed, allow_text=capture == "full", skill_name=skill_name, skill_phase=skill_phase)
     shown = matches[-keep:]
     summary["shown_events"] = len(shown)
     summary["omitted_events"] = len(matches) - len(shown)
-    settings = getattr(db, "_kusto", None)
+    settings = reader_feature(HistoryScope.local(db).reader, "connection_info")
     return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "capture_mode": capture,
                  "node_id": settings.node_id if settings else None,
                  "session_kql_url": session_kql_url(settings, sid, since, until)}
@@ -5162,7 +4656,6 @@ def _merge_transcript(turns: list[dict], legacy: dict | None) -> list[dict]:
     return turns
 
 
-@_in_session_scope("agent_id")
 def agent_transcript(
     db: Any,
     agent_id: str,
@@ -5171,6 +4664,8 @@ def agent_transcript(
     legacy_transcript: Callable[[str], dict | None] | None = None,
     turn: float | None = None,
     brief: bool = True,
+    *,
+    history: HistoryScope | None = None,
 ) -> tuple[int, dict]:
     """The transcript of a board agent's session: one turn per prompt, with its reply and actions.
 
@@ -5183,13 +4678,13 @@ def agent_transcript(
     returns every turn whole.
     """
     now = time.time() if now is None else now
-    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow)
+    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow, history or HistoryScope.local(db))
     if found is None:
         return 404, {"error": "No such agent"}
     sid, events, source = found
     cumulative, largest = _aggregate_flow(events)
     flow_summary = _flow_summary(events, source, cumulative, largest)
-    live = legacy_transcript(sid) if legacy_transcript and getattr(db, "_kusto", None) is None else None
+    live = None
     turns = _merge_transcript(_flow_transcript(events), live)
     replies_kept = any(t["response"] for t in turns)
     actions = [a for t in turns for a in t["actions"]]
@@ -5206,7 +4701,7 @@ def agent_transcript(
     body = {
         "session_id": sid,
         "summary": summary,
-        "capture_mode": getattr(db, "capture", "full"),
+        "capture_mode": capture_mode(db, default="full"),
         "replies_kept": replies_kept,
         "reply_note": None if replies_kept else REPLY_NOT_KEPT,
         "is_live": bool(live and live.get("is_live")),
@@ -5230,31 +4725,23 @@ RUN_HISTORY_DAYS = 30
 MAX_RUN_ROWS = 200
 
 
-def _session_row(db: Any, conn: sqlite3.Connection, sid: str) -> dict:
+def _session_row(history: HistoryScope, sid: str) -> dict:
     """The sessions-table row of a board session, also when it is stored under a monitor id with the same UUID."""
-    row = db.get_session(sid)
-    if row:
-        return row
-    uuid = _session_uuid(sid)
-    if uuid:
-        parts = identity_parts(uuid) if _is_reported_history(db) else None
-        found = conn.execute(
-            "SELECT session_id FROM sessions WHERE session_id LIKE ?"
-            + (" AND node_id = ?" if parts else "") + " ORDER BY started_at DESC LIMIT 1",
-            (f"%{parts[1]}%", parts[0]) if parts else (f"%{uuid}%",),
-        ).fetchone()
-        if found:
-            return db.get_session(found[0]) or {}
-    return {}
+    node, raw = history.split(sid)
+    row = session_row(history.require_reader(), raw, node_scope(node), fragment=_raw_session_uuid(raw) or "")
+    if row and history.qualified:
+        row["session_id"] = identity(node or "", row["session_id"])
+    return row or {}
 
 
-def _agent_git(db: Any, session: dict, sid: str) -> dict:
+def _agent_git(history: HistoryScope, session: dict, sid: str) -> dict:
     """Branch and commit the session started on, and the commits attributed to it so far."""
     sid_stored = session.get("session_id") or sid
+    counts = history.read("sessions.commit_counts", session_keys=history.keys((sid_stored,)))
     return {
         "branch": session.get("git_branch") or None,
         "commit": session.get("git_commit") or None,
-        "commits_in_session": db.count_session_commits(sid_stored),
+        "commits_in_session": sum(row["count"] for row in counts),
     }
 
 
@@ -5266,7 +4753,7 @@ def _median(values: list[float]) -> float | None:
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
 
 
-def _agent_runs(db: Any, session: dict, sid: str, row: dict, now: float) -> list[dict]:
+def _agent_runs(history: HistoryScope, session: dict, sid: str, row: dict, now: float) -> list[dict]:
     """Ended runs of the same tool in the same project over the last 30 days, newest first.
 
     Each run has its duration, tokens (input and output) and changed files as a ratio to the
@@ -5280,15 +4767,16 @@ def _agent_runs(db: Any, session: dict, sid: str, row: dict, now: float) -> list
         return []
     since = now - RUN_HISTORY_DAYS * 86400.0
     # A run counts when it ended in the window. Starts are read further back so a long run is not lost.
-    rows = _one_row_per_session(
-        db.query_sessions(since=since - RUN_HISTORY_DAYS * 86400.0, tool=tool, active=False, limit=5000)
-    )
+    node, _ = history.split(sid)
+    result = history.require_reader().read("sessions.runs", {
+        **node_scope(node), "since": since - RUN_HISTORY_DAYS * 86400.0, "until": since,
+        "requested_tool": tool, "requested_path": project, "limit": 5000,
+    })
+    rows = _one_row_per_session(history.identify(result.rows))
     own = {sid, session.get("session_id") or sid}
     runs = []
     for r in rows:
         ended = float(r.get("ended_at") or 0)
-        if ended < since or (r.get("project_path") or "") != project:
-            continue
         started = float(r.get("started_at") or 0)
         runs.append(
             {
@@ -5345,12 +4833,9 @@ def _flat_tree(nodes: list[dict], depth: int, out: list[dict]) -> None:
         _flat_tree(node.get("children") or [], depth + 1, out)
 
 
-def _rate_limit(conn: sqlite3.Connection, sid: str) -> dict | None:
+def _rate_limit(conn: Any, sid: str, *, facts=None) -> dict | None:
     """The newest rate-limit report that the tool sent for this session, or None."""
-    row = conn.execute(
-        "SELECT ts, detail FROM events WHERE session_id = ? AND detail LIKE '%\"rate_limits\"%' ORDER BY ts DESC LIMIT 1",
-        (sid,),
-    ).fetchone()
+    row = next(iter(facts.get("rate", [])), None)
     if not row:
         return None
     try:
@@ -5368,17 +4853,12 @@ def _rate_limit(conn: sqlite3.Connection, sid: str) -> dict | None:
     return {"ts": row[0], "windows": windows} if windows else None
 
 
-def _lm_by_extension(db: Any, conn: sqlite3.Connection, sid: str) -> list[dict] | None:
+def _lm_by_extension(history: HistoryScope, sid: str) -> list[dict] | None:
     """VS Code language-model tokens by extension, or None when the session has no such record."""
-    hit = conn.execute(
-        "SELECT 1 FROM events WHERE session_id = ? AND (kind LIKE '%lm.usage' OR kind LIKE '%language_model.usage') LIMIT 1",
-        (sid,),
-    ).fetchone()
-    if not hit:
-        return None
-    from ..analysis.lm_usage import session_lm_usage
+    from ..analysis.lm_usage import lm_usage
 
-    usage = session_lm_usage(db, sid)
+    node, raw = history.split(sid)
+    usage = lm_usage(session_events(history.require_reader(), raw, node_scope(node), raw_session=history.qualified))
     rows = [
         {
             "extension": ext,
@@ -5395,7 +4875,7 @@ def _lm_by_extension(db: Any, conn: sqlite3.Connection, sid: str) -> list[dict] 
 
 
 def _agent_resources(
-    db: Any, conn: sqlite3.Connection, board: _Board, sid: str, row: dict, root: bool, now: float
+    db: Any, conn: Any, board: _Board, sid: str, row: dict, root: bool, now: float, *, otel_facts=None
 ) -> dict:
     """Network, state writes, peak CPU and processes from the live monitor, plus rates from the store.
 
@@ -5418,8 +4898,8 @@ def _agent_resources(
     }
     if not root:
         return out
-    out["rate_limit"] = _rate_limit(conn, sid)
-    out["lm_by_extension"] = _lm_by_extension(db, conn, sid)
+    out["rate_limit"] = _rate_limit(conn, sid, facts=otel_facts)
+    out["lm_by_extension"] = _lm_by_extension(board.history, sid)
     live = _live_matches(board, sid) if sid in board.live_by_sid else []
     if not live:
         return out
@@ -5444,23 +4924,19 @@ def _maybe_int(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
-def _agent_skills(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -> list[dict]:
+def _agent_skills(history: HistoryScope, sid: str, agent: str, root: bool) -> list[dict]:
     """The skills that one agent used. A main agent's list also holds its subagents' uses."""
-    agent_sql, params = ("", [sid]) if root else (" AND agent_id = ?", [sid, agent])
+    rows = history.read("skills.agents", sid=sid, requested_agent="" if root else history.split(agent)[1])
     return [
-        {"name": name, "uses": uses, "agents": agents, "started_by": by, "first_ts": first, "last_ts": last}
-        for name, uses, agents, by, first, last in conn.execute(
-            "SELECT name, COUNT(*), COUNT(DISTINCT agent_id), GROUP_CONCAT(DISTINCT trigger), MIN(ts), MAX(ts) FROM skill_uses"
-            f" WHERE session_id = ?{agent_sql} GROUP BY name ORDER BY COUNT(*) DESC, name",
-            params,
-        )
+        row | {"started_by": ",".join(row["started_by"]) or None} for row in rows
     ]
 
 
 _CONTEXT_POINTS = 200
 
 
-def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -> dict | None:
+def _agent_context(conn: Any, sid: str, agent: str, root: bool, *,
+                   facts=None, raw_agent=None, raw_sid=None) -> dict | None:
     """Context size per model call of one agent: input, cache read and cache write together.
 
     A subagent has its own context, so a main agent's figure leaves its subagents out. A drop
@@ -5469,14 +4945,10 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
     only its main agent has one. A main agent's record also has by_agent: the same figures
     (calls, first, last, peak) for the main agent and for each subagent of the session.
     """
-    agent_sql, params = (" AND agent_id = ''", [sid]) if root else (" AND agent_id = ?", [sid, agent])
+    selected = "" if root else (raw_agent or agent)
     sizes = [
         row
-        for row in conn.execute(
-            "SELECT input_tokens + cache_read_tokens + cache_creation_tokens, tool_tokens, max_prompt_tokens,"
-            f" request_bytes, available_tools, ts, tool, model FROM requests WHERE session_id = ?{agent_sql} AND NOT is_error ORDER BY ts",
-            params,
-        )
+        for row in ([r[1:-1] for r in facts.get("call", []) if r[0] == selected])
         if row[0]
     ]
     if not sizes:
@@ -5489,26 +4961,15 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
 
     limit = newest(2)
     body_sizes = [row[3] for row in sizes if row[3] is not None]
-    events = conn.execute(
-        "SELECT ts, tool, trigger, before_tokens, after_tokens, duration_ms FROM context_events"
-        f" WHERE session_id = ?{agent_sql} AND kind = 'compaction' ORDER BY ts",
-        params,
-    ).fetchall()
+    events = [r[1:] for r in facts.get("compaction", []) if r[0] == selected]
     split = None
     if root:
-        split = conn.execute(
-            "SELECT ts, current_tokens, system_tokens, conversation_tokens, tool_tokens FROM context_events"
-            " WHERE session_id = ? AND kind = 'split' ORDER BY ts DESC LIMIT 1",
-            (sid,),
-        ).fetchone()
+        split = next(iter(reversed(facts.get("split", []))), None)
     by_agent = None
     if root:
         per_agent: dict[str, list[int]] = {}
-        for agent_id, size in conn.execute(
-            "SELECT agent_id, input_tokens + cache_read_tokens + cache_creation_tokens FROM requests"
-            " WHERE session_id = ? AND NOT is_error ORDER BY ts",
-            (sid,),
-        ):
+        groups = [(r[0], r[1]) for r in facts.get("call", [])]
+        for agent_id, size in groups:
             if size:
                 per_agent.setdefault(agent_id or "", []).append(size)
         by_agent = [
@@ -5545,7 +5006,8 @@ def _agent_context(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -
     if by_agent is not None:
         result["by_agent"] = by_agent
     breakdown = _context_breakdown(
-        conn, sid, agent, root, tool=str(sizes[-1][6] or ""), at_ts=float(sizes[-1][5] or 0.0), total=values[-1],
+        conn, raw_sid or sid, raw_agent or agent, root, facts=facts,
+        tool=str(sizes[-1][6] or ""), at_ts=float(sizes[-1][5] or 0.0), total=values[-1],
         limit=limit, tool_tokens=sizes[-1][1], split=result["split"], model=str(sizes[-1][7] or ""),
     )
     if breakdown is not None:
@@ -5566,22 +5028,15 @@ _CLAUDE_REST = "System prompt and tool definitions (not itemized)"
 _COPILOT_REST = "Conversation (not itemized)"
 
 
-def _context_item_rows(conn: sqlite3.Connection, sid: str, agent: str, root: bool, at_ts: float) -> list[tuple]:
+def _context_item_rows(conn: Any, sid: str, agent: str, root: bool, at_ts: float, *, facts=None) -> list[tuple]:
     """(kind, name, path, tokens) of the items in an agent's context at *at_ts*.
 
     The newest record of each item counts, unless the tool removed it, or a reset of
     its kind (or of all kinds: a compaction, a new system prompt) came after it.
     A subagent has only its own rows; a main agent the rows without an agent.
     """
-    if not _table_exists(conn, "session_context_items"):
-        return []
     agents = ("", sid) if root else (agent,)
-    marks = ",".join("?" for _ in agents)
-    rows = conn.execute(
-        "SELECT kind, name, path, tokens, removed, ts FROM session_context_items"
-        f" WHERE session_id = ? AND agent_id IN ({marks}) AND (ts <= ? OR ts = 0)",
-        (sid, *agents, at_ts),
-    ).fetchall()
+    rows = ([r[1:-1] for r in facts.get("item", []) if r[0] in agents and (r[6] or 0) <= at_ts])
     resets: dict[str, float] = {}
     for kind, name, _p, _t, _r, ts in rows:
         if kind == "reset":
@@ -5615,22 +5070,16 @@ def _tool_groups(rows: list[tuple]) -> list[dict]:
     ]
 
 
-def _segment_calls(conn: sqlite3.Connection, sid: str, agent: str, root: bool, at_ts: float) -> list[tuple[float, int, int]]:
+def _segment_calls(conn: Any, sid: str, agent: str, root: bool, at_ts: float, *, facts=None) -> list[tuple[float, int, int]]:
     """(ts, context size, output tokens) of the calls since the agent's last compaction up to *at_ts*."""
-    agent_sql, params = (" AND agent_id = ''", [sid]) if root else (" AND agent_id = ?", [sid, agent])
     calls = [
         (float(ts or 0.0), int(size), int(out or 0))
-        for ts, size, out in conn.execute(
-            "SELECT ts, input_tokens + cache_read_tokens + cache_creation_tokens, output_tokens FROM requests"
-            f" WHERE session_id = ?{agent_sql} AND NOT is_error AND ts <= ? ORDER BY ts",
-            (*params, at_ts),
-        )
+        for ts, size, out in ([(r[6], r[1], r[9]) for r in facts.get("call", [])
+                               if r[0] == ("" if root else agent) and r[6] <= at_ts])
         if size
     ]
-    cut = conn.execute(
-        f"SELECT MAX(ts) FROM context_events WHERE session_id = ?{agent_sql} AND kind = 'compaction' AND ts <= ?",
-        (*params, at_ts),
-    ).fetchone()[0]
+    cut = (max((r[1] for r in facts.get("compaction", []) if r[0] == ("" if root else agent) and r[1] <= at_ts),
+               default=None))
     if cut is not None:
         after = [c for c in calls if c[0] > cut]
         calls = after or calls[-1:]
@@ -5641,7 +5090,7 @@ def _segment_calls(conn: sqlite3.Connection, sid: str, agent: str, root: bool, a
 _TOOL_RESULTS, _REPLIES, _PROMPTS = "Tool results", "Replies and tool calls", "User prompts"
 
 
-def _call_steps(conn: sqlite3.Connection, sid: str, agent: str, root: bool, calls: list[tuple[float, int, int]]) -> list[dict]:
+def _call_steps(conn: Any, sid: str, agent: str, root: bool, calls: list[tuple[float, int, int]], *, facts=None) -> list[dict]:
     """The growth of the context from each call to the next, given to what came between them.
 
     A step's growth (call k minus call k-1, measured; below zero counts 0) is shared, in
@@ -5651,16 +5100,10 @@ def _call_steps(conn: sqlite3.Connection, sid: str, agent: str, root: bool, call
     """
     if len(calls) < 2:
         return []
-    agent_sql, params = (" AND agent_id IN ('', ?)", [sid, sid]) if root else (" AND agent_id = ?", [sid, agent])
     lo, hi = calls[0][0], calls[-1][0]
-    tools = conn.execute(
-        f"SELECT ts, tool_name, output_bytes FROM tool_invocations WHERE session_id = ?{agent_sql} AND ts >= ? AND ts < ?",
-        (*params, lo, hi),
-    ).fetchall()
-    prompts = conn.execute(
-        f"SELECT ts, LENGTH(CAST(text AS BLOB)) FROM session_prompts WHERE session_id = ?{agent_sql} AND ts >= ? AND ts < ?",
-        (*params, lo, hi),
-    ).fetchall()
+    agents = ("", sid) if root else (agent,)
+    tools = ([r[1:] for r in facts.get("tool", []) if r[0] in agents and lo <= r[1] < hi])
+    prompts = ([r[1:] for r in facts.get("prompt", []) if r[0] in agents and lo <= r[1] < hi])
     stamps = [c[0] for c in calls]
     by_call: dict[int, list[tuple[str, str, float]]] = defaultdict(list)
     for ts, name, size in tools:
@@ -5705,25 +5148,15 @@ def _heaviest(steps: list[dict]) -> list[dict]:
     return [{"ts": s["ts"], "tokens": s["tokens"], "kind": s["kind"], "name": s["name"]} for s in top if s["tokens"] > 0]
 
 
-def _context_report(conn: sqlite3.Connection, sid: str, agent: str, root: bool) -> dict | None:
+def _context_report(conn: Any, sid: str, agent: str, root: bool, *, facts=None) -> dict | None:
     """The latest ``/context`` report of the agent: Claude Code's own count, by category and item."""
-    if not _table_exists(conn, "session_context_items"):
-        return None
     agents = ("", sid) if root else (agent,)
-    marks = ",".join("?" for _ in agents)
-    head = conn.execute(
-        f"SELECT ts, path, tokens, chars FROM session_context_items WHERE session_id = ? AND agent_id IN ({marks})"
-        " AND kind = 'report' ORDER BY ts DESC LIMIT 1",
-        (sid, *agents),
-    ).fetchone()
+    items = [r for r in facts.get("item", []) if r[0] in agents]
+    head = (next(((r[6], r[3], r[4], r[7]) for r in reversed(items) if r[1] == "report"), None))
     if head is None:
         return None
     ts, model, total, limit = head
-    rows = conn.execute(
-        f"SELECT kind, name, path, tokens FROM session_context_items WHERE session_id = ? AND agent_id IN ({marks})"
-        " AND kind IN ('report_category', 'report_item') AND ts = ?",
-        (sid, *agents, ts),
-    ).fetchall()
+    rows = ([r[1:5] for r in items if r[1] in ("report_category", "report_item") and r[6] == ts])
     sections: dict[str, list[dict]] = defaultdict(list)
     for kind, name, detail, tokens in rows:
         if kind == "report_item":
@@ -5741,7 +5174,7 @@ def _context_report(conn: sqlite3.Connection, sid: str, agent: str, root: bool) 
 
 
 def _context_breakdown(
-    conn: sqlite3.Connection,
+    conn: Any,
     sid: str,
     agent: str,
     root: bool,
@@ -5753,6 +5186,7 @@ def _context_breakdown(
     tool_tokens: int | None,
     split: dict | None,
     model: str = "",
+    facts=None,
 ) -> dict | None:
     """What fills an agent's context at its last model call, by part and item, as /context shows it.
 
@@ -5765,15 +5199,15 @@ def _context_breakdown(
     ``heaviest`` holds the five calls that grew the context most. ``reported`` is the latest
     ``/context`` report of Claude Code, when the session has one. None when nothing is known.
     """
-    rows = _context_item_rows(conn, sid, agent, root, at_ts)
-    calls = _segment_calls(conn, sid, agent, root, at_ts) if total else []
-    steps = _call_steps(conn, sid, agent, root, calls)
+    rows = _context_item_rows(conn, sid, agent, root, at_ts, facts=facts)
+    calls = _segment_calls(conn, sid, agent, root, at_ts, facts=facts) if total else []
+    steps = _call_steps(conn, sid, agent, root, calls, facts=facts)
     parts: list[dict] = []
     fixed: int | None = None
     clamped = False
     rest_tokens: int | None = None
     copilot = tool.startswith("copilot") or any(r[0] in ("instruction_file", "system_prompt_other") for r in rows)
-    reported = None if copilot else _context_report(conn, sid, agent, root)
+    reported = None if copilot else _context_report(conn, sid, agent, root, facts=facts)
     if copilot:
         if not root:
             split = None
@@ -5855,146 +5289,89 @@ def mcp_server_of(tool_name: str) -> str | None:
     return ""
 
 
-def _tool_totals(rows: Iterable[tuple]) -> list[dict]:
+def _tool_totals(rows: Iterable[dict]) -> list[dict]:
     """Per tool: calls, failures, run time (total, median, p95, max) and input and output size.
 
     A call with no recorded time or size does not count toward that figure.
     """
-    by: dict[str, dict] = {}
-    for name, failed, ms, in_b, out_b in rows:
-        t = by.setdefault(name, {"calls": 0, "failed": 0, "ms": [], "in": [], "out": []})
-        t["calls"] += 1
-        t["failed"] += 1 if failed else 0
-        if ms and ms > 0:
-            t["ms"].append(ms)
-        if in_b is not None:
-            t["in"].append(in_b)
-        if out_b is not None:
-            t["out"].append(out_b)
-
     out = []
-    for name, t in by.items():
-        ms, ins, outs = sorted(t["ms"]), t["in"], t["out"]
+    for t in rows:
+        name = t["tool_name"]
+        ms = sorted(exact_values(t, "durations", "timed"))
+        ni, no = t["input_count"], t["output_count"]
         out.append({
             "name": name,
             "mcp_server": mcp_server_of(name),
             "calls": t["calls"],
-            "failed": t["failed"],
+            "failed": t["failures"],
             "total_ms": _ms(sum(ms)) if ms else None,
             "p50_ms": _ms(_percentile(ms, 0.50)),
             "p95_ms": _ms(_percentile(ms, 0.95)),
             "max_ms": _ms(ms[-1]) if ms else None,
-            "input_bytes": sum(ins) if ins else None,
-            "output_bytes": sum(outs) if outs else None,
-            "avg_input_bytes": round(sum(ins) / len(ins)) if ins else None,
-            "avg_output_bytes": round(sum(outs) / len(outs)) if outs else None,
-            "max_output_bytes": max(outs) if outs else None,
+            "input_bytes": t["input_bytes"] if ni else None,
+            "output_bytes": t["output_bytes"] if no else None,
+            "avg_input_bytes": round(t["input_bytes"] / ni) if ni else None,
+            "avg_output_bytes": round(t["output_bytes"] / no) if no else None,
+            "max_output_bytes": t["max_output_bytes"] if no else None,
         })
     out.sort(key=lambda t: (-t["calls"], t["name"]))
     return out
 
 
-def _agent_turns(conn: sqlite3.Connection, sid: str, agent_sql: str, agent_params: list) -> list[dict]:
+def _agent_turns(history: HistoryScope, sid: str, requested_agent: str) -> list[dict]:
     """One row per prompt, or per model call for a session with no stored prompt."""
-    # The main agent's turns start at a person's prompts, a subagent's at its own task prompts.
-    prompt_sql = agent_sql or " AND agent_id = ''"
-    prompts = conn.execute(
-        f"SELECT ts, text FROM session_prompts WHERE session_id = ?{prompt_sql} ORDER BY ts",
-        [sid, *agent_params],
-    ).fetchall()
-    calls = conn.execute(
-        "SELECT ts, model, input_tokens, output_tokens, cache_read_tokens, duration_ms, cache_creation_tokens, cost_usd, agent_id FROM requests"
-        f" WHERE session_id = ?{agent_sql} ORDER BY ts",
-        [sid, *agent_params],
-    ).fetchall()
-    tool_ts = [
-        r[0] for r in conn.execute(f"SELECT ts FROM tool_invocations WHERE session_id = ?{agent_sql} AND {_IS_CALL_SQL} ORDER BY ts", [sid, *agent_params])
+    return [
+        {
+            "ts": row["ts"], "text": mask_secrets(row["text"]), "tools": row["tools"],
+            "model": row["model"] if row["calls"] else None,
+            "input": row["input_tokens"], "output": row["output_tokens"],
+            "cache_read": row["cache_read_tokens"], "cache_write": row["cache_creation_tokens"],
+            "cost_usd": _usd(row["cost_usd"]), "subagent_calls": row["subagent_calls"], "reply_ms": row["reply_ms"] or None,
+        }
+        for row in history.read("prompts.turns", sid=sid, requested_agent=requested_agent, limit=MAX_DETAIL_ROWS, page=True)
     ]
-    if not prompts:
-        turns = [
-            {
-                "ts": ts,
-                "text": "",
-                "tools": bisect.bisect_left(tool_ts, calls[i + 1][0] if i + 1 < len(calls) else math.inf)
-                - bisect.bisect_left(tool_ts, ts),
-                "model": model,
-                "input": i_tok,
-                "output": o_tok,
-                "cache_read": cr_tok,
-                "cache_write": cw_tok,
-                "cost_usd": _usd(cost) if cost else None,
-                "subagent_calls": 0,
-                "reply_ms": duration or None,
-            }
-            for i, (ts, model, i_tok, o_tok, cr_tok, duration, cw_tok, cost, _aid) in enumerate(calls)
-        ]
-    else:
-        turns = []
-        for i, (ts, text) in enumerate(prompts):
-            end = prompts[i + 1][0] if i + 1 < len(prompts) else math.inf
-            inside = [c for c in calls if ts <= c[0] < end]
-            models: dict[str, int] = defaultdict(int)
-            for c in inside:
-                models[c[1]] += 1
-            durations = [c[5] for c in inside if c[5]]
-            turns.append(
-                {
-                    "ts": ts,
-                    "text": mask_secrets(text),
-                    "tools": bisect.bisect_left(tool_ts, end) - bisect.bisect_left(tool_ts, ts),
-                    "model": max(models, key=models.get) if models else None,
-                    "input": sum(c[2] for c in inside) if inside else None,
-                    "output": sum(c[3] for c in inside) if inside else None,
-                    "cache_read": sum(c[4] for c in inside) if inside else None,
-                    "cache_write": sum(c[6] for c in inside) if inside else None,
-                    "cost_usd": _usd(sum(c[7] or 0 for c in inside)) if any(c[7] for c in inside) else None,
-                    "subagent_calls": sum(1 for c in inside if c[8] and not agent_sql),
-                    "reply_ms": sum(durations) if durations else None,
-                }
-            )
-    return turns[-MAX_DETAIL_ROWS:][::-1]
 
 
-def _titles_for(conn: sqlite3.Connection, pairs: set[tuple[str, str]], now: float) -> dict[tuple[str, str], str]:
-    """Titles for detail lists that show calls from many sessions."""
+
+
+def _history_titles(history: HistoryScope, pairs: set[tuple[str, str]], now: float) -> dict[tuple[str, str], str]:
     if not pairs:
         return {}
-    board = _Board(conn, _detail_filters(now), now)
-    sids = sorted({sid for sid, _ in pairs})
-    payload = json.dumps(sids)
-    for sid, tool, project in conn.execute(
-        "SELECT session_id, tool, project_path FROM sessions WHERE session_id IN (SELECT value FROM json_each(?))",
-        (payload,),
-    ):
-        board.session_tool[sid] = tool
-        board.session_project[sid] = project
-    for agent, sid, task in conn.execute(
-        "SELECT agent_id, session_id, task FROM agents WHERE session_id IN (SELECT value FROM json_each(?))",
-        (payload,),
-    ):
-        board.sub_rows[agent] = {"agent_id": agent, "session_id": sid, "task": task}
+    board = _Board(None, _detail_filters(now), now, history=history)
+    keys = history.keys(sid for sid, _ in pairs)
+    for row in history.read("board.sessions", session_keys=keys):
+        board.session_tool[row["session_id"]] = row["tool"]
+        board.session_project[row["session_id"]] = row["project_path"]
+    if any(sid != aid for sid, aid in pairs):
+        for row in history.read("board.agents", session_keys=keys):
+            board.sub_rows[row["agent_id"]] = row
     return board._titles(pairs)
 
 
+def _detail_scope(history: HistoryScope, filters: Filters | None, now: float) -> dict:
+    if filters is None:
+        return {}
+    params = {"since": filters.since, "until": filters.until}
+    if filters.narrowed:
+        board = _Board(None, filters, now, history=history).load()
+        params |= {"restrict_sessions": True, "session_keys": history.keys(board.scope)}
+    return params
+
+
 def tool_detail(db: Any, name: str, now: float | None = None, since: float | None = None, until: float | None = None,
-                *, filters: Filters | None = None) -> tuple[int, dict]:
+                *, filters: Filters | None = None, history: HistoryScope | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
-    conn = db._conn()
-    window, window_params = "", []
-    if filters is not None:
-        board = _Board(conn, filters, now, facts=_store_facts(conn, str(getattr(db, "_path", "memory")))).load()
-        where, window_params = board._scoped()
-        window = f" AND {where} AND {_IS_CALL_SQL}"
-    elif since is not None and until is not None:
-        window, window_params = " AND ts >= ? AND ts < ?", [since, until]
-    rows = conn.execute(
-        "SELECT ts, target, session_id, agent_id, duration_ms, is_error, confirm FROM tool_invocations"
-        f" WHERE tool_name = ?{window} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        [name, *window_params],
-    ).fetchall()
-    total = conn.execute(f"SELECT COUNT(*) FROM tool_invocations WHERE tool_name = ?{window}", [name, *window_params]).fetchone()[0]
+    history = history or HistoryScope.local(db)
+    params = _detail_scope(history, filters, now)
+    if filters is None and since is not None and until is not None:
+        params = {"since": since, "until": until, "inclusive_end": False}
+    page = history.read("tools.detail", limit=MAX_DETAIL_ROWS + 1, page=True, requested_tool_name=name,
+                        real_calls=filters is not None, **params)
+    total = next(r["total"] for r in page if r["row_type"] == "count")
+    fields = ("ts", "target", "session_id", "agent_id", "duration_ms", "is_error", "confirm")
+    rows = [tuple(r[k] for k in fields) for r in page if r["row_type"] == "item"]
     pairs = {(sid, _agent_key(sid, aid)) for _ts, _t, sid, aid, *_ in rows}
-    titles = _titles_for(conn, pairs, now)
+    titles = _history_titles(history, pairs, now)
     return 200, {
         "name": name,
         "total": total,
@@ -6013,42 +5390,33 @@ def tool_detail(db: Any, name: str, now: float | None = None, since: float | Non
     }
 
 
-def error_detail(db: Any, key: str, now: float | None = None, *, filters: Filters | None = None) -> tuple[int, dict]:
+def error_detail(db: Any, key: str, now: float | None = None, *, filters: Filters | None = None,
+                 history: HistoryScope | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
-    conn = db._conn()
+    history = history or HistoryScope.local(db)
     found: list[tuple[float, str, str, str]] = []
     parts = key.split(":", 2)
     if len(parts) < 3 or parts[0] not in ("tool", "api"):
         return 400, {"error": "Bad error key"}
-    where, params = "", []
-    if filters is not None:
-        board = _Board(conn, filters, now, facts=_store_facts(conn, str(getattr(db, "_path", "memory")))).load()
-        condition, params = board._scoped()
-        where = f" AND {condition}"
+    params = _detail_scope(history, filters, now)
     if parts[0] == "tool":
-        for ts, summary, sid, aid in conn.execute(
-            "SELECT ts, result_summary, session_id, agent_id FROM tool_invocations"
-            f" WHERE tool_name = ? AND is_error = 1 AND {_IS_CALL_SQL}{where} ORDER BY ts DESC LIMIT 5000",
-            [parts[1], *params],
-        ):
+        for row in history.read("tools.detail", limit=5000, page=True, requested_tool_name=parts[1], query_mode="errors", **params):
+            ts, summary, sid, aid = (row[k] for k in ("ts", "result_summary", "session_id", "agent_id"))
             if _tool_error_key(parts[1], summary) == key:
                 found.append((ts, _one_line(summary, 500), sid, aid))
                 if len(found) >= MAX_DETAIL_ROWS:
                     break
     else:
         if filters is not None and filters.model:
-            where += " AND model = ?"
-            params.append(filters.model)
-        for ts, error_type, status, sid, aid in conn.execute(
-            "SELECT ts, error_type, http_status, session_id, agent_id FROM requests"
-            f" WHERE is_error = 1 AND error_type = ?{where} ORDER BY ts DESC LIMIT 5000",
-            ["" if parts[1] == "error" else parts[1], *params],
-        ):
+            params["requested_model"] = filters.model
+        for row in history.read("requests.errors", limit=5000, page=True, restrict_error=True,
+                                requested_error="" if parts[1] == "error" else parts[1], **params):
+            ts, error_type, status, sid, aid = (row[k] for k in ("ts", "error_type", "http_status", "session_id", "agent_id"))
             if _api_error_key(error_type, status) == key:
                 found.append((ts, " ".join(str(p) for p in (error_type, status) if p), sid, aid))
                 if len(found) >= MAX_DETAIL_ROWS:
                     break
-    titles = _titles_for(conn, {(sid, _agent_key(sid, aid)) for _t, _d, sid, aid in found}, now)
+    titles = _history_titles(history, {(sid, _agent_key(sid, aid)) for _t, _d, sid, aid in found}, now)
     return 200, {
         "key": key,
         "items": [
@@ -6111,113 +5479,63 @@ def _diff_lines(pairs: list[tuple[str, str]]) -> list[dict]:
     return lines
 
 
-def _history_text(conn: sqlite3.Connection, content: str, blob_hash: str) -> str | None:
-    if blob_hash:
-        row = conn.execute("SELECT content FROM file_blobs WHERE hash = ?", (blob_hash,)).fetchone()
-        if row:
-            return row[0]
-    return content or None
 
 
-def _stored_diff(conn: sqlite3.Connection, path: str, event_ids: list[str],
-                 *, since: float | None = None, until: float | None = None) -> tuple[list[dict] | None, float | None]:
-    """The newest change that has its text stored, from the edit input or the file history."""
-    for event_id in event_ids:
-        if not event_id:
-            continue
-        row = conn.execute(
-            "SELECT input FROM tool_invocations WHERE source_event_id = ? ORDER BY ts DESC LIMIT 1", (event_id,)
-        ).fetchone()
-        pairs = _edit_pairs(row[0]) if row else None
-        if pairs:
-            return _diff_lines(pairs), None
-    versions = conn.execute(
-        "SELECT ts, content, blob_hash FROM file_history WHERE path = ?"
-        + (" AND ts <= ?" if until is not None else "") + " ORDER BY ts DESC LIMIT 2",
-        (path,) if until is None else (path, until),
-    ).fetchall()
-    if versions and (since is None or versions[0][0] >= since):
-        new = _history_text(conn, *versions[0][1:])
-        old = _history_text(conn, *versions[1][1:]) if len(versions) > 1 else ""
-        if new is not None and old is not None:
-            return _diff_lines([(old, new)]), versions[0][0]
-    return None, None
 
 
 def file_detail(db: Any, path: str, now: float | None = None, *, since: float | None = None,
-                until: float | None = None) -> tuple[int, dict]:
+                until: float | None = None, history: HistoryScope | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
-    conn = db._conn()
-    bounds = (" AND ts >= ?" if since is not None else "") + (" AND ts <= ?" if until is not None else "")
-    rows = conn.execute(
-        "SELECT ts, session_id, detail, source_event_id FROM file_write_events WHERE path = ?"
-        f"{bounds} ORDER BY ts DESC LIMIT {MAX_DETAIL_ROWS}",
-        (path, *(v for v in (since, until) if v is not None)),
-    ).fetchall()
-    titles = _titles_for(conn, {(sid, sid) for _ts, sid, _d, _e in rows}, now)
+    history = history or HistoryScope.local(db)
+    rows = history.read("files.detail", requested_path=path, keep_text=getattr(db, "capture", "full") == "full",
+                        edit_limit=MAX_DETAIL_ROWS, limit=MAX_DETAIL_ROWS + 2,
+                        **{k: v for k, v in (("since", since), ("until", until)) if v is not None})
+    writes = [r for r in rows if r["row_type"] == "edit"]
+    titles = _history_titles(history, {(r["session_id"], r["session_id"]) for r in writes if r["session_id"]}, now)
     edits = []
-    for ts, sid, detail, _event in rows:
-        try:
-            info = json.loads(detail or "{}")
-        except ValueError:
-            info = {}
-        edits.append(
-            {
-                "ts": ts,
-                "agent_id": sid,
-                "title": titles.get((sid, sid), ""),
-                "lines_added": info.get("lines_added"),
-                "lines_removed": info.get("lines_removed"),
-            }
-        )
-    nodes = getattr(db, "scope", None)
-    diff, as_of = (None, None) if nodes and nodes.kind == "fleet" else _stored_diff(
-        conn, path, [r[3] for r in rows], since=since, until=until
-    )
+    for r in writes:
+        sid = r["session_id"]
+        detail = _parse_detail(r["detail"])
+        edits.append({"ts": r["ts"], "agent_id": sid, "title": titles.get((sid, sid), ""),
+                      "lines_added": detail.get("lines_added"), "lines_removed": detail.get("lines_removed")})
+    diff, as_of = None, None
+    if history.node is not None:
+        pairs = next((p for r in writes if (p := _edit_pairs(r["input"]))), None)
+        if pairs:
+            diff = _diff_lines(pairs)
+        else:
+            revisions = [r for r in rows if r["row_type"] == "revision"]
+            if revisions and (since is None or revisions[0]["ts"] >= since):
+                texts = [r["content"] if r["found_blob"] else r["content"] or None for r in revisions]
+                new, old = texts[0], texts[1] if len(texts) > 1 else ""
+                if new is not None and old is not None:
+                    diff, as_of = _diff_lines([(old, new)]), revisions[0]["ts"]
     return 200, {"path": path, "edits": edits, "diff": diff, "diff_as_of": as_of}
 
 
-@_in_session_scope("session_id")
-def prompt_detail(db: Any, ts: float, session_id: str, now: float | None = None) -> tuple[int, dict]:
+def prompt_detail(db: Any, ts: float, session_id: str, now: float | None = None, *,
+                  history: HistoryScope | None = None) -> tuple[int, dict]:
     now = time.time() if now is None else now
-    conn = db._conn()
-    row = conn.execute(
-        "SELECT ts, text, prompt_file, project_path, agent_id FROM session_prompts"
-        " WHERE session_id = ? AND ts >= ? AND ts <= ? ORDER BY ABS(ts - ?) LIMIT 1",
-        (session_id, ts - 0.001, ts + 0.001, ts),
-    ).fetchone()
-    if row is None:
+    history = history or HistoryScope.local(db)
+    rows = history.read("prompts.detail", sid=session_id, prompt_ts=ts, open_end=now + 60.0, limit=1)
+    if not rows:
         return 404, {"error": "No such prompt"}
-    start, text, prompt_file, project, _aid = row
-    following = conn.execute(
-        "SELECT MIN(ts) FROM session_prompts WHERE session_id = ? AND ts > ? AND agent_id = ''", (session_id, start)
-    ).fetchone()[0]
-    end = following if following is not None else math.inf
-    i, o, cr, reply, cw, cost, calls, sub_calls = conn.execute(
-        "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(NULLIF(duration_ms, 0)),"
-        " SUM(cache_creation_tokens), SUM(cost_usd), COUNT(*), SUM(agent_id != '')"
-        " FROM requests WHERE session_id = ? AND ts >= ? AND ts < ?",
-        (session_id, start, end if end != math.inf else now + 60.0),
-    ).fetchone()
-    tool_calls = conn.execute(
-        f"SELECT COUNT(*) FROM tool_invocations WHERE session_id = ? AND ts >= ? AND ts < ? AND {_IS_CALL_SQL}",
-        (session_id, start, end if end != math.inf else now + 60.0),
-    ).fetchone()[0]
-    titles = _titles_for(conn, {(session_id, session_id)}, now)
+    row = rows[0]
+    titles = _history_titles(history, {(session_id, session_id)}, now)
     return 200, {
-        "text": mask_secrets(text),
-        "prompt_file": prompt_file,
-        "project": project,
+        "text": mask_secrets(row["text"]),
+        "prompt_file": row["prompt_file"],
+        "project": row["project_path"],
         "title": titles.get((session_id, session_id), ""),
-        "input": i,
-        "output": o,
-        "cache_read": cr,
-        "cache_write": cw,
-        "cost_usd": _usd(cost) if cost else None,
-        "calls": calls,
-        "subagent_calls": sub_calls,
-        "reply_ms": _ms(reply),
-        "tool_calls": tool_calls,
+        "input": row["input_tokens"],
+        "output": row["output_tokens"],
+        "cache_read": row["cache_read_tokens"],
+        "cache_write": row["cache_creation_tokens"],
+        "cost_usd": _usd(row["cost_usd"]) if row["cost_usd"] else None,
+        "calls": row["calls"],
+        "subagent_calls": row["subagent_calls"],
+        "reply_ms": _ms(row["reply_ms"]),
+        "tool_calls": row["tool_calls"],
     }
 
 
@@ -6255,7 +5573,7 @@ _refresh_thread: threading.Thread | None = None
 _COMPUTE_LOCK = threading.Lock()
 
 
-def _store_version(db: Any, now: float) -> tuple:
+def _store_version(history: HistoryScope, now: float) -> tuple:
     """Changes when rows arrive, and every MEMO_TTL_S for rows merged in place and for live state.
 
     The live snapshot's own version is left out: it moves on every monitor cycle, so
@@ -6263,22 +5581,8 @@ def _store_version(db: Any, now: float) -> tuple:
     """
     from ..orchestrator import tool_configs_at
 
-    marks = getattr(db, "version_marks", None)
-    if marks is not None:
-        # A history split by project: the stores read, and the newest rows of each.
-        return (marks(), int(now / MEMO_TTL_S), tool_configs_at())
-    conn = db._conn()
-    ids = tuple(
-        conn.execute(sql).fetchone()[0]
-        for sql in (
-            "SELECT MAX(id) FROM requests",
-            "SELECT MAX(id) FROM tool_invocations",
-            "SELECT MAX(id) FROM session_prompts",
-            "SELECT MAX(id) FROM file_write_events",
-            "SELECT MAX(last_activity_at) FROM session_usage",
-        )
-    )
-    return (ids, int(now / MEMO_TTL_S), tool_configs_at())
+    row, = history.read("board.revision", limit=1)
+    return (row["rows"], row["version"], int(now / MEMO_TTL_S), tool_configs_at())
 
 
 def _change_digest(payload: dict) -> str:
@@ -6306,11 +5610,11 @@ def board_bytes(db: Any, store: Any, query: str, now: float | None = None, backg
     key_filters = filters
     if abs(now - filters.until) <= CLOCK_RANGE_SLACK_S:
         key_filters = replace(filters, until=0.0, since=float(round((filters.until - filters.since) / 60.0)))
-    path = str(getattr(db, "_path", ""))
+    history = HistoryScope.local(store)
+    path = (history.reader, history.node)
     try:
-        with read_scope(db, filters):
-            version = _store_version(db, now)
-    except sqlite3.OperationalError:
+        version = _store_version(history, now)
+    except StoreError:
         # A locked or busy store: the last answer for these filters beats an error
         # that empties the board. With none yet, the error goes to the client.
         sent = _SENT.get((path, key_filters))
@@ -6345,7 +5649,8 @@ def _clock_range(filters: Filters) -> Filters:
 
 
 def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, version: tuple, now: float) -> bytes:
-    path = str(getattr(db, "_path", ""))
+    history = HistoryScope.local(store)
+    path = (history.reader, history.node)
     key = (path, key_filters, version)
     filters = parse_filters(query, now)
     if key_filters.until == 0.0:
@@ -6371,7 +5676,8 @@ def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, versio
         else:
             _BASE_TIMES.clear()
             _BASE_TIMES[base_key] = (filters.since, filters.until, now)
-        payload = compute_board(db, filters, getattr(store, "snapshot", None), now, _BASE_MEMO, base_key)
+        payload = compute_board(db, filters, getattr(store, "snapshot", None), now, _BASE_MEMO, base_key,
+                                history=history)
         digest = _change_digest(payload)
         sent = _SENT.get((path, key_filters))
         if sent is not None and sent[0] == digest and now - sent[1] < RESEND_AFTER_S:
@@ -6414,8 +5720,6 @@ def handle_get(
     path: str, query: str, db: Any, store: Any, now: float | None = None, is_allowed: Callable[[str], bool] | None = None
 ) -> tuple[int, bytes]:
     """Route a GET under /api/board. Returns the status and the JSON body."""
-    if db is None:
-        return 503, json.dumps({"error": "History is not available"}).encode("utf-8")
     qs = parse_qs(query, keep_blank_values=True)
 
     def one(key: str) -> str:
@@ -6423,18 +5727,22 @@ def handle_get(
 
     try:
         scope = parse_scope(qs)
+        history = HistoryScope.local(store)
         if scope.kind != "local":
-            from .board_history import route
+            from .scoped_history import route
 
-            return route(db, scope, path, query, qs, time.time() if now is None else now)
+            return route(db, scope, path, query, qs, time.time() if now is None else now, reader=history.reader)
         # A scoped deep link is never interpreted as a local native ID.
         if any(identity_parts(one(key)) for key in ("id", "session_id")):
             raise ScopeError("A node-qualified record requires a historical scope")
         if path == "/api/board":
+            history.require_reader()
             return 200, board_bytes(db, store, query, now, background=True)
+        if path in {"/api/board/agent", "/api/board/sessions", "/api/board/file"}:
+            history.require_reader()
         snapshot = getattr(store, "snapshot", None)
         if path == "/api/board/agent":
-            status, payload = agent_detail(db, one("id"), snapshot, now) if one("id") else (400, {"error": "Missing id"})
+            status, payload = agent_detail(db, one("id"), snapshot, now, history=history) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/sessions":
             from .session_record import search_sessions
 
@@ -6447,22 +5755,22 @@ def handle_get(
                 _as_number(one("until")),
                 _as_int(one("limit")) or 200,
                 _as_int(one("offset")) or 0,
+                history=history,
             )
         elif path == "/api/board/tool":
             if one("name"):
                 filters = parse_filters(query, time.time() if now is None else now) if one("since") and one("until") else None
-                with read_scope(db, filters):
-                    status, payload = tool_detail(db, one("name"), now, filters=filters)
+                status, payload = tool_detail(db, one("name"), now, filters=filters, history=history)
             else:
                 status, payload = 400, {"error": "Missing name"}
         elif path == "/api/board/error":
             filters = parse_filters(query, time.time() if now is None else now) if one("since") and one("until") else None
-            with read_scope(db, filters):
-                status, payload = error_detail(db, one("key"), now, filters=filters) if one("key") else (400, {"error": "Missing key"})
+            status, payload = error_detail(db, one("key"), now, filters=filters, history=history) if one("key") else (400, {"error": "Missing key"})
         elif path == "/api/board/skill":
             if one("name"):
                 tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
-                status, payload = skill_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")), tools)
+                status, payload = skill_detail(db, one("name"), now, _as_number(one("since")), _as_number(one("until")), tools,
+                                               history=history)
             else:
                 status, payload = 400, {"error": "Missing name"}
         elif path == "/api/board/excerpt":
@@ -6470,19 +5778,21 @@ def handle_get(
             status, payload = file_excerpt(one("path"), max(1, int(at or 1)), is_allowed) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/file":
             status, payload = file_detail(db, one("path"), now, since=_as_number(one("since")),
-                                          until=_as_number(one("until"))) if one("path") else (400, {"error": "Missing path"})
+                                          until=_as_number(one("until")), history=history) if one("path") else (400, {"error": "Missing path"})
         elif path == "/api/board/prompt":
             ts = _as_number(one("ts"))
             if ts is None or not one("session_id"):
                 status, payload = 400, {"error": "Missing ts or session_id"}
             else:
-                status, payload = prompt_detail(db, ts, one("session_id"), now)
+                status, payload = prompt_detail(db, ts, one("session_id"), now, history=history)
         else:
             status, payload = 404, {"error": "No such route"}
     except BoardRequestError as exc:
         status, payload = 400, {"error": str(exc)}
     except ScopeError as exc:
         status, payload = exc.status, {"error": str(exc), "reason": exc.reason}
+    except StoreError as exc:
+        status, payload = 503, {"error": str(exc)}
     return status, json.dumps(payload).encode("utf-8")
 
 
@@ -6499,10 +5809,6 @@ DB_STATS_TTL_S = 60.0
 KUSTO_VOLUME_TTL_S = 300.0  # Logical counts resolve row versions; don't pay for that every minute.
 TABLE_INVENTORY_TTL_S = 300.0
 TABLE_INVENTORY_LIMIT = 512
-_TABLE_DETAILS = (
-    ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
-    f"TotalOriginalSize, HotExtentSize | top {TABLE_INVENTORY_LIMIT + 1} by TableName asc"
-)
 _SUBAGENT_TYPES = frozenset({"subagent", "agent"})
 _ORPHAN_PARENTS = (0, 1)
 _NO_FRESHNESS_TOOLS = frozenset({"aictl", "any"})
@@ -6520,22 +5826,14 @@ _health_cache_lock = threading.Lock()
 _health_cache: dict[tuple, dict] = {}
 
 
-def _health_store_key(db: Any) -> tuple:
-    settings = getattr(db, "_kusto", None)
-    if settings is not None:
-        return (settings.cluster, settings.database, settings.auth_mode, settings.node_id)
-    return (id(db), str(getattr(db, "_path", "")))
-
-
 def _volume_interval(db: Any) -> float:
-    return KUSTO_VOLUME_TTL_S if getattr(db, "_kusto", None) is not None else DB_STATS_TTL_S
+    return KUSTO_VOLUME_TTL_S
 
 
-def _cached_health_data(db: Any, now: float) -> dict:
+def _cached_health_data(db: Any, now: float, reader=None) -> dict:
     """Refresh costly store reads off the HTTP thread, with one refresh per store."""
-    if db is None:
-        return {}
-    key = _health_store_key(db)
+    reader = reader or HistoryScope.local(db).reader
+    key = reader
     with _health_cache_lock:
         entry = _health_cache.setdefault(key, {"data": {}, "at": -math.inf, "refreshing": False})
         if not entry["refreshing"] and time.monotonic() - entry["at"] >= HOOKS_TTL_S:
@@ -6544,27 +5842,24 @@ def _cached_health_data(db: Any, now: float) -> dict:
             def refresh() -> None:
                 try:
                     prev = entry["data"]
-                    policies = _health_kusto_policies(db, prev.get("policies"))
-                    capacity = _health_kusto_capacity(db, prev.get("capacity"))
-                    inventory = _health_table_inventory(db, prev.get("table_inventory"))
+                    policies = _health_kusto_policies(reader, prev.get("policies"))
+                    capacity = _health_kusto_capacity(reader, prev.get("capacity"))
+                    inventory = _health_table_inventory(reader, prev.get("table_inventory"))
                     with _health_cache_lock:
                         entry["data"] = {**prev, "policies": policies, "capacity": capacity, "table_inventory": inventory}
                     cluster = prev.get("cluster_resources")
-                    if getattr(db, "_kusto", None) is not None:
-                        try:
-                            from ..kusto.health_metrics import read_cluster_metrics
-
-                            cluster = read_cluster_metrics(db, cluster)
-                        except Exception:  # noqa: BLE001 - optional telemetry must not block other measurements
-                            logger.debug("Cluster resource metrics unavailable")
-                            if cluster is not None:
-                                cluster = {**cluster, "status": "stale" if cluster.get("checked_at") is not None else "error",
-                                           "attempted_at": time.time(), "last_error": "Cluster resource metrics unavailable"}
+                    try:
+                        cluster = reader_feature(reader, "cluster_resources", cluster)
+                    except Exception:  # noqa: BLE001 - optional telemetry
+                        logger.debug("Cluster resource metrics unavailable", exc_info=True)
+                        if cluster is not None:
+                            cluster = {**cluster, "status": "stale", "attempted_at": time.time(),
+                                       "last_error": "Cluster resource metrics unavailable"}
                     with _health_cache_lock:
                         entry["data"] = {**entry["data"], "cluster_resources": cluster}
-                    volume = _db_stats_sample(db)
-                    quality = _quality_rows(db)
-                    hooks = _hooks_by_tool(db, now)
+                    volume = _db_stats_sample(db, reader)
+                    quality = _quality_rows(reader)
+                    hooks = _hooks_by_tool(reader, now)
                     with _health_cache_lock:
                         entry["data"] = {**entry["data"], "volume": volume, "quality": quality, "hooks": hooks}
                 finally:
@@ -6576,8 +5871,8 @@ def _cached_health_data(db: Any, now: float) -> dict:
         return dict(entry["data"])
 
 
-def _empty_table_inventory(db: Any) -> dict:
-    kusto = getattr(db, "_kusto", None) is not None
+def _empty_table_inventory(reader) -> dict:
+    kusto = reader_feature(reader, "connection_info") is not None
     return {
         "status": "pending" if kusto else "unsupported",
         "checked_at": None, "attempted_at": None, "last_error": None,
@@ -6596,32 +5891,20 @@ def _empty_table_inventory(db: Any) -> dict:
     }
 
 
-def _health_table_inventory(db: Any, previous: dict | None = None) -> dict:
+def _health_table_inventory(reader, previous: dict | None = None) -> dict:
     """Read one bounded native metadata projection; never enumerate or count table contents."""
-    result = previous if previous is not None else _empty_table_inventory(db)
-    settings = getattr(db, "_kusto", None)
-    if settings is None:
-        return result
+    result = previous if previous is not None else _empty_table_inventory(reader)
     attempted = result["attempted_at"]
     if attempted is not None and time.time() - attempted < TABLE_INVENTORY_TTL_S:
         return result
-    from azure.kusto.data import ClientRequestProperties
-
-    from ..kusto.connection import KustoClientFactory, Result
-
-    client, _ = KustoClientFactory.health_objects(settings)
-    if client is None:
+    metadata = reader_feature(reader, "health_metadata")
+    if metadata is None:
         if result["status"] == "cached":
             return {**result, "status": "stale", "last_error": "No initialized Kusto client available"}
         return result
-    props = ClientRequestProperties()
-    props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=5))
     attempted = time.time()
     try:
-        details = Result.from_response(client.execute_mgmt(settings.database, _TABLE_DETAILS, props))
-        if "TableName" not in details.names:
-            raise ValueError("TableName missing from ADX table metadata")
-        rows = details.dicts()
+        rows = metadata.table_inventory(TABLE_INVENTORY_LIMIT)
         tables = []
         for row in rows[:TABLE_INVENTORY_LIMIT]:
             if not row.get("TableName"):
@@ -6639,26 +5922,16 @@ def _health_table_inventory(db: Any, previous: dict | None = None) -> dict:
                 "attempted_at": attempted, "last_error": _one_line(str(exc), 300) or "Table metadata read failed"}
 
 
-def _health_kusto_capacity(db: Any, previous: dict | None = None) -> dict | None:
-    settings = getattr(db, "_kusto", None)
-    if settings is None:
-        return None
+def _health_kusto_capacity(reader, previous: dict | None = None) -> dict | None:
     result = dict(previous or {})
     if time.time() - result.get("attempted_at", 0) < DB_STATS_TTL_S:
         return result
-    from azure.kusto.data import ClientRequestProperties
-
-    from ..kusto.connection import KustoClientFactory, Result
-
-    client, _ = KustoClientFactory.health_objects(settings)
-    if client is None:
+    metadata = reader_feature(reader, "health_metadata")
+    if metadata is None:
         return result or None
-    props = ClientRequestProperties()
-    props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=5))
     result["attempted_at"] = time.time()
     try:
-        response = client.execute_mgmt(settings.database, ".show capacity ingestions", props)
-        row = next((r for r in Result.from_response(response).dicts() if str(r.get("Resource")).lower() == "ingestions"), {})
+        row = metadata.ingestion_capacity()
         if row.get("Total") is None:
             raise ValueError("Ingestion capacity was not reported by the cluster")
         result.update(
@@ -6670,31 +5943,19 @@ def _health_kusto_capacity(db: Any, previous: dict | None = None) -> dict | None
     return result
 
 
-def _health_kusto_policies(db: Any, previous: dict | None = None) -> dict | None:
+def _health_kusto_policies(reader, previous: dict | None = None) -> dict | None:
     """Read database policies only on the existing background health refresh."""
-    settings = getattr(db, "_kusto", None)
-    if settings is None:
-        return None
     result = dict(previous or {})
     if time.time() - result.get("attempted_at", 0) < 300:
         return result
-    from ..kusto.connection import KustoClientFactory, Result
-    from ..kusto.schema import quote
-
-    client, _ = KustoClientFactory.health_objects(settings)
-    if client is None:
+    metadata = reader_feature(reader, "health_metadata")
+    if metadata is None:
         return result or {"status": "pending", "batching": None, "streaming": None}
-    from azure.kusto.data import ClientRequestProperties
 
-    props = ClientRequestProperties()
-    props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=5))
     result.update(attempted_at=time.time(), last_error=None, status="ok")
-    for key, policy in (("batching", "ingestionbatching"), ("streaming", "streamingingestion")):
+    for key in ("batching", "streaming"):
         try:
-            response = client.execute_mgmt(settings.database, f".show database {quote(settings.database)} policy {policy}", props)
-            rows = Result.from_response(response).dicts()
-            raw = rows[0].get("Policy") if rows else None
-            result[key] = json.loads(raw) if isinstance(raw, str) else raw
+            result[key] = metadata.database_policy(key)
         except Exception as exc:  # noqa: BLE001 - policy permissions do not prevent client health
             result.setdefault(key, None)
             result.update(last_error=mask_secrets(str(exc)), status="error")
@@ -6974,11 +6235,13 @@ def _monitor_section(snapshot: Any, selected: set[str] | None) -> dict:
     return {"collectors": collectors, "roots": roots, "per_tool": per_tool}
 
 
-def _db_stats_sample(db: Any) -> dict:
+def _db_stats_sample(db: Any, reader) -> dict:
     """Keep the original scan interval with the counts, including after a failed refresh."""
-    if db is None:
+    from .projections.health import logical_stats
+
+    if reader is None:
         return {}
-    key = _health_store_key(db)
+    key = reader
     with _health_cache_lock:
         cached = _db_stats_memo.get(key)
         if cached and time.monotonic() - cached[0] < _volume_interval(db):
@@ -6988,7 +6251,7 @@ def _db_stats_sample(db: Any) -> dict:
         _db_stats_inflight.add(key)
     started = time.time()
     try:
-        stats = db.stats()
+        stats = logical_stats(reader)
         if not any(k.endswith("_count") and isinstance(v, int) for k, v in stats.items()):
             raise ValueError("Store statistics did not return row counts")
     except Exception:  # noqa: BLE001 - a busy or damaged store still answers the rest
@@ -7068,16 +6331,18 @@ def _sink_section(store: Any) -> dict | None:
     }
 
 
-def _quality_rows(db: Any) -> list[dict]:
-    if db is None:
+def _quality_rows(reader) -> list[dict]:
+    from .projections.history import _json_object, local_scope
+
+    if reader is None:
         return []
     try:
-        rows = db.query_data_quality(limit=MACHINE_QUALITY_ROWS)
+        rows = reader.read("health.quality", {**local_scope(), "limit": MACHINE_QUALITY_ROWS}).rows
     except Exception:  # noqa: BLE001 - an old store without the table still answers the rest
         return []
     out = []
     for r in rows:
-        detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
+        detail = _json_object(r.get("detail"))
         out.append(
             {
                 "ts": r.get("updated_at"),
@@ -7110,6 +6375,8 @@ def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
             status = "off"
         elif not h.get("source_exists"):
             status = "no source"
+        elif h.get("unavailable"):
+            status, last_ok = "unavailable", None
         elif h.get("last_error"):
             status = "failed"
         elif (
@@ -7134,7 +6401,7 @@ def _ingester_rows(handles: Any, quality: list[dict]) -> list[dict]:
                 "status": status,
                 "last_ok": last_ok,
                 "last_poll": polled,
-                "error": mask_secrets(str(h.get("last_error") or (q or {}).get("error") or (q or {}).get("text") or "")) if failing else None,
+                "error": mask_secrets(str(h.get("unavailable") or h.get("last_error") or (q or {}).get("error") or (q or {}).get("text") or "")) if failing else None,
                 "rows": h.get("last_poll_inserted") if last_ok else None,
                 "rows_total": h.get("rows_ingested_total"),
                 "source": _display_folder(Path(h["source_path"])) if h.get("source_path") else None,
@@ -7188,17 +6455,17 @@ HOOKS_TTL_S = 15.0
 _HOOKS_MEMO: dict[tuple, tuple[float, dict]] = {}
 
 
-def _hooks_by_tool(db: Any, now: float) -> dict[str, dict]:
+def _hooks_by_tool(reader, now: float) -> dict[str, dict]:
     """Hook events each tool sent in the last 24 hours: ``{tool: {count, last_fire_ts}}``. Kept HOOKS_TTL_S."""
-    from .hooks_status import _hook_event_counts
+    from .hooks_status import _activity, _hook_event_counts
 
-    key = (id(db), str(getattr(db, "_path", "")))
+    key = reader
     hit = _HOOKS_MEMO.get(key)
     if hit is not None and 0 <= now - hit[0] < HOOKS_TTL_S:
         return hit[1]
     try:
-        result = _hook_event_counts(db, now - 86400)["by_tool"]
-    except (sqlite3.Error, AttributeError):
+        result = _hook_event_counts(_activity(reader, now - 86400, counts_only=True))["by_tool"]
+    except StoreError:
         return {}
     _HOOKS_MEMO.clear()
     _HOOKS_MEMO[key] = (now, result)
@@ -7233,10 +6500,11 @@ def _collection_health(
     snapshot = getattr(store, "snapshot", None)
     selected = set(stored_ids_for(tools)) if tools is not None else None
     usage = _self_usage()
-    sample = cached.get("volume", {}) if cached is not None else _db_stats_sample(db)
+    reader = HistoryScope.local(store).reader
+    sample = cached.get("volume", {}) if cached is not None else _db_stats_sample(db, reader)
     stats = sample.get("stats", {})
     counts = {k[: -len("_count")]: v for k, v in stats.items() if k.endswith("_count") and isinstance(v, int)}
-    quality = cached.get("quality", []) if cached is not None else _quality_rows(db)
+    quality = cached.get("quality", []) if cached is not None else _quality_rows(reader)
     try:
         otel_status = otel.status() if otel is not None else None
     except Exception:  # noqa: BLE001 - the receiver is optional
@@ -7263,7 +6531,7 @@ def _collection_health(
             "sink": _sink_section(store),
             "otel_receiver": otel_status,
             "otel_setup": _otel_setup(port),
-            "hooks": cached.get("hooks", {}) if cached is not None else _hooks_by_tool(db, now),
+            "hooks": cached.get("hooks", {}) if cached is not None else _hooks_by_tool(reader, now),
             "ingesters": _ingester_rows(ingesters, quality),
             "data_quality": quality,
             "freshness": _freshness(snapshot, selected),
@@ -7276,7 +6544,7 @@ def _collection_health(
     }
     if include_resources:
         payload["resources"] = _health_resources(snapshot, usage, cached.get("cluster_resources") if cached else None)
-        settings = getattr(db, "_kusto", None)
+        settings = reader_feature(reader, "connection_info")
         if settings is not None:
             payload["resources"]["host"]["node_id"] = settings.node_id
     return payload
@@ -7295,7 +6563,7 @@ def compute_machine(
     """Everything ``GET /api/board/machine`` returns, with the original tool filter."""
     now = time.time() if now is None else now
     # Machine and Health can be open together. Neither should start or await its own ADX scan.
-    cached = _cached_health_data(db, now) if getattr(db, "_kusto", None) is not None else None
+    cached = _cached_health_data(db, now, HistoryScope.local(store).reader)
     payload = _collection_health(db, store, tools, otel, ingesters, stream_clients, now, port, cached=cached)
     snapshot = getattr(store, "snapshot", None)
     selected = set(stored_ids_for(tools)) if tools is not None else None
@@ -7323,16 +6591,18 @@ def compute_health(
 ) -> dict:
     """Lightweight live collection health; no store query runs on this thread."""
     from urllib.parse import urlsplit, urlunsplit
+    from .projections.health import store_health
 
     now = time.time() if now is None else now
-    cached = _cached_health_data(db, now)
+    reader = HistoryScope.local(store).reader
+    cached = _cached_health_data(db, now, reader)
     payload = _collection_health(
         db, store, otel=otel, ingesters=ingesters, stream_clients=stream_clients,
         now=now, port=port, cached=cached, include_resources=True,
     )
-    settings = getattr(db, "_kusto", None)
+    settings = reader_feature(reader, "connection_info")
     path = str(getattr(db, "_path", ":memory:"))
-    kind = "kusto" if settings is not None else "memory" if path == ":memory:" else "sqlite"
+    kind = "kusto" if settings is not None else "memory"
     reads = http_reads.snapshot() if http_reads is not None else None
     writes = http_writes.snapshot() if http_writes is not None else None
     cluster_url = database = ingestion_mode = capacity = commands = pending = None
@@ -7342,8 +6612,6 @@ def compute_health(
     ingestion_details = None
     scope = "daemon HTTP GET/POST requests, including dashboard assets; not SQL operations"
     if settings is not None:
-        from ..kusto.connection import KustoClientFactory
-
         parsed = urlsplit(settings.cluster)
         host = parsed.hostname or ""
         if ":" in host:
@@ -7351,9 +6619,10 @@ def compute_health(
         netloc = host + (f":{parsed.port}" if parsed.port else "")
         cluster_url = urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/"), "", ""))
         database, ingestion_mode = settings.database, settings.ingestion
-        client, ingester = KustoClientFactory.health_objects(settings)
-        reads = client.reads.snapshot() if hasattr(client, "reads") else None
-        commands = client.commands.snapshot() if hasattr(client, "commands") else None
+        transport = reader_feature(reader, "transport_diagnostics", store_for(store).writer) or {}
+        ingester = transport.get("ingester")
+        reads = transport["reads"].snapshot() if transport.get("reads") is not None else None
+        commands = transport["commands"].snapshot() if transport.get("commands") is not None else None
         operations = getattr(ingester, "operations", None)
         writes = operations.snapshot() if operations is not None else None
         children = getattr(ingester, "ingesters", {})
@@ -7370,21 +6639,11 @@ def compute_health(
                     group_id = traffic_group(submission.table)
                     pending_groups[group_id] = pending_groups.get(group_id, 0) + len(submission.markers)
                 pending_history_groups = dict(pending_groups)
-        from ..kusto.ingest import INLINE_MAX_BYTES, QUEUED_MAX_BYTES, QUEUED_PENDING_ROWS, STREAMING_MAX_BYTES
-        from ..kusto.otel_sink import LINGER_S, MAX_PENDING_BYTES
-
         ingestion_details = {
             "mode": settings.ingestion,
             "default_mode": settings.default_ingestion,
             "table_overrides": dict(settings.table_ingestion),
-            "client_limits": {
-                "inline_max_bytes": INLINE_MAX_BYTES,
-                "streaming_max_bytes": STREAMING_MAX_BYTES,
-                "queued_max_bytes": QUEUED_MAX_BYTES,
-                "queued_pending_rows": QUEUED_PENDING_ROWS,
-                "otel_linger_s": LINGER_S,
-                "otel_max_pending_bytes": MAX_PENDING_BYTES,
-            },
+            "client_limits": transport.get("client_limits", {}),
             "batches": {key: (writes or {}).get(key) for key in ("successful_requests", "avg_rows", "avg_bytes", "last_rows", "last_bytes")},
             "batch_scope": "acknowledged client upload batches, not DM merged ingestion batches",
         }
@@ -7398,7 +6657,7 @@ def compute_health(
     failures = [v for v in operation_snapshots if (v.get("last_error_at") or 0) > (v.get("last_success_at") or 0)]
     failure = max(failures, key=lambda v: v["last_error_at"], default={})
     state = "degraded" if degraded or failures else "ok" if success else "unknown"
-    sink = getattr(db, "otel_sink", None)
+    sink = store_for(store).otlp
     try:
         otel_sink = sink.stats() if sink is not None else None
     except Exception:  # noqa: BLE001 - optional sink diagnostics cannot break health
@@ -7425,6 +6684,7 @@ def compute_health(
         if mode_stats.get("last_error"):
             mode_stats["last_error"] = mask_secrets(mode_stats["last_error"])
     payload["store"] = {
+        **store_health(store),
         "kind": kind,
         "destination": f"{cluster_url}/{database}" if cluster_url else path,
         "cluster_url": cluster_url,
@@ -7440,7 +6700,7 @@ def compute_health(
         "measurement_scope": scope,
         "ingestion_capacity": capacity,
         "capacity_scope": "cluster-wide ingestion slots at the last successful .show capacity ingestions read",
-        "table_inventory": cached.get("table_inventory") or _empty_table_inventory(db),
+        "table_inventory": cached.get("table_inventory") or _empty_table_inventory(reader),
         "queued_history_rows_unconfirmed": pending,
         "otel_sink": otel_sink,
         "volume": {
@@ -7523,17 +6783,8 @@ def _action_baseline_update(_db: Any, root: Any, args: dict, _port: int | None) 
     return {"ok": True, "baseline_updated": bool(report.get("baseline_updated", True))}
 
 
-def _action_db_compact(db: Any, _root: Any, _args: dict, _port: int | None) -> dict:
-    if db is None:
-        return {"ok": False, "error": "History is not available"}
-    removed = db.compact()
-    if db.in_memory:
-        return {"ok": True, "removed": removed}
-    room = db.vacuum_room_needed()
-    if shutil.disk_usage(Path(db._path).parent).free < room:
-        return {"ok": False, "error": f"Old records are removed, but the file was not made smaller: this needs {room // 1_000_000} MB of free disk."}
-    db.vacuum()
-    return {"ok": True, "removed": removed}
+def _action_db_compact(_db: Any, _root: Any, _args: dict, _port: int | None) -> dict:
+    return {"ok": False, "error": "Kusto retention policies replace local compaction."}
 
 
 def _action_ctx_deploy(_db: Any, root: Any, _args: dict, _port: int | None) -> dict:
@@ -7563,14 +6814,16 @@ def run_action(db: Any, root: Any, data: Any, port: int | None = None) -> tuple[
         result = _ACTIONS[action](db, root, args, port)
     except subprocess.TimeoutExpired:
         return 504, {"action": action, "ok": False, "error": "The command did not finish in time"}
-    if db is not None:
+    if facts := getattr(db, "session_facts", None):
         try:
-            db.append_event(
-                EventRow(ts=time.time(), tool="aictl", kind=f"action:{action.replace('-', '_')}", detail={"ok": result.get("ok")})
+            facts.events(
+                [EventRow(ts=time.time(), tool="aictl", kind=f"action:{action.replace('-', '_')}",
+                          detail={"ok": result.get("ok")})], source="dashboard"
             )
-        except Exception:  # noqa: BLE001 - audit logging must never block the action itself
+        except Exception:  # noqa: BLE001 - audit logging must not block the action
             logger.debug("Could not record board action %s", action, exc_info=True)
-    return 200 if result.get("ok") else 500, {"action": action, **result}
+    status = 200 if result.get("ok") else 400 if action == "db-compact" else 500
+    return status, {"action": action, **result}
 
 
 # ─── /api/board/context ───────────────────────────────────────────
@@ -7962,32 +7215,29 @@ def _context_workflows(tool_list: list[Any]) -> list[dict]:
     return sorted(out.values(), key=lambda w: (w["type"], w["name"].lower(), w["path"]))
 
 
-def _context_daily(conn: sqlite3.Connection, tools: tuple[str, ...] | None, now: float, node: str | None = None) -> dict:
-    """Model calls in the history for the last CONTEXT_DAYS local days, by day and model."""
+
+
+def _read_context_daily(history: HistoryScope, tools: tuple[str, ...] | None, now: float) -> list[dict]:
+    days, _ = _context_days(now)
+    dates = [datetime.strptime(day, "%Y-%m-%d") for day in days]
+    starts = [day.timestamp() for day in dates] + [(dates[-1] + timedelta(days=1)).timestamp()]
+    return history.read("context.daily", since=starts[0], until=starts[-1], calendar_days=days,
+                        calendar_starts=starts, restrict_tools=tools is not None,
+                        requested_tools=list(stored_ids_for(tools)) if tools is not None else [])
+
+
+def _daily_from_rows(rows: list[dict], now: float) -> dict:
     days, first = _context_days(now)
-    where = "ts >= ?"
-    params: list[Any] = [first]
-    if node is not None:
-        where += " AND node_id = ?"
-        params.append(node)
-    if tools is not None:
-        ids = stored_ids_for(tools)
-        if not ids:
-            return {"days": days, "since": first, "models": [], "rows": []}
-        where += " AND tool IN (" + ",".join("?" for _ in ids) + ")"
-        params.extend(ids)
-    sql = (
-        "SELECT date(ts, 'unixepoch', 'localtime'), model, COUNT(*),"
-        " SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens),"
-        " SUM(CASE WHEN cost_usd > 0 THEN cost_usd ELSE 0 END),"
-        " SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE input_tokens END), SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE output_tokens END),"
-        " SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE cache_read_tokens END), SUM(CASE WHEN cost_usd > 0 THEN 0 ELSE cache_creation_tokens END),"
-        " MAX(ts)"
-        f" FROM requests WHERE {where} GROUP BY 1, 2"
-    )
+    fields = ("model", "calls", "input", "output", "cache_read", "cache_write",
+              "stored", "ri", "ro", "rcr", "rcw", "last_ts")
+    # Kusto can parse a date in the dynamic calendar as a datetime.
+    return _project_context_daily(days, first, [(str(r["day"])[:10], *(r[k] for k in fields)) for r in rows])
+
+
+def _project_context_daily(days, first, values):
     rows = []
     models: dict[str, dict] = {}
-    for day, model, n, i, o, cr, cw, stored, ri, ro, rcr, rcw, last in conn.execute(sql, params).fetchall():
+    for day, model, n, i, o, cr, cw, stored, ri, ro, rcr, rcw, last in values:
         if day not in days:
             continue
         name = model or None
@@ -8007,44 +7257,29 @@ def _context_daily(conn: sqlite3.Connection, tools: tuple[str, ...] | None, now:
     return {"days": days, "since": first, "models": sorted(models.values(), key=lambda m: -m["tokens"]), "rows": rows}
 
 
-def _context_growth(conn: sqlite3.Connection, now: float) -> list[dict]:
-    """Agent memory size over the last days, at most CONTEXT_GROWTH_POINTS points, each the last value of its time."""
-    since = now - CONTEXT_GROWTH_S
-    first = conn.execute("SELECT MIN(ts) FROM system_snapshots WHERE ts >= ?", (since,)).fetchone()[0]
-    if first is None:
-        return []
-    step = max(60.0, (now - first) / CONTEXT_GROWTH_POINTS)
-    rows = conn.execute(
-        "SELECT MAX(ts), mem_tokens, memory_entries FROM system_snapshots WHERE ts >= ? GROUP BY CAST((ts - ?) / ? AS INTEGER) ORDER BY 1",
-        (first, first, step),
-    ).fetchall()
-    return [{"ts": ts, "mem_tokens": _ctx_int(mt), "memory_entries": _ctx_int(me)} for ts, mt, me in rows]
 
 
-def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float) -> dict:
-    from ..kusto.observations import UnresolvedObservationsError
+def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float, *, history=None) -> dict:
+    from ..stores import UnresolvedObservationsError
 
-    empty = {"daily": _context_daily_empty(now), "growth": []}
-    if db is None:
-        return empty
-    key = (id(db), tools)
+    history = history or HistoryScope.local(db)
+    key = (history.reader, tools)
     with _context_lock:
         hit = _context_db_memo.get(key)
     if hit and 0 <= now - hit[0] < CONTEXT_DB_TTL_S:
         return hit[1]
     try:
-        with read_scope(db, Filters(since=_context_days(now)[1], until=now)):
-            conn = db._conn()
-            try:
-                daily = _context_daily(conn, tools, now)
-            except UnresolvedObservationsError as exc:
-                daily = {**_context_daily_empty(now), "available": False, **exc.to_dict()}
-            parts = {"daily": daily, "growth": _context_growth(conn, now)}
-    except sqlite3.Error:
-        if getattr(db, "_kusto", None) is not None:
-            raise
-        logger.debug("Could not read the context history", exc_info=True)
-        return empty
+        daily = _daily_from_rows(_read_context_daily(history, tools, now), now)
+    except UnresolvedObservationsError as exc:
+        daily = {**_context_daily_empty(now), "available": False, **exc.to_dict()}
+    except StoreConfigurationError as exc:
+        return {"daily": {**_context_daily_empty(now), "available": False, "reason": str(exc).lower()}, "growth": []}
+    growth = history.read("context.growth", since=now - CONTEXT_GROWTH_S, until=now,
+                          growth_points=CONTEXT_GROWTH_POINTS)
+    parts = {"daily": daily, "growth": [
+        {"ts": r["ts"], "mem_tokens": _ctx_int(r["mem_tokens"]), "memory_entries": _ctx_int(r["memory_entries"])}
+        for r in growth
+    ]}
     with _context_lock:
         _context_db_memo[key] = (now, parts)
         while len(_context_db_memo) > CONTEXT_MEMO_KEYS:
@@ -8068,12 +7303,14 @@ def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, n
     """Everything ``GET /api/board/context`` returns. Token counts are estimates at four characters per token."""
     now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
-    queryable = getattr(db, "_kusto", None) is not None
-    if queryable:
-        from .queryable_context import context_snapshot
+    history = HistoryScope.local(db)
+    from .queryable_context import context_snapshot
 
-        snapshot = context_snapshot(db, snapshot)
-    return _context_from_snapshot(snapshot, tools, now, queryable, _context_db_parts(db, tools, now))
+    try:
+        snapshot = context_snapshot(db, snapshot, history=history)
+    except StoreConfigurationError:
+        return _context_from_snapshot(snapshot, tools, now, False, _context_db_parts(db, tools, now, history=history))
+    return _context_from_snapshot(snapshot, tools, now, True, _context_db_parts(db, tools, now, history=history))
 
 
 def _context_from_snapshot(snapshot: Any, tools: tuple[str, ...] | None, now: float, queryable: bool, db_parts: dict,
@@ -8161,9 +7398,7 @@ def context_bytes(db: Any, store: Any, query: str, now: float | None = None) -> 
     """The answer for ``/api/board/context``, kept for each snapshot version. ``tool`` is as on ``/api/board``."""
     qs = parse_qs(query, keep_blank_values=True)
     tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
-    version = getattr(store, "version", None)
-    if getattr(db, "_kusto", None) is not None:
-        version = ("kusto", int((time.time() if now is None else now) / MEMO_TTL_S))
+    version = (getattr(store, "version", None), int((time.time() if now is None else now) / MEMO_TTL_S))
     key = (id(store), version, tools)
     if version is not None:
         with _context_lock:

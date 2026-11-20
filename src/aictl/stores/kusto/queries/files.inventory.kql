@@ -1,0 +1,17 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
+    requested_tool:string='', requested_path:string='', requested_paths:dynamic=dynamic([]),
+    inventory_mode:string='all', row_limit:long);
+files
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'],node_id,path
+| where not(column_ifexists('_deleted',false))
+| where (isnull(last_changed) or last_changed between (since .. until))
+| where isempty(requested_tool) or tool in (requested_tool,'')
+| where array_length(requested_paths)==0 or path in (requested_paths)
+| where inventory_mode != 'memory' or category contains 'memory' or category contains 'instruction'
+| where inventory_mode != 'session' or scope in ('global','user')
+    or (isnotempty(requested_path) and (replace_string(path,@'\','/') =~ requested_path
+       or replace_string(path,@'\','/') startswith strcat(requested_path,'/')))
+| order by last_changed desc,node_id asc,path asc
+| take row_limit
+| project node_id,path,tool,category,scope,size_bytes,tokens,lines,mtime,meta,last_changed

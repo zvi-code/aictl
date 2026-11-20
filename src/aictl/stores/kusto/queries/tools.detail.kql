@@ -1,0 +1,47 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real = real(null), until:real = real(null),
+    requested_session:string = '', requested_agent:string = '', requested_tool_name:string = '',
+    query_mode:string = 'calls', restrict_sessions:bool = false, session_keys:dynamic = dynamic([]),
+    real_calls:bool = true, inclusive_end:bool = true, requested_skill:string = '',
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long
+);
+let calls = materialize(
+    tool_invocations
+    | where all_nodes or node_id == requested_node
+    | where isempty(requested_session) or session_id == requested_session
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where isempty(requested_agent) or agent_id == requested_agent
+    | where isempty(requested_tool_name) or tool_name == requested_tool_name
+    | where (isnull(since) or ts >= since) and (isnull(until) or iff(inclusive_end, ts <= until, ts < until))
+    | where not(restrict_sessions) or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | where not(real_calls) or not(tool_name startswith_cs 'permission:')
+    | where query_mode != 'errors' or is_error == 1
+    | where not(restrict_tools) or tool in (requested_tools)
+    | where query_mode != 'skill_reads' or tolower(tool_name) in ('read','view','read_file','readfile','view_file','open_file')
+);
+let retained = union isfuzzy=true
+    (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, result_summary:string, target:string, _deleted:bool)[]),
+    (tool_invocations_text | project ['project'], node_id, dedup_key, _v, result_summary, target,
+                                    _deleted=column_ifexists('_deleted', false))
+    | where all_nodes or node_id == requested_node
+    | where dedup_key in (calls | project dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
+    | where not(coalesce(_deleted, false))
+    | project ['project'], node_id, fact_key=dedup_key, retained_summary=result_summary, retained_target=target;
+union
+    (calls | summarize total=count()
+        | where query_mode == 'calls'
+        | extend row_type='count'),
+    (calls | join kind=leftouter retained on ['project'], node_id, fact_key
+        | extend target=coalesce(retained_target, column_ifexists('target', ''))
+        | where query_mode != 'tests' or target contains 'test' or target contains 'jest' or target contains 'tox'
+        | where query_mode != 'skill_reads' or replace_string(target, @'\', '/') endswith strcat('/', requested_skill, '/SKILL.md')
+        | project row_type='item', node_id, session_id, agent_id, ts, tool, tool_name, project_path, duration_ms, is_error, confirm, exit_code,
+                  input_bytes=column_ifexists('input_bytes', long(null)), output_bytes=column_ifexists('output_bytes', long(null)),
+                  target,
+                  result_summary=coalesce(retained_summary, column_ifexists('result_summary', '')), id, fact_key)
+| order by row_type asc, ts desc, node_id asc, id asc, fact_key asc
+| take row_limit
+| project-away id, fact_key

@@ -2,6 +2,8 @@
 
 Phase 0, item 7. Source references are for `2cf86cf` (before the parallel layout-table deletion). Line numbers can move; use the method names to find the statements. This inventory excludes `ui_*` tables. It includes direct writes that bypass `HistoryDB`, SQL emitted from templates, and SQLite writes used only to build read projections. The six statement tables contain 80 entries: 16 append, 10 full-row upsert, 18 read-modify-write, 7 delete, 10 age cleanup and budget, and 19 schema and infrastructure. An entry can cover several statement sites or tables that have the same replacement.
 
+Phase S z2 switched the orchestrator, sample sink, transcript and message ingesters, artifact indexer, data-quality status, and catalog to typed plugin writes. Ingestion retries run in the writer, and external source checkpoints use local JSON state. The SQL statements below are historical.
+
 The replacement rules are in `C:\Users\zvischneider\.copilot\session-state\8d74c785-f5f7-4d7b-a85f-09a3e49018be\files\ui-rewrite-plan.md:229–250` (K1–K11, B1–B8), `:252–281` (storage gaps and CLI), and `:426–455` (Phase 0 and Phase S). For all writers: make keys before handoff (K6), use the per-table retry and drop limits (K4), do not ingest with capture off (K5), and carry the project key instead of opening a separate file (K8). Here **full version** means append the complete row with a new version, then select the current version with `arg_max`; filter tombstones after selecting the current version (K1/K9). Here **local state** means bounded live state and, for restart-critical cursors or identity maps, an atomically replaced JSON file in the aictl state directory (K3). It is not a spool for failed ingestion.
 
 **The plan's command description is historical.** The `Mutation` docstring still describes `.set-or-append` (`C:\OSS\aictl\src\aictl\kusto\statements.py:50–56`). At this revision, `KustoConnection._mutate` first queries Kusto for the affected rows, then buffers the resulting versions for ordinary ingestion (`C:\OSS\aictl\src\aictl\kusto\connection.py:1189–1229`); `_mutate_many` can share a materialized read across a batch (`:1110–1136`). Both still violate K9. Also, the runtime can send unresolved fact observations without SQL (`C:\OSS\aictl\src\aictl\storage.py:3393–3441,5033–5039,5934–5951`; `C:\OSS\aictl\src\aictl\kusto\observations.py:15–49`). Audit and retire the SQL/history layout branches too; a clean new-store path alone does not close K9.
@@ -233,6 +235,24 @@ Start with the native writer and schema/test harness per Phase S items 1–2. Th
 7. **Session evidence (E and H memory captures).** Move artifact manifests, Git links and memory snapshots. Differential manifests remove the delete-and-reinsert cycle.
 8. **Store maintenance and file routing (A, P).** Native retention is installed at setup; retire the residual SQL cleanup, DB-file maintenance, routing/index paths and compatibility surface when the last callers move. Apply the same audited K9 requirement to the hot paths before deleting the old stack.
 
+### W1 checks
+
+- Hooks, transcript tool calls, and derived OTel tool calls share the daemon's call state. The writer sends complete versions, text, size evidence, and transcript coverage. `test/test_w1_writes.py` rejects every query or command during tool-call handoff and flush.
+- Discovery writes changes to the inventory and stores its manifest in local JSON. The tests cover the read budget, removal, restart, and capture policy. Sample tests check the 300-second refresh and flood limit. The SQLite single-transaction test no longer applies.
+- `test/parity/test_w1_legacy_reads.py` checks the old SQL adapter against the new rows on the opt-in test database. Remove the legacy joins and this test when the read chain no longer needs them.
+- On `zaictl/aictl_perf_test`, the native schema check sent two metadata reads and no schema or policy changes. It took 4.040 s on the first run, including client authentication, and 0.562 s and 0.550 s on repeat runs. These times exclude the legacy adapter's setup.
+- R5: `HistoryDB` and `ProjectStores` no longer have production callers for `append_tool_invocation`, `update_tool_invocation_duration`, or `fill_tool_sizes` outside their own delegation. `HistoryDB.append_metrics`, `append_tool_metrics`, `append_telemetry`, `append_telemetry_batch`, and `sync_files_from_discovery` also have no production callers. `clear_stale_pending_confirms` remains a fallback for ingesters without the native call collector. The daemon does not use it.
+- W2 must move raw OTLP, late links, and the remaining transcript and session facts. Call pairing uses bounded memory and cannot recover a hook start lost at restart; the legacy read expires stale confirmations by age. W3 can remove the compatibility layer and the old maintenance and routing paths after their last callers move.
+
+### W2 handoff
+
+- **Group 3 (O):** The OTLP handlers hand raw logs, spans, span events and metrics to the plugin's bounded writer. HTTP acknowledgement is for the local handoff, not remote visibility. Raw and derived metrics retain the change, flood and 300-second refresh gates. Export and event keys identify retries. Late trace and tool attribution use link facts; the daemon no longer reads and patches stored events. The old direct `OtelSink` remains for compatibility but does not run in the daemon.
+- **Group 4 (T, H, D):** `SessionFacts` writes transcript requests, usage, agents, steps and links, prompts, skills, loaded files, context/removals, file edits, hook calls, and session lifecycle and process links. A bounded local lifecycle snapshot and transcript/backfill checkpoints replace store lookups. OTel placeholders cannot replace authoritative lifecycle fields. An interactive Stop does not end the session; a later terminal fact can.
+- **Read chain:** Join trace links and short-retention event, hook and step text on their keys; do not infer a link for older events that have no trace ID. Apply transcript request coverage and tool attribution at read time. For context use the newest version, including removals. For loaded files use the earliest observation and the newest nonempty metadata. For a process link use the first observed join. The `compat_*.kql` queries and `test/parity/test_w2_legacy_reads.py` cover the interim SQL surface; remove them after those reads move.
+- **Checks:** `test/test_w2_writes.py` uses a recorded client that fails on any query or management command. It checks lifecycle restart, transcript replay, metric limits, and stable retry keys through writer flush. The targeted sweep passed 290 tests; nine read-chain tests failed on API calls or agent detail. Those nine passed at HEAD. The legacy SQL parity test passed on `zaictl/aictl_perf_test`.
+- **R5:** Outside legacy implementations and their delegates, production no longer calls `append_request`, `append_hook_call`, `set_event_sessions`, `tie_otel_traces`, `batch_link_sessions`, `record_file_write`, `update_session_stats`, `update_session_end`, `upsert_agents`, `link_session_process`, or `link_session_processes`. The daemon no longer uses the legacy transcript `write_call_facts`, `upsert_session_usage`, or `set_sessions_tool` paths. Keep `append_event(s)` and `upsert_session(s)` until the W3 callers move.
+- **W3:** Move catalog and quality counters, message cursors and attribution, Git links and memory/artifact manifests, and maintenance and file routing. Apply the admin trim watermark to W2 text. Remove the dormant sink, legacy SQL mutation/routing code and compatibility surface only after their last callers move.
+
 ## Minute-by-minute counts
 
 These are the individual UTC bins for the management query above (client request ID `Kusto.Cli;b489ff5d-6286-4fc9-8f0e-fc8bb0c43ffc`). `local_text` counts queries that mention `desktop-1c0ea28`, not queries known to originate on that node. `inline` counts `DataIngestPush`, not SDK ingest calls.
@@ -300,3 +320,88 @@ minute_utc,queries,local_text,inline,set_or_append
 00:09,240,228,29,0
 00:10,93,85,18,0
 ```
+
+### W3 handoff
+
+- **Group 5 (Q):** The catalog combines YAML definitions and live provenance before handoff. A local snapshot suppresses unchanged versions across polls and restarts. Removed keys get tombstones. Component health uses one local counter owner and writes complete versions with `count` and `last_ok_at`. No materialized view was added or measured.
+- **Group 6 (M):** The daemon uses local checkpoints for Copilot, Cursor, and VS Code. It uses local session facts for attribution, including Cursor project and time matching. A source without a known session gets a placeholder. Copilot and Cursor open only their external SQLite inputs and import SQLite at poll time. VS Code keeps message keys through rewrites and writes tombstones for removed messages. The checkpoint stores offsets and hashes, not message text.
+- **Group 7 (E, H):** The artifact index compares local manifests and writes changed file rows, changed folder summaries, and tombstones. Incomplete scans do not remove records. Git links use session and commit identity. Memory snapshots put file hashes in `memory_snapshots` and permitted content in `memory_snapshots_text`. Keep existing columns and types; this step only adds columns or tables. Read current artifact and VS Code rows before filtering out tombstones. Join memory text on node, project, session, phase, path, and hash.
+- **Group 8 (A, P):** Plugin setup sets retention policies. The daemon no longer runs SQL age cleanup, VACUUM, or project-file routing. `db compact` is removed. `db reset` clears configured aictl tables on explicit request. `db trim-text` advances a node-local watermark and soft-deletes from the selected text tables. The watermark guards W2 session text at handoff and checks queued text again before submission. Older split-text rows without source time use `_v` for the delete predicate. The command does not erase inline fields in legacy rows or raw OTLP signal rows. Already submitted queued extents can arrive after an admin command. The remaining HTTP audit calls reach the native event writer through the compatibility adapter.
+- **R5 — definitions with no daemon write callers:** `HistoryDB.append_event`, `append_events`, `upsert_session`, `upsert_sessions`, `record_data_quality`, `_sync_datapoint_catalog`, `sync_datapoint_catalog`, `update_datapoint_source`, `update_datapoint_sources`, `replace_session_artifacts`, `upsert_session_commits`, `auto_maintain`, `compact`, `compact_estimate`, `trim_text`, `trim_text_estimate`, `vacuum`, `vacuum_room_needed`, and `flush_soon`. The legacy constructor still seeds the catalog for old clients. `ProjectStores` session and artifact SQL delegates, file routing, index, move, maintenance, and flush helpers are deletion candidates when their compatibility callers go. Keep the `ProjectStores.append_event(s)` and `upsert_session_commits` bridges until R5 removes the remaining call sites in the board/API and session detail paths.
+- **Remaining SQLite:** External Copilot and Cursor sources still need SQLite. The legacy message and artifact test paths, transcript legacy fallbacks, direct memory snapshot compatibility code, legacy SQL adapter, and `HistoryDB`/`ProjectStores` still exist for parity and reads. The doctor no longer opens an aictl history file to get the Copilot cursor. The SQLite-free daemon test is still a final cutover check.
+- **Checks:** `test/test_w3_writes.py` fails on every query and management command during collector handoff and writer flush. It checks catalog suppression, counter restart, three message sources, rewrite tombstones, evidence, and trim replay. The 18-file sweep recorded 325 passes and 25 skips, with zero new write failures. One legacy translator corpus test also fails at HEAD. Three read-chain HTTP tests fail with 503: session commits and two API-call cases. The focused changed-test rerun passed 165 tests. W3 legacy parity passed on `zaictl/aictl_perf_test` together with the W1, W2 and R1 parity tests (6 passed). `test\conftest.py` replaces `HOME` and `USERPROFILE`, so set `AZURE_CONFIG_DIR` to the real Azure CLI folder (for example `$env:USERPROFILE\.azure` before pytest starts) for any opt-in run against the cluster. No catalog cost result is available.
+
+## Phase S follow-up fixes
+
+Class (a) is an old test assumption. Class (b) is a behavior or documentation defect.
+
+| Failing check | Class | Cause and fix |
+|---|---|---|
+| Agent team folders (1) | a | SQLite did not receive the rows. Check both request folders and the main session folder in the writer, including the `project` keys. |
+| Agent team request times (2) | a | SQLite did not receive the rows. Check the source timestamp and ingest-time fallback in `requests`. |
+| Agent team session starts (3) | a | SQLite did not receive the rows. Check the agent time, earliest turn time, and ingest-time fallback in `sessions`. |
+| Start and end in one batch (1) | a | The session was not in SQLite. Check both start and end times in the writer. |
+| Agent team and session start scaling (2) | b | Handoff calls grew with the number of sessions, agents, and process links. Batch session versions, agent rows and text, and links. Count writer calls and rows at both input sizes. |
+| Completed and unseen transcript files (1) | a | The test did not pass the new local checkpoint. Reuse that file across ingester instances and check that only unseen transcript data is replayed. |
+| Failed fact handoff, restart and next poll (2) | a | The tests assumed the SQLite path would not raise. The Kusto poll stops at the record boundary and reports the error to the runner without saving a checkpoint. Check that the next poll retries the buffer before reading more input and that a restart replays the uncheckpointed file. |
+| Typed hook payload and wrapped hook text (2) | a | The old fixture timestamp was outside the text-retention window. Post recent calls and check metadata and retained text in `hook_calls` and `hook_calls_text`. |
+| Analytics recompute failure (1) | a | The test looked in SQLite. Check warning, escalation, and recovery through `CollectionStatus` and `data_quality_status`. |
+| Observation functions with colliding node keys (1) | a | Native facts use a logical key with a legacy row-ID fallback. Check that grouping still includes the node and that tombstones are filtered after grouping. |
+| Empty LM session ID (1) | b | R1 removed the empty-ID shortcut. Restore its three keys and skip the event read. The two token subtotals already existed for valid sessions and stay in the HTTP response when usage is present. |
+| Storage schema command list (1) | b | The docs still named the removed compaction command. Describe Kusto retention and the current `db trim-text` options. |
+
+## K3 restart state and B7 external databases
+
+`src/aictl/state_file.py` reads and writes checkpoint JSON under
+`config_dir() / call_key(cluster, ":", database, ":", node)`. Each consumer owns
+one file. The top level is a UTF-8 JSON object, with a 32 MiB limit per file.
+`StateFile.replace` writes and syncs a new file in the same directory, then
+calls `os.replace`. A failed or oversized write keeps the last saved file.
+A missing file starts empty. An invalid, oversized, or non-object file starts
+empty and logs a warning once per path. The files are not an ingestion queue.
+
+| File | Schema and replaced read |
+|---|---|
+| `copilot_messages.json` | `{source, data: {cursor, last_poll_ts}}`. `cursor` maps source table names to accepted row IDs. The ingester no longer reads `maintenance_state`. `ingester_status_for_doctor` checks the same source and reports its checkpoint time instead of opening `copilot_session_messages` in a history file. Poll totals are local to the running daemon. |
+| `cursor_messages.json` | `{source, data: {cursor}}`, with the last accepted message row ID. Cursor matches project and time against the local session facts, restored from `sessions.json`. If there is no match, it uses `cursor:<conversation_id>`. There is no `sessions` lookup in the store. |
+| `vscode_messages.json` | `{source, data: {cursor, manifest}}`. `cursor` maps paths to `[mtime, size, offset, count, session_id, created, anchor]`. The resume offset and request count can precede unfinished requests. The manifest maps message keys to identifying fields and content hashes, not message text. No `maintenance_state` read or write remains. |
+| `transcript_usage.json` | A source-set key maps to `{ts, files}`, where `files` maps paths to `[mtime_ns, completed_byte_offset]`. The ingester replays recent files to rebuild memory state and reads new or changed files. A rejected fact handoff stops the poll at the record boundary and does not save a checkpoint. The next poll retries the buffer. This replaces the transcript `maintenance_state` read from before W2. |
+| `session_artifacts.json` | Maps session IDs to `{folder, files, scanned_at}`. `folder` includes `signature` and the folder summary; `files` maps paths to `[folder_part, size, mtime]`. The scanner seeds signatures from this manifest, not from `session_folders`. A legacy indexer without a manifest starts empty. |
+
+The earlier OTLP runtime backfill is already deleted. Producers send trace
+link facts, and reads resolve the link; writes do not scan `events`. The
+Claude memory hook already publishes an independent snapshot for each phase.
+`memory_snapshot.py` now reads source files only. A diff takes two snapshots
+from its caller; it does not query `memory_snapshots` for a baseline.
+
+| External database reader | When Python has no SQLite module |
+|---|---|
+| `ingesters/copilot_session_store.py`, `ingesters/cursor_conversations.py` | Return from the poll without opening the database. The ingester handle and `data_quality_status` report `unavailable: Python sqlite3 module missing`. |
+| `ingesters/transcript_usage.py` | Skips the Copilot CLI and desktop database inputs. Keeps the file inputs. Uses the same handle and health report as the message ingesters. |
+| `ingesters/_common.py` | Imports `sqlite3` when opening an external file. The caller handles an absent module through its own report. |
+| `context_audit.py`, `effective_config.py` | Use the app-store inventory note and the picker status, respectively. The unused direct `history.db` reader in `context_audit.py` is removed. |
+| `monitoring/tool_telemetry.py` | Puts the reason in the telemetry report and logs a warning for the Cursor state or Copilot app database input. |
+| `observe/collect.py`, `observe/sessions.py` | Skip database rows. `observe` uses the document notes, and session resolution includes the reason when it reports the locations searched. File sources stay available. |
+
+`KustoStoreError` now derives from the existing `StoreError`; no change to
+`stores/base.py` or the Kusto writer was needed. `FactBuffer.flush` catches
+`StoreError` for a rejected handoff and stores it for retry. The transcript
+and message ingesters no longer handle locks from aictl's own store.
+External database locks are still handled at the input boundary.
+`kusto/connection.py` no longer imports SQLite at module import time. SQL
+script parsing, the SQLite row factory bridge, and the closed-connection
+error are legacy adapter code for s-z.
+
+Phase S z1 removed the dashboard's legacy reads and their SQLite error handlers.
+Dashboard routes now handle store errors at the reader boundary. Action audit
+events go through the runtime store writer.
+
+The remaining `sqlite3` references are:
+
+- **External databases:** `context_audit.py`, `ingesters/_common.py`,
+  `ingesters/copilot_session_store.py`, `ingesters/cursor_conversations.py`,
+  `ingesters/transcript_usage.py`, `monitoring/tool_telemetry.py`,
+  `observe/collect.py`, `observe/sessions.py`.
+- **Deleted in z3:** `storage.py`, `project_stores.py`, `storage_migrations/`,
+  `dashboard/board_history.py`, the SQL adapter, compatibility queries, and
+  parity tests. The native Kusto plugin defines the history schema.

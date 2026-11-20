@@ -28,13 +28,7 @@ def test_the_real_package_is_read(monkeypatch):
     assert code_age._newest_change() > 0
 
 
-def test_the_machine_payload_carries_it(tmp_path, monkeypatch):
-    from aictl.storage import HistoryDB
-
+def test_the_machine_payload_carries_it(monkeypatch):
     monkeypatch.setattr(code_age, "code_changed_at", lambda now=None: 123.0)
-    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    try:
-        me = board_api.compute_machine(db, SimpleNamespace(snapshot=None))["pipeline"]["self"]
-    finally:
-        db.close()
+    me = board_api.compute_machine(None, SimpleNamespace(snapshot=None))["pipeline"]["self"]
     assert me["code_changed_at"] == 123.0 and me["started_at"] == code_age.STARTED_AT

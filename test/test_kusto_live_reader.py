@@ -13,14 +13,16 @@ from types import SimpleNamespace
 import pytest
 
 from aictl.kusto import KustoSettings
-from aictl.kusto.live_reader import ReaderConfig, SharedKustoReader, shared_reader
-from aictl.kusto.schema import Column, Table
+from aictl.stores.kusto.live_reader import ReaderConfig, SharedKustoReader, shared_reader
+from aictl.stores.kusto.tables import Table
 
 TABLE = Table(
-    "sessions",
-    [Column("session_id", "TEXT", "string"), Column("project_path", "TEXT", "string")],
+    (("session_id", "string"), ("project_path", "string"), ("rowid", "long")),
     key=("session_id",),
+    ingestion="inline",
+    tombstone="_deleted",
 )
+RAW = Table((), key=(), ingestion="inline")
 SETTINGS = KustoSettings("http://reader.invalid:1", "test", auth="none", ingestion="inline")
 NOW = datetime(2026, 11, 10, 10, tzinfo=timezone.utc)
 
@@ -276,7 +278,7 @@ def test_idle_cursor_poll_skips_all_tables_and_active_probes_share_one_fixed_upp
     reader = SharedKustoReader(
         SETTINGS,
         client=sdk,
-        tables={"sessions": TABLE, **{name: Table(name, key=()) for name in sdk.empty_tables}},
+        tables={"sessions": TABLE, **{name: Table((), key=(), ingestion="inline") for name in sdk.empty_tables}},
         config=ReaderConfig(queries_per_poll=1),
     )
     initialize(reader)
@@ -325,6 +327,7 @@ def test_failed_probe_retries_its_exact_range_without_advancing_or_reprobing_com
     reader = SharedKustoReader(
         SETTINGS,
         client=sdk,
+        tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("OTELLogs", "sessions"),
         config=ReaderConfig(queries_per_poll=1, tables_per_probe=1),
     )
@@ -371,12 +374,13 @@ def fail_low_memory():
 
 def test_memory_failure_splits_batch_backs_off_one_table_and_lets_others_pass_watermark(monkeypatch):
     clock = [1000.0]
-    monkeypatch.setattr("aictl.kusto.live_reader.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("aictl.stores.kusto.live_reader.time.monotonic", lambda: clock[0])
     sdk = FakeSDK()
     sdk.raw_enabled = True
     reader = SharedKustoReader(
         SETTINGS,
         client=sdk,
+        tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("OTELLogs", "sessions"),
         config=ReaderConfig(queries_per_poll=1, min_poll_s=2, max_error_s=4, failures_before_resync=1),
     )
@@ -414,7 +418,7 @@ def test_memory_failure_splits_batch_backs_off_one_table_and_lets_others_pass_wa
 
 def test_memory_failure_mid_page_preserves_the_page_token_and_retry_upper(monkeypatch):
     clock = [1000.0]
-    monkeypatch.setattr("aictl.kusto.live_reader.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("aictl.stores.kusto.live_reader.time.monotonic", lambda: clock[0])
     sdk = FakeSDK()
     reader = make_reader(sdk, page_size=1, failures_before_resync=1)
     initialize(reader)
@@ -440,7 +444,7 @@ def test_memory_failure_mid_page_preserves_the_page_token_and_retry_upper(monkey
 @pytest.mark.parametrize("stage", ["keys", "winners"])
 def test_cursor_memory_retry_reduces_the_page_until_it_can_drain_without_skips(monkeypatch, stage):
     clock = [1000.0]
-    monkeypatch.setattr("aictl.kusto.live_reader.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("aictl.stores.kusto.live_reader.time.monotonic", lambda: clock[0])
     sdk = FakeSDK()
     reader = make_reader(sdk, page_size=4)
     initialize(reader)
@@ -595,6 +599,7 @@ def test_raw_otel_visibility_is_table_invalidation_not_invented_event_identity()
     reader = SharedKustoReader(
         SETTINGS,
         client=sdk,
+        tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("sessions", "OTELLogs"),
         config=ReaderConfig(queries_per_poll=1, reconcile_partitions=1),
     )
@@ -643,6 +648,7 @@ def test_shared_metadata_refresh_discovers_new_tables_and_explicitly_removes_dro
     reader = SharedKustoReader(
         SETTINGS,
         client=sdk,
+        tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("sessions", "OTELLogs"),
         config=ReaderConfig(queries_per_poll=1, reconcile_partitions=1),
     )

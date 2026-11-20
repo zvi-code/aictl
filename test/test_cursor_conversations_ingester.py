@@ -22,7 +22,13 @@ from pathlib import Path
 import pytest
 
 from aictl.ingesters.cursor_conversations import CursorConversationsIngester
-from aictl.storage import HistoryDB, SessionRow
+from aictl.collection_status import CollectionStatus
+from aictl.ingesters.message_facts import MessageFacts
+from aictl.records import SessionRow
+from aictl.session_facts import SessionFacts
+from aictl.state_file import StateFile
+from core_store_fakes import message_facts, quality, written
+from aictl.stores.testing import MemoryWriter
 
 
 def _build_source_db(path: Path) -> None:
@@ -71,27 +77,23 @@ def _insert_message(
 
 
 @pytest.fixture()
-def store(tmp_path: Path) -> HistoryDB:
-    db = HistoryDB(db_path=tmp_path / "history.db", flush_interval=0)
-    try:
-        yield db
-    finally:
-        db.close()
+def store(tmp_path: Path) -> MessageFacts:
+    return message_facts(tmp_path)
 
 
 # ── tests ─────────────────────────────────────────────────────────
 
 
-def test_poll_missing_db_returns_zero(tmp_path: Path, store: HistoryDB) -> None:
+def test_poll_missing_db_returns_zero(tmp_path: Path, store: MessageFacts) -> None:
     missing = tmp_path / "nope.db"
     ingester = CursorConversationsIngester(missing, store)
     assert ingester.poll() == 0
-    rows = store.query_data_quality(component="ingester:cursor-conversations")
+    rows = quality(store, "ingester:cursor-conversations")
     assert rows[0]["status"] == "source_missing"
 
 
 def test_poll_ingests_rows_and_creates_provisional_session(
-    tmp_path: Path, store: HistoryDB
+    tmp_path: Path, store: MessageFacts
 ) -> None:
     src = tmp_path / "conversations.db"
     _build_source_db(src)
@@ -102,21 +104,15 @@ def test_poll_ingests_rows_and_creates_provisional_session(
     ingester = CursorConversationsIngester(src, store)
     assert ingester.poll() == 2
 
-    conn = store._conn()
-    rows = conn.execute(
-        "SELECT session_id, role, content FROM cursor_session_messages ORDER BY ts"
-    ).fetchall()
-    assert [(r[1], r[2]) for r in rows] == [("user", "hello"), ("assistant", "world")]
+    rows = written(store.writer, "cursor_session_messages")
+    assert [(r["role"], r["content"]) for r in rows] == [("user", "hello"), ("assistant", "world")]
     # Provisional session was created.
-    assert rows[0][0] == "cursor:conv-1"
-    session = conn.execute(
-        "SELECT tool, project_path FROM sessions WHERE session_id=?",
-        (rows[0][0],),
-    ).fetchone()
-    assert session == ("cursor", "/proj/demo")
+    assert rows[0]["session_id"] == "cursor:conv-1"
+    [session] = written(store.writer, "sessions")
+    assert (session["tool"], session["project_path"]) == ("cursor", "/proj/demo")
 
 
-def test_second_poll_ingests_zero(tmp_path: Path, store: HistoryDB) -> None:
+def test_second_poll_ingests_zero(tmp_path: Path, store: MessageFacts) -> None:
     src = tmp_path / "conversations.db"
     _build_source_db(src)
     ts = time.time()
@@ -126,14 +122,10 @@ def test_second_poll_ingests_zero(tmp_path: Path, store: HistoryDB) -> None:
     assert ingester.poll() == 1
     assert ingester.poll() == 0
 
-    conn = store._conn()
-    count = conn.execute("SELECT COUNT(*) FROM cursor_session_messages").fetchone()[0]
-    assert count == 1
+    assert len(written(store.writer, "cursor_session_messages")) == 1
 
 
-def test_correlation_matches_existing_session(
-    tmp_path: Path, store: HistoryDB
-) -> None:
+def test_correlation_matches_existing_session(tmp_path: Path) -> None:
     src = tmp_path / "conversations.db"
     _build_source_db(src)
     ts = time.time()
@@ -141,7 +133,10 @@ def test_correlation_matches_existing_session(
 
     # Pre-seed a live Cursor session with the same project path; window
     # is open on the future side (ended_at IS NULL).
-    store.upsert_session(
+    writer = MemoryWriter()
+    session_state = StateFile(tmp_path / "sessions.json")
+    sessions = SessionFacts(writer, state=session_state)
+    sessions.session(
         SessionRow(
             session_id="existing-cursor-session",
             tool="cursor",
@@ -150,23 +145,21 @@ def test_correlation_matches_existing_session(
             ended_at=None,
         )
     )
+    sessions.save()
 
-    ingester = CursorConversationsIngester(src, store)
+    session_cache = SessionFacts(writer, state=session_state)
+    message_state = StateFile(tmp_path / "cursor_messages.json")
+    message_facts = MessageFacts(session_cache, CollectionStatus(writer), message_state)
+    ingester = CursorConversationsIngester(src, message_facts)
     assert ingester.poll() == 1
-
-    conn = store._conn()
-    row = conn.execute(
-        "SELECT session_id FROM cursor_session_messages"
-    ).fetchone()
-    assert row[0] == "existing-cursor-session"
-    # No provisional session should have been created.
-    provisional = conn.execute(
-        "SELECT COUNT(*) FROM sessions WHERE session_id LIKE 'cursor:%'"
-    ).fetchone()[0]
-    assert provisional == 0
+    assert CursorConversationsIngester(src, message_facts).poll() == 0
+    [message] = [row for _, table, rows in writer.operations if table == "cursor_session_messages" for row in rows]
+    assert message["session_id"] == "existing-cursor-session"
+    [session] = [row for _, table, rows in writer.operations if table == "sessions" for row in rows]
+    assert session["session_id"] == "existing-cursor-session"
 
 
-def test_poll_tolerates_locked_source(tmp_path: Path, store: HistoryDB) -> None:
+def test_poll_tolerates_locked_source(tmp_path: Path, store: MessageFacts) -> None:
     src = tmp_path / "conversations.db"
     _build_source_db(src)
     ts = time.time()
@@ -180,7 +173,7 @@ def test_poll_tolerates_locked_source(tmp_path: Path, store: HistoryDB) -> None:
     try:
         ingester = CursorConversationsIngester(src, store)
         assert ingester.poll() == 0
-        rows = store.query_data_quality(component="ingester:cursor-conversations")
+        rows = quality(store, "ingester:cursor-conversations")
         assert rows[0]["status"] in {"schema_unknown", "query_failed"}
     finally:
         blocker.rollback()

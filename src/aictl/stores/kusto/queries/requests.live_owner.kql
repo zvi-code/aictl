@@ -1,0 +1,14 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_tool:string,
+    project_path_key:string, fold_project:bool, row_limit:long
+);
+requests
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where tool == requested_tool
+| where iff(fold_project, trim_end(@'/+', replace_string(tolower(project_path), @'\', '/')), project_path) == project_path_key
+| order by ts desc, node_id asc, ['project'] asc, fact_key asc
+| take row_limit
+| project node_id, session_id

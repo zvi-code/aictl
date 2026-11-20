@@ -168,7 +168,7 @@ def test_own_log_writes_are_not_file_activity():
 def test_gauge_values_zero_and_one_are_deduplicated():
     from aictl.sink import SampleSink
 
-    sink = SampleSink(db=None, buffer_size=0)
+    sink = SampleSink()
     for ts in (100.0, 105.0, 110.0):
         sink.emit_if_changed("m", 1.0, {"t": "a"}, ts=ts, gauge=True)
     assert sink.stats()["total_emitted"] == 1
@@ -334,27 +334,28 @@ def _copilot_source(path: Path, rows: int) -> None:
 
 def test_copilot_store_ingest_is_batched_and_resumes_after_restart(tmp_path):
     from aictl.ingesters.copilot_session_store import POLL_BATCH_ROWS, CopilotSessionStoreIngester
-    from aictl.storage import HistoryDB
+    from aictl.state_file import StateFile
+    from core_store_fakes import message_facts, written
 
     source = tmp_path / "session-store.db"
     _copilot_source(source, POLL_BATCH_ROWS + 5)
-    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    first = CopilotSessionStoreIngester(source, db)
+    db = message_facts(tmp_path)
+    state = StateFile(tmp_path / "copilot_messages.json")
+    first = CopilotSessionStoreIngester(source, db, checkpoint=state)
     assert first.poll() == POLL_BATCH_ROWS
-    restarted = CopilotSessionStoreIngester(source, db)
+    restarted = CopilotSessionStoreIngester(source, db, checkpoint=state)
     assert restarted.poll() == 5
     assert restarted.poll() == 0
-    db.close()
+    assert len({row["source_row_id"] for row in written(db.writer, "copilot_session_messages")}) == POLL_BATCH_ROWS + 5
 
 
 def test_copilot_store_ingest_copies_no_text_in_metadata_mode(tmp_path):
     from aictl.ingesters.copilot_session_store import CopilotSessionStoreIngester
-    from aictl.storage import HistoryDB
+    from core_store_fakes import message_facts, written
 
     source = tmp_path / "session-store.db"
     _copilot_source(source, 3)
-    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0, capture="metadata")
+    db = message_facts(tmp_path, keeps_text=False)
     assert CopilotSessionStoreIngester(source, db).poll() == 3
-    rows = db._conn().execute("SELECT content FROM copilot_session_messages").fetchall()
-    assert rows == [("",)] * 3
-    db.close()
+    rows = written(db.writer, "copilot_session_messages")
+    assert [row["content"] for row in rows] == [""] * 3

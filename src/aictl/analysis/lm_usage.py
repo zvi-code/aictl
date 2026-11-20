@@ -13,12 +13,12 @@ scanning the already-stored events — no new table.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable
+from typing import Any
 
 from ..data.token_usage import TokenUsage
-
-if TYPE_CHECKING:
-    from ..storage import HistoryDB
+from ..stores.base import Reader
+from ._events import session_events
 
 # Event kinds we'll consider as carriers of VS Code LM-usage records.
 # The OTel receiver stores logs as ``otel:<event.name>``.
@@ -60,7 +60,7 @@ def _extension_id(detail: dict) -> str:
     return ""
 
 
-def session_lm_usage(db: HistoryDB, session_id: str, limit: int = 2000) -> dict:
+def session_lm_usage(reader: Reader, session_id: str, limit: int = 2000) -> dict:
     """Return per-extension LM token usage for *session_id*.
 
     Output shape:
@@ -68,12 +68,18 @@ def session_lm_usage(db: HistoryDB, session_id: str, limit: int = 2000) -> dict:
     ``{"by_extension": {ext_id: {"input_tokens": N, "output_tokens": M,
                                    "total_tokens": N+M, "calls": K,
                                    "models": [model, ...]}},
-       "total_tokens": T, "total_calls": C}``
+       "total_tokens": T, "total_calls": C, "total_input_tokens": I,
+       "total_output_tokens": O}``
+
+    An empty session ID returns only ``by_extension``, ``total_tokens`` and
+    ``total_calls`` without reading events.
     """
-    empty: dict = {"by_extension": {}, "total_tokens": 0, "total_calls": 0}
     if not session_id:
-        return empty
-    events = db.query_events(session_id=session_id, limit=limit)
+        return {"by_extension": {}, "total_tokens": 0, "total_calls": 0}
+    return lm_usage(session_events(reader, session_id, limit))
+
+
+def lm_usage(events: Iterable[Any]) -> dict:
     by_ext: dict[str, dict] = {}
     total_in = 0
     total_out = 0

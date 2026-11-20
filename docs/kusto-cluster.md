@@ -1,6 +1,6 @@
 # Using a remote Kusto cluster as the store
 
-SQLite is the default backend and needs no setup. Kusto (Azure Data Explorer, or a Fabric Eventhouse) is the alternative backend: the history lives in a Kusto database instead of the SQLite file. Every table becomes a table of that database, the daemon serves entirely from it, and nothing is written to `~/.config/aictl/history.db`. An existing SQLite history is not moved.
+Kusto (Azure Data Explorer or a Fabric Eventhouse) is the aictl history store. If no destination is configured, the daemon serves live runtime data without stored history. It does not migrate existing SQLite history.
 
 ## 1. Get a cluster and create the database
 
@@ -71,9 +71,9 @@ Things that trip people up on a remote cluster:
 - **Firewalls.** The cluster must be reachable on port 443 from the machine running the daemon; a cluster with a private endpoint or an IP allow list needs that machine's address allowed. Queued ingestion also needs access to the Azure Storage blob and queue endpoints supplied by DM.
 - **Capacity.** A `Dev(No SLA)` cluster has one ingestion slot and a small cache. Streaming ingestion does not take that slot. An `.ingest inline` command does: aictl reads the cluster's capacity once (`.show capacity ingestions`) and sends at most that many inline commands at a time, so they wait in the daemon instead of being refused. Queued sources are batched and scheduled by DM. A saturated cluster can answer HTTP 429; inline and streaming requests receive bounded retries.
 
-## 3. Install the Kusto extra
+## 3. Install aictl
 
-`pipx install "aictl[all]"` includes it; otherwise `pipx inject aictl azure-kusto-data azure-kusto-ingest sqlglot`.
+`azure-kusto-data` and `azure-kusto-ingest` are required and installed with aictl. No extra is needed for Kusto.
 
 ## 4. Sign in and point aictl at the cluster
 

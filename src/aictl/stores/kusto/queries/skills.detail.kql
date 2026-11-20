@@ -1,0 +1,31 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real = real(null), until:real = real(null),
+    requested_skill:string, requested_tools:dynamic = dynamic([]), restrict_tools:bool = false,
+    query_mode:string = 'detail', session_keys:dynamic = dynamic([]), row_limit:long
+);
+let all_uses = materialize(
+    skill_uses
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where name == requested_skill or name endswith strcat(':', requested_skill)
+    | project node_id, session_id, agent_id, ts, tool, project_path, trigger, fact_key
+);
+let selected = materialize(
+    all_uses | where query_mode == 'detail'
+    | where (isnull(since) or ts >= since) and (isnull(until) or ts < until)
+    | where not(restrict_tools) or tool in (requested_tools)
+);
+union
+    (all_uses | where query_mode == 'detail' | summarize total=count(), first_ts=min(ts), last_ts=max(ts),
+            projects=make_set_if(project_path, isnotempty(project_path), 50)
+        | where query_mode == 'detail' | extend row_type='all'),
+    (selected | summarize uses=count(), agents=count_distinct(tostring(pack_array(node_id, session_id, coalesce(agent_id, session_id))))
+        | where query_mode == 'detail' | extend row_type='counts'),
+    (selected | extend row_type='item'),
+    (all_uses | where query_mode == 'starts' and strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+        | extend row_type='item')
+| order by row_type asc, ts desc, node_id asc, fact_key asc
+| take row_limit
+| project-away fact_key

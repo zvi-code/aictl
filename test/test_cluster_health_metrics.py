@@ -1,24 +1,23 @@
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 from test_kusto_connection import FakeClient, response
 
-from aictl.kusto import KustoSettings, health_metrics
-from aictl.kusto.connection import KustoClientFactory
+from aictl.kusto import KustoSettings
+from aictl.stores.kusto import health_metrics
+from aictl.stores.kusto.client import KustoClientFactory
 
 
 def test_cluster_diagnostics_are_cached_and_stale_failures_keep_the_observation(monkeypatch):
     settings = KustoSettings("https://example.kusto.windows.net")
-    db = SimpleNamespace(_kusto=settings)
     monkeypatch.delenv(health_metrics.RESOURCE_ID_ENV, raising=False)
     monkeypatch.setattr(health_metrics, "_read", lambda *_: (_ for _ in ()).throw(AssertionError("unexpected ARM request")))
     client = FakeClient(on_mgmt=lambda _: response([("nodes", "long"), ("ingestions", "long")], [[2, 0]]))
     monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
-    sample = health_metrics.read_cluster_metrics(db)
+    sample = health_metrics.read_cluster_metrics(settings)
     assert sample["status"] == "cached" and sample["native"] == {"nodes": 2, "ingestions": 0}
-    assert health_metrics.read_cluster_metrics(db, sample) == sample and len(client.commands) == 1
+    assert health_metrics.read_cluster_metrics(settings, sample) == sample and len(client.commands) == 1
     client.on_mgmt = lambda _: (_ for _ in ()).throw(RuntimeError("permission denied"))
-    stale = health_metrics.read_cluster_metrics(db, {**sample, "attempted_at": 0})
+    stale = health_metrics.read_cluster_metrics(settings, {**sample, "attempted_at": 0})
     assert stale["status"] == "stale" and stale["checked_at"] == sample["checked_at"] and stale["native"] == sample["native"]
 
 

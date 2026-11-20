@@ -1,0 +1,22 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_project:string = '', requested_session:string,
+    example_limit:long = 200, row_limit:long
+);
+let calls = materialize(
+    requests
+    | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        and (isempty(requested_project) or ['project'] == requested_project)
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project ts, session_id, model, input_tokens, output_tokens, duration_ms, is_error, error_type, http_status,
+              finish_reason, fact_key
+);
+union
+    (calls | order by ts desc, fact_key asc | take example_limit | extend row_type='example'),
+    (calls | summarize calls=count(), errors=countif(is_error != 0) by model | extend row_type='model'),
+    (calls | where duration_ms > 0 and is_error == 0
+        | summarize times=make_list(duration_ms, 20000), timed=count() | extend row_type='latency')
+| order by row_type asc, ts desc, fact_key asc, model asc
+| take row_limit
+| project-away fact_key

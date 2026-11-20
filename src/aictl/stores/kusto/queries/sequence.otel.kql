@@ -1,0 +1,45 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
+    since:real=0.0, until:real=1.0e20, row_limit:long);
+let calls = materialize(requests
+    | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until);
+let ev = materialize(events
+    | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until);
+let texts = union isfuzzy=true
+    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:string,_deleted:bool)[]),
+    (events_text | project ['project'], node_id, source_key, _v, detail, _deleted=column_ifexists('_deleted',false))
+    | where (all_nodes or node_id == requested_node) and source_key in (ev | project source_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,source_key
+    | where not(_deleted)
+    | project ['project'],node_id,key=source_key,retained_detail=detail;
+let signals = materialize(ev
+    | join kind=leftouter texts on ['project'],node_id,key
+    | extend detail=coalesce(retained_detail,detail)
+    | project ts, kind, key, detail);
+let source_calls = materialize(union
+    (calls | where source == 'transcript' | project ts),
+    (tool_invocations | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and source == 'transcript' and ts >= since and ts < until | project ts),
+    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until | project ts));
+union
+    (source_calls | summarize rows=count() | project row_type='source', values=pack_array(rows)),
+    (ev | where kind startswith 'hook:' | summarize rows=count(), last_ts=max(ts)
+        | project row_type='hooks', values=pack_array(rows,last_ts)),
+    (signals | where kind startswith 'otel:' | project row_type='signal',ts,key,values=pack_array(ts,kind,detail)),
+    (signals | where detail contains_cs '"rate_limits"'
+        | order by ts desc,key asc | take 1 | project row_type='rate',values=pack_array(ts,detail)),
+    (calls | where toscalar(ev | where kind startswith 'otel:' | count) > 0
+        | project row_type='call',ts,key,values=pack_array(dedup_key,ts,model,output_tokens))
+| order by row_type asc, ts asc,key asc
+| take row_limit
+| project row_type, values

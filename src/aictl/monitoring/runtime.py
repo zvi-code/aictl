@@ -56,7 +56,7 @@ class DiscoveryCollector(BaseCollector):
 
     async def run(self) -> None:
         from ..data.schema import metric_name as _M
-        from ..tools import discover_all, files_to_sample
+        from ..tools import discover_all
 
         await self.report_status(
             status="active",
@@ -79,23 +79,12 @@ class DiscoveryCollector(BaseCollector):
                 emit(_M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, gauge=True)
                 emit(_M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, gauge=True)
 
-                for f in files_to_sample(tool_res.files):
-                    ftags = {
-                        "aictl.tool": tool,
-                        "file.path": f.path,
-                        "aictl.file.kind": f.kind,
-                        "aictl.file.scope": f.scope,
-                        "aictl.file.sent_to_llm": f.sent_to_llm,
-                    }
-                    emit(_M("aictl.file.tokens"), float(f.tokens), ftags, gauge=True)
-                    emit(_M("aictl.file.bytes"), float(f.size), ftags, gauge=True)
-
                 for m in tool_res.mcp_servers:
                     mname = m.get("name", "")
                     if mname:
                         emit(_M("aictl.mcp.status"), 1.0 if m.get("status") == "running" else 0.0, {"aictl.tool": tool, "aictl.mcp.server": mname}, gauge=True)
 
-            # One producer batch per scan in Kusto mode, holding only the changed samples.
+            # Send one batch of changed samples per scan.
             if self._pending_samples:
                 await self.sink_flush_batch()
             await self.sleep_paced(self._interval)

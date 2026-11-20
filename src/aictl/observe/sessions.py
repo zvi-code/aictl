@@ -27,7 +27,6 @@ import json
 import ntpath
 import os
 import re
-import sqlite3
 import stat as stat_module
 import time
 from collections.abc import Iterable
@@ -36,7 +35,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from .. import platforms
-from ..ingesters._common import coerce_ts, open_readonly
+from ..ingesters._common import SQLITE_UNAVAILABLE, coerce_ts
 from .collect import FRESH_S, Collector, _query, _workspace_yaml, capture_mode
 from .copilot_events import EventsFile, clean
 from .procs import snapshot
@@ -240,15 +239,8 @@ def _add_alias(rec: dict[str, Any], alias: Any) -> None:
 
 def _state_text(db: Path, key: str) -> str | None:
     """One named key of a ``state.vscdb``. Only named keys are read: the table also holds ``secret://`` rows."""
-    conn = open_readonly(db, "copilot session index")
-    if conn is None:
-        return None
-    try:
-        row = conn.execute("select value from ItemTable where key = ?", (key,)).fetchone()
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
+    rows = _query(db, "select value from ItemTable where key = ? limit 1", (key,))
+    row = rows[0] if rows else None
     if not row or row[0] is None:
         return None
     return row[0].decode("utf-8", "replace") if isinstance(row[0], bytes) else str(row[0])
@@ -782,7 +774,12 @@ class SessionIndex:
                 return {"status": "ok", "session": rec, "matches": [rec], "matched_by": how, "looked_in": []}
             if matches:
                 return {"status": "ambiguous", "session": None, "matches": matches, "matched_by": how, "looked_in": []}
-        return {"status": "not_found", "session": None, "matches": [], "matched_by": None, "looked_in": search_locations()}
+        locations = search_locations()
+        try:
+            import sqlite3  # noqa: F401 - report why some locations could not be searched
+        except ImportError:
+            locations.append(SQLITE_UNAVAILABLE)
+        return {"status": "not_found", "session": None, "matches": [], "matched_by": None, "looked_in": locations}
 
     def _candidates(self, text: str) -> Iterable[tuple[str, list[dict[str, Any]]]]:
         if not text:
@@ -1138,7 +1135,7 @@ def annotate_observed(doc: dict[str, Any]) -> None:
     """Add ``folder``, ``artifact_count`` and ``artifact_bytes`` to the sessions in an ``aictl ps`` document."""
     try:
         index = SessionIndex()
-    except (OSError, sqlite3.Error):
+    except OSError:
         return
     for tool in doc.get("tools", []):
         for session in tool.get("sessions", []):

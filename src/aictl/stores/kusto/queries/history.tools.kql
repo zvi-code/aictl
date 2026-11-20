@@ -1,0 +1,10 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20,
+                         requested_tool:string = '', row_limit:long);
+process_snapshots
+| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+| summarize arg_max(_v, *) by node_id, ['project'], ts, pid
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where isempty(requested_tool) or tool == requested_tool
+| summarize cpu=sum(cpu_percent), mem_mb=sum(memory_rss_mb) by ts, tool
+| order by ts asc, tool asc
+| take row_limit

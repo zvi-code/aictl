@@ -1,0 +1,20 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
+    requested_session:string='', session_keys:dynamic=dynamic([]), restrict_sessions:bool=false,
+    requested_paths:dynamic=dynamic([]), row_limit:long);
+file_write_events
+| where (all_nodes or node_id == requested_node)
+    and (isempty(requested_session) or session_id == requested_session)
+| extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+| summarize arg_max(_v, *) by ['project'],node_id,key
+| where not(column_ifexists('_deleted',false)) and ts between (since .. until)
+| where not(restrict_sessions) or strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
+| where array_length(requested_paths)==0 or path in (requested_paths)
+| extend added=tolong(parse_json(detail).lines_added), removed=tolong(parse_json(detail).lines_removed)
+| summarize project_path=max(project_path), session_id=max(session_id), edits=count(),
+    agents=count_distinct(session_id), last_ts=max(ts), tool=max(tool),
+    added=sum(added), removed=sum(removed), added_n=countif(isnotnull(added)), removed_n=countif(isnotnull(removed))
+    by node_id,path
+| project node_id,path,project_path,session_id,edits,agents,last_ts,tool,
+    added=iff(added_n==0,long(null),added),removed=iff(removed_n==0,long(null),removed)
+| order by last_ts desc,node_id asc,path asc
+| take row_limit

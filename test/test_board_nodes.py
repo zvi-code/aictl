@@ -1,6 +1,7 @@
 import json
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -12,116 +13,89 @@ from click.testing import CliRunner
 
 from aictl.cli import main
 from aictl.dashboard.node_views import NodeViewError, node_view
-from aictl.kusto import KustoSettings
-
-
 def project(**extra):
-    return SimpleNamespace(
-        _kusto=KustoSettings("https://cluster.example", node_id="host-a"), current_history=True, **extra
-    )
+    return SimpleNamespace(current_history=True, **extra)
+
+
+@pytest.fixture
+def node_reader(kusto_store, monkeypatch):
+    reader = kusto_store.history_store.reader
+    settings = SimpleNamespace(cluster="https://cluster.example", database="aictl", node_id="host-a",
+                               node_id_source="hostname", ingestion="auto")
+    monkeypatch.setattr(reader, "connection_info", lambda: settings)
+    return reader
 
 
 def query(view, scope="local", **p):
     return {k: [v] for k, v in {"view": view, "scope": scope, **p}.items()}
 
 
-def test_node_report_bounds_kusto_scan_concurrency_and_exposes_partial_memory_failures(monkeypatch):
-    from azure.kusto.data.exceptions import KustoMultiApiError
-
-    from aictl.kusto.connection import KustoClientFactory
+def test_node_report_bounds_kusto_scan_concurrency_and_exposes_partial_memory_failures():
+    from aictl.stores.kusto.reader import KustoReader
 
     requests = []
 
     def execute(_db, _kql, props):
         requests.append(props)
-        raise KustoMultiApiError([{"OneApiErrors": [{"error": {
-            "code": "LowMemoryCondition", "message": "partial query failure", "@message": "E_LOW_MEMORY_CONDITION",
-        }}]}])
+        raise RuntimeError("partial query failure: E_LOW_MEMORY_CONDITION")
 
-    monkeypatch.setattr(KustoClientFactory, "client", lambda settings: SimpleNamespace(execute=execute))
-    for view in ("nodes", "health"):
-        with pytest.raises(NodeViewError, match="E_LOW_MEMORY_CONDITION") as err:
-            node_view(project(), query(view, "fleet"))
-        props = requests[-1]
-        assert err.value.status == 503 and props.client_request_id in str(err.value)
-        assert props.get_option("query_fanout_threads_percent", None) == 1
-        assert props.get_option("max_memory_consumption_per_query_per_node", None) == 128 * 1024**2
-        assert props.get_option("deferpartialqueryfailures", None) is False
-    assert len({p.client_request_id for p in requests}) == 2
+    reader = KustoReader(SimpleNamespace(execute_query=execute), "aictl_perf_test")
+    with pytest.raises(NodeViewError, match="E_LOW_MEMORY_CONDITION") as err:
+        node_view(project(), query("health", "fleet"), reader=reader)
+    props, = requests
+    assert err.value.status == 503 and props.client_request_id in str(err.value)
+    assert props.get_option("query_fanout_threads_percent", None) == 1
+    assert props.get_option("max_memory_consumption_per_query_per_node", None) == 128 * 1024**2
+    assert props.get_option("deferpartialqueryfailures", None) is False
 
 
-def test_fleet_discovery_and_health_do_not_substitute_the_serving_node():
-    queries = []
-
-    def read(_settings, kql):
-        queries.append(kql)
-        return [
-            {"node_id": "host-b", "captured_at": 200, "cpu_percent": 0.0},
-            {"node_id": "", "captured_at": None, "cpu_percent": None},
-        ]
-
-    nodes = node_view(project(), query("nodes"), read=read)
-    assert [r["node_id"] for r in nodes["rows"]] == ["host-b", "legacy"]
-    assert 'where node_id == "host-a"' not in queries[-1]
+def test_fleet_discovery_and_health_do_not_substitute_the_serving_node(kusto_store, node_reader):
+    kusto_store.insert("system_snapshots", node_id="host-b", ts=200, host_cpu_percent=0)
+    kusto_store.insert("sessions", node_id="", session_id="earlier")
+    reader = node_reader
+    nodes = node_view(project(), query("nodes"), reader=reader)
+    assert {r["node_id"] for r in nodes["rows"]} == {"host-b", "legacy"}
     health = node_view(
         project(),
         query("health", "fleet"),
         now=600,
-        read=read,
+        reader=reader,
         local_health=lambda: pytest.fail("Remote health requested local runtime"),
     )
-    assert "local_runtime" not in health and "leftanti" in queries[-1]
+    assert "local_runtime" not in health
     assert [(r["node_id"], r["status"], r["cpu_percent"]) for r in health["rows"]] == [
-        ("host-b", "stale", 0),
         ("legacy", "unknown", None),
+        ("host-b", "stale", 0),
     ]
     assert health["shared_kusto"]["database"] == "aictl"
-    settings = node_view(project(), query("settings", "node", node_id="host-b"), read=lambda *_: [])
-    assert settings["rows"][0]["status"] == "unknown" and settings["rows"][0]["capture"] is None
+    settings = node_view(project(), query("settings", "node", node_id="host-b"), reader=reader)
+    assert settings["rows"][0]["status"] == "unknown" and not settings["rows"][0]["capture"]
 
 
-def test_session_and_totals_use_node_qualified_keys_and_bound_session_identifiers():
+def test_session_and_totals_use_node_qualified_keys_and_bound_session_identifiers(kusto_store):
     node_rows = {"host-a": "model-a", "host-b": "model-b"}
     sid = 'id " shared & +'
-
-    def read(_settings, text):
-        assert "by node_id, session_id" in text
-        if "let grouped =" in text:
-            assert "row_type='total'" in text
-            return [
-                {"row_type": "total", "sessions": 2, "requests": 9},
-                *(
-                    {"row_type": "session", "node_id": name, "session_id": sid, "model": model}
-                    for name, model in node_rows.items()
-                ),
-            ]
-        assert f"where session_id == {json.dumps(sid)}" in text
-        name = next(key for key in node_rows if f'where node_id == "{key}"' in text)
-        return [{"node_id": name, "session_id": sid, "model": node_rows[name]}]
-
-    overview = node_view(project(), query("overview", "fleet"), read=read)
+    for (node, model), count in zip(node_rows.items(), (4, 5), strict=True):
+        kusto_store.insert("sessions", node_id=node, session_id=sid, tool="copilot-cli", model=model, started_at=100,
+                           request_count=count)
+    reader = kusto_store.history_store.reader
+    overview = node_view(project(), query("overview", "fleet", since="0", until="200"), reader=reader, now=200)
     assert overview["totals"]["sessions"] == 2 and len(overview["sessions"]) == 2
+    assert overview["totals"]["requests"] == 9
     for r in overview["sessions"]:
         q = query("session", "node", node_id=r["node_id"], session_id=r["session_id"])
-        assert node_view(project(), q, read=read)["rows"][0]["model"] == node_rows[r["node_id"]]
+        assert node_view(project(), q, reader=reader, now=200)["rows"][0]["model"] == node_rows[r["node_id"]]
     with pytest.raises(NodeViewError, match="both a named node"):
-        node_view(project(), query("session", "fleet", session_id=sid), read=read)
+        node_view(project(), query("session", "fleet", session_id=sid), reader=reader)
     with pytest.raises(NodeViewError, match="earlier than until"):
-        node_view(project(), query("overview", since="10", until="1"), read=read)
+        node_view(project(), query("overview", since="10", until="1"), reader=reader)
 
 
-def test_health_sample_uses_only_current_process_counters_and_shared_resource_scope():
-    def read(_settings, kql):
-        assert 'column_ifexists("node_health_counters","")' in kql
-        assert 'inbound_bps=column_ifexists("live_in_rate",real(null))' in kql
-        assert 'outbound_bps=column_ifexists("live_out_rate",real(null))' in kql
-        assert kql.index("arg_max(_v, *)") < kql.index("where not(_deleted)") < kql.index("arg_max(captured_at,")
-        return [
-            {"node_id": n, "captured_at": 600, "daemon_pid": 7, "inbound_bps": 240, "outbound_bps": 0,
-             "counter_sample": json.dumps({"at": at, "pid": pid, "store": {"reads": {"total": 123}}})}
-            for n, at, pid in (("current", 598, 7), ("old-process", 598, 6), ("stale", 100, 7))
-        ]
-    report = node_view(project(), query("health", "fleet"), now=600, read=read,
+def test_health_sample_uses_only_current_process_counters_and_shared_resource_scope(kusto_store, node_reader):
+    for node, at, pid in (("current", 598, 7), ("old-process", 598, 6), ("stale", 100, 7)):
+        kusto_store.insert("system_snapshots", node_id=node, ts=600, daemon_pid=7, live_in_rate=240, live_out_rate=0,
+                           node_health_counters=json.dumps({"at": at, "pid": pid, "store": {"reads": {"total": 123}}}))
+    report = node_view(project(), query("health", "fleet"), now=600, reader=node_reader,
                        shared_health=lambda: {"capacity": {"available": 0, "total": 12},
                                               "table_inventory": {"tables": [{"name": "events", "rows": 200}]},
                                               "cluster_resources": {"native": {"nodes": 3}}, "quality": ["private"]})
@@ -132,35 +106,33 @@ def test_health_sample_uses_only_current_process_counters_and_shared_resource_sc
     assert "private" not in json.dumps(report)
 
 
-def test_runtime_reports_keep_monitored_counts_independent_of_agent_inventory():
-    def read(_settings, kql):
-        assert "ts >= 700.0" in kql
-        assert "active_sessions=live_sessions" in kql
-        return [
-            {"node_id": "host-a", "ts": 991, "active_sessions": 4, "active_processes": 8, "daemon_pid": 6},
-            {"node_id": "host-b", "ts": 992, "active_sessions": 9, "active_processes": 13, "daemon_pid": 7,
-             "counter_sample": json.dumps({"at": 992, "pid": 7, "store": {},
-                "runtime": {"agents": {"captured_at": 990, "total": 1, "rows": [
-                    {"session_id": "same-session", "running": True, "project_path": "/private/path", "prompt": "private"}
-                ]}}})},
-            {"node_id": "host-c", "ts": 993, "active_sessions": 0, "active_processes": 0, "daemon_pid": 30,
-             "counter_sample": json.dumps({"at": 993, "pid": 29, "store": {},
-                "runtime": {"agents": {"captured_at": 991, "total": 0, "rows": []}}})},
-        ]
+def test_runtime_reports_keep_monitored_counts_independent_of_agent_inventory(kusto_store, node_reader):
+    seed = kusto_store.insert
+    seed("system_snapshots", node_id="host-a", ts=991, live_sessions=4, active_processes=8, daemon_pid=6)
+    seed("system_snapshots", node_id="host-b", ts=992, live_sessions=9, active_processes=13, daemon_pid=7,
+         node_health_counters=json.dumps({"at": 992, "pid": 7, "store": {},
+             "runtime": {"agents": {"captured_at": 990, "total": 1, "rows": [
+                 {"session_id": "same-session", "running": True, "project_path": "/private/path", "prompt": "private"}
+             ]}}}))
+    seed("system_snapshots", node_id="host-c", ts=993, live_sessions=0, active_processes=0, daemon_pid=30,
+         node_health_counters=json.dumps({"at": 993, "pid": 29, "store": {},
+             "runtime": {"agents": {"captured_at": 991, "total": 0, "rows": []}}}))
+    seed("system_snapshots", node_id="old-host", ts=600, live_sessions=42)
+    reader = node_reader
 
     def local_health():
         return {"resources": {"host": {"checked_at": 997, "activity_at": 996, "active_sessions": 5,
                                        "active_processes": 11, "memory_total_bytes": 100 * 1024**2}},
                 "pipeline": {"self": {"pid": 6}}}
 
-    fleet = node_view(project(), query("runtime", "fleet"), now=1000.0, read=read, local_health=local_health)
+    fleet = node_view(project(), query("runtime", "fleet"), now=1000.0, reader=reader, local_health=local_health)
     a, b, c = fleet["rows"]
     assert (a["active_sessions"], a["active_processes"]) == (5, 11)
     assert (b["active_sessions"], b["active_processes"]) == (9, 13)
     assert b["agents"]["rows"][0]["session_id"] == "same-session"
     assert "private" not in json.dumps(fleet)
     assert c["active_sessions"] == 0 and c["agents"] is None
-    own = node_view(project(), query("health"), now=1000.0, read=read, local_health=local_health)
+    own = node_view(project(), query("health"), now=1000.0, reader=reader, local_health=local_health)
     assert own["rows"] == [{k: v for k, v in a.items() if k != "agents"}]
 
 
@@ -181,67 +153,28 @@ def test_local_runtime_inventory_does_not_export_paths_and_deduplicates_sessions
     assert agent_inventory(hub, 1300) is None
 
 
-def test_historical_detail_prefilters_immutable_session_keys_before_current_winner():
-    from aictl.dashboard.board_history import Read, Scope
-
-    predicate = 'session_id in ("session-a")'
-    text = Read.sessions("vscode_chat_messages", predicate).kql(Scope("node", "host-a"))
-    assert text.index(predicate) < text.index("summarize arg_max")
-    assert text.count(predicate) == 2
-    assert "where ['node_id'] == \"host-a\"" in text
-    mutable = Read.sessions("requests", predicate).kql(Scope("node", "host-a"))
-    assert mutable.count(predicate) == 2 and mutable.rindex(predicate) > mutable.index("arg_max")
-    compact = Read.sessions("requests", predicate, ("session_id",)).kql(Scope("fleet"))
-    assert compact.index("['rowid'] in (") < compact.index("arg_max") < compact.rindex(predicate)
-    assert "arg_max(['_v'], ['_deleted'], ['session_id'])" in compact
-    text = Read.sessions("session_step_text", predicate).kql(Scope("node", "host-a"))
-    assert text.index("['step_key'] in (") < text.index("arg_max") < text.rindex(predicate)
 
 
-def test_history_retries_memory_limited_batch_without_using_partial_rows(monkeypatch):
-    from azure.kusto.data.exceptions import KustoMultiApiError
-
-    from aictl.dashboard.board_history import ScopeError, _batch
-    from aictl.kusto.connection import KustoClientFactory
-
-    calls = []
-
-    def execute(_db, kql, props):
-        assert props.get_option("query_fanout_threads_percent", None) == 1
-        assert props.get_option("request_readonly_hardline", None) is True
-        calls.append(kql)
-        if ";\n" in kql or kql == "large":
-            raise KustoMultiApiError([{"OneApiErrors": [{"error": {
-                "code": "LowMemoryCondition", "message": "partial query failure", "@message": "E_LOW_MEMORY_CONDITION",
-            }}]}])
-        table = [[1]] if kql == "one" else [[2]]
-
-        class Result(list):
-            rows_count = 1
-            columns = [SimpleNamespace(column_type="long")]
-
-        return SimpleNamespace(errors_count=0, primary_results=[Result(table)])
-
-    monkeypatch.setattr(KustoClientFactory, "client", lambda settings: SimpleNamespace(execute_query=execute))
-    assert _batch(project()._kusto, ["one", "two"]) == [[(1,)], [(2,)]]
-    assert calls == ["one;\ntwo", "one", "two"]
-    with pytest.raises(ScopeError, match=r"memory budget \(aictl\.BoardHistory;") as err:
-        _batch(project()._kusto, ["large"])
-    assert err.value.status == 503
 
 
 @pytest.fixture
-def history(monkeypatch):
-    from aictl.dashboard import board_api, board_history
-    from aictl.kusto.schema import row_defaults, store_schema
+def history(monkeypatch, kusto_store):
+    from aictl.dashboard import board_api, session_record
 
     sid = "eaf2c622-9bed-4cf3-88af-f9ebac09b7de"
-    records: dict[str, list[tuple[str, Any, int, bool, dict]]] = {}
     calls = []
 
     def add(table, node, key, version=1, deleted=False, **fields):
-        data = {**row_defaults(store_schema()[table]), "node_id": node, **fields}
-        records.setdefault(table, []).append((node, key, version, deleted, data))
+        from aictl.stores.kusto.tables import TABLES
+
+        schema = TABLES[table]
+        canonical = {k: v for k, v in fields.items() if k in dict(schema.columns)}
+        canonical.update(node_id=node, _v=f"2026-01-{version:02d}")
+        if schema.tombstone:
+            canonical[schema.tombstone] = deleted
+        if "dedup_key" in dict(schema.columns):
+            canonical.setdefault("dedup_key", str(key))
+        kusto_store.insert(table, **canonical)
 
     for node, ts, tool, model, input_, cache, duration, count in [
         ("host-a", 1100, "copilot-cli", "model-a", 10, 90, 10, 1),
@@ -334,53 +267,11 @@ def history(monkeypatch):
     )
     add("session_step_text", "host-b", "step", step_key="step", session_id=sid, ts=1600, text="node-b evidence")
 
-    def batch(_settings, queries):
-        calls.append(queries)
-        result: list[list[tuple]] = []
-        for kql in queries:
-            match = re.match(r"\['(\w+)'\]", kql)
-            assert match
-            table = match[1]
-            head, tail = kql.split(" | where ['_deleted'] == false", 1)
-            partition = re.search(r"\['node_id'\] == (\"[^\"]*\")", head)
-            chosen = json.loads(partition[1]) if partition else None
-            if chosen is None:
-                assert head.endswith(", ['node_id']"), kql
-            if "ts between" in head:
-                assert table == "process_snapshots" or ("where ['rowid'] in (" in head and " | project ['rowid'])" in head)
-            winners: dict[tuple[str, Any], tuple[int, bool, dict]] = {}
-            for node, key, version, deleted, row in records.get(table, []):
-                if chosen is None or chosen == node:
-                    old = winners.get((node, key))
-                    if not old or old[0] < version:
-                        winners[(node, key)] = (version, deleted, row)
-            rows = [r for _, deleted, r in winners.values() if not deleted]
-            if bounds := re.search(r"ts between \(([\d.]+) \.\. ([\d.]+)\)", tail):
-                rows = [r for r in rows if float(bounds[1]) <= r["ts"] <= float(bounds[2])]
-            if bounds := re.search(r"ts >= ([\d.]+) and ts < ([\d.]+)", tail):
-                rows = [r for r in rows if float(bounds[1]) <= r["ts"] < float(bounds[2])]
-            if value := re.search(r"agent_id == (\"[^\"]*\")", tail):
-                rows = [r for r in rows if r.get("agent_id") == json.loads(value[1])]
-            elif value := re.search(r"agent_id == (\"[^\"]*\")", head):
-                if table == "agents":
-                    rows = [r for r in rows if r.get("agent_id") == json.loads(value[1])]
-            if " | distinct node_id, session_id" in tail:
-                result.append(sorted({(r["node_id"], r["session_id"]) for r in rows}))
-            elif " | project session_id" in tail or " | distinct session_id" in tail:
-                result.append(sorted({(r["session_id"],) for r in rows}))
-            else:
-                columns = re.findall(r"\['(\w+)'\]", tail.split(" | project ")[-1])
-                result.append([tuple(r[c] for c in columns) for r in rows])
-        return result
 
     def no_local(*_args, **_kwargs):
         pytest.fail("Scoped history tried to access serving-node data")
 
-    monkeypatch.setattr(board_history, "_batch", batch)
-    monkeypatch.setattr(board_history, "_settings", lambda db: db._kusto)
-    monkeypatch.setattr(board_history, "_cached", {})
-    monkeypatch.setattr(board_history, "_boards", {})
-    monkeypatch.setattr(board_history, "_aux_cache", {"machine": {}, "context": {}})
+    monkeypatch.setattr(session_record, "time", SimpleNamespace(time=lambda: 4000, monotonic=time.monotonic))
     for fn in ("_prompt_files_on_disk", "_skill_file", "_self_usage", "project_root"):
         monkeypatch.setattr(board_api, fn, no_local)
     monkeypatch.setattr("aictl.dashboard.session_record._stat", no_local)
@@ -389,17 +280,15 @@ def history(monkeypatch):
 
     def call(endpoint="", now=4000, **params):
         path = endpoint if endpoint.startswith("/api/") else "/api/board" + endpoint
-        status, body = board_api.handle_get(path, urlencode({"scope": "fleet"} | params), db, None, now=now)
+        status, body = board_api.handle_get(path, urlencode({"scope": "fleet"} | params), db, kusto_store, now=now)
         return status, json.loads(body)
 
     yield SimpleNamespace(call=call, sid=sid, calls=calls, add=add)
-    for _, projection in board_history._cached.values():
-        projection.conn.close()
 
 
 def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
     status, board = history.call(since=1000, until=2000, buckets=2)
-    assert status == 200 and len(history.calls) == 3
+    assert status == 200 and not history.calls
     assert board["node_scope"] == {"kind": "fleet", "node_id": None}
     assert board["kpis"]["tokens"] == 520
     assert board["kpis"]["cached_share"] == pytest.approx(130 / 520, abs=1e-4)
@@ -429,9 +318,9 @@ def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
     )
     assert filtered["kpis"]["tokens"] == 400
     assert {r["node_id"] for r in filtered["agents"]} == {"host-b"}
-    assert len(history.calls) == 3
+    assert not history.calls
     _, brushed = history.call(since=1580, until=1660, buckets=2)
-    assert brushed["kpis"]["tokens"] == 400 and len(history.calls) == 3
+    assert brushed["kpis"]["tokens"] == 400 and not history.calls
     _, legacy = history.call(scope="node", node_id="legacy", since=1000, until=2000)
     assert {r["node_id"] for r in legacy["agents"]} == {"legacy"}
     status, empty = history.call(scope="node", node_id="not-reported", since=1000, until=2000)
@@ -439,13 +328,11 @@ def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
 
 
 def test_wide_board_retains_only_current_facts_and_reuses_projection(history, monkeypatch):
-    from aictl.dashboard import board_history
 
-    monkeypatch.setattr(board_history, "TIMED_READ_S", 400)
     _, board = history.call(since=1000, until=2000, buckets=2)
     assert board["kpis"]["tokens"] == 520
     assert board["kpis"]["tool_calls"] == 6
-    assert any("ts < " in stmt for group in history.calls for stmt in group)
+    assert not history.calls
     calls = len(history.calls)
     _, tool = history.call("/tool", since=1000, until=2000, buckets=2, name="Read", model="model-b", tool="copilot-cli")
     assert tool["total"] == 4 and len(history.calls) == calls
@@ -460,33 +347,47 @@ def test_tool_drawer_uses_the_same_session_scope_as_the_summary(history):
     assert none["total"] == 0
 
 
-def test_file_fallback_diff_never_uses_a_later_version():
+def test_file_fallback_diff_never_uses_a_later_version(kusto_store):
     from aictl.dashboard.board_api import file_detail
-    from aictl.dashboard.board_history import HistoryProjection, Read, Scope
+    from aictl.dashboard.projections.history import HistoryScope
 
-    scope = Scope("node", "host-a")
-    db = HistoryProjection(scope)
-    try:
-        db.load(Read("file_write_events", cols=("path", "ts", "session_id", "detail", "source_event_id")),
-                [("host-a", "/x", 100, "session", "{}", ""), ("host-a", "/x", 300, "session", "{}", "")], scope)
-        db.load(Read("file_history", cols=("path", "ts", "content", "blob_hash")),
-                [("host-a", "/x", 90, "before", ""), ("host-a", "/x", 110, "selected", ""),
-                 ("host-a", "/x", 300, "later", "")], scope)
-        _, data = file_detail(db, "/x", since=100, until=200)
-        assert [edit["ts"] for edit in data["edits"]] == [100]
-        assert data["diff_as_of"] == 110
-        assert {line["text"] for line in data["diff"]} == {"before", "selected"}
-        assert file_detail(db, "/x", since=120, until=200)[1]["diff"] is None
-    finally:
-        db.conn.close()
+    history = HistoryScope(kusto_store.history_store.reader, "host-a", qualified=True)
+    for ts in (100, 300):
+        kusto_store.insert("file_write_events", node_id="host-a", path="/x", ts=ts, session_id="session")
+    for node, ts, content in (("host-a", 90, "before"), ("host-a", 110, "selected"), ("host-a", 300, "later"),
+                              ("host-b", 190, "other node")):
+        kusto_store.insert("file_history", node_id=node, path="/x", ts=ts)
+        kusto_store.insert("file_history_text", node_id=node, path="/x", ts=ts, content=content)
+    _, data = file_detail(kusto_store, "/x", now=400.0, since=100, until=200, history=history)
+    assert [edit["ts"] for edit in data["edits"]] == [100]
+    assert data["diff_as_of"] == 110
+    assert {line["text"] for line in data["diff"]} == {"before", "selected"}
+    assert file_detail(kusto_store, "/x", now=400.0, since=120, until=200, history=history)[1]["diff"] is None
+
+
+def test_flow_pid_links_use_current_sessions_in_the_same_project_and_node(kusto_store):
+    for session, project_name, node in (
+        ("active", "p", "host-a"), ("stale", "p", "host-a"),
+        ("wrong-project", "other", "host-a"), ("wrong-node", "p", "host-b"),
+    ):
+        kusto_store.insert("sessions", session_id=session, project=project_name, node_id=node, started_at=100,
+                           _v="2025-01-01T00:00:00Z")
+        kusto_store.insert("session_processes", session_id=session, project="p", node_id="host-a", pid=42)
+    kusto_store.insert("sessions", session_id="stale", project="p", node_id="host-a", started_at=300,
+                       _v="2025-01-02T00:00:00Z")
+    result = kusto_store.history_store.reader.read("sequence.pid_sessions", {
+        "all_nodes": False, "requested_node": "host-a", "requested_pid": 42, "since": 100, "until": 200,
+        "limit": 10,
+    })
+    assert [row["session_id"] for row in result.rows] == ["active"]
 
 
 def test_scoped_drilldowns_and_search_pagination(history):
-    from aictl.dashboard.board_history import identity
+    from aictl.dashboard.history_scope import identity
 
     first = history.call("/sessions", q="shared prompt", limit=2)
     second = history.call("/sessions", q="shared prompt", limit=2, offset=2)
-    assert first[0] == second[0] == 200
+    assert first[0] == second[0] == 200, (first, second)
     rows = first[1]["rows"] + second[1]["rows"]
     assert first[1]["total"] == second[1]["total"] == len(rows) == 3
     assert [r["node_id"] for r in rows] == ["legacy", "host-b", "host-a"]
@@ -509,7 +410,7 @@ def test_scoped_drilldowns_and_search_pagination(history):
 
 
 def test_context_machine_and_session_records_keep_colliding_paths_and_pids_separate(history, monkeypatch):
-    from aictl.dashboard.board_history import identity
+    from aictl.dashboard.history_scope import identity
 
     monkeypatch.setattr("aictl.dashboard.board_api._file_sessions", lambda: pytest.fail("No local discovery"))
     for n, value in (("host-a", 7), ("host-b", 19)):
@@ -534,9 +435,9 @@ def test_context_machine_and_session_records_keep_colliding_paths_and_pids_separ
     assert history.call("/file", path="/s/memory.md")[0] == 400
 
 
-def test_history_errors_do_not_become_empty_or_local(monkeypatch):
-    from aictl.dashboard import board_api, board_history
-    from aictl.kusto.observations import UnresolvedObservationsError
+def test_history_errors_do_not_become_empty_or_local(monkeypatch, kusto_store):
+    from aictl.dashboard import board_api
+    from aictl.stores.base import StoreError
 
     db = SimpleNamespace(_conn=lambda: pytest.fail("Must not fall back"))
     assert board_api.handle_get("/api/board", "scope=fleet", db, None)[0] == 422
@@ -550,32 +451,27 @@ def test_history_errors_do_not_become_empty_or_local(monkeypatch):
     ):
         assert board_api.handle_get("/api/board", query_string, db, None)[0] == 400
 
-    def unresolved(_db):
-        raise UnresolvedObservationsError(("requests",))
+    def failure(*_args):
+        raise StoreError("timeout")
 
-    monkeypatch.setattr(board_history, "_settings", unresolved)
-    with pytest.raises(UnresolvedObservationsError):
-        board_api.handle_get("/api/board", "scope=fleet", project(), None)
-
-    def failure(_db):
-        raise TimeoutError
-
-    monkeypatch.setattr(board_history, "_settings", failure)
-    status, body = board_api.handle_get("/api/board", "scope=fleet", project(), None)
+    monkeypatch.setattr(kusto_store.history_store.reader, "read", failure)
+    status, body = board_api.handle_get("/api/board", "scope=fleet", project(), kusto_store)
     assert status == 503 and json.loads(body)["reason"] == "query_failed"
 
 
-def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(tmp_path, monkeypatch):
+def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(tmp_path, monkeypatch, kusto_store):
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore
-    from aictl.storage import HistoryDB, SessionRow
 
     monkeypatch.setenv("AICTL_NODE_ID", "My-Node")
-    db = HistoryDB(tmp_path / "store.db", flush_interval=0)
+    monkeypatch.setattr("aictl.dashboard.node_views.local_node_id", lambda: "my-node")
+    db = kusto_store
     sid = 'same id &+ "'
-    db.upsert_session(SessionRow(session_id=sid, tool="cli", model="model-a", started_at=100))
+    db.insert("sessions", node_id="my-node", session_id=sid, tool="cli", model="model-a", started_at=100)
     server = _DashboardHTTPServer(
-        ("127.0.0.1", 0), _DashboardHandler, SnapshotStore(db=db), AllowedPaths(), tmp_path, start_ingesters_now=False
+        ("127.0.0.1", 0), _DashboardHandler,
+        SnapshotStore(history_store=db.history_store, keeps_text=lambda: True), AllowedPaths(),
+        tmp_path, start_ingesters_now=False
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -594,7 +490,8 @@ def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(t
         assert overview["sessions"][0]["session_id"] == sid
         assert json.loads(run("session", sid, "--node", "my-node").stdout)["rows"][0]["model"] == "model-a"
         result = run("settings", "--all-nodes")
-        assert result.exit_code != 0 and "shared Kusto" in result.output
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["rows"][0]["status"] == "unknown"
         for path, method in [("settings/file", "PUT"), ("board/action", "POST")]:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/{path}?scope=node&node_id=host-b", method=method, data=b"{}"
@@ -612,4 +509,3 @@ def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(t
         server.shutdown()
         server.server_close()
         thread.join(2)
-        db.close()

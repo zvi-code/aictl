@@ -1,0 +1,12 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long
+);
+sessions
+| where all_nodes or node_id == requested_node
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| summarize arg_max(_v, *) by ['project'], node_id, session_id
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| summarize arg_max(_v, *) by node_id, session_id
+| order by node_id asc, session_id asc
+| take row_limit
+| project node_id, session_id, tool, project_path, model, pid, started_at, ended_at

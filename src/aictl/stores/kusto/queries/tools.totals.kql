@@ -1,0 +1,17 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_session:string,
+    requested_agent:string = '', row_limit:long
+);
+tool_invocations
+| where session_id == requested_session and (all_nodes or node_id == requested_node)
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where (isempty(requested_agent) or agent_id == requested_agent) and not(tool_name startswith_cs 'permission:')
+| summarize calls=count(), failures=countif(is_error != 0), timed=countif(duration_ms > 0),
+            durations=make_list_if(duration_ms, duration_ms > 0, 20000), total_duration=sum(duration_ms), last_ts=max(ts),
+            input_bytes=sum(input_bytes), input_count=countif(isnotnull(input_bytes)),
+            output_bytes=sum(output_bytes), output_count=countif(isnotnull(output_bytes)),
+            max_output_bytes=max(output_bytes) by tool_name
+| order by calls desc, tool_name asc
+| take row_limit

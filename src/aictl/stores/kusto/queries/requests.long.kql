@@ -1,0 +1,17 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
+    requested_session:string = '', session_keys:dynamic = dynamic([]), requested_models:dynamic, min_tokens:long, row_limit:long
+);
+requests
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where ts between (since .. until) and isnotempty(session_id)
+| where isempty(requested_session) or session_id == requested_session
+| where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| where model in (requested_models) and input_tokens + cache_read_tokens + cache_creation_tokens > min_tokens
+| extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
+| order by ts asc, node_id asc, ['project'] asc, fact_key asc
+| take row_limit
+| project node_id, session_id, agent_id, model, g, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, ts

@@ -1,0 +1,13 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', metric_prefix:string = '', row_limit:long);
+metrics
+| where (all_nodes or node_id == requested_node) and metric startswith metric_prefix
+| summarize arg_max(_v, *) by node_id, ['project'], metric, ts, seq
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| partition hint.strategy=native by metric (
+    order by ts desc, seq desc, node_id asc, ['project'] asc
+    | serialize rn=row_number()
+    | summarize count=count(), arg_min(rn, ts, value) by metric
+)
+| project metric, count, latest_ts=ts, last_value=value
+| order by metric asc
+| take row_limit

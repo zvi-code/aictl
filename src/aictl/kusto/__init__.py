@@ -1,10 +1,7 @@
-"""A Kusto (Azure Data Explorer) cluster as the store behind aictl.
+"""Settings for the aictl Kusto (Azure Data Explorer) store.
 
-With a cluster configured, every table of the history lives in one Kusto database
-and the daemon serves from it alone: no SQLite file is opened for the store. The
-code keeps issuing its SQLite statements; ``translate`` turns each into KQL or into
-rows to ingest, and ``connection`` runs them (see ``statements`` for the contract
-and ``schema`` for the tables).
+The store plugin in ``aictl.stores.kusto`` writes history to one Kusto database.
+Without a configured destination, the daemon serves live runtime data without history.
 
 Configure it in ``config.toml``::
 
@@ -14,7 +11,7 @@ Configure it in ``config.toml``::
     kusto_ingestion = "auto"
 
     [storage.kusto_table_ingestion]
-    path_defs = "inline"
+    events = "streaming"
 
 or with ``aictl daemon serve --kusto-cluster URL [--kusto-database NAME]``, or the
 environment variables ``AICTL_KUSTO_CLUSTER`` and ``AICTL_KUSTO_DATABASE``.
@@ -51,7 +48,6 @@ AUTO_STREAMING_TABLES = frozenset(
      "OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"}
 )
 
-# Mutable SQL writers still resolve the source key, but publish the new timeline synchronously.
 AUTO_STREAMING_STATE_TABLES = frozenset({"session_steps", "session_step_text", "turn_request_links"})
 
 # These tables hold state, unique-key upserts, or bootstrap data used immediately.
@@ -267,7 +263,7 @@ class KustoSettings:
 
 
 def kusto_settings() -> KustoSettings | None:
-    """The configured cluster: the environment first, then ``config.toml``; None when SQLite is the store."""
+    """Return the destination from the environment or config file, or None if unset."""
     from ..platforms import load_config
 
     cfg = load_config()

@@ -1,0 +1,15 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real,
+    growth_points:long, calendar_bins:bool=false, row_limit:long);
+let samples = materialize(system_snapshots
+    | where (all_nodes or node_id == requested_node) and ts between (since .. until)
+    | summarize arg_max(_v, *) by ['project'],node_id,ts
+    | where not(column_ifexists('_deleted',false)));
+let starts = samples | summarize first_ts=min(ts) by node_id;
+samples
+| lookup kind=inner starts on node_id
+| extend width=iff(calendar_bins,(until-since)/growth_points,max_of(60.0,(until-first_ts)/growth_points))
+| extend bucket=tolong((ts-iff(calendar_bins,0.0,first_ts))/width)
+| summarize arg_max(ts,mem_tokens,memory_entries) by node_id,bucket
+| order by node_id asc,ts asc
+| take row_limit
+| project node_id,ts,mem_tokens,memory_entries

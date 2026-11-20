@@ -1,0 +1,23 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real,
+    calendar_starts:dynamic, calendar_days:dynamic, requested_tools:dynamic=dynamic([]),
+    restrict_tools:bool=false, row_limit:long);
+let calendar = print intervals=zip(calendar_days,array_slice(calendar_starts,0,-2),array_slice(calendar_starts,1,-1))
+    | mv-expand interval=intervals
+    | project day=tostring(interval[0]), day_start=toreal(interval[1]), day_end=toreal(interval[2]), join_key=1;
+requests
+| where all_nodes or node_id == requested_node
+| extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+| summarize arg_max(_v, *) by ['project'],node_id,key
+| where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
+| where not(restrict_tools) or tool in (requested_tools)
+| extend join_key=1
+| lookup kind=inner calendar on join_key
+| where ts >= day_start and ts < day_end
+| summarize calls=count(), input=sum(input_tokens), output=sum(output_tokens), cache_read=sum(cache_read_tokens),
+    cache_write=sum(cache_creation_tokens), stored=sumif(cost_usd,cost_usd>0),
+    ri=sumif(input_tokens,not(cost_usd>0) or isnull(cost_usd)), ro=sumif(output_tokens,not(cost_usd>0) or isnull(cost_usd)),
+    rcr=sumif(cache_read_tokens,not(cost_usd>0) or isnull(cost_usd)),
+    rcw=sumif(cache_creation_tokens,not(cost_usd>0) or isnull(cost_usd)), last_ts=max(ts)
+    by node_id,day,model
+| order by node_id asc,day asc,model asc
+| take row_limit

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 import uuid
@@ -162,16 +161,21 @@ TRAFFIC_LABELS = {
     "other": "Other tables",
 }
 
+SESSION_TABLES = frozenset({
+    "sessions", "requests", "tool_invocations", "session_prompts", "session_steps", "session_step_text",
+    "turn_request_links", "session_usage", "skill_uses", "file_write_events", "context_events", "agents",
+    "session_commits", "session_processes", "session_folders", "session_artifacts", "session_loaded_files",
+    "session_context_items", "events", "hook_calls",
+})
+
 
 def traffic_group(table: str) -> str:
-    """Exclusive table grouping; sessions reuse the canonical project-table registry."""
-    from .project_stores import PROJECT_TABLES
-
+    """Return one traffic group for the table."""
     if table.upper().startswith("OTEL"):
         return "otel"
     if table == "hook_calls":
         return "hooks"
-    if table in PROJECT_TABLES or table in {
+    if table in SESSION_TABLES or table in {
         "copilot_session_messages",
         "cursor_session_messages",
         "vscode_chat_messages",
@@ -195,10 +199,9 @@ def traffic_group(table: str) -> str:
 
 @lru_cache(maxsize=1)
 def traffic_tables() -> tuple[str, ...]:
-    from .storage import _SCHEMA_SQL
+    from .stores.kusto.tables import TABLES
 
-    names = re.findall(r"CREATE TABLE IF NOT EXISTS\s+(\w+)", _SCHEMA_SQL)
-    return tuple(sorted(set(names) | {"OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"}))
+    return tuple(sorted(TABLES))
 
 
 def traffic_groups(
@@ -287,12 +290,9 @@ def ingestion_traffic(
     return result
 
 
-def node_client_counters(settings: Any) -> dict:
-    """Numeric SDK counters for a node heartbeat. Never persist errors, KQL or request bodies."""
-    from .kusto.connection import KustoClientFactory
-
-    client, ingester = KustoClientFactory.health_objects(settings)
-    operations = getattr(ingester, "operations", None)
+def node_transport_counters(transport: dict) -> dict:
+    """Keep only numeric transport measurements in stored health reports."""
+    operations = getattr(transport.get("ingester"), "operations", None)
     fields = ("total", "successful_requests", "in_flight", "failed", "recent_completed", "recent_avg_ms", "avg_ms",
               "rate_per_s", "rows", "rows_per_s", "bytes", "bytes_per_s", "last_success_at", "last_error_at")
 
@@ -300,7 +300,7 @@ def node_client_counters(settings: Any) -> dict:
         return {key: stats[key] for key in fields if isinstance(stats.get(key), (int, float))}
 
     result = {}
-    for key, op in (("reads", getattr(client, "reads", None)), ("commands", getattr(client, "commands", None)),
+    for key, op in (("reads", transport.get("reads")), ("commands", transport.get("commands")),
                     ("writes", operations)):
         if op is not None:
             result[key] = numeric(op.snapshot())
@@ -354,7 +354,7 @@ class ObservedKustoClient:
         request: str | None = None,
         client_request_id: str | None = None,
     ) -> Any:
-        from .kusto.diagnostics import log_failure
+        from .stores.kusto.diagnostics import log_failure
 
         self._responses.active = True
         self._responses.value = None

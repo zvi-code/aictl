@@ -155,11 +155,10 @@ class KustoTape:
 
 def start_isolated(port, state, tape):
     from aictl import orchestrator, platforms
-    from aictl.kusto import schema
     from aictl.monitoring.config import MonitorConfig
+    from aictl.stores.kusto.tables import TABLES
 
-    store = schema.store_schema()
-    tape.scrubber.identifiers.update({*store, *(col.name for table in store.values() for col in table.columns)})
+    tape.scrubber.identifiers.update({*TABLES, *(name for table in TABLES.values() for name, _ in table.columns)})
     tape.install()
     os.environ.update(AICTL_KUSTO_CLUSTER=CLUSTER, AICTL_KUSTO_DATABASE=DATABASE, AICTL_CAPTURE="metadata",
                       AICTL_PORT=str(port))
@@ -179,7 +178,7 @@ def start_isolated(port, state, tape):
 
     def serve():
         try:
-            orchestrator.start_server(Path.cwd(), port=port, open_browser=False, db_path=state / "history.db")
+            orchestrator.start_server(Path.cwd(), port=port, open_browser=False)
         except Exception as exc:  # noqa: BLE001 - raw service errors can contain private data
             print(f"Isolated daemon startup failed: {type(exc).__name__}", file=previous_stderr, flush=True)
 

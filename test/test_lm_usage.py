@@ -7,59 +7,37 @@ case.
 
 from __future__ import annotations
 
-import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-import pytest
-
-from aictl.analysis.lm_usage import session_lm_usage
-from aictl.storage import EventRow, HistoryDB
+from aictl.analysis.lm_usage import lm_usage, session_lm_usage
 
 
-@pytest.fixture()
-def db(tmp_path):
-    h = HistoryDB(db_path=str(tmp_path / "aictl.db"), flush_interval=0)
-    yield h
-    h.close()
+def _ev(detail, kind="otel:language_model.usage"):
+    return SimpleNamespace(kind=kind, detail=detail)
 
 
-def _ev(db, *, session_id, kind, detail, ts=None):
-    db.append_event(
-        EventRow(
-            ts=ts if ts is not None else time.time(),
-            tool="copilot-vscode",
-            kind=kind,
-            detail=detail,
-            session_id=session_id,
-        )
-    )
-
-
-def test_aggregates_by_extension(db):
-    sid = "lm-1"
-    _ev(db, session_id=sid, kind="otel:language_model.usage",
-        detail={
+def test_aggregates_by_extension():
+    result = lm_usage([
+        _ev({
             "extension.id": "github.copilot-chat",
             "gen_ai.usage.input_tokens": 100,
             "gen_ai.usage.output_tokens": 50,
             "gen_ai.request.model": "gpt-4o",
-        })
-    _ev(db, session_id=sid, kind="otel:language_model.usage",
-        detail={
+        }),
+        _ev({
             "extension.id": "github.copilot-chat",
             "gen_ai.usage.input_tokens": 200,
             "gen_ai.usage.output_tokens": 80,
             "gen_ai.request.model": "gpt-4o",
-        })
-    _ev(db, session_id=sid, kind="otel:language_model.usage",
-        detail={
+        }),
+        _ev({
             "extension.id": "ms-azuretools.vscode-azure-github-copilot",
             "gen_ai.usage.input_tokens": 30,
             "gen_ai.usage.output_tokens": 10,
             "gen_ai.request.model": "gpt-4o-mini",
-        })
-    db.flush()
-
-    result = session_lm_usage(db, sid)
+        }),
+    ])
     by_ext = result["by_extension"]
     assert "github.copilot-chat" in by_ext
     cp = by_ext["github.copilot-chat"]
@@ -71,41 +49,29 @@ def test_aggregates_by_extension(db):
     az = by_ext["ms-azuretools.vscode-azure-github-copilot"]
     assert az["total_tokens"] == 40
     assert result["total_tokens"] == 470
+    assert result["total_input_tokens"] == 330
+    assert result["total_output_tokens"] == 140
     assert result["total_calls"] == 3
 
 
-def test_falls_back_to_plain_token_keys(db):
-    sid = "lm-2"
-    _ev(db, session_id=sid, kind="otel:language_model.usage",
-        detail={
-            "extensionId": "foo.bar",
-            "input_tokens": "5",
-            "output_tokens": "2",
-            "model": "llama3",
-        })
-    db.flush()
-    result = session_lm_usage(db, sid)
+def test_falls_back_to_plain_token_keys():
+    result = lm_usage([_ev({"extensionId": "foo.bar", "input_tokens": "5", "output_tokens": "2", "model": "llama3"})])
     assert result["total_tokens"] == 7
     assert result["by_extension"]["foo.bar"]["models"] == ["llama3"]
 
 
-def test_unknown_extension_bucketed_as_literal(db):
-    sid = "lm-3"
-    _ev(db, session_id=sid, kind="otel:language_model.usage",
-        detail={"input_tokens": 1, "output_tokens": 1})
-    db.flush()
-    result = session_lm_usage(db, sid)
+def test_unknown_extension_bucketed_as_literal():
+    result = lm_usage([_ev({"input_tokens": 1, "output_tokens": 1})])
     assert "(unknown)" in result["by_extension"]
 
 
-def test_non_lm_events_ignored(db):
-    sid = "lm-4"
-    _ev(db, session_id=sid, kind="otel:api_request", detail={"input_tokens": 1000})
-    db.flush()
-    result = session_lm_usage(db, sid)
+def test_non_lm_events_ignored():
+    result = lm_usage([_ev({"input_tokens": 1000}, kind="otel:api_request")])
     assert result["total_calls"] == 0
     assert result["by_extension"] == {}
 
 
-def test_empty_session_id(db):
-    assert session_lm_usage(db, "") == {"by_extension": {}, "total_tokens": 0, "total_calls": 0}
+def test_empty_session_id():
+    reader = Mock()
+    assert session_lm_usage(reader, "") == {"by_extension": {}, "total_tokens": 0, "total_calls": 0}
+    reader.query_events.assert_not_called()

@@ -17,7 +17,6 @@ from aictl.commands.admin import (
     _find_project_root,
     _package_source,
     _render_markdown,
-    _resolve_db_path,
     build_ui,
     catalog,
     config,
@@ -29,31 +28,6 @@ from aictl.commands.admin import (
 @pytest.fixture()
 def runner():
     return CliRunner()
-
-
-# ────────────────────────────────────────────────────────────────
-# _resolve_db_path
-# ────────────────────────────────────────────────────────────────
-
-
-class TestResolveDbPath:
-    def test_existing_path(self, tmp_path):
-        db_file = tmp_path / "test.db"
-        db_file.touch()
-        result = _resolve_db_path(str(db_file))
-        assert result == db_file
-
-    def test_nonexistent_path_raises(self, tmp_path):
-        with pytest.raises(click.ClickException, match="Database not found"):
-            _resolve_db_path(str(tmp_path / "nonexistent.db"))
-
-    def test_default_path_used_when_none(self):
-        # When None, it uses DEFAULT_DB_PATH — which may or may not exist
-        # We just verify it doesn't crash with a TypeError
-        try:
-            _resolve_db_path(None)
-        except click.ClickException:
-            pass  # Expected if DB doesn't exist
 
 
 # ────────────────────────────────────────────────────────────────
@@ -216,27 +190,27 @@ class TestRenderMarkdown:
 
 
 class TestDbStats:
-    def test_stats_output(self, runner, tmp_path):
-        """db stats renders table with row counts."""
-        db_file = tmp_path / "test.db"
-        db_file.touch()
+    def test_stats_output(self, runner):
+        from aictl.kusto import KustoSettings
 
-        mock_db = MagicMock()
-        mock_db.stats.return_value = {
-            "file_size_bytes": 1024 * 1024,
-            "samples_count": 1000,
-            "events_count": 500,
-            "earliest_ts": time.time() - 86400,
-            "latest_ts": time.time(),
-        }
-
-        with patch("aictl.project_stores.ProjectStores", return_value=mock_db):
-            result = runner.invoke(db, ["--db", str(db_file), "stats"])
+        details = [{"TableName": "events", "TotalExtents": 2, "TotalRowCount": 1000, "TotalExtentSize": 4096}]
+        logical = [{"table": "events", "rows": 500}]
+        with patch("aictl.commands.admin.kusto_settings", return_value=KustoSettings("https://example.invalid")), \
+             patch("aictl.stores.kusto.maintenance.store_stats", return_value=(details, logical)):
+            result = runner.invoke(db, ["stats"])
 
         assert result.exit_code == 0
-        assert "1.0 MB" in result.output
-        assert "1,000" in result.output
-        assert "samples" in result.output
+        current, physical = result.output.split("Physical extent metadata")
+        assert "500" in current and "1,000" not in current
+        assert "1,000" in physical and "4,096" in physical
+
+    def test_schema_includes_native_key_and_retention(self, runner):
+        result = runner.invoke(db, ["schema", "--json"])
+        assert result.exit_code == 0
+        rows = {r["table"]: r for line in result.output.splitlines() if (r := json.loads(line))}
+        assert rows["events"]["key"] == ["project", "node_id", "source_key"]
+        assert rows["events_text"]["retention_days"] == 14
+        assert rows["files"]["columns"]["_deleted"] == "bool"
 
 
 # ────────────────────────────────────────────────────────────────
@@ -245,36 +219,10 @@ class TestDbStats:
 
 
 class TestDbCompact:
-    def test_compact_runs(self, runner, tmp_path):
-        db_file = tmp_path / "test.db"
-        db_file.write_bytes(b"\x00" * 1024)  # 1KB dummy
-
-        mock_conn = MagicMock()
-        mock_db = MagicMock()
-        mock_db.compact.return_value = {"samples_downsampled": 100, "events_deleted": 50}
-        mock_db._conn.return_value = mock_conn
-
-        with patch("aictl.project_stores.ProjectStores", return_value=mock_db):
-            result = runner.invoke(db, ["--db", str(db_file), "compact"])
-
-        assert result.exit_code == 0
-        assert "Compacting" in result.output
-        mock_db.compact.assert_called_once()
-        mock_db.vacuum.assert_called_once()
-
-    def test_compact_no_vacuum(self, runner, tmp_path):
-        db_file = tmp_path / "test.db"
-        db_file.write_bytes(b"\x00" * 1024)
-
-        mock_db = MagicMock()
-        mock_db.compact.return_value = {}
-
-        with patch("aictl.project_stores.ProjectStores", return_value=mock_db):
-            result = runner.invoke(db, ["--db", str(db_file), "compact", "--no-vacuum"])
-
-        assert result.exit_code == 0
-        # VACUUM should NOT be called
-        mock_db.vacuum.assert_not_called()
+    def test_compact_removed(self, runner):
+        result = runner.invoke(db, ["compact"])
+        assert result.exit_code != 0
+        assert "No such command" in result.output
 
 
 # ────────────────────────────────────────────────────────────────
@@ -283,26 +231,46 @@ class TestDbCompact:
 
 
 class TestDbReset:
-    def test_reset_with_yes(self, runner, tmp_path):
+    def test_reset_rejects_file(self, runner, tmp_path):
         db_file = tmp_path / "test.db"
         db_file.write_bytes(b"\x00" * 1024)
 
-        mock_db = MagicMock()
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
-            result = runner.invoke(db, ["--db", str(db_file), "reset", "--yes"])
+        result = runner.invoke(db, ["--db", str(db_file), "reset", "--yes"])
+        assert result.exit_code != 0
+        assert db_file.stat().st_size == 1024
 
-        assert result.exit_code == 0
-        assert "deleted" in result.output.lower() or "Fresh database" in result.output
+    def test_reset_needs_confirmation(self, runner):
+        from aictl.kusto import KustoSettings
 
-    def test_reset_nonexistent_db(self, runner, tmp_path):
-        db_file = tmp_path / "new.db"
+        with patch("aictl.commands.admin.kusto_settings", return_value=KustoSettings("https://example.invalid")), \
+             patch("aictl.stores.kusto.maintenance.reset_history", return_value=2) as reset:
+            assert runner.invoke(db, ["reset"], input="n\n").exit_code != 0
+            reset.assert_not_called()
+            result = runner.invoke(db, ["reset", "--yes"])
+            assert result.exit_code == 0
+            assert "Cleared 2 aictl tables" in result.output
+            reset.assert_called_once()
 
-        mock_db = MagicMock()
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
-            result = runner.invoke(db, ["--db", str(db_file), "reset", "--yes"])
+    def test_reset_and_trim_commands_are_scoped_to_native_tables(self, monkeypatch, tmp_path):
+        from test_kusto_connection import response
 
-        assert result.exit_code == 0
-        assert "does not exist yet" in result.output
+        from aictl.kusto import KustoSettings
+        from aictl.stores.kusto import maintenance
+
+        settings = KustoSettings("https://example.invalid", database="aictl_perf_test", node_id="host-a")
+        receive = MagicMock(return_value=response([("TableName", "string")], [["events"], ["unrelated"]]))
+        monkeypatch.setattr(maintenance.KustoClientFactory, "client", lambda _: MagicMock(execute_mgmt=receive))
+        monkeypatch.setattr(maintenance, "restart_directory", lambda *_: tmp_path)
+        assert maintenance.reset_history(settings) == 1
+        assert receive.call_args_list[-1].args == ("aictl_perf_test", ".clear table ['events'] data")
+        receive.reset_mock()
+        done = maintenance.trim_text(settings, 1000, dry_run=True)
+        assert "events_text" in done and "files_text" in done and "OTELLogs" not in done
+        for call in receive.call_args_list:
+            database, command = call.args
+            assert database == "aictl_perf_test"
+            assert command.startswith(".delete table ") and "records with (whatif=true) <|" in command
+            assert '| where node_id == "host-a"' in command
 
 
 # ────────────────────────────────────────────────────────────────
@@ -439,80 +407,48 @@ class TestReinstall:
 # ────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture
+def catalog_store(kusto_store, monkeypatch):
+    from aictl.kusto import KustoSettings
+
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: KustoSettings("https://example.invalid"))
+    monkeypatch.setattr("aictl.stores.open_store", lambda *args, **kwargs: kusto_store.history_store)
+    kusto_store.insert("datapoint_catalog", key="k1", tab="t", section="s", source_type="raw",
+                       explanation="e", query="q", calc="c")
+    return kusto_store
+
+
 class TestCatalog:
-    def test_catalog_dump_md(self, runner):
-        mock_db = MagicMock()
-        mock_db.query_datapoint_catalog.return_value = [
-            {
-                "key": "k1",
-                "tab": "t",
-                "section": "s",
-                "source_type": "raw",
-                "explanation": "e",
-                "query": "q",
-                "calc": "c",
-                "dynamic_source": None,
-            },
-        ]
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
-            result = runner.invoke(catalog, [])
+    def test_catalog_dump_md(self, runner, catalog_store):
+        result = runner.invoke(catalog, [])
         assert result.exit_code == 0
         assert "Datapoint Catalog" in result.output
 
-    def test_catalog_dump_json(self, runner):
-        mock_db = MagicMock()
-        mock_db.query_datapoint_catalog.return_value = [
-            {
-                "key": "k1",
-                "tab": "t",
-                "section": "s",
-                "source_type": "raw",
-                "explanation": "e",
-                "query": "q",
-                "calc": "c",
-                "dynamic_source": None,
-            },
-        ]
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
-            result = runner.invoke(catalog, ["--format", "json"])
+    def test_catalog_dump_json(self, runner, catalog_store):
+        result = runner.invoke(catalog, ["--format", "json"])
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert len(parsed) == 1
         assert parsed[0]["key"] == "k1"
 
-    def test_catalog_empty_raises(self, runner):
-        mock_db = MagicMock()
-        mock_db.query_datapoint_catalog.return_value = []
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
-            result = runner.invoke(catalog, [])
+    def test_catalog_empty_raises(self, runner, catalog_store):
+        catalog_store.facts.clear("datapoint_catalog")
+        result = runner.invoke(catalog, [])
         assert result.exit_code != 0
         assert "No catalog entries" in result.output
 
-    def test_catalog_output_to_file(self, runner, tmp_path):
+    def test_catalog_output_to_file(self, runner, tmp_path, catalog_store):
         out_file = tmp_path / "catalog.md"
-        mock_db = MagicMock()
-        mock_db.query_datapoint_catalog.return_value = [
-            {
-                "key": "k1",
-                "tab": "t",
-                "section": "s",
-                "source_type": "raw",
-                "explanation": "e",
-                "query": "q",
-                "calc": "c",
-                "dynamic_source": None,
-            },
-        ]
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
-            result = runner.invoke(catalog, ["-o", str(out_file)])
+        result = runner.invoke(catalog, ["-o", str(out_file)])
         assert result.exit_code == 0
         assert out_file.exists()
         assert "Datapoint Catalog" in out_file.read_text()
 
     def test_catalog_sync(self, runner):
-        mock_db = MagicMock()
-        mock_db.sync_datapoint_catalog.return_value = 42
-        with patch("aictl.storage.HistoryDB", return_value=mock_db):
+        from aictl.kusto import KustoSettings
+
+        with patch("aictl.commands.admin.kusto_settings", return_value=KustoSettings("https://example.invalid")), \
+             patch("aictl.commands.admin._sync_catalog", return_value=42):
             result = runner.invoke(catalog, ["sync"])
         assert result.exit_code == 0
         assert "42" in result.output

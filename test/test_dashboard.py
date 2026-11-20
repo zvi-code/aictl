@@ -7,7 +7,7 @@ import json
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool
 from aictl.dashboard.web_server import _DashboardHandler
 from aictl.orchestrator import SnapshotStore, collect
-from aictl.storage import EventRow
+from aictl.records import EventRow
 from aictl.tools import ResourceFile, ToolResources
 
 

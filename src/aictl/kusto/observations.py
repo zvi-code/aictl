@@ -6,22 +6,13 @@ links remain unknown; readers must not turn arrival order into source authority.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .schema import Table
+from typing import Any
 
 FAMILIES = (
     "requests", "tool_invocations", "sessions", "agents", "session_usage",
     "session_processes", "session_prompts", "skill_uses", "file_write_events",
     "context_events", "session_loaded_files", "session_context_items",
 )
-PRODUCER_ID = uuid.uuid4().hex
-
 # An empty table is the layout marker: unlike a maintenance row it cannot expire.
 CURRENT_STORE = "aictl_current_store_v1"
 COMPANIONS = frozenset(family + "_observations" for family in FAMILIES)
@@ -40,117 +31,6 @@ def table_name(family: str) -> str:
     if family not in FAMILIES:
         raise ValueError(f"Unknown observation family: {family}")
     return family + "_observations"
-
-
-def tables_for(baseline: dict[str, Table]) -> dict[str, Table]:
-    from .schema import Column, Table
-
-    envelope = [
-        Column("observation_id", "TEXT", "string"),
-        Column("observation_source", "TEXT", "string"),
-        Column("source_entity_id", "TEXT", "string"),
-        Column("producer_id", "TEXT", "string"),
-        Column("source_revision", "INTEGER", "long"),
-        Column("event_time", "TEXT", "datetime"),
-        Column("received_time", "TEXT", "datetime"),
-        Column("retention_ts", "REAL", "real"),
-        Column("presence", "TEXT", "string"),
-        Column("source_presence_known", "INTEGER", "bool"),
-        Column("serialized_fields", "TEXT", "string"),
-        Column("observation_operation", "TEXT", "string"),
-    ]
-    result = {}
-    for family in FAMILIES:
-        original = baseline[family]
-        columns = [
-            Column(c.name, c.sqlite_type, c.kusto_type, c.default, c.not_null)
-            for c in original.columns
-        ]
-        if family in ("requests", "tool_invocations"):
-            columns.append(Column("source_ts", "REAL", "real"))
-        if family == "session_processes":
-            columns.append(Column("trace_id", "TEXT", "string"))
-        if not any(c.name == "project_path" for c in columns):
-            columns.append(Column("project_path", "TEXT", "string"))
-        if family == "sessions":
-            columns.append(Column("ts", "REAL", "real"))
-        result[table_name(family)] = Table(
-            name=table_name(family), columns=columns + envelope, key=("observation_id",)
-        )
-    return result
-
-
-def envelope(
-    values: dict[str, Any], *, source: str, operation: str,
-    source_entity_id: str = "", observation_id: str | None = None,
-) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    now_ts = now.timestamp()
-    stamp = values.get("ts") or values.get("last_activity_at") or values.get("started_at")
-    event_time = datetime.fromtimestamp(float(stamp), timezone.utc) if stamp else None
-    retention_ts = float(stamp) if stamp else now_ts
-    return values | {
-        "observation_id": observation_id or uuid.uuid4().hex,
-        "observation_source": source,
-        "source_entity_id": source_entity_id,
-        "producer_id": PRODUCER_ID,
-        # A call start or ingestion timestamp is not an upstream revision.
-        "source_revision": None,
-        "event_time": event_time,
-        "received_time": now,
-        "retention_ts": retention_ts,
-        "presence": None,
-        "source_presence_known": False,
-        "serialized_fields": json.dumps(sorted(values)),
-        "observation_operation": operation,
-    }
-
-
-def typed_identity(identity: int, values: dict[str, Any]) -> str:
-    payload = json.dumps(values, sort_keys=True, default=str, separators=(",", ":"))
-    return hashlib.sha256(f"{PRODUCER_ID}:{identity}:{payload}".encode()).hexdigest()
-
-
-def unresolved_query(families: tuple[str, ...], *, node_id: str | None = None) -> str:
-    """Cutover policies by node and family. None means every node; '' is the untagged node only."""
-    from .schema import NODE, node_predicate, quote
-
-    prefix = "observation_cutover:"
-    keys = ", ".join(json.dumps(prefix + family) for family in sorted(set(families)))
-    key_filter = f"['key'] in ({keys})" if keys else "false"
-    source = "['maintenance_state']"
-    if node_id is not None:
-        source += f" | where {node_predicate(node_id)}"
-    return (
-        f"{source} | where {key_filter} | summarize arg_max(['_v'], *) by {quote(NODE)}, ['key']"
-        " | where ['_deleted'] == false"
-        f" | project {quote(NODE)}, family=substring(['key'], {len(prefix)}), policy=['text']"
-    )
-
-
-def public_function_name(table: Table) -> str:
-    if table.name in COMPANIONS:
-        return "aictl_" + table.name
-    if table.name in FAMILIES:
-        return "aictl_resolved_" + table.name
-    raise ValueError(f"Not an observation family or companion: {table.name}")
-
-
-def public_function_commands(tables: dict[str, Table], layout: set[str]) -> list[str]:
-    """Stored functions for the physical layout returned by LAYOUT_QUERY, after schema setup.
-
-    A current store publishes versioned facts; an observation store publishes evidence,
-    not its incomplete baseline. There is no daemon-specific value in a function definition.
-    A caller can add ``| where node_id == "..."`` to the zero-argument function call.
-    """
-    from .schema import current
-
-    current_store = has_current_store(layout)
-    names = (family if current_store else table_name(family) for family in FAMILIES)
-    return [
-        f".create-or-alter function {public_function_name(tables[name])}() {{\n{current(tables[name])}\n}}"
-        for name in names if name in tables and name in layout
-    ]
 
 
 class UnresolvedObservationsError(RuntimeError):

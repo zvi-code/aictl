@@ -1,0 +1,14 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
+                         restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long);
+process_snapshots
+| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+| summarize arg_max(_v, *) by node_id, ['project'], ts, pid
+| where not(coalesce(column_ifexists('_deleted', false), false)) and (not(restrict_tools) or tool in (requested_tools))
+| summarize cpu=iff(countif(isnotnull(cpu_percent)) > 0, sum(cpu_percent), real(null)),
+            mem=iff(countif(isnotnull(memory_rss_mb)) > 0, sum(memory_rss_mb), real(null)) by tool, node_id, ts
+| extend b=min_of(grid - 1, tolong((ts - since) * grid / (until - since)))
+| summarize cpu=avg(cpu), mem=avg(mem) by tool, node_id, b
+| summarize cpu=iff(countif(isnotnull(cpu)) > 0, sum(cpu), real(null)),
+            mem=iff(countif(isnotnull(mem)) > 0, sum(mem), real(null)) by tool, b
+| order by tool asc, b asc
+| take row_limit

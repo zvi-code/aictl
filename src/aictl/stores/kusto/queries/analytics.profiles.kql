@@ -1,0 +1,14 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long
+);
+sessions
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by node_id, ['project'], session_id
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where started_at between (since .. until) and session_id != 'aictl-verify'
+| where input_tokens > 0 or output_tokens > 0 or cache_read_tokens > 0 or cache_creation_tokens > 0
+| project session_id, tool, project_path, model, started_at, input_tokens, output_tokens, cache_read_tokens,
+          cache_creation_tokens, cost_usd, request_count, tool_call_count,
+          tokens_source=source, tokens_quality='unknown', cost_quality='unknown'
+| order by started_at desc, session_id asc
+| take row_limit

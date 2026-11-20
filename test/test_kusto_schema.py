@@ -1,50 +1,35 @@
-"""The Kusto schema is derived from the SQLite schema, and its documentation from the code."""
+"""The native store schema preserves the report cutover and the OTLP wire columns."""
 
-from pathlib import Path
+import pytest
+from test_kusto_connection import FakeClient, response
 
-from aictl.kusto import schema as S
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_every_store_table_is_grouped_once():
-    tables = S.store_schema()
-    grouped = [n for _, names in S.TABLE_GROUPS for n in names]
-    assert sorted(grouped) == sorted(tables), "a table joined or left the store without a group"
-    assert len(grouped) == len(set(grouped))
+from aictl.kusto.observations import CURRENT_STORE
+from aictl.stores.kusto.maintenance import schema_rows
+from aictl.stores.kusto.otel import TABLES as OTLP_TABLES
+from aictl.stores.kusto.schema import ensure_schema
+from aictl.stores.kusto.tables import TABLES
 
 
-def test_information_rows_cover_every_column_and_system_column():
-    tables = S.store_schema()
-    rows = S.information_rows(tables)
-    by_table: dict[str, list[dict]] = {}
-    for r in rows:
-        by_table.setdefault(str(r["table_name"]), []).append(r)
-    for name, table in tables.items():
-        own = by_table[name]
-        system = len(S.SYSTEM_COLUMNS) - bool(table.rowid_column)
-        assert len(own) == len(table.columns) + system, name
-        assert [r["ordinal"] for r in own] == list(range(1, len(own) + 1))
-        keyed = [r["column_name"] for r in sorted(own, key=lambda r: r["key_position"]) if r["key_position"]]
-        expected = (table.rowid_column,) if table.rowid_column and table.key == (S.ROWID,) else table.key
-        assert tuple(keyed) == (S.NODE, *expected), name
-    assert {r["scope"] for r in rows} == {"session", "machine", "telemetry"}
-    from aictl.kusto.otel import TABLES
-
-    for raw in TABLES:
-        assert [(r["column_name"], r["kusto_type"]) for r in by_table[raw.name]] == [(c.name, c.kusto_type) for c in raw.columns]
-    assert all(r["table_group"] for r in rows)
+def test_schema_includes_all_otlp_wire_columns():
+    rows = {r["table"]: r for r in schema_rows()}
+    for raw in OTLP_TABLES:
+        assert {c.name: c.kusto_type for c in raw.columns}.items() <= rows[raw.name]["columns"].items()
 
 
-def test_information_commands_are_two_and_quote_every_identifier():
-    create, fill = S.information_commands()
-    assert create.startswith(".create-merge table ['aictl_information_schema'] (")
-    assert fill.startswith(".set-or-replace ['aictl_information_schema'] <| datatable(")
-    assert "'requests', 'dedup_key'" in fill and "'dedup_key'," in fill
+@pytest.mark.parametrize("existing", [None, "requests", "requests_observations", CURRENT_STORE])
+def test_schema_marks_only_a_fresh_report_layout(existing):
+    tables = {name: TABLES[name] for name in ("requests", "tool_invocations", "requests_observations")}
+    columns = [("TableName", "string"), ("ColumnName", "string"), ("ColumnType", "string")]
 
+    def mgmt(command):
+        if command.startswith(".show database schema"):
+            return response(columns, [[existing, "unrelated", "string"]] if existing else [])
+        return response()
 
-def test_kusto_schema_doc_is_current():
-    doc = (ROOT / "docs" / "kusto-schema.md").read_text(encoding="utf-8")
-    assert doc == S.render_markdown(), (
-        "docs/kusto-schema.md is stale: run `aictl db schema --markdown > docs/kusto-schema.md`"
-    )
+    client = FakeClient(on_mgmt=mgmt)
+    ensure_schema(client, "test", tables=tables, modes=dict.fromkeys(tables, "queued"))
+    creates = [c for c in client.commands if c.startswith(".create-merge table")]
+    assert any(CURRENT_STORE in command for command in creates) == (existing is None)
+    assert any("requests_observations" in command for command in creates) == (existing == "requests_observations")
+    assert any("['requests']" in command for command in creates)
+    assert any("['tool_invocations']" in command for command in creates)

@@ -1,7 +1,13 @@
-# aictl Storage Schema
+# Legacy aictl SQLite schema
 
-SQLite database at `~/.config/aictl/history.db` (configurable via
-`[storage] db_path` in `config.toml` or `--db` CLI flag).
+Phase S z3 deleted the SQLite history layer. This page describes the retired local format. The daemon writes new history through
+the Kusto store plugin. For current definitions, run `aictl db schema` or see
+[`stores/kusto/tables.py`](../src/aictl/stores/kusto/tables.py). Local restart manifests
+record collection progress; they are not a second history store.
+Dashboard history uses the plugin's [named query views](../src/aictl/stores/kusto/queries),
+not the local history file described here.
+
+The former default database was `~/.config/aictl/history.db`.
 
 ## One store per project
 
@@ -14,14 +20,12 @@ database (`history.db` gives `history-projects/`):
   to its main repository.
 - `_shared.db` for sessions launched outside git.
 
-The per-session tables are listed in `PROJECT_TABLES` in
-[src/aictl/project_stores.py](../src/aictl/project_stores.py). `ProjectStores` routes
-each write and attaches the stores a read needs. The machine store's `project_stores`
-table records each store's file, time range and row count.
+The old store routed writes by project and attached project files for reads.
+The machine store's `project_stores` table recorded each store's file, time range and row count.
 
 A `history.db` written before this split is split in the background. The daemon
 moves its sessions to their project stores, a few seconds of work at a time. A
-stopped move is finished on the next start. `aictl db reset` deletes only files that
+stopped move was finished on the next start. The legacy reset deleted only files that
 are project stores.
 
 ## Schema Versioning
@@ -411,7 +415,7 @@ CLI: `aictl daemon serve --db /path/to/custom.db`
 | 7d–30d | 5-minute averages | `GROUP BY 5-min bucket` |
 | >30d | Deleted | `DELETE WHERE ts < cutoff` |
 
-The daemon runs maintenance 10 minutes after start and then every 30 minutes, in small transactions. It leaves rows older than its first run alone for one retention period; `aictl db compact` removes them on request (`--dry-run` prints the expected size).
+Kusto uses table retention policies to remove old data. It does not use this SQLite compaction schedule.
 
 ## Bounds and capture modes
 
@@ -423,6 +427,6 @@ Storage is a disposable cache. Losing history is acceptable; hurting the host is
 | `max_total_mb` | 1024 | Budget for live DB pages, WAL and logs. Eviction order: rotated logs, text, message rows, then time series. Sessions, requests, agents, files and any table not listed for eviction stay. |
 | `content_retention_days` | 14 | With `full`: blank conversation text older than this. |
 
-Free pages do not count against the budget. Only `aictl db compact` (VACUUM) shrinks a file created before incremental vacuum. `aictl db trim-text` removes stored text from an existing DB.
+`aictl db trim-text` removes retained text from the configured Kusto store. Use `--dry-run` to check the delete predicates and `--older-than-days N` to select text older than that cutoff.
 
 If the DB file is corrupt, full or stays locked, the daemon continues on the in-memory store and `/api/self-status` reports `storage_degraded`.

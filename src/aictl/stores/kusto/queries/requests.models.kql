@@ -1,0 +1,20 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_project:string = '',
+    requested_session:string, requested_agent:string = '',
+    since:real = real(null), until:real = real(null), row_limit:long
+);
+requests
+| where all_nodes or node_id == requested_node
+| where isempty(requested_project) or ['project'] == requested_project
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where session_id == requested_session and (isempty(requested_agent) or agent_id == requested_agent)
+| where (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
+| summarize calls=count(), input_tokens=sum(input_tokens), output_tokens=sum(output_tokens),
+            cache_read_tokens=sum(cache_read_tokens), cache_creation_tokens=sum(cache_creation_tokens),
+            last_ts=max(ts), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd) by model
+| project model, calls, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+          last_ts, cost_usd=iff(priced == 0, real(null), sum_cost)
+| order by model asc
+| take row_limit

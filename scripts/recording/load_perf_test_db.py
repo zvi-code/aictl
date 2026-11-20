@@ -1,4 +1,4 @@
-"""Reset aictl-owned tables and load the fixed busy recording into the test database."""
+"""Reset aictl-owned tables and load a native store recording into the test database."""
 
 import argparse
 import gzip
@@ -8,7 +8,6 @@ import re
 import sys
 import time
 from collections import defaultdict
-from pathlib import Path
 
 from record_daemon import CLUSTER, DATABASE, guard
 from scrub import relative_path, verify_text
@@ -38,7 +37,7 @@ def read_batches(path, schema):
 
 
 def row_counts(client, tables):
-    from aictl.kusto.schema import quote
+    from aictl.stores.kusto.client import quote
 
     branches = [
         f"({quote(table)} | summarize row_count=count() | extend table_name='{table}')"
@@ -50,15 +49,15 @@ def row_counts(client, tables):
 
 
 def run(path, counts_path):
-    from aictl.kusto import KustoSettings, otel
-    from aictl.kusto.connection import KustoClientFactory, connect
-    from aictl.kusto.ingest import InlineIngester
-    from aictl.kusto.schema import SYSTEM_COLUMNS, quote, store_schema
+    from aictl.kusto import KustoSettings
+    from aictl.stores.kusto.client import KustoClientFactory, quote
+    from aictl.stores.kusto.ingest import InlineIngester
+    from aictl.stores.kusto.schema import LEGACY_COLUMNS, ensure_schema
+    from aictl.stores.kusto.tables import TABLES
 
-    tables = store_schema()
-    schema = {name: {c.name for c in table.columns} | {n for n, _ in SYSTEM_COLUMNS}
+    tables = {name: table for name, table in TABLES.items() if not name.endswith("_observations")}
+    schema = {name: {column for column, _ in (*table.columns, *LEGACY_COLUMNS.get(name, ()))}
               for name, table in tables.items()}
-    schema.update({t.name: {c.name for c in t.columns} for t in otel.TABLES})
     if any(not re.fullmatch(r"[a-zA-Z0-9_]+", name) for name in schema):
         raise ValueError("Unexpected table name in the aictl schema")
     batches = read_batches(path, schema)
@@ -66,10 +65,7 @@ def run(path, counts_path):
     guard(settings.database)
     client = KustoClientFactory.client(settings)
     ingester = InlineIngester(client, DATABASE)
-    connect(settings, client=client, ingester=ingester, tables=tables)
-    for command in otel.create_commands():
-        guard(DATABASE, command)
-        client.execute_mgmt(DATABASE, command)
+    ensure_schema(client, DATABASE, modes=dict.fromkeys(tables, "inline"), tables=tables)
 
     # Clear rows that the isolated recorder wrote, including the tables with no fixture rows.
     # Do not clear any other tables, functions or benchmark data.
@@ -95,7 +91,7 @@ def run(path, counts_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--recording", default=Path("test") / "recordings" / "busy" / "kusto.jsonl.gz")
+    parser.add_argument("--recording", required=True, help="Sanitized native Kusto recording")
     parser.add_argument("--counts", help="Optional relative output path for the verified counts")
     parser.add_argument("--reset-test-tables", required=True, action="store_true",
                         help="Clear all aictl-owned test tables, not only those represented in the recording")

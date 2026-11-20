@@ -1,0 +1,15 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, restrict_sessions:bool = false,
+    session_keys:dynamic = dynamic([]), row_limit:long
+);
+session_prompts
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where ts between (since .. until) and isnotempty(session_id) and isempty(agent_id)
+| where isnotempty(prompt_file) and not(prompt_file endswith 'SKILL.md')
+| where not(restrict_sessions) or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| summarize session_id=max(session_id), uses=count(), last_ts=max(ts) by node_id, path=prompt_file, project_path
+| order by uses desc, last_ts desc, node_id asc, path asc, project_path asc
+| take row_limit

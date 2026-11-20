@@ -9,10 +9,11 @@ from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any
 
-from ..kusto.observations import FAMILIES, UnresolvedObservationsError, retains_unresolved_facts
+from ..stores import OBSERVATION_FAMILIES, UnresolvedObservationsError, retains_unresolved_facts
+from ..stores import reader_feature
+from .projections.history import configured_reader
 from .live_hub import LiveCapacityError, LiveHub
 from .live_protocol import canonical_scope, stable_id
-from .live_queries import ProjectionConnection, ProjectionQueries
 
 logger = logging.getLogger(__name__)
 _BOARD_TOPICS = {"history.board", "configuration.board", "catalog.board", "source.status"}
@@ -119,20 +120,13 @@ def board_entities(scope: str, payload: dict) -> list[tuple[str, str, dict, str]
 
 
 class _ProjectionDB:
-    """Use existing aggregate math with query results invalidated by Kusto changes."""
+    """Keep live board keys distinct from HTTP cache keys."""
 
-    def __init__(self, db: Any, queries: ProjectionQueries, epoch: str) -> None:
+    _live_projection = True
+
+    def __init__(self, db: Any, epoch: str) -> None:
         self._db = db
-        self._queries = queries
         self._path = f"{getattr(db, '_path', '')}:live:{epoch}"
-
-    def _conn(self) -> ProjectionConnection:
-        return ProjectionConnection(self._db._conn(), self._queries)
-
-    def query_session_usage(self, **kwargs: Any) -> list[dict]:
-        from ..storage import HistoryDB
-
-        return HistoryDB.query_session_usage(self, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._db, name)
@@ -177,8 +171,7 @@ class LiveDashboard:
         self._health_provider = health_provider
         self._reader_factory = reader_factory
         self._compute = compute
-        self._queries = ProjectionQueries()
-        self._projection_db = _ProjectionDB(db, self._queries, hub.epoch)
+        self._projection_db = _ProjectionDB(db, hub.epoch)
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
         self._wake = threading.Event()
@@ -187,6 +180,8 @@ class LiveDashboard:
         self._scopes: dict[str, _Scope] = {}
         self._reader: Any = None
         self._reader_handle: Any = None
+        self._poll_history = False
+        self._next_poll = 0.0
         self._frontier: dict = {}
         self._reader_ready = False
         self._reader_stale = False
@@ -239,7 +234,7 @@ class LiveDashboard:
                 entry.refs += 1
                 entry.last_used = time.monotonic()
                 if retains_unresolved_facts(self.db) and not entry.blocked:
-                    self._block_history(entry, UnresolvedObservationsError(FAMILIES))
+                    self._block_history(entry, UnresolvedObservationsError(OBSERVATION_FAMILIES))
                 read_history = not entry.blocked
         with self._lock:
             self._clients += 1
@@ -267,35 +262,33 @@ class LiveDashboard:
                     thread = threading.Thread(target=target, name=name, daemon=True)
                     self._threads.append(thread)
                     thread.start()
-            if history and self._reader is None:
-                if self._reader_factory is None:
-                    from ..kusto.live_reader import shared_reader
-
-                    factory = shared_reader
+            if history and self._reader is None and not self._poll_history:
+                reader = configured_reader(self.store)
+                if self._reader_factory is not None:
+                    self._reader = self._reader_factory(reader_feature(reader, "connection_info"))
                 else:
-                    factory = self._reader_factory
-                settings = getattr(self.db, "_kusto", None) or getattr(self.db, "kusto", None)
-                self._reader = factory(settings)
-                self._reader_handle = self._reader.subscribe(self._on_batch)
-                self._reader.start()
+                    self._reader = reader_feature(reader, "live_feed")
+                if self._reader is None:
+                    with self._lock:
+                        self._poll_history = self._baseline_allowed = True
+                        self._reader_ready = True
+                        self._reader_reason = None
+                else:
+                    self._reader_handle = self._reader.subscribe(self._on_batch)
+                    self._reader.start()
 
     def _on_batch(self, batch: Any) -> None:
         if self._stop.is_set():
             return
-        from ..kusto.observations import FAMILIES, table_name
-
-        aliases = {table_name(family): family for family in FAMILIES}
-        tables = tuple(sorted(set(batch.changed_tables) | {
-            aliases[name] for name in batch.changed_tables if name in aliases
-        }))
         consumer_gap = batch.kind == "resync" and batch.reason in {"subscriber_overflow", "subscriber_error"}
         if batch.kind in {"bootstrap", "changes", "resync"}:
-            self._queries.invalidate(tables if tables and not consumer_gap else None)
             from .board_api import _facts_lock, _facts_memo, _sources_memo
 
             with _facts_lock:
-                _facts_memo.pop(self._projection_db._path, None)
-                _sources_memo.pop(self._projection_db._path, None)
+                for memo in (_facts_memo, _sources_memo):
+                    for key in tuple(memo):
+                        if key[0] == self._projection_db._path:
+                            del memo[key]
         with self._lock:
             self._frontier = dict(batch.frontier)
             self._reader_ready, self._reader_stale = batch.ready, batch.stale
@@ -377,7 +370,7 @@ class LiveDashboard:
         if entry.rolling:
             filters = _clock_range(replace(filters, since=now - entry.span, until=now))
         if filters.status in {"active", "running", "idle", "waiting"}:
-            from ..storage import _session_uuid
+            from ..records import _session_uuid
 
             ready = any(
                 row.get("producer") == "runtime-collector" and row.get("ready")
@@ -402,13 +395,22 @@ class LiveDashboard:
 
     def _history_loop(self) -> None:
         from .board_api import compute_board
+        from .projections.history import HistoryScope
 
-        compute = self._compute or compute_board
+        compute = self._compute or (
+            lambda db, filters, **kwargs: compute_board(db, filters, history=HistoryScope.local(self.store), **kwargs)
+        )
         while not self._stop.is_set():
             self._wake.wait(1.0)
             self._wake.clear()
             with self._lock:
                 self._expire_scopes_locked()
+                now_mono = time.monotonic()
+                if self._poll_history and now_mono >= self._next_poll:
+                    self._next_poll = now_mono + 5.0
+                    for entry in self._scopes.values():
+                        if entry.refs and not entry.blocked:
+                            entry.dirty = True
                 candidates = [
                     entry
                     for entry in self._scopes.values()

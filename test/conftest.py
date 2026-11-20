@@ -6,21 +6,54 @@ import atexit
 import json
 import os
 import shutil
-import signal
-import socket
-import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(scope="module")
+def kusto_tape(request):
+    from kusto_replay import Tape
+
+    tape = Tape(Path(request.module.__file__).stem)
+    yield tape
+    tape.save()
+
+
+@pytest.fixture
+def kusto_store(kusto_tape, monkeypatch, request):
+    from kusto_replay import LOCAL_NODE, FixturePath, SeededStore
+
+    from aictl.dashboard import node_views
+    from aictl.dashboard.projections import history
+
+    monkeypatch.setattr(history, "local_node_id", lambda: LOCAL_NODE)
+    monkeypatch.setattr(node_views, "local_node_id", lambda: LOCAL_NODE)
+    path = FixturePath(request.getfixturevalue("tmp_path")) if "tmp_path" in request.fixturenames else None
+    return SeededStore(kusto_tape, fixture_path=path)
+
+
+@pytest.fixture
+def dashboard_store(kusto_store):
+    from kusto_replay import FixtureWriter
+
+    from aictl.orchestrator import SnapshotStore
+    from aictl.stores import Store
+
+    writer = FixtureWriter(kusto_store.facts)
+    store = SnapshotStore(history_store=Store(reader=kusto_store.history_store.reader, writer=writer),
+                          keeps_text=lambda: True)
+    return store
+
 
 # ── Real-machine isolation ────────────────────────────────────────
 # The suite runs real install/uninstall/enable code, and that code resolves its
@@ -77,6 +110,15 @@ def _real_home() -> Path:
 
 REAL_HOME = _real_home()
 _PROTECTED = tuple(os.path.normcase(str(REAL_HOME / relative)) for relative in _PROTECTED_RELATIVE)
+_SESSION_SCRATCH = None
+if scratch := os.environ.get("AICTL_TEST_SESSION_SCRATCH"):
+    candidate = Path(scratch).resolve(strict=True)
+    sessions = (REAL_HOME / ".copilot" / "session-state").resolve()
+    relative = candidate.relative_to(sessions)
+    if (len(relative.parts) != 3 or relative.parts[1] != "files"
+            or relative.parts[2] not in {"r2-scratch", "r3-scratch", "sd-scratch"}):
+        raise ValueError("Use the session's designated scratch directory under files")
+    _SESSION_SCRATCH = os.path.normcase(str(candidate))
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _real_home_violations: list[str] = []
 
@@ -87,6 +129,10 @@ def _is_protected(path: object) -> bool:
     if not isinstance(path, (str, os.PathLike)):
         return False  # a file descriptor, or an unnamed database
     resolved = os.path.normcase(os.path.abspath(os.fspath(path)))
+    if _SESSION_SCRATCH and resolved.startswith(_SESSION_SCRATCH + os.sep):
+        destination = os.path.normcase(str(Path(resolved).resolve()))
+        if destination.startswith(_SESSION_SCRATCH + os.sep):
+            return False
     return any(resolved == root or resolved.startswith(root + os.sep) for root in _PROTECTED)
 
 
@@ -126,6 +172,11 @@ if not REAL_HOME_ALLOWED:
     # These would point tool paths straight back at the real directories.
     for _variable in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"):
         os.environ.pop(_variable, None)
+    # The test home hides config.toml but not a Kusto target inherited from the shell.
+    if os.environ.get("AICTL_PARITY_DB") != "aictl_perf_test":
+        for _variable in tuple(os.environ):
+            if _variable.startswith("AICTL_KUSTO_"):
+                os.environ.pop(_variable)
     # Temp-repo commits in tests have no global git identity under this HOME.
     for _role in ("AUTHOR", "COMMITTER"):
         os.environ.setdefault(f"GIT_{_role}_NAME", "aictl tests")
@@ -227,37 +278,12 @@ def _isolated_mutation_ledger(monkeypatch, tmp_path):
     monkeypatch.setattr(mutation_ledger, "_ledger_path", lambda: tmp_path / "mutation-log.jsonl")
 
 
-_PYTHON = sys.executable
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_http(url: str, *, timeout: float = 15) -> None:
-    """Block until *url* responds with HTTP 200 (or timeout)."""
-    deadline = time.monotonic() + timeout
-    last_err: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            with urlopen(url, timeout=2) as resp:
-                if resp.status == 200:
-                    return
-        except (URLError, OSError, TimeoutError) as exc:
-            last_err = exc
-        time.sleep(0.05)
-    raise TimeoutError(f"{url} not ready after {timeout}s: {last_err}")
-
-
 @dataclass
 class ServerHandle:
-    """Running aictl daemon serve process with convenience helpers."""
+    """Test HTTP server and its captured facts."""
 
     port: int
-    db_path: Path
-    proc: subprocess.Popen
+    facts: Any
     base_url: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -292,27 +318,9 @@ class ServerHandle:
     def post_otel_traces(self, payload: dict) -> dict:
         return self.post("/v1/traces", payload)
 
-    def _read_db(self, read: Any) -> Any:
-        """Run *read(db)* against the server's stores: its machine file and every project store.
-
-        A session with a project cwd is kept in that project's store, so reading the
-        machine file alone misses it.
-        """
-        from aictl.project_stores import ProjectStores
-
-        db = ProjectStores(db_path=str(self.db_path), flush_interval=0)
-        try:
-            return read(db)
-        finally:
-            db.close()
-
     def get_sessions(self, since: str = "0") -> list[dict]:
-        """Session rows the server stored, read from its database.
-
-        No REST route lists session rows; the board reads the same table.
-        A row without ``ended_at`` is active.
-        """
-        rows = self._read_db(lambda db: db.query_sessions(since=float(since)))
+        """Return the captured current session rows."""
+        rows = [dict(row) for row in self.facts.rows["sessions"] if row["started_at"] >= float(since)]
         for r in rows:
             r["active"] = not r.get("ended_at")
             r["lifecycle_status"] = "ended" if r.get("ended_at") else "active"
@@ -320,14 +328,10 @@ class ServerHandle:
 
     def get_file_writes(self, session_id: str) -> list[dict]:
         """File writes the server stored for *session_id*."""
-        return self._read_db(lambda db: db.query_file_writes(session_id=session_id))
+        return [dict(row) for row in self.facts.rows["file_write_events"] if row["session_id"] == session_id]
 
     def get_events(self, *, timeout: float = 15, min_count: int = 0, **kw) -> list[dict]:
-        """Query /api/events, polling until *min_count* results appear.
-
-        The server flushes its buffers within a second of a hook while a client
-        watches, so a query may return empty at first.
-        """
+        """Query /api/events, polling until *min_count* results appear."""
         deadline = time.monotonic() + timeout
         while True:
             result = self.get("/api/events", **kw)
@@ -359,49 +363,53 @@ class ServerHandle:
 
 @pytest.fixture(scope="session")
 def aictl_server(tmp_path_factory) -> ServerHandle:
-    """Start ``aictl daemon serve`` on a random port, yield handle, cleanup."""
-    port = _find_free_port()
-    db_dir = tmp_path_factory.mktemp("e2e")
-    db_path = db_dir / "e2e_test.db"
+    """Run the collection service and HTTP server with in-memory history."""
+    from kusto_replay import Facts, FixtureWriter
 
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    cli_invoke = "import sys; sys.argv = ['aictl'] + sys.argv[1:]; from aictl.cli import main; main()"
-    proc = subprocess.Popen(
-        [
-            _PYTHON,
-            "-c",
-            cli_invoke,
-            "daemon",
-            "serve",
-            "--port",
-            str(port),
-            "--no-open",
-            "--no-monitor",
-            "--db",
-            str(db_path),
-            "--root",
-            str(REPO_ROOT),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    from aictl import kusto, stores
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+    from aictl.orchestrator import CollectionService
+    from aictl.stores.testing import FixtureReader
 
+    facts = Facts()
+
+    def events(params):
+        text = {row["source_key"]: row["detail"] for row in facts.rows["events_text"]}
+        rows = [
+            {"pid": 0, "session_id": "", **row, "detail": text.get(row["source_key"], row["detail"])}
+            for row in facts.rows["events"]
+            if (params.get("since") is None or row["ts"] >= params["since"])
+            and (params.get("until") is None or row["ts"] <= params["until"])
+            and (not params.get("requested_session") or row.get("session_id") == params["requested_session"])
+            and (not params.get("requested_tool") or row["tool"] == params["requested_tool"])
+            and (not params.get("requested_kinds") or row["kind"] in params["requested_kinds"])
+        ]
+        return sorted(rows, key=lambda row: row["ts"], reverse=True)
+
+    reader = FixtureReader({
+        "events.page": lambda p: events(p)[:p["limit"]],
+        "events.count": lambda p: [{"count": len(events(p))}],
+        "samples.metrics": lambda p: [{"metric": metric} for metric in sorted({
+            row["metric"] for row in facts.rows["metrics"] if row["metric"].startswith(p.get("metric_prefix", ""))
+        })],
+    })
+    history = stores.Store(reader=reader, writer=FixtureWriter(facts))
+    root = tmp_path_factory.mktemp("e2e")
+    service = CollectionService(root, include_live_monitor=False)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(kusto, "kusto_settings", lambda: kusto.KustoSettings("https://e2e.invalid", auth="none"))
+        patch.setattr(stores, "open_store", lambda *_args, **_kwargs: history)
+        patch.setattr("aictl.orchestrator.restart_directory", lambda *_args: root / "state")
+        service.open_stores(quiet=True)
+    server = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, service.store, service.allowed, root,
+                                  start_ingesters_now=False)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
     try:
-        _wait_for_http(f"http://127.0.0.1:{port}/api/otel-status", timeout=20)
-    except TimeoutError:
-        proc.kill()
-        stdout, stderr = proc.communicate(timeout=5)
-        raise RuntimeError(
-            f"aictl serve failed to start on :{port}\nstdout: {stdout.decode()[:500]}\nstderr: {stderr.decode()[:500]}"
-        )
-
-    handle = ServerHandle(port=port, db_path=db_path, proc=proc)
-    yield handle
-
-    proc.send_signal(signal.SIGTERM)
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=3)
+        service.run(quiet=True)
+        yield ServerHandle(port=server.server_port, facts=facts)
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+        service.stop()

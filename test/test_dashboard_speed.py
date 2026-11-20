@@ -257,6 +257,52 @@ def test_static_assets_are_compressed_once_and_cached_by_name(tmp_path, monkeypa
     assert unhashed.sent_headers["Cache-Control"] == "no-cache" and "ETag" in unhashed.sent_headers
 
 
+@pytest.mark.parametrize(
+    ("header", "encoding"),
+    [
+        ("gzip, br", "br"),
+        ("gzip, br;q=0.5", "gzip"),
+        ("br;q=0, *;q=0.5", "gzip"),
+        ("br;q=0, gzip;q=0", None),
+        (None, None),
+    ],
+)
+def test_static_assets_use_the_accepted_sidecar(header, encoding, tmp_path, monkeypatch):
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    css = b"a{}"
+    # Brotli encoding of a{}; no Brotli Python dependency is needed to serve it.
+    brotli = bytes.fromhex("0b0180617b7d03")
+    packed = gzip.compress(css)
+    (assets / "index-AbCd1234.css").write_bytes(css)
+    (assets / "index-AbCd1234.css.br").write_bytes(brotli)
+    (assets / "index-AbCd1234.css.gz").write_bytes(packed)
+    monkeypatch.setattr(web_server, "_static_dist_candidates", lambda: [tmp_path])
+
+    h = _Recorder(header)
+    h._serve_static("/assets/index-AbCd1234.css")
+    body = {None: css, "br": brotli, "gzip": packed}[encoding]
+    assert h.status == 200 and h.wfile.getvalue() == body
+    assert h.sent_headers.get("Content-Encoding") == encoding
+    assert h.sent_headers["Content-Type"] == "text/css"
+    assert h.sent_headers["Content-Length"] == str(len(body))
+    assert h.sent_headers["Vary"] == "Accept-Encoding"
+    assert h.sent_headers["Cache-Control"] == "public, max-age=31536000, immutable"
+
+
+def test_static_font_uses_woff2_mime_type(tmp_path, monkeypatch):
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "inter-AbCd1234.woff2").write_bytes(b"font data")
+    monkeypatch.setattr(web_server, "_static_dist_candidates", lambda: [tmp_path])
+
+    h = _Recorder("gzip, br")
+    h._serve_static("/assets/inter-AbCd1234.woff2")
+    assert h.sent_headers["Content-Type"] == "font/woff2"
+    assert "Content-Encoding" not in h.sent_headers
+    assert h.wfile.getvalue() == b"font data"
+
+
 def _serve(snapshot: DashboardSnapshot, tmp_path):
     store = SnapshotStore()
     store.update(snapshot)
@@ -342,7 +388,7 @@ def test_refresh_bypasses_the_kept_audit(tmp_path, monkeypatch):
     from aictl import context_audit
 
     runs = []
-    monkeypatch.setattr(context_audit, "run_audit", lambda project, tool=None: runs.append(1) or {"n": len(runs)})
+    monkeypatch.setattr(context_audit, "run_audit", lambda project, tool=None, **options: runs.append(1) or {"n": len(runs)})
     cache = AuditCache(ttl_s=60, clock=lambda: 0.0)
     cache.get(tmp_path)
     assert cache.get(tmp_path, refresh=True)["n"] == 2
@@ -381,7 +427,7 @@ def test_audit_route_passes_refresh_through(monkeypatch, tmp_path):
     from aictl.dashboard.audit_cache import AUDIT_CACHE
 
     runs = []
-    monkeypatch.setattr(context_audit, "run_audit", lambda project, tool=None: runs.append(1) or {"n": len(runs)})
+    monkeypatch.setattr(context_audit, "run_audit", lambda project, tool=None, **options: runs.append(1) or {"n": len(runs)})
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     AUDIT_CACHE.clear()
 
@@ -400,6 +446,7 @@ def test_audit_route_passes_refresh_through(monkeypatch, tmp_path):
     for query in ({}, {}, {"refresh": "1"}, {}):
         stub = Stub(query)
         _DashboardHandler._serve_context_audit(stub)
+        assert "error" not in stub.sent, stub.sent
     assert len(runs) == 2
     AUDIT_CACHE.clear()
 

@@ -290,5 +290,5 @@ class TestFileWriteIndex:
             writes = aictl_server.get_file_writes(sid)
         assert len(writes) == 1
         assert writes[0]["operation"] == "write"
-        assert writes[0]["path"].endswith("/tmp/aictl-e2e/src/new_file.py")
+        assert writes[0]["path"].replace("\\", "/").endswith("/tmp/aictl-e2e/src/new_file.py")
         assert writes[0]["source_event_id"] == tool_use_id

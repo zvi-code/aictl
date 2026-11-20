@@ -1,15 +1,18 @@
 """Copilot events.jsonl -> searchable steps. All transcripts here are synthetic."""
 
 import json
-import sqlite3
 import time
 from types import SimpleNamespace
 
 import pytest
 
+from core_store_fakes import current
 from aictl.ingesters.call_facts import CopilotFacts, FactBuffer
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.storage import STEP_TEXT_LIMIT, HistoryDB, SessionStepRow, TurnRequestLink
+from aictl.records import STEP_TEXT_LIMIT, SessionStepRow, TurnRequestLink
+from aictl.session_facts import SessionFacts
+from aictl.stores.base import StoreError
+from aictl.stores.testing import MemoryWriter
 
 
 def event(kind, data, **envelope):
@@ -59,51 +62,49 @@ def test_flow_across_polls_and_restart(tmp_path):
         # Identical ID-less records are distinct source records but replay does not duplicate them.
         event("user.message", {"content": "again"}), event("user.message", {"content": "again"}),
     ]
-    db = HistoryDB(tmp_path / "db", flush_interval=0)
-    try:
-        ingester = reader(db, tmp_path)
-        for batch in (first, second):
-            with path.open("a", encoding="utf-8") as f:
-                for obj in batch:
-                    f.write(json.dumps({**obj, "timestamp": ts}) + "\n")
-            ingester.poll()
+    writer = MemoryWriter()
+    facts = SessionFacts(writer, keeps_text=lambda: True)
+    ingester = reader(facts, tmp_path)
+    for batch in (first, second):
+        with path.open("a", encoding="utf-8") as f:
+            for obj in batch:
+                f.write(json.dumps({**obj, "timestamp": ts}) + "\n")
+        ingester.poll()
 
-        def timeline():
-            conn = db._conn()
-            cur = conn.execute("SELECT s.*, t.text FROM session_steps s LEFT JOIN session_step_text t USING(step_key) ORDER BY source_order")
-            return [dict(zip([c[0] for c in cur.description], row, strict=True)) for row in cur]
+    def timeline():
+        text = {r["step_key"]: r["text"] for r in current(writer, "session_step_text")}
+        return [r | {"text": text.get(r["step_key"])}
+                for r in sorted(current(writer, "session_steps"), key=lambda r: r["source_order"])]
 
-        rows = timeline()
-        reader(db, tmp_path).poll()
-        assert timeline() == rows
-        assert len({r["step_key"] for r in rows}) == len(rows)
-        assert [r["text"] for r in rows if r["role"] == "user"] == [prompt, "again", "again"]
-        assert {r["project_path"] for r in rows} == {str(tmp_path)}
-        assert [(r["kind"], r["phase"]) for r in rows if r["tool_call_id"] == "c1"] == [
-            ("tool_call", "requested"), ("tool_call", "started"), ("command", "started"),
-            ("tool_result", "failed"), ("context", "snapshot"),
-        ]
-        assert [r["phase"] for r in rows if r["tool_call_id"] == "never-started"] == ["requested"]
-        cmd, result = [r for r in rows if r["kind"] in ("command", "tool_result")]
-        assert (cmd["turn_id"], cmd["round_id"], cmd["message_id"], cmd["request_id"]) == ("t1", "api1", "m1", "r1")
-        assert cmd["name"] == "bash" and "privatevalue" not in cmd["text"] and "\n" in cmd["text"]
-        assert result["text"] == "failed\none test" and result["exit_code"] == 2
-        rnd, = (r for r in rows if r["kind"] == "round")
-        assert (rnd["round_id"], rnd["input_tokens"], rnd["output_tokens"], rnd["context_tokens"]) == ("api1", 21, 3, None)
-        assert rnd["context_limit"] is None  # maxPromptTokens limits input, not the whole context window
-        assert [(r["agent_id"], r["parent_agent_id"]) for r in rows if r["kind"] == "agent"] == [
-            ("child", ""), ("grandchild", "child"), ("child", ""),
-        ]
-        task, = (r for r in rows if r["kind"] == "agent_prompt")
-        assert (task["text"], task["agent_id"], task["tool_call_id"]) == ("fix it", "", "child-call")
-        tool_ctx, child_ctx, compact = [r for r in rows if r["kind"] == "context"]
-        assert (tool_ctx["context_tokens"], tool_ctx["context_limit"]) == (0, 1024)
-        assert (child_ctx["agent_id"], child_ctx["turn_id"], child_ctx["context_tokens"], child_ctx["estimated"]) == ("child", "", 23, 0)
-        assert child_ctx["context_limit"] == 1024
-        assert (child_ctx["system_tokens"], child_ctx["conversation_tokens"], child_ctx["tool_tokens"]) == (8, 11, 4)
-        assert (compact["before_tokens"], compact["after_tokens"], compact["context_limit"]) == (23, 8, None)
-    finally:
-        db.close()
+    rows = timeline()
+    reader(facts, tmp_path).poll()
+    assert timeline() == rows
+    assert len({r["step_key"] for r in rows}) == len(rows)
+    assert [r["text"] for r in rows if r["role"] == "user"] == [prompt, "again", "again"]
+    assert {r["project_path"] for r in rows} == {str(tmp_path)}
+    assert [(r["kind"], r["phase"]) for r in rows if r["tool_call_id"] == "c1"] == [
+        ("tool_call", "requested"), ("tool_call", "started"), ("command", "started"),
+        ("tool_result", "failed"), ("context", "snapshot"),
+    ]
+    assert [r["phase"] for r in rows if r["tool_call_id"] == "never-started"] == ["requested"]
+    cmd, result = [r for r in rows if r["kind"] in ("command", "tool_result")]
+    assert (cmd["turn_id"], cmd["round_id"], cmd["message_id"], cmd["request_id"]) == ("t1", "api1", "m1", "r1")
+    assert cmd["name"] == "bash" and "privatevalue" not in cmd["text"] and "\n" in cmd["text"]
+    assert result["text"] == "failed\none test" and result["exit_code"] == 2
+    rnd, = (r for r in rows if r["kind"] == "round")
+    assert (rnd["round_id"], rnd["input_tokens"], rnd["output_tokens"], rnd["context_tokens"]) == ("api1", 21, 3, None)
+    assert rnd["context_limit"] is None  # maxPromptTokens limits input, not the whole context window
+    assert [(r["agent_id"], r["parent_agent_id"]) for r in rows if r["kind"] == "agent"] == [
+        ("child", ""), ("grandchild", "child"), ("child", ""),
+    ]
+    task, = (r for r in rows if r["kind"] == "agent_prompt")
+    assert (task["text"], task["agent_id"], task["tool_call_id"]) == ("fix it", "", "child-call")
+    tool_ctx, child_ctx, compact = [r for r in rows if r["kind"] == "context"]
+    assert (tool_ctx["context_tokens"], tool_ctx["context_limit"]) == (0, 1024)
+    assert (child_ctx["agent_id"], child_ctx["turn_id"], child_ctx["context_tokens"], child_ctx["estimated"]) == ("child", "", 23, 0)
+    assert child_ctx["context_limit"] == 1024
+    assert (child_ctx["system_tokens"], child_ctx["conversation_tokens"], child_ctx["tool_tokens"]) == (8, 11, 4)
+    assert (compact["before_tokens"], compact["after_tokens"], compact["context_limit"]) == (23, 8, None)
 
 
 @pytest.mark.parametrize("capture", ["full", "metadata", "off"])
@@ -210,12 +211,12 @@ def test_explicit_context_lifecycle_and_model_change(full):
     assert not any(r.text for r in (reset, rewind, start, cancelled, compacted, failed)) and "PRIVATE-" not in repr(buf.steps)
 
 
-def test_step_only_batch_retry_surface_and_legacy_exclusion(monkeypatch):
+def test_step_only_batch_retry_and_surface(monkeypatch):
     batches = []
     def write(facts):
         batches.append(facts)
         if len(batches) == 1:
-            raise sqlite3.OperationalError("busy")
+            raise StoreError("Fact handoff failed")
         return len(facts)
 
     monkeypatch.setattr("aictl.ingesters.call_facts.BUFFER_FLUSH_ROWS", 2)
@@ -235,22 +236,13 @@ def test_step_only_batch_retry_surface_and_legacy_exclusion(monkeypatch):
     assert [[r.step_key for r in batch.steps] for batch in batches] == [["1", "2"], ["1", "2"]]
     assert all(r.tool == "copilot-desktop" and r.text == "" for r in batches[-1].steps)
 
-    store.streams_observations = True
-    legacy = FactBuffer(store)
-    legacy.add_step(step("ignored", 6))
-    legacy.add_cost_link(TurnRequestLink("ignored", 6, "s"))
-    CopilotFacts("s", legacy).feed(event("user.message", {"content": "not for legacy steps"}))
-    assert len(legacy) == 1  # legacy prompt observation, no new fact family
-    legacy.flush()
-    assert batches[-1].prompts and not batches[-1].steps and not batches[-1].cost_links
-
 
 def test_link_only_write_retries_with_latest_attribution():
     batches = []
     def write(facts):
         batches.append(facts)
         if len(batches) == 1:
-            raise sqlite3.OperationalError("locked")
+            raise StoreError("Fact handoff failed")
         return len(facts)
 
     buf = FactBuffer(SimpleNamespace(write_call_facts=write))
@@ -290,34 +282,31 @@ def test_cost_links_join_canonical_requests_across_polls_and_nested_agents(tmp_p
         # Explicit local turn with no evidence of any parent, even though its ID matches.
         event("session.usage_record", {"usage": usage | {"turnId": "1"}}, agentId="orphan"),
     ]
-    db = HistoryDB(tmp_path / "turns.db", flush_interval=0)
-    try:
-        buf = FactBuffer(db)
-        buf.surface = lambda _: "copilot-desktop"
-        cop = CopilotFacts("sid", buf)
-        conn = db._conn()
-        for _ in range(2):
-            cop.reset()  # repeat the entire file: same canonical request keys, no second cost
-            for batch in (before, after):
-                for obj in batch:
-                    cop.feed(obj | {"timestamp": ts})
-                buf.flush()
-        joined = list(conn.execute(
-            "SELECT l.agent_id,l.turn_id,l.root_session_id,l.root_turn_id,l.basis,l.tool,r.cost_usd "
-            "FROM requests r JOIN turn_request_links l ON l.request_key=r.dedup_key ORDER BY r.id"
-        ))
-        assert [tuple(row[:5]) for row in joined] == [
-            ("child", "1", "sid", "spawn", "api_call_id"), ("", "1", "sid", "1", "api_call_id"),
-            ("grandchild", "1", "sid", "spawn", "open_turn"), ("", "", "", "", "unattributed"),
-            ("orphan", "1", "", "", "explicit_turn"),
-        ]
-        assert all(row[5] == "copilot-desktop" and row[6] > 0 for row in joined)
-        assert conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == len(joined)
-        assert conn.execute("SELECT COUNT(*) FROM turn_request_links").fetchone()[0] == len(joined)
-        assert {r[0] for r in conn.execute("SELECT phase FROM session_steps WHERE role='assistant' AND phase!=''")} == {"commentary", "final_answer"}
-        assert not conn.execute("SELECT 1 FROM session_step_text WHERE text LIKE '%HIDDEN%'").fetchone()
-    finally:
-        db.close()
+    writer = MemoryWriter()
+    buf = FactBuffer(SessionFacts(writer, keeps_text=lambda: True))
+    buf.surface = lambda _: "copilot-desktop"
+    cop = CopilotFacts("sid", buf)
+    for _ in range(2):
+        cop.reset()
+        for batch in (before, after):
+            for obj in batch:
+                cop.feed(obj | {"timestamp": ts})
+            buf.flush()
+    requests = current(writer, "requests")
+    links = {r["request_key"]: r for r in current(writer, "turn_request_links")}
+    assert len(requests) == len(links)
+    fields = ("agent_id", "turn_id", "root_session_id", "root_turn_id", "basis")
+    assert [tuple(links[r["dedup_key"]][field] for field in fields) for r in requests] == [
+        ("child", "1", "sid", "spawn", "api_call_id"), ("", "1", "sid", "1", "api_call_id"),
+        ("grandchild", "1", "sid", "spawn", "open_turn"), ("", "", "", "", "unattributed"),
+        ("orphan", "1", "", "", "explicit_turn"),
+    ]
+    assert all(r["tool"] == "copilot-desktop" for r in links.values())
+    assert all(r["cost_usd"] > 0 for r in requests)
+    assert {r["phase"] for r in current(writer, "session_steps") if r["role"] == "assistant" and r["phase"]} == {
+        "commentary", "final_answer",
+    }
+    assert all("HIDDEN" not in r["text"] for r in current(writer, "session_step_text"))
 
 
 def test_ambiguous_usage_stays_unattributed_until_same_agent_api_id_arrives():

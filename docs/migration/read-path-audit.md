@@ -1,6 +1,12 @@
 # SQL read-path audit — Phase S
 
-This is the read work list required by `C:\Users\zvischneider\.copilot\session-state\8d74c785-f5f7-4d7b-a85f-09a3e49018be\files\ui-rewrite-plan.md:431–448`. Consumer names and classes refer to `C:\OSS\aictl\docs\migration\consumer-audit.md`. The SQL, tables and callers below describe the checkout. The KQL shapes are proposals, not measured query plans. Storage citations use the method names as stable anchors because the Phase 0 layout cleanup changed line offsets in `storage.py` and `project_stores.py` during the audit.
+This is the read work list required by `C:\Users\zvischneider\.copilot\session-state\8d74c785-f5f7-4d7b-a85f-09a3e49018be\files\ui-rewrite-plan.md:431–448`. Consumer names and classes refer to `C:\OSS\aictl\docs\migration\consumer-audit.md`. The inventory below records the SQL paths at the time of the audit. The proposed KQL shapes are not measured query plans.
+
+Phase S z1 moved Board, session records and evidence, context inventory, live history, and analytics to named store views. The dashboard no longer calls `board_history.py`, and `live_queries.py` was removed. The dashboard uses the configured store's reader for both local-node and fleet history. Local runtime data, such as process gauges, remains separate.
+
+Phase S z2 moved language-model and MCP event scans to `events.page`, and moved the live feed reader and cluster health metrics into `stores/kusto`. External Copilot, Cursor, and VS Code databases remain read-only inputs.
+
+Phase S z3 deleted the legacy dashboard projections, SQL adapter, and parity tests. References below are historical.
 
 ## Order and rules
 
@@ -19,6 +25,152 @@ Do the plugin base, tables and expected-failure B6 test first. Then use one doma
 | 9 | Retire the SQL adapters | Remove the memo, connection and in-memory projection shims after the last domain moves. Restart and external database work is tracked below; no product query should still use the shim (`C:\OSS\aictl\src\aictl\dashboard\live_queries.py:57–128`; `C:\OSS\aictl\src\aictl\dashboard\board_history.py:282–380`). |
 
 **Notation.** **Current** means `summarize arg_max(version, *) by node_id, <logical key>` (or a measured equivalent materialized view), then reject tombstones. Only immutable filters can precede it. **Filter** means a parameterized `where` and bounded `project` plus sort/limit as indicated. **Aggregate** means `summarize` over deduplicated rows; use exact counts where the contract requires exact counts. **Series** means `make-series` or an explicit grid with `summarize … by bin_at(...)`; preserve bucket start, nulls, and incomplete last bucket. Version/key selection belongs to the plugin, not the HTTP handler. These constraints follow K1, K6 and B2–B4 (`C:\Users\zvischneider\.copilot\session-state\8d74c785-f5f7-4d7b-a85f-09a3e49018be\files\ui-rewrite-plan.md:229–247`). Do not assume that a native Kusto branch and a SQLite fallback already return identical results.
+
+### R1 implementation and checks
+
+The reader has 45 new parameterized query views. The count of replaced or bypassed direct SQL and `HistoryDB` call sites is 19 for domain 1, 19 for domain 2, and 51 for domain 3. This count includes the old scoped-record SQL calls, although their function stays for the deletion step. It does not count generic adapter internals or related changes to R2 titles, search eligibility, or sequence reads. Fleet board reads no longer load the R1 fact tables into SQLite. The R2 and runtime fields still use the legacy projection.
+
+On `aictl_perf_test`, five runs per table gave the following median `.show queries` duration / total CPU: `agents` 5.76 / 0.00 ms, `requests` 8.28 / 0.00 ms, and `tool_invocations` 5.99 / 0.00 ms. The candidate tables had no canonical rows from the fixed capture during measurement. The earlier nonempty probe table and view were no longer present. These measurements do not show whether materialization would benefit a populated table. No view was created.
+
+Run the opt-in checks in `test\parity\test_r1_read_parity.py` with `AICTL_PARITY_DB=aictl_perf_test`. On the fixed Phase 0 node and window, the node totals and usage-by-model checks agreed on empty canonical data. The event check agreed on the complete payload and count for 5,018 events. The old page sorted on timestamp alone and could select different rows at a tie. The new page returns a repeatable prefix. Full payload parity, especially nonempty usage and tool facts, is not established.
+
+The first broad run excluded `test_import.py` and `test_hooks_lsp_plugin.py` to protect the shared fixtures. It listed 562 failing test IDs across 149 files, of which 376 were not in the comparable Phase 0 baseline (187 IDs). This run predates the final event, process, and stop endpoint test changes and the fixtures below.
+
+#### Recorded fixtures for read regressions
+
+Use the `kusto_store` pytest fixture for read tests. Seed it with `kusto_store.insert("requests", **{"session_id": "s", "ts": 100.0, "input_tokens": 7})` and pass `kusto_store` to the board or `kusto_store.history_store` to the HTTP snapshot. Use canonical `stores\kusto\tables.py` fields. Seed a separate row in a `*_text` table when the view needs retained text. Use fixed times and explicit node IDs when the test concerns fleet scope. The fixture replaces the pytest sandbox root with a stable marker in requests and restores it in responses.
+
+The fixture runs the production `KustoReader`. In record mode it adds schema-typed `let <table> = datatable(...)[...];` declarations after the query parameters. These shadow the stored tables. Bare and bracket-quoted table references are supported. Explicit `table()`, `materialized_view()`, `database()` and `cluster()` references are rejected rather than reading shared data. Where a `union` used implicit source names, R1 now labels each branch explicitly: Kusto gives shadowed expressions generated names such as `union_arg0`. Large tables use compressed query parameters and are expanded and typed in the inline expression before the view runs. The 100,000-request wire-budget test's literal query was 43,555,692 characters; the engine's limit is 2,097,152. Packing preserves all the seeded rows without changing the view or ingesting data. The fixture sends only query requests, with hardline read-only mode, to `zaictl/aictl_perf_test`.
+
+```powershell
+# Set this before pytest redirects HOME and USERPROFILE.
+$env:AZURE_CONFIG_DIR = "$env:USERPROFILE\.azure"
+$env:AICTL_PARITY_DB = "aictl_perf_test"
+$env:AICTL_RECORD_KUSTO = "1"
+python -m pytest -q test\test_usage_figures.py
+
+# Replay is the default and needs no Kusto credentials.
+Remove-Item Env:AICTL_RECORD_KUSTO,Env:AICTL_PARITY_DB
+python -m pytest -q test\test_usage_figures.py
+```
+
+Commit `test\recordings\kusto\<test module>\views.jsonl.gz` with the test. The lookup key covers the actual query, typed fixture data, and bound parameters. A missing recording fails; it does not fall back to the network. Record one process per module. To force a fresh capture rather than reuse unchanged responses, remove that module's tape before recording it. The fixture derives a separate in-memory projection only for callers still on the R2 SQL path; migrated R1 views never use that projection.
+
+Nonempty seeded data exposed two read differences: interval usage returned no rows when the dynamic parameter and expanded column shared the same name; application totals with no start time were filtered out before projection. R1 now names the expanded column explicitly and uses the legacy unknown-start rule. The original prompt, skill, and application-total assertions stay in place.
+
+The board now sorts the set of requested turn keys before binding it, so the same keys produce the same query parameters in every process. Response ordering assertions did not need to change. Artifact fixtures write LF explicitly so Windows byte counts match the asserted bytes. Tests dedicated to SQLite `ProjectStores` now check which facts are visible across stores, after a split, or while another store writes, without routing those assertions through the Kusto board. Mixed session-search tests still exercise the legacy listing and assert the original search result and detail counts, with their migrated reads fed by the same input dictionaries.
+
+#### Follow-up baseline result
+
+The default offline Windows rerun used the per-file runner on 151 files, excluding the two shared-fixture tests named above. Compared by failing ID with `head_baseline.json`, the rerun had 210 failures against 201 at HEAD: 181 unchanged, 20 gone, and 29 new. Of the 299 IDs in `r1_new.json`, 285 no longer fail and 14 remain. None of the 29 current new failures is in the migrated R1 read chain. The three board failures are the same Windows path failures as at HEAD; the other 387 board tests passed, including the 100,000-request wire budget. Session records (42), node routes (16), context facts (16), and R1 projections (8) passed offline.
+
+| Outside R1 | New IDs | Cause |
+|---|---:|---|
+| `test_agent_team_persist`, `test_store_round_trips` | 9 | Legacy SQLite expectations for agent-team requests, session starts and ends, and write counts no longer match current write routing. |
+| `test_board_facts` | 3 | Transcript checkpointing and write retry tests: completion is not reused on restart, or a failed handoff propagates `OperationalError`. |
+| `test_api_endpoints`, `test_analytics` | 3 | Two hook-call tests expect persisted text fields; the analytics cache test expects a quality row in SQLite instead of the collection-status sink. |
+| `test_kusto_observation_views` | 1 | The legacy public-function test expects the old grouping key; current canonical grouping uses `__fact_key`. |
+| `test_lm_usage`, `test_docs_commands` | 2 | The empty LM usage payload has additional token fields; the storage schema docs still name the removed `db compact` command. |
+| `test_tree_walk`, `test_monitor` | 10 | Scratch directories under the checkout are seen as inside a Git repository by application discovery. |
+| `test_monitor` | 1 | The JSONL telemetry tail assertion failed in the broad run and passed in isolation. |
+
+Deletion candidates: `HistoryDB.count_events`, `query_agents`, `get_session_processes`, `get_session_commits`, and `count_session_commits`; and `board_history._entity`, `_session_records`, `HistoryProjection.get_session`, `query_sessions`, `_overlay_session_usage`, `query_session_usage`, `get_session_commits`, and `count_session_commits`. The methods can still appear in the router, dormant helpers, or tests. Do not delete the live legacy paths: the next read steps still need Flow, Transcript, retained evidence, file and artifact search, context history, and the board cache version.
+
+### R2 implementation and checks
+
+R2 adds 18 parameterized KustoReader views. The counts below are direct call sites for those views, grouped by the output they serve. They do not count route aliases or calls to R1 views.
+
+| Domain | New views (`.kql`) | Replaced call sites |
+|---|---|---|
+| 4. Sequence and evidence | `sequence.flow`, `sequence.stamp`, `sequence.evidence`, `sequence.skills`, `sequence.otel`, `sequence.context`, `sequence.event_log`, `sequence.pid_sessions` | **8:** Flow/Transcript inputs and revision check (2), Agent OTel and context (2), skills (1), retained evidence (1), and event/PID lookups for Flow (2). |
+| 5. Files and search | `files.changes`, `files.inventory`, `files.artifacts`, `files.recorded`, `files.detail`, `files.recent_writes`, `sessions.search` | **9:** Board file changes and memory (3), Agent file totals (1), artifact list/count (2), recorded-path check (1), file detail (1), and local/scoped session search (1). |
+| 6. Context and history | `context.daily`, `context.growth`, `context.telemetry` | **10:** Local context inventory, telemetry, day totals, and growth (4); scoped inventory, telemetry, and growth (3); session context inventory (1); audit writes and instruction loads (2). These include the uses of `files.inventory`, `files.recent_writes`, and `sequence.event_log`. |
+
+Flow and Transcript still merge source evidence in Python and give native author messages precedence. The revision query counts changes, not logical facts, so a new version can invalidate cached Flow. Search selects a page after grouping sessions and breaks ties by stable keys. Scoped results keep node-qualified identity. Day totals use explicit local calendar boundaries, including days that cross DST. Inventory metadata does not authorize file reads: the route still checks paths and permissions and opens files locally. File diff fallback selects retained revisions on the requested node at or before the upper bound. Context audit history uses the reader; external tool stores and local configuration probes stay separate.
+
+**Checks.** Recorded seeded responses on `zaictl/aictl_perf_test` with the R1 record/replay fixture. Coverage includes Board, node/scoped routes, context facts, session records, retained evidence, loaded files, OTel, audit drift, and startup before the first snapshot. The PID test checks a newer version outside the interval and project/node collisions. The file-diff test checks later and other-node revisions.
+
+Default tests isolate both the aictl config directory and inherited `AICTL_KUSTO_*` settings. Context audits with no store skip history reads; the stored-write test supplies a recorded `kusto_store` reader. The parity opt-in retains the connection settings.
+
+The opt-in `test/parity/test_r2_read_parity.py` run passed all three checks. The fixed Phase 0 snapshot matched 89 event rows for one session. The file-write and daily-context comparisons matched zero rows; these checks establish empty-result parity only. Seeded replay exercises nonempty file and context payloads.
+
+**Offline baseline.** The 153-file Windows run had 183 failing test IDs, against 200 in `head_baseline.json`, excluding blank entries from the runner. Of those, 176 were unchanged, 24 no longer failed, and seven were new. None of the seven was in the 18-ID `r1b_new.json` list. The board passed 387 tests and had the same three Windows path failures as HEAD. Node routes (17), session records (42), context facts (16), loaded files (16), and the retained-evidence API (3) passed.
+
+One new ID was the startup HTTP test: its evidence query bound the wall-clock retention cutoff, which did not match the recorded cutoff. The test now fixes that clock and passed an offline HTTP replay after re-recording. The full suite was not rerun after this test-only fix. The other six new IDs are outside R2: four file-watcher cases classify the required scratch path beneath `.copilot` as tool state, one agent-file parser test fails, and one transcript-ingestion retry test fails.
+
+**Deletion candidates.** Keep the SQL in this step. After callers move, remove the SQL branches of board Flow, OTel, loaded/context facts, file diff and context projections; `session_evidence._sqlite_rows` and `_evidence_kql`; the legacy session-record search CTEs and artifact helpers; `context_audit._db_rows`; and the unused or legacy store helpers for sequence, process links, file writes, file revisions, and content. Check offline and CLI callers before removing shared `HistoryDB` methods.
+
+**R3 dependencies.** The main board still uses the scoped projection for runtime, health, coverage, and cache/version reads. Keep `HistoryProjection`, the scoped load path, `ProjectStores` routing, and the SQL test adapter until those consumers and the catalog, history, and sample routes move. R2 does not change write paths, live process sampling, or external-tool database readers.
+
+### R3 implementation and checks
+
+R3 adds 12 parameterized views and extends `board.activity_facts`. The counts
+are direct reader call sites, not route aliases or calls through a projection.
+
+| Domain | New views (`.kql`) | Replaced call sites |
+|---|---|---|
+| 7. Runtime, hooks, and Health | `runtime.resources`, `runtime.processes`, `nodes.reports`, `hooks.activity`, `health.totals`, `health.quality`, `board.revision` | **9:** Board resource series (1), node overview/health/runtime/settings and scoped Machine reports (2), scoped Machine process list and total (1), hook and agent activity (1), Health and self-status counts (1), quality status (1), board revision (1), and the extended activity facts view for coverage and tool options (1). Source labels reuse `board.sources`. |
+| 8. Catalog, history, samples, and maintenance | `catalog.entries`, `history.system`, `history.tools`, `samples.page`, `samples.metrics` | **7:** Catalog HTTP and CLI projection (1), history HTTP and startup projections (2), sample list, series, and metric names (3), and `db stats` logical counts through `health.totals` (1). |
+
+Local and scoped boards use the same reader and projection. The activity facts
+replace SQLite index/span probes. The board cache checks the row count and
+latest version watermark; a version update can invalidate it without changing
+the logical row count. The scoped Machine view lists recorded links, not live
+processes, and keeps the total separate from its 1,000-row list. Health keeps
+sealed extent metadata separate from logical counts. Local database file sizes
+and limits are unknown in Kusto and use `null` in the old fields. The new
+`store_health` field in self-status and `store` in Health include `status`,
+`reader`, and `writer`. Writer tables report `queue_depth`,
+`rows_sent`, `rows_dropped`, and `last_error`. With no store the status is
+`no store configured`, and history routes do not open a local store.
+
+`db stats` shows `.show tables details` separately from current row counts.
+`db schema` prints definitions from the native table registry. `db report` is
+unchanged. `db reset` prompts unless `--yes` is set and clears only aictl
+tables. `db trim-text` soft-deletes retained text for the configured node,
+with a dry run and optional age cutoff; it leaves the metadata tables intact.
+`db compact` is removed. The old board action reports that Kusto retention
+replaces compaction. Catalog sync and validation use the plugin writer and
+reader. ADX policy, table inventory, ingestion capacity, and cluster
+diagnostics management reads run in the plugin, not in the HTTP handlers.
+
+**Checks.** Recorded inline fixture queries on `zaictl/aictl_perf_test` for
+board, node, hook, Health, CLI, startup, HTTP, session, usage, and OTel
+regressions. A fake client checks reset and trim commands. On the fixed Phase
+0 data, all three R3 live parity checks passed: four system history rows and
+six metric samples matched, and neither path found a hook event. The latter
+checks empty-result parity; seeded replay checks nonempty hook counts.
+
+**Offline baseline.** The final 155-file Windows run had 173 failing IDs,
+compared with 200 in `head_baseline.json` and 176 in `r2b_full.json`. Five
+IDs are new against either baseline. Four watcher tests (`bin`, `build`,
+`obj`, `target`) classify the required scratch path under `.copilot` as tool
+state. The agent-file parser test's `NamedTemporaryFile` call is blocked by
+the test home guard at the scratch root. No new failure ID is in the migrated
+paths. The focused replay had 677 passes and six HEAD failures; all 27
+command documentation tests passed. The full result is `r3_final_full.json`
+in the session scratch directory.
+
+**Deletion candidates.** `board_history.py` now holds the old projection and
+router, not the serving scoped routes. Remove `HistoryProjection`,
+`_projection`, `_board_projection`, `_legacy_route`, and the unused SQL
+projection cache in `live_queries.py` after their compatibility tests move.
+Also remove `_resolve_db_path`, legacy `HistoryDB` catalog, history, samples,
+and stats helpers, and the unused aictl readers for `path_defs` and
+`process_defs`. Keep `db report` and the collectors that read other tools'
+databases.
+
+**Remaining reads.** `rg -n 'sqlite3\.connect|\._conn\(|PRAGMA|execute_mgmt|HistoryProjection\('`
+finds no matches in `web_server.py`, `api_handlers.py`, `scoped_history.py`,
+`live_projection.py`, `node_views.py`, `hooks_status.py`, the dashboard
+`projections` package, or `commands/admin.py`. The board detail, context, and
+session modules still expose legacy branches for direct compatibility calls;
+the HTTP paths provide a native reader or return no-store status. The daemon
+still constructs `ProjectStores` and calls `self.db.machine._conn()` in the
+configured startup branch in `orchestrator.py`. This selects the legacy Kusto
+adapter layout before native setup and is outside R3's allowed startup edits.
+Do not treat this as proof of SQLite-free startup. The old adapter and
+shared row/type helpers still need to move or be removed in S-Z.
 
 ## 1. Session and node identity
 

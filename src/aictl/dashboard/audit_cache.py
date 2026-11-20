@@ -41,13 +41,13 @@ class AuditCache:
             results = [result for _stored, result in self._items.values()]
         return {_path_key(source["path"]) for result in results for source in result.get("sources", []) if source.get("path")}
 
-    def poll(self, project: str | Path, tool: str | None = None, *, refresh: bool = False) -> dict:
+    def poll(self, project: str | Path, tool: str | None = None, *, refresh: bool = False, history=None) -> dict:
         """The audit if it is ready, otherwise what is running now. Never waits for a scan.
 
         While it runs the answer is ``{"status": "scanning", "step": name, "elapsed_s": n}``.
         A later call without *refresh* collects the result, or ``{"error": text}`` once.
         """
-        key = self._key(project, tool)
+        key = self._key(project, tool, history)
         if not refresh and (hit := self._fresh(key)) is not None:
             return hit
         with self._lock:
@@ -58,15 +58,15 @@ class AuditCache:
                     return {"error": error}
                 job = {"step": "starting", "started": self._clock()}
                 self._jobs[key] = job
-                threading.Thread(target=self._run_job, args=(key, job, project, tool), daemon=True).start()
+                threading.Thread(target=self._run_job, args=(key, job, project, tool, history), daemon=True).start()
         return {"status": "scanning", "step": job["step"], "elapsed_s": round(self._clock() - job["started"], 1)}
 
-    def _run_job(self, key: tuple, job: dict, project: str | Path, tool: str | None) -> None:
+    def _run_job(self, key: tuple, job: dict, project: str | Path, tool: str | None, history=None) -> None:
         def progress(step: str) -> None:
             job["step"] = step
 
         try:
-            self.get(project, tool, refresh=True, progress=progress)
+            self.get(project, tool, refresh=True, progress=progress, history=history)
         except Exception as exc:  # noqa: BLE001 - the panel shows this instead of waiting for ever
             with self._lock:
                 self._errors[key] = f"{type(exc).__name__}: {exc}"
@@ -75,8 +75,8 @@ class AuditCache:
                 self._jobs.pop(key, None)
 
     @staticmethod
-    def _key(project: str | Path, tool: str | None) -> tuple:
-        return (str(Path(project).expanduser().resolve()), tool or "", os.environ.get("HOME", ""))
+    def _key(project: str | Path, tool: str | None, history=None) -> tuple:
+        return (str(Path(project).expanduser().resolve()), tool or "", os.environ.get("HOME", ""), history)
 
     def get(
         self,
@@ -85,6 +85,7 @@ class AuditCache:
         *,
         refresh: bool = False,
         progress: Callable[[str], None] | None = None,
+        history=None,
     ) -> dict:
         """The cached audit, or a new one when none is fresh or *refresh* is set.
 
@@ -93,7 +94,7 @@ class AuditCache:
         """
         from .. import context_audit  # looked up here so a test can replace run_audit
 
-        key = self._key(project, tool)
+        key = self._key(project, tool, history)
         if not refresh and (hit := self._fresh(key)) is not None:
             return hit
         arrived = self._clock()
@@ -105,10 +106,12 @@ class AuditCache:
             hit = self._fresh(key)
             if hit is not None and (not refresh or self._stored_at(key) > arrived):
                 return hit
-            if progress is None:
-                result = context_audit.run_audit(project, tool)
-            else:
-                result = context_audit.run_audit(project, tool, progress=progress)
+            options = {}
+            if progress is not None:
+                options["progress"] = progress
+            if history is not None:
+                options["history"] = history
+            result = context_audit.run_audit(project, tool, **options)
             with self._lock:
                 if len(self._items) >= _MAX_ENTRIES and key not in self._items:
                     oldest = min(self._items, key=lambda k: self._items[k][0])

@@ -15,6 +15,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from aictl.context import scan
 from aictl.emitters import claude as claude_emit
 from aictl.emitters import copilot as copilot_emit
@@ -30,6 +32,16 @@ from aictl.resolver import resolve
 from aictl.synthesizer import synthesize
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "project"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def isolated_fixture(tmp_path_factory):
+    import shutil
+
+    with pytest.MonkeyPatch.context() as patch:
+        destination = shutil.copytree(FIXTURE_ROOT, tmp_path_factory.getbasetemp() / "import-project")
+        patch.setitem(globals(), "FIXTURE_ROOT", destination)
+        yield
 
 # ---------------------------------------------------------------------------
 # Helpers

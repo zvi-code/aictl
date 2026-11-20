@@ -19,13 +19,12 @@ from __future__ import annotations
 import logging
 import os
 import re
-import sqlite3
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from ..storage import FLUSH_YIELD_S, is_lock_error
+from ..session_evidence import SessionEvidence
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +90,7 @@ def signature(folder: Path) -> float:
     return newest
 
 
-def scan_folder(tool: str, folder: Path) -> tuple[list[tuple[str, str, int, float]], int, int]:
+def scan_folder(tool: str, folder: Path, *, require_complete: bool = False) -> tuple[list[tuple[str, str, int, float]], int, int]:
     """(kept files, count of all files, bytes of all files) of one session folder.
 
     A kept file is (path, first folder part, size, mtime); the newest
@@ -107,6 +106,8 @@ def scan_folder(tool: str, folder: Path) -> tuple[list[tuple[str, str, int, floa
         try:
             entries = list(os.scandir(path))
         except OSError:
+            if require_complete:
+                raise
             continue
         for entry in entries:
             seen += 1
@@ -120,10 +121,14 @@ def scan_folder(tool: str, folder: Path) -> tuple[list[tuple[str, str, int, floa
                     continue
                 st = entry.stat(follow_symlinks=False)
             except OSError:
+                if require_complete:
+                    raise
                 continue
             total += 1
             size_total += st.st_size
             files.append((entry.path, part, st.st_size, st.st_mtime))
+    if stack and require_complete:
+        raise OSError("Session folder exceeds the scan budget")
     if len(files) > MAX_FILES_PER_SESSION:
         files.sort(key=lambda f: -f[3])
         files = files[:MAX_FILES_PER_SESSION]
@@ -133,7 +138,7 @@ def scan_folder(tool: str, folder: Path) -> tuple[list[tuple[str, str, int, floa
 class SessionArtifactIndexer:
     """Polls the session folders of every tool home and keeps the index current."""
 
-    def __init__(self, store: Any, roots: dict[str, list[Path]] | None = None) -> None:
+    def __init__(self, store: SessionEvidence, roots: dict[str, list[Path]] | None = None) -> None:
         self.store = store
         # Fixed roots per tool name, for tests; None follows tool_homes.session_dirs.
         self._roots = roots
@@ -151,25 +156,27 @@ class SessionArtifactIndexer:
 
         return tool_homes.session_dirs(tool)
 
-    def _knows(self, sid: str) -> bool:
-        knows = getattr(self.store, "knows_session", None)
-        return bool(knows(sid)) if callable(knows) else True
-
     def poll(self) -> int:
         """Index the folders that changed since the last scan. Returns the folders written."""
         if self._seen is None:
             # The signatures of earlier runs: a restart does not scan every folder again.
-            self._seen = dict(self.store.artifact_scans())
+            self._seen = self.store.artifact_scans()
             self._cold = not self._seen
         written = 0
         old_before = time.time() - RECENT_FIRST_S if self._cold else 0.0
         budget = 0 if self._cold else DEFERRED_FOLDERS_PER_POLL
+        rescans = DEFERRED_FOLDERS_PER_POLL
+        scans_updated = False
         for tool, tool_id in TOOLS.items():
             for root in self.roots(tool):
                 for sid, folder in session_folders(tool, root):
                     sig = signature(folder)
-                    if not sig or self._seen.get(sid) == sig:
+                    if not sig or (self._seen.get(sid) == sig and self.store.scan_recently(sid, time.time())):
                         continue
+                    if self._seen.get(sid) == sig:
+                        if rescans <= 0:
+                            continue
+                        rescans -= 1
                     if sid in self._deferred:
                         if budget <= 0:
                             continue
@@ -178,23 +185,20 @@ class SessionArtifactIndexer:
                     elif sig < old_before:
                         self._deferred.add(sid)
                         continue
-                    if not self._knows(sid):
-                        # The index waits for the session's own rows. Written first, it would
-                        # place the session in the shared store, and its rows would move later.
-                        continue
-                    files, total, size = scan_folder(tool, folder)
                     try:
-                        self.store.replace_session_artifacts(sid, tool_id, str(folder), sig, files, total, size)
-                    except sqlite3.OperationalError as exc:
-                        if not is_lock_error(exc):
-                            raise
-                        # Not recorded: the next poll scans this folder again.
-                        log.debug("session artifacts: store busy, %s waits for the next poll: %s", sid, exc)
-                        continue
+                        files, total, size = scan_folder(tool, folder, require_complete=True)
+                    except OSError:
+                        continue  # An incomplete scan cannot establish that a file was removed.
+                    changed = self.store.replace_session_artifacts(sid, tool_id, str(folder), sig, files, total, size)
                     self._seen[sid] = sig
-                    written += 1
-                    # A writer in SQLite's busy wait takes the lock now.
-                    time.sleep(FLUSH_YIELD_S)
+                    written += int(bool(changed))
+                    scans_updated = True
+        removed = self.store.remove_missing_folders()
+        written += len(removed)
+        for sid in removed:
+            self._seen.pop(sid, None)
+        if scans_updated or removed:
+            self.store.save()
         self._cold = False
         self.last_poll_ts = time.time()
         self.last_poll_inserted = written

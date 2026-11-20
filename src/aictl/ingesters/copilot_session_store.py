@@ -34,15 +34,17 @@ schema surprises, unreadable rows — all result in ``poll()`` returning
 from __future__ import annotations
 
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ._common import coerce_ts, open_readonly, provision_session, record_quality, session_tool, writer_conn
+from ..state_file import StateFile
+from ._common import SQLITE_UNAVAILABLE, coerce_ts, open_readonly, record_quality
+from .message_facts import MessageFacts, load_checkpoint, save_checkpoint
 
 if TYPE_CHECKING:
-    from ..storage import HistoryDB
+    import sqlite3
+
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +87,7 @@ class CopilotSessionStoreIngester:
         Path to Copilot CLI's ``session-store.db``. ``None`` uses the
         default ``~/.copilot/session-store.db``.
     our_store:
-        The shared :class:`~aictl.storage.HistoryDB` we write into.
+        Message facts and session attribution.
     last_cursor:
         Per-table watermark of highest ``rowid`` already ingested,
         keyed by source table name. ``None`` or empty means ingest from
@@ -95,13 +97,19 @@ class CopilotSessionStoreIngester:
     def __init__(
         self,
         db_path: Path | str | None,
-        our_store: HistoryDB,
+        our_store: MessageFacts,
         last_cursor: dict[str, int] | None = None,
+        *,
+        checkpoint: StateFile | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser() if db_path else default_db_path()
         self.store = our_store
-        self._provisioned: set[str] = set()
-        self.last_cursor: dict[str, int] = dict(last_cursor or {})
+        self._checkpoint = checkpoint if checkpoint is not None else our_store.state
+        saved = load_checkpoint(self._checkpoint, self.db_path).get("cursor")
+        self.last_cursor = dict(last_cursor) if last_cursor is not None else {
+            key: value for key, value in (saved.items() if isinstance(saved, dict) else ())
+            if type(value) is int and value >= 0
+        }
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
         # Source file signature of the last complete poll; an equal one means nothing new.
@@ -137,6 +145,11 @@ class CopilotSessionStoreIngester:
         unreadable; never raises.
         """
         self.last_poll_ts = time.time()
+        try:
+            import sqlite3
+        except ImportError:
+            return MessageFacts.status(self, SQLITE_UNAVAILABLE)
+        self.unavailable = ""
         sig = self._signature()
         if sig is not None and sig == self._source_sig:
             self.last_poll_inserted = 0
@@ -218,6 +231,8 @@ class CopilotSessionStoreIngester:
 
     def _discover_tables(self, src: sqlite3.Connection) -> list[tuple[str, dict[str, str]]]:
         """Return [(table_name, {role:..., session:..., content:..., ts:...}), ...]."""
+        import sqlite3
+
         cur = src.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         out: list[tuple[str, dict[str, str]]] = []
         for (name,) in cur.fetchall():
@@ -252,10 +267,10 @@ class CopilotSessionStoreIngester:
         """Pull new rows from *table* and insert them into our store."""
         last_rowid = self.last_cursor.get(table)
         if last_rowid is None:
-            last_rowid = self._stored_cursor(table)
+            last_rowid = 0
         last_rowid = int(last_rowid)
         # Do not even read text this store would not keep.
-        keeps_text = getattr(self.store, "_keeps_text", lambda: True)() is True
+        keeps_text = self.store._keeps_text()
         content_col = f'"{cols["content"]}"' if keeps_text else "''"
         select_cols = ["rowid AS _row_id", f'"{cols["role"]}" AS _role', f"{content_col} AS _content"]
         if cols["session"]:
@@ -278,46 +293,26 @@ class CopilotSessionStoreIngester:
         inserted = 0
         now = time.time()
         max_rowid = last_rowid
-        conn = writer_conn(self.store)
-        try:
-            for row_id, role, content, session_key, raw_ts in rows:
-                row_id = int(row_id)
-                if row_id > max_rowid:
-                    max_rowid = row_id
-                ts = coerce_ts(raw_ts)
-                session_id = self._correlate(str(session_key or ""), ts)
-                if self._insert_message(
-                    session_id=session_id,
-                    source_row_id=row_id,
-                    source_table=table,
-                    role=str(role or ""),
-                    content=_stringify(content),
-                    ts=ts,
-                    ingested_at=now,
-                ):
-                    inserted += 1
-            # Cursor goes in the same transaction as the batch of rows.
-            self._save_cursor(table, max_rowid)
-        finally:
-            conn.commit()
+        for row_id, role, content, session_key, raw_ts in rows:
+            row_id = int(row_id)
+            max_rowid = max(max_rowid, row_id)
+            ts = coerce_ts(raw_ts)
+            session_id = self._correlate(str(session_key or ""), ts)
+            if self._insert_message(
+                session_id=session_id,
+                source_row_id=row_id,
+                source_table=table,
+                role=str(role or ""),
+                content=_stringify(content),
+                ts=ts,
+                ingested_at=now,
+            ):
+                inserted += 1
+        save_checkpoint(self._checkpoint, self.db_path, {
+            "cursor": self.last_cursor | {table: max_rowid}, "last_poll_ts": self.last_poll_ts,
+        })
         self.last_cursor[table] = max_rowid
         return inserted
-
-    def _stored_cursor(self, table: str) -> int:
-        """Watermark from the previous run, so a restart does not read the store again."""
-        row = (
-            writer_conn(self.store)
-            .execute("SELECT value FROM maintenance_state WHERE key = ?", (f"copilot_store_cursor:{table}",))
-            .fetchone()
-        )
-        return int(row[0]) if row else 0
-
-    def _save_cursor(self, table: str, rowid: int) -> None:
-        conn = writer_conn(self.store)
-        conn.execute(
-            "INSERT OR REPLACE INTO maintenance_state(key, value) VALUES(?,?)",
-            (f"copilot_store_cursor:{table}", rowid),
-        )
 
     # ── our storage writes ────────────────────────────────────
 
@@ -332,14 +327,13 @@ class CopilotSessionStoreIngester:
         ts: float,
         ingested_at: float,
     ) -> bool:
-        conn = writer_conn(self.store)
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO copilot_session_messages"
-            "(session_id, source_row_id, source_table, role, content, ts, ingested_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (session_id, source_row_id, source_table, role, content, ts, ingested_at),
+        self.store.append(
+            "copilot_session_messages",
+            dict(session_id=session_id, source_row_id=source_row_id, source_table=source_table,
+                 role=role, content=content, ts=ts, ingested_at=ingested_at),
+            project=self.store.sessions.project_for(session_id),
         )
-        return cur.rowcount > 0
+        return True
 
     def _correlate(self, source_session_key: str, ts: float) -> str:
         """Map a source session id to one of our session_ids.
@@ -348,30 +342,15 @@ class CopilotSessionStoreIngester:
         1. Exact match on ``sessions.session_id`` with ``tool='copilot-cli'``
            — typical when OTel has already created the row.
         2. Fall back to a provisional ``copilot:<source_session_key>``
-           session row; insert with ``INSERT OR IGNORE`` so repeated
-           polls are idempotent.
+           session row. The same source key gives the same provisional ID.
         3. If the source row has no session key at all, attach to a
            synthetic ``copilot:unknown`` session so the content is not
            lost.
         """
-        if not source_session_key:
-            provisional = "copilot:unknown"
-        else:
-            if session_tool(self.store, source_session_key) == "copilot-cli":
-                return source_session_key
-            provisional = f"copilot:{source_session_key}"
-
-        # Through the store's writer: a store split by project places the row.
-        from ..storage import SessionRow
-
-        provision_session(
-            self.store,
-            self._provisioned,
-            SessionRow(
-                session_id=provisional, tool="copilot-cli", started_at=ts or time.time(), source="copilot-session-store"
-            ),
-        )
-        return provisional
+        if source_session_key and self.store.exact(source_session_key, "copilot-cli"):
+            return source_session_key
+        return self.store.placeholder(f"copilot:{source_session_key or 'unknown'}",
+                                      "copilot-cli", ts, "copilot-session-store")
 
 
 def _stringify(value: Any) -> str:
@@ -381,7 +360,7 @@ def _stringify(value: Any) -> str:
     if isinstance(value, (bytes, bytearray)):
         try:
             return value.decode("utf-8", errors="replace")
-        except Exception:
+        except UnicodeError:
             return ""
     if isinstance(value, str):
         return value
@@ -389,7 +368,7 @@ def _stringify(value: Any) -> str:
         import json
 
         return json.dumps(value, ensure_ascii=False, default=str)
-    except Exception:
+    except (TypeError, ValueError, RecursionError):
         return str(value)
 
 

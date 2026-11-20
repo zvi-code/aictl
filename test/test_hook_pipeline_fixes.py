@@ -11,7 +11,7 @@ from pathlib import Path
 
 from aictl._hook_owner import _AICTL_OWNER_MARKER, canonicalize_hook_events, merge_aictl_hooks, strip_aictl_hooks
 from aictl.data.token_usage import TokenUsage
-from aictl.storage import EventRow
+from aictl.records import EventRow
 
 # ── _hook_owner merge helpers ─────────────────────────────────────
 

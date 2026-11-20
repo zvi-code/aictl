@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 
-from ..storage import EventRow
+from ..records import EventRow
 from .otel_receiver import _num
 
 
@@ -125,6 +125,28 @@ def _extract_response_text(detail: dict) -> str:
 
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def reader_session_flow(history, session_id: str, since: float, until: float) -> dict:
+    from .projections.history import event_params, event_rows, node_scope
+
+    node, sid = history.split(session_id)
+    reader = history.require_reader()
+
+    class EvidenceReader:
+        def query_events(self, *, since, until, limit, session_id=None, tool=None, pid=None):
+            params = {**node_scope(node), **event_params(since=since, until=until, tool=tool, session_id=session_id)}
+            if pid:
+                params["requested_pid"] = pid
+            return [EventRow(**row) for row in event_rows(reader.read("sequence.event_log", {**params, "limit": limit}))]
+
+        def find_session_ids_by_pid(self, pid, *, since, until):
+            result = reader.read("sequence.pid_sessions", {
+                **node_scope(node), "requested_pid": pid, "since": since, "until": until, "limit": 500,
+            })
+            return [row["session_id"] for row in result.rows]
+
+    return build_session_flow(EvidenceReader(), sid, since, until)
 
 
 def build_session_flow(db, session_id: str, since: float, until: float) -> dict:

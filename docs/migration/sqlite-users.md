@@ -1,5 +1,13 @@
 # SQLite users
 
+The inventory below describes the pre-removal checkout. Phase S z1 removed the
+dashboard and Board CLI callers of the legacy store. Phase S z3 deleted the
+legacy store, SQL adapter, compatibility fixtures, and parity tests.
+
+Phase S z2 removed aictl history opens and SQL adapter calls from the core
+runtime. The remaining SQLite reads in core code are optional reads of other
+tools' files, not fallback history storage.
+
 Phase 0, item 9. Source and test references are for `2cf86cf` (before the parallel layout-table deletion). The Phase S dispositions follow sections 3.3, 7 and 8 of `C:\Users\zvischneider\.copilot\session-state\8d74c785-f5f7-4d7b-a85f-09a3e49018be\files\ui-rewrite-plan.md:229–250,356–413,442–455`.
 
 ## Source

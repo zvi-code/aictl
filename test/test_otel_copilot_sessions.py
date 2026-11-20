@@ -20,10 +20,11 @@ import pytest
 from aictl.dashboard import board_api
 from aictl.dashboard.board_api import agent_detail, agent_flow, compute_machine
 from aictl.dashboard.otel_receiver import OtelReceiver
-from aictl.ingesters import otel_sessions_backfill
+from aictl.dashboard.projections.history import HistoryScope
 from aictl.ingesters.call_facts import copilot_call_key
 from aictl.monitoring.tool_config import copilot_cli_otel_endpoint
-from aictl.storage import EventRow, HistoryDB
+from aictl.stores import Store
+from aictl.stores.testing import FixtureReader
 
 FIXTURE = Path(__file__).parent / "fixtures" / "otel" / "copilot_cli_synthetic_session.jsonl"
 SID = "00000000-0000-4000-8000-000000000001"
@@ -123,24 +124,28 @@ class TestReceiverTiesEveryRecord:
         tool_events = [e for e in events if e.detail.get("otel.span_id") == tool["spanId"]]
         assert tool_events and {e.session_id for e in tool_events} == {SID}
 
-    def test_a_trace_named_by_a_later_export_is_reported_and_its_stored_events_are_tied(self, tmp_path):
+    def test_a_trace_named_by_a_later_export_adds_a_link_without_patching_events(self):
+        from aictl.session_facts import SessionFacts
+        from aictl.stores.testing import MemoryWriter
+
         receiver = OtelReceiver()
         spans = _spans()
         tool = next(s for s in spans if s["name"].startswith("execute_tool"))
         _s, first = receiver.parse_traces(_body([_without_conversation(tool)]))
         assert {e.session_id for e in first} == {""}
-        assert receiver.take_late_traces() == []
-        db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-        db.append_events(first)
+        assert receiver.take_trace_links() == []
+        writer = MemoryWriter()
+        facts = SessionFacts(writer)
+        facts.events(first, source="traces")
         _s, second = receiver.parse_traces(_body([s for s in spans if s is not tool]))
         assert {e.session_id for e in second} == {SID}
-        late = receiver.take_late_traces()
+        late = receiver.take_trace_links()
         assert late == [(TRACE, SID)]
-        assert receiver.take_late_traces() == []
-        assert db.tie_otel_traces(late) == len(first)
-        stored = db._conn().execute("SELECT DISTINCT session_id FROM events WHERE kind LIKE 'otel:%'").fetchall()
-        assert stored == [(SID,)]
-        db.close()
+        assert receiver.take_trace_links() == []
+        facts.trace_links(late)
+        assert [table for _, table, _ in writer.operations] == ["events", "otel_trace_sessions"]
+        assert {row["session_id"] for row in writer.operations[0][2]} == {""}
+        assert writer.operations[1][2] == [{"trace_id": TRACE, "session_id": SID, "project": ""}]
 
     def test_a_log_record_takes_the_session_of_its_trace(self):
         receiver = OtelReceiver()
@@ -211,168 +216,58 @@ class TestReceiverTiesEveryRecord:
 # ─── Backfill of events stored before the receiver named the session ─────
 
 
-def _old_shape(events: list[EventRow]) -> list[EventRow]:
-    """Events as the old receiver stored them: no session id, no trace or span ids."""
-    out = []
-    for e in events:
-        d = {
-            k: v
-            for k, v in e.detail.items()
-            if k not in ("session_id", "otel.trace_id", "otel.span_id", "otel.parent_span_id")
-        }
-        out.append(EventRow(ts=e.ts, tool=e.tool, kind=e.kind, detail=d, session_id="", pid=e.pid))
-    return out
-
-
-class TestBackfill:
-    def test_old_events_get_the_session_of_their_conversation_or_of_the_turn_they_fall_in(self, tmp_path):
-        _s, events = OtelReceiver().parse_traces(_body(_spans()))
-        db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-        db.append_events(_old_shape(events))
-        assert otel_sessions_backfill.run(db) is True
-        rows = db._conn().execute("SELECT session_id, COUNT(*) FROM events GROUP BY session_id").fetchall()
-        assert rows == [(SID, len(events))]
-        assert db.state_value(otel_sessions_backfill.STATE_KEY) is not None
-        db.close()
-
-    def test_it_runs_once(self, tmp_path):
-        db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-        assert otel_sessions_backfill.run(db) is True
-        _s, events = OtelReceiver().parse_traces(_body(_spans()))
-        db.append_events(_old_shape(events))
-        assert otel_sessions_backfill.run(db) is True
-        assert db._conn().execute("SELECT COUNT(*) FROM events WHERE session_id = ''").fetchone()[0] == len(events)
-        db.close()
-
-    def test_a_span_event_in_two_overlapping_turns_of_two_sessions_keeps_no_session(self, tmp_path):
-        db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-        turn = {"gen_ai.operation.name": "invoke_agent", "span.name": "invoke_agent", "duration_ms": 10_000.0}
-        db.append_events(
-            [
-                EventRow(
-                    ts=100.0,
-                    tool="copilot-cli",
-                    kind="otel:invoke_agent",
-                    detail={**turn, "gen_ai.conversation.id": "a"},
-                ),
-                EventRow(
-                    ts=105.0,
-                    tool="copilot-cli",
-                    kind="otel:invoke_agent",
-                    detail={**turn, "gen_ai.conversation.id": "b"},
-                ),
-                EventRow(
-                    ts=102.0,
-                    tool="copilot-cli",
-                    kind="otel:github.copilot.user.message",
-                    detail={"parent_span": "invoke_agent"},
-                ),
-                EventRow(
-                    ts=107.0,
-                    tool="copilot-cli",
-                    kind="otel:github.copilot.user.message",
-                    detail={"parent_span": "invoke_agent"},
-                ),
-                EventRow(
-                    ts=112.0,
-                    tool="copilot-cli",
-                    kind="otel:github.copilot.user.message",
-                    detail={"parent_span": "invoke_agent"},
-                ),
-                EventRow(
-                    ts=103.0,
-                    tool="other-tool",
-                    kind="otel:github.copilot.user.message",
-                    detail={"parent_span": "invoke_agent"},
-                ),
-            ]
-        )
-        otel_sessions_backfill.run(db)
-        got = db._conn().execute("SELECT ts, tool, session_id FROM events ORDER BY ts, tool").fetchall()
-        assert got == [
-            (100.0, "copilot-cli", "a"),
-            (102.0, "copilot-cli", "a"),
-            (103.0, "other-tool", ""),
-            (105.0, "copilot-cli", "b"),
-            (107.0, "copilot-cli", ""),  # inside both turns
-            (112.0, "copilot-cli", "b"),
-        ]
-        db.close()
-
-    def test_an_event_with_a_trace_id_takes_its_trace_session(self, tmp_path):
-        db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-        db.append_events(
-            [
-                EventRow(
-                    ts=1.0,
-                    tool="t",
-                    kind="otel:chat m",
-                    detail={"span.name": "chat m", "otel.trace_id": "T", "gen_ai.conversation.id": "s"},
-                ),
-                EventRow(
-                    ts=2.0,
-                    tool="t",
-                    kind="otel:execute_tool x",
-                    detail={"span.name": "execute_tool x", "otel.trace_id": "T"},
-                ),
-                EventRow(
-                    ts=3.0,
-                    tool="t",
-                    kind="otel:execute_tool y",
-                    detail={"span.name": "execute_tool y", "otel.trace_id": "U"},
-                ),
-            ]
-        )
-        otel_sessions_backfill.run(db)
-        assert db._conn().execute("SELECT session_id FROM events ORDER BY ts").fetchall() == [("s",), ("s",), ("",)]
-        db.close()
-
-
 # ─── The agent detail: the otel block, and the session file's numbers untouched ─────
 
 NOW = 1700000010.0 + 3600
 
 
-def _seed_session(db: HistoryDB, project: str) -> None:
+def _seed_session(db, project: str) -> None:
     """The session as aictl reads it from the session file: its two model calls and one tool call."""
-    conn = db._conn()
-    conn.execute(
-        "INSERT INTO sessions (session_id, tool, project_path, started_at, source) VALUES (?, 'copilot-cli', ?, ?, 'transcript')",
-        (SID, project, 1700000000.0),
-    )
-    for n, (ts, i, o, cr, cw, cost, dur) in enumerate(
-        [
-            (1700000005.0, 10000, 50, 6000, 3000, 0.02, 3000.0),
-            (1700000009.8, 12000, 100, 10000, 1000, 0.005, 4000.0),
-        ]
+    fields = {"session_id": SID, "tool": "copilot-cli", "project_path": project, "source": "transcript"}
+    db.insert("sessions", **fields, started_at=1700000000.0)
+    for ts, i, o, cr, cw, cost, duration in (
+        (1700000005.0, 10000, 50, 6000, 3000, 0.02, 3000.0),
+        (1700000009.8, 12000, 100, 10000, 1000, 0.005, 4000.0),
     ):
-        conn.execute(
-            "INSERT INTO requests (dedup_key, ts, session_id, tool, project_path, model, input_tokens, output_tokens,"
-            " cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, source)"
-            " VALUES (?, ?, ?, 'copilot-cli', ?, 'example-model', ?, ?, ?, ?, ?, ?, 'transcript')",
-            (copilot_call_key(SID, (i, o, cr, cw), 0), ts, SID, project, max(0, i - cr - cw), o, cr, cw, cost, dur),
-        )
-    conn.execute(
-        "INSERT INTO tool_invocations (dedup_key, ts, session_id, tool, tool_name, source) VALUES ('t1', 1700000005.2, ?, 'copilot-cli', 'bash', 'transcript')",
-        (SID,),
-    )
-    conn.commit()
+        db.insert("requests", **fields, dedup_key=copilot_call_key(SID, (i, o, cr, cw), 0), ts=ts,
+                  model="example-model", input_tokens=max(0, i - cr - cw), output_tokens=o, cache_read_tokens=cr,
+                  cache_creation_tokens=cw, cost_usd=cost, duration_ms=duration)
+    db.insert("tool_invocations", **fields, dedup_key="t1", ts=1700000005.2, tool_name="bash")
 
 
-@pytest.fixture()
-def seeded(tmp_path):
-    db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-    _seed_session(db, str(tmp_path))
-    yield db
-    db.close()
+def _seed_events(db):
+    _, events = OtelReceiver().parse_traces(_body(_spans()))
+    for row in events:
+        db.insert("events", ts=row.ts, tool=row.tool, kind=row.kind, session_id=row.session_id,
+                  pid=row.pid, detail=json.dumps(row.detail))
+
+
+class OtelFixtureReader(FixtureReader):
+    def __init__(self, replay):
+        super().__init__({"files.inventory": []})
+        self.replay = replay
+
+    def read(self, view, params):
+        return super().read(view, params) if view in self.views else self.replay.read(view, params)
+
+
+@pytest.fixture
+def history_store(kusto_store):
+    kusto_store.history_store = Store(reader=OtelFixtureReader(kusto_store.history_store.reader))
+    return kusto_store
+
+
+@pytest.fixture
+def seeded(tmp_path, history_store):
+    _seed_session(history_store, str(tmp_path))
+    return history_store
 
 
 class TestAgentDetail:
     def test_the_otel_block_has_the_otel_only_values_matched_to_the_session_file_calls(self, seeded):
         before = agent_detail(seeded, SID, None, NOW)[1]
         assert before["otel"] is None
-        _s, events = OtelReceiver().parse_traces(_body(_spans()))
-        seeded.append_events(events)
+        _seed_events(seeded)
         code, d = agent_detail(seeded, SID, None, NOW)
         assert code == 200
         otel = d["otel"]
@@ -419,10 +314,8 @@ class TestAgentDetail:
         assert d["by_model"] == before["by_model"]
 
     def test_a_call_the_session_file_does_not_have_shows_its_tokens_and_counts_nowhere(self, seeded):
-        seeded._conn().execute("DELETE FROM requests WHERE ts > 1700000006")
-        seeded._conn().commit()
-        _s, events = OtelReceiver().parse_traces(_body(_spans()))
-        seeded.append_events(events)
+        seeded.facts.rows["requests"][:] = [row for row in seeded.facts.rows["requests"] if row["ts"] <= 1700000006]
+        _seed_events(seeded)
         d = agent_detail(seeded, SID, None, NOW)[1]
         calls = d["otel"]["calls"]
         assert [c["matched"] for c in calls] == [True, False]
@@ -430,65 +323,35 @@ class TestAgentDetail:
         assert d["agent"]["output"] == 50
 
     def test_a_named_mcp_server_shows_its_name(self, seeded):
-        _s, events = OtelReceiver().parse_traces(_body(_spans()))
-        seeded.append_events(events)
-        conn = seeded._conn()
-        conn.execute(
-            "INSERT INTO tool_invocations (dedup_key, ts, session_id, tool, tool_name, source) VALUES ('t2', 1700000006.0, ?, 'copilot-cli', 'github-mcp-server-get_me', 'transcript')",
-            (SID,),
-        )
-        conn.commit()
+        _seed_events(seeded)
+        seeded.insert("tool_invocations", dedup_key="t2", ts=1700000006.0, session_id=SID, tool="copilot-cli",
+                      tool_name="github-mcp-server-get_me", source="transcript")
         d = agent_detail(seeded, SID, None, NOW)[1]
         names = {s["hash"][:8]: s["name"] for s in d["otel"]["mcp_servers"]}
         assert names["4c96a3dc"] == "github-mcp-server"
 
     def test_the_flow_gains_no_subagent_and_no_second_reply_from_the_spans(self, seeded):
-        _s, events = OtelReceiver().parse_traces(_body(_spans()))
-        seeded.append_events(events)
+        _seed_events(seeded)
         _code, flow = agent_flow(seeded, SID, now=NOW)
         kinds = [e["type"] for e in flow["turns"]]
         assert "subagent" not in kinds
         assert kinds.count("api_call") == 2
         assert all(e["type"] != "api_response" or not e.get("tokens") for e in flow["turns"])
 
-    def test_events_backfilled_in_the_machine_store_are_found_for_a_session_in_a_project_store(self, tmp_path):
-        from aictl.project_stores import ProjectStores
-
+    def test_machine_events_are_found_for_a_session_with_a_project(self, tmp_path, history_store):
         project = tmp_path / "proj"
         (project / ".git").mkdir(parents=True)
-        stores = ProjectStores(db_path=tmp_path / "history.db", flush_interval=0)
-        try:
-            from aictl.storage import RequestRow, SessionRow
-
-            stores.upsert_session(
-                SessionRow(session_id=SID, tool="copilot-cli", project_path=str(project), started_at=1700000000.0)
-            )
-            stores.append_request(
-                RequestRow(
-                    ts=1700000005.0,
-                    session_id=SID,
-                    tool="copilot-cli",
-                    project_path=str(project),
-                    model="example-model",
-                    input_tokens=1000,
-                    output_tokens=50,
-                    cache_read_tokens=6000,
-                    cache_creation_tokens=3000,
-                    dedup_key=copilot_call_key(SID, (10000, 50, 6000, 3000), 0),
-                    source="transcript",
-                )
-            )
-            stores.flush()
-            assert stores.store_of_session(SID) not in ("", None)
-            _s, events = OtelReceiver().parse_traces(_body(_spans()))
-            stores.machine.append_events(_old_shape(events))
-            stores.machine.flush()
-            otel_sessions_backfill.run(stores)
-            d = agent_detail(stores, SID, None, NOW)[1]
-            assert d["otel"]["spans"]["count"] == 4
-            assert d["otel"]["calls"][0]["matched"] is True
-        finally:
-            stores.close()
+        fields = dict(session_id=SID, tool="copilot-cli", project_path=str(project))
+        history_store.insert("sessions", **fields, started_at=1700000000.0)
+        history_store.insert(
+            "requests", **fields, ts=1700000005.0, model="example-model", input_tokens=1000, output_tokens=50,
+            cache_read_tokens=6000, cache_creation_tokens=3000,
+            dedup_key=copilot_call_key(SID, (10000, 50, 6000, 3000), 0), source="transcript",
+        )
+        _seed_events(history_store)
+        d = agent_detail(history_store, SID, None, NOW, history=HistoryScope.local(history_store))[1]
+        assert d["otel"]["spans"]["count"] == 4
+        assert d["otel"]["calls"][0]["matched"] is True
 
 
 # ─── Setup: the variable Copilot CLI reads ─────
@@ -524,19 +387,15 @@ class TestCopilotCliEndpoint:
         if "COPILOT_OTEL_ENDPOINT" in env:
             assert "ignores" in got["text"]
 
-    def test_the_machine_payload_reports_it(self, monkeypatch, tmp_path):
+    def test_the_machine_payload_reports_it(self, monkeypatch, kusto_store):
         monkeypatch.setattr(board_api, "_otel_setup", lambda port: {"copilot-cli": copilot_cli_otel_endpoint(port, {})})
-        db = HistoryDB(db_path=str(tmp_path / "h.db"), flush_interval=0)
-        try:
-            payload = compute_machine(db, None, now=NOW, port=8597)
-        finally:
-            db.close()
+        payload = compute_machine(kusto_store, None, now=NOW, port=8597)
         assert payload["pipeline"]["otel_setup"]["copilot-cli"]["status"] == "missing"
 
     def test_the_settings_catalog_says_copilot_cli_ignores_it(self):
         import yaml
 
-        catalog = yaml.safe_load((Path(board_api.__file__).parents[1] / "data" / "settings-catalog.yaml").read_text())
+        catalog = yaml.safe_load((Path(board_api.__file__).parents[1] / "data" / "settings-catalog.yaml").read_text(encoding="utf-8"))
         entries = [
             e
             for tool in catalog["tools"].values()

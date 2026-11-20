@@ -18,7 +18,9 @@ from pathlib import Path
 import pytest
 
 from aictl.ingesters.vscode_chat_logs import VSCodeChatLogsIngester
-from aictl.storage import HistoryDB, SessionRow
+from aictl.records import SessionRow
+from aictl.state_file import StateFile
+from core_store_fakes import message_facts, written
 
 
 def _write_snapshot(
@@ -95,9 +97,7 @@ def _build_log_tree(root: Path) -> Path:
 
 @pytest.fixture()
 def our_db(tmp_path):
-    db = HistoryDB(db_path=str(tmp_path / "aictl.db"), flush_interval=0)
-    yield db
-    db.close()
+    return message_facts(tmp_path)
 
 
 def test_ingests_user_and_assistant_messages(tmp_path, our_db):
@@ -108,25 +108,18 @@ def test_ingests_user_and_assistant_messages(tmp_path, our_db):
     # 2 requests × 2 roles (user + assistant) = 4 rows.
     assert inserted == 4
 
-    conn = our_db._conn()
-    rows = conn.execute(
-        "SELECT session_id, role, content, model FROM vscode_chat_messages ORDER BY source_row_id"
-    ).fetchall()
-    roles = [r[1] for r in rows]
+    rows = sorted(written(our_db.writer, "vscode_chat_messages"), key=lambda row: row["source_row_id"])
+    roles = [r["role"] for r in rows]
     assert roles == ["user", "assistant", "user", "assistant"]
-    assert rows[0][2] == "Hello assistant"
+    assert rows[0]["content"] == "Hello assistant"
     # The full text of a response that arrived over two append patches;
     # a thinking block gets a "[thinking]" prefix.
-    assert rows[1][2] == "Hi there[thinking] pondering"
-    assert rows[3][2] == "4"
-    assert rows[0][3] == "gpt-4o-mini"
+    assert rows[1]["content"] == "Hi there[thinking] pondering"
+    assert rows[3]["content"] == "4"
+    assert rows[0]["model"] == "gpt-4o-mini"
     # Provisional session row was created.
-    sess = conn.execute(
-        "SELECT session_id, tool FROM sessions WHERE session_id = ?",
-        ("vscode-chat:vs-sess-1",),
-    ).fetchone()
-    assert sess is not None
-    assert sess[1] == "copilot-vscode"
+    sessions = written(our_db.writer, "sessions")
+    assert any(r["session_id"] == "vscode-chat:vs-sess-1" and r["tool"] == "copilot-vscode" for r in sessions)
 
 
 def test_second_poll_unchanged_file_is_noop(tmp_path, our_db):
@@ -136,39 +129,17 @@ def test_second_poll_unchanged_file_is_noop(tmp_path, our_db):
     assert ingester.poll() == 0
 
 
-def test_poll_uses_one_message_upsert_batch_across_files(monkeypatch, tmp_path, our_db):
+def test_poll_keeps_message_keys_distinct_across_files(tmp_path, our_db):
     log_dir = _build_log_tree(tmp_path)
     first = log_dir / "abcd1234" / "chatSessions" / "session-aaa.jsonl"
     second = log_dir / "efgh5678" / "chatSessions" / "session-bbb.jsonl"
     second.parent.mkdir(parents=True)
     second.write_bytes(first.read_bytes())
-    batches = []
-    singles = []
-
-    class Spy:
-        def __init__(self, conn):
-            self.conn = conn
-
-        def execute(self, sql, params=()):
-            if sql.startswith("INSERT INTO vscode_chat_messages"):
-                singles.append(sql)
-            return self.conn.execute(sql, params)
-
-        def executemany(self, sql, rows):
-            values = list(rows)
-            if sql.startswith("INSERT INTO vscode_chat_messages"):
-                batches.append(values)
-            return self.conn.executemany(sql, values)
-
-        def __getattr__(self, name):
-            return getattr(self.conn, name)
-
-    monkeypatch.setattr("aictl.ingesters.vscode_chat_logs.writer_conn", lambda _store: Spy(our_db._conn()))
     ingester = VSCodeChatLogsIngester(log_dir, our_db)
 
     assert ingester.poll() == 8
-    assert len(batches) == 1 and len(batches[0]) == 8
-    assert not singles
+    rows = written(our_db.writer, "vscode_chat_messages", operation="upsert")
+    assert len({(r["source_file"], r["source_row_id"]) for r in rows}) == 8
 
 
 def test_missing_log_dir_returns_zero(tmp_path, our_db):
@@ -189,7 +160,7 @@ def test_correlates_to_existing_session(tmp_path, our_db):
     # Pre-seed a real session row whose session_id matches the VS Code
     # chat sessionId — the ingester should attach to it rather than
     # creating a vscode-chat:* provisional row.
-    our_db.upsert_session(
+    our_db.sessions.session(
         SessionRow(
             session_id="vs-sess-1",
             tool="copilot-vscode",
@@ -200,15 +171,10 @@ def test_correlates_to_existing_session(tmp_path, our_db):
     ingester = VSCodeChatLogsIngester(log_dir, our_db)
     assert ingester.poll() == 4
 
-    conn = our_db._conn()
-    sids = {r[0] for r in conn.execute("SELECT DISTINCT session_id FROM vscode_chat_messages").fetchall()}
+    sids = {r["session_id"] for r in written(our_db.writer, "vscode_chat_messages")}
     assert sids == {"vs-sess-1"}
     # No provisional row was created.
-    row = conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id = ?",
-        ("vscode-chat:vs-sess-1",),
-    ).fetchone()
-    assert row is None
+    assert {r["session_id"] for r in written(our_db.writer, "sessions")} == {"vs-sess-1"}
 
 
 def test_empty_requests_are_ignored(tmp_path, our_db):
@@ -218,22 +184,14 @@ def test_empty_requests_are_ignored(tmp_path, our_db):
     assert ingester.poll() == 0
 
 
-def _cursor_rows(db):
-    return db._conn().execute("SELECT key, typeof(value), text FROM maintenance_state").fetchall()
-
-
-def test_cursor_is_saved_in_text_and_value_stays_a_number(tmp_path, our_db):
+def test_cursor_is_saved_in_local_json(tmp_path, our_db):
     log_dir = _build_log_tree(tmp_path)
-    ingester = VSCodeChatLogsIngester(log_dir, our_db)
+    state = StateFile(tmp_path / "vscode_messages.json")
+    ingester = VSCodeChatLogsIngester(log_dir, our_db, checkpoint=state)
     assert ingester.poll() > 0
-    rows = _cursor_rows(our_db)
-    assert rows
-    # A typed (Kusto) column cannot hold JSON text in a REAL column.
-    assert all(kind == "real" for _key, kind, _text in rows)
-    (cursor,) = [text for key, _kind, text in rows if key == VSCodeChatLogsIngester._CURSOR_KEY]
-    assert json.loads(cursor)
+    assert state.read()["data"]["cursor"]
     # A new ingester reads the cursor back and reads no file twice.
-    again = VSCodeChatLogsIngester(log_dir, our_db)
+    again = VSCodeChatLogsIngester(log_dir, our_db, checkpoint=state)
     assert again._files
     assert {k: v.resume_point() for k, v in again._files.items()} == {
         k: v.resume_point() for k, v in ingester._files.items()
@@ -241,21 +199,10 @@ def test_cursor_is_saved_in_text_and_value_stays_a_number(tmp_path, our_db):
     assert again.poll() == 0
 
 
-def test_cursor_saved_by_an_older_version_in_value_is_still_loaded(tmp_path, our_db):
+def test_cursor_for_another_source_is_not_loaded(tmp_path, our_db):
     log_dir = _build_log_tree(tmp_path)
-    ingester = VSCodeChatLogsIngester(log_dir, our_db)
+    state = StateFile(tmp_path / "vscode_messages.json")
+    ingester = VSCodeChatLogsIngester(log_dir, our_db, checkpoint=state)
     assert ingester.poll() > 0
-    conn = our_db._conn()
-    (cursor,) = conn.execute(
-        "SELECT text FROM maintenance_state WHERE key = ?", (VSCodeChatLogsIngester._CURSOR_KEY,)
-    ).fetchone()
-    # The old format: the JSON in ``value``, ``text`` empty.
-    conn.execute("DELETE FROM maintenance_state WHERE key = ?", (VSCodeChatLogsIngester._CURSOR_KEY,))
-    conn.execute("INSERT INTO maintenance_state(key, value) VALUES(?, ?)", (VSCodeChatLogsIngester._CURSOR_KEY, cursor))
-    conn.commit()
-    again = VSCodeChatLogsIngester(log_dir, our_db)
-    assert again._files
-    assert {k: v.resume_point() for k, v in again._files.items()} == {
-        k: v.resume_point() for k, v in ingester._files.items()
-    }
-    assert again.poll() == 0
+    again = VSCodeChatLogsIngester(tmp_path / "other", our_db, checkpoint=state)
+    assert not again._files

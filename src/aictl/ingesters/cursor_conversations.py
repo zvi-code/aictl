@@ -36,17 +36,17 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
-import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..platforms import cursor_home_dir
-from ._common import open_readonly, provision_session, record_quality, writer_conn
+from ._common import SQLITE_UNAVAILABLE, open_readonly, record_quality
+from .message_facts import MessageFacts
 
 if TYPE_CHECKING:
-    from ..storage import HistoryDB
+    import sqlite3
+
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class CursorConversationsIngester:
     db_path:
         Path to Cursor's ``conversations.db``.
     our_store:
-        The shared :class:`~aictl.storage.HistoryDB` instance we write into.
+        Message facts and session attribution.
     last_cursor:
         Highest ``messages.id`` already ingested. ``0`` means ingest from
         the beginning.
@@ -71,13 +71,13 @@ class CursorConversationsIngester:
     def __init__(
         self,
         db_path: Path | str,
-        our_store: HistoryDB,
-        last_cursor: int = 0,
+        our_store: MessageFacts,
+        last_cursor: int | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.store = our_store
-        self._provisioned: set[str] = set()
-        self.last_cursor = int(last_cursor)
+        saved = self.store.load(self.db_path).get("cursor", 0)
+        self.last_cursor = (saved if type(saved) is int and saved >= 0 else 0) if last_cursor is None else last_cursor
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
 
@@ -93,6 +93,11 @@ class CursorConversationsIngester:
         is missing, locked, or has no new rows.
         """
         self.last_poll_ts = time.time()
+        try:
+            import sqlite3
+        except ImportError:
+            return MessageFacts.status(self, SQLITE_UNAVAILABLE)
+        self.unavailable = ""
         src = open_readonly(self.db_path, "cursor ingester")
         if src is None:
             self._quality(
@@ -125,8 +130,9 @@ class CursorConversationsIngester:
             src.close()
 
         inserted = 0
+        high = self.last_cursor
         for row in rows:
-            conv = conversations.get(row["conversation_id"], {})
+            conv = conversations.get(str(row["conversation_id"]), {})
             project_path = str(conv.get("workspace_path") or "")
             session_id = self._correlate(
                 conversation_id=str(row["conversation_id"]),
@@ -141,8 +147,10 @@ class CursorConversationsIngester:
                 ts=float(row["ts"]),
             ):
                 inserted += 1
-            if int(row["id"]) > self.last_cursor:
-                self.last_cursor = int(row["id"])
+            high = max(high, int(row["id"]))
+        if high != self.last_cursor:
+            self.store.save(self.db_path, {"cursor": high})
+        self.last_cursor = high
         self.last_poll_inserted = inserted
         self._quality("ok", severity="info", message="Cursor conversations poll completed", detail={"inserted": inserted})
         return inserted
@@ -150,12 +158,13 @@ class CursorConversationsIngester:
     # ── source read helpers ───────────────────────────────────
 
     def _fetch_new_messages(self, src: sqlite3.Connection) -> list[dict[str, Any]]:
+        content = "content" if self.store._keeps_text() else "''"
         cur = src.execute(
-            "SELECT id, conversation_id, role, content,"
+            f"SELECT id, conversation_id, role, {content},"
             " COALESCE(created_at, 0) AS ts"
             " FROM messages"
             " WHERE id > ?"
-            " ORDER BY id ASC",
+            " ORDER BY id ASC LIMIT 500",
             (self.last_cursor,),
         )
         return [
@@ -176,6 +185,8 @@ class CursorConversationsIngester:
     ) -> dict[str, dict[str, Any]]:
         if not ids:
             return {}
+        import sqlite3
+
         # Older Cursor builds don't have a ``conversations`` table at all.
         try:
             placeholders = ",".join("?" for _ in ids)
@@ -201,14 +212,12 @@ class CursorConversationsIngester:
         content: str,
         ts: float,
     ) -> bool:
-        conn = writer_conn(self.store)
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO cursor_session_messages"
-            "(session_id, source_row_id, role, content, ts) VALUES(?,?,?,?,?)",
-            (session_id, source_row_id, role, content, ts),
+        self.store.append(
+            "cursor_session_messages",
+            dict(session_id=session_id, source_row_id=source_row_id, role=role, content=content, ts=ts),
+            project=self.store.sessions.project_for(session_id),
         )
-        conn.commit()
-        return cur.rowcount > 0
+        return True
 
     def _correlate(self, conversation_id: str, project_path: str, ts: float) -> str:
         """Find a session to attach this message to, or provision one.
@@ -218,38 +227,12 @@ class CursorConversationsIngester:
         The window is left open-ended on the future side because live
         sessions have ``ended_at = NULL``.
         """
-        from ..kusto.observations import retains_unresolved_facts
-
-        if project_path and not retains_unresolved_facts(self.store):
-            where = "tool = 'cursor' AND project_path = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)"
-            find = getattr(self.store, "sessions_where", None)
-            if find is not None:
-                # A history split by project: the session can be in any store.
-                rows = find(where, (project_path, ts, ts), order="newest", limit=1)
-                row = rows[0] if rows else None
-            else:
-                row = (
-                    self.store._conn()
-                    .execute(f"SELECT session_id FROM sessions WHERE {where} ORDER BY started_at DESC LIMIT 1", (project_path, ts, ts))
-                    .fetchone()
-                )
-            if row:
-                return str(row[0])
-
-        # Provisional session keyed by conversation id.
-        provisional_id = f"cursor:{conversation_id}"
-        # Through the store's writer: a store split by project places the row.
-        from ..storage import SessionRow
-
-        provision_session(
-            self.store,
-            self._provisioned,
-            SessionRow(session_id=provisional_id, tool="cursor", project_path=project_path, started_at=ts, source="cursor-ingester")
-        )
-        return provisional_id
+        return (self.store.sessions.active_session("cursor", project_path, ts)
+                or self.store.placeholder(f"cursor:{conversation_id}", "cursor", ts,
+                                          "cursor-ingester", project_path))
 
 
-__all__ = ["CursorConversationsIngester", "POLL_INTERVAL_S", "start_background_poller"]
+__all__ = ["CursorConversationsIngester", "POLL_INTERVAL_S"]
 
 
 DEFAULT_DB_PATH = cursor_home_dir() / "conversations.db"
@@ -257,40 +240,3 @@ DEFAULT_DB_PATH = cursor_home_dir() / "conversations.db"
 
 def cursor_ingester_enabled() -> bool:
     return os.environ.get("AICTL_CURSOR_INGESTER", "").strip().lower() not in {"0", "false", "no", "off"}
-
-
-def start_background_poller(
-    our_store: HistoryDB,
-    db_path: Path | str = DEFAULT_DB_PATH,
-    interval: float = POLL_INTERVAL_S,
-) -> threading.Thread | None:
-    """Start a daemon thread that calls :meth:`CursorConversationsIngester.poll`.
-
-    Gated on:
-
-    * ``AICTL_CURSOR_INGESTER`` env var — set to ``0`` / ``false`` to disable.
-    * The presence of *db_path* at startup. If it's missing, we still
-      start the thread so the file can appear later (Cursor might not
-      be running yet), but polls are effectively no-ops until it shows up.
-
-    Returns the running thread, or ``None`` if disabled.
-    """
-    if not cursor_ingester_enabled():
-        return None
-
-    ingester = CursorConversationsIngester(db_path, our_store)
-
-    def _loop() -> None:
-        seen_source = False
-        while True:
-            try:
-                seen_source = seen_source or ingester.db_path.is_file()
-                if seen_source:
-                    ingester.poll()
-            except Exception as exc:  # noqa: BLE001 - isolate poll failures from the daemon
-                log.debug("cursor ingester poll error: %s", exc)
-            time.sleep(interval)
-
-    thread = threading.Thread(target=_loop, daemon=True, name="aictl-cursor-ingester")
-    thread.start()
-    return thread

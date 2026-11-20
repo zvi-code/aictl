@@ -21,13 +21,13 @@ already-stored events on every request.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..importers._parse_helpers import import_mcp_from_json
-
-if TYPE_CHECKING:
-    from ..storage import HistoryDB
+from ..stores.base import Reader
+from ._events import session_events
 
 # Config files that might hold MCP server definitions for a project.
 # Order matches what aictl emitters/importers write today.
@@ -97,7 +97,7 @@ def _extract_server_name(ev: Any) -> str:
     return ""
 
 
-def session_mcp_calls(db: HistoryDB, session_id: str, limit: int = 2000) -> list[dict]:
+def session_mcp_calls(reader: Reader, session_id: str, limit: int = 2000) -> list[dict]:
     """Aggregate MCP server calls observed during *session_id*.
 
     Returns one dict per distinct server:
@@ -108,7 +108,10 @@ def session_mcp_calls(db: HistoryDB, session_id: str, limit: int = 2000) -> list
     """
     if not session_id:
         return []
-    events = db.query_events(session_id=session_id, limit=limit)
+    return mcp_calls(session_events(reader, session_id, limit))
+
+
+def mcp_calls(events: Iterable[Any]) -> list[dict]:
     per_server: dict[str, dict] = {}
     for ev in events:
         server = _extract_server_name(ev)

@@ -1,0 +1,15 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+union
+    (system_snapshots
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, ts
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize captured_at=max(ts) by node_id),
+    (sessions
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | distinct node_id | extend captured_at=real(null))
+| summarize captured_at=max(captured_at) by node_id
+| order by node_id asc
+| take row_limit

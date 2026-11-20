@@ -1,0 +1,13 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
+    requested_paths:dynamic, row_limit:long);
+union
+    (session_artifacts | where (all_nodes or node_id==requested_node) and path in (requested_paths)
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,path
+        | where not(column_ifexists('_deleted',false)) and (isnull(mtime) or mtime between (since .. until)) | project path),
+    (file_write_events | where all_nodes or node_id==requested_node
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and path in (requested_paths) and ts between (since .. until) | project path)
+| take 1
+| project found=true
+| take row_limit

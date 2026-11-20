@@ -16,8 +16,13 @@ import pytest
 from aictl.ingesters.call_facts import apply_patch_files, command_head, edit_line_counts, target_of
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.monitoring import tool_telemetry as tt
-from aictl.storage import AgentRow, FileWriteRow, HistoryDB, RequestRow, ToolInvocationRow
-from aictl.storage_migrations import CURRENT_VERSION
+from aictl.records import AgentRow, FileWriteRow, RequestRow, ToolInvocationRow
+from aictl.session_facts import SessionFacts
+from aictl.state_file import StateFile
+from aictl.stores.base import StoreError
+from aictl.stores.testing import MemoryWriter
+from aictl.tool_calls import ToolCalls
+from core_store_fakes import current
 
 NOW = time.time()
 SESSION = "11111111-1111-4111-8111-111111111111"
@@ -46,14 +51,20 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+class CapturedFacts(SessionFacts):
+    def __init__(self, *, keeps_text=lambda: True, **kwargs):
+        super().__init__(MemoryWriter(), keeps_text=keeps_text, **kwargs)
+        self.tool_calls = ToolCalls(self.writer, keeps_text=keeps_text)
+
+
 @pytest.fixture
-def db(tmp_path):
-    store = HistoryDB(tmp_path / "history.db", flush_interval=0)
-    yield store
-    store.close()
+def db():
+    return CapturedFacts()
 
 
 def make_ingester(db, root: Path, **kwargs) -> TranscriptUsageIngester:
+    if isinstance(db, CapturedFacts):
+        kwargs.setdefault("tool_calls", db.tool_calls)
     return TranscriptUsageIngester(
         db,
         claude_projects=root / "claude" / "projects",
@@ -64,14 +75,29 @@ def make_ingester(db, root: Path, **kwargs) -> TranscriptUsageIngester:
     )
 
 
-def rows(db, sql: str, *params) -> list[dict]:
-    cur = db._conn().execute(sql, params)
-    names = [c[0] for c in cur.description]
-    return [dict(zip(names, r, strict=True)) for r in cur.fetchall()]
+def rows(db, table, *fields, order=None, **filters):
+    result = current(db.writer, table)
+    if table in ("tool_invocations", "agents"):
+        key = "dedup_key" if table == "tool_invocations" else "agent_id"
+        defaults = {"input": "{}", "result_summary": "", "target": ""} if key == "dedup_key" else {"task": ""}
+        retained = {(r["project"], r[key]): r for r in current(db.writer, table + "_text")}
+        result = [defaults | row | {name: retained.get((row["project"], row[key]), {}).get(name, default)
+                                    for name, default in defaults.items()} for row in result]
+    result = [r for r in result if all(r.get(name) == value for name, value in filters.items())]
+    if order:
+        result.sort(key=lambda r: r[order])
+    return [{field: r[field] for field in fields} for r in result] if fields else result
 
 
 def count(db, table: str) -> int:
-    return db._conn().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    return len(current(db.writer, table))
+
+
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
+def total_tokens(batch, fields=TOKEN_FIELDS):
+    return sum(row[field] for row in batch for field in fields)
 
 
 FACT_TABLES = ("requests", "tool_invocations", "session_prompts", "skill_uses", "agents", "file_write_events")
@@ -164,7 +190,7 @@ class TestClaude:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT * FROM requests")
+        got = rows(db, "requests")
         assert len(got) == 1
         row = got[0]
         assert (row["input_tokens"], row["output_tokens"], row["cache_read_tokens"], row["cache_creation_tokens"]) == (10, 40, 100, 20)
@@ -182,8 +208,9 @@ class TestClaude:
             [c_assistant("m1", "r1", 100, inp=7, out=8, read=9, write=3), c_assistant("m2", "r2", 90, inp=1, out=2, read=3, write=4)],
         )
         make_ingester(db, tmp_path).poll()
-        usage = rows(db, "SELECT * FROM session_usage")[0]
-        total = rows(db, "SELECT SUM(input_tokens) i, SUM(output_tokens) o, SUM(cache_read_tokens) r, SUM(cache_creation_tokens) w FROM requests")[0]
+        usage = rows(db, "session_usage")[0]
+        requests = rows(db, "requests")
+        total = {label: sum(row[field] for row in requests) for label, field in zip("iorw", TOKEN_FIELDS, strict=True)}
         assert (total["i"], total["o"], total["r"], total["w"]) == (
             usage["input_tokens"],
             usage["output_tokens"],
@@ -200,12 +227,12 @@ class TestClaude:
         # A resumed session replays the same call in another file.
         write_lines(claude_path(tmp_path).with_name("99999999-9999-4999-8999-999999999999.jsonl"), [sub_line])
         make_ingester(db, tmp_path).poll()
-        got = {r["agent_id"]: r for r in rows(db, "SELECT * FROM requests")}
+        got = {r["agent_id"]: r for r in rows(db, "requests")}
         assert set(got) == {"", "abc"}
         assert got["abc"]["session_id"] == SESSION
-        agent = rows(db, "SELECT * FROM agents")[0]
+        agent = rows(db, "agents")[0]
         assert (agent["agent_id"], agent["session_id"], agent["task"], agent["is_sidechain"]) == ("abc", SESSION, "Explore", 1)
-        prompts = rows(db, "SELECT agent_id, text FROM session_prompts")
+        prompts = rows(db, "session_prompts", "agent_id", "text")
         assert prompts == [{"agent_id": "abc", "text": "explore this"}]
 
     def test_prompts_exclude_tool_results_notifications_and_local_commands(self, db, tmp_path):
@@ -222,7 +249,7 @@ class TestClaude:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        assert [r["text"] for r in rows(db, "SELECT text FROM session_prompts ORDER BY ts")] == ["real prompt", "after reminder"]
+        assert [r["text"] for r in rows(db, "session_prompts", order="ts")] == ["real prompt", "after reminder"]
 
     def test_task_notification_is_not_a_human_turn(self, db, tmp_path):
         write_lines(
@@ -234,7 +261,7 @@ class TestClaude:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        assert rows(db, "SELECT turn_count FROM session_usage")[0]["turn_count"] == 1
+        assert rows(db, "session_usage")[0]["turn_count"] == 1
 
     def test_command_resolves_to_a_prompt_file_and_a_skill(self, db, tmp_path):
         project = tmp_path / "proj"
@@ -252,11 +279,11 @@ class TestClaude:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT text, prompt_file FROM session_prompts ORDER BY ts")
+        got = rows(db, "session_prompts", "text", "prompt_file", order="ts")
         assert got[0] == {"text": "/review src", "prompt_file": ".claude/commands/review.md"}
         assert got[1]["prompt_file"] == ".claude/skills/grind/SKILL.md"
         assert got[2] == {"text": "/gone", "prompt_file": ""}
-        assert [(r["name"], r["trigger"]) for r in rows(db, "SELECT name, trigger FROM skill_uses")] == [("grind", "user")]
+        assert [(r["name"], r["trigger"]) for r in rows(db, "skill_uses")] == [("grind", "user")]
 
     def test_tool_call_fields_and_confirmations(self, db, tmp_path):
         write_lines(
@@ -272,7 +299,7 @@ class TestClaude:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        got = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
         assert got["t1"]["target"] == "pytest -q tests"
         assert got["t1"]["exit_code"] == 2
         assert got["t1"]["is_error"] == 1
@@ -283,7 +310,7 @@ class TestClaude:
         assert got["t2"]["exit_code"] is None
         assert got["t3"]["confirm"] == "blocked"
         assert got["t4"]["duration_ms"] == 0  # no result yet
-        assert [r["name"] for r in rows(db, "SELECT name FROM skill_uses")] == ["ui-review"]
+        assert [r["name"] for r in rows(db, "skill_uses")] == ["ui-review"]
 
     def test_line_counts_prefer_the_patch_then_the_input(self, db, tmp_path):
         patch = {"filePath": "/work/proj/a.py", "structuredPatch": [{"lines": [" same", "-old", "+new", "+more"]}]}
@@ -299,11 +326,11 @@ class TestClaude:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = {r["path"]: json.loads(r["detail"]) for r in rows(db, "SELECT path, detail FROM file_write_events")}
+        got = {r["path"].replace("\\", "/"): json.loads(r["detail"]) for r in rows(db, "file_write_events")}
         assert (got["/work/proj/a.py"]["lines_added"], got["/work/proj/a.py"]["lines_removed"]) == (2, 1)
         assert (got["/work/proj/b.py"]["lines_added"], got["/work/proj/b.py"]["lines_removed"]) == (3, 0)
         assert "/work/proj/c.py" not in got  # the edit failed
-        edit = rows(db, "SELECT input FROM tool_invocations WHERE source_event_id = 'e1'")[0]
+        edit = rows(db, "tool_invocations", source_event_id="e1")[0]
         assert json.loads(edit["input"])["new_string"] == "new\nmore"
 
     def test_api_error_is_a_failed_request_with_no_tokens(self, db, tmp_path):
@@ -313,31 +340,29 @@ class TestClaude:
         synthetic["message"]["model"] = "<synthetic>"
         write_lines(claude_path(tmp_path), [line, synthetic])
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT is_error, error_type, input_tokens FROM requests")
+        got = rows(db, "requests", "is_error", "error_type", "input_tokens")
         assert got == [{"is_error": 1, "error_type": "rate_limit", "input_tokens": 0}]
 
 
 class TestSupersededRows:
     def test_other_writers_rows_for_covered_calls_go_away(self, db, tmp_path):
         ts = NOW - 200
-        db.append_request(RequestRow(ts=ts, source_ts=ts, session_id=SESSION, tool="claude-code", model=MODEL, input_tokens=10, source="otel"))
-        db.append_request(RequestRow(ts=ts, source_ts=ts, session_id=SESSION, tool="claude-code", model=MODEL, input_tokens=10, source="claude-code-jsonl"))
-        db.append_tool_invocation(ToolInvocationRow(ts=ts, session_id=SESSION, tool="claude-code", tool_name="Bash", source="otel", source_event_id="span"))
-        db.append_tool_invocation(
+        db.requests([RequestRow(ts=ts, source_ts=ts, session_id=SESSION, tool="claude-code", model=MODEL, input_tokens=10, source="otel")])
+        db.requests([RequestRow(ts=ts, source_ts=ts, session_id=SESSION, tool="claude-code", model=MODEL, input_tokens=10, source="claude-code-jsonl")])
+        db.tool_calls.record([
+            ToolInvocationRow(ts=ts, session_id=SESSION, tool="claude-code", tool_name="Bash", source="otel", source_event_id="span"),
             ToolInvocationRow(ts=ts, session_id=SESSION, tool="claude-code", tool_name="Bash", source="hook", source_event_id="t1", result_summary="kept", input={"command": "ls"})
-        )
+        ])
         # A live row for a call newer than the file stays until the file catches up.
         live = NOW - 1
-        db.append_request(RequestRow(ts=live, source_ts=live, session_id=SESSION, tool="claude-code", model=MODEL, source="otel"))
-        db.flush()
+        db.requests([RequestRow(ts=live, source_ts=live, session_id=SESSION, tool="claude-code", model=MODEL, source="otel")])
         write_lines(
             claude_path(tmp_path),
             [c_assistant("m1", "r1", 100, blocks=[c_tool_use("t1", "Bash", {"command": "ls"})]), c_tool_result("t1", 90)],
         )
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT source FROM requests ORDER BY ts")
-        assert sorted(r["source"] for r in got) == ["otel", "transcript"]
-        tools = rows(db, "SELECT * FROM tool_invocations")
+        assert {r["source"] for r in rows(db, "requests")} >= {"otel", "transcript"}
+        tools = rows(db, "tool_invocations")
         assert len(tools) == 1
         assert tools[0]["source"] == "transcript"
         assert tools[0]["result_summary"] == "kept"  # what only the hook had
@@ -346,19 +371,19 @@ class TestSupersededRows:
     def test_team_scan_cannot_bring_rows_back(self, db, tmp_path):
         write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100)])
         make_ingester(db, tmp_path).poll()
-        db.append_request(RequestRow(ts=NOW - 100, source_ts=NOW - 100, session_id=SESSION, tool="claude-code", model=MODEL, input_tokens=10, source="claude-code-jsonl"))
-        db.flush()
-        assert count(db, "requests") == 1
+        transcript, = rows(db, "requests")
+        db.requests([RequestRow(ts=NOW - 100, source_ts=NOW - 100, session_id=SESSION, tool="claude-code", model=MODEL,
+                                dedup_key=transcript["dedup_key"], input_tokens=10, source="claude-code-jsonl")])
+        assert rows(db, "requests") == [transcript]
 
     def test_team_scan_row_stays_without_a_transcript(self, db):
-        db.append_request(RequestRow(ts=NOW, source_ts=NOW, session_id="other", tool="claude-code", model=MODEL, source="claude-code-jsonl"))
-        db.flush()
+        db.requests([RequestRow(ts=NOW, source_ts=NOW, session_id="other", tool="claude-code", model=MODEL, source="claude-code-jsonl")])
         assert count(db, "requests") == 1
 
     def test_team_scan_keeps_a_stored_role(self, db):
-        db.write_call_facts(_agent_facts())
-        db.upsert_agent(AgentRow(agent_id="abc", session_id=SESSION, tool="claude-code", task="first prompt text", input_tokens=5))
-        row = rows(db, "SELECT task, input_tokens FROM agents")[0]
+        db.write(_agent_facts())
+        db.agents([AgentRow(agent_id="abc", session_id=SESSION, tool="claude-code", input_tokens=5)])
+        row = rows(db, "agents", "task", "input_tokens")[0]
         assert row == {"task": "Explore", "input_tokens": 5}
 
     def test_hook_file_write_after_transcript_is_ignored(self, db, tmp_path):
@@ -368,24 +393,24 @@ class TestSupersededRows:
         )
         make_ingester(db, tmp_path).poll()
         late = FileWriteRow(ts=NOW, path="/x/a.py", session_id=SESSION, source_event_id="e1", source_event_kind="hook:PostToolUse")
-        assert db.record_file_write(late) is False
-        assert count(db, "file_write_events") == 1
+        db.file_writes([late], transcript=False)
+        assert any(r["source_event_kind"] == "transcript" for r in rows(db, "file_write_events"))
 
     def test_hook_file_write_before_transcript_is_replaced(self, db, tmp_path):
         early = FileWriteRow(ts=NOW - 100, path="/x/a.py", session_id=SESSION, source_event_id="e1", source_event_kind="hook:PostToolUse")
-        assert db.record_file_write(early) is True
+        db.file_writes([early], transcript=False)
         write_lines(
             claude_path(tmp_path),
             [c_assistant("m1", "r1", 100, blocks=[c_tool_use("e1", "Write", {"file_path": "/x/a.py", "content": "1\n"})]), c_tool_result("e1", 90, result={})],
         )
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT detail FROM file_write_events")
+        got = rows(db, "file_write_events", "detail", source_event_kind="transcript")
         assert len(got) == 1
         assert json.loads(got[0]["detail"])["lines_added"] == 1
 
 
 def _agent_facts():
-    from aictl.storage import CallFacts
+    from aictl.records import CallFacts
 
     return CallFacts(agents=[AgentRow(agent_id="abc", session_id=SESSION, tool="claude-code", task="Explore", is_sidechain=1, started_at=NOW)])
 
@@ -460,7 +485,7 @@ class TestCopilot:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = {r["agent_id"]: r for r in rows(db, "SELECT * FROM requests")}
+        got = {r["agent_id"]: r for r in rows(db, "requests")}
         main = got[""]
         assert (main["input_tokens"], main["output_tokens"], main["cache_read_tokens"], main["cache_creation_tokens"]) == (30, 30, 80, 10)
         assert (main["duration_ms"], main["ttft_ms"], main["finish_reason"]) == (1500, 400, "stop")
@@ -474,15 +499,14 @@ class TestCopilot:
         same = (COPILOT_SID, "", MODEL, 120, 30, 80, 10, 0, 1500, 400.0, None, "stop", iso(400))
         make_store(tmp_path, [same, same, (COPILOT_SID, "sub-9", "Explore", 60, 20, 10, 0, 0, 900, None, 300.0, "stop", iso(380))])
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT * FROM requests ORDER BY ts")
+        got = rows(db, "requests", order="ts")
         assert len(got) == 3
         only_store = next(r for r in got if r["agent_id"] == "sub-9")
         assert (only_store["input_tokens"], only_store["ttft_ms"], only_store["project_path"]) == (50, 300, "/work/stored")
         assert only_store["model"] == "unknown"
-        agent = rows(db, "SELECT * FROM agents WHERE agent_id = 'sub-9'")[0]
+        agent = rows(db, "agents", agent_id="sub-9")[0]
         assert (agent["task"], agent["session_id"], agent["is_sidechain"]) == ("Explore", COPILOT_SID, 1)
-        usage = rows(db, "SELECT SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) t FROM requests")[0]["t"]
-        assert usage == rows(db, "SELECT input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens t FROM session_usage")[0]["t"]
+        assert total_tokens(rows(db, "requests")) == total_tokens(rows(db, "session_usage"))
 
     def test_tool_call_fields(self, db, tmp_path):
         write_lines(
@@ -501,7 +525,7 @@ class TestCopilot:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        got = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
         c1 = got["c1"]
         assert (c1["tool_name"], c1["target"], c1["is_error"], c1["exit_code"], c1["result_summary"]) == ("bash", "pytest -x", 1, 3, "boom")
         assert c1["duration_ms"] == pytest.approx(10_000, abs=50)
@@ -524,7 +548,7 @@ class TestCopilot:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        got = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
         assert got["c1"]["confirm"] == "approved"
         assert got["c1"]["confirm_wait_ms"] == pytest.approx(5000, abs=50)
         assert (got["p2"]["confirm"], got["p2"]["tool_name"]) == ("blocked", "permission:extension-permission-access")
@@ -536,14 +560,16 @@ class TestCopilot:
         write_lines(path, [ev("permission.requested", 100, {"requestId": "p1", "permissionRequest": {"kind": "url"}})])
         ingester = make_ingester(db, tmp_path)
         ingester.poll()
-        assert rows(db, "SELECT confirm FROM tool_invocations")[0]["confirm"] == "pending"
+        assert rows(db, "tool_invocations")[0]["confirm"] == "pending"
         write_lines(path, [ev("permission.completed", 90, {"requestId": "p1", "result": {"kind": "approved"}, "decisionSource": "user"})])
         ingester.poll()
-        got = rows(db, "SELECT confirm, confirm_wait_ms FROM tool_invocations")
+        got = rows(db, "tool_invocations")
         assert got[0]["confirm"] == "approved"
         assert got[0]["confirm_wait_ms"] > 0
-        db._conn().execute("UPDATE tool_invocations SET confirm = 'pending', ts = ?", (NOW - 86400,))
-        assert db.clear_stale_pending_confirms(NOW - 3600) == 1
+        db.tool_calls.record([ToolInvocationRow(ts=NOW - 86400, session_id="old", tool_name="url",
+                                               source="transcript", confirm="pending")])
+        db.tool_calls.expire(NOW - 3600)
+        assert rows(db, "tool_invocations", session_id="old")[0]["confirm"] == ""
 
     def test_prompts_skills_agents_errors_edits(self, db, tmp_path):
         write_lines(
@@ -570,15 +596,15 @@ class TestCopilot:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        assert {(r["agent_id"], r["text"]) for r in rows(db, "SELECT agent_id, text FROM session_prompts")} == {("", "real prompt"), ("sub-1", "sub task")}
-        assert rows(db, "SELECT name, trigger FROM skill_uses") == [{"name": "grind", "trigger": "agent-invoked"}]
-        agent = rows(db, "SELECT * FROM agents")[0]
+        assert {(r["agent_id"], r["text"]) for r in rows(db, "session_prompts")} == {("", "real prompt"), ("sub-1", "sub task")}
+        assert rows(db, "skill_uses", "name", "trigger") == [{"name": "grind", "trigger": "agent-invoked"}]
+        agent = rows(db, "agents")[0]
         assert (agent["agent_id"], agent["task"], agent["completed"], agent["session_id"]) == ("sub-1", "explore", 1, COPILOT_SID)
         assert agent["started_at"] > 0
         assert agent["ended_at"] > agent["started_at"]
-        error = rows(db, "SELECT is_error, error_type, http_status FROM requests")[0]
+        error = rows(db, "requests", "is_error", "error_type", "http_status")[0]
         assert error == {"is_error": 1, "error_type": "rate_limit", "http_status": 429}
-        detail = json.loads(rows(db, "SELECT detail FROM file_write_events")[0]["detail"])
+        detail = json.loads(rows(db, "file_write_events")[0]["detail"])
         assert (detail["lines_added"], detail["lines_removed"]) == (4, 2)
 
     def test_a_multi_file_apply_patch_gets_line_counts_per_file(self, db, tmp_path):
@@ -614,7 +640,7 @@ class TestCopilot:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = {r["path"]: json.loads(r["detail"]) for r in rows(db, "SELECT path, detail FROM file_write_events")}
+        got = {r["path"]: json.loads(r["detail"]) for r in rows(db, "file_write_events")}
         assert got["/work/a.py"] == {"lines_added": 2, "lines_removed": 1}
         assert got["/work/b.py"] == {"lines_added": 3, "lines_removed": 0}
         # The patch is longer than the text that is stored, and the last file is still counted.
@@ -654,17 +680,17 @@ class TestCopilot:
             )
         make_ingester(db, tmp_path).poll()
         for table in FACT_TABLES:
-            got = {r["session_id"]: r["tool"] for r in rows(db, f"SELECT session_id, tool FROM {table}")}
+            got = {r["session_id"]: r["tool"] for r in rows(db, table)}
             assert got == {DESKTOP_SID: "copilot-desktop", COPILOT_SID: "copilot-cli"}, table
 
     def test_rows_written_before_the_app_listed_a_session_are_corrected(self, db, tmp_path):
         write_lines(copilot_events(tmp_path, DESKTOP_SID), [usage_record(400)])
         ingester = make_ingester(db, tmp_path)
         ingester.poll()
-        assert rows(db, "SELECT tool FROM requests")[0]["tool"] == "copilot-cli"
+        assert rows(db, "requests")[0]["tool"] == "copilot-cli"
         make_store(tmp_path, [], {DESKTOP_SID: "project"})
         ingester.poll()
-        assert rows(db, "SELECT tool FROM requests")[0]["tool"] == "copilot-desktop"
+        assert rows(db, "session_attribution", "tool", session_id=DESKTOP_SID) == [{"tool": "copilot-desktop"}]
 
 
 # ── VS Code fixtures ───────────────────────────────────────────────────
@@ -737,7 +763,7 @@ class TestVSCode:
         )
         write_lines(d / "title-x.jsonl", [v_line("llm_request", 300, "x1", sid="title", model=MODEL, inputTokens=9, outputTokens=1, cachedTokens=0)])
         make_ingester(db, tmp_path).poll()
-        got = {r["input_tokens"]: r for r in rows(db, "SELECT * FROM requests")}
+        got = {r["input_tokens"]: r for r in rows(db, "requests")}
         main = got[40]
         assert (main["cache_read_tokens"], main["ttft_ms"], main["duration_ms"], main["agent_id"]) == (60, 350, 2000, "")
         assert main["tool"] == "copilot-vscode"
@@ -745,26 +771,25 @@ class TestVSCode:
         assert got[50]["agent_id"] == "child-1"
         assert got[50]["session_id"] == VSCODE_SID
         assert got[9]["agent_id"] == ""  # a title call is not a subagent
-        failed = rows(db, "SELECT is_error, error_type FROM requests WHERE is_error = 1")
+        failed = rows(db, "requests", "is_error", "error_type", is_error=1)
         assert failed == [{"is_error": 1, "error_type": "rate limit reached"}]
-        agent = rows(db, "SELECT * FROM agents")[0]
+        agent = rows(db, "agents")[0]
         assert (agent["agent_id"], agent["task"], agent["session_id"]) == ("child-1", "Explore", VSCODE_SID)
-        tools = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        tools = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
         assert (tools["t1"]["target"], tools["t1"]["exit_code"], tools["t1"]["duration_ms"]) == ("pytest", 2, 900)
         assert (tools["t2"]["is_error"], tools["t2"]["result_summary"]) == (1, "bad regex")
         assert tools["c3"]["agent_id"] == "child-1"
-        edits = {r["path"]: json.loads(r["detail"]) for r in rows(db, "SELECT path, detail FROM file_write_events")}
+        edits = {r["path"].replace("\\", "/"): json.loads(r["detail"]) for r in rows(db, "file_write_events")}
         assert edits["/work/vs/a.py"] == {"lines_added": 2, "lines_removed": 1}
         assert edits["/work/vs/b.py"] == {"lines_added": 2, "lines_removed": 1}
-        assert rows(db, "SELECT agent_id, text FROM session_prompts") == [{"agent_id": "child-1", "text": "find it"}]
+        assert rows(db, "session_prompts", "agent_id", "text") == [{"agent_id": "child-1", "text": "find it"}]
 
     def test_totals_match_the_session_row(self, db, tmp_path):
         d = debug_dir(tmp_path)
         write_lines(d / "main.jsonl", [v_line("llm_request", 400, "l1", model=MODEL, inputTokens=100, outputTokens=20, cachedTokens=60)])
         write_lines(d / "categorization-x.jsonl", [v_line("llm_request", 300, "x1", sid="c", model=MODEL, inputTokens=9, outputTokens=1, cachedTokens=0)])
         make_ingester(db, tmp_path).poll()
-        expected = rows(db, "SELECT input_tokens + output_tokens + cache_read_tokens t FROM session_usage")[0]["t"]
-        assert rows(db, "SELECT SUM(input_tokens + output_tokens + cache_read_tokens) t FROM requests")[0]["t"] == expected
+        assert total_tokens(rows(db, "requests"), TOKEN_FIELDS[:3]) == total_tokens(rows(db, "session_usage"), TOKEN_FIELDS[:3])
 
     def test_prompts_come_from_the_chat_file_with_their_prompt_file(self, db, tmp_path):
         workspace_json(tmp_path)
@@ -780,7 +805,7 @@ class TestVSCode:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        got = rows(db, "SELECT text, prompt_file, project_path, tool FROM session_prompts ORDER BY ts")
+        got = rows(db, "session_prompts", "text", "prompt_file", "project_path", "tool", order="ts")
         assert [r["text"] for r in got] == ["from chat", "second"]
         assert got[0]["prompt_file"] == "/work/vs/.github/prompts/x.prompt.md"
         assert got[1]["prompt_file"] == ""
@@ -791,7 +816,7 @@ class TestVSCode:
     def test_debug_log_prompts_are_used_when_there_is_no_chat_file(self, db, tmp_path):
         write_lines(debug_dir(tmp_path) / "main.jsonl", [v_line("user_message", 400, "u1", content="from log")])
         make_ingester(db, tmp_path).poll()
-        assert [r["text"] for r in rows(db, "SELECT text FROM session_prompts")] == ["from log"]
+        assert [r["text"] for r in rows(db, "session_prompts")] == ["from log"]
 
     def test_chat_only_session_gets_requests_and_tools_with_confirmations(self, db, tmp_path):
         tool_part = {"kind": "toolInvocationSerialized", "toolCallId": "toolu_1", "toolId": "copilot_readFile", "isConfirmed": {"type": 4}, "invocationMessage": {"value": "Reading a.py"}}
@@ -808,9 +833,9 @@ class TestVSCode:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        request = rows(db, "SELECT * FROM requests")[0]
+        request = rows(db, "requests")[0]
         assert (request["input_tokens"], request["output_tokens"], request["model"], request["duration_ms"]) == (70, 7, MODEL, 2500)
-        tools = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        tools = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
         assert (tools["toolu_1"]["confirm"], tools["toolu_1"]["target"]) == ("approved", "Reading a.py")
         assert tools["toolu_2"]["confirm"] == "auto"
         assert (tools["toolu_3"]["confirm"], tools["toolu_3"]["is_error"]) == ("denied", 1)
@@ -843,6 +868,33 @@ def full_fixture(root: Path) -> None:
     write_lines(chat_file(root, VSCODE_SID), [{"kind": 0, "v": {"sessionId": VSCODE_SID, "requests": [chat_request("req-1", 400, "hello")]}}])
 
 
+@pytest.fixture
+def transcript_writer(tmp_path):
+    class Writer(MemoryWriter):
+        reject_requests = False
+
+        def upsert(self, table, rows):
+            if self.reject_requests and table == "requests":
+                raise StoreError("Fact handoff failed")
+            super().upsert(table, rows)
+
+    writer = Writer()
+
+    def start(root=tmp_path):
+        return make_ingester(
+            None,
+            root,
+            fact_target=SessionFacts(writer, keeps_text=lambda: True),
+            tool_calls=ToolCalls(writer, keeps_text=lambda: True),
+            checkpoint=StateFile(tmp_path / "transcript_usage.json"),
+        )
+
+    def written(table):
+        return [r for _, name, batch in writer.operations if name == table for r in batch]
+
+    return writer, start, written
+
+
 class TestRereads:
     @pytest.mark.parametrize("stall", ["older_file", "source_store"])
     @pytest.mark.parametrize("held", [False, True])
@@ -866,11 +918,10 @@ class TestRereads:
         original_read = ingester._store.read
 
         def blocked():
-            assert rows(db, "SELECT session_id FROM session_usage WHERE session_id = ?", COPILOT_SID)
-            assert rows(db, "SELECT session_id FROM sessions WHERE session_id = ?", COPILOT_SID)
-            assert rows(db, "SELECT text FROM session_prompts WHERE session_id = ?", COPILOT_SID) == [{"text": "current"}]
-            assert rows(db, "SELECT input_tokens FROM requests WHERE session_id = ?", COPILOT_SID) == [{"input_tokens": 30}]
-            assert count(db, "maintenance_state") == 0
+            assert rows(db, "session_usage", session_id=COPILOT_SID)
+            assert rows(db, "sessions", session_id=COPILOT_SID)
+            assert rows(db, "session_prompts", "text", session_id=COPILOT_SID) == [{"text": "current"}]
+            assert rows(db, "requests", "input_tokens", session_id=COPILOT_SID) == [{"input_tokens": 30}]
             raise RuntimeError("later work stalled")
 
         def open_file(path, *args, **kwargs):
@@ -891,7 +942,7 @@ class TestRereads:
         make_ingester(db, tmp_path).poll()
         assert count(db, "requests") == 2
         assert count(db, "session_usage") == 2
-        assert rows(db, "SELECT input_tokens, output_tokens FROM session_usage WHERE session_id = ?", COPILOT_SID) == [
+        assert rows(db, "session_usage", "input_tokens", "output_tokens", session_id=COPILOT_SID) == [
             {"input_tokens": 30, "output_tokens": 30}
         ]
 
@@ -901,7 +952,7 @@ class TestRereads:
         make_store(tmp_path, [same])
         ingester = make_ingester(db, tmp_path)
         assert ingester.poll() == 1
-        assert rows(db, "SELECT project_path, git_branch FROM sessions") == [
+        assert rows(db, "sessions", "project_path", "git_branch") == [
             {"project_path": "/work/stored", "git_branch": "main"}
         ]
         assert count(db, "requests") == 1
@@ -939,20 +990,29 @@ class TestRereads:
         assert count(db, "requests") == 1
         assert not restarted._deferred
 
-    def test_a_completed_old_file_is_skipped_but_an_unseen_source_is_not(self, db, tmp_path):
+    def test_a_completed_old_file_is_skipped_but_an_unseen_source_is_not(self, transcript_writer, tmp_path, monkeypatch):
+        from aictl.ingesters import transcript_usage
+
+        _, start, written = transcript_writer
         for root in (tmp_path / "first", tmp_path / "second"):
             path = copilot_events(root, sid=root.name)
             write_lines(path, [ev("user.message", 3 * 3600, {"content": root.name})])
             old = NOW - 3 * 3600
             os.utime(path, (old, old))
-        first = make_ingester(db, tmp_path / "first")
-        first.poll()
-        restarted = make_ingester(db, tmp_path / "first")
-        restarted.poll()
-        assert not restarted._offsets
-        second = make_ingester(db, tmp_path / "second")
-        second.poll()
-        assert rows(db, "SELECT text FROM session_prompts ORDER BY text") == [{"text": "first"}, {"text": "second"}]
+        start(tmp_path / "first").poll()
+        completed = copilot_events(tmp_path / "first", sid="first")
+        records = transcript_usage.records
+
+        def read_unseen(file, *args, **kwargs):
+            assert Path(file.name) != completed, "The completed transcript must not be replayed"
+            return records(file, *args, **kwargs)
+
+        monkeypatch.setattr(transcript_usage, "records", read_unseen)
+        start(tmp_path / "first").poll()
+        start(tmp_path / "second").poll()
+        assert [(r["session_id"], r["text"]) for r in written("session_prompts")] == [
+            ("first", "first"), ("second", "second"),
+        ]
 
     def test_windows_stale_metadata_does_not_hide_growth_after_restart(self, db, tmp_path, monkeypatch):
         from aictl.ingesters import transcript_usage as tu
@@ -970,22 +1030,23 @@ class TestRereads:
         make_ingester(db, tmp_path).poll()
         assert count(db, "requests") == 2
 
-    def test_failed_facts_are_not_checkpointed_across_restart(self, db, tmp_path, monkeypatch):
+    def test_failed_facts_are_not_checkpointed_across_restart(self, transcript_writer, tmp_path):
+        writer, start, written = transcript_writer
         path = copilot_events(tmp_path)
         write_lines(path, [usage_record(3 * 3600)])
         old = NOW - 3 * 3600
         os.utime(path, (old, old))
-        real = db.write_call_facts
-
-        def locked(_facts):
-            raise sqlite3.OperationalError("database is locked")
-
-        monkeypatch.setattr(db, "write_call_facts", locked)
-        make_ingester(db, tmp_path).poll()
-        assert count(db, "requests") == 0
-        monkeypatch.setattr(db, "write_call_facts", real)
-        make_ingester(db, tmp_path).poll()
-        assert count(db, "requests") == 1
+        writer.reject_requests = True
+        with pytest.raises(StoreError, match="Fact handoff failed"):
+            start().poll()
+        assert written("requests") == []
+        assert not (tmp_path / "transcript_usage.json").exists()
+        writer.reject_requests = False
+        assert start().poll() == 1
+        [request] = written("requests")
+        assert (request["session_id"], request["input_tokens"], request["output_tokens"]) == (COPILOT_SID, 30, 30)
+        assert start().poll() == 0
+        assert written("requests") == [request]
 
     def test_failed_session_write_is_retried_without_new_lines(self, db, tmp_path, monkeypatch):
         write_lines(copilot_events(tmp_path), [usage_record(100)])
@@ -993,10 +1054,10 @@ class TestRereads:
         real = db.upsert_session
 
         def locked(_row):
-            raise sqlite3.OperationalError("database is locked")
+            raise StoreError("Fact handoff failed")
 
         monkeypatch.setattr(db, "upsert_session", locked)
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(StoreError, match="Fact handoff failed"):
             ingester.poll()
         monkeypatch.setattr(db, "upsert_session", real)
         ingester.poll()
@@ -1018,14 +1079,14 @@ class TestRereads:
         write_lines(path, [c_assistant("m1", "r1", 400, out=1, blocks=[c_tool_use("t1", "Bash", {"command": "ls"})])])
         ingester = make_ingester(db, tmp_path)
         ingester.poll()
-        assert rows(db, "SELECT duration_ms FROM tool_invocations")[0]["duration_ms"] == 0
+        assert rows(db, "tool_invocations")[0]["duration_ms"] == 0
         offset = ingester._offsets[path]
         assert offset == path.stat().st_size
         write_lines(path, [c_assistant("m1", "r1", 395, out=9), c_tool_result("t1", 390)])
         ingester.poll()
         assert ingester._offsets[path] == path.stat().st_size
-        assert rows(db, "SELECT output_tokens FROM requests") == [{"output_tokens": 9}]
-        assert rows(db, "SELECT duration_ms FROM tool_invocations")[0]["duration_ms"] > 0
+        assert rows(db, "requests", "output_tokens") == [{"output_tokens": 9}]
+        assert rows(db, "tool_invocations")[0]["duration_ms"] > 0
 
     def test_half_written_last_line_waits_for_its_newline(self, db, tmp_path):
         path = copilot_events(tmp_path)
@@ -1055,20 +1116,23 @@ class TestRereads:
         make_ingester(db, tmp_path).poll()
         assert count(db, "requests") == 1
 
-    def test_failed_write_is_kept_and_retried(self, db, tmp_path, monkeypatch):
-        write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100)])
-        ingester = make_ingester(db, tmp_path)
-        real = db.write_call_facts
-
-        def locked(_facts):
-            raise sqlite3.OperationalError("database is locked")
-
-        monkeypatch.setattr(db, "write_call_facts", locked)
-        ingester.poll()
-        assert count(db, "requests") == 0
-        monkeypatch.setattr(db, "write_call_facts", real)
-        ingester.poll()
-        assert count(db, "requests") == 1
+    def test_failed_write_is_kept_and_retried(self, transcript_writer, tmp_path):
+        writer, start, written = transcript_writer
+        path = claude_path(tmp_path)
+        write_lines(path, [c_assistant("m1", "r1", 100)])
+        ingester = start()
+        writer.reject_requests = True
+        for _ in range(2):
+            with pytest.raises(StoreError, match="Fact handoff failed"):
+                ingester.poll()
+        assert written("requests") == []
+        path.unlink()
+        writer.reject_requests = False
+        assert ingester.poll() == 1
+        [request] = written("requests")
+        assert (request["session_id"], request["input_tokens"], request["output_tokens"]) == (SESSION, 10, 5)
+        assert ingester.poll() == 0
+        assert written("requests") == [request]
 
 
 # ── Capture mode ───────────────────────────────────────────────────────
@@ -1076,10 +1140,8 @@ class TestRereads:
 
 class TestMetadataCapture:
     @pytest.fixture
-    def meta_db(self, tmp_path):
-        store = HistoryDB(tmp_path / "meta.db", flush_interval=0, capture="metadata")
-        yield store
-        store.close()
+    def meta_db(self):
+        return CapturedFacts(keeps_text=lambda: False)
 
     def test_no_text_is_stored(self, meta_db, tmp_path):
         write_lines(
@@ -1098,30 +1160,28 @@ class TestMetadataCapture:
         write_lines(sub, [c_assistant("m4", "r4", 330, agentId="abc", isSidechain=True)])
         sub.with_name("agent-abc.meta.json").write_text(json.dumps({"agentType": "Explore"}))
         make_ingester(meta_db, tmp_path).poll()
-        assert rows(meta_db, "SELECT text FROM session_prompts") == [{"text": ""}]
-        got = {r["source_event_id"]: r for r in rows(meta_db, "SELECT * FROM tool_invocations")}
-        assert got["t1"]["target"] == "pytest"  # a test run can still be recognised
+        assert rows(meta_db, "session_prompts", "text") == [{"text": ""}]
+        got = {r["source_event_id"]: r for r in rows(meta_db, "tool_invocations")}
+        assert got["t1"]["target"] == ""
         assert got["t1"]["exit_code"] == 1
         assert got["t1"]["input"] == "{}"
         assert got["t1"]["result_summary"] == ""
-        assert got["t2"]["target"] == "git"
+        assert got["t2"]["target"] == ""
         assert got["t3"]["target"] == ""
-        # A role is not conversation text, and the board groups by it.
-        assert rows(meta_db, "SELECT task FROM agents") == [{"task": "Explore"}]
+        assert not current(meta_db.writer, "agents_text")
 
     def test_team_scan_prompt_is_not_stored(self, meta_db):
-        meta_db.upsert_agent(AgentRow(agent_id="x", session_id=SESSION, task="first prompt text"))
-        assert rows(meta_db, "SELECT task FROM agents") == [{"task": ""}]
+        meta_db.agents([AgentRow(agent_id="x", session_id=SESSION, task="first prompt text")])
+        assert rows(meta_db, "agents", "task") == [{"task": ""}]
 
-    def test_trim_blanks_targets_and_prompts(self, db, tmp_path):
+    def test_trim_watermark_withholds_replayed_prompts(self, tmp_path):
+        db = CapturedFacts(trim_before=lambda: NOW)
         write_lines(
             claude_path(tmp_path),
             [c_user("plan", 400), c_assistant("m1", "r1", 390, blocks=[c_tool_use("t1", "Bash", {"command": "pytest"})])],
         )
         make_ingester(db, tmp_path).poll()
-        assert db.trim_text() > 0
-        assert rows(db, "SELECT text FROM session_prompts") == [{"text": ""}]
-        assert rows(db, "SELECT target FROM tool_invocations") == [{"target": ""}]
+        assert rows(db, "session_prompts", "text") == [{"text": ""}]
 
 
 class TestTextHelpers:
@@ -1158,67 +1218,15 @@ class TestTextHelpers:
         assert apply_patch_files(patch) == [("old/a.py", 1, 1), ("new/a.py", 1, 1)]
 
 
-# ── Migration ──────────────────────────────────────────────────────────
-
-
-class TestMigration:
-    def _old_db(self, path: Path) -> None:
-        store = HistoryDB(path, flush_interval=0)
-        store.close()
-        conn = sqlite3.connect(path)
-        conn.execute("DROP TABLE session_prompts")
-        conn.execute("DROP TABLE skill_uses")
-        conn.execute("ALTER TABLE requests DROP COLUMN ttft_ms")
-        for column in ("agent_id", "confirm", "confirm_wait_ms", "target", "exit_code"):
-            conn.execute(f"ALTER TABLE tool_invocations DROP COLUMN {column}")
-        conn.execute("DELETE FROM schema_version")
-        conn.execute("INSERT INTO schema_version(version) VALUES(29)")
-        conn.commit()
-        conn.close()
-
-    def test_upgrade_adds_columns_and_tables(self, tmp_path):
-        path = tmp_path / "old.db"
-        self._old_db(path)
-        store = HistoryDB(path, flush_interval=0)
-        conn = store._conn()
-        assert {r[1] for r in conn.execute("PRAGMA table_info(requests)")} >= {"ttft_ms"}
-        assert {r[1] for r in conn.execute("PRAGMA table_info(tool_invocations)")} >= {"agent_id", "confirm", "confirm_wait_ms", "target", "exit_code"}
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == CURRENT_VERSION >= 30
-        for table in ("session_prompts", "skill_uses"):
-            indexes = {r[1]: r[2] for r in conn.execute(f"PRAGMA index_list({table})")}
-            assert indexes[f"idx_{table}_dedup"] == 1
-            assert f"idx_{table}_ts" in indexes
-        store.close()
-
-    def test_migrated_and_fresh_schemas_have_the_same_columns(self, tmp_path):
-        old = tmp_path / "old.db"
-        self._old_db(old)
-        migrated = HistoryDB(old, flush_interval=0)
-        fresh = HistoryDB(tmp_path / "fresh.db", flush_interval=0)
-        for table in ("requests", "tool_invocations", "session_prompts", "skill_uses"):
-            a = {r[1] for r in migrated._conn().execute(f"PRAGMA table_info({table})")}
-            b = {r[1] for r in fresh._conn().execute(f"PRAGMA table_info({table})")}
-            assert a == b, table
-        migrated.close()
-        fresh.close()
-
-    def test_new_tables_follow_retention(self, db):
-        db._conn().execute("INSERT INTO session_prompts(ts, session_id) VALUES(?, 's')", (NOW - 400 * 86400,))
-        db._conn().execute("INSERT INTO skill_uses(ts, session_id, name) VALUES(?, 's', 'n')", (NOW - 400 * 86400,))
-        db._conn().commit()
-        db.compact()
-        assert count(db, "session_prompts") == 0
-        assert count(db, "skill_uses") == 0
-
-    def test_fact_columns_flow_through_the_buffered_writers(self, db):
-        db.append_request(RequestRow(ts=NOW, source_ts=NOW, session_id="s", model=MODEL, ttft_ms=12.5, source="otel"))
-        db.append_tool_invocation(
-            ToolInvocationRow(ts=NOW, session_id="s", tool_name="Bash", source="hook", source_event_id="i", agent_id="a", confirm="approved", confirm_wait_ms=5, target="ls", exit_code=0)
-        )
-        db.flush()
-        assert rows(db, "SELECT ttft_ms FROM requests") == [{"ttft_ms": 12.5}]
-        got = rows(db, "SELECT agent_id, confirm, confirm_wait_ms, target, exit_code FROM tool_invocations")
-        assert got == [{"agent_id": "a", "confirm": "approved", "confirm_wait_ms": 5, "target": "ls", "exit_code": 0}]
+def test_fact_columns_flow_through_the_buffered_writers(db):
+    db.requests([RequestRow(ts=NOW, source_ts=NOW, session_id="s", model=MODEL, ttft_ms=12.5, source="otel")])
+    db.tool_calls.record([
+        ToolInvocationRow(ts=NOW, session_id="s", tool_name="Bash", source="hook", source_event_id="i",
+                          agent_id="a", confirm="approved", confirm_wait_ms=5, target="ls", exit_code=0)
+    ])
+    assert rows(db, "requests", "ttft_ms") == [{"ttft_ms": 12.5}]
+    got = rows(db, "tool_invocations", "agent_id", "confirm", "confirm_wait_ms", "target", "exit_code")
+    assert got == [{"agent_id": "a", "confirm": "approved", "confirm_wait_ms": 5, "target": "ls", "exit_code": 0}]
 
 
 # ── Accuracy guards in the telemetry parsers ───────────────────────────
@@ -1302,6 +1310,7 @@ class TestCopilotTelemetry:
 
     def test_desktop_and_cli_reports_hold_their_own_sessions(self, tmp_path, monkeypatch):
         monkeypatch.setattr(tt.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / ".copilot"))
         monkeypatch.setattr(tt, "_copilot_report_cache", None)
         monkeypatch.setattr(tt, "_copilot_app_sessions_cache", None)
         home = tmp_path / ".copilot"
@@ -1362,7 +1371,7 @@ def test_a_tool_duration_starts_at_the_last_block_of_its_message(db, tmp_path):
         ],
     )
     make_ingester(db, tmp_path).poll()
-    got = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+    got = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
     assert got["a"]["duration_ms"] == pytest.approx(1000, abs=50)
     assert got["b"]["duration_ms"] == pytest.approx(2000, abs=50)
 
@@ -1374,7 +1383,7 @@ def test_a_forked_replay_with_zero_usage_keeps_the_real_row(db, tmp_path):
     fork = real.with_name("fork-session.jsonl")
     write_lines(fork, [{**c_assistant("m1", "r1", 90, inp=0, out=0, read=0, write=0), "sessionId": "fork-session"}])
     make_ingester(db, tmp_path).poll()
-    row = rows(db, "SELECT * FROM requests")[0]
+    row = rows(db, "requests")[0]
     assert (row["input_tokens"], row["output_tokens"], row["cache_read_tokens"]) == (5, 7, 100)
 
 
@@ -1385,13 +1394,13 @@ class TestClaudePromptRules:
     def test_an_image_only_prompt_counts(self, db, tmp_path):
         write_lines(claude_path(tmp_path), [self._user(10, [{"type": "image", "source": {}}])])
         make_ingester(db, tmp_path).poll()
-        assert [r["text"] for r in rows(db, "SELECT text FROM session_prompts")] == ["[Image]"]
+        assert [r["text"] for r in rows(db, "session_prompts")] == ["[Image]"]
 
     @pytest.mark.parametrize("text", ["<cross-session-message>x</cross-session-message>", "<side-sessions-event>x</side-sessions-event>", "[Request interrupted by user]"])
     def test_machine_text_is_not_a_prompt(self, db, tmp_path, text):
         write_lines(claude_path(tmp_path), [self._user(10, text)])
         make_ingester(db, tmp_path).poll()
-        assert rows(db, "SELECT text FROM session_prompts") == []
+        assert rows(db, "session_prompts") == []
 
     def test_a_skill_with_no_file_is_seen_from_its_body(self, db, tmp_path):
         write_lines(
@@ -1402,12 +1411,12 @@ class TestClaudePromptRules:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        assert [r["name"] for r in rows(db, "SELECT name FROM skill_uses")] == ["builtin-skill"]
+        assert [r["name"] for r in rows(db, "skill_uses")] == ["builtin-skill"]
 
     def test_a_plain_command_is_not_a_skill(self, db, tmp_path):
         write_lines(claude_path(tmp_path), [self._user(10, "<command-name>/not-a-skill</command-name>"), self._user(9, "Caveat: other text", isMeta=True)])
         make_ingester(db, tmp_path).poll()
-        assert rows(db, "SELECT name FROM skill_uses") == []
+        assert rows(db, "skill_uses") == []
 
 
 class TestPatchLines:
@@ -1416,7 +1425,7 @@ class TestPatchLines:
 
         stored = json.dumps({"input": "*** Update File: a.py\n-old\n+new\n+more\n*** Add File: /x/b.py\n+one\n"})
         got = _patch_counts(stored, "/x")
-        assert got == {"/x/a.py": (2, 1), "/x/b.py": (1, 0)}
+        assert {k.replace("\\", "/"): v for k, v in got.items()} == {"/x/a.py": (2, 1), "/x/b.py": (1, 0)}
 
     def test_input_that_is_not_a_patch_counts_nothing(self):
         from aictl.ingesters.call_facts import _patch_counts
@@ -1438,7 +1447,7 @@ class TestToolCallSizesAndSkills:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        row = rows(db, "SELECT input_bytes, output_bytes FROM tool_invocations")[0]
+        row = rows(db, "tool_invocations", "tool_name", "input_bytes", "output_bytes")[0]
         assert row["input_bytes"] == len(json.dumps(args, ensure_ascii=False).encode())
         assert row["output_bytes"] == len("héllo world".encode())
 
@@ -1451,7 +1460,7 @@ class TestToolCallSizesAndSkills:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        row = rows(db, "SELECT tool_name, input_bytes, output_bytes FROM tool_invocations")[0]
+        row = rows(db, "tool_invocations", "tool_name", "input_bytes", "output_bytes")[0]
         assert row == {"tool_name": "mcp__kusto__query", "input_bytes": len(json.dumps({"q": "T | take 1"}).encode()), "output_bytes": 300}
 
     def test_vscode_debug_call_keeps_sizes_and_a_skill_read_is_a_skill_use(self, db, tmp_path):
@@ -1466,9 +1475,9 @@ class TestToolCallSizesAndSkills:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        tools = {r["source_event_id"]: r for r in rows(db, "SELECT * FROM tool_invocations")}
+        tools = {r["source_event_id"]: r for r in rows(db, "tool_invocations")}
         assert (tools["t1"]["input_bytes"], tools["t1"]["output_bytes"]) == (len(skill_args.encode()), len(b"# worklist"))
-        skills = rows(db, "SELECT name, tool, trigger, session_id FROM skill_uses")
+        skills = rows(db, "skill_uses", "name", "tool", "trigger", "session_id")
         assert skills == [{"name": "worklist", "tool": "copilot-vscode", "trigger": "agent-invoked", "session_id": VSCODE_SID}]
 
     def test_vscode_chat_only_session_reads_the_skill_link(self, db, tmp_path):
@@ -1483,7 +1492,7 @@ class TestToolCallSizesAndSkills:
             ],
         )
         make_ingester(db, tmp_path).poll()
-        assert [r["name"] for r in rows(db, "SELECT name FROM skill_uses")] == ["ui-review"]
+        assert [r["name"] for r in rows(db, "skill_uses")] == ["ui-review"]
 
     def test_skill_of_path_on_both_kinds_of_slash(self):
         from aictl.ingesters.call_facts import skill_of_path

@@ -1,0 +1,14 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='',
+    requested_tool:string='', requested_path:string='', row_limit:long);
+let path_prefix = trim_end(@'/+', replace_string(requested_path, '\\', '/'));
+files
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'], node_id, path
+| where not(column_ifexists('_deleted', false))
+| where isempty(requested_tool) or tool in (requested_tool, '')
+| where scope in ('global', 'user')
+    or (isnotempty(path_prefix) and (replace_string(path, '\\', '/') =~ path_prefix
+       or replace_string(path, '\\', '/') startswith strcat(path_prefix, '/')))
+| sort by path asc
+| take row_limit
+| project path

@@ -4,7 +4,7 @@
 
 Mirrors the shape of :mod:`aictl.importers`, but for live/periodic
 ingestion (vs one-shot config import). Each ingester opens its source
-read-only and writes into our :class:`~aictl.storage.HistoryDB`.
+read-only and submits facts through the configured store writer.
 """
 
 from __future__ import annotations

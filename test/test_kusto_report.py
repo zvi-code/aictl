@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -650,7 +649,7 @@ emulator = pytest.mark.skipif(not _emulator_up(), reason="Kusto emulator not run
 @emulator
 def test_emulator_node_scoping_with_overlapping_ids():
     """Run the actual filters and discovery against literals only; no table reads or writes."""
-    from aictl.kusto.connection import KustoClientFactory
+    from aictl.stores.kusto.client import KustoClientFactory
 
     client = KustoClientFactory.client(EMULATOR)
     fixture = """
@@ -685,69 +684,49 @@ let tool_invocations = events | where not(req);
 
 @emulator
 def test_emulator_runs_the_command_end_to_end(monkeypatch, tmp_path):
-    """Seed synthetic rows, run ``aictl db report`` and check which sections the emulator answers.
+    """Run the report CLI and execute its queries against synthetic rows, without writes.
 
     Result on the emulator image used here: every section runs except the ones that need an operator
     the emulator lacks, which show their error text (asserted below as the set of failed sections).
     """
+    from test_kusto_connection import response
+
     from aictl.cli import main
-    from aictl.kusto.connection import connect
-    from aictl.kusto.schema import current, row_defaults, store_schema
-    from aictl.kusto.statements import Insert, Mutation
+    from aictl.kusto.observations import CURRENT_STORE, LAYOUT_QUERY
+    from aictl.stores.kusto.client import KustoClientFactory
 
-    tables = store_schema()
-    tag = "rpt" + uuid.uuid4().hex[:8]
+    client = KustoClientFactory.client(EMULATOR)
+    fixture = """
+let examples = range id from 1 to 6 step 1
+    | extend _v = now(), _deleted = false, node_id = "emulator", session_id = "rpt-private-session",
+             tool = "claude-code", agent_id = "", project_path = "/work/fixture", duration_ms = 1000.0 * id;
+let requests = examples
+    | extend ts = (now() - datetime(1970-01-01)) / 1s - id * 600,
+             model = "m1", input_tokens = 10, output_tokens = 100 * id, cache_read_tokens = 1000 * id,
+             cache_creation_tokens = 0, cost_usd = 0.5 * id, finish_reason = "stop";
+let tool_invocations = examples
+    | extend ts = (now() - datetime(1970-01-01)) / 1s - id * 60,
+             tool_name = iff(id % 2 == 0, "Read", "Bash"), target = strcat("/work/fixture/file", id % 3, ".md"),
+             input = "", is_error = 0, exit_code = 0, input_bytes = 16, output_bytes = 32;
+"""
 
-    class Stub:
-        def __init__(self):
-            self.m = {}
+    class LiteralClient:
+        def execute(self, database, query, props):
+            if query == LAYOUT_QUERY:
+                return response([("TableName", "string")],
+                                [[name] for name in (CURRENT_STORE, "requests", "tool_invocations")])
+            return client.execute(database, fixture + query, props)
 
-        def translate(self, sql, params=()):
-            return self.m[sql]
-
-        def translate_script(self, sql):
-            from aictl.kusto.statements import Noop
-
-            return [Noop("script")]
-
-    tr = Stub()
-    conn = connect(EMULATOR, translator=tr)
-    try:
-        req = []
-        tool = []
-        for i in range(6):
-            req.append(row_defaults(tables["requests"]) | {
-                "dedup_key": f"{tag}-r{i}", "ts": T0 + i * 600, "session_id": f"{tag}-s1", "tool": "claude-code", "model": "m1",
-                "input_tokens": 10, "output_tokens": 100 * (i + 1), "cache_read_tokens": 1000 * (i + 1), "cost_usd": 0.5 * (i + 1),
-                "duration_ms": 1000.0 * (i + 1), "finish_reason": "stop"})
-            tool.append(row_defaults(tables["tool_invocations"]) | {
-                "dedup_key": f"{tag}-t{i}", "ts": T0 + i * 60, "session_id": f"{tag}-s1", "tool": "claude-code",
-                "tool_name": "Read" if i % 2 else "Bash", "target": f"/home/user/dir/file{i % 3}.md", "agent_id": "" if i < 3 else f"{tag}-ag{i}"})
-        tr.m["req"] = Insert("requests", req)
-        tr.m["tool"] = Insert("tool_invocations", tool)
-        conn.execute("req")
-        conn.execute("tool")
-        conn.commit()
-
-        monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: EMULATOR)
-        out = tmp_path / "emulator.html"
-        res = CliRunner().invoke(main, ["db", "report", "--out", str(out)])
-        assert res.exit_code == 0, res.output
-        html = out.read_text(encoding="utf-8")
-        assert "localhost:8080" in html and '"database":"aictl"' in html
-        data = json.loads(re.search(r"const REPORT=(\{.*?\});\n", html, re.S).group(1))
-        status = {s["name"]: ("failed" if s["error"] else "ok") for s in data["sections"]}
-        print(status, {s["name"]: (s["error"] or "")[:120] for s in data["sections"] if s["error"]})
-        assert set(status) == {s.name for s in SECTIONS}
-        assert status["dna"] == "ok" and status["cost"] == "ok" and status["slow"] == "ok" and status["context"] == "ok"
-        for s in data["sections"]:
-            if s["error"]:
-                assert s["error"].strip()
-        assert '"' + tag not in html  # session ids are cut to 8 characters
-    finally:
-        for name in ("requests", "tool_invocations"):
-            t = tables[name]
-            tr.m["del"] = Mutation(
-                name, f"{current(t)} | where session_id startswith '{tag}' | extend ['_v'] = now(), ['_deleted'] = true", "delete")
-            conn.execute("del")
-        conn.commit()
+    monkeypatch.setattr(KustoClientFactory, "client", lambda _: LiteralClient())
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: EMULATOR)
+    out = tmp_path / "emulator.html"
+    res = CliRunner().invoke(main, ["db", "report", "--out", str(out)])
+    assert res.exit_code == 0, res.output
+    html = out.read_text(encoding="utf-8")
+    assert "localhost:8080" in html and '"database":"aictl"' in html
+    data = json.loads(re.search(r"const REPORT=(\{.*?\});\n", html, re.S).group(1))
+    sections = {s["name"]: s for s in data["sections"]}
+    assert sections.keys() == {s.name for s in SECTIONS}
+    for name in ("dna", "cost", "slow", "context"):
+        assert not sections[name]["error"], sections[name]["error"]
+    assert '"rpt-private-session"' not in html  # session ids are cut to 8 characters

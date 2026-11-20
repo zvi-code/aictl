@@ -1,0 +1,8 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+data_quality_status
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'], node_id, component, source
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| order by updated_at desc, component asc, source asc, node_id asc, ['project'] asc
+| take row_limit
+| project component, source, kind, status, severity, message, updated_at, last_ok_at, count, detail

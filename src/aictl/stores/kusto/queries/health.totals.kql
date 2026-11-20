@@ -1,0 +1,72 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+union
+    (system_snapshots | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], ts
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count(), earliest_ts=min(ts), latest_ts=max(ts) | extend table='system_snapshots'),
+    (process_snapshots | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], ts, pid
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='process_snapshots'),
+    (events | where all_nodes or node_id == requested_node
+        | extend event_key=iff(isempty(source_key), strcat('legacy:', tostring(seq)), source_key)
+        | summarize arg_max(_v, *) by node_id, ['project'], event_key
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='events'),
+    (files | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], path
+        | where not(coalesce(_deleted, false))
+        | summarize rows=count(), files_total_bytes=sum(size_bytes), files_total_tokens=sum(tokens) | extend table='files'),
+    (file_history | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], path, ts
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='file_history'),
+    (file_write_events | where all_nodes or node_id == requested_node
+        | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+        | summarize arg_max(_v, *) by node_id, ['project'], fact_key
+        | where not(coalesce(_deleted, false))
+        | summarize rows=count() | extend table='file_write_events'),
+    (data_quality_status | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], component, source
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='data_quality_status'),
+    (path_defs | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], path_template, ai_tool
+        | where not(coalesce(_deleted, false))
+        | summarize rows=count() | extend table='path_defs'),
+    (process_defs | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], process_name, ai_tool
+        | where not(coalesce(_deleted, false))
+        | summarize rows=count() | extend table='process_defs'),
+    (metrics | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], metric, ts, seq
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='metrics'),
+    (sessions | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], session_id
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='sessions'),
+    (requests | where all_nodes or node_id == requested_node
+        | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+        | summarize arg_max(_v, *) by node_id, ['project'], fact_key
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='requests'),
+    (tool_invocations | where all_nodes or node_id == requested_node
+        | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+        | summarize arg_max(_v, *) by node_id, ['project'], fact_key
+        | where not(coalesce(_deleted, false))
+        | summarize rows=count() | extend table='tool_invocations'),
+    (processes | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], source_key
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='processes'),
+    (agents | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], agent_id
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='agents'),
+    (tool_stats | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by node_id, ['project'], ts, tool
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | summarize rows=count() | extend table='tool_stats')
+| order by table asc
+| take row_limit

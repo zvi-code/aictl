@@ -1,0 +1,73 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
+    since:real=0.0, until:real=1.0e20, keep_text:bool=true, text_floor:real=0.0,
+    evidence_filters:dynamic=dynamic({}), search_terms:dynamic=dynamic([]), context_group:string='',
+    page_offset:long=0, include_detail:bool=false, include_spans:bool=false, row_limit:long);
+let retained = session_step_text
+    | where keep_text and session_id == requested_session and (all_nodes or node_id == requested_node)
+    | summarize arg_max(_v, *) by ['project'], node_id, step_key
+    | where not(column_ifexists('_deleted',false)) and ts >= text_floor
+    | project ['project'], node_id, session_id, step_key, content=text;
+let steps = session_steps
+    | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | summarize arg_max(_v, *) by ['project'], node_id, step_key
+    | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
+    | join kind=leftouter retained on ['project'], node_id, session_id, step_key
+    | project step_key, ts, session_id, kind, tool, project_path, agent_id, parent_agent_id, turn_id, round_id,
+              message_id, request_id, tool_call_id, trace_id, span_id, parent_span_id, source, source_order, role, name,
+              phase, text_status, context_tokens, context_limit, before_tokens, after_tokens, input_tokens, output_tokens,
+              estimated, exit_code, system_tokens, conversation_tokens, tool_tokens, content;
+let spans = union isfuzzy=true
+    (datatable(node_id:string,SessionId:string,TraceID:string,SpanID:string,ParentID:string,StartTime:datetime,
+        EndTime:datetime,Tool:string,ToolName:string,TurnId:string,ToolCallId:string,OperationName:string,
+        InputTokens:long,OutputTokens:long,AgentName:string,Model:string,DurationMs:long,TraceAttributes:dynamic,
+        CacheReadInputTokens:long,CacheWriteInputTokens:long,ReasoningOutputTokens:long,
+        ReportedSkillNames:string,ReportedMcpServers:string,ReportedContext:dynamic)[]),
+    (OTELTraces | project node_id, SessionId, TraceID, SpanID, ParentID, StartTime, EndTime, Tool, ToolName,
+        TurnId, ToolCallId, OperationName, InputTokens, OutputTokens, AgentName, Model, DurationMs, TraceAttributes,
+        CacheReadInputTokens, CacheWriteInputTokens, ReasoningOutputTokens, ReportedSkillNames, ReportedMcpServers, ReportedContext)
+    | where include_spans and SessionId == requested_session and (all_nodes or node_id == requested_node)
+    | where isnotempty(TraceID) and isnotempty(SpanID)
+    | summarize arg_max(EndTime, *) by node_id, TraceID, SpanID
+    | extend ts=(StartTime-datetime(1970-01-01))/1s
+    | where ts >= since and ts < until
+    | project step_key=strcat('otel:',TraceID,':',SpanID), ts, session_id=SessionId,
+        ['kind']=case(isnotempty(ToolCallId),'tool_call',isnotnull(InputTokens) or isnotnull(OutputTokens),'model_call','span'),
+        tool=Tool, turn_id=TurnId, tool_call_id=ToolCallId, trace_id=TraceID, span_id=SpanID,
+        parent_span_id=ParentID, agent_name=AgentName, model=Model, duration_ms=DurationMs,
+        cache_read_tokens=coalesce(CacheReadInputTokens,tolong(TraceAttributes['gen_ai.usage.cache_read.input_tokens'])),
+        cache_write_tokens=coalesce(CacheWriteInputTokens,tolong(TraceAttributes['gen_ai.usage.cache_write.input_tokens'])),
+        reasoning_tokens=coalesce(ReasoningOutputTokens,tolong(TraceAttributes['gen_ai.usage.reasoning.output_tokens'])),
+        reported_skills=coalesce(ReportedContext.skills,iff(isnotempty(ReportedSkillNames),split(ReportedSkillNames,'\n'),
+            parse_json(tostring(TraceAttributes['github.copilot.context.skills'])))),
+        reported_mcp_servers=coalesce(ReportedContext.mcp_servers,iff(isnotempty(ReportedMcpServers),split(ReportedMcpServers,'\n'),
+            parse_json(tostring(TraceAttributes['github.copilot.context.mcp_server_names'])))),
+        source='otel', name=coalesce(ToolName,OperationName), phase=iff(isnull(EndTime),'started','ended'),
+        input_tokens=InputTokens, output_tokens=OutputTokens, text_status='not_reported', content='';
+union steps, spans
+| where (context_group != 'usage' or (kind in ('round','model_call','span') and (isnotnull(input_tokens) or isnotnull(output_tokens))))
+    and (context_group != 'changes' or kind == 'session_command' or
+         (kind == 'context' and (name == 'reset' or phase contains 'compact' or phase contains 'reset' or phase contains 'truncat')))
+    and (context_group != 'inputs' or kind == 'skill' or array_length(reported_skills) > 0 or array_length(reported_mcp_servers) > 0)
+| where (isempty(tostring(evidence_filters.kind)) or kind == tostring(evidence_filters.kind))
+    and (isempty(tostring(evidence_filters.agent_id)) or agent_id == tostring(evidence_filters.agent_id))
+    and (isempty(tostring(evidence_filters.turn_id)) or turn_id == tostring(evidence_filters.turn_id))
+    and (isempty(tostring(evidence_filters.round_id)) or round_id == tostring(evidence_filters.round_id))
+    and (isempty(tostring(evidence_filters.tool_call_id)) or tool_call_id == tostring(evidence_filters.tool_call_id))
+    and (isempty(tostring(evidence_filters.request_id)) or request_id == tostring(evidence_filters.request_id))
+    and (isempty(tostring(evidence_filters.step_key)) or step_key == tostring(evidence_filters.step_key))
+    and (isempty(tostring(evidence_filters.message_id)) or message_id == tostring(evidence_filters.message_id))
+    and (isempty(tostring(evidence_filters.trace_id)) or trace_id == tostring(evidence_filters.trace_id))
+    and (isempty(tostring(evidence_filters.span_id)) or span_id == tostring(evidence_filters.span_id))
+| mv-apply term=iff(array_length(search_terms)==0,dynamic(['']),search_terms) to typeof(string) on (
+    summarize misses=countif(isnotempty(term) and not(kind contains term or name contains term or role contains term
+        or phase contains term or tool_call_id contains term or turn_id contains term or agent_id contains term or content contains term))
+)
+| where misses == 0
+| extend sort_ts=iff(isempty(context_group),ts,-ts)
+| order by sort_ts asc nulls last, source_order asc nulls last, step_key asc
+| serialize n=row_number()
+| where n > page_offset
+| take row_limit
+| extend text_preview=substring(content,0,240), text=iff(include_detail,substring(content,0,32768),'')
+| project-away n, sort_ts, misses, content
+| project data=pack_all()

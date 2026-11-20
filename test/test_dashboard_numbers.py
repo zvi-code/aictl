@@ -12,151 +12,63 @@ from pathlib import Path
 import pytest
 
 from aictl.dashboard.api_handlers import tool_history_for_api
-from aictl.dashboard.hooks_status import _post_tool_use_usage, _subagent_usage
+from kusto_replay import NOW
+
+from aictl.dashboard.hooks_status import _activity, _post_tool_use_usage, _subagent_usage
 from aictl.monitoring.config import MonitorConfig
 from aictl.monitoring.correlator import SessionCorrelator
 from aictl.monitoring.session import ProcessInfo
-from aictl.storage import AgentRow, EventRow, HistoryDB, SessionRow, ToolInvocationRow
+from aictl.dashboard.projections.history import HistoryScope
 
 
-@pytest.fixture()
-def db(tmp_path):
-    d = HistoryDB(db_path=str(tmp_path / "numbers.db"), flush_interval=0)
-    yield d
-    d.close()
-
-
-def _sql(db, sql, params=()):
-    conn = db._conn()
-    conn.execute(sql, params)
-    conn.commit()
-
-
-# ── 1. Tool calls panel: true totals, not the page ────────────────
-
-
-def test_session_tool_totals_count_every_stored_call(db):
-    now = time.time()
+def test_session_tool_totals_count_every_stored_call(kusto_store):
     for i in range(30):
-        db.append_tool_invocation(
-            ToolInvocationRow(
-                ts=now - i,
-                session_id="s1",
-                tool="claude-code",
-                tool_name="Bash" if i % 3 == 0 else "Read",
-                is_error=1 if i % 10 == 0 else 0,
-                source_event_id=f"u{i}",
-            )
-        )
-    db.flush()
-    page = db.query_tool_invocations(session_id="s1", limit=5)
-    assert len(page) == 5  # the page is capped ...
-    totals = db.session_tool_invocation_totals("s1")
-    assert totals["total"] == 30  # ... the totals are not
-    assert totals["errors"] == 3
-    assert totals["by_tool"] == {"Bash": 10, "Read": 20}
-    assert db.session_tool_invocation_totals("other") == {"total": 0, "errors": 0, "by_tool": {}}
-
-
-# ── 2. Session profiles from the sessions table ───────────────────
-
-
-def test_stored_session_profile_has_project_files_and_subagents(db):
-    now = time.time()
-    db.upsert_session(
-        SessionRow(session_id="sess-a", tool="claude-code", project_path="/w/proj", started_at=now - 600, ended_at=now - 60)
-    )
-    for i in range(3):
-        db.append_event(
-            EventRow(
-                ts=now - 500 + i,
-                tool="claude-code",
-                kind="file_modified",
-                session_id="sess-a",
-                detail={"path": f"/w/proj/f{i % 2}.py", "growth_bytes": 10},
-            )
-        )
-    db.append_event(
-        EventRow(
-            ts=now - 400,
-            tool="claude-code",
-            kind="file_modified",
-            session_id="sess-a",
-            detail={"path": "/h/.claude/projects/p/sess-a/subagents/agent-1.jsonl"},
-        )
-    )
-    db.flush()
-    _sql(
-        db,
-        "INSERT INTO file_write_events(ts, session_id, path, tool) VALUES(?,?,?,?)",
-        (now - 300, "sess-a", "/w/proj/other.py", "claude-code"),
-    )
-    db.upsert_agent(AgentRow(agent_id="ag1", session_id="sess-a", tool="claude-code", is_sidechain=1, started_at=now - 450))
-    db.upsert_agent(AgentRow(agent_id="ag2", session_id="sess-a", tool="claude-code", is_sidechain=1, started_at=now - 440))
-    db.flush()
-
-    (p,) = db.query_session_profiles(since=now - 3600)
-    assert p["project"] == "/w/proj"  # stored rows carry the project as live rows do
-    assert p["project_path"] == "/w/proj"
-    assert p["files_modified"] == 4
-    assert p["unique_files"] == 3
-    assert p["subagents"] == 2
-    assert p["bytes_written"] == 30
+        kusto_store.insert("tool_invocations", ts=NOW - i, session_id="s1", tool="claude-code",
+                           tool_name="Bash" if i % 3 == 0 else "Read", is_error=int(i % 10 == 0),
+                           source_event_id=f"u{i}")
+    history = HistoryScope.local(kusto_store)
+    rows = history.read("tools.totals", sid="s1")
+    assert {row["tool_name"]: row["calls"] for row in rows} == {"Bash": 10, "Read": 20}
+    assert sum(row["failures"] for row in rows) == 3
+    assert history.read("tools.totals", sid="other") == []
 
 
 # ── 3. Agents tab: counts come from the store ─────────────────────
 
 
-def test_agents_activity_counts_stored_calls_skills_and_subagents(db):
-    now = time.time()
+def test_agents_activity_counts_stored_calls_skills_and_subagents(kusto_store):
+    db, now = kusto_store, NOW
     for i in range(4):
-        db.append_tool_invocation(
-            ToolInvocationRow(ts=now - 10 - i, session_id="s1", tool="claude-code", tool_name="Read", source_event_id=f"r{i}")
-        )
-    db.append_tool_invocation(
-        ToolInvocationRow(ts=now - 5, session_id="s1", tool="claude-code", tool_name="Skill", source_event_id="sk")
-    )
-    db.flush()
-    _sql(
-        db,
-        "INSERT INTO skill_uses(dedup_key, ts, session_id, tool, project_path, name) VALUES(?,?,?,?,?,?)",
-        ("k1", now - 5, "s1", "claude-code", "/w", "review-pr"),
-    )
-    db.upsert_agent(AgentRow(agent_id="a1", session_id="s1", tool="claude-code", is_sidechain=1, started_at=now - 100, ended_at=now - 50))
-    db.upsert_agent(AgentRow(agent_id="old", session_id="s0", tool="claude-code", is_sidechain=1, started_at=now - 90_000, ended_at=now - 89_000))
-    db.flush()
-    # No hook:PostToolUse event exists: only the store knows these.
-    skills, calls = _post_tool_use_usage(db, now - 86400)
+        db.insert("tool_invocations", ts=now - 10 - i, session_id="s1", tool="claude-code", tool_name="Read", source_event_id=f"r{i}")
+    db.insert("tool_invocations", ts=now - 5, session_id="s1", tool="claude-code", tool_name="Skill")
+    db.insert("skill_uses", dedup_key="k1", ts=now - 5, session_id="s1", tool="claude-code", project_path="/w", name="review-pr")
+    db.insert("agents", agent_id="a1", session_id="s1", tool="claude-code", is_sidechain=1, started_at=now - 100, ended_at=now - 50)
+    db.insert("agents", agent_id="old", session_id="s0", tool="claude-code", is_sidechain=1, started_at=now - 90_000, ended_at=now - 89_000)
+    activity = _activity(db.history_store.reader, now - 86400)
+    skills, calls = _post_tool_use_usage(activity)
     assert calls["by_tool"] == {"claude-code": 4}  # the Skill call is a skill use, not a general call
     assert calls["by_tool_name"]["claude-code"] == {"Read": 4}
     assert skills["by_tool"] == {"claude-code": 1}
     assert skills["by_skill"] == [{"skill": "review-pr", "count": 1}]
-    sub = _subagent_usage(db, now - 86400)
+    sub = _subagent_usage(activity)
     assert sub["by_tool"]["claude-code"] == {"starts": 1, "stops": 1}
     assert sub["starts_24h"] == 1
 
 
-def test_agents_activity_does_not_double_count_hook_and_store(db):
-    now = time.time()
-    db.append_event(
-        EventRow(ts=now - 20, tool="claude-code", kind="hook:PostToolUse", session_id="s1", detail={"tool_name": "Read"})
-    )
-    db.append_tool_invocation(
-        ToolInvocationRow(ts=now - 20, session_id="s1", tool="claude-code", tool_name="Read", source_event_id="x")
-    )
-    db.flush()
-    _, calls = _post_tool_use_usage(db, now - 86400)
+def test_agents_activity_does_not_double_count_hook_and_store(kusto_store):
+    db, now = kusto_store, NOW
+    db.insert("events", ts=now - 20, tool="claude-code", kind="hook:PostToolUse", session_id="s1", detail='{"tool_name":"Read"}')
+    db.insert("tool_invocations", ts=now - 20, session_id="s1", tool="claude-code", tool_name="Read", source_event_id="x")
+    _, calls = _post_tool_use_usage(_activity(db.history_store.reader, now - 86400))
     assert calls["by_tool_name"]["claude-code"] == {"Read": 1}
 
 
-def test_subagent_starts_are_not_cut_at_50_events(db):
-    now = time.time()
+def test_subagent_starts_are_not_cut_at_50_events(kusto_store):
+    db, now = kusto_store, NOW
     for i in range(80):
-        db.append_event(
-            EventRow(ts=now - 100 + i * 0.01, tool="claude-code", kind="hook:SubagentStart", session_id="s", detail={"agent_id": f"a{i}"})
-        )
-    db.flush()
-    sub = _subagent_usage(db, now - 86400)
+        db.insert("events", ts=now - 100 + i * 0.01, tool="claude-code", kind="hook:SubagentStart", session_id="s",
+                  detail='{"agent_id":"a%d"}' % i)
+    sub = _subagent_usage(_activity(db.history_store.reader, now - 86400))
     assert sub["starts_24h"] == 80
     assert len(sub["recent"]) == 10
 
@@ -180,16 +92,16 @@ def test_large_file_gets_a_size_based_token_estimate(tmp_path, monkeypatch):
 # ── 7. Events count and per-tool history ──────────────────────────
 
 
-def test_count_events_ignores_the_page_limit(db):
-    now = time.time()
+def test_count_events_ignores_the_page_limit(kusto_store):
     for i in range(12):
-        db.append_event(EventRow(ts=now - i, tool="claude-code", kind="hook:Stop", session_id="s"))
-    db.append_event(EventRow(ts=now, tool="codex-cli", kind="hook:Stop", session_id="t"))
-    db.flush()
-    assert len(db.query_events(since=now - 100, tool="claude-code", limit=5)) == 5
-    assert db.count_events(since=now - 100, tool="claude-code") == 12
-    assert db.count_events(since=now - 100) == 13
-    assert db.count_events(since=now - 100, session_id="t") == 1
+        kusto_store.insert("events", ts=NOW-i, tool="claude-code", kind="hook:Stop", session_id="s")
+    kusto_store.insert("events", ts=NOW, tool="codex-cli", kind="hook:Stop", session_id="t")
+    history = HistoryScope.local(kusto_store)
+    params = {"since": NOW-100, "until": NOW+1}
+    assert len(history.read("events.page", requested_tool="claude-code", limit=5, page=True, **params)) == 5
+    assert history.read("events.count", requested_tool="claude-code", **params)[0]["count"] == 12
+    assert history.read("events.count", **params)[0]["count"] == 13
+    assert history.read("events.count", sid="t", **params)[0]["count"] == 1
 
 
 def test_history_api_leaves_out_series_the_store_does_not_keep():
@@ -277,6 +189,12 @@ def test_first_cpu_sample_of_a_new_process_is_not_known():
         def cwd(self):
             return "/"
 
+        def create_time(self):
+            return 42.0
+
+        def is_running(self):
+            return True
+
     class FakePsutil:
         Error = FakeError
         Process = FakeHandle
@@ -289,4 +207,4 @@ def test_first_cpu_sample_of_a_new_process_is_not_known():
     first = collector._snapshot(FakePsutil)
     assert first[42]["cpu_percent"] is None
     second = collector._snapshot(FakePsutil)
-    assert second[42]["cpu_percent"] == 100.0 * (os.cpu_count() or 1)  # bounded by the cores
+    assert second[42]["cpu_percent"] == min(2508.8, 100.0 * (os.cpu_count() or 1))

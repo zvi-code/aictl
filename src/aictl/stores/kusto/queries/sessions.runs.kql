@@ -1,0 +1,21 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_tool:string, requested_path:string,
+    since:real, until:real, row_limit:long
+);
+let usage = session_usage
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project ['project'], node_id, usage_session=tolower(session_id), usage_input=input_tokens, usage_output=output_tokens;
+sessions
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'], node_id, session_id
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where session_id != 'aictl-verify' and tool == requested_tool and project_path == requested_path
+| where started_at >= since and isnotnull(ended_at) and ended_at >= until
+| extend usage_session=tolower(coalesce(extract(@'(?i)[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}', 0, session_id), session_id))
+| join kind=leftouter usage on ['project'], node_id, usage_session
+| project node_id, session_id, started_at, ended_at, input_tokens=coalesce(usage_input, input_tokens),
+          output_tokens=coalesce(usage_output, output_tokens), files_modified, cost_usd
+| order by ended_at desc, node_id asc, session_id asc
+| take row_limit

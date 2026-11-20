@@ -1,0 +1,42 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long
+);
+let memory = materialize(files
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by node_id, ['project'], path
+    | where not(coalesce(column_ifexists('_deleted', false), false)) and category == 'memory'
+    | project node_id, ['project'], path, tool, last_changed);
+let changes = materialize(file_history
+    | where (all_nodes or node_id == requested_node) and ts between (since .. until)
+    | summarize arg_max(_v, *) by node_id, ['project'], path, ts
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | join kind=inner memory on node_id, ['project'], path);
+let selected = memory | where not(restrict_tools) or tool in (requested_tools) | top 20 by last_changed desc;
+let has_inventory = toscalar(memory | take 1 | count) > 0;
+let owners = sessions
+    | where not(has_inventory) and (all_nodes or node_id == requested_node)
+    | summarize arg_max(_v, *) by node_id, ['project'], session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false)) and isnotempty(session_id)
+    | summarize arg_max(_v, tool) by node_id, session_id
+    | project node_id, session_id, session_tool=tool;
+let writes = materialize(events
+    | where not(has_inventory) and (all_nodes or node_id == requested_node)
+        and kind == 'file_modified' and ts between (since .. until)
+    | project node_id, session_id, tool, ts, seq, detail
+    | join kind=leftouter owners on node_id, session_id
+    | extend tool=iff(tool in ('', 'any', 'unknown'), session_tool, tool));
+union
+    (changes | where restrict_tools and tool in ('', 'any', 'unknown') | summarize by path
+             | summarize hidden=count() | where has_inventory | extend row_type='hidden'),
+    (changes | join kind=leftsemi selected on node_id, ['project'], path
+             | project row_type='revision', path, ts, size_bytes, tokens),
+    (memory | summarize count=count() | extend row_type='inventory'),
+    (writes | summarize hidden=countif(restrict_tools and tool in ('', 'any', 'unknown'))
+            | where not(has_inventory) | extend row_type='hidden'),
+    (writes | where not(restrict_tools) or tool in (requested_tools)
+            | order by ts asc, seq asc | take 5000
+            | extend fact=parse_json(detail)
+            | project row_type='event', ts, seq, path=tostring(fact.path), growth_bytes=tolong(fact.growth_bytes))
+| order by row_type asc, ts asc, seq asc, path asc
+| take row_limit

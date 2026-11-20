@@ -11,10 +11,12 @@ import re
 from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..context_audit import _redact
-from ..storage import SessionStepRow, TurnRequestLink, _dedup_key
+
+if TYPE_CHECKING:
+    from ..records import SessionStepRow, TurnRequestLink
 
 _LABEL = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,255}\Z")
 _CREDENTIAL = re.compile(
@@ -132,6 +134,8 @@ class CopilotSteps:
         return self.spawn_roots.get(agent, "") if agent else turn
 
     def usage_link(self, obj: dict, data: dict, usage: dict, ts: float, cwd: str, *, allow_open: bool = True) -> TurnRequestLink:
+        from ..records import TurnRequestLink
+
         """Snapshot at the usage record, not at flush. Envelope parentId is chronology, not causality."""
         parent = data.get("parentToolCallId") or usage.get("parentToolCallId")
         raw_agent = obj.get("agentId") or data.get("agentId")
@@ -210,6 +214,8 @@ class CopilotSteps:
             # old format lacks event IDs; its 1-based position distinguishes even identical lines.
             event = _label(obj.get("id"))
             identity = event or f"#{self.record}:{ts}"
+            from ..records import SessionStepRow, _dedup_key
+
             key = _dedup_key("\0".join(("copilot-step", self.sid, identity, source, kind, slot)))
             self.order += 1
             if isinstance(body, str) and body:

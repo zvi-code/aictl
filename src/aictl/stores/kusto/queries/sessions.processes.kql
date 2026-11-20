@@ -1,0 +1,17 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_project:string = '',
+    requested_session:string, row_limit:long
+);
+let linked = materialize(
+    session_processes
+    | where (all_nodes or node_id == requested_node) and session_id == requested_session
+    | where isempty(requested_project) or ['project'] == requested_project
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, pid
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project pid, tool, role, joined_at
+);
+union
+    (linked | summarize count=count() by role=iff(isempty(role), 'unknown', role) | extend row_type='count'),
+    (linked | order by joined_at asc, pid asc | take row_limit | extend row_type='process')
+| order by row_type asc, joined_at asc, pid asc
+| take row_limit

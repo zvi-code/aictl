@@ -9,7 +9,6 @@ block on database queries.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
@@ -17,8 +16,9 @@ from datetime import datetime, timedelta
 from ..data.model_pricing import PRICING_AS_OF, PRICING_SOURCES, context_window_for
 from ..data.provenance import COPILOT_COST_REASON, USD_PER_AI_CREDIT, combine_cost_quality, combine_tokens_quality
 from ..ingesters.transcript_usage import local_day
-from ..tool_scope import is_selected, is_unattributed, normalize_selection, selection_block
+from ..tool_scope import normalize_selection, selection_block, stored_ids_for
 from ..utils import estimate_tokens_from_size
+from .projections.history import HistoryScope, project_usage
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +150,11 @@ class _AnalyticsCache:
         )
 
     def _record_quality(self, status: str, *, severity: str, message: str, detail: dict | None = None) -> None:
-        db = getattr(self._store, "_db", None) if self._store else None
-        if db is None or not hasattr(db, "record_data_quality"):
+        quality = getattr(self._store, "collection_status", None)
+        if quality is None:
             return
         try:
-            db.record_data_quality(
+            quality.record_data_quality(
                 "dashboard:analytics-cache",
                 status,
                 kind="aggregator",
@@ -162,7 +162,7 @@ class _AnalyticsCache:
                 message=message,
                 detail=detail,
             )
-        except (OSError, sqlite3.Error):
+        except (OSError, RuntimeError):
             logger.debug("analytics cache: failed to record data-quality signal", exc_info=True)
 
     def _loop(self) -> None:
@@ -187,9 +187,7 @@ class _AnalyticsCache:
                 logger.exception("Analytics cache recompute error")
 
     def _recompute(self) -> None:
-        db = getattr(self._store, "_db", None) if self._store else None
-        if not db:
-            return
+        db = self._store
         now = time.monotonic()
         with self._lock:
             for key in [k for k, seen in self._wanted.items() if now - seen > self._KEY_TTL]:
@@ -225,9 +223,12 @@ def compute_analytics(db, since: float | None, until: float | None, tools: tuple
     }
 
 
-def _unattributed_hidden(count_fn, since: float, until: float, tools) -> int:
-    """Rows a selection hides because no tool can be recovered for them (0 with All tools)."""
-    return count_fn(since=since, until=until) if tools is not None else 0
+def _selection(tools):
+    return {"restrict_tools": tools is not None, "requested_tools": stored_ids_for(tools) if tools else []}
+
+
+def _hidden(rows):
+    return next((r["hidden"] for r in rows if r["row_type"] == "hidden"), 0)
 
 
 def _compute_response_time(db, since: float, until: float, limit: int = 2000, tools=None) -> dict:
@@ -241,10 +242,18 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000, to
     ``unattributed_hidden`` counts rows with no recoverable tool, which no
     selection includes.
     """
-    hidden = _unattributed_hidden(db.count_requests_unattributed, since, until, tools)
-    by_model = db.query_response_time_by_model(since=since, until=until, tools=tools)
+    history = HistoryScope.local(db)
+    results = history.read("analytics.requests", since=since, until=until, page_size=limit, **_selection(tools))
+    hidden = _hidden(results)
+    by_model = [
+        {"model": r["model"] or "(unknown)", "count": r["count"],
+         **{k: round(r.get(k) or 0, 1) for k in ("avg_ms", "p50_ms", "p95_ms")},
+         "total_tokens": (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0)}
+        for r in results if r["row_type"] == "model"
+    ]
+    by_model.sort(key=lambda r: r["model"])
     available = sum(g["count"] for g in by_model)
-    rows = db.query_requests_analytics(since=since, until=until, limit=limit, tools=tools)
+    rows = [r for r in results if r["row_type"] == "request"]
     listed = {
         "available": available,
         "listed": len(rows),
@@ -285,77 +294,30 @@ def _compute_response_time(db, since: float, until: float, limit: int = 2000, to
 
 
 def _compute_tools(db, since: float, until: float, tools=None) -> dict:
-    """Build tool-usage analytics (runs in background thread).
-
-    Primary source: Pre/PostToolUse event pairs in the events table (joined
-    by tool_use_id).  This gives accurate counts and real durations.
-    Fallback: tool_invocations table (for OTel-sourced invocations that
-    don't go through hooks).
-
-    `tools` is the tool selection (None is every tool); every count, average and
-    percentile comes from the selected tools' rows only.
-    """
-    # Try event-based analytics first (accurate durations from Pre/Post matching)
-    agg = db.query_tool_analytics_from_events(since=since, until=until, tools=tools)
-    use_events = bool(agg)
-    count_hidden = db.count_tool_events_unattributed
-
-    # The source does not depend on the selection: when hook pairs exist for other
-    # tools, a selection with none has no usage, rather than switching source.
-    if not agg and tools is not None and db.query_tool_analytics_from_events(since=since, until=until):
-        use_events = True
-    elif not agg:
-        # Fallback to tool_invocations table
-        agg = db.query_tool_invocations_agg(since=since, until=until, tools=tools)
-        count_hidden = db.count_tool_invocations_unattributed
-    hidden = _unattributed_hidden(count_hidden, since, until, tools)
-
-    if not agg:
-        # Check if there's data outside this range
-        all_time = db.query_tool_analytics_from_events(tools=tools)
-        if not all_time:
-            all_time = db.query_tool_invocations_agg(tools=tools)
-        total_all_time = sum(r["count"] for r in all_time) if all_time else 0
-        return {"invocations": [], "total_all_time": total_all_time, "unattributed_hidden": hidden}
-
-    # Get per-tool breakdown by CLI tool (e.g. claude-code vs codex)
-    breakdown: dict[str, list[dict]] = {}
-    if use_events:
-        breakdown = db.query_tool_breakdown_from_events(since=since, until=until, tools=tools)
-
+    """Summarize selected tool calls and report unattributed calls separately."""
+    history = HistoryScope.local(db)
+    selection = _selection(tools)
+    rows = history.read("analytics.tools", since=since, until=until, **selection)
+    tool_rows = [r for r in rows if r["row_type"] == "tool"]
+    hidden = _hidden(rows)
+    if not tool_rows:
+        all_time = history.read("analytics.tools", **selection)
+        return {"invocations": [], "total_all_time": sum(r["count"] for r in all_time if r["row_type"] == "tool"),
+                "unattributed_hidden": hidden}
+    breakdown = {}
+    for r in rows:
+        if r["row_type"] == "cli":
+            breakdown.setdefault(r["tool_name"], []).append({"cli_tool": r["cli_tool"], "count": r["count"]})
     invocations = []
-    for row in agg[:30]:
-        name = row["tool_name"] or "(unknown)"
-        count = row["count"]
-        total_ms = row.get("total_ms") or 0
-        avg_ms = row.get("avg_ms") or (round(total_ms / count, 1) if count else 0)
-
-        # Get per-invocation durations for percentile calculation
-        if use_events:
-            durations = sorted(
-                db.query_tool_durations_from_events(name, since=since, until=until, limit=500, tools=tools)
-            )
-        else:
-            durations = sorted(
-                db.query_tool_invocations_durations(name, since=since, until=until, limit=500, tools=tools)
-            )
-        n = len(durations)
-        p95 = round(durations[min(int(n * 0.95), n - 1)], 1) if n else 0
-
-        entry: dict = {
-            "tool_name": name,
-            "count": count,
-            "avg_ms": avg_ms,
-            "p95_ms": p95,
-            "error_count": row.get("error_count", 0),
-        }
-        if name in breakdown:
-            entry["by_cli"] = breakdown[name]
+    for r in tool_rows[:30]:
+        name = r["tool_name"] or "(unknown)"
+        entry = {"tool_name": name, "count": r["count"], "avg_ms": round(r["avg_ms"] or 0, 1),
+                 "p95_ms": round(r["p95_ms"] or 0, 1), "error_count": r["error_count"]}
+        if r["tool_name"] in breakdown:
+            entry["by_cli"] = breakdown[r["tool_name"]]
         invocations.append(entry)
-
-    # Collect all unique CLI tools across all invocations for consistent coloring
-    cli_tools = sorted({s["cli_tool"] for segs in breakdown.values() for s in segs})
-    return {"invocations": invocations, "cli_tools": cli_tools, "unattributed_hidden": hidden}
+    return {"invocations": invocations, "cli_tools": sorted({r["cli_tool"] for r in rows if r["row_type"] == "cli"}),
+            "unattributed_hidden": hidden}
 
 
 def _compute_files(db, since: float, until: float, tools=None) -> dict:
@@ -365,18 +327,14 @@ def _compute_files(db, since: float, until: float, tools=None) -> dict:
     tool that owns them; ``unattributed_hidden`` counts files and write events
     with no recoverable tool, which no selection includes.
     """
-    # Try structured file_history first
-    memory_files = db.list_files(category="memory")
-    if memory_files:
-        hidden = 0
-        if tools is not None:
-            # Files with no recoverable owner and some change in the window.
-            orphans = [f.path for f in memory_files if is_unattributed(f.tool)]
-            hidden = sum(1 for entries in db.file_history_bulk(orphans, since=since, until=until).values() if entries)
-            memory_files = [f for f in memory_files if is_selected(f.tool, tools)]
-        memory_files.sort(key=lambda f: f.last_changed or 0, reverse=True)
-        paths = [f.path for f in memory_files[:20]]
-        bulk = db.file_history_bulk(paths, since=since, until=until)
+    history = HistoryScope.local(db)
+    results = history.read("analytics.memory", since=since, until=until, **_selection(tools))
+    hidden = _hidden(results)
+    if any(r["row_type"] == "inventory" and r["count"] for r in results):
+        bulk = {}
+        for row in results:
+            if row["row_type"] == "revision":
+                bulk.setdefault(row["path"], []).append(row)
         memory_timeline = {}
         for p, entries in bulk.items():
             if entries:
@@ -404,9 +362,7 @@ def _compute_files(db, since: float, until: float, tools=None) -> dict:
         memory_events.sort(key=lambda e: e["ts"], reverse=True)
         return {"memory_timeline": memory_timeline, "memory_events": memory_events[:50], "unattributed_hidden": hidden}
 
-    # Fallback: single-scan file_modified events
-    hidden = _unattributed_hidden(db.count_file_modified_unattributed, since, until, tools)
-    rows = db.query_file_modified_events(since=since, until=until, tools=tools)
+    rows = [(e["ts"], e["path"], e["growth_bytes"]) for e in results if e["row_type"] == "event"]
     if not rows:
         return {"memory_timeline": {}, "memory_events": [], "unattributed_hidden": hidden}
 
@@ -494,13 +450,15 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
     correlator ``tool:pid:start`` id) is ignored for a tool that has transcript
     coverage, since it can only be another view of the same tokens.
     """
-    from ..storage import _session_uuid
+    from ..records import _session_uuid
 
     until = until or time.time()
     out: list[dict] = []
     covered_ids: set[str] = set()
     covered_tools: set[str] = set()
-    for u in db.query_session_usage(active_since=since, active_until=until):
+    history = HistoryScope.local(db)
+    for data in history.read("usage.sessions", since=since, until=until):
+        u = project_usage(data)
         covered_ids.add(u["session_id"].lower())
         covered_tools.add(u["tool"])
         days: dict[str, dict] = {}
@@ -540,7 +498,7 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
         out.append(entry)
 
     ignored = 0
-    for p in db.query_session_profiles(since=since, until=until):
+    for p in history.read("analytics.profiles", since=since, until=until):
         if p.get("tokens_source") == "transcript" or not any(p.get(k) for k in _TOKEN_KEYS):
             continue
         ids = [p.get("session_id", ""), *(p.get("alt_session_ids") or [])]

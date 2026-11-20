@@ -119,32 +119,30 @@ class TestQuery:
 
 
 class TestPersistence:
-    def test_flush_to_db(self):
-        mock_db = MagicMock()
-        sink = SampleSink(db=mock_db, buffer_size=0)
-        sink.emit("test", 1.0)
-        # buffer_size=0 means flush on every emit
-        assert mock_db.append_samples.called
+    def test_hands_off_to_writer(self):
+        from aictl.stores import Store
+        from aictl.stores.testing import MemoryWriter
 
-    def test_flush_returns_count(self):
-        mock_db = MagicMock()
-        sink = SampleSink(db=mock_db, buffer_size=10000)
-        sink.emit("a", 1.0)
-        sink.emit("b", 2.0)
-        count = sink.flush()
-        assert count == 2
+        writer = MemoryWriter()
+        sink = SampleSink(history_store=Store(writer=writer))
+        sink.emit("test", 1.0)
+        [(op, table, [row])] = writer.operations
+        assert (op, table, row["metric"], row["value"]) == ("append", "metrics", "test", 1.0)
 
     def test_no_db_flush_returns_zero(self):
-        sink = SampleSink(db=None)
+        sink = SampleSink()
         sink.emit("test", 1.0)
         assert sink.flush() == 0
 
     def test_close_flushes(self):
-        mock_db = MagicMock()
-        sink = SampleSink(db=mock_db, buffer_size=10000)
+        from aictl.stores import Store
+        from aictl.stores.testing import MemoryWriter
+
+        writer = MemoryWriter()
+        sink = SampleSink(history_store=Store(writer=writer))
         sink.emit("test", 1.0)
         sink.close()
-        assert mock_db.append_samples.called
+        assert writer.flushes == 1
 
 
 class TestStats:

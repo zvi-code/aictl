@@ -124,17 +124,17 @@ pipx install ".[all]"
 
 Install, update, removal, Windows and troubleshooting steps are in [HOWTO.md](HOWTO.md).
 
-### Storage backends: SQLite (default) or Kusto
+### History storage: Kusto
 
-aictl keeps its history in a local SQLite file by default (`~/.config/aictl/history.db`, split per repository, bounded by `max_total_mb`); nothing needs to be set up. The alternative backend is a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) cluster, or a Fabric Eventhouse: every table is a table of one Kusto database, and the daemon serves entirely from the cluster. Remote `auto` mode uses queued ingestion for telemetry and inline ingestion for state/configuration tables that need immediate reads. Set it in the config file (`~/.config/aictl/config.toml` on macOS and Linux, `%APPDATA%\aictl\config.toml` on Windows; `[storage] kusto_cluster = "https://mycluster.westus.kusto.windows.net"`, `kusto_database = "aictl"`) or pass it once:
+aictl stores history in a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) database or a Fabric Eventhouse. Without a configured database, the daemon serves live runtime data without history. Both Azure Kusto SDKs are required and installed with aictl. Set `kusto_cluster` and `kusto_database` under `[storage]` in the config file or pass them on the command line:
 
 ```bash
 aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --kusto-database aictl
 ```
 
-Both engine and `ingest-` URLs are accepted; queued writes use DM, while queries, inline and streaming use the engine. Remote `auto` streams telemetry, raw OTLP and mutable-fact companion observations, keeps control/configuration writes inline, and queues remaining tables. `--kusto-ingestion queued`, `streaming` or `inline` selects a global mode; per-table overrides remain available. Observation acceptance does not query existing facts. **Canonical fact totals are reported as incomplete until source identity/order and partial-update semantics are established; legacy baseline rows are not presented as complete current results.** Queued handoff confirms submission, not visibility. See [the retain-unresolved cutover](docs/kusto-cluster.md#mutable-observations-retain-unresolved-do-not-guess-canonical-totals).
+Both engine and `ingest-` URLs are accepted. Remote `auto` selects streaming or queued ingestion by table. Inline ingestion is only for the local emulator. Queued handoff confirms submission, not visibility.
 
-The `kusto` extra brings the SDKs (`pipx install "aictl[all]"` includes it). Sign-in is the Azure CLI's by default (`az login`; add `--scope "https://<cluster host>/.default"` when the tenant asks for multi-factor authentication); `kusto_auth` picks `device`, `managed-identity` or `none` (the local emulator). The signed-in account needs the Database Admin role on an existing, empty database; aictl creates the tables. The first start writes the machine's recent history to the cluster and takes a few minutes; later starts and polls are quick. An existing SQLite history is not moved to the cluster. Step by step, including creating a cluster, access and identities, or running the free emulator, in [docs/kusto-cluster.md](docs/kusto-cluster.md); design in [docs/architecture.md](docs/architecture.md#kusto-store-kusto); every table in [docs/kusto-schema.md](docs/kusto-schema.md).
+Remote sign-in uses the Azure CLI by default. aictl creates the tables and sets retention policies on the configured database. Existing SQLite history is not migrated. See [cluster setup](docs/kusto-cluster.md) and run `aictl db schema` for current table definitions.
 
 ### Insight report from a Kusto store: `aictl db report` (work in progress)
 
@@ -593,13 +593,12 @@ hurting the machine is not.
 
 | `[storage] capture` | What is kept |
 |---|---|
-| `full` (default) | Conversation text, capped by age and size; the session's metadata outlives its text |
+| `full` (default) | Session metadata and separate, shorter-lived conversation text |
 | `metadata` | Sessions, tokens, cost, timings, tool names and sizes, with no prompt or response text |
-| `off` | Nothing on disk: no database, journal or log files; history resets on restart |
+| `off` | No history capture; live runtime data remains available |
 
-`max_total_mb` (default 1024) caps the database, journal and logs together, evicting the oldest data
-first. If the database is corrupt, full or locked, the daemon continues in memory and reports it.
-Details: [how-to](HOWTO.md#control-how-much-is-stored), [storage schema](docs/storage-schema.md).
+Kusto policies control retention. If ingestion fails, rows wait in bounded memory queues.
+Health shows the queue depth and dropped-row count per table.
 
 ### Hidden context: `aictl ctx audit`
 
@@ -682,11 +681,10 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl catalog` | Explain any dashboard metric: its source and query |
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
-| `aictl db stats` | Show database size, table row counts, and time range |
-| `aictl db compact --dry-run` | Show what compaction would remove and the expected size |
-| `aictl db compact` | Downsample old data, delete expired rows, reclaim space |
-| `aictl db trim-text` | Remove stored conversation text and tool payloads, keep all metadata |
-| `aictl db reset` | Delete the history database and initialise a fresh empty one |
+| `aictl db stats` | Show current logical counts, time range, and separate physical extent metadata |
+| `aictl db schema` | Print the Kusto table keys, columns, retention, and ingestion modes |
+| `aictl db trim-text` | Soft-delete records from text tables for this node |
+| `aictl db reset` | Clear the aictl tables in the configured Kusto database |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
 | `aictl reinstall --build-ui` | Also build the dashboard when its source has no local changes |
@@ -754,8 +752,8 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 | `--interval SECS` | Refresh interval in seconds (default: `5`) |
 | `--no-open` | Don't auto-open the browser |
 | `--no-monitor` | Disable live runtime overlay (process/network/filesystem collectors) |
-| `--capture full\|metadata\|off` | What to store: bounded text, no text, or nothing on disk. See [storage](#storage-bounded-and-optional) |
-| `--db PATH` | Path to the SQLite history database |
+| `--capture full\|metadata\|off` | What to capture: metadata and text, metadata only, or nothing. See [storage](#storage-bounded-and-optional) |
+| `--kusto-cluster URL`, `--kusto-database NAME` | Destination for stored history |
 | `--daemon` | Run in the background |
 | `--stop`, `--status` | Stop or report the server on this port, started with or without `--daemon` |
 | `--headless` | Collection only, no web UI |
@@ -770,17 +768,12 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 ### Database options (`aictl db`)
 
-| Option | Description |
-|--------|-------------|
-| `--db PATH` | Path to SQLite database (default: `~/.config/aictl/history.db`) |
-
-`aictl db reset` accepts `-y` / `--yes` to skip the confirmation prompt.
+`aictl db reset` clears aictl tables on the configured Kusto database. Use `-y` / `--yes` to skip the confirmation prompt.
 
 `aictl db report` takes `--out PATH`, `--days N`, `--sections A,B`, `--kusto-cluster URL`, `--kusto-database NAME` and the filters `--from`, `--to`, `--project`, `--tool`, `--model`, `--mcp`, `--skill`, `--agent`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
 
-`aictl db compact` takes `--dry-run`, `--retention-days N` and `--no-vacuum`.
-`aictl db trim-text` takes `--dry-run` and `--older-than-days N`. Compact deletes rows older than the
-retention window, so check `--dry-run` first: [how to shrink a database](HOWTO.md#shrink-an-existing-database).
+Kusto retention policies replace the former compaction command. Use `aictl db trim-text --dry-run` to check the
+delete predicates. Use `--older-than-days N` to trim text older than that cutoff.
 
 ### Dashboard options (`aictl daemon dashboard`)
 
@@ -861,14 +854,14 @@ Use this sequence after changing storage, hook ingestion, local-store ingesters,
 # Sanity checks before launching longer commands
 pwd
 ~/.local/pipx/venvs/aictl/bin/python -m pytest --version
-~/.local/pipx/venvs/aictl/bin/python -c "import aictl; from aictl.storage import SCHEMA_VERSION; print(aictl.__file__, SCHEMA_VERSION)"
+~/.local/pipx/venvs/aictl/bin/python -c "import aictl.cli"
 command -v docker && docker info --format '{{.ServerVersion}}'
 command -v claude && claude --version
 command -v copilot && copilot --help >/dev/null
 
 # Fast local regression pass for the observability/control substrates
 ~/.local/pipx/venvs/aictl/bin/python -m pytest \
-  test/test_storage.py \
+  test/test_no_sqlite.py \
   test/test_api_endpoints.py \
   test/test_copilot_session_store_ingester.py \
   test/test_cursor_conversations_ingester.py \
@@ -893,7 +886,6 @@ Success means all commands exit 0 and these behaviors are specifically covered:
 - Collector and ingester health is stored in `data_quality_status`; missing, unreadable, schema-drift, degraded, and ok states are persisted instead of only logged.
 - `aictl ctx deploy --profile <name>` fails for unknown profiles unless `--allow-empty-profile` is supplied.
 - `aictl ctx deploy --strict` fails when the selected emitter cannot represent a selected feature.
-- The Docker gate derives the expected schema from `aictl.storage.SCHEMA_VERSION` and checks current table and column names, so stale schema assumptions fail fast.
 
 Optional real Claude Code check, pinned to the full Haiku model id by default:
 
@@ -928,7 +920,7 @@ make test                                       # full unit suite
 Coverage includes:
 - **SSE↔Snapshot contract** — every `DashboardSnapshot` key must appear in the SSE summary
 - **Snapshot aggregation** — computed totals (files, tokens, live sessions, rates)
-- **Storage** — SQLite history, metrics, telemetry, events CRUD
+- **Storage** — Kusto history, metrics, telemetry, and events
 - **Monitor** — process classification, network snapshots, collector status
 - **WriteGuard** — 48 tests: interactive confirmation, approve-all, abort, non-TTY pass-through
 - **Exception discipline** — AST + regex static analysis enforcing no silent exception swallowing
@@ -1016,6 +1008,6 @@ No CI workflow is configured in this repository, so run `make test-all` before m
 | [docs/tool-cursor.md](docs/tool-cursor.md) | Cursor: .mdc rules, glob scoping, MCP |
 | [docs/vscode-claude-modes.md](docs/vscode-claude-modes.md) | Four VS Code session targets: Local, Cloud, Claude Code, Copilot CLI — same model, different harness |
 | [docs/memory.md](docs/memory.md) | Memory swap per (root, profile), outside-repo files |
-| [docs/storage-schema.md](docs/storage-schema.md) | SQLite schema — sessions, events, requests, samples, file history |
+| [docs/storage-schema.md](docs/storage-schema.md) | Retired SQLite schema and link to current Kusto definitions |
 | [docs/datapoint-catalog.md](docs/datapoint-catalog.md) | Every datapoint the dashboard shows: source, query, meaning |
 | [docs/ui/design.md](docs/ui/design.md) | Dashboard rewrite: design tokens, primitives and accessibility rules |

@@ -9,6 +9,7 @@ shown. The numbers are worked out by hand.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -17,7 +18,8 @@ import pytest
 from aictl.dashboard.analytics import _compute_response_time, compute_usage_summary, window_sessions
 from aictl.dashboard.board_api import Filters, compute_board
 from aictl.ingesters.transcript_usage import local_day
-from aictl.storage import HistoryDB
+from aictl.stores import Store
+from aictl.stores.testing import FixtureReader
 
 # A fixed local date well in the past, so "now" never falls inside the window.
 DAY1 = datetime(2026, 3, 10)
@@ -53,10 +55,16 @@ def usage_row(sid, tool, started, last, days, **extra):
 
 
 @pytest.fixture
-def db(tmp_path):
-    d = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    yield d
-    d.close()
+def db():
+    rows = []
+    defaults = dict(tool_call_count=0, turn_count=0, source="transcript", quality="measured",
+                    cost_quality="unknown", cost_reason="", unpriced_models=[], billing_unit="",
+                    premium_requests=None, cost_usd=None)
+    return Store(reader=FixtureReader({
+        "usage.sessions": lambda p: [defaults | row for row in rows if row["started_at"] <= p["until"] and
+                                     row["last_activity_at"] >= p["since"]],
+        "analytics.profiles": [],
+    })), rows
 
 
 # ── Usage summary window ──────────────────────────────────────────
@@ -67,41 +75,41 @@ class TestWindowEdges:
 
     def seed(self, db):
         # Morning only on day 1, evening only on day 1, and one that crosses noon.
-        db.upsert_session_usage(usage_row("morning", "claude-code", at(DAY1, 8), at(DAY1, 9), [(at(DAY1, 8), {"output_tokens": 10})]))
-        db.upsert_session_usage(usage_row("evening", "claude-code", at(DAY1, 20), at(DAY1, 21), [(at(DAY1, 20), {"output_tokens": 20})]))
-        db.upsert_session_usage(usage_row("across", "claude-code", at(DAY1, 11), at(DAY1, 13), [(at(DAY1, 11), {"output_tokens": 40})]))
+        for sid, start, end, tokens in (("morning", 8, 9, 10), ("evening", 20, 21, 20), ("across", 11, 13, 40)):
+            db[1].append(_usage_result(usage_row(sid, "claude-code", at(DAY1, start), at(DAY1, end),
+                                                 [(at(DAY1, start), {"output_tokens": tokens})])))
 
     def test_a_session_day_wholly_outside_the_window_is_left_out(self, db):
         self.seed(db)
-        summary = compute_usage_summary(db, at(DAY1, 12), at(DAY1, 23))
+        summary = compute_usage_summary(db[0], at(DAY1, 12), at(DAY1, 23))
         assert summary["totals"]["output_tokens"] == 20 + 40
         assert summary["totals"]["sessions"] == 2
 
     def test_until_cuts_the_end(self, db):
         self.seed(db)
-        summary = compute_usage_summary(db, at(DAY1, 0), at(DAY1, 10))
+        summary = compute_usage_summary(db[0], at(DAY1, 0), at(DAY1, 10))
         assert summary["totals"]["output_tokens"] == 10  # 'across' began at 11:00, after the end
 
     def test_a_day_cut_through_its_activity_counts_whole_and_says_so(self, db):
         self.seed(db)
-        summary = compute_usage_summary(db, at(DAY1, 12), at(DAY1, 23))
+        summary = compute_usage_summary(db[0], at(DAY1, 12), at(DAY1, 23))
         assert summary["window"] == {"granularity": "day", "approximate": True, "approximate_session_days": 1}
         (day,) = summary["daily"]
         assert day["date"] == local_day(at(DAY1, 0))
-        sessions, _ = window_sessions(db, at(DAY1, 12), at(DAY1, 23))
+        sessions, _ = window_sessions(db[0], at(DAY1, 12), at(DAY1, 23))
         assert {s["session_id"]: s["approximate_days"] for s in sessions} == {"across": [day["date"]], "evening": []}
 
     def test_a_window_that_cuts_nothing_is_exact(self, db):
         self.seed(db)
-        summary = compute_usage_summary(db, at(DAY1, 0), at(DAY2, 0))
+        summary = compute_usage_summary(db[0], at(DAY1, 0), at(DAY2, 0))
         assert summary["totals"]["output_tokens"] == 70
         assert summary["window"]["approximate"] is False
 
     def test_the_running_day_is_marked_partial(self, db):
         now = time.time()
-        db.upsert_session_usage(usage_row("today", "claude-code", now - 60, now, [(now, {"output_tokens": 5})]))
-        db.upsert_session_usage(usage_row("old", "claude-code", at(DAY1, 8), at(DAY1, 9), [(at(DAY1, 8), {"output_tokens": 5})]))
-        summary = compute_usage_summary(db, at(DAY1, 0), now)
+        db[1].append(_usage_result(usage_row("today", "claude-code", now - 60, now, [(now, {"output_tokens": 5})])))
+        db[1].append(_usage_result(usage_row("old", "claude-code", at(DAY1, 8), at(DAY1, 9), [(at(DAY1, 8), {"output_tokens": 5})])))
+        summary = compute_usage_summary(db[0], at(DAY1, 0), now)
         assert {d["date"]: d["partial"] for d in summary["daily"]} == {local_day(now): True, local_day(at(DAY1, 0)): False}
 
 
@@ -111,22 +119,22 @@ class TestWindowEdges:
 class TestResponseTimeRows:
     """The percentiles came from the newest 2000 rows and the payload did not say so."""
 
-    def seed(self, db, count):
+    def seed(self, count):
         base = time.time() - 1000
         rows = [
             {"ts": base + i, "session_id": "s", "tool": "claude-code", "model": "m", "duration_ms": float(i), "input_tokens": 1, "output_tokens": 1,
              "dedup_key": f"k{i}"}
             for i in range(count)
         ]
-        conn = db._conn()
-        for r in rows:
-            cols = ", ".join(r)
-            conn.execute(f"INSERT INTO requests ({cols}) VALUES ({', '.join('?' * len(r))})", tuple(r.values()))
-        conn.commit()
-        return base
+        group = dict(row_type="model", model="m", count=count, avg_ms=(count - 1) / 2,
+                     p50_ms=count // 2, p95_ms=int(.95 * count), max_ms=count - 1,
+                     input_tokens=count, output_tokens=count)
+        reader = FixtureReader({"analytics.requests": lambda p: [] if p["since"] > base + count else
+                                [group, *(r | {"row_type": "request"} for r in rows[-p["page_size"]:])]})
+        return Store(reader=reader), base
 
-    def test_model_figures_cover_every_request_and_the_list_says_it_is_cut(self, db):
-        base = self.seed(db, 100)
+    def test_model_figures_cover_every_request_and_the_list_says_it_is_cut(self):
+        db, base = self.seed(100)
         out = _compute_response_time(db, base - 1, base + 1000, limit=10)
         (group,) = out["by_model"]
         assert group["count"] == 100
@@ -137,8 +145,8 @@ class TestResponseTimeRows:
         assert len(out["requests"]) == 10
         assert out["requests_listed"] == {"available": 100, "listed": 10, "limit": 10, "newest_only": True}
 
-    def test_a_list_that_holds_every_request_is_not_marked_cut(self, db):
-        base = self.seed(db, 5)
+    def test_a_list_that_holds_every_request_is_not_marked_cut(self):
+        db, base = self.seed(5)
         out = _compute_response_time(db, base - 1, base + 1000, limit=10)
         assert out["requests_listed"] == {"available": 5, "listed": 5, "limit": 10, "newest_only": False}
         assert _compute_response_time(db, base + 5000, base + 6000)["requests_listed"]["available"] == 0
@@ -156,13 +164,23 @@ def put_usage(db, sid, tool, started, last, days, models_per_day=True, **extra):
     if not models_per_day:
         for d in row["daily"].values():
             d.pop("models")
-    db.upsert_session_usage(row)
+    seed_usage(db, row)
+
+
+def seed_usage(store, row):
+    store.insert("session_usage", **_usage_result(row))
+
+
+def _usage_result(row):
+    return dict(models_json=json.dumps(row["models"]), daily_json=json.dumps(row["daily"]),
+                **{k: v for k, v in row.items() if k not in {"models", "daily"}})
 
 
 class TestFallbackByDay:
     """A session with no request rows was placed whole at its last activity."""
 
-    def test_each_day_lands_in_its_own_bucket_and_outside_days_are_left_out(self, db):
+    def test_each_day_lands_in_its_own_bucket_and_outside_days_are_left_out(self, kusto_store):
+        db = kusto_store
         put_usage(
             db, "lifetime", "codex-cli", at(DAY1, 10), at(DAY3, 14),
             [(at(DAY1, 10), {"input_tokens": 100}), (at(DAY2, 10), {"input_tokens": 200}), (at(DAY3, 10), {"input_tokens": 400})],
@@ -175,24 +193,21 @@ class TestFallbackByDay:
         assert one_day["kpis"]["tokens"] == 200
         assert one_day["kpis"]["prev"]["tokens"] == 100  # the day before is the previous window
 
-    def test_days_that_do_not_add_up_to_the_total_fall_back_to_the_whole_session(self, db):
+    def test_days_that_do_not_add_up_to_the_total_fall_back_to_the_whole_session(self, kusto_store):
+        db = kusto_store
         put_usage(db, "odd", "codex-cli", at(DAY1, 10), at(DAY2, 14), [(at(DAY1, 10), {"input_tokens": 100}), (at(DAY2, 10), {"input_tokens": 200})])
-        db._conn().execute("UPDATE session_usage SET input_tokens = 999 WHERE session_id = 'odd'")
-        db._conn().commit()
+        db.replace("session_usage", where={"session_id": "odd"}, input_tokens=999)
         payload = board(db, at(DAY1, 0), at(DAY2, 0) + 86400, buckets=2)
         assert payload["series"]["tokens"]["input"] == [0, 999]  # at the last activity, as before
 
 
 class TestUnpricedTokens:
-    def test_tokens_of_a_model_with_no_price_are_reported_with_its_name(self, db):
+    def test_tokens_of_a_model_with_no_price_are_reported_with_its_name(self, kusto_store):
+        db = kusto_store
         now = at(DAY2, 12)
-        conn = db._conn()
         for i, (model, tokens) in enumerate((("no-such-model", 70), ("no-such-model", 30), ("other-unknown", 5), ("claude-sonnet-4-5", 1000))):
-            conn.execute(
-                "INSERT INTO requests(ts, session_id, tool, dedup_key, model, input_tokens) VALUES(?,?,?,?,?,?)",
-                (now - 100 + i, "s", "claude-code", f"k{i}", model, tokens),
-            )
-        conn.commit()
+            db.insert("requests", ts=now - 100 + i, session_id="s", tool="claude-code",
+                      dedup_key=f"k{i}", model=model, input_tokens=tokens)
         payload = board(db, now - 3600, now)
         assert payload["unpriced"] == {
             "tokens": 105,
@@ -202,17 +217,19 @@ class TestUnpricedTokens:
         # The cost stays the priced part only, and is not zero.
         assert payload["kpis"]["cost_usd"] > 0
 
-    def test_when_everything_has_a_price_none_is_unpriced(self, db):
+    def test_when_everything_has_a_price_none_is_unpriced(self, kusto_store):
+        db = kusto_store
         now = at(DAY2, 12)
-        db._conn().execute(
-            "INSERT INTO requests(ts, session_id, tool, dedup_key, model, input_tokens) VALUES(?,?,?,?,?,?)",
-            (now - 10, "s", "claude-code", "k", "claude-sonnet-4-5", 10),
-        )
-        db._conn().commit()
+        db.insert("requests", ts=now - 10, session_id="s", tool="claude-code",
+                  dedup_key="k", model="claude-sonnet-4-5", input_tokens=10)
         assert board(db, now - 3600, now)["unpriced"] == {"tokens": 0, "share": 0.0, "models": []}
 
 
 class TestCredits:
+    @pytest.fixture(autouse=True)
+    def db(self, kusto_store):
+        return kusto_store
+
     def copilot(self, db, sid, credits, tool="copilot-cli", ts=None):
         ts = ts or at(DAY2, 10)
         row = usage_row(sid, tool, ts, ts + 3600, [(ts, {"input_tokens": 10})], billing_unit="ai_credits")
@@ -221,7 +238,7 @@ class TestCredits:
                 d["billing_amount"] = credits
                 d["models"]["m"]["billing_amount"] = credits
         row["billing_amount"] = credits
-        db.upsert_session_usage(row)
+        seed_usage(db, row)
 
     def test_credits_are_reported_in_their_own_unit_not_as_dollars(self, db):
         self.copilot(db, "a", 1200.5)
@@ -256,10 +273,10 @@ class TestCredits:
 
 
 class TestPartialBucket:
-    def test_the_bucket_that_ends_after_now_is_marked(self, db):
+    def test_the_bucket_that_ends_after_now_is_marked(self, kusto_store):
         now = at(DAY2, 12)
-        assert board(db, now - 3600, now + 60, now=now, buckets=6)["range"]["partial_bucket"] == 5
+        assert board(kusto_store, now - 3600, now + 60, now=now, buckets=6)["range"]["partial_bucket"] == 5
 
-    def test_a_window_that_ended_has_no_partial_bucket(self, db):
+    def test_a_window_that_ended_has_no_partial_bucket(self, kusto_store):
         now = at(DAY3, 12)
-        assert board(db, at(DAY1, 0), at(DAY2, 0), now=now, buckets=6)["range"]["partial_bucket"] is None
+        assert board(kusto_store, at(DAY1, 0), at(DAY2, 0), now=now, buckets=6)["range"]["partial_bucket"] is None

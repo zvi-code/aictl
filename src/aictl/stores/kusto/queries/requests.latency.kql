@@ -1,0 +1,18 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
+    session_keys:dynamic, requested_model:string = '', row_limit:long
+);
+requests
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where ts between (since .. until) and (duration_ms > 0 or ttft_ms > 0)
+| where (isempty(requested_model) or model == requested_model)
+    and strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
+| summarize durations=make_list_if(duration_ms, duration_ms > 0, 20000), firsts=make_list_if(ttft_ms, ttft_ms > 0, 20000),
+            duration_count=countif(duration_ms > 0), first_count=countif(ttft_ms > 0)
+        by node_id, session_id, model, g
+| order by node_id asc, session_id asc, model asc, g asc
+| take row_limit

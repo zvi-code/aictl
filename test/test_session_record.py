@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import threading
 import time
 import urllib.error
@@ -15,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from kusto_replay import NOW
 from test_board_facts import c_assistant, c_tool_result, c_tool_use, claude_path, write_lines
 
 from aictl.dashboard import board_api, session_record
@@ -23,35 +23,35 @@ from aictl.dashboard.session_record import PullRequestFinder, is_recorded_artifa
 from aictl.ingesters import session_artifacts, tool_size_backfill
 from aictl.ingesters.session_artifacts import SessionArtifactIndexer, scan_folder
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.project_stores import ProjectStores, store_key
-from aictl.storage import HistoryDB, _dedup_key
+from aictl.records import _dedup_key
+from aictl.session_evidence import SessionEvidence
+from aictl.session_facts import SessionFacts
+from aictl.stores.base import StoreError
+from aictl.stores.testing import MemoryWriter
 
-NOW = time.time()
 SID = "aaaaaaaa-1111-4111-8111-111111111111"
 SID2 = "bbbbbbbb-2222-4222-8222-222222222222"
 
 
 @pytest.fixture
-def db(tmp_path):
-    store = HistoryDB(db_path=str(tmp_path / "history.db"), flush_interval=0)
-    yield store
-    store.close()
+def db(kusto_store):
+    return kusto_store
 
 
 @pytest.fixture(autouse=True)
 def _fresh_memos(monkeypatch):
-    session_record._recorded.clear()
     session_record._attributed.clear()
     # No test may run the real gh: an answer from a fake finder only.
     monkeypatch.setattr(session_record, "PR_FINDER", PullRequestFinder(which=lambda name: None, background=False))
     for memo in (board_api._facts_memo, board_api._sources_memo, board_api._disk_prompts_memo):
         memo.clear()
     monkeypatch.setattr(board_api, "_process_start", lambda pid: 0.0)
+    monkeypatch.setattr(session_record, "time", SimpleNamespace(time=lambda: NOW, monotonic=time.monotonic))
 
 
 def _write(path: Path, text: str = "x", mtime: float | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8", newline="\n")
     if mtime is not None:
         os.utime(path, (mtime, mtime))
     return path
@@ -75,35 +75,27 @@ def _indexer(store, copilot: Path | None = None, claude: Path | None = None, cod
     return SessionArtifactIndexer(store, roots=roots)
 
 
-def _session(conn, sid, tool, project, started, ended=None, **extra):
-    cols = {"session_id": sid, "tool": tool, "project_path": project, "started_at": started, "ended_at": ended, **extra}
-    conn.execute(f"INSERT INTO sessions ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})", tuple(cols.values()))
+def _session(store, sid, tool, project, started, ended=None, **extra):
+    store.insert("sessions", session_id=sid, tool=tool, project_path=project, started_at=started, ended_at=ended, **extra)
 
 
 def _artifact_rows(db, sid=SID) -> dict[str, tuple]:
     return {
-        Path(p).name: (folder, size)
-        for p, folder, size in db._conn().execute("SELECT path, folder, size_bytes FROM session_artifacts WHERE session_id = ?", (sid,))
+        Path(row["path"]).name: (row["folder"], row["size_bytes"])
+        for row in db.writer.written("session_artifacts") if row["session_id"] == sid
     }
 
 
-def test_remote_session_reads_do_not_use_sqlite_json_packing(monkeypatch):
-    monkeypatch.setattr(session_record, "_packing", [True])
-    sql = "SELECT started_at, session_id FROM sessions"
-    rows = [(100.5, SID)]
-
-    class RemoteConnection:
-        def execute(self, query, params=()):
-            assert query == sql
-            return SimpleNamespace(fetchall=lambda: rows)
-
-    assert session_record._rows(RemoteConnection(), sql) == rows
 
 
 # ─── Index of session folders ─────────────────────────────────────
 
 
 class TestIndex:
+    @pytest.fixture
+    def db(self):
+        return SessionEvidence(SessionFacts(MemoryWriter()))
+
     def test_copilot_folder_files_are_indexed_without_the_tools_own_records(self, db, tmp_path):
         _copilot_folder(tmp_path / "copilot")
         assert _indexer(db, copilot=tmp_path / "copilot" / "session-state").poll() == 1
@@ -113,8 +105,8 @@ class TestIndex:
             "001.md": ("checkpoints", 10),
             "plan.md": ("", 4),
         }
-        folder, total, size = db._conn().execute("SELECT folder, files_total, bytes_total FROM session_folders").fetchone()
-        assert (Path(folder).name, total, size) == (SID, 4, 28)
+        row, = db.writer.written("session_folders")
+        assert (Path(row["folder"]).name, row["files_total"], row["bytes_total"]) == (SID, 4, 28)
 
     def test_an_unchanged_folder_is_skipped_and_a_new_file_is_found(self, db, tmp_path):
         folder = _copilot_folder(tmp_path / "copilot")
@@ -127,10 +119,18 @@ class TestIndex:
         assert indexer.poll() == 1
         assert "second.md" in _artifact_rows(db)
 
-    def test_a_restart_does_not_scan_unchanged_folders_again(self, db, tmp_path):
+    def test_a_restart_does_not_scan_unchanged_folders_again(self, tmp_path):
+        from aictl.session_evidence import SessionEvidence
+        from aictl.session_facts import SessionFacts
+        from aictl.state_file import StateFile
+        from aictl.stores.testing import MemoryWriter
+
         _copilot_folder(tmp_path / "copilot")
-        assert _indexer(db, copilot=tmp_path / "copilot" / "session-state").poll() == 1
-        assert _indexer(db, copilot=tmp_path / "copilot" / "session-state").poll() == 0
+        state = StateFile(tmp_path / "session_artifacts.json")
+        sessions = SessionFacts(MemoryWriter())
+        root = tmp_path / "copilot" / "session-state"
+        assert _indexer(SessionEvidence(sessions, state), copilot=root).poll() == 1
+        assert _indexer(SessionEvidence(sessions, state), copilot=root).poll() == 0
 
     def test_a_huge_folder_keeps_the_newest_files_and_the_real_count(self, db, tmp_path, monkeypatch):
         monkeypatch.setattr(session_artifacts, "MAX_FILES_PER_SESSION", 3)
@@ -139,7 +139,8 @@ class TestIndex:
             _write(folder / "files" / f"f{k}.txt", "ab", mtime=NOW - 100 + k)
         _indexer(db, copilot=tmp_path / "copilot" / "session-state").poll()
         assert sorted(_artifact_rows(db)) == ["f2.txt", "f3.txt", "f4.txt"]
-        assert db._conn().execute("SELECT files_total, bytes_total FROM session_folders").fetchone() == (5, 10)
+        row, = db.writer.written("session_folders")
+        assert (row["files_total"], row["bytes_total"]) == (5, 10)
 
     def test_files_are_only_stat_ed_never_read(self, tmp_path):
         folder = tmp_path / SID
@@ -159,15 +160,16 @@ class TestIndex:
         _write(projects / "-work-proj" / "memory" / "MEMORY.md", "m")
         _indexer(db, claude=projects).poll()
         assert _artifact_rows(db) == {"agent-1.jsonl": ("subagents", 3), "r.txt": ("tool-results", 3)}
-        assert db._conn().execute("SELECT tool FROM session_folders").fetchone()[0] == "claude-code"
+        row, = db.writer.written("session_folders")
+        assert row["tool"] == "claude-code"
 
     def test_codex_dated_folders_are_not_session_folders(self, db, tmp_path):
         sessions = tmp_path / "codex" / "sessions"
         _write(sessions / "2026" / "03" / "06" / f"rollout-{SID}.jsonl", "{}\n")
         assert _indexer(db, codex=sessions).poll() == 0
-        assert db._conn().execute("SELECT COUNT(*) FROM session_artifacts").fetchone()[0] == 0
+        assert db.writer.written("session_artifacts") == []
 
-    def test_a_busy_store_skips_the_folder_until_the_next_poll(self, db, tmp_path, monkeypatch):
+    def test_a_failed_write_leaves_the_folder_pending_for_the_next_poll(self, db, tmp_path, monkeypatch):
         _copilot_folder(tmp_path / "copilot")
         indexer = _indexer(db, copilot=tmp_path / "copilot" / "session-state")
         real = db.replace_session_artifacts
@@ -176,36 +178,14 @@ class TestIndex:
         def locked(*args, **kwargs):
             calls.append(1)
             if len(calls) == 1:
-                raise sqlite3.OperationalError("database is locked")
+                raise StoreError("writer unavailable")
             return real(*args, **kwargs)
 
         monkeypatch.setattr(db, "replace_session_artifacts", locked)
-        assert indexer.poll() == 0
+        with pytest.raises(StoreError, match="writer unavailable"):
+            indexer.poll()
         assert indexer.poll() == 1
         assert len(_artifact_rows(db)) == 4
-
-    def test_the_index_is_written_to_the_store_of_the_sessions_project(self, tmp_path):
-        repo = tmp_path / "repo"
-        (repo / ".git").mkdir(parents=True)
-        stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-        try:
-            from aictl.storage import SessionRow
-
-            stores.upsert_session(SessionRow(session_id=SID, tool="copilot-cli", project_path=str(repo), started_at=NOW - 100))
-            _copilot_folder(tmp_path / "copilot")
-            _indexer(stores, copilot=tmp_path / "copilot" / "session-state").poll()
-            file = stores._file_of(store_key(str(repo)))
-            conn = sqlite3.connect(file)
-            try:
-                assert conn.execute("SELECT COUNT(*) FROM session_artifacts WHERE session_id = ?", (SID,)).fetchone()[0] == 4
-            finally:
-                conn.close()
-            assert stores.machine._conn().execute("SELECT COUNT(*) FROM session_artifacts").fetchone()[0] == 0
-            # The signatures of every store are read back on a restart.
-            assert SID in stores.artifact_scans()
-        finally:
-            stores.close()
-
 
 # ─── Artifacts and commits of the agent detail ────────────────────
 
@@ -214,35 +194,35 @@ def _seed_detail(db, tmp_path) -> tuple[Path, Path]:
     project = tmp_path / "proj"
     project.mkdir()
     folder = _copilot_folder(tmp_path / "copilot")
-    _write(folder / "files" / "image.png", "\x89PNG\x00\x00")
+    (folder / "files" / "image.png").write_bytes(b"\x89PNG\x00\x00")
     outside = _write(tmp_path / "elsewhere" / "summary.md", "# Summary\n")
-    conn = db._conn()
-    _session(conn, SID, "copilot-cli", str(project), NOW - 3600, NOW - 60)
-    conn.execute(
-        "INSERT INTO requests (ts, session_id, tool, project_path, model, input_tokens) VALUES (?,?,?,?,?,?)",
-        (NOW - 3000, SID, "copilot-cli", str(project), "gpt-5", 10),
-    )
+    fields = {"session_id": SID, "tool": "copilot-cli", "project_path": str(project)}
+    _session(db, SID, "copilot-cli", str(project), NOW - 3600, NOW - 60)
+    db.insert("requests", **fields, ts=NOW - 3000, model="gpt-5", input_tokens=10)
     for k, path in enumerate((str(outside), str(outside), str(project / "src" / "a.py"))):
-        conn.execute(
-            "INSERT INTO file_write_events (ts, session_id, tool, path, project_path, dedup_key) VALUES (?,?,?,?,?,?)",
-            (NOW - 2000 + k, SID, "copilot-cli", path, str(project), f"w{k}"),
-        )
-    conn.commit()
-    _indexer(db, copilot=tmp_path / "copilot" / "session-state").poll()
+        db.insert("file_write_events", **fields, ts=NOW - 2000 + k, path=path, dedup_key=f"w{k}")
+    files, count, size = scan_folder("copilot", folder)
+    db.insert("session_folders", session_id=SID, tool="copilot-cli", folder=str(folder), files_total=count, bytes_total=size)
+    for path, group, file_size, _mtime in files:
+        db.insert("session_artifacts", session_id=SID, path=path, folder=group, size_bytes=file_size, mtime=NOW)
     return project, outside
 
 
 class TestAgentDetailArtifacts:
-    def test_the_detail_lists_the_files_that_can_affect_the_session(self, db, tmp_path, monkeypatch):
-        from aictl import tree_walk
+    @pytest.fixture
+    def db(self, kusto_store):
+        return kusto_store
 
+    def test_the_detail_lists_the_files_that_can_affect_the_session(self, db, tmp_path, monkeypatch):
         project, _outside = _seed_detail(db, tmp_path)
+        db.insert("files", path=str(project / "AGENTS.md"), tool="copilot-cli", scope="project")
         monkeypatch.setattr(
-            tree_walk, "files_for_folder", lambda folder: {"git_root": str(project), "read": True, "files": [str(project / "AGENTS.md")]}
+            "aictl.tree_walk.files_for_folder", lambda _: pytest.fail("The historical inventory was not used")
         )
         cf = agent_detail(db, SID, None, NOW)[1]["context_files"]
         assert cf == {
-            "git_root": str(project), "read": True, "total": 1, "files": [{"path": str(project / "AGENTS.md"), "name": "AGENTS.md"}], "loaded": [],
+            "git_root": str(project), "read": True, "total": 1, "source": "kusto.queryable",
+            "files": [{"path": str(project / "AGENTS.md"), "name": "AGENTS.md"}], "loaded": [],
         }
 
     def test_artifacts_are_the_session_folder_and_writes_outside_the_project(self, db, tmp_path):
@@ -256,37 +236,34 @@ class TestAgentDetailArtifacts:
         assert written["first_ts"] == pytest.approx(NOW - 2000) and written["last_ts"] == pytest.approx(NOW - 1999)
         report = by_name["report.md"]
         assert (report["kind"], report["folder"], report["ext"], report["writes"]) == ("session-folder", "files", "md", 0)
-        assert (report["exists"], report["size_bytes"], report["viewable"]) == (True, 9, True)
+        assert (report["exists"], report["size_bytes"], report["viewable"]) == (None, 9, False)
+        assert report["source"] == "kusto.queryable"
         assert by_name["image.png"]["viewable"] is False
         assert detail["artifacts_total"] == 6
-        assert detail["artifacts_bytes"] == sum(a["size_bytes"] for a in detail["artifacts"])
+        assert detail["artifacts_bytes"] == sum(a["size_bytes"] or 0 for a in detail["artifacts"])
 
-    def test_exists_size_and_mtime_come_from_the_disk_at_request_time(self, db, tmp_path):
+    def test_historical_size_and_mtime_do_not_change_with_local_files(self, db, tmp_path):
         _project, outside = _seed_detail(db, tmp_path)
         outside.unlink()
         report = tmp_path / "copilot" / "session-state" / SID / "files" / "report.md"
-        report.write_text("# A longer report now\n")
+        report.write_text("# A longer report now\n", encoding="utf-8", newline="\n")
         by_name = {a["name"]: a for a in agent_detail(db, SID, None, NOW)[1]["artifacts"]}
-        assert (by_name["summary.md"]["exists"], by_name["summary.md"]["size_bytes"], by_name["summary.md"]["mtime"]) == (False, None, None)
+        assert by_name["summary.md"]["exists"] is None
         assert by_name["summary.md"]["viewable"] is False
-        assert by_name["report.md"]["size_bytes"] == len("# A longer report now\n")
-        assert by_name["report.md"]["mtime"] == pytest.approx(report.stat().st_mtime)
+        assert by_name["report.md"]["size_bytes"] == 9
+        assert by_name["report.md"]["mtime"] == NOW
 
     def test_a_subagent_has_no_artifacts_of_its_own(self, db, tmp_path):
         _seed_detail(db, tmp_path)
-        conn = db._conn()
-        conn.execute("INSERT INTO agents (agent_id, session_id, tool, started_at) VALUES ('sub-1', ?, 'copilot-cli', ?)", (SID, NOW - 1000))
-        conn.execute(
-            "INSERT INTO requests (ts, session_id, agent_id, tool, model) VALUES (?,?,?,?,?)", (NOW - 900, SID, "sub-1", "copilot-cli", "gpt-5")
-        )
-        conn.commit()
+        db.insert("agents", agent_id="sub-1", session_id=SID, tool="copilot-cli", started_at=NOW - 1000)
+        db.insert("requests", ts=NOW - 900, session_id=SID, agent_id="sub-1", tool="copilot-cli", model="gpt-5")
         detail = agent_detail(db, "sub-1", None, NOW)[1]
         assert (detail["artifacts"], detail["artifacts_total"], detail["commits"], detail["prs_note"]) == ([], 0, [], "")
 
     def test_commits_carry_their_pull_requests(self, db, tmp_path, monkeypatch):
         project, _ = _seed_detail(db, tmp_path)
-        db.upsert_session_commits(SID, [{"sha": "a" * 40, "subject": "Fix it", "author_name": "Zvi", "ts": NOW - 500}])
-        db.upsert_session_commits(SID, [{"sha": "b" * 40, "subject": "Older", "author_name": "Zvi", "ts": NOW - 900}])
+        db.insert("session_commits", session_id=SID, sha="a" * 40, subject="Fix it", author_name="Zvi", ts=NOW - 500)
+        db.insert("session_commits", session_id=SID, sha="b" * 40, subject="Older", author_name="Zvi", ts=NOW - 900)
         finder = PullRequestFinder(run=_fake_gh({"a" * 40: [{"number": 12, "url": "https://github.com/o/r/pull/12", "title": "Fix", "state": "MERGED"}]}), which=lambda n: f"/bin/{n}", background=False)
         monkeypatch.setattr(session_record, "PR_FINDER", finder)
         first = agent_detail(db, SID, None, NOW)[1]
@@ -299,7 +276,7 @@ class TestAgentDetailArtifacts:
 
     def test_without_gh_the_commits_have_no_pull_requests_and_a_note(self, db, tmp_path):
         _seed_detail(db, tmp_path)
-        db.upsert_session_commits(SID, [{"sha": "c" * 40, "subject": "x", "ts": NOW - 500}])
+        db.insert("session_commits", session_id=SID, sha="c" * 40, subject="x", ts=NOW - 500)
         detail = agent_detail(db, SID, None, NOW)[1]
         assert detail["commits"][0]["prs"] == [] and detail["prs_note"] == "gh not installed"
 
@@ -362,43 +339,34 @@ class TestPullRequestFinder:
 
 
 def _seed_search(db, tmp_path) -> None:
-    conn = db._conn()
-    _session(conn, "s-old", "claude-code", "/p/alpha", NOW - 9000, NOW - 8000, input_tokens=100, output_tokens=10, cost_usd=0.5, tool_call_count=3)
-    _session(conn, "s-mid", "copilot-cli", "/p/beta", NOW - 5000, NOW - 4000)
-    _session(conn, "s-new", "copilot-cli", "/p/gamma", NOW - 1000)
+    _session(db, "s-old", "claude-code", "/p/alpha", NOW - 9000, NOW - 8000, input_tokens=100, output_tokens=10,
+             cost_usd=0.5, tool_call_count=3)
+    _session(db, "s-mid", "copilot-cli", "/p/beta", NOW - 5000, NOW - 4000)
+    _session(db, "s-new", "copilot-cli", "/p/gamma", NOW - 1000)
     # The board counts the facts, not the totals on the sessions row.
-    conn.execute(
-        "INSERT INTO requests (ts, session_id, tool, project_path, model, input_tokens, output_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
-        (NOW - 8950, "s-old", "claude-code", "/p/alpha", "claude-sonnet-4-5", 100, 10, 0.5),
-    )
+    old = {"session_id": "s-old", "tool": "claude-code", "project_path": "/p/alpha"}
+    new = {"session_id": "s-new", "tool": "copilot-cli", "project_path": "/p/gamma"}
+    db.insert("requests", **old, ts=NOW - 8950, model="claude-sonnet-4-5", input_tokens=100, output_tokens=10, cost_usd=0.5)
     for k in range(3):
-        conn.execute(
-            "INSERT INTO tool_invocations (ts, session_id, tool, project_path, tool_name) VALUES (?,?,?,?,?)",
-            (NOW - 8940 + k, "s-old", "claude-code", "/p/alpha", "Bash"),
-        )
-    conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, 's-old', '', 'claude-code', 'Refactor the parser')", (NOW - 8900,))
-    conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, 's-old', '', 'claude-code', 'now add the widget')", (NOW - 8800,))
-    conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, 's-mid', '', 'copilot-cli', 'Write a plan')", (NOW - 4900,))
-    conn.execute(
-        "INSERT INTO file_write_events (ts, session_id, tool, path, project_path) VALUES (?, 's-new', 'copilot-cli', '/tmp/out/widget-report.md', '/p/gamma')",
-        (NOW - 900,),
-    )
-    conn.execute(
-        "INSERT INTO tool_invocations (ts, session_id, tool, project_path, tool_name) VALUES (?, 's-new', 'copilot-cli', '/p/gamma', 'edit')",
-        (NOW - 900,),
-    )
-    conn.execute("INSERT INTO session_commits (session_id, sha, ts, subject) VALUES ('s-mid', 'abc', ?, 'Add the widget API')", (NOW - 4500,))
-    conn.commit()
-    db.replace_session_artifacts("s-mid", "copilot-cli", "/state/s-mid", 1.0, [("/state/s-mid/files/widget.md", "files", 3, NOW - 4400)], 7, 30)
+        db.insert("tool_invocations", **old, ts=NOW - 8940 + k, tool_name="Bash")
+    db.insert("session_prompts", **old, ts=NOW - 8900, text="Refactor the parser")
+    db.insert("session_prompts", **old, ts=NOW - 8800, text="now add the widget")
+    db.insert("session_prompts", ts=NOW - 4900, session_id="s-mid", tool="copilot-cli", text="Write a plan")
+    db.insert("file_write_events", **new, ts=NOW - 900, path="/tmp/out/widget-report.md")
+    db.insert("tool_invocations", **new, ts=NOW - 900, tool_name="edit")
+    db.insert("session_commits", session_id="s-mid", sha="abc", ts=NOW - 4500, subject="Add the widget API")
+    db.insert("session_folders", session_id="s-mid", tool="copilot-cli", folder="/state/s-mid", files_total=7, bytes_total=30)
+    db.insert("session_artifacts", session_id="s-mid", path="/state/s-mid/files/widget.md", folder="files", size_bytes=3,
+              mtime=NOW - 4400)
 
 
 def _numbers(row: dict) -> tuple:
     return (row["tokens"], row["cost_usd"], row["tool_calls"], row["prompts"], row["artifacts"])
 
 
-def _detail_numbers(db, sid: str) -> tuple:
+def _detail_numbers(db, sid: str, *, history=None) -> tuple:
     """The same numbers as the agent side panel shows them for the session."""
-    detail = agent_detail(db, sid, None, time.time())[1]
+    detail = agent_detail(db, sid, None, NOW, history=history)[1]
     agent = detail["agent"]
     tokens = sum(int(agent[k] or 0) for k in ("input", "output", "cache_read", "cache_write"))
     # The search row has whole numbers: a count the agent detail leaves empty is 0 there.
@@ -406,6 +374,10 @@ def _detail_numbers(db, sid: str) -> tuple:
 
 
 class TestSearch:
+    @pytest.fixture
+    def db(self, kusto_store):
+        return kusto_store
+
     def test_no_text_lists_every_session_newest_first(self, db, tmp_path):
         _seed_search(db, tmp_path)
         out = search_sessions(db)
@@ -446,23 +418,19 @@ class TestSearch:
         assert (page["total"], [r["id"] for r in page["rows"]]) == (3, ["s-mid"])
 
     def test_a_session_under_two_ids_is_one_row(self, db, tmp_path):
-        conn = db._conn()
-        _session(conn, SID, "claude-code", "/p/a", NOW - 100, input_tokens=5)
-        _session(conn, f"claude-code:123:{SID}", "claude-code", "/p/a", NOW - 100)
+        _session(db, SID, "claude-code", "/p/a", NOW - 100, input_tokens=5)
+        _session(db, f"claude-code:123:{SID}", "claude-code", "/p/a", NOW - 100)
         for sid in (SID, f"claude-code:123:{SID}"):
-            conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, ?, '', 'claude-code', 'go')", (NOW - 90, sid))
-        conn.commit()
+            db.insert("session_prompts", ts=NOW - 90, session_id=sid, tool="claude-code", text="go")
         out = search_sessions(db)
         assert (out["total"], [r["id"] for r in out["rows"]]) == (1, [SID])
 
     def test_a_process_the_monitor_saw_is_not_a_session_row(self, db, tmp_path):
         """A sessions row with no records (a monitor placeholder) cannot be opened, so it is not listed."""
         _seed_search(db, tmp_path)
-        conn = db._conn()
-        _session(conn, "claude-code:54259:1794162948", "claude-code", "", NOW - 10)
-        _session(conn, "codex-desktop:995:1794162948", "codex-desktop", "", NOW - 5)
-        conn.commit()
-        assert agent_detail(db, "claude-code:54259:1794162948", None, time.time())[0] == 404
+        _session(db, "claude-code:54259:1794162948", "claude-code", "", NOW - 10)
+        _session(db, "codex-desktop:995:1794162948", "codex-desktop", "", NOW - 5)
+        assert agent_detail(db, "claude-code:54259:1794162948", None, NOW)[0] == 404
         out = search_sessions(db)
         assert [r["id"] for r in out["rows"]] == ["s-new", "s-mid", "s-old"]
         assert out["total"] == 3
@@ -470,15 +438,14 @@ class TestSearch:
 
     def test_every_search_row_opens_in_the_agent_detail(self, db, tmp_path):
         _seed_search(db, tmp_path)
-        _session(db._conn(), "placeholder:1:2", "claude-desktop", "", NOW - 1)
-        db._conn().commit()
+        _session(db, "placeholder:1:2", "claude-desktop", "", NOW - 1)
         for q in ("", "widget", "p"):
             for row in search_sessions(db, q)["rows"]:
-                assert agent_detail(db, row["id"], None, time.time())[0] == 200, row["id"]
+                assert agent_detail(db, row["id"], None, NOW)[0] == 200, row["id"]
 
     def test_the_route_answers_with_the_contract_shape(self, db, tmp_path):
         _seed_search(db, tmp_path)
-        status, body = handle_get("/api/board/sessions", "q=widget&tool=copilot-cli&limit=200&offset=0", db, None, NOW)
+        status, body = handle_get("/api/board/sessions", "q=widget&tool=copilot-cli&limit=200&offset=0", db, db, NOW)
         payload = json.loads(body)
         assert status == 200 and payload["total"] == 2
         assert set(payload["rows"][0]) == {
@@ -486,39 +453,17 @@ class TestSearch:
             "tool_calls", "prompts", "artifacts", "commits", "match", "match_text",
         }
 
-    def test_the_search_reads_every_project_store(self, tmp_path):
-        from aictl.storage import SessionPromptRow, SessionRow
-
-        stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-        try:
-            for k in range(12):
-                repo = tmp_path / f"repo{k}"
-                (repo / ".git").mkdir(parents=True)
-                sid = f"s{k}"
-                stores.upsert_session(SessionRow(session_id=sid, tool="claude-code", project_path=str(repo), started_at=NOW - 1000 + k))
-                stores.write_call_facts(
-                    __import__("aictl.storage", fromlist=["CallFacts"]).CallFacts(
-                        prompts=[SessionPromptRow(dedup_key=f"p{k}", ts=NOW - 900 + k, session_id=sid, tool="claude-code", project_path=str(repo), text=f"task number {k}")]
-                    )
-                )
-            assert search_sessions(stores)["total"] == 12
-            assert [r["id"] for r in search_sessions(stores, "number 11")["rows"]] == ["s11"]
-            assert search_sessions(stores, "task number")["total"] == 12
-        finally:
-            stores.close()
-
-
 # ─── Viewing an artifact through /api/file ────────────────────────
 
 
 @pytest.fixture
-def server(db, tmp_path):
+def server(kusto_store, tmp_path):
     from aictl.dashboard.models import DashboardSnapshot
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore
 
     snap = DashboardSnapshot(timestamp=time.time(), root=str(tmp_path), tools=[], sessions=[])
-    store = SnapshotStore(db=db)
+    store = SnapshotStore(db=kusto_store, history_store=kusto_store.history_store)
     store.update(snap)
     allowed = AllowedPaths()
     allowed.update(snap)
@@ -539,6 +484,10 @@ def _get_file(base: str, path: Path) -> tuple[int, str]:
 
 
 class TestViewing:
+    @pytest.fixture
+    def db(self, kusto_store):
+        return kusto_store
+
     def test_an_indexed_artifact_and_a_written_file_are_served(self, db, tmp_path, server):
         _project, outside = _seed_detail(db, tmp_path)
         report = tmp_path / "copilot" / "session-state" / SID / "files" / "report.md"
@@ -570,7 +519,7 @@ class TestViewing:
 
 
 def _ingester_factory(root: Path):
-    def make(target):
+    def make(target, tool_calls):
         return TranscriptUsageIngester(
             target,
             claude_projects=root / "claude" / "projects",
@@ -578,13 +527,14 @@ def _ingester_factory(root: Path):
             copilot_state=root / "copilot" / "session-state",
             vscode_workspaces=root / "vscode" / "workspaceStorage",
             backfill_days=tool_size_backfill.ALL_DAYS,
+            tool_calls=tool_calls,
         )
 
     return make
 
 
 class TestToolSizeBackfill:
-    def _seed(self, db, tmp_path) -> dict:
+    def _seed(self, tmp_path) -> dict:
         args = {"command": "ls -la"}
         write_lines(
             claude_path(tmp_path),
@@ -594,124 +544,75 @@ class TestToolSizeBackfill:
                 c_tool_result("t2", 80, content="there"),
             ],
         )
-        conn = db._conn()
-        # A call stored before v33: no sizes. The second call is not stored (gone by retention).
-        conn.execute(
-            "INSERT INTO tool_invocations (dedup_key, ts, session_id, tool, tool_name) VALUES (?, ?, 's', 'claude-code', 'Bash')",
-            (_dedup_key("claude-tool", "t1"), NOW - 100),
-        )
-        conn.commit()
         return args
 
-    def test_sizes_of_stored_calls_are_filled_once_and_no_row_is_added(self, db, tmp_path):
-        args = self._seed(db, tmp_path)
-        assert tool_size_backfill.run(db, _ingester_factory(tmp_path)) is True
-        rows = db._conn().execute("SELECT input_bytes, output_bytes, session_id FROM tool_invocations").fetchall()
-        assert rows == [(len(json.dumps(args).encode()), 5, "s")]
-        assert db.state_value(tool_size_backfill.STATE_KEY) is not None
-        assert db._conn().execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    def test_sizes_are_replayed_once_without_writing_call_rows(self, tmp_path):
+        from aictl.state_file import StateFile
+        from aictl.stores.testing import MemoryWriter
 
-        def never(target):
-            raise AssertionError("the backfill ran twice")
+        args = self._seed(tmp_path)
+        writer = MemoryWriter()
+        state = StateFile(tmp_path / "sizes.json")
+        # This test uses the transcript fixtures' fixed clock.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr("time.time", lambda: NOW)
+            assert tool_size_backfill.run(writer, state, _ingester_factory(tmp_path))
+        assert {table for _, table, _ in writer.operations} == {"tool_invocation_sizes"}
+        sizes = {row["dedup_key"]: row for _, _, batch in writer.operations for row in batch}
+        assert len(sizes) == 2  # Evidence does not add a call, even if no base row exists.
+        row = sizes[_dedup_key("claude-tool", "t1")]
+        assert (row["input_bytes"], row["output_bytes"]) == (len(json.dumps(args).encode()), 5)
+        assert state.read()[tool_size_backfill.STATE_KEY] == NOW
 
-        assert tool_size_backfill.run(db, never) is True
+        def never(*args):
+            pytest.fail("The backfill ran twice")
 
-    def test_a_size_already_set_stays(self, db, tmp_path):
-        self._seed(db, tmp_path)
-        db._conn().execute("UPDATE tool_invocations SET input_bytes = 7")
-        db._conn().commit()
-        tool_size_backfill.run(db, _ingester_factory(tmp_path))
-        assert db._conn().execute("SELECT input_bytes, output_bytes FROM tool_invocations").fetchone() == (7, 5)
+        assert tool_size_backfill.run(writer, state, never)
 
-    def test_a_write_that_keeps_failing_leaves_the_backfill_to_run_again(self, db, tmp_path, monkeypatch):
-        self._seed(db, tmp_path)
-        monkeypatch.setattr(tool_size_backfill, "LOCK_RETRY_S", 0.0)
+    def test_failed_handoff_does_not_save_restart_marker(self, tmp_path, monkeypatch):
+        from aictl.state_file import StateFile
+        from aictl.stores.testing import MemoryWriter
 
-        def locked(rows):
-            raise sqlite3.OperationalError("database is locked")
+        self._seed(tmp_path)
+        writer = MemoryWriter()
+        state = StateFile(tmp_path / "sizes.json")
+        monkeypatch.setattr("time.time", lambda: NOW)
 
-        monkeypatch.setattr(db, "fill_tool_sizes", locked)
-        assert tool_size_backfill.run(db, _ingester_factory(tmp_path)) is False
-        assert db.state_value(tool_size_backfill.STATE_KEY) is None
+        def fail(*args):
+            raise OSError("handoff failed")
 
-    def test_project_stores_fill_the_store_that_holds_the_call(self, tmp_path):
-        from aictl.storage import CallFacts, SessionRow, ToolInvocationRow
-
-        repo = tmp_path / "repo"
-        (repo / ".git").mkdir(parents=True)
-        stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-        try:
-            stores.upsert_session(SessionRow(session_id="s", tool="claude-code", project_path=str(repo), started_at=NOW - 200))
-            stores.write_call_facts(CallFacts(tools=[ToolInvocationRow(dedup_key="k1", ts=NOW - 100, session_id="s", tool="claude-code", tool_name="Bash", project_path=str(repo))]))
-            assert stores.fill_tool_sizes([("s", "k1", 11, 22), ("s", "k-missing", 1, 1)]) == 1
-            conn = sqlite3.connect(stores._file_of(store_key(str(repo))))
-            try:
-                assert conn.execute("SELECT input_bytes, output_bytes FROM tool_invocations").fetchall() == [(11, 22)]
-            finally:
-                conn.close()
-        finally:
-            stores.close()
+        monkeypatch.setattr(writer, "upsert", fail)
+        with pytest.raises(OSError, match="handoff failed"):
+            tool_size_backfill.run(writer, state, _ingester_factory(tmp_path))
+        assert state.read() == {}
 
 
 # ─── Schema v34 ───────────────────────────────────────────────────
 
 
-def test_a_v33_store_gets_the_index_tables_and_a_rerun_changes_nothing(tmp_path):
-    from aictl.storage_migrations import m034_session_artifacts
-
-    path = tmp_path / "old.db"
-    HistoryDB(db_path=str(path), flush_interval=0).close()
-    conn = sqlite3.connect(path)
-    conn.execute("DROP TABLE session_artifacts")
-    conn.execute("DROP TABLE session_folders")
-    conn.execute("DROP INDEX idx_sessions_started")
-    conn.execute("DELETE FROM schema_version WHERE version > 33")
-    conn.commit()
-    conn.close()
-    store = HistoryDB(db_path=str(path), flush_interval=0)
-    try:
-        conn = store._conn()
-        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
-        assert {"session_artifacts", "session_folders", "idx_session_artifacts_path", "idx_sessions_started"} <= names
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] >= 34
-        m034_session_artifacts.apply(conn)
-    finally:
-        store.close()
-
-
-def test_the_index_tables_are_per_project_tables():
-    from aictl.project_stores import PROJECT_TABLES
-
-    assert {"session_folders", "session_artifacts"} <= set(PROJECT_TABLES)
-
-
-
 # ─── The search row agrees with the agent detail ─────────────────
 
 
-def test_a_search_row_has_the_numbers_of_the_agent_detail(db, tmp_path):
+def test_a_search_row_has_the_numbers_of_the_agent_detail(kusto_store, tmp_path):
+    db = kusto_store
     _project, _outside = _seed_detail(db, tmp_path)
-    conn = db._conn()
     for k in range(4):
-        conn.execute(
-            "INSERT INTO tool_invocations (ts, session_id, tool, tool_name) VALUES (?,?,?,?)", (NOW - 2500 + k, SID, "copilot-cli", "bash")
-        )
-    conn.execute("INSERT INTO session_prompts (ts, session_id, agent_id, tool, text) VALUES (?, ?, '', 'copilot-cli', 'Write the report')", (NOW - 3100, SID))
+        db.insert("tool_invocations", ts=NOW - 2500 + k, session_id=SID, tool="copilot-cli", tool_name="bash")
+    db.insert("session_prompts", ts=NOW - 3100, session_id=SID, tool="copilot-cli", text="Write the report")
     # The sessions row says something else: the facts win, as on the board.
-    conn.execute("UPDATE sessions SET tool_call_count = 99, cost_usd = 9.0, input_tokens = 5 WHERE session_id = ?", (SID,))
-    conn.commit()
+    db.replace("sessions", where={"session_id": SID}, tool_call_count=99, cost_usd=9.0, input_tokens=5)
     row = next(r for r in search_sessions(db, "report")["rows"] if r["id"] == SID)
     assert _numbers(row) == _detail_numbers(db, SID)
     assert (row["tool_calls"], row["prompts"], row["artifacts"]) == (4, 1, 6)
 
 
-def test_transcript_usage_counts_from_the_same_time_as_in_the_agent_detail(db):
+def test_transcript_usage_counts_from_the_same_time_as_in_the_agent_detail(kusto_store):
     """A session with usage from its transcript and no model call rows: the search row and the
     agent detail count its usage over the same time window."""
-    conn = db._conn()
+    db = kusto_store
     day = 86400.0
     start = NOW - 3 * day
-    _session(conn, "u-1", "codex-cli", "/p/u", start)
+    _session(db, "u-1", "codex-cli", "/p/u", start)
     models = {"gpt-5": {"requests": 4, "input_tokens": 300, "output_tokens": 30, "cache_read_tokens": 60, "cache_creation_tokens": 0}}
     early = {"input_tokens": 200, "output_tokens": 20, "cache_read_tokens": 0, "cache_creation_tokens": 0}
     late = {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 60, "cache_creation_tokens": 0}
@@ -719,110 +620,10 @@ def test_transcript_usage_counts_from_the_same_time_as_in_the_agent_detail(db):
         time.strftime("%Y-%m-%d", time.localtime(start)): {**early, "models": {"gpt-5": {**early, "requests": 2}}},
         time.strftime("%Y-%m-%d", time.localtime(NOW - 100)): {**late, "models": {"gpt-5": {**late, "requests": 2}}},
     }
-    conn.execute(
-        "INSERT INTO session_usage (session_id, tool, model, models_json, daily_json, input_tokens, output_tokens, cache_read_tokens,"
-        " cache_creation_tokens, request_count, tool_call_count, turn_count, started_at, last_activity_at, project_path)"
-        " VALUES ('u-1', 'codex-cli', 'gpt-5', ?, ?, 300, 30, 60, 0, 4, 1, 1, ?, ?, '/p/u')",
-        (json.dumps(models), json.dumps(daily), start, NOW - 100),
-    )
+    db.insert("session_usage", session_id="u-1", tool="codex-cli", model="gpt-5", models_json=json.dumps(models),
+              daily_json=json.dumps(daily), input_tokens=300, output_tokens=30, cache_read_tokens=60, request_count=4,
+              tool_call_count=1, turn_count=1, started_at=start, last_activity_at=NOW - 100, project_path="/p/u")
     # The first tool call comes long after the transcript's first day.
-    conn.execute("INSERT INTO tool_invocations (ts, session_id, tool, tool_name) VALUES (?, 'u-1', 'codex-cli', 'shell')", (NOW - 150,))
-    conn.commit()
+    db.insert("tool_invocations", ts=NOW - 150, session_id="u-1", tool="codex-cli", tool_name="shell")
     row = next(r for r in search_sessions(db)["rows"] if r["id"] == "u-1")
     assert _numbers(row) == _detail_numbers(db, "u-1")
-
-
-def test_a_session_whose_rows_are_in_two_stores_is_counted_whole(tmp_path, monkeypatch):
-    """A session placed in the shared store, then named a project, moves; until the move is
-    done its rows are in both stores. The search row must count both, as the agent detail does."""
-    from aictl.storage import CallFacts, FileWriteRow, RequestRow, SessionPromptRow, SessionRow, ToolInvocationRow
-
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-    try:
-        # First rows with no folder: the session is placed in _shared.
-        stores.write_call_facts(
-            CallFacts(
-                prompts=[SessionPromptRow(dedup_key="p1", ts=NOW - 900, session_id=SID, tool="claude-code", project_path="", text="paste the stderr")],
-                tools=[ToolInvocationRow(dedup_key=f"t{k}", ts=NOW - 890 + k, session_id=SID, tool="claude-code", tool_name="Bash") for k in range(3)],
-            )
-        )
-        # The move to the repository's store does not finish (a busy store): it stays pending.
-        monkeypatch.setattr(stores, "_move_rows", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")))
-        stores.upsert_session(SessionRow(session_id=SID, tool="claude-code", project_path=str(repo), started_at=NOW - 1000))
-        assert SID in stores._pending_moves
-        stores.write_call_facts(
-            CallFacts(
-                requests=[RequestRow(dedup_key="r1", ts=NOW - 800, session_id=SID, tool="claude-code", project_path=str(repo), model="claude-sonnet-4-5", input_tokens=40, output_tokens=2)],
-                tools=[ToolInvocationRow(dedup_key=f"u{k}", ts=NOW - 700 + k, session_id=SID, tool="claude-code", tool_name="Read", project_path=str(repo)) for k in range(2)],
-                file_writes=[FileWriteRow(dedup_key="w1", ts=NOW - 600, session_id=SID, tool="claude-code", path=str(tmp_path / "out" / "notes.md"), project_path=str(repo))],
-            )
-        )
-        row = next(r for r in search_sessions(stores, "paste the stderr")["rows"] if r["id"] == SID)
-        assert (row["tool_calls"], row["prompts"], row["tokens"], row["artifacts"]) == (5, 1, 42, 1)
-        assert _numbers(row) == _detail_numbers(stores, SID)
-    finally:
-        stores.close()
-
-
-def test_the_index_does_not_place_a_session_the_stores_do_not_know(tmp_path):
-    """Written first, the index would put the session in _shared and force a move later."""
-    from aictl.storage import SessionRow
-
-    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-    try:
-        _copilot_folder(tmp_path / "copilot")
-        indexer = _indexer(stores, copilot=tmp_path / "copilot" / "session-state")
-        assert indexer.poll() == 0
-        assert stores.store_of_session(SID) is None
-        stores.upsert_session(SessionRow(session_id=SID, tool="copilot-cli", project_path="", started_at=NOW - 100))
-        assert indexer.poll() == 1
-    finally:
-        stores.close()
-
-
-def test_the_search_answers_the_same_with_and_without_packed_reads(db, tmp_path, monkeypatch):
-    """An SQLite that writes a REAL in JSON with fewer digits reads row by row: the same answer."""
-    _seed_search(db, tmp_path)
-    packed = [search_sessions(db, q) for q in ("", "widget")]
-    monkeypatch.setattr(session_record, "_packing", [False])
-    assert [search_sessions(db, q) for q in ("", "widget")] == packed
-
-
-def test_a_page_of_many_sessions_makes_few_queries(tmp_path):
-    """Each sqlite call can wait for the GIL in a busy daemon: a page of 200 sessions in 12
-    stores must not make a query per session."""
-    from aictl.storage import CallFacts, SessionPromptRow, SessionRow, ToolInvocationRow
-
-    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-    try:
-        for k in range(12):
-            repo = tmp_path / f"repo{k}"
-            (repo / ".git").mkdir(parents=True)
-            for j in range(20):
-                sid = f"s{k}-{j}"
-                stores.upsert_session(SessionRow(session_id=sid, tool="claude-code", project_path=str(repo), started_at=NOW - 5000 + k * 100 + j))
-                stores.write_call_facts(
-                    CallFacts(
-                        prompts=[SessionPromptRow(dedup_key=f"p{sid}", ts=NOW - 900, session_id=sid, tool="claude-code", project_path=str(repo), text="do it")],
-                        tools=[ToolInvocationRow(dedup_key=f"t{sid}", ts=NOW - 800, session_id=sid, tool="claude-code", tool_name="Bash", project_path=str(repo))],
-                    )
-                )
-        calls = []
-        real = session_record._read
-
-        def counted(conn, sql, params=()):
-            calls.append(sql)
-            return real(conn, sql, params)
-
-        session_record._read = counted
-        try:
-            out = search_sessions(stores, limit=200)
-        finally:
-            session_record._read = real
-        assert out["total"] == 240 and len(out["rows"]) == 200
-        assert all(r["tool_calls"] == 1 and r["prompts"] == 1 for r in out["rows"])
-        assert len(calls) < 15 * 13, len(calls)
-    finally:
-        stores.close()

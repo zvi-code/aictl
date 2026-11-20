@@ -15,7 +15,8 @@ import pytest
 from aictl.dashboard.analytics import compute_usage_summary
 from aictl.ingesters._common import decode_file_uri, open_readonly, project_key
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.storage import HistoryDB, SessionRow
+from aictl.records import SessionRow
+from core_store_fakes import UsageFacts, message_facts, quality
 
 NOW = time.time()
 CLI_SID = "aaaaaaaa-0000-4000-8000-000000000001"
@@ -70,10 +71,8 @@ def build_store(home):
 
 
 @pytest.fixture
-def db(tmp_path):
-    d = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    yield d
-    d.close()
+def db():
+    return UsageFacts()
 
 
 @pytest.fixture
@@ -88,7 +87,7 @@ def ing(tmp_path, db):
 
 
 def row(db, sid):
-    rows = db.query_session_usage(session_ids=[sid])
+    rows = db.usage_rows(session_ids=[sid])
     assert rows, sid
     return rows[0]
 
@@ -217,10 +216,12 @@ class TestBilling:
         assert summary["daily"][0]["cost_usd"] == 0
 
     def test_hook_row_for_copilot_is_not_list_priced(self, db):
-        db.upsert_session(SessionRow(session_id=VS_SID, tool="copilot-vscode", source="otel", started_at=NOW - 10, model="gpt-6.1-sol", input_tokens=1000))
-        r = db.get_session(VS_SID)
-        assert r["cost_usd"] is None
-        assert r["billing_unit"] == "ai_credits"
+        db.profiles.append(dict(session_id=VS_SID, tool="copilot-vscode", tokens_source="otel",
+                                started_at=NOW - 10, model="gpt-6.1-sol", input_tokens=1000,
+                                cost_usd=None, billing_unit="ai_credits"))
+        row, = compute_usage_summary(db, NOW - 86400)["tools"]
+        assert row["cost_usd"] is None
+        assert row["billing_unit"] == "ai_credits"
 
     def test_cloud_only_tool_is_not_available_rather_than_zero(self, db):
         summary = compute_usage_summary(db, NOW - 86400)
@@ -372,21 +373,13 @@ def test_otel_service_name_selects_the_surface(service, tool):
     assert _resolve_tool(service) == tool
 
 
-class _QualityRecorder:
-    def __init__(self):
-        self.statuses = []
-
-    def record_data_quality(self, component, status, **kwargs):
-        self.statuses.append((status, kwargs.get("severity")))
-
-
 def test_session_store_ingester_names_the_current_schema(tmp_path):
     from aictl.ingesters.copilot_session_store import CopilotSessionStoreIngester
 
     build_store(tmp_path / "copilot")
-    rec = _QualityRecorder()
-    assert CopilotSessionStoreIngester(tmp_path / "copilot" / "session-store.db", rec).poll() == 0
-    assert rec.statuses == [("not_applicable", "info")]
+    facts = message_facts(tmp_path)
+    assert CopilotSessionStoreIngester(tmp_path / "copilot" / "session-store.db", facts).poll() == 0
+    assert [(r["status"], r["severity"]) for r in quality(facts, "ingester:copilot-session-store")] == [("not_applicable", "info")]
 
 
 def test_session_store_ingester_reports_an_unrecognised_schema(tmp_path):
@@ -397,9 +390,9 @@ def test_session_store_ingester_reports_an_unrecognised_schema(tmp_path):
     con.execute("CREATE TABLE unrelated(x)")
     con.commit()
     con.close()
-    rec = _QualityRecorder()
-    assert CopilotSessionStoreIngester(path, rec).poll() == 0
-    assert rec.statuses == [("schema_unknown", "warning")]
+    facts = message_facts(tmp_path)
+    assert CopilotSessionStoreIngester(path, facts).poll() == 0
+    assert [(r["status"], r["severity"]) for r in quality(facts, "ingester:copilot-session-store")] == [("schema_unknown", "warning")]
 
 
 class TestHeldFiles:

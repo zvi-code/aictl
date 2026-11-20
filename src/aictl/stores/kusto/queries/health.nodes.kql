@@ -1,0 +1,8 @@
+declare query_parameters(requested_project:string = '', requested_node:string = '', row_limit:long);
+system_snapshots
+| where isempty(requested_project) or ['project'] == requested_project
+| where isempty(requested_node) or node_id == requested_node
+| summarize by ['project'], node_id, ts
+| summarize samples = count(), last_sample = max(ts) by node_id
+| order by node_id asc
+| take row_limit

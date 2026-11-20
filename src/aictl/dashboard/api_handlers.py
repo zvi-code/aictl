@@ -8,7 +8,6 @@ supply all /api/* endpoint implementations.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import math
@@ -19,9 +18,23 @@ from collections import Counter
 from pathlib import Path
 
 from ..data.token_usage import TokenUsage
+from ..stores import store_for
+from ..stores.base import StoreConfigurationError, StoreError
 from ..tool_scope import selection_block
 from ..tools import budget_tools, compute_token_budget
 from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
+from .projections.health import logical_stats, store_health
+from .projections.history import (
+    HistoryScope,
+    configured_reader,
+    event_params,
+    event_rows,
+    local_scope,
+    session_events,
+    session_processes,
+    session_row,
+)
+from .projections.metrics import catalog_entries, sample_metrics, sample_page, sample_series, system_history, tool_history
 
 # Synthesized process-based session_id format: "tool:pid:timestamp".
 # Used by copilot-vscode (and other tools that don't emit their own ids)
@@ -102,7 +115,7 @@ def _one_row_per_session(rows: list[dict]) -> list[dict]:
     row stays (a live row keeps its live fields) and takes the transcript's
     numbers if another row has them.
     """
-    from ..storage import _USAGE_PROFILE_KEYS, _session_uuid
+    from ..records import _USAGE_PROFILE_KEYS, _session_uuid
 
     kept: dict[str, dict] = {}
     out: list[dict] = []
@@ -385,11 +398,14 @@ class _APIHandlersMixin:
         except Exception:
             result["pid"] = os.getpid()
         db = self._db
-        if db:
-            try:
-                result["db"] = db.stats()
-            except Exception:
-                result["db"] = {}
+        reader = configured_reader(self.server.store)
+        try:
+            result["db"] = logical_stats(reader)
+        except StoreConfigurationError:
+            pass
+        except StoreError:
+            result["db"] = {}
+        result["store_health"] = store_health(self.server.store)
         # Sink stats (emission rates, flood protection)
         sink = getattr(self.server.store, "_sink", None)
         if sink:
@@ -397,16 +413,9 @@ class _APIHandlersMixin:
                 result["sink"] = sink.stats()
             except Exception:
                 result["sink"] = {}
-        try:
-            result.update(db.storage_status())
-        except Exception as exc:  # no DB at all still answers the contract
-            result.update(
-                capture_mode="off",
-                storage_bytes=0,
-                storage_budget_bytes=0,
-                storage_degraded=True,
-                storage_degraded_reason=str(exc),
-            )
+        from .projections.health import storage_fields
+
+        result.update(storage_fields(db, reader))
         self._json_response(result)
 
     def _serve_settings_files(self) -> None:
@@ -421,7 +430,7 @@ class _APIHandlersMixin:
             from ..monitoring.tool_config import collect_tool_configs
 
             tool_configs = [c.to_dict() for c in collect_tool_configs(Path(root))]
-        audit = AUDIT_CACHE._fresh(AUDIT_CACHE._key(root, None)) or {}
+        audit = AUDIT_CACHE._fresh(AUDIT_CACHE._key(root, None, HistoryScope.local(self.server.store))) or {}
         live = getattr(snap, "live_monitor", None) or {}
         if "workspace_paths" in live or "state_paths" in live:
             folders = [*live.get("workspace_paths", []), *live.get("state_paths", [])]
@@ -548,9 +557,7 @@ class _APIHandlersMixin:
         if not agent_id:
             self._json_response({"error": "Missing id"}, status=400)
             return
-        if not self._db:
-            self._json_response({"error": "History is not available"}, status=503)
-            return
+        history = HistoryScope.local(self.server.store)
         try:
             since, until = self._qs_float_opt("since"), self._qs_float_opt("until")
             limit = int(self._qs_get("limit")) if self._qs_get("limit") else None
@@ -563,10 +570,14 @@ class _APIHandlersMixin:
                 raise ValueError("failed must be 0 or 1")
             status, payload = agent_flow(
                 self._db, agent_id, since, until, limit=limit, failed=failed == "1",
+                history=history,
                 **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
             )
         except ValueError as exc:
             self._json_response({"error": str(exc)}, status=400)
+            return
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
             return
         except Exception as exc:  # any failure must reach the tab's error state
             logging.getLogger(__name__).exception("Board agent flow failed")
@@ -575,7 +586,7 @@ class _APIHandlersMixin:
         self._json_response(payload, status=status)
 
     def _serve_board_agent_transcript(self) -> None:
-        """The transcript of a board agent's session, from the store with the live transcript merged in.
+        """The recorded transcript of a board agent's session.
 
         GET /api/board/agent/transcript?id=<agent id>[&turn=<unix ts>][&full=1]
         Without ``turn`` the turns are brief: previews, counts and tokens. ``turn`` returns one
@@ -587,14 +598,7 @@ class _APIHandlersMixin:
         if not agent_id:
             self._json_response({"error": "Missing id"}, status=400)
             return
-        if not self._db:
-            self._json_response({"error": "History is not available"}, status=503)
-            return
-        analyzer = getattr(self.server, "session_analyzer", None)
-
-        def live(session_id: str) -> dict | None:
-            transcript = analyzer.get_transcript(session_id) if analyzer is not None else None
-            return transcript.to_dict() if transcript is not None else None
+        history = HistoryScope.local(self.server.store)
 
         try:
             turn = self._qs_float_opt("turn")
@@ -603,7 +607,11 @@ class _APIHandlersMixin:
             return
         full = self._qs_get("full") in ("1", "true", "yes")
         try:
-            status, payload = agent_transcript(self._db, agent_id, legacy_transcript=live, turn=turn, brief=not full)
+            status, payload = agent_transcript(self._db, agent_id, turn=turn, brief=not full,
+                                               history=history)
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
         except Exception as exc:  # any failure must reach the tab's error state
             logging.getLogger(__name__).exception("Board agent transcript failed")
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
@@ -613,7 +621,7 @@ class _APIHandlersMixin:
     def _serve_otel_status(self) -> None:
         """Return OTel receiver health status."""
         status = self.server.otel_receiver.status()
-        sink = getattr(self._db, "otel_sink", None)
+        sink = store_for(self.server.store).otlp
         if sink is not None:
             # What reached the cluster's OTel tables, what waits and what was dropped.
             status["kusto"] = sink.stats()
@@ -629,7 +637,12 @@ class _APIHandlersMixin:
             server_port = int(self.server.server_address[1])
         except (AttributeError, IndexError, TypeError, ValueError):
             server_port = None
-        self._json_response(collect_hooks_status(self._db, self.server.root, server_port=server_port))
+        try:
+            status = collect_hooks_status(configured_reader(self.server.store), self.server.root, server_port=server_port)
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
+        self._json_response(status)
 
     def _serve_session_mcp_usage(self) -> None:
         """Return per-session MCP server usage.
@@ -647,25 +660,19 @@ class _APIHandlersMixin:
         Configured-but-unused servers appear in ``configured_servers``
         only (not in ``servers``); the UI renders them dimmed.
         """
-        from ..analysis.mcp_usage import configured_servers, session_mcp_calls
+        from ..analysis.mcp_usage import configured_servers, mcp_calls
 
         session_id = self._qs_get("session_id")
         if not session_id:
             self.send_error(400, "Missing session_id")
             return
-        db = self._db
-        if not db:
-            self._json_response(
-                {
-                    "session_id": session_id,
-                    "servers": [],
-                    "total_calls": 0,
-                    "configured_servers": [],
-                }
-            )
+        reader = configured_reader(self.server.store)
+        try:
+            servers = mcp_calls(session_events(reader, session_id, local_scope()))
+            sess = session_row(reader, session_id, local_scope()) or {}
+        except StoreError as exc:
+            self.send_error(503, str(exc))
             return
-        servers = session_mcp_calls(db, session_id)
-        sess = db.get_session(session_id) or {}
         project_path = sess.get("project_path", "") or ""
         configured = configured_servers(project_path)
         total_calls = sum(int(s.get("call_count", 0)) for s in servers)
@@ -686,15 +693,13 @@ class _APIHandlersMixin:
         ``gen_ai.client.inference.operation.details`` spans) for
         latency/frequency analysis.
         """
-        db = self._db
-        if not db:
-            self._json_response({"calls": [], "summary": {}})
-            return
+        reader = configured_reader(self.server.store)
 
         since = self._qs_float("since", time.time() - 3600)
         until = self._qs_float("until", time.time())
-        limit = min(int(self._qs_get("limit", "500")), 2000)
+        limit = max(1, min(int(self._qs_get("limit", "500")), 2000))
         session_id = self._qs_get("session_id") or None
+        scope = local_scope()
 
         # Resolve filter strategy. For synthesized process-based session
         # ids (e.g. ``copilot-vscode:3716:1776541738``), OTel events carry
@@ -703,7 +708,11 @@ class _APIHandlersMixin:
         filter_session_id: str | None = session_id
         filter_tool: str | None = None
         if session_id and _SYNTHETIC_SESSION_RE.match(session_id):
-            sess = db.get_session(session_id)
+            try:
+                sess = session_row(reader, session_id, scope)
+            except StoreError as exc:
+                self._json_response({"error": str(exc)}, status=503)
+                return
             if sess:
                 filter_session_id = None
                 filter_tool = sess.get("tool") or None
@@ -717,31 +726,26 @@ class _APIHandlersMixin:
                     except (TypeError, ValueError):
                         pass
 
-        # Query API request events across all known kinds
-        api_events = []
-        for name in API_REQUEST_EVENTS:
-            api_events.extend(
-                db.query_events(
-                    since=since,
-                    until=until,
-                    kind=f"otel:{name}",
-                    tool=filter_tool,
-                    session_id=filter_session_id,
-                    limit=limit,
-                )
-            )
-        error_events = []
-        for name in API_ERROR_EVENTS:
-            error_events.extend(
-                db.query_events(
-                    since=since,
-                    until=until,
-                    kind=f"otel:{name}",
-                    tool=filter_tool,
-                    session_id=filter_session_id,
-                    limit=limit,
-                )
-            )
+        def category(names):
+            return [
+                ev
+                for name in names
+                for ev in event_rows(reader.read("events.page", {
+                    **scope, **event_params(since=since, until=until, kinds=[f"otel:{name}"],
+                                             tool=filter_tool, session_id=filter_session_id),
+                    "limit": limit,
+                }))
+            ]
+
+        try:
+            api_events = category(API_REQUEST_EVENTS)
+            error_events = category(API_ERROR_EVENTS)
+        except StoreConfigurationError as exc:
+            self._json_response({"calls": [], "summary": {}, "error": str(exc)}, status=503)
+            return
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
 
         def _enrich(d: dict, is_error: bool) -> dict:
             extra: dict = {}
@@ -786,14 +790,14 @@ class _APIHandlersMixin:
 
         calls = []
         for ev in api_events:
-            d = ev.detail if isinstance(ev.detail, dict) else {}
+            d = ev["detail"]
             usage = TokenUsage.from_dict(d)
             calls.append(
                 {
-                    "ts": ev.ts,
-                    "tool": ev.tool or d.get("tool", ""),
-                    "session_id": ev.session_id or d.get("session_id", ""),
-                    "pid": ev.pid or int(d.get("pid", 0) or 0),
+                    "ts": ev["ts"],
+                    "tool": ev["tool"] or d.get("tool", ""),
+                    "session_id": ev["session_id"] or d.get("session_id", ""),
+                    "pid": ev["pid"] or int(d.get("pid", 0) or 0),
                     "model": _model(d),
                     "duration_ms": _num(d.get("duration_ms", d.get("duration", 0))),
                     "input_tokens": usage.input,
@@ -805,13 +809,13 @@ class _APIHandlersMixin:
                 }
             )
         for ev in error_events:
-            d = ev.detail if isinstance(ev.detail, dict) else {}
+            d = ev["detail"]
             calls.append(
                 {
-                    "ts": ev.ts,
-                    "tool": ev.tool or d.get("tool", ""),
-                    "session_id": ev.session_id or d.get("session_id", ""),
-                    "pid": ev.pid or int(d.get("pid", 0) or 0),
+                    "ts": ev["ts"],
+                    "tool": ev["tool"] or d.get("tool", ""),
+                    "session_id": ev["session_id"] or d.get("session_id", ""),
+                    "pid": ev["pid"] or int(d.get("pid", 0) or 0),
                     "model": _model(d),
                     "error": d.get("error", d.get("message", "unknown")),
                     "prompt_id": d.get("prompt.id", d.get("prompt_id", "")),
@@ -854,8 +858,7 @@ class _APIHandlersMixin:
         """Serve time-series history.
 
         Without ?range or ?since, returns in-memory ring buffer (fast, ~35 min).
-        With ?range=1h|6h|24h|7d, queries SQLite for longer history.
-        With ?since=<ts>[&until=<ts>][&tool=<name>], queries SQLite for custom range.
+        With range or since, reads stored history.
         """
         import json
 
@@ -863,8 +866,8 @@ class _APIHandlersMixin:
         since_str = self._qs_get("since")
         tool_filter = self._qs_get("tool")
 
-        use_db = (range_str or since_str) and self._db
-        if use_db:
+        if range_str or since_str:
+            reader = configured_reader(self.server.store)
             import time as _time
 
             if since_str:
@@ -874,8 +877,12 @@ class _APIHandlersMixin:
                 secs = range_map.get(range_str, 3600)
                 since = _time.time() - secs
             until = self._qs_float_opt("until")
-            data = self._db.query_metrics(since=since, until=until)
-            tool_data = self._db.query_tool_metrics(tool=tool_filter, since=since, until=until)
+            try:
+                data = system_history(reader, since=since, until=until)
+                tool_data = tool_history(reader, requested_tool=tool_filter, since=since, until=until)
+            except StoreError as exc:
+                self._json_response({"error": str(exc)}, status=503)
+                return
             data["by_tool"] = tool_history_for_api(tool_data)
             body = json.dumps(data).encode("utf-8")
         else:
@@ -890,63 +897,59 @@ class _APIHandlersMixin:
         Or: ?list=1&prefix=X  to list distinct metric names.
         Or: ?series=X&since=<ts>  to get a single metric as time-series.
         """
-        db = self._require_db()
-        if not db:
-            return
+        reader = configured_reader(self.server.store)
 
         qs = self._qs
-        # Mode: list metrics
-        if "list" in qs:
+        try:
             prefix = self._qs_get("prefix", "")
-            result = db.list_metrics(prefix=prefix)
-        # Mode: single metric series
-        elif "series" in qs:
-            metric = qs["series"][0]
-            since = self._qs_float("since", time.time() - 3600)
-            result = db.query_samples_series(metric, since=since)
-        # Mode: query samples
-        else:
-            metric = self._qs_get("metric")
-            prefix = self._qs_get("prefix")
-            since = self._qs_float("since", time.time() - 3600)
-            limit = int(self._qs_get("limit", "1000"))
-            # Extract tag filters from tag.X=Y params
-            tag_filter = {k[4:]: v[0] for k, v in qs.items() if k.startswith("tag.")}
-            try:
-                rows = db.query_samples(
-                    metric=metric,
-                    metric_prefix=prefix,
-                    since=since,
-                    tag_filter=tag_filter or None,
-                    limit=limit,
+            if "list" in qs:
+                result = sample_metrics(reader, metric_prefix=prefix)
+            elif "series" in qs:
+                result = sample_series(reader, requested_metric=qs["series"][0],
+                                       since=self._qs_float("since", time.time() - 3600))
+            else:
+                limit = min(int(self._qs_get("limit", "1000")), 20_000)
+                result = sample_page(
+                    reader, requested_metric=self._qs_get("metric"), metric_prefix=prefix,
+                    since=self._qs_float("since", time.time() - 3600), limit=limit,
+                    tags={k[4:]: v[0] for k, v in qs.items() if k.startswith("tag.")},
                 )
-            except ValueError as exc:
-                self._json_response({"error": str(exc)}, status=400)
-                return
-            result = [{"ts": s.ts, "metric": s.metric, "value": s.value, "tags": s.tags} for s in rows]
+        except ValueError as exc:
+            self._json_response({"error": str(exc)}, status=400)
+            return
+        except StoreConfigurationError:
+            self._json_response([])
+            return
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
 
         self._json_response(result)
 
     # ── Analytics endpoint ─────────────────────────────────────────
 
     def _serve_events(self) -> None:
-        """Serve recent events from SQLite.
+        """Serve a bounded page of recent events.
 
         Params: ?since=<unix_ts>&until=<unix_ts>&tool=<name>&kind=<type>&session_id=<id>&limit=<n>
         """
-        events_list = []
-        db = self._db
-        if db:
-            since = self._qs_float("since", time.time() - 3600)
-            until = self._qs_float_opt("until")
-            tool = self._qs_get("tool")
-            kind = self._qs_get("kind")
-            session_id = self._qs_get("session_id")
-            limit = int(self._qs_get("limit", "200"))
-            rows = db.query_events(since=since, until=until, tool=tool, kind=kind, session_id=session_id, limit=limit)
-            events_list = [dataclasses.asdict(r) for r in rows]
+        reader = configured_reader(self.server.store)
+        limit = max(1, min(int(self._qs_get("limit", "200")), 2000))
+        try:
+            rows = event_rows(reader.read("events.page", {**self._event_filters(), "limit": limit}))
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
+        self._json_response(rows)
 
-        self._json_response(events_list)
+    def _event_filters(self) -> dict:
+        kind = self._qs_get("kind")
+        return {
+            **local_scope(),
+            **event_params(since=self._qs_float("since", time.time() - 3600),
+                           until=self._qs_float_opt("until"), tool=self._qs_get("tool"),
+                           kinds=[kind] if kind else [], session_id=self._qs_get("session_id")),
+        }
 
     def _serve_events_count(self) -> None:
         """Serve the true number of events for the filters of ``/api/events`` (no limit).
@@ -954,17 +957,15 @@ class _APIHandlersMixin:
         Params: ?since=<unix_ts>&until=<unix_ts>&tool=<name>&kind=<type>&session_id=<id>
         Returns ``{count: int}``; ``count`` is ``null`` when there is no store.
         """
-        db = self._db
-        if not db:
+        reader = configured_reader(self.server.store)
+        try:
+            count = reader.read("events.count", {**self._event_filters(), "limit": 1}).rows[0]["count"]
+        except StoreConfigurationError:
             self._json_response({"count": None})
             return
-        count = db.count_events(
-            since=self._qs_float("since", time.time() - 3600),
-            until=self._qs_float_opt("until"),
-            tool=self._qs_get("tool"),
-            kind=self._qs_get("kind"),
-            session_id=self._qs_get("session_id"),
-        )
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
         self._json_response({"count": count})
 
     def _serve_datapoint_catalog(self) -> None:
@@ -977,9 +978,14 @@ class _APIHandlersMixin:
         source_type = self._qs_get("source_type")
 
         entries = []
-        db = self._db
-        if db:
-            entries = db.query_datapoint_catalog(tab=tab, key=key, source_type=source_type)
+        reader = configured_reader(self.server.store)
+        try:
+            entries = catalog_entries(reader, tab=tab, key=key, source_type=source_type)
+        except StoreConfigurationError:
+            pass
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
+            return
 
         self._json_response(entries)
 
@@ -995,20 +1001,13 @@ class _APIHandlersMixin:
         if not session_id:
             self.send_error(400, "Missing session_id")
             return
-        db = self._require_db()
-        if not db:
-            return
+        reader = configured_reader(self.server.store)
 
-        processes = db.get_session_processes(session_id)
-        roles = Counter(str(p.get("role", "") or "unknown") for p in processes)
-        self._json_response(
-            {
-                "session_id": session_id,
-                "total": len(processes),
-                "by_role": dict(roles),
-                "processes": processes,
-            }
-        )
+        try:
+            result = reader.read("sessions.processes", {**local_scope(), "requested_session": session_id, "limit": 2000})
+            self._json_response(session_processes(session_id, result))
+        except StoreError as exc:
+            self._json_response({"error": str(exc)}, status=503)
 
     def _serve_session_kill(self) -> None:
         """Signal a live session's tracked process tree (control action).
@@ -1022,7 +1021,6 @@ class _APIHandlersMixin:
         ``confirm:true`` is mandatory so an accidental/replayed request can't
         tear down a session — the destructive intent must be explicit.
         """
-        from ..storage import EventRow
 
         content_length = self._content_length()
         if content_length is None:
@@ -1067,7 +1065,11 @@ class _APIHandlersMixin:
             # The dashboard names an agent by its stored id, not by the monitor's.
             from .board_api import live_pids_of
 
-            pids = live_pids_of(self._db, snap, session_id) if self._db else []
+            try:
+                pids = live_pids_of(self.server.store, snap, session_id)
+            except StoreError as exc:
+                self._json_response({"error": str(exc)}, status=503)
+                return
             session = {"tool": ""}
             if not pids:
                 self._json_response({"error": "This agent has no running process"}, status=404)
@@ -1077,26 +1079,18 @@ class _APIHandlersMixin:
             return
 
         result = _kill_session_pids(pids, sig_name)
-        db = self._db
-        if db:
-            try:
-                db.append_event(
-                    EventRow(
-                        ts=time.time(),
-                        tool=str(session.get("tool", "")),
-                        kind="action:session_kill",
-                        detail={
-                            "session_id": session_id,
-                            "signal": "SIG" + sig_name,
-                            "signaled": result["signaled"],
-                            "failed": result["failed"],
-                        },
-                        session_id=session_id,
-                    )
-                )
-            except Exception:
-                # Audit logging must never block the control action itself.
-                pass
+        from ..records import EventRow
+
+        try:
+            self.server.store.session_facts.events([
+                EventRow(ts=time.time(), tool=str(session.get("tool", "")), kind="action:session_kill",
+                         detail={"session_id": session_id, "signal": "SIG" + sig_name,
+                                 "signaled": result["signaled"], "failed": result["failed"]},
+                         session_id=session_id),
+            ], source="dashboard")
+        except Exception:
+            # Audit logging must not block the control action.
+            pass
         # A stop that reached no process is a failure, whatever the reason.
         status = 200 if result["signaled"] else 409
         payload = {"session_id": session_id, "signal": "SIG" + sig_name, **result}
@@ -1128,16 +1122,15 @@ class _APIHandlersMixin:
             # Enrich with VS Code Language-Model usage (Slice 3.4c): a
             # per-extension token breakdown derived from OTel events. Empty
             # when no LM-usage events exist for the session.
-            db = self._db
-            if db:
-                try:
-                    from ..analysis.lm_usage import session_lm_usage
+            reader = configured_reader(self.server.store)
+            try:
+                from ..analysis.lm_usage import lm_usage
 
-                    lm = session_lm_usage(db, session_id)
-                    if lm.get("total_calls", 0) or lm.get("by_extension"):
-                        out["vscode_lm_usage"] = lm
-                except Exception:
-                    pass
+                lm = lm_usage(session_events(reader, session_id, local_scope()))
+                if lm.get("total_calls", 0) or lm.get("by_extension"):
+                    out["vscode_lm_usage"] = lm
+            except StoreError:
+                out["vscode_lm_usage"] = None
             self._json_response(out)
         else:
             # All sessions with deduced metrics
@@ -1159,28 +1152,30 @@ class _APIHandlersMixin:
         author_email, ts, subject, current_branch_match}], branch}``.
 
         On first request for an ended session with no cached rows we
-        compute the attribution lazily and persist it.
+        compute and cache the attribution from the local repository.
         """
-        from ..analysis.git_attribution import attribute_session, is_reachable
+        from ..analysis.git_attribution import commits_in_window, is_reachable
 
         session_id = self._qs_get("session_id")
         if not session_id:
             self.send_error(400, "Missing session_id")
             return
-        db = self._require_db()
-        if not db:
+        history = HistoryScope.local(self.server.store)
+        try:
+            sess = session_row(history.require_reader(), session_id, local_scope()) or {}
+            commits = history.read("sessions.commits", sid=session_id)
+        except StoreError as exc:
+            self.send_error(503, str(exc))
             return
 
-        sess = db.get_session(session_id) or {}
         project_dir = sess.get("project_path", "") or ""
         branch = sess.get("git_branch", "") or ""
         ended_at = sess.get("ended_at")
         started_at = float(sess.get("started_at", 0.0) or 0.0)
 
-        commits = db.get_session_commits(session_id)
         if not commits and ended_at and started_at > 0 and project_dir:
-            # Lazy attribution: compute and cache on first request.
-            commits = attribute_session(db, session_id, project_dir, started_at, float(ended_at))
+            commits = commits_in_window(project_dir, started_at, float(ended_at))
+            self.server.store.session_evidence.publish_commits(session_id, project_dir, commits)
 
         out = []
         for c in commits:

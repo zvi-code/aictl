@@ -122,7 +122,7 @@ def test_discovery_of_a_huge_tree_does_not_flood_the_sink(monkeypatch):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(runtime.DiscoveryCollector, "sleep_paced", stop)
-    sink = SampleSink(db=None, buffer_size=0)
+    sink = SampleSink()
     collector = runtime.DiscoveryCollector(MonitorConfig.for_root(Path.cwd()))
     collector.set_sink(sink)
     with pytest.raises(asyncio.CancelledError):
@@ -137,13 +137,13 @@ def test_snapshot_path_samples_the_same_files(tmp_path, monkeypatch):
     tool = ToolResources("project-env", "Project Environment")
     tool.files = _many_files(20_000)
     monkeypatch.setattr(orchestrator, "discover_all", lambda *a, **k: [tool])
-    sink = SampleSink(db=None, buffer_size=0)
+    sink = SampleSink()
     orchestrator.collect(tmp_path, include_processes=False, _sink=sink)
     assert sink.stats()["total_dropped"] == 0
 
 
 def test_flood_message_is_readable_and_names_the_metric(caplog):
-    sink = SampleSink(db=None, buffer_size=0)
+    sink = SampleSink()
     sink._flood_max = 1
     for name in ("metric.one", "metric.two", "metric.three"):
         sink.emit(name, 1.0, ts=100.0)

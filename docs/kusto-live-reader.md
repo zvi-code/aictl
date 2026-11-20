@@ -1,7 +1,7 @@
 # Query-visible Kusto live reader
 
 The Kusto live dashboard uses one process-local
-[`SharedKustoReader`](../src/aictl/kusto/live_reader.py) per normalized engine
+[`SharedKustoReader`](../src/aictl/stores/kusto/live_reader.py) per normalized engine
 endpoint, case-insensitive database name, authentication mode and reporting
 `node_id`. Data queries filter to that node. Ingestion
 settings do not create additional readers. Browser connections subscribe to

@@ -25,7 +25,7 @@ from aictl.dashboard.web_server import (
 from aictl.dashboard.web_server import (
     _parse_otel_attributes as _parse_attributes,
 )
-from aictl.storage import EventRow, HistoryDB, Sample
+from aictl.records import EventRow, Sample
 
 # ── Unit tests: OTLP JSON parsing helpers ────────────────────────
 
@@ -432,60 +432,11 @@ def test_status_active_after_data():
     assert st["metrics_received"] == 1
 
 
-# ── Integration: receiver → HistoryDB ────────────────────────────
-
-
-def test_metrics_stored_in_db(tmp_path):
-    """Parsed OTel metrics should be storable via HistoryDB.append_samples."""
-    db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
-    receiver = OtelReceiver()
-
-    body = _make_otlp_metrics("claude_code.token.usage", 5000)
-    samples = receiver.parse_metrics(body)
-    db.append_samples(samples)
-
-    # Query back
-    result = db.query_samples(
-        metric="otel.token.usage",
-        since=0,
-        until=time.time() + 3600,
-    )
-    assert len(result) == 1
-    assert result[0].value == 5000.0
-    db.close()
-
-
-def test_events_stored_in_db(tmp_path):
-    """Parsed OTel events should be storable via HistoryDB.append_events."""
-    db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
-    receiver = OtelReceiver()
-
-    body = _make_otlp_logs(
-        "claude_code.api_request",
-        attrs={
-            "model": "claude-opus-4-6",
-            "duration_ms": "350",
-        },
-    )
-    events = receiver.parse_logs(body)
-    db.append_events(events)
-
-    # Query back
-    result = db.query_events(
-        since=0,
-        until=time.time() + 3600,
-        kind="otel:claude_code.api_request",
-    )
-    assert len(result) == 1
-    assert result[0].tool == "claude-code"
-    db.close()
-
-
 # ── Integration: HTTP endpoints ──────────────────────────────────
 
 
 @pytest.fixture()
-def otel_server(tmp_path):
+def otel_server(tmp_path, kusto_store):
     """Start a real HTTP server for OTel endpoint testing."""
     from pathlib import Path
 
@@ -495,9 +446,13 @@ def otel_server(tmp_path):
         _DashboardHTTPServer,
     )
     from aictl.orchestrator import AllowedPaths, SnapshotStore
+    from aictl.sink import SampleSink
+    from aictl.stores import Store
+    from aictl.stores.testing import MemoryWriter
 
-    db = HistoryDB(db_path=str(tmp_path / "otel.db"), flush_interval=0)
-    store = SnapshotStore(db=db)
+    writer = MemoryWriter()
+    history = Store(reader=kusto_store.history_store.reader, writer=writer)
+    store = SnapshotStore(sink=SampleSink(history_store=history), history_store=history, keeps_text=lambda: True)
     store.update(
         DashboardSnapshot(
             timestamp=time.time(),
@@ -518,9 +473,9 @@ def otel_server(tmp_path):
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-    yield f"http://127.0.0.1:{port}", srv, db
+    yield f"http://127.0.0.1:{port}", srv, writer
     srv.shutdown()
-    db.close()
+    srv.server_close()
 
 
 def _post_json(url, data):
@@ -536,26 +491,26 @@ def _get_json(url):
 
 
 def test_post_v1_metrics(otel_server):
-    base, srv, db = otel_server
+    base, srv, writer = otel_server
     body = _make_otlp_metrics("claude_code.token.usage", 5000)
     status, resp = _post_json(f"{base}/v1/metrics", body)
     assert status == 200
     assert resp["ok"] is True
 
     # Verify stored
-    samples = db.query_samples(metric="otel.token.usage", since=0, until=time.time() + 3600)
-    assert len(samples) == 1
+    sample, = [r for _, table, rows in writer.operations if table == "metrics" for r in rows]
+    assert (sample["metric"], sample["value"]) == ("otel.token.usage", 5000.0)
 
 
 def test_post_v1_logs(otel_server):
-    base, srv, db = otel_server
+    base, srv, writer = otel_server
     body = _make_otlp_logs("claude_code.api_request", attrs={"model": "opus"})
     status, resp = _post_json(f"{base}/v1/logs", body)
     assert status == 200
     assert resp["ok"] is True
 
-    events = db.query_events(since=0, until=time.time() + 3600, kind="otel:claude_code.api_request")
-    assert len(events) == 1
+    event, = [r for _, table, rows in writer.operations if table == "events" for r in rows]
+    assert (event["kind"], event["tool"]) == ("otel:claude_code.api_request", "claude-code")
 
 
 def test_tool_invocations_persisted_via_logs_endpoint(otel_server):
@@ -578,13 +533,16 @@ def test_tool_invocations_persisted_via_logs_endpoint(otel_server):
     assert status == 200
     assert resp["ok"] is True
 
-    rows = db.query_tool_invocations(session_id="otel-persist-sess")
+    operations = srv.store.history_store.writer.operations
+    rows = [r for _, table, batch in operations if table == "tool_invocations" for r in batch]
     assert len(rows) == 1
     row = rows[0]
     assert row["tool_name"] == "Read"
     assert row["source"] == "otel"
     assert row["source_event_id"] == "otel-persist-sess:42"
-    assert "/tmp/x.py" in (row["input"] or "")
+    text, = [r for _, table, batch in operations if table == "tool_invocations_text" for r in batch]
+    assert text["dedup_key"] == row["dedup_key"]
+    assert "/tmp/x.py" in text["input"]
 
 
 def test_otel_status_endpoint(otel_server):
@@ -600,8 +558,10 @@ def test_otel_status_endpoint(otel_server):
     assert data["active"] is True
 
 
-def test_api_calls_endpoint(otel_server):
-    base, srv, db = otel_server
+def test_api_calls_endpoint(otel_server, kusto_store):
+    from kusto_replay import NOW
+
+    base, srv, writer = otel_server
 
     # Push API request events
     for i in range(3):
@@ -610,7 +570,7 @@ def test_api_calls_endpoint(otel_server):
             _make_otlp_logs(
                 "claude_code.api_request",
                 attrs={"model": "claude-opus-4-6", "duration_ms": str(200 + i * 50)},
-                ts_nano=str(int((time.time() - i) * 1e9)),
+                ts_nano=str(int((NOW - i) * 1e9)),
             ),
         )
     # Push one error
@@ -619,11 +579,15 @@ def test_api_calls_endpoint(otel_server):
         _make_otlp_logs(
             "claude_code.api_error",
             attrs={"error": "rate_limit", "model": "opus"},
-            ts_nano=str(int(time.time() * 1e9)),
+            ts_nano=str(int(NOW * 1e9)),
         ),
     )
 
-    data = _get_json(f"{base}/api/api-calls?since=0")
+    for _, table, rows in writer.operations:
+        if table in {"events", "events_text"}:
+            for row in rows:
+                kusto_store.insert(table, **row)
+    data = _get_json(f"{base}/api/api-calls?since={NOW - 60}&until={NOW + 1}")
     assert data["summary"]["total_calls"] == 3
     assert data["summary"]["total_errors"] == 1
     assert "claude-opus-4-6" in data["summary"]["by_model"]
@@ -631,8 +595,10 @@ def test_api_calls_endpoint(otel_server):
 
 
 def test_api_calls_empty(otel_server):
+    from kusto_replay import NOW
+
     base, srv, db = otel_server
-    data = _get_json(f"{base}/api/api-calls")
+    data = _get_json(f"{base}/api/api-calls?since={NOW - 60}&until={NOW + 1}")
     assert data["calls"] == []
     assert data["summary"]["total_calls"] == 0
 
@@ -832,7 +798,7 @@ def test_parse_traces_span_event_zero_time_follows_span_start():
 
 def test_extract_requests_list_finish_reason():
     """finish_reason from Copilot OTel is a list ["stop"] — must not crash flush."""
-    from aictl.storage import EventRow
+    from aictl.records import EventRow
 
     r = OtelReceiver()
     events = [
@@ -860,7 +826,7 @@ def test_extract_requests_list_finish_reason():
 
 def test_extract_requests_scalar_finish_reason():
     """Claude Code sends finish_reason as a plain string — must also work."""
-    from aictl.storage import EventRow
+    from aictl.records import EventRow
 
     r = OtelReceiver()
     events = [
@@ -888,7 +854,7 @@ def test_extract_requests_scalar_finish_reason():
 def test_hook_handler_returns_200(otel_server):
     """Hook POST must return 200 and store the event (Bug #1 regression:
     NameError on event_record crashed the handler after DB write)."""
-    base, srv, db = otel_server
+    base, srv, writer = otel_server
     hook_payload = {
         "event": "UserPromptSubmit",
         "session_id": "hook-test-sess",
@@ -901,14 +867,13 @@ def test_hook_handler_returns_200(otel_server):
     assert resp["ok"] is True
 
     # Verify event is stored
-    events = db.query_events(since=0, until=time.time() + 3600, kind="hook:UserPromptSubmit")
-    assert len(events) >= 1
-    assert events[0].session_id == "hook-test-sess"
+    event, = [r for _, table, rows in writer.operations if table == "events" for r in rows]
+    assert event["session_id"] == "hook-test-sess"
 
 
 def test_hook_receiver_derives_tool_from_aictl_source(otel_server):
     """Non-Claude hooks must not be attributed to claude-code by fallback."""
-    base, _srv, db = otel_server
+    base, _srv, writer = otel_server
     status, resp = _post_json(
         f"{base}/api/hooks",
         {
@@ -922,9 +887,9 @@ def test_hook_receiver_derives_tool_from_aictl_source(otel_server):
     assert status == 200
     assert resp["ok"] is True
 
-    events = db.query_events(since=0, until=time.time() + 3600, session_id="vscode-hook-sess")
-    assert len(events) == 1
-    assert events[0].tool == "copilot-vscode"
+    event, = [r for _, table, rows in writer.operations if table == "events" for r in rows]
+    assert event["session_id"] == "vscode-hook-sess"
+    assert event["tool"] == "copilot-vscode"
 
 
 def test_extract_value_histogram_uses_mean():

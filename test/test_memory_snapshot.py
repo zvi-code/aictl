@@ -12,10 +12,9 @@ from aictl import memory_snapshot
 from aictl.memory_snapshot import (
     build_session_memory_diff,
     diff_snapshots,
-    record_snapshot,
+    read_snapshot,
     snapshot_claude_memory,
 )
-from aictl.storage import HistoryDB
 
 
 @pytest.fixture()
@@ -110,38 +109,24 @@ def test_diff_caps_unified_diff(fake_claude_home):
     assert "truncated" in a["unified_diff"]
 
 
-def test_migration_applies_on_fresh_db(tmp_path: Path):
-    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    conn = db._conn()
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_snapshots'"
-    )
-    assert cur.fetchone() is not None
-    # check columns
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_snapshots)")}
-    assert cols == {"session_id", "phase", "path", "sha", "content", "ts"}
-
-
-def test_record_snapshot_and_build_diff(tmp_path: Path, fake_claude_home):
+def test_record_snapshot_and_build_diff(fake_claude_home):
     claude_root, project_hash = fake_claude_home
     mem_dir = claude_root / "projects" / project_hash / "memory"
 
-    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    conn = db._conn()
-    n_start = record_snapshot(conn, "sess-1", project_hash, "start", ts=1000.0)
-    assert n_start == 3  # a.md, b.md, CLAUDE.md
+    start = read_snapshot(project_hash)
+    assert len(start[0]) == 3  # a.md, b.md, CLAUDE.md
 
     # No end snapshot yet — diff must return files=[] gracefully
-    payload = build_session_memory_diff(conn, "sess-1")
+    payload = build_session_memory_diff(start, None)
     assert payload == {"files": [], "summary": {"added": 0, "modified": 0, "removed": 0}}
 
     # Now mutate + record end
     (mem_dir / "a.md").write_text("alpha one\nalpha CHANGED\n")
     (mem_dir / "b.md").unlink()
     (mem_dir / "c.md").write_text("charlie\n")
-    record_snapshot(conn, "sess-1", project_hash, "end", ts=2000.0)
+    end = read_snapshot(project_hash)
 
-    payload = build_session_memory_diff(conn, "sess-1")
+    payload = build_session_memory_diff(start, end)
     kinds = {f["path"]: f["change"] for f in payload["files"]}
     assert kinds["a.md"] == "modified"
     assert kinds["b.md"] == "removed"
@@ -149,10 +134,8 @@ def test_record_snapshot_and_build_diff(tmp_path: Path, fake_claude_home):
     assert payload["summary"] == {"added": 1, "modified": 1, "removed": 1}
 
 
-def test_unknown_session_diff_is_empty(tmp_path: Path):
+def test_unknown_session_diff_is_empty():
     """Unknown session → empty files list + zero summary."""
-    db = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    conn = db._conn()
-    payload = build_session_memory_diff(conn, "does-not-exist")
+    payload = build_session_memory_diff(None, None)
     assert payload["files"] == []
     assert payload["summary"] == {"added": 0, "modified": 0, "removed": 0}

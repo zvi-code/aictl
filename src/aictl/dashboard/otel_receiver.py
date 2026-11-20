@@ -19,10 +19,27 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..data.token_usage import TokenUsage
-from ..storage import EventRow, RequestRow, ToolInvocationRow
-from ..storage import Sample as _Sample
+from ..records import EventRow, RequestRow, ToolInvocationRow
+from ..records import Sample as _Sample
+from ..tool_calls import call_key
 
 logger = logging.getLogger(__name__)
+
+
+def _wire_key(*parts: Any) -> str:
+    return call_key(json.dumps(parts, sort_keys=True, default=str))
+
+
+@dataclass(slots=True)
+class _OtelEvent(EventRow):
+    source_event_id: str = ""
+    embedded_ts: float = 0.0
+
+
+@dataclass(slots=True)
+class _OtelSample(_Sample):
+    source_key: str = ""
+    gauge: bool = False
 
 
 # ── OtelReceiver ────────────────────────────────────────────────────
@@ -180,45 +197,44 @@ class OtelReceiver:
         # session themselves (Copilot CLI's execute_tool spans): a span of the same
         # trace that does (gen_ai.conversation.id) names it for the whole trace.
         self._trace_sessions: dict[str, str] = {}
-        # Traces stored with no session id because no span of them named one yet.
-        self._orphan_traces: set[str] = set()
-        # Traces of _orphan_traces whose session a later export named: (trace id, session id).
-        self._late_traces: list[tuple[str, str]] = []
+        self._trace_lock = threading.Lock()
+        self._trace_links: dict[str, str] = {}
 
     # ── Session of a trace ────────────────────────────────────
 
     def _note_trace(self, trace_id: str, session_id: str) -> None:
-        if not trace_id or not session_id or self._trace_sessions.get(trace_id) == session_id:
+        if not trace_id or not session_id:
             return
-        if len(self._trace_sessions) >= _MAX_TRACES and trace_id not in self._trace_sessions:
-            self._trace_sessions.clear()  # pathological; start over
-        self._trace_sessions[trace_id] = session_id
-        if trace_id in self._orphan_traces:
-            self._orphan_traces.discard(trace_id)
-            self._late_traces.append((trace_id, session_id))
+        with self._trace_lock:
+            if self._trace_sessions.get(trace_id) == session_id:
+                return
+            if len(self._trace_sessions) >= _MAX_TRACES and trace_id not in self._trace_sessions:
+                self._trace_sessions.clear()
+            self._trace_sessions[trace_id] = session_id
+            self._trace_links[trace_id] = session_id
 
     def _session_of_trace(self, attrs: dict, trace_id: str) -> str:
-        """The session id of a span or log record: its own, else its trace's. Notes an orphan."""
+        """The session ID of a span or log record: its own, else its trace's."""
         sid = str(attrs.get("session_id") or "")
         if sid:
             return sid
         sid = self._trace_sessions.get(trace_id, "") if trace_id else ""
         if sid:
             attrs["session_id"] = sid
-        elif trace_id:
-            if len(self._orphan_traces) >= _MAX_TRACES:
-                self._orphan_traces.clear()
-            self._orphan_traces.add(trace_id)
         return sid
 
-    def take_late_traces(self) -> list[tuple[str, str]]:
-        """(trace id, session id) of traces stored earlier without a session, now known. Clears the list."""
-        late, self._late_traces = self._late_traces, []
-        return late
+    def take_trace_links(self) -> list[tuple[str, str]]:
+        """Take session links named by these exports, even if no orphan was seen."""
+        with self._trace_lock:
+            links, self._trace_links = self._trace_links, {}
+        return list(links.items())
 
-    def restore_late_traces(self, traces: list[tuple[str, str]]) -> None:
+    def restore_trace_links(self, traces: list[tuple[str, str]]) -> None:
         """A failed handoff must not consume the only copy of identity links."""
-        self._late_traces[:0] = traces
+        with self._trace_lock:
+            for trace, session in traces:
+                if self._trace_sessions.get(trace) == session:
+                    self._trace_links.setdefault(trace, session)
 
     # ── Metrics ───────────────────────────────────────────────
 
@@ -406,11 +422,13 @@ class OtelReceiver:
                                 key, value, start_ns, point_ns, tags, staged=staged
                             )
                         samples.append(
-                            _Sample(
+                            _OtelSample(
                                 ts=ts,
                                 metric=mapped,
                                 value=value,
                                 tags=tags,
+                                source_key=_wire_key(name, resource_attrs, sm.get("scope"), dp),
+                                gauge="gauge" in metric,
                             )
                         )
         return samples, staged
@@ -435,11 +453,11 @@ class OtelReceiver:
             for sl in _iter_otel_dicts(rl, "scopeLogs"):
                 for record in _iter_otel_dicts(sl, "logRecords"):
                     # timeUnixNano 0 means unknown; the observed time is the next best.
-                    ts = (
+                    source_ts = (
                         _nano_to_epoch(record.get("timeUnixNano", "0"))
                         or _nano_to_epoch(record.get("observedTimeUnixNano", "0"))
-                        or received_at
                     )
+                    ts = source_ts or received_at
                     attrs = _parse_otel_attributes(
                         record.get("attributes", []),
                         self.stats,
@@ -479,13 +497,15 @@ class OtelReceiver:
                         self.stats.api_errors_total += 1
 
                     events.append(
-                        EventRow(
+                        _OtelEvent(
                             ts=ts,
                             tool=tool,
                             kind=kind,
                             detail=attrs,
                             session_id=attrs.get("session_id", ""),
                             pid=int(attrs.get("pid", 0) or 0),
+                            source_event_id=_wire_key("log", resource_attrs, sl.get("scope"), record),
+                            embedded_ts=source_ts,
                         )
                     )
 
@@ -504,12 +524,11 @@ class OtelReceiver:
                 continue
             d = e.detail if isinstance(e.detail, dict) else {}
             usage = TokenUsage.from_dict(d)
-            # e.ts is derived from OTel timeUnixNano — it IS the embedded
-            # source timestamp, so pass it as source_ts for correct dedup.
+            source_ts = getattr(e, "embedded_ts", e.ts)
             requests.append(
                 RequestRow(
                     ts=e.ts,
-                    source_ts=e.ts,  # OTel always has an embedded timestamp
+                    source_ts=source_ts,
                     session_id=e.session_id or d.get("session_id", ""),
                     pid=e.pid or int(d.get("pid", 0) or 0),
                     tool=e.tool,
@@ -524,6 +543,7 @@ class OtelReceiver:
                     is_error=1 if d.get("error") or d.get("is_error") else 0,
                     source="otel",
                     prompt_id=d.get("prompt.id", ""),
+                    dedup_key=getattr(e, "source_event_id", "") if not source_ts else "",
                 )
             )
         return requests
@@ -633,7 +653,10 @@ class OtelReceiver:
                     end_ts = _nano_to_epoch(span.get("endTimeUnixNano", "0"))
                     duration_ms = (end_ts - start_ts) * 1000 if end_ts > start_ts > 0 else 0
                     # Rows are stored at the span start; an unknown start falls back to the end, then receipt.
-                    start_ts = start_ts or end_ts or received_at
+                    source_ts = start_ts or end_ts
+                    start_ts = source_ts or received_at
+                    span_key = _wire_key("span", trace_id, span_id, source_ts) if trace_id and span_id else (
+                        _wire_key("span", resource_attrs, ss.get("scope"), span))
 
                     attrs["tool"] = tool
                     attrs["span.name"] = name
@@ -703,19 +726,22 @@ class OtelReceiver:
                     otel_sid = attrs.get("session_id", "")
                     otel_pid = int(attrs.get("pid", 0) or 0)
                     events.append(
-                        EventRow(
+                        _OtelEvent(
                             ts=start_ts,
                             tool=tool,
                             kind=kind,
                             detail=attrs,
                             session_id=otel_sid,
                             pid=otel_pid,
+                            source_event_id=span_key,
+                            embedded_ts=source_ts,
                         )
                     )
 
                     # Span-level events (e.g. exceptions)
-                    for span_event in span.get("events", []):
-                        ev_ts = _nano_to_epoch(span_event.get("timeUnixNano", "0")) or start_ts
+                    for index, span_event in enumerate(span.get("events", [])):
+                        event_ts = _nano_to_epoch(span_event.get("timeUnixNano", "0")) or source_ts
+                        ev_ts = event_ts or start_ts
                         ev_attrs = _parse_otel_attributes(span_event.get("attributes", []), self.stats)
                         ev_attrs["tool"] = tool
                         ev_attrs["parent_span"] = name
@@ -727,13 +753,15 @@ class OtelReceiver:
                             ev_attrs["session_id"] = otel_sid
                         ev_name = span_event.get("name", "span_event")
                         events.append(
-                            EventRow(
+                            _OtelEvent(
                                 ts=ev_ts,
                                 tool=tool,
                                 kind=f"otel:{ev_name}",
                                 detail=ev_attrs,
                                 session_id=otel_sid,
                                 pid=otel_pid,
+                                source_event_id=call_key(span_key, str(index)),
+                                embedded_ts=event_ts,
                             )
                         )
 

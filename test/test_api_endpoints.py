@@ -1,253 +1,31 @@
 """Tests for dashboard API endpoints.
 
 Exercises the HTTP layer by spinning up a real _DashboardHTTPServer on a
-random port and making requests with urllib.  Each test class gets a
-fresh in-memory HistoryDB pre-populated with realistic data so the
-endpoints return meaningful results rather than empty arrays.
+random port and making requests with urllib. Tests that read history use
+replayed Kusto views.
 """
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 
 import pytest
 
 from aictl.dashboard.models import DashboardSnapshot
 from aictl.orchestrator import AllowedPaths, SnapshotStore
-from aictl.storage import (
-    EventRow,
-    FileWriteRow,
-    HistoryDB,
-    Sample,
-    TelemetryRow,
-)
+from aictl.records import EventRow
+from aictl.stores import Store
+from aictl.stores.kusto.reader import KustoReader, _query
+from aictl.stores.kusto.recorded import RecordedKustoClient
 
 # ── Fixtures ──────────────────────────────────────────────────────
-
-
-@pytest.fixture()
-def populated_db(tmp_path):
-    """File-based DB pre-populated with samples, events, telemetry, and files.
-
-    Uses a real file so the server thread can access the same data
-    (in-memory DBs are per-thread with SQLite).
-    """
-    db = HistoryDB(db_path=str(tmp_path / "test.db"), flush_interval=0)
-    now = time.time()
-
-    # Samples
-    db.append_samples(
-        [
-            Sample(ts=now - 60, metric="cpu.core.0", value=45.2),
-            Sample(ts=now - 30, metric="cpu.core.0", value=52.1),
-            Sample(ts=now, metric="cpu.core.0", value=48.7),
-            Sample(ts=now - 60, metric="cpu.core.1", value=12.8),
-            Sample(ts=now, metric="mem.total", value=8192, tags={"tool": "claude-code"}),
-        ]
-    )
-
-    # Events (including session_end for historical sessions)
-    db.append_event(
-        EventRow(
-            ts=now - 300,
-            tool="claude-code",
-            kind="session_start",
-            detail={"session_id": "sess-001"},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 100,
-            tool="claude-code",
-            kind="session_end",
-            detail={"session_id": "sess-001", "duration_s": 200},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 50,
-            tool="copilot-cli",
-            kind="session_start",
-            detail={"session_id": "sess-002"},
-        )
-    )
-
-    # Telemetry
-    db.append_telemetry(
-        TelemetryRow(
-            ts=now - 60,
-            tool="claude-code",
-            source="stats-cache",
-            confidence=0.95,
-            input_tokens=1000,
-            output_tokens=5000,
-            cache_read_tokens=500,
-            total_sessions=3,
-            total_messages=42,
-            model="claude-opus-4-6",
-            by_model={"claude-opus-4-6": {"input": 1000, "output": 5000}},
-        )
-    )
-    db.append_telemetry(
-        TelemetryRow(
-            ts=now,
-            tool="copilot-cli",
-            source="direct",
-            confidence=0.8,
-            input_tokens=200,
-            output_tokens=800,
-        )
-    )
-
-    # Files
-    db.upsert_file(path="/project/README.md", tool="claude-code", category="instructions", content="# Hello\nWorld")
-    db.upsert_file(path="/project/.env", tool="copilot-cli", category="config", content="KEY=val")
-    db.record_file_write(
-        FileWriteRow(
-            ts=now - 20,
-            session_id="sess-001",
-            tool="claude-code",
-            tool_name="Write",
-            operation="write",
-            path="/project/new.py",
-            project_path="/project",
-            source_event_kind="hook:PostToolUse",
-            source_event_id="write-1",
-        )
-    )
-    db.record_data_quality(
-        "ingester:copilot-session-store",
-        "schema_unknown",
-        kind="ingester",
-        severity="warning",
-        message="schema drift",
-        source="/tmp/session-store.db",
-        ts=now - 10,
-    )
-
-    # Session rows
-    from aictl.storage import SessionRow
-
-    db.upsert_session(
-        SessionRow(
-            session_id="sess-001",
-            tool="claude-code",
-            project_path="/project",
-            started_at=now - 300,
-            ended_at=now - 100,
-            input_tokens=1000,
-            output_tokens=500,
-            files_modified=7,
-        )
-    )
-    db.upsert_session(
-        SessionRow(
-            session_id="sess-table-only",
-            tool="claude-code",
-            project_path="/project",
-            started_at=now - 90,
-            ended_at=now - 30,
-            input_tokens=321,
-            output_tokens=123,
-            files_modified=2,
-            source="hook",
-        )
-    )
-    db.upsert_session(
-        SessionRow(
-            session_id="cursor:historic-chat",
-            tool="cursor",
-            project_path="/project",
-            started_at=now - 200,
-            source="cursor-ingester",
-        )
-    )
-
-    # Session with rich detail: per-model requests, tool invocations,
-    # process genealogy, and cache tokens (for cost-by-model / cache-ratio /
-    # process / tool-call endpoints).
-    from aictl.storage import RequestRow, ToolInvocationRow
-
-    db.upsert_session(
-        SessionRow(
-            session_id="sess-detail",
-            tool="claude-code",
-            project_path="/project",
-            started_at=now - 400,
-            ended_at=now - 50,
-            input_tokens=1000,
-            output_tokens=600,
-            cache_read_tokens=3000,
-            cache_creation_tokens=200,
-            cost_usd=0.42,
-            source="hook",
-        )
-    )
-    db.append_request(
-        RequestRow(
-            ts=now - 390,
-            session_id="sess-detail",
-            tool="claude-code",
-            model="claude-sonnet-4",
-            input_tokens=700,
-            output_tokens=400,
-            cache_read_tokens=2000,
-            cost_usd=0.30,
-        )
-    )
-    db.append_request(
-        RequestRow(
-            ts=now - 380,
-            session_id="sess-detail",
-            tool="claude-code",
-            model="claude-sonnet-4",
-            input_tokens=200,
-            output_tokens=150,
-            cache_read_tokens=1000,
-            cost_usd=0.08,
-        )
-    )
-    db.append_request(
-        RequestRow(
-            ts=now - 370,
-            session_id="sess-detail",
-            tool="claude-code",
-            model="claude-haiku",
-            input_tokens=100,
-            output_tokens=50,
-            cost_usd=0.04,
-        )
-    )
-    db.append_tool_invocation(
-        ToolInvocationRow(
-            ts=now - 385,
-            session_id="sess-detail",
-            tool="claude-code",
-            tool_name="Read",
-            duration_ms=12.5,
-        )
-    )
-    db.append_tool_invocation(
-        ToolInvocationRow(
-            ts=now - 375,
-            session_id="sess-detail",
-            tool="claude-code",
-            tool_name="Bash",
-            is_error=1,
-            duration_ms=88.0,
-            result_summary="exit 1",
-        )
-    )
-    db.link_session_process("sess-detail", pid=4242, tool="claude-code", role="lead")
-    db.link_session_process("sess-detail", pid=4243, tool="claude-code", role="subagent")
-
-    yield db
-    db.close()
 
 
 def _make_snapshot(sessions=None):
@@ -261,16 +39,8 @@ def _make_snapshot(sessions=None):
 
 
 @pytest.fixture()
-def server(populated_db):
-    """Start a real HTTP server on a random port, yield its base URL."""
-    from pathlib import Path
-
-    from aictl.dashboard.web_server import (
-        _DashboardHandler,
-        _DashboardHTTPServer,
-    )
-
-    store = SnapshotStore(db=populated_db)
+def server(tmp_path):
+    store = SnapshotStore()
     # Give the store a snapshot so /api/sessions doesn't 503
     store.update(
         _make_snapshot(
@@ -289,19 +59,73 @@ def server(populated_db):
         )
     )
 
-    allowed = AllowedPaths()
+    yield from _serve_test_store(store, tmp_path / "project")
+
+
+@pytest.fixture
+def metrics_server(kusto_store, tmp_path, monkeypatch):
+    from aictl.dashboard import hooks_status
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(hooks_status, "time", SimpleNamespace(time=lambda: 100_000.0))
+    for ts, metric, value, tags in (
+        (99_940, "cpu.core.0", 45.2, {}), (99_970, "cpu.core.0", 52.1, {}),
+        (100_000, "cpu.core.0", 48.7, {}), (99_940, "cpu.core.1", 12.8, {}),
+        (100_000, "mem.total", 8192, {"tool": "claude-code"}),
+    ):
+        kusto_store.insert("metrics", ts=ts, metric=metric, value=value, tags=json.dumps(tags))
+    kusto_store.insert("datapoint_catalog", key="runtime.cpu", tab="machine", source_type="raw")
+    kusto_store.insert("system_snapshots", ts=100_000, cpu_percent=42)
+    kusto_store.insert("process_snapshots", ts=100_000, pid=1, tool="claude-code", cpu_percent=8)
+    yield from _serve_test_store(SnapshotStore(history_store=kusto_store.history_store), tmp_path / "project")
+
+
+def _serve_test_store(store, project_path):
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+
     srv = _DashboardHTTPServer(
         ("127.0.0.1", 0),
         _DashboardHandler,
         store,
-        allowed,
-        Path("/tmp/test-project"),
+        AllowedPaths(),
+        project_path,
     )
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-    yield f"http://127.0.0.1:{port}"
-    srv.shutdown()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@pytest.fixture()
+def recorded_server(tmp_path):
+    """Run the HTTP handler with only a Kusto reader. Record parameters as well as payloads."""
+    seen = []
+
+    class Client(RecordedKustoClient):
+        def execute_query(self, database, text, properties):
+            seen.append((text, properties))
+            return super().execute_query(database, text, properties)
+
+    def serve(queries):
+        tape = tmp_path / "api.jsonl.gz"
+        with gzip.open(tape, "wt", encoding="utf-8") as file:
+            for view, columns, rows in (("history.system", {"ts": "real"}, []),
+                                         ("history.tools", {"ts": "real"}, []), *queries):
+                record = {
+                    "kind": "query", "kql": _query(view), "outcome": "ok",
+                    "response": [{"columns": [{"name": k, "type": t} for k, t in columns.items()], "rows": rows}],
+                }
+                file.write(json.dumps(record) + "\n")
+        store = SnapshotStore(history_store=Store(reader=KustoReader(Client(tape), "aictl_perf_test")))
+        seen.clear()
+        store.update(_make_snapshot())
+        yield from _serve_test_store(store, tmp_path / "project")
+
+    return contextmanager(serve), seen
 
 
 def _get_json(url):
@@ -354,7 +178,7 @@ def _post_json(url, payload):
 
 
 @pytest.fixture()
-def config_server(populated_db, tmp_path):
+def config_server(tmp_path):
     from aictl.dashboard.web_server import (
         _DashboardHandler,
         _DashboardHTTPServer,
@@ -362,7 +186,7 @@ def config_server(populated_db, tmp_path):
 
     root = tmp_path / "project"
     root.mkdir()
-    store = SnapshotStore(db=populated_db)
+    store = SnapshotStore()
     store.update(_make_snapshot())
     srv = _DashboardHTTPServer(
         ("127.0.0.1", 0),
@@ -382,7 +206,8 @@ def config_server(populated_db, tmp_path):
 
 
 class TestSamplesAPI:
-    def test_list_metrics(self, server):
+    def test_list_metrics(self, metrics_server):
+        server = metrics_server
         data = _get_json(f"{server}/api/samples?list=1")
         assert isinstance(data, list)
         assert len(data) >= 3  # cpu.core.0, cpu.core.1, mem.total
@@ -395,7 +220,8 @@ class TestSamplesAPI:
         assert "latest_ts" in core0
         assert "last_value" in core0
 
-    def test_list_metrics_with_prefix(self, server):
+    def test_list_metrics_with_prefix(self, metrics_server):
+        server = metrics_server
         data = _get_json(f"{server}/api/samples?list=1&prefix=cpu.")
         names = [m["metric"] for m in data]
         assert "cpu.core.0" in names
@@ -403,7 +229,8 @@ class TestSamplesAPI:
 
 
 class TestObservabilitySubstrateAPI:
-    def test_hooks_status_endpoint_returns_counts(self, server):
+    def test_hooks_status_endpoint_returns_counts(self, metrics_server):
+        server = metrics_server
         data = _get_json(f"{server}/api/hooks-status")
         assert "tools" in data
         assert "counts_by_kind" in data
@@ -421,8 +248,8 @@ class TestObservabilitySubstrateAPI:
         assert updated["permissions"]["deny"] == ["Bash(rm -rf *)"]
         assert json.loads((root / ".claude" / "settings.json").read_text())["permissions"]["allow"] == ["Read(*)"]
 
-    def test_series(self, server):
-        since = int(time.time()) - 3600
+    def test_series(self, metrics_server):
+        server, since = metrics_server, 96_400
         data = _get_json(f"{server}/api/samples?series=cpu.core.0&since={since}")
         assert "ts" in data
         assert "value" in data
@@ -431,8 +258,8 @@ class TestObservabilitySubstrateAPI:
         # Values should match what we inserted
         assert data["value"][-1] == pytest.approx(48.7)
 
-    def test_query_by_metric(self, server):
-        since = int(time.time()) - 3600
+    def test_query_by_metric(self, metrics_server):
+        server, since = metrics_server, 96_400
         data = _get_json(f"{server}/api/samples?metric=mem.total&since={since}")
         assert isinstance(data, list)
         assert len(data) == 1
@@ -440,16 +267,26 @@ class TestObservabilitySubstrateAPI:
         assert data[0]["value"] == 8192
         assert data[0]["tags"]["tool"] == "claude-code"
 
-    def test_query_by_prefix(self, server):
-        since = int(time.time()) - 3600
+    def test_query_by_prefix(self, metrics_server):
+        server, since = metrics_server, 96_400
         data = _get_json(f"{server}/api/samples?prefix=cpu.core&since={since}")
         assert len(data) == 4  # 3 for core.0 + 1 for core.1
 
-    def test_query_with_tag_filter(self, server):
-        since = int(time.time()) - 3600
+    def test_query_with_tag_filter(self, metrics_server):
+        server, since = metrics_server, 96_400
         data = _get_json(f"{server}/api/samples?since={since}&tag.tool=claude-code")
         assert len(data) >= 1
         assert all(s["tags"]["tool"] == "claude-code" for s in data)
+
+    def test_history_catalog_and_self_status(self, metrics_server):
+        data = _get_json(f"{metrics_server}/api/history?since=96400&until=100000&tool=claude-code")
+        assert data["cpu"] == [42]
+        assert data["by_tool"]["claude-code"]["cpu"] == [8]
+        rows = _get_json(f"{metrics_server}/api/datapoints?tab=machine")
+        assert [row["key"] for row in rows] == ["runtime.cpu"]
+        status = _get_json(f"{metrics_server}/api/self-status")
+        assert status["db"]["samples_count"] == 5
+        assert status["store_health"]["reader"]["status"] == "ready"
 
     def test_empty_db_returns_empty(self):
         """Samples endpoint with no DB returns []."""
@@ -461,7 +298,7 @@ class TestObservabilitySubstrateAPI:
         )
 
         # SnapshotStore with no DB
-        store = SnapshotStore(db=None)
+        store = SnapshotStore()
         allowed = AllowedPaths()
         srv = _DashboardHTTPServer(
             ("127.0.0.1", 0),
@@ -484,8 +321,18 @@ class TestObservabilitySubstrateAPI:
 
 
 class TestSessionDetailAPI:
-    def test_session_processes_genealogy(self, server):
-        data = _get_json(f"{server}/api/session-processes?session_id=sess-detail")
+    def test_session_processes_genealogy(self, recorded_server):
+        serve, seen = recorded_server
+        columns = dict(row_type="string", role="string", count="long", pid="long", tool="string", joined_at="real")
+        rows = [
+            ["count", "lead", 1, None, "", None],
+            ["count", "subagent", 1, None, "", None],
+            ["process", "lead", None, 4242, "claude-code", 100.0],
+            ["process", "subagent", None, 4243, "claude-code", 110.0],
+        ]
+        with serve([("sessions.processes", columns, rows)]) as server:
+            data = _get_json(f"{server}/api/session-processes?session_id=sess-detail")
+        assert seen[0][1].get_parameter("requested_session", None) == "sess-detail"
         assert data["session_id"] == "sess-detail"
         assert data["total"] == 2
         assert data["by_role"] == {"lead": 1, "subagent": 1}
@@ -569,11 +416,13 @@ class TestSessionKillAPI:
         assert status == 400
         assert "confirm" in body["error"].lower()
 
-    def test_kill_unknown_session_404(self, server):
-        status, body = _post_json(
-            f"{server}/api/session-kill",
-            {"session_id": "nope", "confirm": True},
-        )
+    def test_kill_unknown_session_404(self, recorded_server):
+        serve, _seen = recorded_server
+        with serve([]) as server:
+            status, body = _post_json(
+                f"{server}/api/session-kill",
+                {"session_id": "nope", "confirm": True},
+            )
         assert status == 404
 
     def test_kill_rejects_bad_signal(self, server):
@@ -669,7 +518,7 @@ class TestContextTomlAllowlist:
         # Allowlist should be empty (no tools, no memory, no readable root).
         assert not allowed.is_allowed(str(tmp_path / "anything"))
 
-    def test_api_file_serves_context_toml_after_update(self, populated_db, tmp_path):
+    def test_api_file_serves_context_toml_after_update(self, tmp_path):
         """End-to-end: GET /api/file?path=<root>/.context.toml returns 200
         with the file body. Prior to the fix this returned 403 'Path not in
         discovered resource set' — see new-ui/captured/SHAPES.md finding #3."""
@@ -690,7 +539,7 @@ class TestContextTomlAllowlist:
             tools=[],
             sessions=[],
         )
-        store = SnapshotStore(db=populated_db)
+        store = SnapshotStore()
         store.update(snap)
         allowed = AllowedPaths()
         allowed.update(snap)
@@ -722,27 +571,57 @@ class TestContextTomlAllowlist:
 
 @pytest.fixture()
 def hook_server(tmp_path):
-    """Fresh server + DB pair so tests can inspect session rows after hooks."""
-    from aictl.dashboard.web_server import (
-        _DashboardHandler,
-        _DashboardHTTPServer,
-    )
+    yield from _hook_writer_server(tmp_path, keep_text=True)
 
-    db = HistoryDB(db_path=str(tmp_path / "hooks.db"), flush_interval=0)
-    store = SnapshotStore(db=db)
+
+def _hook_writer_server(tmp_path, *, keep_text):
+    from aictl.stores import Store
+    from aictl.stores.testing import MemoryWriter
+
+    writer = MemoryWriter()
+    store = SnapshotStore(history_store=Store(writer=writer), keeps_text=lambda: keep_text)
     store.update(_make_snapshot())
-    srv = _DashboardHTTPServer(
-        ("127.0.0.1", 0),
-        _DashboardHandler,
-        store,
-        AllowedPaths(),
-        tmp_path,
-    )
-    port = srv.server_address[1]
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    yield f"http://127.0.0.1:{port}", db
-    srv.shutdown()
+    writer.operations.clear()
+    for url in _serve_test_store(store, tmp_path):
+        yield url, writer
+
+
+def _hook_rows(writer, family):
+    return [row for _, table, rows in writer.operations if table == family for row in rows]
+
+
+def _hook_session(writer, sid):
+    return next((row for row in reversed(_hook_rows(writer, "sessions")) if row["session_id"] == sid), None)
+
+
+@pytest.fixture()
+def tool_hook_server(tmp_path):
+    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+    from aictl.stores import Store
+    from aictl.stores.testing import MemoryWriter
+
+    writer = MemoryWriter()
+    store = SnapshotStore(history_store=Store(writer=writer), keeps_text=lambda: True)
+    with _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path,
+                              start_ingesters_now=False) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}", writer
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def _written_tool_calls(writer):
+    calls = {}
+    text = {}
+    for _, table, rows in writer.operations:
+        if table == "tool_invocations":
+            calls.update({row["dedup_key"]: row for row in rows})
+        elif table == "tool_invocations_text":
+            text.update({row["dedup_key"]: row for row in rows})
+    return [row | text.get(key, {}) for key, row in calls.items()]
 
 
 class TestStopHookIsNotTerminal:
@@ -763,7 +642,7 @@ class TestStopHookIsNotTerminal:
         url, db = hook_server
         self._hook(url, "SessionStart")
         self._hook(url, "Stop", input_tokens=1200, output_tokens=300)
-        row = db.get_session(self.SID)
+        row = _hook_session(db, self.SID)
         assert row is not None
         assert row.get("ended_at") in (None, 0), "Stop must not stamp ended_at"
         assert int(row.get("input_tokens") or 0) == 1200
@@ -774,7 +653,7 @@ class TestStopHookIsNotTerminal:
         self._hook(url, "SessionStart")
         self._hook(url, "Stop")
         self._hook(url, "SessionEnd", input_tokens=1500)
-        row = db.get_session(self.SID)
+        row = _hook_session(db, self.SID)
         assert row is not None
         assert float(row.get("ended_at") or 0) > 0
 
@@ -783,9 +662,9 @@ class TestStopHookIsNotTerminal:
         url, db = hook_server
         self._hook(url, "SessionStart")
         self._hook(url, "SessionEnd")
-        assert float(db.get_session(self.SID).get("ended_at") or 0) > 0
+        assert float(_hook_session(db, self.SID).get("ended_at") or 0) > 0
         self._hook(url, "Stop", input_tokens=2000)
-        row = db.get_session(self.SID)
+        row = _hook_session(db, self.SID)
         assert row.get("ended_at") in (None, 0)
         assert int(row.get("input_tokens") or 0) == 2000
 
@@ -828,20 +707,20 @@ class TestToolInvocationHookDedup:
             tool_response="ok",
         )
 
-    def test_identical_repeats_persist_with_own_durations(self, hook_server):
-        url, db = hook_server
+    def test_identical_repeats_persist_with_own_durations(self, tool_hook_server):
+        url, writer = tool_hook_server
         now = time.time()
         self._pre_post(url, "toolu_01", now, now + 1.0)
         self._pre_post(url, "toolu_02", now + 10.0, now + 12.0)
 
-        rows = {r["source_event_id"]: r for r in db.query_tool_invocations(session_id=self.SID)}
+        rows = {r["source_event_id"]: r for r in _written_tool_calls(writer)}
         assert set(rows) == {"toolu_01", "toolu_02"}
         assert rows["toolu_01"]["duration_ms"] == pytest.approx(1000.0, abs=1.0)
         assert rows["toolu_02"]["duration_ms"] == pytest.approx(2000.0, abs=1.0)
         assert all(r["result_summary"] == "ok" for r in rows.values())
 
-    def test_same_tool_use_id_retried_stays_one_row(self, hook_server):
-        url, db = hook_server
+    def test_same_tool_use_id_retried_stays_one_row(self, tool_hook_server):
+        url, writer = tool_hook_server
         now = time.time()
         for _ in range(2):
             self._hook(
@@ -852,8 +731,7 @@ class TestToolInvocationHookDedup:
                 tool_name="Bash",
                 tool_input={"command": "git status"},
             )
-        rows = db.query_tool_invocations(session_id=self.SID)
-        assert len(rows) == 1
+        assert len([r for _, table, rows in writer.operations if table == "tool_invocations" for r in rows]) == 1
 
 
 # ── Hook ingest: one hook_calls row per hook call ─────────────────
@@ -861,29 +739,19 @@ class TestToolInvocationHookDedup:
 
 @pytest.fixture()
 def metadata_hook_server(tmp_path):
-    """The hook route on a store whose capture mode keeps no text."""
-    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-
-    db = HistoryDB(db_path=str(tmp_path / "meta.db"), flush_interval=0, capture="metadata")
-    store = SnapshotStore(db=db)
-    store.update(_make_snapshot())
-    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), tmp_path)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}", db
-    srv.shutdown()
+    yield from _hook_writer_server(tmp_path, keep_text=False)
 
 
-def _hook_calls(db) -> list[dict]:
-    cur = db._conn().execute("SELECT * FROM hook_calls ORDER BY id")
-    names = [d[0] for d in cur.description]
-    return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
+def _hook_calls(writer) -> list[dict]:
+    meta = {r["call_id"]: r for r in _hook_rows(writer, "hook_calls")}
+    text = {r["call_id"]: r for r in _hook_rows(writer, "hook_calls_text")}
+    return [dict(command="", output="") | row | text.get(key, {}) for key, row in meta.items()]
 
 
 class TestHookCallsTable:
     SID = "5c0ffee1-cccc-4abc-9def-1234567890ab"
 
-    def _v1(self, call_id="a" * 32, ts=1731182400.5, **payload):
+    def _v1(self, call_id="a" * 32, ts=None, **payload):
         """A body as the v1 wrapper sends it."""
         return {
             "session_id": self.SID,
@@ -899,7 +767,7 @@ class TestHookCallsTable:
             "aictl_hook": {
                 "v": 1,
                 "call_id": call_id,
-                "ts": ts,
+                "ts": time.time() - 60 if ts is None else ts,
                 "source": "root.claude-user",
                 "pid": 4242,
                 "ppid": 4241,
@@ -911,14 +779,15 @@ class TestHookCallsTable:
         }
 
     def test_a_post_stores_one_typed_row(self, hook_server):
-        url, db = hook_server
+        url, writer = hook_server
+        call_ts = time.time() - 60
         before = time.time()
-        assert _post_json(f"{url}/api/hooks", self._v1())[0] == 200
-        rows = _hook_calls(db)
-        assert len(rows) == 1
-        r = rows[0]
+        assert _post_json(f"{url}/api/hooks", self._v1(ts=call_ts))[0] == 200
+        [r] = _hook_rows(writer, "hook_calls")
+        [text] = _hook_rows(writer, "hook_calls_text")
         assert r["call_id"] == "a" * 32
-        assert r["ts"] == 1731182400.5  # the time of the call, not of receipt
+        assert r["ts"] == call_ts
+        assert (text["call_id"], text["project"], text["ts"]) == (r["call_id"], "/work/repo", call_ts)
         assert r["received_at"] >= before
         assert (r["format_version"], r["tool"], r["event"], r["hook_event_name"]) == (1, "claude-code", "PreToolUse", "PreToolUse")
         assert (r["source"], r["session_id"], r["agent_id"], r["project_path"]) == (
@@ -930,18 +799,19 @@ class TestHookCallsTable:
         assert (r["hook_pid"], r["hook_ppid"], r["tool_name"], r["tool_use_id"]) == (4242, 4241, "Bash", "toolu_77")
         assert (r["permission_mode"], r["payload_bytes"], r["truncated"], r["wrapped"]) == ("default", 321, 0, 0)
         assert r["exit_code"] is None
-        payload = json.loads(r["payload"])
+        payload = json.loads(text["payload"])
         assert "aictl_hook" not in payload and "event" not in payload
         assert payload["tool_input"] == {"command": "git status --short"}
         assert payload["hook_event_name"] == "PreToolUse"
         # The events row is still written as before.
-        kinds = [k for (k,) in db._conn().execute("SELECT kind FROM events WHERE session_id = ?", (self.SID,))]
+        kinds = [r["kind"] for r in _hook_rows(writer, "events") if r["session_id"] == self.SID]
         assert kinds == ["hook:PreToolUse"]
 
     def test_the_same_body_posted_twice_is_one_row(self, hook_server):
         url, db = hook_server
+        body = self._v1(call_id="b" * 32)
         for _ in range(2):
-            assert _post_json(f"{url}/api/hooks", self._v1(call_id="b" * 32))[0] == 200
+            assert _post_json(f"{url}/api/hooks", body)[0] == 200
         assert len(_hook_calls(db)) == 1
 
     def test_a_post_from_an_old_wrapper_gets_version_0_and_a_derived_id(self, hook_server):
@@ -972,7 +842,7 @@ class TestHookCallsTable:
 
     def test_a_wrapped_user_hook_stores_only_its_call(self, hook_server):
         """aictl's own hook on the same event reports the event: a wrapped call must not count it twice."""
-        url, db = hook_server
+        url, writer = hook_server
         body = self._v1(call_id="d" * 32)
         body["aictl_hook"]["wrapped"] = {
             "command": "~/bin/guard.sh --strict",
@@ -984,18 +854,17 @@ class TestHookCallsTable:
             "stdout": json.dumps({"hookSpecificOutput": {"permissionDecision": "deny"}}),
         }
         assert _post_json(f"{url}/api/hooks", body)[0] == 200
-        rows = _hook_calls(db)
-        assert len(rows) == 1
-        r = rows[0]
+        [r] = _hook_rows(writer, "hook_calls")
+        [text] = _hook_rows(writer, "hook_calls_text")
+        assert (r["call_id"], r["project"]) == (text["call_id"], text["project"]) == ("d" * 32, "/work/repo")
         assert (r["wrapped"], r["exit_code"], r["duration_ms"], r["overhead_ms"]) == (1, 2, 12.5, 3.25)
         assert (r["stdout_bytes"], r["stderr_bytes"], r["decision"]) == (61, 4, "deny")
-        assert r["command"] == "~/bin/guard.sh --strict"
+        assert text["command"] == "~/bin/guard.sh --strict"
         assert r["command_hash"] == hashlib.sha256(b"~/bin/guard.sh --strict").hexdigest()[:16]
-        assert "permissionDecision" in r["output"]
-        conn = db._conn()
-        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM tool_invocations").fetchone()[0] == 0
-        assert db.get_session(self.SID) is None
+        assert "permissionDecision" in text["output"]
+        assert not _hook_rows(writer, "events")
+        assert not _hook_rows(writer, "tool_invocations")
+        assert _hook_session(writer, self.SID) is None
 
     @pytest.mark.parametrize(
         ("stdout", "exit_code", "decision"),
@@ -1017,6 +886,7 @@ class TestHookCallsTable:
         body["aictl_hook"]["wrapped"] = {"command": "secret.sh --token X", "exit_code": 0, "stdout": "secret"}
         _post_json(f"{url}/api/hooks", self._v1(call_id="f" * 32, prompt="my secret prompt"))
         _post_json(f"{url}/api/hooks", body)
+        assert not _hook_rows(db, "hook_calls_text")
         rows = _hook_calls(db)
         assert len(rows) == 2
         for r in rows:
@@ -1033,68 +903,54 @@ class TestHookCallsTable:
 
 
 class TestEventsAPI:
-    def test_count_is_not_limited_by_the_page(self, server):
-        since = int(time.time()) - 3600
-        page = _get_json(f"{server}/api/events?since={since}&limit=1")
-        count = _get_json(f"{server}/api/events/count?since={since}")["count"]
-        assert len(page) == 1
-        assert count == len(_get_json(f"{server}/api/events?since={since}&limit=2000"))
-        assert count > 1
+    columns = dict(ts="real", tool="string", kind="string", detail="string", session_id="string", pid="long")
+    end = [200.0, "copilot-cli", "session_end", '{"session_id":"sess-001"}', "sess-001", 0]
+    start = [100.0, "claude-code", "session_start", '{"session_id":"sess-002"}', "sess-002", 0]
 
-    def test_query_all(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/events?since={since}")
-        assert isinstance(data, list)
-        assert len(data) >= 3
-        kinds = {e["kind"] for e in data}
-        assert "session_start" in kinds
-        assert "session_end" in kinds
+    def test_count_is_not_limited_by_the_page(self, recorded_server):
+        serve, seen = recorded_server
+        queries = [
+            ("events.page", self.columns, [self.end, self.start]),
+            ("events.count", {"count": "long"}, [[2]]),
+        ]
+        with serve(queries) as server:
+            page = _get_json(f"{server}/api/events?since=50&limit=1")
+            count = _get_json(f"{server}/api/events/count?since=50")["count"]
+            all_events = _get_json(f"{server}/api/events?since=50&limit=2000")
+        assert len(page) == 1 and count == len(all_events) == 2
+        assert {e["kind"] for e in all_events} == {"session_end", "session_start"}
+        assert seen[0][1].get_parameter("row_limit", None) == "2"
+        assert seen[1][1].get_parameter("since", None) == seen[0][1].get_parameter("since", None) == "50.0"
 
-    def test_filter_by_tool(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/events?tool=copilot-cli&since={since}")
-        assert all(e["tool"] == "copilot-cli" for e in data)
-
-    def test_filter_by_kind(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/events?kind=session_end&since={since}")
-        assert all(e["kind"] == "session_end" for e in data)
-
-    def test_event_has_detail(self, server):
-        since = int(time.time()) - 3600
-        data = _get_json(f"{server}/api/events?kind=session_end&since={since}")
-        assert len(data) >= 1
-        assert "session_id" in data[0]["detail"]
-
-    def test_filter_by_session_id(self, server):
-        since = int(time.time()) - 3600
-        # Get all events first to find a valid session_id
-        all_events = _get_json(f"{server}/api/events?kind=session_end&since={since}")
-        if all_events:
-            sid = all_events[0]["detail"]["session_id"]
-            filtered = _get_json(f"{server}/api/events?session_id={sid}&since={since}")
-            assert all(e["detail"].get("session_id") == sid for e in filtered)
+    @pytest.mark.parametrize(("filter_query", "parameter", "value"), [
+        ("tool=copilot-cli", "requested_tool", "copilot-cli"),
+        ("kind=session_end", "requested_kinds", 'dynamic(["session_end"])'),
+        ("session_id=sess-001", "requested_session", "sess-001"),
+    ])
+    def test_filter_and_detail(self, recorded_server, filter_query, parameter, value):
+        serve, seen = recorded_server
+        with serve([("events.page", self.columns, [self.end])]) as server:
+            data = _get_json(f"{server}/api/events?since=50&{filter_query}")
+        assert data == [{
+            "ts": 200.0, "tool": "copilot-cli", "kind": "session_end",
+            "detail": {"session_id": "sess-001"}, "session_id": "sess-001", "pid": 0,
+        }]
+        assert seen[0][1].get_parameter(parameter, None) == value
 
 
 # ── API Calls endpoint: OTel attribute extraction ─────────────────
 
 
 @pytest.fixture()
-def api_calls_server(tmp_path):
-    """Server with DB pre-populated with OTel api_request/api_error events
-    whose detail dicts use the real OTel attribute keys."""
-    from pathlib import Path
+def api_calls_server(recorded_server):
+    """Replay OTel API request and error rows with real OTel attribute names."""
+    from aictl.dashboard.api_handlers import API_ERROR_EVENTS, API_REQUEST_EVENTS
 
-    from aictl.dashboard.web_server import (
-        _DashboardHandler,
-        _DashboardHTTPServer,
-    )
-
-    db = HistoryDB(db_path=str(tmp_path / "apicalls.db"), flush_interval=0)
+    events = []
     now = time.time()
 
     # Successful request with real OTel keys: finish_reasons list + http.status_code
-    db.append_event(
+    events.append(
         EventRow(
             ts=now - 10,
             tool="claude-code",
@@ -1108,7 +964,7 @@ def api_calls_server(tmp_path):
         )
     )
     # Error with real OTel keys: error.type + http.response.status_code (newer)
-    db.append_event(
+    events.append(
         EventRow(
             ts=now - 5,
             tool="claude-code",
@@ -1122,7 +978,7 @@ def api_calls_server(tmp_path):
         )
     )
     # Current-format Claude Code kind (receiver emits "otel:api_request")
-    db.append_event(
+    events.append(
         EventRow(
             ts=now - 20,
             tool="claude-code",
@@ -1131,7 +987,7 @@ def api_calls_server(tmp_path):
         )
     )
     # Copilot / generic OTel GenAI span — uses namespaced gen_ai.* keys only
-    db.append_event(
+    events.append(
         EventRow(
             ts=now - 30,
             tool="copilot-vscode",
@@ -1145,7 +1001,7 @@ def api_calls_server(tmp_path):
         )
     )
     # Codex
-    db.append_event(
+    events.append(
         EventRow(
             ts=now - 40,
             tool="codex-cli",
@@ -1153,25 +1009,17 @@ def api_calls_server(tmp_path):
             detail={"model": "gpt-5", "duration_ms": 300},
         )
     )
-    db.flush()
-
-    store = SnapshotStore(db=db)
-    store.update(_make_snapshot())
-
-    allowed = AllowedPaths()
-    srv = _DashboardHTTPServer(
-        ("127.0.0.1", 0),
-        _DashboardHandler,
-        store,
-        allowed,
-        Path("/tmp/test-project"),
-    )
-    port = srv.server_address[1]
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{port}"
-    srv.shutdown()
-    db.close()
+    columns = dict(ts="real", tool="string", kind="string", detail="string", session_id="string", pid="long")
+    queries = []
+    for name in (*API_REQUEST_EVENTS, *API_ERROR_EVENTS):
+        rows = [
+            [e.ts, e.tool, e.kind, json.dumps(e.detail), e.session_id, e.pid]
+            for e in events if e.kind == f"otel:{name}"
+        ]
+        queries.append(("events.page", columns, rows))
+    serve, _seen = recorded_server
+    with serve(queries) as url:
+        yield url
 
 
 class TestApiCallsOtelEnrichment:
@@ -1235,9 +1083,7 @@ class TestHookVerifyPingIsNotPersisted:
             )
             assert status == 200
             assert body.get("ok") is True
-        db.flush()
-        assert db.get_session("aictl-verify") is None
-        assert db.query_events(limit=50) == []
+        assert not db.operations
 
 
 class TestPostToolUseFailureMarksError:
@@ -1254,8 +1100,8 @@ class TestPostToolUseFailureMarksError:
         )
         assert status == 200
 
-    def test_failure_closes_pending_invocation_with_error(self, hook_server):
-        url, db = hook_server
+    def test_failure_closes_pending_invocation_with_error(self, tool_hook_server):
+        url, writer = tool_hook_server
         now = time.time()
         self._hook(url, "PreToolUse", ts=now, tool_use_id="toolu_f1", tool_name="Bash", tool_input={"command": "false"})
         self._hook(
@@ -1267,19 +1113,17 @@ class TestPostToolUseFailureMarksError:
             tool_input={"command": "false"},
             error="exit status 1",
         )
-        db.flush()
-        rows = db.query_tool_invocations(session_id=self.SID)
+        rows = _written_tool_calls(writer)
         assert len(rows) == 1
         row = rows[0]
         assert row["is_error"] == 1
         assert row["duration_ms"] == pytest.approx(500.0, abs=1.0)
         assert "exit status 1" in row["result_summary"]
 
-    def test_failure_without_pre_is_stored_as_error(self, hook_server):
-        url, db = hook_server
+    def test_failure_without_pre_is_stored_as_error(self, tool_hook_server):
+        url, writer = tool_hook_server
         self._hook(url, "PostToolUseFailure", tool_use_id="toolu_f2", tool_name="Read", error="ENOENT")
-        db.flush()
-        rows = db.query_tool_invocations(session_id=self.SID)
+        rows = _written_tool_calls(writer)
         assert [r["is_error"] for r in rows] == [1]
 
 
@@ -1304,7 +1148,7 @@ SETTINGS_FILE_KEYS = {
 
 
 @pytest.fixture()
-def settings_files_server(populated_db, tmp_path, monkeypatch):
+def settings_files_server(tmp_path, monkeypatch):
     """A server whose snapshot names files in a temp home and a temp project."""
     from aictl import context_audit, platforms, tool_homes
     from aictl.dashboard.audit_cache import AUDIT_CACHE
@@ -1349,7 +1193,7 @@ def settings_files_server(populated_db, tmp_path, monkeypatch):
         {"tool": "claude-desktop", "config_files": [str(user_file)], "sections": []},
     ]
     snap.live_monitor = {"workspace_paths": [str(root)], "state_paths": [str(home / ".claude")]}
-    store = SnapshotStore(db=populated_db)
+    store = SnapshotStore()
     store.update(snap)
     srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), root)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -1511,7 +1355,7 @@ class TestSettingsToolsAPI:
 
         assert slim_tool_configs([{"tool": "copilot365", "hints": ["x"]}]) == [{"tool": "copilot365", "hints": ["x"]}]
 
-    def test_endpoint_returns_full_records_and_labels(self, populated_db, tmp_path, monkeypatch):
+    def test_endpoint_returns_full_records_and_labels(self, tmp_path, monkeypatch):
         from aictl import orchestrator
         from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 
@@ -1522,7 +1366,7 @@ class TestSettingsToolsAPI:
 
         snap.tools = [DashboardTool(tool="claude-code", label="Claude Code")]
         snap.live_monitor = {"diagnostics": {"process:psutil": {"status": "active"}}, "workspace_paths": [str(tmp_path)]}
-        store = SnapshotStore(db=populated_db)
+        store = SnapshotStore()
         store.update(snap)
         srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), str(tmp_path))
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -1547,7 +1391,7 @@ class TestSettingsToolsAPI:
 
 
 @pytest.fixture()
-def editor_server(populated_db, tmp_path):
+def editor_server(tmp_path):
     """A server whose allowed file set holds one settings file in a temp folder."""
     import os
     from pathlib import Path
@@ -1560,7 +1404,7 @@ def editor_server(populated_db, tmp_path):
     f.write_text('{\n  "a": 1\n}\n')
     other = root / ".claude" / "other.json"
     other.write_text("{}\n")
-    store = SnapshotStore(db=populated_db)
+    store = SnapshotStore()
     store.update(_make_snapshot())
     allowed = AllowedPaths()
     allowed._paths.add(os.path.realpath(str(f)))

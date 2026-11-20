@@ -413,13 +413,15 @@ def _picker_rows(db: Path, scope: str) -> tuple[list[dict], str]:
         return [], "absent"
     conn = None
     try:
-        from .ingesters._common import open_readonly
+        from .ingesters._common import SQLITE_UNAVAILABLE, open_readonly
 
         conn = open_readonly(db, "effective-model")
         if conn is None:
             return [], "not readable"
         raw = conn.execute("SELECT key, value FROM ItemTable WHERE key LIKE ? AND key NOT LIKE 'secret://%'", (_PICKER_KEY_PREFIX + "%",)).fetchall()
-    except Exception:  # sqlite3.Error, but also a bad row type; a locked or corrupt file must never raise
+    except ImportError:
+        return [], SQLITE_UNAVAILABLE
+    except Exception:  # A locked or corrupt file must not stop settings collection.
         return [], "not readable"
     finally:
         if conn is not None:

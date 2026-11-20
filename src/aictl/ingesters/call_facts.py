@@ -17,41 +17,29 @@ is an estimate of value, not the amount billed, which is in AI credits.
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..context_audit import _redact
 from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
-from ..kusto.observations import retains_unresolved_facts
-from ..storage import (
-    STEP_TEXT_LIMIT,
-    AgentRow,
-    CallFacts,
-    ContextEventRow,
-    ContextItemRow,
-    FileWriteRow,
-    LoadedFileRow,
-    RequestRow,
-    SessionPromptRow,
-    SessionStepRow,
-    SkillUseRow,
-    ToolInvocationRow,
-    TurnRequestLink,
-    _dedup_key,
-)
+from ..stores.base import StoreError
 from ..utils import estimate_tokens_from_size
 from . import context_items, loaded_files
 from ._common import coerce_ts, decode_file_uri
 from .transcript_steps import CopilotSteps, redact_step_text
+
+if TYPE_CHECKING:
+    from .. import records as fact_rows
+else:
+    from .. import records as fact_rows
 
 log = logging.getLogger(__name__)
 
@@ -275,72 +263,54 @@ class FactBuffer:
     file offsets have already moved past the lines it came from.
     """
 
-    def __init__(self, store: Any, cutoff: float = 0.0) -> None:
+    def __init__(self, store: Any, cutoff: float = 0.0, *, tool_calls=None) -> None:
         self.store = store
+        self.tool_calls = tool_calls
         self.cutoff = cutoff
-        self.requests: dict[str, RequestRow] = {}
-        self.tools: dict[str, ToolInvocationRow] = {}
-        self.prompts: dict[str, SessionPromptRow] = {}
-        self.skills: dict[str, SkillUseRow] = {}
-        self.agents: dict[str, AgentRow] = {}
-        self.file_writes: dict[str, FileWriteRow] = {}
-        self.context_events: dict[str, ContextEventRow] = {}
-        self.steps: dict[str, SessionStepRow] = {}
-        self.cost_links: dict[str, TurnRequestLink] = {}
-        self.loaded_files: dict[tuple[str, str, str], LoadedFileRow] = {}
-        self.context_items: dict[tuple[str, str, str, str], ContextItemRow] = {}
+        self.requests: dict[str, fact_rows.RequestRow] = {}
+        self.tools: dict[str, fact_rows.ToolInvocationRow] = {}
+        self.prompts: dict[str, fact_rows.SessionPromptRow] = {}
+        self.skills: dict[str, fact_rows.SkillUseRow] = {}
+        self.agents: dict[str, fact_rows.AgentRow] = {}
+        self.file_writes: dict[str, fact_rows.FileWriteRow] = {}
+        self.context_events: dict[str, fact_rows.ContextEventRow] = {}
+        self.steps: dict[str, fact_rows.SessionStepRow] = {}
+        self.cost_links: dict[str, fact_rows.TurnRequestLink] = {}
+        self.loaded_files: dict[tuple[str, str, str], fact_rows.LoadedFileRow] = {}
+        self.context_items: dict[tuple[str, str, str, str], fact_rows.ContextItemRow] = {}
         self.surface: Callable[[str], str] | None = None
         self.written = 0
-        self._versions: dict[str, list] = {}
-        self.write_error: sqlite3.Error | None = None
-
-    def _capture(self, family: str, row: Any) -> bool:
-        if not retains_unresolved_facts(self.store):
-            return False
-        saved = copy.deepcopy(row)
-        if not _keep_text(self.store):
-            for name in ("text", "result_summary"):
-                if hasattr(saved, name):
-                    setattr(saved, name, "")
-            if hasattr(saved, "input"):
-                saved.input = {}
-        self._versions.setdefault(family, []).append(saved)
-        self._maybe_flush()
-        return True
+        self.write_error: StoreError | None = None
 
     def _in_window(self, ts: float) -> bool:
         return not self.cutoff or not ts or ts >= self.cutoff
 
-    def add_request(self, row: RequestRow) -> None:
+    def add_request(self, row: fact_rows.RequestRow) -> None:
         if self._in_window(row.ts):
-            if self._capture("requests", row):
-                return
             self.requests[row.dedup_key] = row
             self._maybe_flush()
 
-    def add_tool(self, row: ToolInvocationRow) -> None:
+    def add_tool(self, row: fact_rows.ToolInvocationRow) -> None:
         if self._in_window(row.ts):
-            if self._capture("tools", row):
+            if self.tool_calls is not None:
+                tool = self.surface(row.session_id) if self.surface is not None and row.tool == "copilot-cli" else row.tool
+                self.written += self.tool_calls.record([replace(row, source="transcript", tool=tool)])
                 return
             self.tools[row.dedup_key] = row
             self._maybe_flush()
 
-    def add_prompt(self, row: SessionPromptRow) -> None:
+    def add_prompt(self, row: fact_rows.SessionPromptRow) -> None:
         if self._in_window(row.ts):
-            if self._capture("prompts", row):
-                return
             self.prompts[row.dedup_key] = row
+            self._maybe_flush()
 
-    def add_skill(self, row: SkillUseRow) -> None:
+    def add_skill(self, row: fact_rows.SkillUseRow) -> None:
         if self._in_window(row.ts):
-            if self._capture("skills", row):
-                return
             self.skills[row.dedup_key] = row
+            self._maybe_flush()
 
-    def add_agent(self, row: AgentRow) -> None:
+    def add_agent(self, row: fact_rows.AgentRow) -> None:
         if self._in_window(row.started_at or row.ended_at or 0.0):
-            if self._capture("agents", row):
-                return
             prior = self.agents.get(row.agent_id)
             if prior is not None:
                 row.task = row.task or prior.task
@@ -349,22 +319,21 @@ class FactBuffer:
                 row.ended_at = row.ended_at if row.ended_at is not None else prior.ended_at
                 row.completed = max(row.completed, prior.completed)
             self.agents[row.agent_id] = row
+            self._maybe_flush()
 
-    def add_file_write(self, row: FileWriteRow) -> None:
+    def add_file_write(self, row: fact_rows.FileWriteRow) -> None:
         if self._in_window(row.ts):
-            if self._capture("file_writes", row):
-                return
             self.file_writes[row.dedup_key] = row
+            self._maybe_flush()
 
-    def add_context_event(self, row: ContextEventRow) -> None:
+    def add_context_event(self, row: fact_rows.ContextEventRow) -> None:
         if self._in_window(row.ts):
-            if self._capture("context_events", row):
-                return
             # Files are read oldest first, so the first line of a replayed event is the original.
             self.context_events.setdefault(row.dedup_key, row)
+            self._maybe_flush()
 
-    def add_step(self, row: SessionStepRow) -> None:
-        if retains_unresolved_facts(self.store) or not self._in_window(row.ts) or row.step_key in self.steps:
+    def add_step(self, row: fact_rows.SessionStepRow) -> None:
+        if not self._in_window(row.ts) or row.step_key in self.steps:
             return
         if row.text:
             keeps_text = getattr(self.store, "_keeps_text", None)
@@ -372,42 +341,39 @@ class FactBuffer:
                 row.text, row.text_status = "", "withheld"
             else:
                 text = redact_step_text(row.text)
-                row.text = text[:STEP_TEXT_LIMIT]
-                row.text_status = "truncated" if len(text) > STEP_TEXT_LIMIT or row.text_status == "truncated" else "captured"
+                limit = fact_rows.STEP_TEXT_LIMIT
+                row.text = text[:limit]
+                row.text_status = "truncated" if len(text) > limit or row.text_status == "truncated" else "captured"
         elif not row.text_status:
             row.text_status = "not_reported"
         self.steps[row.step_key] = row
         self._maybe_flush()
 
-    def add_cost_link(self, row: TurnRequestLink) -> None:
-        if not retains_unresolved_facts(self.store) and self._in_window(row.ts):
+    def add_cost_link(self, row: fact_rows.TurnRequestLink) -> None:
+        if self._in_window(row.ts):
             self.cost_links[row.request_key] = row
             self._maybe_flush()
 
-    def add_loaded_file(self, row: LoadedFileRow) -> None:
-        if self._capture("loaded_files", row):
-            return
-        # Not limited to the window: a session loads its files once, at its start, and the
-        # store keeps the first time of each (see _LOADED_FILE_UPSERT).
+    def add_loaded_file(self, row: fact_rows.LoadedFileRow) -> None:
+        # A session loads its files once. Keep the earliest observation, even
+        # when it falls before the backfill window.
         key = (row.session_id, row.path, row.how)
         prior = self.loaded_files.get(key)
         if prior is None or (row.ts and (not prior.ts or row.ts < prior.ts)):
             self.loaded_files[key] = row
+            self._maybe_flush()
 
-    def add_context_item(self, row: ContextItemRow) -> None:
-        if self._capture("context_items", row):
-            return
-        # Not limited to the window, like loaded files: the newest record of each item wins,
-        # and a later line of the same time wins over an earlier one (see _CONTEXT_ITEM_UPSERT).
+    def add_context_item(self, row: fact_rows.ContextItemRow) -> None:
+        # Keep the latest observation, including the later line for equal times.
         key = (row.session_id, row.agent_id, row.kind, row.name)
         prior = self.context_items.get(key)
         if prior is None or row.ts >= prior.ts:
             self.context_items[key] = row
+            self._maybe_flush()
 
     def __len__(self) -> int:
         return (
-            sum(map(len, self._versions.values()))
-            + len(self.steps)
+            len(self.steps)
             + len(self.cost_links)
             + len(self.context_items)
             + len(self.loaded_files)
@@ -421,25 +387,13 @@ class FactBuffer:
         )
 
     def _maybe_flush(self) -> None:
-        if len(self) >= BUFFER_FLUSH_ROWS:
+        if self.write_error is None and len(self) >= BUFFER_FLUSH_ROWS:
             self.flush(retry=False)
 
     def flush(self, *, retry: bool = True) -> None:
+        if self.tool_calls is not None:
+            self.tool_calls.publish_coverage()
         if not len(self) or (self.write_error is not None and not retry):
-            return
-        if self._versions:
-            if self.surface is not None:
-                for rows in self._versions.values():
-                    for row in rows:
-                        if row.tool == "copilot-cli":
-                            row.tool = self.surface(row.session_id)
-            try:
-                self.written += self.store.write_call_facts(CallFacts(**self._versions))
-            except sqlite3.Error as exc:
-                self.write_error = exc
-                log.warning("Kusto observation handoff failed; fact versions retained for retry", exc_info=True)
-                return
-            self._clear()
             return
         writer = getattr(self.store, "write_call_facts", None)
         if writer is None:  # a store without fact tables
@@ -452,7 +406,7 @@ class FactBuffer:
             for row in rows:
                 if row.tool == "copilot-cli":
                     row.tool = self.surface(row.session_id)
-        facts = CallFacts(
+        facts = fact_rows.CallFacts(
             requests=list(self.requests.values()),
             tools=list(self.tools.values()),
             prompts=list(self.prompts.values()),
@@ -467,17 +421,13 @@ class FactBuffer:
         )
         try:
             self.written += writer(facts)
-        except sqlite3.Error as exc:
-            if getattr(self.store, "current_history", False) is True:
-                self.write_error = exc
-                log.warning("Kusto current-history batch failed; retaining facts for retry", exc_info=True)
-                return
-            log.debug("call facts: write failed, retrying next poll: %s", exc)
+        except StoreError as exc:
+            self.write_error = exc
+            log.warning("Fact handoff failed; retrying next poll", exc_info=True)
             return
         self._clear()
 
     def _clear(self) -> None:
-        self._versions = {}
         self.write_error = None
         self.requests, self.tools, self.prompts = {}, {}, {}
         self.skills, self.agents, self.file_writes = {}, {}, {}
@@ -488,8 +438,8 @@ class FactBuffer:
         self.context_items = {}
 
 
-def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> ContextItemRow:
-    return ContextItemRow(
+def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> fact_rows.ContextItemRow:
+    return fact_rows.ContextItemRow(
         session_id=sid, kind=item.kind, name=item.name, ts=ts, agent_id=agent_id, path=item.path,
         chars=0 if item.removed else item.chars, tokens=0 if item.removed else estimate_tokens_from_size(item.chars),
         estimated=1, removed=1 if item.removed else 0, tool=tool, project_path=project,
@@ -563,8 +513,8 @@ class ClaudeFacts:
         self._tool_message: dict[str, int] = {}
         self._last_command: dict[str, tuple[str, str]] = {}
         self._message_last_block: dict[int, float] = {}
-        self._pending: dict[str, tuple[ToolInvocationRow, str, dict]] = {}
-        self._open_agents: dict[str, AgentRow] = {}
+        self._pending: dict[str, tuple[fact_rows.ToolInvocationRow, str, dict]] = {}
+        self._open_agents: dict[str, fact_rows.AgentRow] = {}
 
     def feed(self, sid: str, obj: dict, *, agent_id: str = "", role: str = "") -> None:
         kind = obj.get("type")
@@ -599,7 +549,7 @@ class ClaudeFacts:
         """The instruction files, subfolder CLAUDE.md files and skills the session loaded."""
         for path, how, detail in loaded_files.claude_attachment(obj.get("attachment")):
             self.buffer.add_loaded_file(
-                LoadedFileRow(
+                fact_rows.LoadedFileRow(
                     session_id=sid, path=path, how=how, ts=ts, detail=detail, tool="claude-code",
                     agent_id=agent_id, project_path=str(obj.get("cwd") or ""),
                 )
@@ -611,7 +561,7 @@ class ClaudeFacts:
     def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict) -> None:
         row = self._open_agents.get(agent_id)
         if row is None:
-            row = AgentRow(agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts)
+            row = fact_rows.AgentRow(agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts)
             self._open_agents[agent_id] = row
         row.ended_at = ts or row.ended_at
         msg = obj.get("message")
@@ -638,7 +588,7 @@ class ClaudeFacts:
         """Running subagents are written with no end, so they read as still going."""
         for row in self._open_agents.values():
             self.buffer.add_agent(
-                AgentRow(
+                fact_rows.AgentRow(
                     agent_id=row.agent_id,
                     session_id=row.session_id,
                     tool=row.tool,
@@ -686,8 +636,8 @@ class ClaudeFacts:
         first_sid, first_agent, first_ts, start, first_cwd = first
         reply_ms = (ts - start) * 1000 if start and ts > start else 0.0
         self.buffer.add_request(
-            RequestRow(
-                dedup_key=_dedup_key("claude-call", *call),
+            fact_rows.RequestRow(
+                dedup_key=fact_rows._dedup_key("claude-call", *call),
                 ts=first_ts or ts,
                 session_id=first_sid,
                 agent_id=first_agent,
@@ -706,8 +656,8 @@ class ClaudeFacts:
 
     def _api_error(self, sid: str, obj: dict, ts: float, agent_id: str, cwd: str) -> None:
         self.buffer.add_request(
-            RequestRow(
-                dedup_key=_dedup_key("claude-api-error", str(obj.get("uuid") or ""), sid),
+            fact_rows.RequestRow(
+                dedup_key=fact_rows._dedup_key("claude-api-error", str(obj.get("uuid") or ""), sid),
                 ts=ts,
                 session_id=sid,
                 agent_id=agent_id,
@@ -727,8 +677,8 @@ class ClaudeFacts:
         self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, reset, "claude-code", str(obj.get("cwd") or "")))
         # A resumed session replays the line with the same id, so the key leaves the session out.
         self.buffer.add_context_event(
-            ContextEventRow(
-                dedup_key=_dedup_key("claude-compact", str(obj.get("uuid") or f"{sid}{ts}")),
+            fact_rows.ContextEventRow(
+                dedup_key=fact_rows._dedup_key("claude-compact", str(obj.get("uuid") or f"{sid}{ts}")),
                 ts=ts,
                 session_id=sid,
                 agent_id=agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else ""),
@@ -749,7 +699,7 @@ class ClaudeFacts:
         agent_id = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
         for item in context_items.claude_context_report(content):
             self.buffer.add_context_item(
-                ContextItemRow(
+                fact_rows.ContextItemRow(
                     session_id=sid, kind=item.kind, name=item.name, ts=ts, agent_id=agent_id, path=item.path,
                     chars=item.chars, tokens=item.tokens, estimated=0, tool="claude-code", project_path=str(obj.get("cwd") or ""),
                 )
@@ -767,8 +717,8 @@ class ClaudeFacts:
         error = obj.get("error") if isinstance(obj.get("error"), dict) else {}
         inner = error.get("error") if isinstance(error.get("error"), dict) else {}
         self.buffer.add_request(
-            RequestRow(
-                dedup_key=_dedup_key("claude-api-error", str(obj.get("uuid") or ""), sid),
+            fact_rows.RequestRow(
+                dedup_key=fact_rows._dedup_key("claude-api-error", str(obj.get("uuid") or ""), sid),
                 ts=ts,
                 session_id=sid,
                 agent_id=agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else ""),
@@ -814,8 +764,8 @@ class ClaudeFacts:
             return  # the expanded body of a slash command; its name is on its own line
         uuid = str(obj.get("uuid") or "")
         self.buffer.add_prompt(
-            SessionPromptRow(
-                dedup_key=_dedup_key("claude-prompt", uuid or f"{sid}{ts}"),
+            fact_rows.SessionPromptRow(
+                dedup_key=fact_rows._dedup_key("claude-prompt", uuid or f"{sid}{ts}"),
                 ts=ts,
                 session_id=sid,
                 agent_id=agent_id,
@@ -833,8 +783,8 @@ class ClaudeFacts:
 
     def _skill(self, key: str, sid: str, name: str, trigger: str, ts: float, agent_id: str, cwd: str) -> None:
         self.buffer.add_skill(
-            SkillUseRow(
-                dedup_key=_dedup_key("claude-skill", key),
+            fact_rows.SkillUseRow(
+                dedup_key=fact_rows._dedup_key("claude-skill", key),
                 ts=ts,
                 session_id=sid,
                 agent_id=agent_id,
@@ -858,8 +808,8 @@ class ClaudeFacts:
             self._tools_seen.add(hash(tool_id))
             name = str(block.get("name") or "")
             args = block.get("input") if isinstance(block.get("input"), dict) else {}
-            row = ToolInvocationRow(
-                dedup_key=_dedup_key("claude-tool", tool_id),
+            row = fact_rows.ToolInvocationRow(
+                dedup_key=fact_rows._dedup_key("claude-tool", tool_id),
                 ts=ts,
                 session_id=sid,
                 agent_id=agent_id,
@@ -911,7 +861,7 @@ class ClaudeFacts:
             if not failed and row.tool_name in _CLAUDE_WRITE_TOOLS:
                 self._file_edit(row, cwd, args, obj.get("toolUseResult"))
 
-    def _file_edit(self, row: ToolInvocationRow, cwd: str, args: dict, result: Any) -> None:
+    def _file_edit(self, row: fact_rows.ToolInvocationRow, cwd: str, args: dict, result: Any) -> None:
         path = str(args.get("file_path") or args.get("notebook_path") or "")
         if not path:
             return
@@ -922,8 +872,8 @@ class ClaudeFacts:
         if counts is not None:
             detail["lines_added"], detail["lines_removed"] = counts
         self.buffer.add_file_write(
-            FileWriteRow(
-                dedup_key=_dedup_key("claude-edit", row.source_event_id, path),
+            fact_rows.FileWriteRow(
+                dedup_key=fact_rows._dedup_key("claude-edit", row.source_event_id, path),
                 ts=row.ts,
                 path=absolute_path(path, cwd),
                 session_id=row.session_id,
@@ -973,7 +923,7 @@ def copilot_call_key(session_id: str, tokens: tuple[int, int, int, int], occurre
     The store has no call id, but its rows carry the same four raw token counts
     as the event, so the n-th call with the same counts is the same call.
     """
-    return _dedup_key("copilot-call", session_id, *map(str, tokens), str(occurrence))
+    return fact_rows._dedup_key("copilot-call", session_id, *map(str, tokens), str(occurrence))
 
 
 def confirm_from_permission(result: Any, decision_source: Any) -> str:
@@ -1007,15 +957,15 @@ class CopilotFacts:
     def __init__(self, session_id: str, buffer: FactBuffer) -> None:
         self.sid = session_id
         self.buffer = buffer
-        self.steps = None if retains_unresolved_facts(buffer.store) else CopilotSteps(session_id, buffer.add_step, buffer.add_cost_link)
+        self.steps = CopilotSteps(session_id, buffer.add_step, buffer.add_cost_link)
         self.keep_text = _keep_text(buffer.store)
         self.cwd = ""
         self.git_root = ""
         self.model = ""
         self._occurrence: Counter[tuple[int, int, int, int]] = Counter()
         self._record_ids: set[str] = set()
-        self._compactions: list[tuple[dict, float, str, str, TurnRequestLink | None]] = []
-        self._running: dict[str, ToolInvocationRow] = {}
+        self._compactions: list[tuple[dict, float, str, str, fact_rows.TurnRequestLink | None]] = []
+        self._running: dict[str, fact_rows.ToolInvocationRow] = {}
         # A completion needs counts per file, never the patch body.
         self._patches: dict[str, dict[str, tuple[int, int]]] = {}
         self._confirms: dict[str, tuple[str, float]] = {}
@@ -1090,7 +1040,7 @@ class CopilotFacts:
             if now - ts <= pending_window_s:
                 self._write_confirm(request_id, ts, name, target, tool_call_id, agent_id, "pending", 0.0)
 
-    def _call(self, usage: dict, ts: float, agent_id: str, link: TurnRequestLink | None) -> None:
+    def _call(self, usage: dict, ts: float, agent_id: str, link: fact_rows.TurnRequestLink | None) -> None:
         raw = to_int(usage.get("inputTokens"))
         read, write = to_int(usage.get("cacheReadTokens")), to_int(usage.get("cacheWriteTokens"))
         out = to_int(usage.get("outputTokens"))
@@ -1101,7 +1051,7 @@ class CopilotFacts:
         billable = max(0, raw - read - write)
         key = copilot_call_key(self.sid, tokens, n)
         self.buffer.add_request(
-            RequestRow(
+            fact_rows.RequestRow(
                 dedup_key=key,
                 ts=ts,
                 session_id=self.sid,
@@ -1130,8 +1080,8 @@ class CopilotFacts:
         if data.get("success") is False:
             return
         self.buffer.add_context_event(
-            ContextEventRow(
-                dedup_key=_dedup_key("copilot-compact", self.sid, event_id or str(ts)),
+            fact_rows.ContextEventRow(
+                dedup_key=fact_rows._dedup_key("copilot-compact", self.sid, event_id or str(ts)),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1148,8 +1098,8 @@ class CopilotFacts:
         if not to_count(data.get("currentTokens")):
             return
         self.buffer.add_context_event(
-            ContextEventRow(
-                dedup_key=_dedup_key("copilot-split", self.sid, event_id or str(ts)),
+            fact_rows.ContextEventRow(
+                dedup_key=fact_rows._dedup_key("copilot-split", self.sid, event_id or str(ts)),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1164,8 +1114,8 @@ class CopilotFacts:
 
     def _api_error(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
         self.buffer.add_request(
-            RequestRow(
-                dedup_key=_dedup_key("copilot-error", self.sid, event_id or str(ts)),
+            fact_rows.RequestRow(
+                dedup_key=fact_rows._dedup_key("copilot-error", self.sid, event_id or str(ts)),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1185,8 +1135,8 @@ class CopilotFacts:
             return
         text = str(data.get("content") or "")
         self.buffer.add_prompt(
-            SessionPromptRow(
-                dedup_key=_dedup_key("copilot-prompt", self.sid, event_id or str(ts)),
+            fact_rows.SessionPromptRow(
+                dedup_key=fact_rows._dedup_key("copilot-prompt", self.sid, event_id or str(ts)),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1198,7 +1148,7 @@ class CopilotFacts:
 
     def _loaded(self, path: str, how: str, ts: float, agent_id: str, detail: str = "") -> None:
         self.buffer.add_loaded_file(
-            LoadedFileRow(
+            fact_rows.LoadedFileRow(
                 session_id=self.sid, path=path, how=how, ts=ts, detail=detail, tool="copilot-cli",
                 agent_id=agent_id, project_path=self.cwd,
             )
@@ -1240,8 +1190,8 @@ class CopilotFacts:
         if os.path.isabs(path):
             self._loaded(path, loaded_files.SKILL, ts, agent_id)
         self.buffer.add_skill(
-            SkillUseRow(
-                dedup_key=_dedup_key("copilot-skill", self.sid, event_id or f"{name}{ts}"),
+            fact_rows.SkillUseRow(
+                dedup_key=fact_rows._dedup_key("copilot-skill", self.sid, event_id or f"{name}{ts}"),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1256,7 +1206,7 @@ class CopilotFacts:
         agent_id = str(obj.get("agentId") or data.get("agentId") or "")
         if agent_id:
             self.buffer.add_agent(
-                AgentRow(
+                fact_rows.AgentRow(
                     agent_id=agent_id,
                     session_id=self.sid,
                     tool="copilot-cli",
@@ -1271,7 +1221,7 @@ class CopilotFacts:
         agent_id = str(obj.get("agentId") or data.get("agentId") or "")
         if agent_id:
             self.buffer.add_agent(
-                AgentRow(
+                fact_rows.AgentRow(
                     agent_id=agent_id,
                     session_id=self.sid,
                     tool="copilot-cli",
@@ -1284,7 +1234,7 @@ class CopilotFacts:
             )
 
     def _tool_key(self, tool_call_id: str) -> str:
-        return _dedup_key("copilot-tool", self.sid, tool_call_id)
+        return fact_rows._dedup_key("copilot-tool", self.sid, tool_call_id)
 
     def _tool_start(self, data: dict, ts: float, agent_id: str) -> None:
         call_id = str(data.get("toolCallId") or "")
@@ -1301,7 +1251,7 @@ class CopilotFacts:
             args = {"input": raw_args}
         if name == "apply_patch":
             self._patches[call_id] = _patch_counts(args, self.cwd)
-        row = ToolInvocationRow(
+        row = fact_rows.ToolInvocationRow(
             dedup_key=self._tool_key(call_id),
             ts=ts,
             session_id=self.sid,
@@ -1324,7 +1274,7 @@ class CopilotFacts:
         row = self._running.pop(call_id, None)
         patch_counts = self._patches.pop(call_id, {})
         if row is None:
-            row = ToolInvocationRow(
+            row = fact_rows.ToolInvocationRow(
                 dedup_key=self._tool_key(call_id),
                 ts=ts,
                 session_id=self.sid,
@@ -1355,7 +1305,7 @@ class CopilotFacts:
         self.buffer.add_tool(row)
         self._file_edits(row, data, patch_counts)
 
-    def _file_edits(self, row: ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]]) -> None:
+    def _file_edits(self, row: fact_rows.ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]]) -> None:
         edits = data.get("fileEdits")
         if row.is_error or not isinstance(edits, list):
             return
@@ -1373,8 +1323,8 @@ class CopilotFacts:
                 detail = {"lines_added": to_int(metrics.get("linesAdded")), "lines_removed": to_int(metrics.get("linesRemoved"))}
             path = str(edit["path"])
             self.buffer.add_file_write(
-                FileWriteRow(
-                    dedup_key=_dedup_key("copilot-edit", self.sid, row.source_event_id, path),
+                fact_rows.FileWriteRow(
+                    dedup_key=fact_rows._dedup_key("copilot-edit", self.sid, row.source_event_id, path),
                     ts=row.ts,
                     path=absolute_path(path, self.cwd),
                     session_id=self.sid,
@@ -1423,8 +1373,8 @@ class CopilotFacts:
         # A request with no tool call, such as an extension asking for access. It is a
         # row of its own, named ``permission:<kind>``, so the decision is not lost.
         self.buffer.add_tool(
-            ToolInvocationRow(
-                dedup_key=_dedup_key("copilot-permission", self.sid, request_id),
+            fact_rows.ToolInvocationRow(
+                dedup_key=fact_rows._dedup_key("copilot-permission", self.sid, request_id),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1520,7 +1470,7 @@ class VSCodeDebugFacts:
     def _write_agent(self, ts: float) -> None:
         if self.agent_id:
             self.buffer.add_agent(
-                AgentRow(
+                fact_rows.AgentRow(
                     agent_id=self.agent_id,
                     session_id=self.sid,
                     tool="copilot-vscode",
@@ -1535,7 +1485,7 @@ class VSCodeDebugFacts:
         child = str(attrs.get("childSessionId") or "")
         if child and label.startswith(_SUBAGENT_LABEL):
             self.buffer.add_agent(
-                AgentRow(
+                fact_rows.AgentRow(
                     agent_id=child,
                     session_id=self.sid,
                     tool="copilot-vscode",
@@ -1555,8 +1505,8 @@ class VSCodeDebugFacts:
         billable = max(0, raw - cached)
         model = str(attrs.get("model") or "")
         self.buffer.add_request(
-            RequestRow(
-                dedup_key=_dedup_key("vscode-call", self.sid, span or str(ts)),
+            fact_rows.RequestRow(
+                dedup_key=fact_rows._dedup_key("vscode-call", self.sid, span or str(ts)),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=self.agent_id,
@@ -1582,8 +1532,8 @@ class VSCodeDebugFacts:
             args = {}
         failed = obj.get("status") == "error"
         code = _VSCODE_EXIT_CODE.search(str(attrs.get("result") or "")) if name == "run_in_terminal" else None
-        row = ToolInvocationRow(
-            dedup_key=_dedup_key("vscode-tool", self.sid, span or f"{name}{ts}"),
+        row = fact_rows.ToolInvocationRow(
+            dedup_key=fact_rows._dedup_key("vscode-tool", self.sid, span or f"{name}{ts}"),
             ts=ts,
             session_id=self.sid,
             agent_id=self.agent_id,
@@ -1607,8 +1557,8 @@ class VSCodeDebugFacts:
         skill = skill_of_path(args.get("filePath")) if name in _VSCODE_READ_TOOLS else ""
         if skill:
             self.buffer.add_skill(
-                SkillUseRow(
-                    dedup_key=_dedup_key("vscode-skill", self.sid, span or f"{name}{ts}"),
+                fact_rows.SkillUseRow(
+                    dedup_key=fact_rows._dedup_key("vscode-skill", self.sid, span or f"{name}{ts}"),
                     ts=ts,
                     session_id=self.sid,
                     agent_id=self.agent_id,
@@ -1620,8 +1570,8 @@ class VSCodeDebugFacts:
             )
         for path, added, removed in _vscode_file_edits(name, args):
             self.buffer.add_file_write(
-                FileWriteRow(
-                    dedup_key=_dedup_key("vscode-edit", self.sid, span, path),
+                fact_rows.FileWriteRow(
+                    dedup_key=fact_rows._dedup_key("vscode-edit", self.sid, span, path),
                     ts=ts,
                     path=absolute_path(decode_file_uri(path), self.project_path),
                     session_id=self.sid,
@@ -1640,8 +1590,8 @@ class VSCodeDebugFacts:
             return
         text = str(attrs.get("content") or "")
         self.buffer.add_prompt(
-            SessionPromptRow(
-                dedup_key=_dedup_key("vscode-log-prompt", self.sid, span or str(ts)),
+            fact_rows.SessionPromptRow(
+                dedup_key=fact_rows._dedup_key("vscode-log-prompt", self.sid, span or str(ts)),
                 ts=ts,
                 session_id=self.sid,
                 agent_id=self.agent_id,
@@ -1721,8 +1671,8 @@ class VSCodeChatFacts:
         if not text and not prompt_file:
             return
         self.buffer.add_prompt(
-            SessionPromptRow(
-                dedup_key=_dedup_key("vscode-prompt", self.sid, slot["id"]),
+            fact_rows.SessionPromptRow(
+                dedup_key=fact_rows._dedup_key("vscode-prompt", self.sid, slot["id"]),
                 ts=slot["ts"],
                 session_id=self.sid,
                 tool="copilot-vscode",
@@ -1742,8 +1692,8 @@ class VSCodeChatFacts:
         tokens_in, tokens_out = to_int(meta.get("promptTokens")), to_int(meta.get("outputTokens"))
         timings = result.get("timings") if isinstance(result.get("timings"), dict) else {}
         self.buffer.add_request(
-            RequestRow(
-                dedup_key=_dedup_key("vscode-chat-turn", self.sid, slot["id"]),
+            fact_rows.RequestRow(
+                dedup_key=fact_rows._dedup_key("vscode-chat-turn", self.sid, slot["id"]),
                 ts=slot["ts"],
                 session_id=self.sid,
                 tool="copilot-vscode",
@@ -1771,8 +1721,8 @@ class VSCodeChatFacts:
         shown = message.get("value") if isinstance(message, dict) else message
         call_id = str(part["toolCallId"])
         self.buffer.add_tool(
-            ToolInvocationRow(
-                dedup_key=_dedup_key("vscode-chat-tool", self.sid, call_id),
+            fact_rows.ToolInvocationRow(
+                dedup_key=fact_rows._dedup_key("vscode-chat-tool", self.sid, call_id),
                 ts=slot["ts"],
                 session_id=self.sid,
                 tool="copilot-vscode",
@@ -1788,8 +1738,8 @@ class VSCodeChatFacts:
         link = _VSCODE_SKILL_LINK.search(shown) if isinstance(shown, str) and kind != 0 else None
         if link:
             self.buffer.add_skill(
-                SkillUseRow(
-                    dedup_key=_dedup_key("vscode-chat-skill", self.sid, call_id),
+                fact_rows.SkillUseRow(
+                    dedup_key=fact_rows._dedup_key("vscode-chat-skill", self.sid, call_id),
                     ts=slot["ts"],
                     session_id=self.sid,
                     tool="copilot-vscode",

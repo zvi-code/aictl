@@ -13,8 +13,8 @@ from requests import Response
 
 from aictl.health import ObservedKustoClient
 from aictl.kusto import KustoSettings
-from aictl.kusto.connection import retrying
-from aictl.kusto.ingest import InlineIngester, QueuedIngester, StreamingIngester
+from aictl.stores.kusto.client import retrying
+from aictl.stores.kusto.ingest import InlineIngester, QueuedIngester, StreamingIngester
 
 CLUSTER = "http://localhost:8099"
 
@@ -28,7 +28,7 @@ def http_response(body, status=400):
 
 
 def failures(caplog):
-    return [record.getMessage() for record in caplog.records if record.name == "aictl.kusto.diagnostics"]
+    return [record.getMessage() for record in caplog.records if record.name == "aictl.stores.kusto.diagnostics"]
 
 
 @pytest.mark.parametrize("method", ["execute", "execute_query", "execute_mgmt"])
@@ -55,7 +55,7 @@ def test_query_failures_log_full_kql_and_exact_body(method, caplog):
 
 
 def test_inline_retries_log_each_failed_attempt_before_recovery(monkeypatch, caplog):
-    monkeypatch.setattr("aictl.kusto.connection.time.sleep", lambda _: None)
+    monkeypatch.setattr("aictl.stores.kusto.client.time.sleep", lambda _: None)
     bodies = ["first refusal\nwith detail", "second refusal\nwith different detail"]
     attempts = []
 
@@ -221,7 +221,7 @@ def test_concurrent_failures_keep_their_own_request_response_pair(caplog):
 
 
 def test_last_retry_failure_is_logged_too(monkeypatch, caplog):
-    monkeypatch.setattr("aictl.kusto.connection.RETRY_DELAYS_S", (0,))
+    monkeypatch.setattr("aictl.stores.kusto.client.RETRY_DELAYS_S", (0,))
     attempts = []
 
     def fail(*_args):

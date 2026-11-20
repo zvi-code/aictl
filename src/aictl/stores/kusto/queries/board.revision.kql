@@ -1,0 +1,9 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+union (requests | project node_id, _v), (tool_invocations | project node_id, _v),
+      (session_prompts | project node_id, _v), (file_write_events | project node_id, _v),
+      (session_usage | project node_id, _v), (sessions | project node_id, _v),
+      (agents | project node_id, _v), (skill_uses | project node_id, _v),
+      (process_snapshots | project node_id, _v), (files | project node_id, _v)
+| where all_nodes or node_id == requested_node
+| summarize rows=count(), version=max(_v)
+| take row_limit

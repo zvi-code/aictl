@@ -88,7 +88,7 @@ def test_context_audit_does_not_stat_a_unc_project(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Path, "is_dir", spy)
     used: list = []
-    monkeypatch.setattr("aictl.context_audit.run_audit", lambda project, tool: used.append(project) or {})
+    monkeypatch.setattr("aictl.context_audit.run_audit", lambda project, tool, **options: used.append(project) or {})
     stub = SimpleNamespace(
         server=SimpleNamespace(root=tmp_path),
         _qs_get=lambda key, default=None: {"project": r"\\evil\share"}.get(key, default),

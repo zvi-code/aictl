@@ -1,0 +1,20 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long
+);
+let tasks = union isfuzzy=true
+    (datatable(['project']:string, node_id:string, agent_id:string, _v:datetime, task:string, _deleted:bool)[]),
+    (agents_text | project ['project'], node_id, agent_id, _v, task, _deleted=column_ifexists('_deleted', false))
+    | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+    | where not(coalesce(_deleted, false))
+    | project ['project'], node_id, agent_id, retained_task=task;
+agents
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'], node_id, agent_id
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| extend legacy_task=column_ifexists('task', '')
+| join kind=leftouter tasks on ['project'], node_id, agent_id
+| summarize arg_max(_v, *) by node_id, agent_id
+| order by node_id asc, session_id asc, agent_id asc
+| take row_limit
+| project node_id, agent_id, session_id, task=coalesce(retained_task, legacy_task), model, started_at, ended_at, completed

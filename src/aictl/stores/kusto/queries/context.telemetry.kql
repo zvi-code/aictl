@@ -1,0 +1,10 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20, row_limit:long);
+tool_stats
+| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+| summarize arg_max(_v, *) by ['project'],node_id,ts,tool
+| where not(column_ifexists('_deleted',false))
+| summarize arg_max(ts, *) by node_id,tool
+| order by node_id asc,tool asc
+| take row_limit
+| project node_id,ts,tool,source,confidence,input_tokens,output_tokens,cache_read_tokens,
+    cache_creation_tokens,total_sessions,total_messages,cost_usd,model,by_model,by_project

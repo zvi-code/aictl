@@ -1,0 +1,12 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long);
+union (requests | extend fact_table='requests'),
+      (tool_invocations | extend fact_table='tool_invocations'),
+      (session_prompts | extend fact_table='session_prompts')
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by fact_table, ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| summarize first_ts=min(ts) by node_id, session_id
+| order by node_id asc, session_id asc
+| take row_limit

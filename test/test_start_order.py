@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,14 +21,12 @@ from aictl.dashboard import web_server
 from aictl.dashboard.models import DashboardSnapshot
 from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
 from aictl.orchestrator import AllowedPaths, SnapshotStore
-from aictl.storage import HistoryDB
 
 
 @pytest.fixture
-def starting(tmp_path):
+def starting(tmp_path, kusto_store):
     """A server whose first snapshot is not ready yet."""
-    db = HistoryDB(db_path=str(tmp_path / "start.db"), flush_interval=0)
-    store = SnapshotStore(db=db)
+    store = SnapshotStore(history_store=kusto_store.history_store, keeps_text=lambda: True)
     srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/tmp"))
     srv.ready.clear()
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -35,7 +34,7 @@ def starting(tmp_path):
     yield f"http://127.0.0.1:{srv.server_address[1]}", srv, store
     srv.ready.set()
     srv.shutdown()
-    db.close()
+    srv.server_close()
 
 
 def _post(url, data):
@@ -79,10 +78,22 @@ def test_the_wait_stays_under_the_socket_timeout():
 
 
 def test_session_history_does_not_wait_for_machine_snapshot(starting, monkeypatch):
+    from aictl.dashboard import board_api, session_evidence
+
     base, _, _store = starting
     monkeypatch.setattr(web_server, "READY_WAIT_S", 0)
+    clock = SimpleNamespace(**(vars(time) | {"time": lambda: 1_800_000_000.0}))
+    monkeypatch.setattr(board_api, "time", clock)
+    monkeypatch.setattr(session_evidence, "time", clock)
+    from aictl.stores import Store
+    from aictl.stores.testing import FixtureReader
+
+    reader = FixtureReader({"sequence.evidence": [], "agents.resolve": [], "sequence.flow": [],
+                            "sequence.stamp": [{}], "sequence.event_log": []})
+    _store.history_store = Store(reader=reader)
     with urllib.request.urlopen(base + "/api/session-evidence?session_id=absent", timeout=5) as resp:
         assert json.load(resp)["rows"] == []
+    assert reader.calls[0][0] == "sequence.evidence"
     with pytest.raises(urllib.error.HTTPError) as err:
         urllib.request.urlopen(base + "/api/board/agent/flow?id=absent&category=prompts", timeout=5)
     assert err.value.code == 404  # the store answered; not a starting/503 placeholder

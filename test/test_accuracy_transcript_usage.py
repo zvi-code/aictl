@@ -16,7 +16,8 @@ import pytest
 
 from aictl.dashboard.analytics import compute_usage_summary
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester, local_day
-from aictl.storage import HistoryDB, SessionRow
+from aictl.records import SessionRow
+from core_store_fakes import UsageFacts, current
 
 CLAUDE_SID = "11111111-1111-4111-8111-111111111111"
 SIBLING_SID = "22222222-2222-4222-8222-222222222222"
@@ -65,10 +66,8 @@ def stores(tmp_path):
 
 
 @pytest.fixture
-def db(tmp_path):
-    d = HistoryDB(db_path=tmp_path / "h.db", flush_interval=0)
-    yield d
-    d.close()
+def db():
+    return UsageFacts()
 
 
 def ingest(db, stores):
@@ -78,7 +77,7 @@ def ingest(db, stores):
 
 
 def usage_of(db, sid):
-    rows = db.query_session_usage(session_ids=[sid])
+    rows = db.usage_rows(session_ids=[sid])
     assert rows, f"no usage row for {sid}"
     return rows[0]
 
@@ -263,7 +262,7 @@ class TestCodex:
         u = usage_of(db, CODEX_SID)
         assert (u["input_tokens"], u["output_tokens"]) == (300, 30)
         assert u["turn_count"] == 1  # the sub-agent's task is not a user turn
-        assert len(db.query_session_usage(active_since=0)) == 1
+        assert len(db.usage_rows()) == 1
 
     def test_long_context_rate_applies_per_request(self, db, stores):
         rollout(
@@ -369,9 +368,14 @@ class TestMergeAcrossSources:
 
     def seed_other_sources(self, db):
         started = NOW - 3000
-        db.upsert_session(SessionRow(session_id=CLAUDE_SID, tool="claude-code", source="hook", started_at=started, input_tokens=9, output_tokens=9, cache_read_tokens=9, cost_usd=99.0))
-        db.upsert_session(SessionRow(session_id=f"claude-code:4242:{CLAUDE_SID}", tool="claude-code", source="otel", pid=4242, started_at=started + 5, input_tokens=500, output_tokens=500))
-        db.upsert_session(SessionRow(session_id="claude-code:4242:1700000000", tool="claude-code", source="correlator", pid=4242, started_at=started + 8, input_tokens=700, output_tokens=700))
+        db.profiles.extend([
+            dict(session_id=CLAUDE_SID, tool="claude-code", tokens_source="hook", started_at=started,
+                 input_tokens=9, output_tokens=9, cache_read_tokens=9, cost_usd=99.0),
+            dict(session_id=f"claude-code:4242:{CLAUDE_SID}", tool="claude-code", tokens_source="otel",
+                 started_at=started + 5, input_tokens=500, output_tokens=500),
+            dict(session_id="claude-code:4242:1700000000", tool="claude-code", tokens_source="correlator",
+                 started_at=started + 8, input_tokens=700, output_tokens=700),
+        ])
 
     def test_headline_is_the_transcript_alone(self, db, stores):
         claude_fixture(stores)
@@ -387,37 +391,38 @@ class TestMergeAcrossSources:
         assert tool["tokens_quality"] == "exact"
         assert summary["ignored_rows"] >= 0
 
-    def test_profiles_merge_to_one_row_with_transcript_numbers(self, db, stores):
+    def test_transcript_handoff_keeps_exact_numbers_and_estimated_cost(self, db, stores):
         claude_fixture(stores)
         self.seed_other_sources(db)
         ingest(db, stores)
-        rows = db.query_session_profiles(since=NOW - 86400)
-        assert len(rows) == 1
-        p = rows[0]
+        p, = db.usage_rows()
         assert (p["input_tokens"], p["output_tokens"]) == (60, 340)
-        assert p["tokens_source"] == "transcript"
+        assert p["source"] == "transcript"
         assert p["cost_quality"] == "estimated"
 
     def test_transcript_wins_over_a_later_hook_write(self, db, stores):
         claude_fixture(stores)
         ingest(db, stores)
-        db.upsert_session(SessionRow(session_id=CLAUDE_SID, tool="claude-code", source="hook", input_tokens=1, output_tokens=1))
-        row = db.get_session(CLAUDE_SID)
+        db.profiles.append(dict(session_id=CLAUDE_SID, tool="claude-code", tokens_source="hook",
+                                input_tokens=1, output_tokens=1))
+        row, = compute_usage_summary(db, NOW - 86400)["tools"]
         assert (row["input_tokens"], row["output_tokens"]) == (60, 340)
-        assert row["tokens_source"] == "transcript"
+        assert row["tokens_source"] == ["transcript"]
 
     def test_two_sessions_started_together_in_one_cwd_stay_separate(self, db, stores):
         project = stores["claude_projects"] / "p"
         write_jsonl(project / f"{CLAUDE_SID}.jsonl", [assistant("a", "ra", "claude-opus-5-5", 2000, inp=1, out=100)])
         write_jsonl(project / f"{SIBLING_SID}.jsonl", [assistant("b", "rb", "claude-opus-5-5", 1999, inp=1, out=30)])
         ingest(db, stores)
-        rows = db.query_session_profiles(since=NOW - 86400)
+        rows = db.usage_rows()
         assert sorted(r["output_tokens"] for r in rows) == [30, 100]
 
     def test_session_without_a_transcript_is_labelled_partial(self, db):
-        db.upsert_session(SessionRow(session_id=COPILOT_SID, tool="codex-cli", source="hook", started_at=NOW - 100, model="gpt-6.1-sol", input_tokens=1000))
-        row = db.get_session(COPILOT_SID)
-        assert (row["tokens_source"], row["tokens_quality"]) == ("hook", "partial")
+        db.profiles.append(dict(session_id=COPILOT_SID, tool="codex-cli", tokens_source="hook",
+                                tokens_quality="partial", started_at=NOW - 100, model="gpt-6.1-sol",
+                                input_tokens=1000, cost_quality="estimated", cost_usd=0.002))
+        row, = compute_usage_summary(db, NOW - 86400)["tools"]
+        assert (row["tokens_source"], row["tokens_quality"]) == (["hook"], "partial")
         assert row["cost_quality"] == "estimated"
         assert row["cost_usd"] == pytest.approx(0.002)
 
@@ -434,7 +439,7 @@ class TestUnknownModels:
         assert u["cost_quality"] == "unknown"
         assert u["unpriced_models"] == ["claude-future-9"]
         assert "claude-future-9" in u["cost_reason"]
-        assert db.get_session(CLAUDE_SID)["cost_usd"] is None
+        assert compute_usage_summary(db, NOW - 86400)["totals"]["cost_usd"] is None
 
     def test_mixed_session_prices_what_it_can_and_says_partial(self, db, stores):
         write_jsonl(
@@ -483,10 +488,7 @@ class TestSummaryLayer:
 
     def seed(self, db, stores):
         claude_fixture(stores)
-        started = NOW - 3000
-        db.upsert_session(SessionRow(session_id=CLAUDE_SID, tool="claude-code", source="hook", started_at=started))
-        db.upsert_session(SessionRow(session_id=f"claude-code:4242:{CLAUDE_SID}", tool="claude-code", source="otel", pid=4242, started_at=started + 5, input_tokens=500, output_tokens=500))
-        db.upsert_session(SessionRow(session_id="claude-code:4242:1700000000", tool="claude-code", source="correlator", pid=4242, started_at=started + 8, input_tokens=700, output_tokens=700))
+        TestMergeAcrossSources().seed_other_sources(db)
         ingest(db, stores)
 
     def test_usage_summary_counts_one_session_once(self, db, stores):
@@ -502,9 +504,9 @@ def test_totals_do_not_depend_on_stored_text(db, stores):
     """Capture modes may trim text, so nothing is derived from it at query time."""
     claude_fixture(stores)
     ingest(db, stores)
-    assert db._conn().execute("SELECT COUNT(*) FROM session_usage WHERE models_json LIKE '%hello%'").fetchone()[0] == 0
-    columns = [r[1] for r in db._conn().execute("PRAGMA table_info(session_usage)")]
-    assert not {"prompt", "response", "content", "text"} & set(columns)
+    row, = current(db.writer, "session_usage")
+    assert "hello" not in row["models_json"]
+    assert not {"prompt", "response", "content", "text"} & row.keys()
     assert usage_of(db, CLAUDE_SID)["turn_count"] == 1
 
 
@@ -528,8 +530,6 @@ def test_a_large_transcript_is_read_line_by_line(db, stores, monkeypatch):
     assert ing._offsets[path] == path.stat().st_size
 
 
-def test_phantom_verify_row_never_reaches_a_read(db):
-    db.upsert_session(SessionRow(session_id="aictl-verify", tool="claude-code", source="hook", started_at=NOW - 10))
-    assert db.get_session("aictl-verify") is None
-    assert db.query_sessions() == []
-    assert db.query_session_profiles(since=NOW - 100) == []
+def test_phantom_verify_row_never_reaches_history(db):
+    db.session(SessionRow(session_id="aictl-verify", tool="claude-code", source="hook", started_at=NOW - 10))
+    assert not current(db.writer, "sessions")

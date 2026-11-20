@@ -1,0 +1,15 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
+    session_keys:dynamic, row_limit:long
+);
+tool_invocations
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where ts between (since .. until) and not(tool_name startswith_cs 'permission:')
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
+| summarize calls=count() by node_id, session_id, agent_id, g
+| order by node_id asc, session_id asc, agent_id asc, g asc
+| take row_limit

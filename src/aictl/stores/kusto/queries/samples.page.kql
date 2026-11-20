@@ -1,0 +1,17 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20,
+                         requested_metric:string = '', metric_prefix:string = '', tag_filter:dynamic = dynamic([]),
+                         ascending:bool = false, row_limit:long);
+metrics
+| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+| summarize arg_max(_v, *) by node_id, ['project'], metric, ts, seq
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where (isempty(requested_metric) or metric == requested_metric) and metric startswith metric_prefix
+| extend parsed_tags=parse_json(tags)
+| mv-apply filter = array_concat(tag_filter, dynamic([[]])) on (
+    summarize matches=countif(array_length(filter) == 2 and tostring(parsed_tags[tostring(filter[0])]) == tostring(filter[1])
+                              and gettype(parsed_tags[tostring(filter[0])]) == "string")
+)
+| where matches == array_length(tag_filter)
+| order by iff(ascending, ts, -ts) asc, metric asc, seq asc, node_id asc, ['project'] asc
+| take row_limit
+| project ts, metric, value, tags

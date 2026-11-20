@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..ingesters._common import coerce_ts, open_readonly
+from ..ingesters._common import SQLITE_UNAVAILABLE, coerce_ts, open_readonly
 from ..platforms import config_path, copilot_global_dir, copilot_session_dir, vscode_user_dir
 from ..utils import estimate_tokens_from_size
 from .copilot_events import EventsFile, EventsParse, clean
 from .procs import ProcTable, assign_shares, snapshot
+
+if TYPE_CHECKING:
+    import sqlite3
 
 SCHEMA_VERSION = 1
 FRESH_S = 120.0
@@ -82,21 +84,14 @@ def _connect_no_side_files(path: Path) -> sqlite3.Connection | None:
     With neither file present no writer is attached, so ``immutable=1`` reads the
     same data and leaves the tool's directory untouched.
     """
-    try:
-        with path.open("rb") as fh:
-            header = fh.read(20)
-    except OSError:
-        return None
-    is_wal = len(header) == 20 and header[18] == 2
-    if is_wal and not Path(f"{path}-wal").exists() and not Path(f"{path}-shm").exists():
-        try:
-            return sqlite3.connect(f"{path.as_uri()}?immutable=1", uri=True, timeout=1.0)
-        except sqlite3.Error:
-            return None
     return open_readonly(path, "observe")
 
 
 def _query(path: Path, sql: str, args: tuple = ()) -> list[tuple]:
+    try:
+        import sqlite3
+    except ImportError:
+        return []
     conn = _connect_no_side_files(path)
     if conn is None:
         return []
@@ -603,6 +598,10 @@ class Collector:
         notes = []
         if table is None:
             notes.append("psutil is not installed: process data is n/a. Install with: pip install aictl[processes]")
+        try:
+            import sqlite3  # noqa: F401 - report the optional source in the document notes
+        except ImportError:
+            notes.append(SQLITE_UNAVAILABLE)
         roots = table.tool_roots() if table else {}
         sessions = self.copilot_state_sessions(table, now, capture, include_ended, target)
         editor_running = "copilot-vscode" in roots

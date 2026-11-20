@@ -1,0 +1,20 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    requested_session:string = '', session_keys:dynamic = dynamic([]), row_limit:long
+);
+tool_invocations
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where ts between (since .. until) and isnotempty(session_id)
+| where isempty(requested_session) or session_id == requested_session
+| where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| extend is_call=not(tool_name startswith_cs 'permission:')
+| summarize arg_max(ts, tool, project_path), calls=countif(is_call), failures=countif(is_call and is_error != 0),
+            asked=countif(confirm in ('approved','denied','pending')), denied=countif(confirm == 'denied'),
+            pending=countif(confirm == 'pending'), first_ts=min(ts), last_ts=max(ts),
+            last_error=maxif(ts, is_call and is_error != 0) by node_id, session_id, agent_id
+| project-away ts
+| order by node_id asc, session_id asc, agent_id asc
+| take row_limit

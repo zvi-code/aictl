@@ -1,0 +1,37 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
+    since:real=0.0, until:real=1.0e20, row_limit:long);
+union
+    (requests | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until and is_error == 0
+        | extend size=input_tokens+cache_read_tokens+cache_creation_tokens
+        | where size != 0
+        | project row_type='call',ts,key,values=pack_array(agent_id,size,tool_tokens,max_prompt_tokens,request_bytes,available_tools,ts,tool,model,output_tokens)),
+    (context_events | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until and kind in ('compaction','split')
+        | project row_type=kind,ts,key,values=iff(kind=='split',pack_array(ts,current_tokens,system_tokens,conversation_tokens,tool_tokens),
+            pack_array(agent_id,ts,tool,trigger,before_tokens,after_tokens,duration_ms))),
+    (session_context_items | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
+        | project row_type='item',ts,key=strcat(agent_id,':',kind,':',name),values=pack_array(agent_id,kind,name,path,tokens,removed,ts,chars)),
+    (tool_invocations | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
+        | project row_type='tool',ts,key,values=pack_array(agent_id,ts,tool_name,output_bytes)),
+    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
+        | project row_type='prompt',ts,key,values=pack_array(agent_id,ts,string_size(text))),
+    (session_loaded_files | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,path,how
+        | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
+        | project row_type='loaded',ts,key=strcat(path,':',how),values=pack_array(path,how,detail,ts,agent_id))
+| order by row_type asc, ts asc,key asc
+| take row_limit
+| project row_type, values

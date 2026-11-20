@@ -1,0 +1,38 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), page_size:long, row_limit:long
+);
+let named_sessions = sessions
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by node_id, ['project'], session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false)) and isnotempty(session_id)
+    | summarize arg_max(_v, tool) by node_id, session_id
+    | project node_id, session_id, session_tool=tool;
+let calls = materialize(requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by node_id, ['project'], fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false)) and ts between (since .. until)
+    | project node_id, session_id, agent_id, tool, model, ts, duration_ms=coalesce(duration_ms, 0.0),
+              input_tokens, output_tokens, cache_read_tokens, finish_reason, cost_usd, is_error
+    | join kind=leftouter named_sessions on node_id, session_id
+    | extend attributed=iff(tool in ('', 'any', 'unknown'), session_tool, tool));
+let selected = materialize(calls | where not(restrict_tools) or attributed in (requested_tools));
+let model_counts = selected | summarize count=count(), avg_ms=avg(duration_ms),
+    input_tokens=sum(input_tokens), output_tokens=sum(output_tokens) by model;
+let model_ranks = selected
+    | project model, duration_ms
+    | sort by model asc, duration_ms asc
+    | extend rank=row_number(0, prev(model) != model);
+union
+    (calls | summarize hidden=countif(restrict_tools and attributed in ('', 'any', 'unknown')) | extend row_type='hidden'),
+    (model_ranks | join kind=inner model_counts on model
+        | summarize p50_ms=maxif(duration_ms, rank == count / 2),
+                    p95_ms=maxif(duration_ms, rank == min_of(tolong(count * 0.95), count - 1)),
+                    max_ms=max(duration_ms) by model, count, avg_ms, input_tokens, output_tokens
+        | extend row_type='model'),
+    (selected | top page_size by ts desc
+              | project row_type='request', ts, duration_ms, input_tokens, output_tokens, cache_read_tokens,
+                        model, session_id, agent_id, finish_reason, cost_usd, is_error)
+| order by row_type asc, ts desc
+| take row_limit

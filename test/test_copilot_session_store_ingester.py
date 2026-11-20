@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from aictl.ingesters.copilot_session_store import CopilotSessionStoreIngester
-from aictl.storage import HistoryDB, SessionRow
+from aictl.records import SessionRow
+from core_store_fakes import message_facts, quality, written
 
 
 def _build_source_db(path: Path) -> None:
@@ -52,9 +53,7 @@ def _build_source_db(path: Path) -> None:
 
 @pytest.fixture()
 def our_db(tmp_path):
-    db = HistoryDB(db_path=str(tmp_path / "aictl.db"), flush_interval=0)
-    yield db
-    db.close()
+    return message_facts(tmp_path)
 
 
 def test_ingests_all_messages_on_first_poll(tmp_path, our_db):
@@ -65,17 +64,11 @@ def test_ingests_all_messages_on_first_poll(tmp_path, our_db):
     inserted = ingester.poll()
 
     assert inserted == 8
-    conn = our_db._conn()
-    rows = conn.execute(
-        "SELECT session_id, role, content FROM copilot_session_messages"
-        " ORDER BY source_row_id"
-    ).fetchall()
+    rows = written(our_db.writer, "copilot_session_messages")
     assert len(rows) == 8
     # Provisional sessions were created for both source ids.
-    sess_rows = conn.execute(
-        "SELECT session_id FROM sessions WHERE tool='copilot-cli' ORDER BY session_id"
-    ).fetchall()
-    session_ids = {r[0] for r in sess_rows}
+    sess_rows = written(our_db.writer, "sessions")
+    session_ids = {r["session_id"] for r in sess_rows if r["tool"] == "copilot-cli"}
     assert "copilot:sess-A" in session_ids
     assert "copilot:sess-B" in session_ids
     # Cursor advanced.
@@ -87,7 +80,7 @@ def test_correlates_to_existing_session(tmp_path, our_db):
     _build_source_db(src)
 
     # Pre-seed a real session row that matches one of the source ids.
-    our_db.upsert_session(
+    our_db.sessions.session(
         SessionRow(
             session_id="sess-A",
             tool="copilot-cli",
@@ -99,11 +92,8 @@ def test_correlates_to_existing_session(tmp_path, our_db):
     ingester = CopilotSessionStoreIngester(src, our_db)
     ingester.poll()
 
-    conn = our_db._conn()
-    rows = conn.execute(
-        "SELECT DISTINCT session_id FROM copilot_session_messages ORDER BY session_id"
-    ).fetchall()
-    ids = {r[0] for r in rows}
+    rows = written(our_db.writer, "copilot_session_messages")
+    ids = {r["session_id"] for r in rows}
     # sess-A should have been correlated to the existing row verbatim.
     assert "sess-A" in ids
     # sess-B had no match, so a provisional row was made.
@@ -122,7 +112,7 @@ def test_second_poll_with_no_new_rows_inserts_zero(tmp_path, our_db):
 def test_missing_source_db_returns_zero(tmp_path, our_db):
     ingester = CopilotSessionStoreIngester(tmp_path / "does-not-exist.db", our_db)
     assert ingester.poll() == 0
-    rows = our_db.query_data_quality(component="ingester:copilot-session-store")
+    rows = quality(our_db, "ingester:copilot-session-store")
     assert rows[0]["status"] == "source_missing"
 
 
@@ -135,7 +125,7 @@ def test_unknown_schema_records_data_quality(tmp_path, our_db):
 
     ingester = CopilotSessionStoreIngester(src, our_db)
     assert ingester.poll() == 0
-    rows = our_db.query_data_quality(component="ingester:copilot-session-store")
+    rows = quality(our_db, "ingester:copilot-session-store")
     assert rows[0]["status"] == "schema_unknown"
 
 
@@ -180,5 +170,5 @@ def test_discover_handles_schema_without_ts(tmp_path, our_db):
 
     ingester = CopilotSessionStoreIngester(src, our_db)
     assert ingester.poll() == 1
-    rows = our_db.query_data_quality(component="ingester:copilot-session-store")
+    rows = quality(our_db, "ingester:copilot-session-store")
     assert rows[0]["status"] == "ok"

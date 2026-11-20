@@ -1,0 +1,421 @@
+"""Phase S acceptance probe. Run the daemon with both SQLite modules blocked."""
+
+import gzip
+import http.client
+import json
+import logging
+import os
+import socket
+import subprocess
+import sys
+import threading
+import time
+import traceback
+from functools import partial
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+from urllib.parse import urlsplit
+
+RECORDINGS = Path(__file__).parent / "recordings"
+_TRIM_TIME = 1780000000
+_INGESTERS = {
+    "copilot-session-store",
+    "cursor-conversations",
+    "vscode-chat-logs",
+    "transcript-usage",
+    "session-artifacts",
+}
+
+
+def test_daemon_and_cli_without_sqlite(tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AICTL_")}
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    result = subprocess.run(
+        [sys.executable, "-u", str(Path(__file__).resolve()), str(tmp_path)],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=230,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _dashboard_requests(root):
+    paths = {}
+    for tape in (RECORDINGS / "quiet" / "isolated-rest.jsonl.gz", RECORDINGS / "supplemental-main-rest.jsonl.gz"):
+        with gzip.open(tape, "rt", encoding="utf-8") as file:
+            for record in map(json.loads, file):
+                paths[record["route"]] = record["path"]
+    paths.update(
+        {
+            path: path
+            for path in (
+                "/",
+                "/api/snapshot",
+                "/api/budget",
+                "/api/history",
+                "/api/datapoints",
+                "/api/self-status",
+                "/api/copilot-sessions",
+                "/api/live/stream?history=1",
+            )
+        }
+    )
+    asset = next((root / "src" / "aictl" / "dashboard" / "dist" / "assets").glob("*.js"), None)
+    paths["asset"] = "/assets/" + (asset.name if asset else "no-sqlite-probe.js")
+    for path in paths.values():
+        yield "GET", path
+    for path in ("/api/hooks", "/api/session-kill", "/api/board/action", "/v1/metrics", "/v1/logs", "/v1/traces"):
+        yield "POST", path
+    for path in ("/api/tool-config/copilot-cli", "/api/settings/file"):
+        yield "PUT", path
+
+
+def _request(port, method, path):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+    try:
+        headers = {"Content-Type": "application/json"} if method != "GET" else {}
+        connection.request(method, path, body="{}" if headers else None, headers=headers)
+        response = connection.getresponse()
+        assert response.status < 500, f"HTTP {response.status}: {response.read(300)!r}"
+        route = urlsplit(path).path
+        if route in ("/api/stream", "/api/live/stream"):
+            assert response.status == 200 and "text/event-stream" in response.getheader("Content-Type", "")
+            lines = []
+            while line := response.readline(65_536).strip():
+                lines.append(line)
+                if line.startswith(b"data:"):
+                    break
+            assert any(line.startswith(b"data:") for line in lines), "No initial SSE frame"
+            if route == "/api/live/stream":
+                assert b"event: bootstrap" in lines, "No live bootstrap event"
+        elif method == "GET" and route in ("/", "/api/snapshot", "/api/live/capabilities", "/api/board/health"):
+            assert response.status == 200, f"HTTP {response.status}"
+    finally:
+        connection.close()
+
+
+def _supplement_replay(client, settings):
+    """Supply offline responses for the native store paths added after the recording."""
+    from datetime import datetime, timezone
+
+    from aictl.kusto import report
+    from aictl.kusto.observations import CURRENT_STORE, LAYOUT_QUERY
+    from aictl.stores.kusto.client import kql_literal, quote
+    from aictl.stores.kusto.maintenance import TRIM_TIMESTAMPS
+    from aictl.stores.kusto.reader import _VIEWS, _query
+    from aictl.stores.kusto.recorded import RecordedKustoClient
+    from aictl.stores.kusto.schema import LEGACY_COLUMNS
+    from aictl.stores.kusto.tables import TABLES
+
+    client._responses.update(RecordedKustoClient(RECORDINGS / "r1-kusto.jsonl.gz")._responses)
+
+    def response(kind, text, columns=(), rows=(), *, replace=False):
+        key = (kind, text)
+        if replace:
+            client._responses[key].clear()
+        if not client._responses[key]:
+            client._responses[key].append({
+                "outcome": "ok",
+                "response": [{"columns": [{"name": name, "type": typ} for name, typ in columns], "rows": rows}],
+            })
+
+    names = [name for name in TABLES if not name.endswith("_observations")] + [CURRENT_STORE]
+    response("command", LAYOUT_QUERY, [("TableName", "string")], [[name] for name in names], replace=True)
+    response(
+        "command", ".show database schema | project TableName, ColumnName, ColumnType",
+        [(name, "string") for name in ("TableName", "ColumnName", "ColumnType")],
+        [[name, column, kind] for name in names if name in TABLES
+         for column, kind in (*TABLES[name].columns, *LEGACY_COLUMNS.get(name, ()))],
+    )
+    response(
+        "command", ".show tables details | project TableName, RetentionPolicy, StreamingIngestionPolicy",
+        [("TableName", "string"), ("RetentionPolicy", "dynamic"), ("StreamingIngestionPolicy", "dynamic")],
+        [[name, {"SoftDeletePeriod": f"{TABLES[name].retention_days}.00:00:00"}, {"IsEnabled": True}]
+         for name in names if name in TABLES],
+    )
+    response("command", ".show tables details | project TableName, TotalExtents, TotalRowCount, TotalExtentSize",
+             [("TableName", "string"), ("TotalExtents", "long"), ("TotalRowCount", "long"),
+              ("TotalExtentSize", "long")], [["sessions", 0, 0, 0]])
+    for name in names:
+        if name in TABLES:
+            response("command", f".clear table {quote(name)} data")
+    node = kql_literal(settings.node_id, "string")
+    instant = kql_literal(datetime.fromtimestamp(_TRIM_TIME, timezone.utc), "datetime")
+    for name, (column, kind) in TRIM_TIMESTAMPS.items():
+        cutoff = instant if kind == "datetime" else kql_literal(_TRIM_TIME, "real")
+        age = f"{column} < {cutoff}"
+        if column != "_v":
+            age += f" or (isnull({column}) and _v < {instant})"
+        table = quote(name)
+        response("command", f".delete table {table} records with (whatif=true) <| {table}"
+                            f" | where node_id == {node} | where {age}")
+    # Ungrouped summaries return one row even when their source is empty.
+    for view, columns, rows in (
+        ("board.revision", [("rows", "long"), ("version", "datetime")], [[0, None]]),
+        ("events.count", [("count", "long")], [[0]]),
+        ("sessions.first_activity", [("first_ts", "real")], [[None]]),
+        ("sequence.stamp", [("versions", "long"), ("newest", "datetime"), ("in_window", "long")], [[0, None, 0]]),
+        ("tools.detail", [("row_type", "string"), ("total", "long")], [["count", 0]]),
+        ("skills.detail",
+         [("row_type", "string"), ("uses", "long"), ("agents", "long"), ("total", "long"),
+          ("first_ts", "real"), ("last_ts", "real"), ("projects", "dynamic")],
+         [["all", None, None, 0, None, None, []], ["counts", 0, 0, None, None, None, None]]),
+    ):
+        response("query", _query(view), columns, rows)
+    for view in _VIEWS:
+        response("query", _query(view))
+    for section in report.SECTIONS:
+        response("query", report.parameterized(report.read_query(section), None, None))
+
+    execute_query = client.execute_query
+    mode_queries = {_query(view) for view in ("skills.detail", "tools.detail")}
+
+    def query(database, text, properties=None):
+        if text in mode_queries and properties is not None:
+            if properties.get_parameter("query_mode", "detail") not in {"detail", '"detail"'}:
+                return SimpleNamespace(primary_results=[])
+        return execute_query(database, text, properties)
+
+    client.execute_query = query
+
+
+def _probe(root, state):
+    # Keep both the daemon and its tool inputs separate from the user's state.
+    inputs = state / "profile"
+    inputs.mkdir()
+    store_dir = state / "store"
+    store_dir.mkdir()
+    os.environ.update(
+        {
+            name: str(inputs)
+            for name in (
+                "HOME",
+                "USERPROFILE",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "COPILOT_HOME",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+            )
+        }
+    )
+    os.environ.update(
+        AICTL_KUSTO_CLUSTER="https://recording.invalid",
+        AICTL_KUSTO_DATABASE="aictl_perf_test",
+        AICTL_CAPTURE="metadata",
+        AICTL_KUSTO_AUTH="none",
+    )
+    (inputs / "session-state").mkdir()
+
+    creation_attempts = set()
+
+    def audit(event, args):
+        if event == "socket.connect" and args[0].family in (socket.AF_INET, socket.AF_INET6):
+            assert args[1][0] in ("127.0.0.1", "::1"), "The probe must use the recorded Kusto client"
+        if event == "open" and isinstance(args[0], (bytes, str)) and args[2] & os.O_CREAT:
+            path = Path(os.fsdecode(args[0])).absolute()
+            if path.is_relative_to(store_dir) and _sqlite_name(path):
+                creation_attempts.add(str(path))
+
+    sys.addaudithook(audit)
+    from aictl import platforms
+    from aictl.kusto import KustoSettings
+    from aictl.stores.kusto.client import KustoClientFactory
+    from aictl.stores.kusto.writer import KustoWriter
+
+    platforms.config_dir = lambda: store_dir
+
+    def writer_failure(client):
+        settings = KustoSettings.from_env()
+        assert settings is not None
+        assert KustoClientFactory.client(settings) is client
+        writer = KustoWriter(KustoClientFactory.native_ingester(settings), node_id=settings.node_id)
+        client.ingest_error = RuntimeError("forced B6 ingestion failure")
+        try:
+            writer.upsert("files", [{"project": "", "path": "b6"}])
+            writer.flush()
+            health = writer.health()["tables"]["files"]
+            assert health["queue_depth"] == 1 and health["last_error"] == "forced B6 ingestion failure"
+        finally:
+            writer.close()
+            client.ingest_error = None
+
+    errors = []
+
+    def step(name, work, *args):
+        print(f"B6: {name}", flush=True)
+        try:
+            return work(*args)
+        except Exception as exc:
+            errors.append(name)
+            print(f"B6 failure [{name}]: {type(exc).__name__}: {exc}", flush=True)
+            traceback.print_exc()
+            return None
+
+    def cli(args):
+        from click.testing import CliRunner
+
+        from aictl.cli import main
+
+        with patch("aictl.commands.admin.time", SimpleNamespace(time=lambda: _TRIM_TIME)):
+            result = CliRunner().invoke(main, ["db", *args], input="y\n")
+        if result.exception and not isinstance(result.exception, SystemExit):
+            raise result.exception
+        assert result.exit_code == 0, result.output
+
+    with KustoClientFactory.replay(RECORDINGS / "quiet" / "kusto.jsonl.gz") as client:
+        _supplement_replay(client, KustoSettings.from_env())
+        writer_failure(client)
+        step("daemon, collector cycles, dashboard and live stream", _exercise_daemon, root, inputs, store_dir, step)
+        for args in (
+            ["trim-text", "--dry-run"],
+            ["stats"],
+            ["schema"],
+            ["reset", "--yes"],
+            ["report", "--out", str(store_dir / "report.html")],
+        ):
+            step(f"db {args[0]}", cli, args)
+
+    sqlite_files = set(creation_attempts)
+    for path in store_dir.rglob("*"):
+        if path.is_file():
+            with path.open("rb") as file:
+                if _sqlite_name(path) or file.read(16) == b"SQLite format 3\x00":
+                    sqlite_files.add(str(path))
+    if sqlite_files:
+        errors.append("SQLite files in state directory")
+        print(f"B6 failure [SQLite files in state directory]: {sorted(sqlite_files)}", flush=True)
+    if errors:
+        print("B6 failed steps: " + "; ".join(errors), flush=True)
+        return 1
+    return 0
+
+
+def _sqlite_name(path):
+    name = path.name.lower()
+    return name.endswith((".sqlite", ".sqlite3", ".db", "-wal", "-shm", "-journal"))
+
+
+def _exercise_daemon(root, inputs, store_dir, step):
+    from aictl import orchestrator
+    from aictl.dashboard import ingester_runner, web_server
+    from aictl.monitoring import config as monitor_config, runtime
+
+    orchestrator._kill_stale_server = lambda _port: None
+    monitor_config.default_state_paths = lambda _root: (inputs,)
+    copilot = inputs / "session-store.db"
+    cursor = inputs / "conversations.db"
+    copilot.touch()
+    cursor.touch()
+    vscode = inputs / "vscode-logs"
+    vscode.mkdir()
+    ingester_runner.TranscriptUsageIngester = partial(
+        ingester_runner.TranscriptUsageIngester,
+        claude_projects=inputs / "projects",
+        codex_sessions=inputs / "sessions",
+        copilot_state=inputs / "session-state",
+        vscode_workspaces=vscode,
+    )
+    ingester_runner.default_db_path = lambda: copilot
+    ingester_runner.CURSOR_DEFAULT_DB_PATH = cursor
+    ingester_runner.vscode_chat_default_log_dir = lambda: vscode
+
+    monitors, cycles, handles, servers, daemon_errors = set(), set(), {}, [], []
+    build = runtime.build_collectors
+    start = ingester_runner.start_ingesters
+
+    def build_collectors(config):
+        collectors = build(config)
+        for collector in collectors:
+            label = collector.name
+            monitors.add(label)
+            original_sleep = collector.sleep_paced
+            original_status = collector.report_status
+
+            async def paced(interval, name=label, sleep=original_sleep):
+                cycles.add(name)
+                await sleep(interval)
+
+            async def reported(*, status, mode, detail, name=label, report=original_status):
+                await report(status=status, mode=mode, detail=detail)
+                if status == "unavailable" or name in {"network:macos-bpf", "filesystem:watchdog"}:
+                    cycles.add(name)
+
+            collector.sleep_paced = paced
+            collector.report_status = reported
+        return collectors
+
+    def start_ingesters(store):
+        result = start(store)
+        handles.update(result)
+        return result
+
+    runtime.build_collectors = build_collectors
+    ingester_runner.start_ingesters = start_ingesters
+
+    class ObservedServer(web_server._DashboardHTTPServer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            servers.append(self)
+
+    web_server._DashboardHTTPServer = ObservedServer
+
+    def daemon():
+        try:
+            orchestrator.start_server(inputs / "workspace", port=0, open_browser=False)
+        except Exception as exc:
+            daemon_errors.append(exc)
+            traceback.print_exc()
+
+    def wait_for(check, reason, *, timeout=30):
+        deadline = time.monotonic() + timeout
+        while not check() and not daemon_errors and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if daemon_errors:
+            raise daemon_errors[0]
+        assert check(), reason()
+
+    (inputs / "workspace").mkdir()
+    worker = threading.Thread(target=daemon, name="B6-daemon", daemon=True)
+    worker.start()
+    try:
+        wait_for(lambda: servers and servers[0].ready.is_set(), lambda: "Daemon did not start", timeout=100)
+        for method, path in _dashboard_requests(root):
+            step(f"{method} {path}", _request, servers[0].server_port, method, path)
+
+        def collector_cycles():
+            def ingester_finished(name):
+                handle = handles.get(name)
+                if handle is None:
+                    return False
+                status = handle.status()
+                return status.get("last_success_at") or (
+                    "unavailable: Python sqlite3 module missing" in json.dumps(status, default=str)
+                )
+
+            wait_for(lambda: monitors and cycles >= monitors, lambda: f"Monitor cycles missing: {monitors - cycles}")
+            wait_for(
+                lambda: all(map(ingester_finished, _INGESTERS)),
+                lambda: f"Ingester cycles missing: {sorted(n for n in _INGESTERS if not ingester_finished(n))}",
+            )
+
+        step("collector cycles", collector_cycles)
+    finally:
+        if servers:
+            servers[0].shutdown()
+        worker.join(timeout=5)
+
+
+if __name__ == "__main__":
+    sys.modules["sqlite3"] = None
+    sys.modules["_sqlite3"] = None
+    logging.basicConfig(level=logging.INFO)
+    raise SystemExit(_probe(Path(__file__).resolve().parents[1], Path(sys.argv[1])))

@@ -1,0 +1,53 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real = 1.0e20,
+                         counts_only:bool = false, row_limit:long);
+let hook_events = materialize(events
+    | where (all_nodes or node_id == requested_node) and ts between (since .. until)
+    | extend event_key=iff(isempty(source_key), strcat('legacy:', tostring(seq)), source_key)
+    | summarize arg_max(_v, *) by node_id, ['project'], event_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where kind startswith 'hook:' or (not(counts_only) and kind contains 'subagent')
+    | extend d=parse_json(detail)
+    | where coalesce(tobool(d._aictl_verify), false) == false
+    | project node_id, ['project'], event_key, ts, tool, kind, d);
+let session_tools = sessions
+    | where not(counts_only) and (all_nodes or node_id == requested_node)
+    | summarize arg_max(_v, *) by node_id, ['project'], session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project node_id, ['project'], session_id, session_tool=tool;
+let stored_tools =
+    union (tool_invocations | extend category='call', entry=tool_name),
+          (skill_uses | extend category='skill', entry=name)
+    | where not(counts_only) and (all_nodes or node_id == requested_node)
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by category, node_id, ['project'], fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+        and ts between (since .. until) and session_id != 'aictl-verify'
+    | where category != 'call' or entry != 'Skill'
+    | join kind=leftouter session_tools on node_id, ['project'], session_id
+    | summarize count=count() by category, tool=coalesce(iff(tool in ('', 'unknown', 'unattributed'), '', tool), session_tool, tool, 'unknown'),
+                                  name=coalesce(entry, 'unknown');
+let subagents = hook_events | where not(counts_only) and kind contains 'subagent';
+union
+    (hook_events | where kind startswith 'hook:' | summarize count=count(), last_ts=max(ts) by tool, kind
+        | extend row_type='hook'),
+    (hook_events | where not(counts_only) and kind == 'hook:PostToolUse'
+        | extend name=coalesce(tostring(d.tool_name), tostring(d.name), 'unknown')
+        | extend row_type=iff(name == 'Skill', 'hook_skill', 'hook_call')
+        | extend name=iff(row_type == 'hook_skill',
+            coalesce(tostring(d.skill_name), tostring(d.tool_input.skill), tostring(d.tool_input.name),
+                     tostring(d.input.skill), tostring(d.input.name), 'unknown'), name)
+        | summarize count=count() by tool, name, row_type),
+    (stored_tools | extend row_type=category | project-away category),
+    (subagents | summarize count=count() by tool, kind | extend row_type='subagent'),
+    (subagents | order by ts desc, node_id asc, ['project'] asc, event_key asc | take 10
+        | project row_type='recent', ts, tool, kind, agent_id=coalesce(tostring(d.agent_id), tostring(d.subagent_id)),
+                  agent_type=tostring(d.agent_type), event_key),
+    (agents | where not(counts_only) and (all_nodes or node_id == requested_node)
+        | summarize arg_max(_v, *) by node_id, ['project'], agent_id
+        | where not(coalesce(column_ifexists('_deleted', false), false)) and is_sidechain == 1
+            and (started_at between (since .. until) or ended_at between (since .. until))
+        | summarize starts=countif(started_at between (since .. until)), stops=countif(ended_at between (since .. until))
+                    by tool=coalesce(tool, 'unknown')
+        | extend row_type='agent')
+| order by row_type asc, ts desc nulls last, tool asc, kind asc, name asc, event_key asc
+| take row_limit

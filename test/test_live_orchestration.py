@@ -1,4 +1,4 @@
-"""Kusto-only live lifecycle wiring without opening a store, server, or real tool."""
+"""Live lifecycle wiring without opening a store, server, or real tool."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,13 +10,17 @@ from aictl.dashboard.web_server import _DashboardHTTPServer
 
 
 @pytest.mark.parametrize("use_kusto", [False, True])
-def test_collection_lifecycle_attaches_live_sources_only_to_kusto(monkeypatch, use_kusto):
-    from aictl import kusto, platforms, project_stores, sink, tree_walk
+def test_collection_lifecycle_shares_store_and_keeps_live_sources(monkeypatch, use_kusto, tmp_path):
+    from aictl import kusto, platforms, sink, stores, tree_walk
     from aictl.monitoring import live_sources
     from aictl.observe import collect
 
     calls = []
-    settings = SimpleNamespace(uri="https://example.invalid/history", auth_mode="none") if use_kusto else None
+    settings = kusto.KustoSettings("https://example.invalid") if use_kusto else None
+    writer = SimpleNamespace(close=lambda: calls.append("writer-close"))
+    plugin = stores.Store(reader=object(), writer=writer) if use_kusto else None
+    opened = []
+    monkeypatch.setattr(stores, "open_store", lambda name, **options: opened.append((name, options)) or plugin)
     cfg = SimpleNamespace(
         logging_enabled=False,
         capture="full",
@@ -25,16 +29,18 @@ def test_collection_lifecycle_attaches_live_sources_only_to_kusto(monkeypatch, u
         content_retention_days=7,
         effective_log_file=lambda: Path("unit.log"),
     )
-    db = SimpleNamespace(_kusto=settings, capture="full", close=lambda: calls.append("db-close"))
     monkeypatch.setattr(platforms, "load_config", lambda: cfg)
+    monkeypatch.setattr(platforms, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(kusto, "kusto_settings", lambda: settings)
-    monkeypatch.setattr(project_stores, "ProjectStores", lambda **_: db)
     monkeypatch.setattr(tree_walk, "set_lazy", lambda _: None)
     monkeypatch.setattr(sink, "SampleSink", lambda **_: SimpleNamespace(close=lambda: calls.append("sink-close")))
     monkeypatch.setattr(
         orchestrator,
         "SnapshotStore",
-        lambda **_: SimpleNamespace(live_hub=None, live_sources=None),
+        lambda **options: SimpleNamespace(live_hub=None, live_sources=None, _persistence=SimpleNamespace(),
+                                         history_store=options["history_store"],
+                                         collection_status=SimpleNamespace(save=lambda: None),
+                                         session_facts=SimpleNamespace(save=lambda: None), session_evidence=object()),
     )
     monkeypatch.setattr(collect, "capture_mode", lambda: "metadata")
 
@@ -53,16 +59,21 @@ def test_collection_lifecycle_attaches_live_sources_only_to_kusto(monkeypatch, u
     service = orchestrator.CollectionService(Path.cwd())
     service.open_stores(quiet=True)
     try:
+        assert service.store.live_hub is not None
+        assert calls[:2] == [("sources", Path.cwd(), "metadata"), "sources-start"]
+        assert service.store.history_store is service.history_store
         if use_kusto:
-            assert service.store.live_hub is not None
-            assert calls[:2] == [("sources", Path.cwd(), "metadata"), "sources-start"]
+            [(name, options)] = opened
+            assert name == "kusto" and options["settings"] == settings
+            assert options["trim_before"]() == 0
+            assert service.history_store is plugin
         else:
-            assert service.store.live_hub is None and service.store.live_sources is None
-            assert calls == []
+            assert not opened
+            assert service.history_store.health() == {"status": "no store configured"}
     finally:
         service.stop()
-    assert calls[-2:] == ["sink-close", "db-close"]
-    assert ("sources-stop" in calls) is use_kusto
+    assert calls[-1] == ("writer-close" if use_kusto else "sink-close")
+    assert "sources-stop" in calls
 
 
 def test_kusto_snapshot_and_live_watcher_share_config_results_without_changing_legacy(monkeypatch):

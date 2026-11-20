@@ -338,7 +338,7 @@ board.credits:
     AI credits GitHub Copilot reports for the sessions in view. A credit is
     the tool's unit, not dollars.
   source: >
-    board_api._credits_section: HistoryDB.query_session_usage daily
+    board_api._credits_section: daily session usage from the Kusto store
     billing_amount for sessions active in the window; days cut by a window
     edge count whole.
   source_type: aggregated

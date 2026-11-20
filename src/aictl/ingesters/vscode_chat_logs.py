@@ -47,6 +47,7 @@ All errors are soft — missing dir, unreadable file, partial JSON — so
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -55,12 +56,11 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, Any
 
-from ._common import coerce_ts, provision_session, record_quality, session_tool, writer_conn
-
-if TYPE_CHECKING:
-    from ..storage import HistoryDB
+from ._common import coerce_ts, record_quality
+from ..state_file import StateFile
+from .message_facts import MessageFacts, load_checkpoint, save_checkpoint
 
 log = logging.getLogger(__name__)
 
@@ -76,16 +76,6 @@ _MAX_CONTENT_CHARS = 20_000
 _HEAD_RE = re.compile(rb'^\{"kind":(\d),"k":\["requests"(?:,(\d+),"(\w+)")?\]')
 _HEAD_BYTES = 256
 _CHUNK_BYTES = 1 << 20
-_MESSAGE_BATCH_ROWS = 200
-_MESSAGE_UPSERT_SQL = (
-    "INSERT INTO vscode_chat_messages"
-    "(session_id, source_file, source_row_id, role, content, model, ts, ingested_at)"
-    " VALUES(?,?,?,?,?,?,?,?)"
-    " ON CONFLICT(session_id, source_file, source_row_id) DO UPDATE SET"
-    " role = excluded.role, content = excluded.content, model = excluded.model,"
-    " ts = excluded.ts, ingested_at = excluded.ingested_at"
-    " WHERE content != excluded.content"
-)
 
 
 def default_log_dir() -> Path:
@@ -109,7 +99,7 @@ class VSCodeChatLogsIngester:
         directory; we recurse to find ``*/chatSessions/*.jsonl`` files.
         ``None`` uses :func:`default_log_dir`.
     our_store:
-        Shared :class:`~aictl.storage.HistoryDB` we write into.
+        Message facts and session attribution.
     last_cursor:
         Per-file watermark ``{source_file: (mtime, size)}`` used to
         skip unchanged files. ``None`` loads the saved cursor.
@@ -121,18 +111,20 @@ class VSCodeChatLogsIngester:
     def __init__(
         self,
         log_dir: Path | str | None,
-        our_store: HistoryDB,
+        our_store: MessageFacts,
         last_cursor: dict[str, tuple[float, int]] | None = None,
         *,
         idle_after_s: float = 2 * POLL_INTERVAL_S,
+        checkpoint: StateFile | None = None,
     ) -> None:
         self.log_dir = Path(log_dir).expanduser() if log_dir else default_log_dir()
         self.store = our_store
+        self._checkpoint = checkpoint if checkpoint is not None else our_store.state
+        self._manifest: dict[str, dict[str, list]] = {}
         self.last_cursor: dict[str, tuple[float, int]] = dict(last_cursor or {})
         self.idle_after_s = idle_after_s
         self.last_poll_ts: float = 0.0
         self.last_poll_inserted: int = 0
-        self._provisioned: set[str] = set()
         self._message_batch: _MessageBatch | None = None
         # Read position and unfinished requests per file.
         self._files: dict[str, _FileState] = {}
@@ -143,27 +135,24 @@ class VSCodeChatLogsIngester:
     # again. Per file: [mtime, size, resume offset, request count at that offset,
     # VS Code sessionId, creationDate]. The resume offset is the start of the
     # line that added the oldest unfinished request, so a restart rebuilds that
-    # request's text. The first cursor key held [mtime, size, requests] and is
-    # not read.
-    _CURSOR_KEY = "vscode_chat_logs:files2"
-
+    # request's text.
     def _load_cursor(self) -> None:
         try:
-            row = (
-                writer_conn(self.store)
-                .execute("SELECT text, value FROM maintenance_state WHERE key = ?", (self._CURSOR_KEY,))
-                .fetchone()
-            )
-            # An older version kept the JSON in ``value``; the cursor is not lost on upgrade.
-            raw = row[0] if row and row[0] else (row[1] if row and isinstance(row[1], str) else "")
-            saved = json.loads(raw) if raw else {}
-            for key, (mtime, size, offset, count, vscode_sid, created) in saved.items():
+            data = load_checkpoint(self._checkpoint, self.log_dir)
+            self._manifest = data.get("manifest", {})
+            saved = data.get("cursor", {})
+            if not isinstance(self._manifest, dict):
+                raise ValueError("Invalid VS Code message manifest")
+            for key, (mtime, size, offset, count, vscode_sid, created, *extra) in saved.items():
                 self._files[key] = _FileState(
-                    offset=int(offset), count=int(count), vscode_sid=str(vscode_sid), created=float(created)
+                    offset=int(offset), count=int(count), vscode_sid=str(vscode_sid), created=float(created),
+                    anchor=extra[0] if extra else None,
                 )
                 if int(offset) >= int(size):
                     self.last_cursor[key] = (float(mtime), int(size))
-        except Exception:  # noqa: BLE001 - a store without the table or a bad value starts over
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            log.warning("VS Code chat checkpoint unavailable: %s", exc)
+            self._manifest = {}
             self._files.clear()
             self.last_cursor.clear()
 
@@ -173,15 +162,10 @@ class VSCodeChatLogsIngester:
             st = self._files.get(key)
             if st is not None:
                 offset, count = st.resume_point()
-                value[key] = [mtime, size, offset, count, st.vscode_sid, st.created]
+                value[key] = [mtime, size, offset, count, st.vscode_sid, st.created, st.anchor]
         try:
-            conn = writer_conn(self.store)
-            conn.execute(
-                "INSERT OR REPLACE INTO maintenance_state(key, value, text) VALUES(?,?,?)",
-                (self._CURSOR_KEY, time.time(), json.dumps(value)),
-            )
-            conn.commit()
-        except Exception as exc:  # noqa: BLE001 - the next poll saves again
+            save_checkpoint(self._checkpoint, self.log_dir, {"cursor": value, "manifest": self._manifest})
+        except (OSError, ValueError) as exc:
             log.debug("vscode chat ingester: cursor not saved (%s)", exc)
 
     def _quality(self, status: str, *, severity: str = "", message: str = "", detail: dict | None = None) -> None:
@@ -267,8 +251,6 @@ class VSCodeChatLogsIngester:
                     advanced = True
                 except OSError:
                     pass
-            self._flush_message_batch()
-            writer_conn(self.store).commit()
             inserted = batch.written
         finally:
             self._message_batch = None
@@ -312,12 +294,20 @@ class VSCodeChatLogsIngester:
         assert batch is not None
         start_written = batch.written
         ok = True
+        rewritten = False
         try:
             with path.open("rb") as fh:
                 st = os.fstat(fh.fileno())
-                if st.st_size < state.offset:
+                previous = self.last_cursor.get(key)
+                rewritten = state.anchor is not None and (
+                    st.st_size < state.anchor[0] or _anchor(fh, state.anchor[0]) != state.anchor
+                    or (previous and previous[1] == st.st_size and previous[0] != st.st_mtime)
+                )
+                if st.st_size < state.offset or rewritten:
                     # The file shrank: it was rewritten, so read it from the top.
                     state.reset()
+                if rewritten:
+                    state.rewritten_rows = set()
                 for end, event in _iter_lines(fh, state.offset):
                     if event is None:
                         state.offset = end
@@ -330,18 +320,19 @@ class VSCodeChatLogsIngester:
                         self._apply(path, state, event)
                     state.offset = end
                 mtime = os.fstat(fh.fileno()).st_mtime
+                if ok:
+                    state.anchor = _anchor(fh, state.offset)
             if ok:
                 self._settle(path, state, idle=time.time() - mtime > self.idle_after_s)
+                if rewritten:
+                    self._remove_rows(path, 0, keep=state.rewritten_rows)
         except OSError as exc:
             log.debug("vscode chat ingester: read %s failed (%s)", path, exc)
             ok = False
         finally:
+            state.rewritten_rows = None
             if owns_batch:
-                try:
-                    self._flush_message_batch()
-                    writer_conn(self.store).commit()
-                finally:
-                    self._message_batch = None
+                self._message_batch = None
         return batch.written - start_written, ok
 
     def _apply_snapshot(self, path: Path, state: _FileState, end: int) -> tuple[int, bool]:
@@ -428,10 +419,16 @@ class VSCodeChatLogsIngester:
         for idx in [i for i in state.pending if i >= cut]:
             del state.pending[idx]
         state.count = cut
-        self._flush_message_batch()
-        writer_conn(self.store).execute(
-            "DELETE FROM vscode_chat_messages WHERE source_file = ? AND source_row_id >= ?", (str(path), cut * 2)
-        )
+        self._remove_rows(path, cut * 2)
+
+    def _remove_rows(self, path: Path, first_row: int, *, keep: set[int] | None = None) -> None:
+        manifest = self._manifest.get(str(path), {})
+        for row_id in [key for key in manifest if int(key) >= first_row and (keep is None or int(key) not in keep)]:
+            sid, project, _ = manifest[row_id]
+            self.store.writer.delete("vscode_chat_messages", [
+                dict(project=project, session_id=sid, source_file=str(path), source_row_id=int(row_id))
+            ])
+            del manifest[row_id]
 
     def _settle(self, path: Path, state: _FileState, *, idle: bool) -> int:
         """Write the assistant rows of finished requests and forget the requests that are done.
@@ -455,6 +452,8 @@ class VSCodeChatLogsIngester:
     def _write(self, path: Path, state: _FileState, row_id: int, role: str, text: str, req: _Request) -> bool:
         if not state.session_id:
             state.session_id = self._correlate(state.vscode_sid or path.stem, state.created)
+        if state.rewritten_rows is not None:
+            state.rewritten_rows.add(row_id)
         return self._insert_message(
             session_id=state.session_id,
             source_file=str(path),
@@ -481,55 +480,39 @@ class VSCodeChatLogsIngester:
         ingested_at: float,
     ) -> bool:
         """Insert the row, or replace its content when the text changed. True when a row was written."""
-        values = (
-            session_id,
-            source_file,
-            source_row_id,
-            role,
-            content[:_MAX_CONTENT_CHARS],
-            model,
-            ts,
-            ingested_at,
-        )
-        if self._message_batch is not None:
-            self._message_batch.rows.append(values)
-            if len(self._message_batch.rows) >= _MESSAGE_BATCH_ROWS:
-                self._flush_message_batch()
-            return True
-        conn = writer_conn(self.store)
-        cur = conn.execute(_MESSAGE_UPSERT_SQL, values)
-        return cur.rowcount > 0
-
-    def _flush_message_batch(self) -> None:
-        batch = self._message_batch
-        if batch is None or not batch.rows:
-            return
-        cur = writer_conn(self.store).executemany(_MESSAGE_UPSERT_SQL, batch.rows)
-        batch.written += max(cur.rowcount, 0)
-        batch.rows.clear()
+        content = self.store.text(ts, content[:_MAX_CONTENT_CHARS])
+        digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+        manifest = self._manifest.setdefault(source_file, {})
+        row_id = str(source_row_id)
+        previous = manifest.get(row_id)
+        project = previous[1] if previous and previous[0] == session_id else self.store.sessions.project_for(session_id)
+        entry = [session_id, project, digest]
+        if previous == entry:
+            return False
+        if previous and previous[:2] != entry[:2]:
+            old_sid, old_project, _ = previous
+            self.store.writer.delete("vscode_chat_messages", [
+                dict(session_id=old_sid, project=old_project, source_file=source_file, source_row_id=source_row_id)
+            ])
+        self.store.writer.upsert("vscode_chat_messages", [
+            dict(project=project, session_id=session_id, source_file=source_file, source_row_id=source_row_id,
+                 role=role, content=content, model=model, ts=ts, ingested_at=ingested_at)
+        ])
+        manifest[row_id] = entry
+        if self._message_batch:
+            self._message_batch.written += 1
+        return True
 
     def _correlate(self, vscode_sid: str, ts: float) -> str:
         """Map VS Code's chat sessionId to one of our ``sessions`` rows.
 
         Strategy:
         1. Exact match on ``sessions.session_id`` with ``tool='copilot-vscode'``.
-        2. Otherwise provision ``vscode-chat:<sessionId>`` and insert a
-           stub session row (``INSERT OR IGNORE`` — safe on repeated polls).
+        2. Otherwise provision a placeholder with ID ``vscode-chat:<sessionId>``.
         """
-        if session_tool(self.store, vscode_sid) == "copilot-vscode":
+        if self.store.exact(vscode_sid, "copilot-vscode"):
             return vscode_sid
-        provisional = f"vscode-chat:{vscode_sid}"
-        # Through the store's writer: a store split by project places the row.
-        from ..storage import SessionRow
-
-        provision_session(
-            self.store,
-            self._provisioned,
-            SessionRow(
-                session_id=provisional, tool="copilot-vscode", started_at=ts or time.time(), source="vscode-chat-logs"
-            ),
-        )
-        return provisional
+        return self.store.placeholder(f"vscode-chat:{vscode_sid}", "copilot-vscode", ts, "vscode-chat-logs")
 
 
 # ─── helpers ──────────────────────────────────────────────────────
@@ -537,7 +520,6 @@ class VSCodeChatLogsIngester:
 
 @dataclass
 class _MessageBatch:
-    rows: list[tuple[str, str, int, str, str, str, float, float]] = field(default_factory=list)
     written: int = 0
 
 
@@ -563,6 +545,8 @@ class _FileState:
     vscode_sid: str = ""
     created: float = 0.0
     session_id: str = ""
+    anchor: list | None = None
+    rewritten_rows: set[int] | None = None
     pending: dict[int, _Request] = field(default_factory=dict)
 
     def reset(self) -> None:
@@ -577,6 +561,14 @@ class _FileState:
             return self.offset, self.count
         oldest = min(self.pending.values(), key=lambda r: r.start)
         return oldest.start, oldest.count_before
+
+
+def _anchor(fh: IO[bytes], offset: int) -> list:
+    """Fingerprint the start and the last bytes read, without rereading the file."""
+    fh.seek(0)
+    start = fh.read(min(offset, 512))
+    fh.seek(max(0, offset - 512))
+    return [offset, hashlib.sha256(start + fh.read(min(offset, 512))).hexdigest()]
 
 
 @dataclass

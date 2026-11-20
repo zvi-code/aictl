@@ -1,0 +1,14 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real = real(null), until:real = real(null),
+    session_keys:dynamic, preview:bool = false, row_limit:long
+);
+session_prompts
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where isempty(agent_id) and (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| order by ts desc, node_id asc, id asc, fact_key asc
+| take row_limit
+| project node_id, id, ts, session_id, agent_id, project_path, text=iff(preview, text, ''), prompt_file

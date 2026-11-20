@@ -438,18 +438,17 @@ def test_agent_write_before_the_baseline_is_not_high(repo, home):
     assert "drift.agent-write" not in rules(audit(repo))
 
 
-def test_agent_writes_from_file_write_events_when_a_db_exists(repo, home):
-    import sqlite3
+def test_agent_writes_from_file_write_events_when_a_db_exists(repo, home, kusto_store, monkeypatch):
+    from aictl.dashboard.projections.history import HistoryScope
 
     target = write(repo / "CLAUDE.md", "one\n")
-    audit(repo, now=time.time() - 3600)
-    db = home / ".config" / "aictl" / "history.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE file_write_events (ts REAL, session_id TEXT, tool TEXT, tool_name TEXT, path TEXT)")
-    conn.execute("INSERT INTO file_write_events VALUES (?, 'db-session', 'claude-code', 'Write', ?)", (time.time(), str(target)))
-    conn.commit()
-    conn.close()
-    hit = next(f for f in audit(repo)["findings"] if f["rule"] == "drift.agent-write")
+    now = 1_795_134_600.0
+    history = HistoryScope.local(kusto_store)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    audit(repo, now=now - 3600, history=history)
+    kusto_store.insert("file_write_events", ts=now - 1, session_id="db-session", tool="claude-code",
+                       tool_name="Write", path=str(target))
+    hit = next(f for f in audit(repo, now=now, history=history)["findings"] if f["rule"] == "drift.agent-write")
     assert hit["severity"] == "high" and hit["session_id"] == "db-session"
 
 
@@ -593,6 +592,10 @@ def test_a_failed_step_is_reported_and_the_other_steps_still_run(repo, monkeypat
     def fail(*_args, **_kwargs):
         raise IndexError(0)
 
+    def unexpected_client(*_args, **_kwargs):
+        pytest.fail("An audit with no store must not create a Kusto client")
+
+    monkeypatch.setattr("aictl.stores.kusto.client.KustoClientFactory.client", unexpected_client)
     monkeypatch.setattr(ca, "_collect_vscode", fail)
     (repo / "CLAUDE.md").write_text("project rules\n")
     result = audit(repo)

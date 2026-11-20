@@ -263,7 +263,7 @@ def run_section(
     """Run one section's query; a failure becomes the result's error text. The result holds the KQL as it ran."""
     from azure.kusto.data import ClientRequestProperties
 
-    from ..connection import _server_message, _throttled
+    from ...stores.kusto.client import _server_message, _throttled
 
     kql = parameterized(read_query(section), days, only)
     result = SectionResult(section.name, kql)
@@ -271,7 +271,7 @@ def run_section(
     props.set_option(ClientRequestProperties.request_timeout_option_name, REPORT_TIMEOUT)
     started = time.perf_counter()
     try:
-        from ..connection import Result
+        from ...stores.kusto.client import Result
         from ..observations import LAYOUT_QUERY, UnresolvedObservationsError, has_current_store
 
         layout = Result.from_response(_execute(client, database, LAYOUT_QUERY, props, _throttled))
@@ -299,7 +299,7 @@ def run_report(
     only: ReportFilter | None = None,
 ) -> list[SectionResult]:
     """Run every section against *settings*' store, one after another."""
-    from ..connection import KustoClientFactory
+    from ...stores.kusto.client import KustoClientFactory
 
     client = KustoClientFactory.client(settings)
     results = []
@@ -317,7 +317,7 @@ VALUES = Section("values", "_values.kql")
 
 def run_values(settings: KustoSettings, days: int | None = None, only: ReportFilter | None = None) -> SectionResult:
     """List the available filter values, including nodes with only tool calls."""
-    from ..connection import KustoClientFactory
+    from ...stores.kusto.client import KustoClientFactory
 
     return run_section(KustoClientFactory.client(settings), settings.database, VALUES, days, only)
 

@@ -1,7 +1,7 @@
 """Regression tests for the dashboard/CLI security-fix batch.
 
 Covers (one class per fix):
-  1. SQL injection via tag keys in HistoryDB.query_samples / /api/samples
+  1. SQL injection via tag keys in /api/samples
   2. Path traversal in static asset serving (/assets/..)
   3. CORS: Access-Control-Allow-Origin reflected for loopback origins only
   4. CSRF guard: POST/PUT with a non-loopback Origin header is rejected
@@ -24,10 +24,11 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from kusto_replay import NOW
 
 from aictl.dashboard.models import DashboardSnapshot
 from aictl.orchestrator import AllowedPaths, SnapshotStore
-from aictl.storage import HistoryDB, Sample
+from aictl.records import Sample
 
 # ── Harness ───────────────────────────────────────────────────────
 
@@ -41,21 +42,18 @@ def _make_snapshot(sessions=None):
     )
 
 
-@pytest.fixture()
-def db(tmp_path):
-    """File-based DB with one tagged sample (in-memory DBs are per-thread)."""
-    db = HistoryDB(db_path=str(tmp_path / "sec.db"), flush_interval=0)
-    db.append_samples([Sample(ts=time.time(), metric="mem.total", value=8192, tags={"tool": "claude-code"})])
-    yield db
-    db.close()
 
 
 @pytest.fixture()
-def server(db):
+def server(kusto_store, monkeypatch):
     """Real HTTP server on a random port with one live session, yields base URL."""
+    from aictl.dashboard import board_api
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
+    pids_of = board_api.live_pids_of
+    monkeypatch.setattr(board_api, "live_pids_of", lambda store, snap, sid: pids_of(store, snap, sid, now=NOW))
 
-    store = SnapshotStore(db=db)
+    kusto_store.insert("metrics", ts=NOW, metric="mem.total", value=8192, tags='{"tool":"claude-code"}')
+    store = SnapshotStore(history_store=kusto_store.history_store)
     store.update(
         _make_snapshot(
             sessions=[{"session_id": "live-001", "tool": "claude-code", "duration_s": 1, "pids": [1234]}]
@@ -112,14 +110,7 @@ HOSTILE_TAG_KEY = "x') OR 1=1 --"
 
 
 class TestQuerySamplesTagKeyInjection:
-    def test_storage_rejects_hostile_tag_key(self, db):
-        with pytest.raises(ValueError, match="Invalid tag key"):
-            db.query_samples(tag_filter={HOSTILE_TAG_KEY: "v"})
 
-    def test_storage_accepts_legit_tag_key(self, db):
-        rows = db.query_samples(tag_filter={"tool": "claude-code"})
-        assert len(rows) == 1
-        assert rows[0].tags["tool"] == "claude-code"
 
     def test_api_returns_400_for_hostile_tag_key(self, server):
         key = urllib.parse.quote("tag." + HOSTILE_TAG_KEY, safe="")

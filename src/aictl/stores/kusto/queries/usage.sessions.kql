@@ -1,0 +1,27 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_project:string = '',
+    since:real = real(null), until:real = real(null), requested_session:string = '',
+    without_requests:bool = false, session_keys:dynamic = dynamic([]), row_limit:long
+);
+let usage = session_usage
+    | where all_nodes or node_id == requested_node
+    | where isempty(requested_project) or ['project'] == requested_project
+    | where isempty(requested_session) or session_id == requested_session
+    | where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where (isnull(since) or last_activity_at >= since) and (isnull(until) or coalesce(started_at, 0.0) <= until);
+let request_sessions = requests
+    | where without_requests and (all_nodes or node_id == requested_node)
+    | where isempty(requested_project) or ['project'] == requested_project
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where isnotempty(session_id) and (isempty(requested_session) or session_id == requested_session)
+    | where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | summarize by node_id, session_id;
+usage
+| join kind=leftanti request_sessions on node_id, session_id
+| order by node_id asc, session_id asc, ['project'] asc
+| take row_limit
+| project-away _v, ['project']

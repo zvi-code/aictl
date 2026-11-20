@@ -8,7 +8,7 @@ from pathlib import Path
 from aictl._hook_owner import _AICTL_OWNER_MARKER
 from aictl.commands.integrations import GEMINI_HOOK_MAP, HOOK_EVENTS, VSCODE_HOOK_EVENTS
 from aictl.dashboard.hooks_status import collect_hooks_status
-from aictl.storage import EventRow, HistoryDB
+from aictl.records import EventRow
 
 
 def _hook_cmd(event: str, source: str) -> str:
@@ -69,9 +69,8 @@ def _write_flat_hook(path: Path, events, source: str) -> None:
     )
 
 
-def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_path):
-    now = time.time()
-    db = HistoryDB(db_path=str(tmp_path / "hooks.db"), flush_interval=0)
+def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_path, kusto_store):
+    now = 100_000.0
     root = tmp_path / "project"
     paths = {
         "claude_user": tmp_path / "home" / ".claude" / "settings.json",
@@ -91,64 +90,19 @@ def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_
         encoding="utf-8",
     )
 
-    db.append_event(EventRow(ts=now - 60, tool="claude-code", kind="hook:UserPromptSubmit", session_id="s1"))
-    db.append_event(
-        EventRow(
-            ts=now - 50,
-            tool="claude-code",
-            kind="hook:UserPromptSubmit",
-            session_id="aictl-verify",
-            detail={"_aictl_verify": True},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 30,
-            tool="claude-code",
-            kind="hook:PostToolUse",
-            session_id="s1",
-            detail={"tool_name": "Skill", "tool_input": {"skill": "review-pr"}},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 28,
-            tool="claude-code",
-            kind="hook:PostToolUse",
-            session_id="s1",
-            detail={"tool_name": "Read"},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 26,
-            tool="claude-code",
-            kind="hook:PostToolUse",
-            session_id="s1",
-            detail={"tool_name": "Read"},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 24,
-            tool="claude-code",
-            kind="hook:PostToolUse",
-            session_id="s1",
-            detail={"tool_name": "Bash"},
-        )
-    )
-    db.append_event(
-        EventRow(
-            ts=now - 20,
-            tool="copilot-vscode",
-            kind="hook:SubagentStart",
-            session_id="s2",
-            detail={"agent_id": "agent-1"},
-        )
-    )
-    db.append_event(EventRow(ts=now - 90_000, tool="claude-code", kind="hook:Stop", session_id="old"))
+    for age, tool, kind, sid, detail in (
+        (60, "claude-code", "UserPromptSubmit", "s1", {}),
+        (50, "claude-code", "UserPromptSubmit", "aictl-verify", {"_aictl_verify": True}),
+        (30, "claude-code", "PostToolUse", "s1", {"tool_name": "Skill", "tool_input": {"skill": "review-pr"}}),
+        (28, "claude-code", "PostToolUse", "s1", {"tool_name": "Read"}),
+        (26, "claude-code", "PostToolUse", "s1", {"tool_name": "Read"}),
+        (24, "claude-code", "PostToolUse", "s1", {"tool_name": "Bash"}),
+        (20, "copilot-vscode", "SubagentStart", "s2", {"agent_id": "agent-1"}),
+        (90_000, "claude-code", "Stop", "old", {}),
+    ):
+        kusto_store.insert("events", ts=now - age, tool=tool, kind=f"hook:{kind}", session_id=sid, detail=json.dumps(detail))
 
-    status = collect_hooks_status(db, root, now=now, paths=paths, server_port=8484)
+    status = collect_hooks_status(kusto_store.history_store.reader, root, now=now, paths=paths, server_port=8484)
 
     assert status["total_fired_24h"] == 6
     assert status["tools"]["claude-code"]["missing_events"] == []  # full install, no partial warning
@@ -171,12 +125,9 @@ def test_collect_hooks_status_reports_configured_fired_skills_and_subagents(tmp_
     assert tool_calls["by_tool_name"]["claude-code"] == {"Read": 2, "Bash": 1}
     assert tool_calls["by_name"][0] == {"name": "Read", "count": 2}
 
-    db.close()
-
 
 def test_collect_hooks_status_reports_claude_disable_all_hooks(tmp_path):
     now = time.time()
-    db = HistoryDB(db_path=str(tmp_path / "hooks.db"), flush_interval=0)
     root = tmp_path / "project"
     paths = {
         "claude_user": tmp_path / "home" / ".claude" / "settings.json",
@@ -192,7 +143,7 @@ def test_collect_hooks_status_reports_claude_disable_all_hooks(tmp_path):
     data["disableAllHooks"] = True
     paths["claude_project"].write_text(json.dumps(data), encoding="utf-8")
 
-    status = collect_hooks_status(db, root, now=now, paths=paths)
+    status = collect_hooks_status(None, root, now=now, paths=paths)
 
     assert status["tools"]["claude-code"]["status"] == "disabled"
     assert status["warnings"] == [
@@ -203,8 +154,6 @@ def test_collect_hooks_status_reports_claude_disable_all_hooks(tmp_path):
             "message": "disableAllHooks is true",
         }
     ]
-
-    db.close()
 
 
 def _paths(tmp_path: Path) -> tuple[Path, dict[str, Path]]:

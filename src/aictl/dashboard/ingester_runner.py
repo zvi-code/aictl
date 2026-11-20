@@ -12,13 +12,12 @@ the runner never crashes the server.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ingesters import context_items_backfill, loaded_files_backfill, otel_sessions_backfill, tool_size_backfill
+from ..ingesters import context_items_backfill, loaded_files_backfill, tool_size_backfill
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -33,6 +32,7 @@ from ..ingesters.cursor_conversations import (
     POLL_INTERVAL_S as CURSOR_POLL_INTERVAL_S,
 )
 from ..ingesters.cursor_conversations import CursorConversationsIngester, cursor_ingester_enabled
+from ..ingesters.message_facts import MessageFacts, load_checkpoint
 from ..ingesters.session_artifacts import (
     POLL_INTERVAL_S as SESSION_ARTIFACTS_POLL_INTERVAL_S,
 )
@@ -50,14 +50,12 @@ from ..ingesters.vscode_chat_logs import (
 from ..ingesters.vscode_chat_logs import (
     default_log_dir as vscode_chat_default_log_dir,
 )
-from ..storage import is_lock_error
+from ..state_file import StateFile, restart_directory
 
 log = logging.getLogger(__name__)
 
 # The tool size backfill starts after the first rounds of the readers: both read every transcript.
 BACKFILL_DELAY_S = 120.0
-# An ingester whose store stays busy this long is reported as failed, and again after as long.
-LOCKED_REPORT_S = 300.0
 
 
 @dataclass
@@ -81,6 +79,7 @@ class IngesterHandle:
             "source_exists": self.source_exists,
             "last_poll_ts": getattr(self.ingester, "last_poll_ts", 0.0),
             "last_poll_inserted": getattr(self.ingester, "last_poll_inserted", 0),
+            **({"unavailable": unavailable} if (unavailable := getattr(self.ingester, "unavailable", "")) else {}),
             **poll,
         }
 
@@ -88,9 +87,12 @@ class IngesterHandle:
 def start_ingesters(store) -> dict[str, IngesterHandle]:
     """Start all enabled ingesters. Returns a dict keyed by ingester name."""
     handles: dict[str, IngesterHandle] = {}
-    db = getattr(store, "_db", None)
-    if db is None:
+    restart_dir = store.restart_dir
+    if store.history_store.writer is None or restart_dir is None:
         return handles
+
+    def messages(name: str) -> MessageFacts:
+        return MessageFacts(store.session_facts, store.collection_status, StateFile(restart_dir / f"{name}.json"))
 
     # ── Copilot CLI session-store (Slice 3.2) ──────────────────
     copilot_path = default_db_path()
@@ -102,7 +104,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         source_exists=copilot_path.exists(),
     )
     if copilot_enabled:
-        ingester = CopilotSessionStoreIngester(copilot_path, db)
+        ingester = CopilotSessionStoreIngester(copilot_path, messages("copilot_messages"))
         handle.ingester = ingester
         thread = threading.Thread(
             target=_poll_loop,
@@ -125,7 +127,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         source_exists=cursor_exists,
     )
     if cursor_enabled:
-        c_ing = CursorConversationsIngester(cursor_path, db)
+        c_ing = CursorConversationsIngester(cursor_path, messages("cursor_messages"))
         c_handle.ingester = c_ing
         c_thread = threading.Thread(
             target=_poll_loop,
@@ -148,7 +150,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         source_exists=vscode_enabled,
     )
     if vscode_enabled:
-        v_ing = VSCodeChatLogsIngester(vscode_path, db)
+        v_ing = VSCodeChatLogsIngester(vscode_path, messages("vscode_messages"))
         v_handle.ingester = v_ing
         v_thread = threading.Thread(
             target=_poll_loop,
@@ -161,7 +163,10 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
     handles[v_handle.name] = v_handle
 
     # ── Transcript usage: exact tokens for Claude Code, Codex, Copilot CLI ──
-    t_ing = TranscriptUsageIngester(db, defer_old=True)
+    checkpoint = StateFile(restart_dir / "transcript_usage.json")
+    t_ing = TranscriptUsageIngester(None, defer_old=True, tool_calls=store.tool_calls,
+                                    fact_target=store.session_facts, checkpoint=checkpoint,
+                                    quality=store.collection_status)
     t_enabled = t_ing.source_exists()
     t_handle = IngesterHandle(
         name="transcript-usage",
@@ -182,7 +187,7 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
     handles[t_handle.name] = t_handle
 
     # ── Session folders: an index of each session's files (stat only) ──
-    a_ing = SessionArtifactIndexer(db)
+    a_ing = SessionArtifactIndexer(store.session_evidence)
     a_handle = IngesterHandle(
         name="session-artifacts",
         enabled=True,
@@ -202,31 +207,22 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── One-time backfill of tool call sizes (v33) ──────────────
     if t_enabled:
-        b_thread = threading.Thread(target=_backfill_tool_sizes, args=(db,), daemon=True, name="tool-size-backfill")
+        b_thread = threading.Thread(target=_backfill_transcripts, args=(store,), daemon=True, name="transcript-backfill")
         b_thread.start()
     return handles
 
 
-def _backfill_tool_sizes(db) -> None:
-    """Run the one-time tool size backfill; a failure is logged and retried on the next start."""
+def _backfill_transcripts(store) -> None:
+    """Run the one-time transcript backfills."""
     time.sleep(BACKFILL_DELAY_S)
-    # First: it reads only the stored events and takes seconds; the others re-read every transcript.
-    try:
-        otel_sessions_backfill.run(db)
-    except Exception:  # noqa: BLE001 - the backfill must never stop the server
-        log.exception("OTel session backfill failed; it runs again on the next start")
-    try:
-        tool_size_backfill.run(db)
-    except Exception:  # noqa: BLE001 - the backfill must never stop the server
-        log.exception("Tool size backfill failed; it runs again on the next start")
-    try:
-        loaded_files_backfill.run(db)
-    except Exception:  # noqa: BLE001 - the backfill must never stop the server
-        log.exception("Loaded files backfill failed; it runs again on the next start")
-    try:
-        context_items_backfill.run(db)
-    except Exception:  # noqa: BLE001 - the backfill must never stop the server
-        log.exception("Context items backfill failed; it runs again on the next start")
+    if store.restart_dir is None:
+        return
+    for module, target in ((tool_size_backfill, store.history_store.writer), (loaded_files_backfill, store.session_facts),
+                           (context_items_backfill, store.session_facts)):
+        try:
+            module.run(target, StateFile(store.restart_dir / f"{module.__name__.rsplit('.', 1)[-1]}.json"))
+        except Exception:
+            log.exception("%s failed; it runs again on the next start", module.__name__)
 
 
 def _record_poll_failure(ingester, name: str, exc: Exception) -> None:
@@ -234,13 +230,15 @@ def _record_poll_failure(ingester, name: str, exc: Exception) -> None:
 
     The poll loop previously only logged, so a crashing ingester was
     invisible in the dashboard. Surface it via the shared data-quality
-    channel (guarded — a store without ``record_data_quality`` is a no-op).
+    channel when the ingester supplies it.
     """
-    store = getattr(ingester, "store", None)
-    if store is None or not hasattr(store, "record_data_quality"):
+    record_quality = getattr(getattr(ingester, "quality", None), "record_data_quality", None)
+    if record_quality is None:
+        record_quality = getattr(getattr(ingester, "store", None), "record_data_quality", None)
+    if record_quality is None:
         return
     try:
-        store.record_data_quality(
+        record_quality(
             f"ingester:{name}",
             "failed",
             kind="ingester",
@@ -262,8 +260,6 @@ def _poll_loop(
     watch_source: IngesterHandle | None = None,
 ) -> None:
     """Call ``ingester.poll()`` every *interval* seconds until *stop* is set."""
-    locked_since: float | None = None  # a busy store skips the round: logged once, until a poll succeeds
-    reported_at = 0.0
     first = True  # initial poll immediately so the first data point is available
     while first or not stop.wait(timeout=interval):
         first = False
@@ -286,37 +282,9 @@ def _poll_loop(
                 last_poll_inserted=inserted,
                 rows_ingested_total=poll.get("rows_ingested_total", 0) + (inserted or 0),
             )
-            locked_since = None
             if inserted:
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
-        except sqlite3.OperationalError as exc:
-            poll.update(last_error=str(exc), last_error_at=time.time())
-            if not is_lock_error(exc):
-                log.exception("%s ingester: poll loop error", name)
-                _record_poll_failure(ingester, name, exc)
-                continue
-            store = getattr(ingester, "store", None)
-            writes = ", ".join(store.active_writes()) if hasattr(store, "active_writes") else ""
-            now = time.monotonic()
-            if locked_since is None:
-                locked_since = reported_at = now
-                level = logging.WARNING
-            elif now - reported_at >= LOCKED_REPORT_S:
-                # Still locked after a long time: say so loudly and mark the ingester failed.
-                reported_at = now
-                level = logging.WARNING
-                _record_poll_failure(ingester, name, exc)
-            else:
-                level = logging.DEBUG
-            log.log(
-                level,
-                "%s ingester: store busy for %.0f s, round skipped and retried: %s. Writes running in this process: %s",
-                name,
-                now - locked_since,
-                exc,
-                writes or "none",
-            )
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             poll.update(last_error=str(exc), last_error_at=time.time())
             log.exception("%s ingester: poll loop error", name)
             _record_poll_failure(ingester, name, exc)
@@ -333,38 +301,19 @@ def collect_status(handles: dict[str, IngesterHandle] | None) -> list[dict]:
 
 
 def ingester_status_for_doctor(db_path: Path | str | None = None) -> list[dict]:
-    """Static status report usable by ``aictl doctor`` (no live server).
+    """Report source presence and the last checkpoint without opening history."""
+    from ..stores import configured_destination
 
-    We can't touch the live HTTP server from the monitor CLI, so we
-    derive status from filesystem existence + the last ingest-event row
-    persisted to the aictl history DB.
-    """
-    out: list[dict] = []
     src = default_db_path()
     exists = src.exists()
     last_poll_ts = 0.0
-    last_row_count = 0
-    if db_path:
-        try:
-            import sqlite3
-
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
-            try:
-                row = conn.execute(
-                    "SELECT MAX(ingested_at) FROM copilot_session_messages"
-                ).fetchone()
-                if row and row[0]:
-                    last_poll_ts = float(row[0])
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM copilot_session_messages"
-                ).fetchone()
-                if row:
-                    last_row_count = int(row[0])
-            finally:
-                conn.close()
-        except (sqlite3.Error, OSError) as exc:
-            log.debug("Could not read persisted ingester status: %s", exc)
-    out.append(
+    if (settings := configured_destination()) is not None:
+        directory = restart_directory(settings.cluster, settings.database, settings.node_id)
+        saved = load_checkpoint(StateFile(directory / "copilot_messages.json"), src)
+        ts = saved.get("last_poll_ts")
+        if type(ts) in (float, int) and ts > 0:
+            last_poll_ts = ts
+    return [
         {
             "name": "copilot-session-store",
             "enabled": exists,
@@ -372,10 +321,8 @@ def ingester_status_for_doctor(db_path: Path | str | None = None) -> list[dict]:
             "source_exists": exists,
             "last_poll_ts": last_poll_ts,
             "last_poll_age_s": (time.time() - last_poll_ts) if last_poll_ts else None,
-            "rows_ingested_total": last_row_count,
-        }
-    )
-    return out
+        },
+    ]
 
 
 __all__ = [

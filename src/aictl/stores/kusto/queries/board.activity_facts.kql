@@ -1,0 +1,55 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+let facts = materialize(
+    union (requests | extend fact_table='requests'),
+          (tool_invocations | extend fact_table='tool_invocations'),
+          (session_prompts | extend fact_table='session_prompts'),
+          (skill_uses | extend fact_table='skill_uses')
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by fact_table, ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project fact_table, tool, cache_read_tokens, cache_creation_tokens, duration_ms, ttft_ms, tool_name, confirm, text, prompt_file
+);
+let usage = session_usage
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project tool, cache_read_tokens, cache_creation_tokens;
+union
+    (union (facts | where fact_table == 'requests'), usage
+        | summarize cr=max(cache_read_tokens), cw=max(cache_creation_tokens), reply=max(duration_ms), ttft=max(ttft_ms) by tool
+        | extend fact_names=pack_array('requests', iff(cr > 0, 'cache_read', ''), iff(cw > 0, 'cache_write', ''),
+                                  iff(reply > 0, 'reply_latency', ''), iff(ttft > 0, 'ttft', ''))),
+    (facts | where fact_table == 'tool_invocations'
+        | summarize calls=countif(not(tool_name startswith_cs 'permission:')), confirms=countif(isnotempty(confirm)),
+                    duration=max(duration_ms) by tool
+        | extend fact_names=pack_array('tool_rows', iff(calls > 0, 'tool_calls', ''), iff(confirms > 0, 'confirms', ''),
+                                  iff(duration > 0, 'tool_duration', ''))),
+    (facts | where fact_table == 'session_prompts'
+        | summarize texts=countif(isnotempty(text)), files=countif(isnotempty(prompt_file)) by tool
+        | extend fact_names=pack_array('prompts', iff(texts > 0, 'prompt_text', ''), iff(files > 0, 'prompt_files', ''))),
+    (facts | where fact_table == 'skill_uses' | distinct tool | extend fact_names=dynamic(['skills'])),
+    (agents | where all_nodes or node_id == requested_node | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+        | where not(coalesce(column_ifexists('_deleted', false), false)) and is_sidechain == 1
+        | distinct tool | extend fact_names=dynamic(['subagents'])),
+    (sessions | where all_nodes or node_id == requested_node | summarize arg_max(_v, *) by ['project'], node_id, session_id
+        | where not(coalesce(column_ifexists('_deleted', false), false)) | distinct tool | extend fact_names=dynamic(['sessions'])),
+    (process_snapshots | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, ts, pid
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | distinct tool | extend fact_names=dynamic(['processes'])),
+    (files | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, path
+        | where not(coalesce(_deleted, false)) and category contains 'memory'
+        | distinct tool | extend fact_names=dynamic(['memory_files'])),
+    (file_write_events | where all_nodes or node_id == requested_node
+        | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+        | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+        | where not(coalesce(_deleted, false))
+        | summarize lines=countif(isnotnull(parse_json(detail).lines_added)) by tool
+        | extend fact_names=pack_array('file_writes', iff(lines > 0, 'file_lines', '')))
+| mv-expand fact=fact_names to typeof(string)
+| where isnotempty(fact)
+| distinct tool, fact
+| order by tool asc, fact asc
+| take row_limit

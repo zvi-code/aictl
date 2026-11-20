@@ -1,0 +1,172 @@
+import gzip
+import json
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from aictl.kusto import KustoSettings
+from aictl.stores import open_store
+from aictl.stores.base import StoreConfigurationError, StoreError, StorePermissionError, UnknownViewError
+from aictl.stores.kusto.client import KustoClientFactory, Result
+from aictl.stores.kusto.reader import KustoReader
+from aictl.stores.kusto.recorded import UnrecordedQueryError
+from aictl.stores.kusto.schema import SchemaStatus, ensure_schema
+from aictl.stores.kusto.tables import TABLES
+
+RECORDINGS = Path(__file__).parent / "recordings"
+SETTINGS = KustoSettings("https://recording.invalid", "test_db", auth="none")
+
+
+def test_registry_lazy_and_kusto_imports_without_old_dependencies():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+sys.modules.update(sqlite3=None, _sqlite3=None)
+from aictl.stores import open_store
+assert open_store().health() == {"status": "no store configured"}
+assert "aictl.stores.kusto" not in sys.modules
+from aictl.kusto import KustoSettings
+store = open_store("kusto", settings=KustoSettings("https://recording.invalid"), capture=False)
+assert store.reader is None and store.writer.health()["status"] == "capture is off"
+assert "aictl.stores.kusto.writer" in sys.modules
+assert "aictl.kusto.connection" not in sys.modules
+""",
+        ],
+        check=True,
+        timeout=30,
+    )
+    with pytest.raises(StoreConfigurationError, match="Unknown store plugin"):
+        open_store("missing")
+
+
+def test_native_tables_use_scoped_keys_and_text_tables_retain_less_history():
+    assert not any(name.startswith("ui_") for name in TABLES)
+    for name, spec in TABLES.items():
+        columns = dict(spec.columns)
+        assert len(columns) == len(spec.columns)
+        assert set(spec.key) <= columns.keys() and "rowid" not in spec.key
+        assert columns["project"] == "string" and spec.key[:2] == ("project", "node_id")
+        assert columns[spec.version] == "datetime"
+        assert spec.ingestion in {"queued", "streaming"}
+        if spec.tombstone:
+            assert columns[spec.tombstone] == "bool"
+        if moved := TABLES.get(f"{name}_text"):
+            assert moved.retention_days == 14 and spec.retention_days == 30
+            assert moved.key[:len(spec.key)] == spec.key
+
+
+def response(columns=(), rows=()):
+    class Table(list):
+        pass
+
+    table = Table(rows)
+    table.columns = [SimpleNamespace(column_name=name, column_type="string") for name in columns]
+    return SimpleNamespace(primary_results=[table])
+
+
+def test_reader_binds_parameters_and_limits_returned_rows():
+    supplied = """a" | count //"""
+
+    def execute(database, text, props):
+        assert database == "db"
+        assert supplied not in text and text.startswith("declare query_parameters(")
+        assert props.get_parameter("requested_node", None) == supplied
+        assert props.get_parameter("row_limit", None) == "2"
+        return response(("node_id",), (("a",), ("b",), ("c",)))
+
+    reader = KustoReader(SimpleNamespace(execute_query=execute), "db")
+    result = reader.read("health.nodes", {"requested_node": supplied, "limit": 1})
+    assert result.rows == [{"node_id": "a"}] and result.truncated
+    assert reader.health()["queries"] == 1 and reader.health()["last_latency_ms"] >= 0
+    assert not reader.capabilities()["change_feed"]
+    with pytest.raises(UnknownViewError):
+        reader.read("../secrets", {})
+    with pytest.raises(ValueError, match="unexpected"):
+        reader.read("health.nodes", {"row_limit": 123})
+
+
+def test_schema_widens_tables_then_falls_back_when_streaming_policy_denied():
+    sent = []
+
+    def execute(database, text):
+        assert database == "db"
+        sent.append(text)
+        if text.startswith(".show"):
+            return response(("TableName", "ColumnName", "ColumnType"), [("files", "path", "System.String")])
+        if "streamingingestion enable" in text:
+            raise RuntimeError("Not authorized")
+        return response()
+
+    status = ensure_schema(SimpleNamespace(execute_mgmt=execute), "db", tables={"files": TABLES["files"]})
+    assert not status.streaming_available and "Database Admin" in status.warning
+    assert "['project']:string" in next(s for s in sent if s.startswith(".create-merge"))
+    assert sent[-1].endswith("policy retention softdelete = 30d")
+    assert not any(s.startswith(".clear") for s in sent)
+
+
+def test_schema_names_required_role_when_retention_is_denied():
+    def execute(_, text):
+        if "policy retention" in text:
+            raise RuntimeError("Forbidden")
+        return response()
+
+    with pytest.raises(StorePermissionError, match="Set retention for session_step_text requires Table Admin"):
+        ensure_schema(
+            SimpleNamespace(execute_mgmt=execute), "db", tables={"session_step_text": TABLES["session_step_text"]}
+        )
+
+
+def test_open_store_applies_streaming_fallback_to_writer(monkeypatch):
+    from aictl.stores.kusto import schema
+
+    def provision(_, database, *, modes):
+        assert database == SETTINGS.database
+        assert modes["files"] == modes["metrics"] == "streaming"
+        assert modes["file_history"] == "queued"
+        return SchemaStatus(False, "Database Admin permission missing")
+
+    monkeypatch.setattr(schema, "ensure_schema", provision)
+    with KustoClientFactory.replay(RECORDINGS / "quiet" / "kusto.jsonl.gz") as client:
+        store = open_store("kusto", settings=SETTINGS)
+        store.writer.append("files", [{"project": "", "path": "one"}])
+        store.writer.flush()
+        health = store.health()["writer"]
+        assert health["tables"]["files"]["mode"] == "queued"
+        assert "Database Admin" in health["warning"]
+        assert client.ingestions[0][0] == "files"
+
+
+def test_factory_replays_real_recording_and_rejects_unknown_queries():
+    file = RECORDINGS / "quiet" / "kusto.jsonl.gz"
+    with KustoClientFactory.replay(file) as recording:
+        assert KustoClientFactory.client(SETTINGS) is KustoClientFactory.ingester(SETTINGS) is recording
+        assert KustoClientFactory.native_ingester(SETTINGS) is recording
+        capacity = recording.execute_mgmt("db", ".show capacity ingestions").primary_results[0]
+        assert isinstance(next(iter(capacity))["Total"], int)
+        with pytest.raises(UnrecordedQueryError, match="Unrecorded Kusto query in db: print 18652"):
+            recording.execute_query("db", "print 18652")
+        reader = KustoReader(recording, "db")
+        with pytest.raises(StoreError, match="Unrecorded Kusto query"):
+            reader.read("health.nodes", {})
+        assert reader.health()["query_failures"] == 1
+
+
+def test_recording_replays_occurrences_in_order(tmp_path):
+    path = tmp_path / "test.jsonl.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as file:
+        for value in (1, 2):
+            record = {
+                "kind": "query",
+                "kql": "T",
+                "outcome": "ok",
+                "response": [{"columns": [{"name": "x", "type": "long"}], "rows": [[value]]}],
+            }
+            file.write(json.dumps(record) + "\n")
+    with KustoClientFactory.replay(path) as client:
+        assert [Result.from_response(client.execute("db", "T")).rows for _ in range(3)] == [[(1,)], [(2,)], [(2,)]]

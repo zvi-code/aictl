@@ -3,7 +3,7 @@
 """Unified data emission pipeline for all collectors and derived metrics.
 
 Every data point in aictl flows through ``SampleSink.emit()``.  The sink
-handles buffering, SQLite persistence (via HistoryDB), in-memory ring
+handles handoff to the store writer, in-memory ring
 buffers for real-time charting, and dispatching to registered handlers
 for async post-processing (anomaly detection, trend analysis, alerts).
 
@@ -13,7 +13,7 @@ Architecture::
     Discovery ──► sink.emit("file.tokens", 2040, {"path":"..."})
     Correlator ─► sink.emit("tool.tokens.input", 1000, {...})
                         │
-                        ├──► SQLite samples table (write-behind)
+                        ├──► Store writer (bounded write-behind)
                         ├──► Handler chain (sync or async)
                         └──► Metrics aggregator (optional)
 
@@ -44,16 +44,51 @@ class SampleHandler(Protocol):
     def __call__(self, metric: str, value: float, tags: dict[str, Any], ts: float) -> None: ...
 
 
+class OtelMetricGate:
+    """Limit OTLP volume before handing rows to the writer."""
+
+    def __init__(self, *, limit: int = 5000, series_limit: int = 20_000, clock=time.monotonic) -> None:
+        self.limit = limit
+        self.series_limit = series_limit
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._window = -1
+        self._count = 0
+        self.dropped = 0
+        self._series: OrderedDict = OrderedDict()
+
+    def accept(self, rows, *, series, value, identity=None, suppress=lambda row: True):
+        accepted = []
+        with self._lock:
+            now = self.clock()
+            if int(now) != self._window:
+                self._window, self._count = int(now), 0
+            for row in rows:
+                key, number = series(row), value(row)
+                sample_id = identity(row) if identity else None
+                previous = self._series.get(key)
+                if previous and ((sample_id is not None and previous[2] == sample_id)
+                                 or (suppress(row) and previous[0] == number and now - previous[1] < 300)):
+                    continue
+                if self._count >= self.limit:
+                    self.dropped += 1
+                    continue
+                self._count += 1
+                self._series[key] = (number, now, sample_id)
+                self._series.move_to_end(key)
+                if len(self._series) > self.series_limit:
+                    self._series.popitem(last=False)
+                accepted.append(row)
+        return accepted
+
+
 class SampleSink:
     """Single entry point for all metric emission.
 
     Parameters
     ----------
-    db : HistoryDB | None
-        SQLite persistence layer.  If None, samples are only dispatched
-        to handlers (useful for testing or ephemeral runs).
-    buffer_size : int
-        Max samples to buffer before auto-flush.  0 = flush on every emit.
+    The store writer buffers accepted samples. Live handlers can run without
+    a configured writer.
     """
 
     LATEST_MAXSIZE: int = 10_000
@@ -64,15 +99,20 @@ class SampleSink:
 
     def __init__(
         self,
-        db: Any | None = None,
-        buffer_size: int = 5000,
+        *,
         datapoint_logger: Any | None = None,
+        history_store=None,
+        quality=None,
     ) -> None:
-        self._db = db
-        self._buffer_size = buffer_size
+        from .collection_status import CollectionStatus
+        from .stores import Store, writer_or_discard
+
+        writer = (history_store or Store()).writer
+        self._writer = writer_or_discard(writer)
+        self._quality = quality or CollectionStatus(writer)
+        self._otel_gate = OtelMetricGate()
         self._datapoint_logger = datapoint_logger
         self._lock = threading.Lock()
-        self._buffer: list[tuple[float, str, float, dict]] = []
         self._handlers: list[SampleHandler] = []
         # Per-metric latest value cache (LRU-bounded OrderedDict)
         self._latest: OrderedDict[str, tuple[float, float, dict]] = OrderedDict()
@@ -97,7 +137,7 @@ class SampleSink:
 
     @property
     def streams_observations(self) -> bool:
-        return getattr(self._db, "streams_observations", False) is True
+        return True
 
     # ── LRU helpers (all callers must hold self._lock) ──────────────
 
@@ -236,69 +276,7 @@ class SampleSink:
         ts : float, optional
             Unix timestamp.  Defaults to ``time.time()``.
         """
-        if ts is None:
-            ts = time.time()
-        t = tags or {}
-
-        # Deferred record_data_quality calls — issued after the lock is
-        # released so DB writes never happen while holding it.
-        notices: list[tuple[str, str, str, dict]] = []
-        should_flush = False
-
-        if self.streams_observations:
-            with self._lock:
-                dropped, first_drop, total_dropped = self._flood_check_locked(ts, notices)
-            self._report_flood(metric, ts, notices, dropped, first_drop, total_dropped)
-            if not dropped:
-                self.emit_batch([(metric, value, tags)], ts)
-            return
-
-        # Single lock acquisition per emit: flood accounting, cache and
-        # buffer updates, and periodic dedup GC all share the same
-        # critical section (these structures are mutated from the monitor
-        # thread and the RefreshLoop thread concurrently).
-        with self._lock:
-            dropped, first_drop, total_dropped = self._flood_check_locked(ts, notices)
-            if not dropped:
-                # Update latest + series cache (LRU-bounded)
-                self._lru_set_latest(metric, (ts, value, t))
-                self._series_append(metric, (ts, value))
-
-                # Buffer for SQLite persistence
-                self._buffer.append((ts, metric, value, t))
-                self._total_emitted += 1
-                should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
-
-                # Periodic dedup GC
-                self._count_emits_for_gc_locked(1)
-
-        self._report_flood(metric, ts, notices, dropped, first_drop, total_dropped)
-        if dropped:
-            return
-
-        # Write to datapoint log file (if configured)
-        if self._datapoint_logger:
-            try:
-                self._datapoint_logger.log_sample(
-                    ts,
-                    metric,
-                    value,
-                    t,
-                    session_id=t.get("session_id", ""),
-                    tool=t.get("tool", ""),
-                )
-            except Exception as exc:
-                log.debug("Datapoint log error: %s", exc)
-
-        # Dispatch to handlers (outside lock)
-        for handler in self._handlers:
-            try:
-                handler(metric, value, t, ts)
-            except Exception as exc:
-                log.debug("Handler error on %s: %s", metric, exc)
-
-        if should_flush:
-            self.flush()
+        self.emit_batch([(metric, value, tags)], ts)
 
     # Max seconds before re-emitting an unchanged value (avoids stale gaps)
     DEDUP_STALE_SECONDS = 300  # 5 minutes
@@ -483,6 +461,17 @@ class SampleSink:
             self._lru_set_dedup(cache_key, (value, ts))
         return value
 
+    def emit_otel(self, samples) -> None:
+        samples = self._otel_gate.accept(
+            samples,
+            series=lambda sample: (sample.metric, json.dumps(sample.tags, sort_keys=True, default=str)),
+            value=lambda sample: sample.value,
+            identity=lambda sample: getattr(sample, "source_key", None),
+            # Equal nonzero deltas report separate work.
+            suppress=lambda sample: getattr(sample, "gauge", False),
+        )
+        self.emit_batch([(sample.metric, sample.value, sample.tags, sample.ts) for sample in samples])
+
     def emit_batch(
         self,
         samples: list[tuple[str, float, dict[str, Any] | None] | tuple[str, float, dict[str, Any] | None, float]],
@@ -500,55 +489,61 @@ class SampleSink:
             (item[0], item[1], item[2] or {}, item[3] if len(item) == 4 else ts) for item in samples
         ]
 
-        if self.streams_observations:
-            from .storage import Sample
-
-            # Handoff first: a refused batch must not appear accepted in caches or counters.
-            try:
-                self._db.append_samples(
-                    [Sample(ts=sample_ts, metric=metric, value=value, tags=t) for metric, value, t, sample_ts in normalized]
-                )
-            except BaseException:
-                self._forget_dedup(normalized)
-                raise
-            with self._lock:
-                for metric, value, t, sample_ts in normalized:
-                    self._lru_set_latest(metric, (sample_ts, value, t))
-                    self._series_append(metric, (sample_ts, value))
-                self._total_emitted += len(normalized)
-                self._total_flushed += len(normalized)
-                self._count_emits_for_gc_locked(len(normalized))
-            for metric, value, t, sample_ts in normalized:
-                if self._datapoint_logger:
-                    try:
-                        self._datapoint_logger.log_sample(sample_ts, metric, value, t)
-                    except Exception:
-                        log.exception("Datapoint logging failed after Kusto accepted %s", metric)
-                for handler in self._handlers:
-                    try:
-                        handler(metric, value, t, sample_ts)
-                    except Exception:
-                        log.exception("Sample handler failed for %s after Kusto accepted the observation", metric)
-            return
-
+        accepted = []
+        dropped_samples = []
+        notices = []
+        first = None
         with self._lock:
-            for metric, value, t, sample_ts in normalized:
-                self._lru_set_latest(metric, (sample_ts, value, t))
-                self._series_append(metric, (sample_ts, value))
-                self._buffer.append((sample_ts, metric, value, t))
-                self._total_emitted += 1
-            should_flush = self._buffer_size == 0 or len(self._buffer) >= self._buffer_size
+            now = time.time()
+            for item in normalized:
+                metric, _, _, sample_ts = item
+                dropped, first_drop, total = self._flood_check_locked(now, notices)
+                if dropped:
+                    dropped_samples.append(item)
+                    if first_drop:
+                        first = metric, sample_ts, total
+                else:
+                    accepted.append(item)
+        self._forget_dedup(dropped_samples)
+        if first is not None:
+            self._report_flood(first[0], first[1], notices, True, True, first[2])
+        elif notices:
+            self._report_flood("", ts, notices, False, False, 0)
+        if accepted:
+            from .tool_calls import call_key
 
-        # Dispatch handlers
-        for metric, value, t, sample_ts in normalized:
+            rows = []
+            for metric, value, tags, sample_ts in accepted:
+                serialized = json.dumps(tags, sort_keys=True, default=str)
+                project = str(tags.get("project_path") or tags.get("cwd") or "")
+                rows.append(dict(ts=sample_ts, metric=metric, value=value, tags=serialized,
+                                 tool=str(tags.get("tool") or tags.get("aictl.tool") or ""),
+                                 project=project, project_path=project, session_id=str(tags.get("session_id") or ""),
+                                 seq=int(call_key(serialized, repr(value)), 16) & (2**63 - 1)))
+            try:
+                self._writer.append("metrics", rows)
+            except Exception:
+                self._forget_dedup(accepted)
+                raise
+        with self._lock:
+            for metric, value, tags, sample_ts in accepted:
+                self._lru_set_latest(metric, (sample_ts, value, tags))
+                self._series_append(metric, (sample_ts, value))
+            self._total_emitted += len(accepted)
+            self._total_flushed += len(accepted)
+            self._count_emits_for_gc_locked(len(accepted))
+        for metric, value, tags, sample_ts in accepted:
+            if self._datapoint_logger:
+                try:
+                    self._datapoint_logger.log_sample(sample_ts, metric, value, tags,
+                                                       session_id=tags.get("session_id", ""), tool=tags.get("tool", ""))
+                except Exception:
+                    log.debug("Datapoint log failed for %s", metric, exc_info=True)
             for handler in self._handlers:
                 try:
-                    handler(metric, value, t, sample_ts)
-                except Exception as exc:
-                    log.debug("Batch handler error on %s: %s", metric, exc)
-
-        if should_flush:
-            self.flush()
+                    handler(metric, value, tags, sample_ts)
+                except Exception:
+                    log.debug("Sample handler failed for %s", metric, exc_info=True)
 
     # ── Handlers ──────────────────────────────────────────────────
 
@@ -580,11 +575,9 @@ class SampleSink:
         detail: dict[str, Any] | None = None,
         ts: float | None = None,
     ) -> None:
-        """Record data-source health when a HistoryDB is attached."""
-        if self._db is None or not hasattr(self._db, "record_data_quality"):
-            return
+        """Record data-source health."""
         try:
-            self._db.record_data_quality(
+            self._quality.record_data_quality(
                 component,
                 status,
                 kind=kind,
@@ -597,27 +590,10 @@ class SampleSink:
         except Exception as exc:
             log.debug("Data-quality write error for %s: %s", component, exc)
 
-    # ── Flush (persist to SQLite) ─────────────────────────────────
-
     def flush(self) -> int:
-        """Persist buffered samples to SQLite.  Returns count flushed."""
-        with self._lock:
-            buf = self._buffer
-            self._buffer = []
-
-        if not buf or not self._db:
-            return 0
-
-        try:
-            from .storage import Sample
-
-            samples = [Sample(ts=ts, metric=metric, value=value, tags=tags) for ts, metric, value, tags in buf]
-            self._db.append_samples(samples)
-            self._total_flushed += len(samples)
-            return len(samples)
-        except Exception as exc:
-            log.warning("SampleSink flush error: %s", exc)
-            return 0
+        """Flush the configured writer. The writer owns transmission counters."""
+        self._writer.flush()
+        return 0
 
     # ── Query (from cache, not DB) ────────────────────────────────
 
@@ -652,7 +628,7 @@ class SampleSink:
                 "total_flushed": self._total_flushed,
                 "total_dropped": self._total_dropped,
                 "flood_drop_count": self._flood_drop_count,
-                "buffer_size": len(self._buffer),
+                "buffer_size": 0,
                 "metrics_tracked": len(self._latest),
                 "dedup_cache_size": len(self._dedup_cache),
                 "handlers": len(self._handlers),
@@ -783,34 +759,6 @@ class DatapointLogger:
 
 if TYPE_CHECKING:
     from .dashboard.models import DashboardSnapshot
-    from .storage import HistoryDB
-
-_prov_log = logging.getLogger(__name__)
-
-# Throttle: only refresh provenance every N seconds to avoid DB churn.
-_REFRESH_INTERVAL = 30.0
-_last_refresh: float = 0.0
-
-
-def update_provenance(db: HistoryDB, snap: DashboardSnapshot) -> int:
-    """Refresh dynamic source provenance from a live snapshot.
-
-    Returns the number of catalog entries updated.
-    """
-    global _last_refresh
-    now = time.time()
-    if now - _last_refresh < _REFRESH_INTERVAL:
-        return 0
-    _last_refresh = now
-
-    builders = _build_provenance(snap)
-    try:
-        # One write for the catalog: a statement per entry was a request per entry on a Kusto store.
-        db.update_datapoint_sources(builders)
-    except Exception as exc:
-        _prov_log.debug("Provenance update failed: %s", exc)
-        return 0
-    return len(builders)
 
 
 def _get(obj, key: str, default=None):

@@ -2,63 +2,26 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import math
 import os
 import time
-import uuid
-from datetime import timedelta
 from urllib.parse import urlsplit
 
-from ..kusto import NODE_ENV, local_node_id, normalize_node_id
+from ..stores import NODE_ENV, has_history, local_node_id, normalize_node_id, reader_feature
+from ..stores.base import Reader, StoreError
+from .projections.history import capture_mode, configured_reader, node_overview, node_scope, node_session, session_row
 
 MAX_NODES = 256
 MAX_SESSIONS = 100
 MAX_RUNTIME_AGENTS = 128
 STALE_AFTER = 300
-METRICS = ("sessions", "requests", "input_tokens", "output_tokens", "cost_usd")
-SESSION_FIELDS = (
-    "session_id, tool, model, project_path, started_at, ended_at, request_count, input_tokens, output_tokens, cost_usd"
-)
 
 
 class NodeViewError(ValueError):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
-
-
-def _read(settings, kql):
-    from azure.kusto.data import ClientRequestProperties
-    from azure.kusto.data.exceptions import KustoApiError, KustoMultiApiError
-
-    from ..kusto.connection import KustoClientFactory, Result
-
-    props = ClientRequestProperties()
-    props.client_request_id = f"aictl.NodeView;{uuid.uuid4()}"
-    for key, value in {
-        "request_readonly": True,
-        "request_readonly_hardline": True,
-        "deferpartialqueryfailures": False,
-        "servertimeout": timedelta(seconds=15),
-        "truncationmaxrecords": MAX_NODES + MAX_SESSIONS + 3,
-        "truncationmaxsize": 8 * 1024**2 if "node_health_counters" in kql else 1_000_000,
-        "max_memory_consumption_per_query_per_node": 134_217_728,
-        # Concurrent scan buffers can exhaust the 128 MiB budget even for max(ts) by node.
-        "query_fanout_threads_percent": 1,
-    }.items():
-        props.set_option(key, value)
-    try:
-        response = KustoClientFactory.client(settings).execute(settings.database, kql, props)
-    except (KustoApiError, KustoMultiApiError) as exc:
-        errors = exc.get_api_errors() if isinstance(exc, KustoMultiApiError) else [exc.get_api_error()]
-        if errors and all(e.code == "LowMemoryCondition" or "E_LOW_MEMORY_CONDITION" in (e.description or "") for e in errors):
-            raise NodeViewError(f"Kusto reported E_LOW_MEMORY_CONDITION (client request ID: {props.client_request_id})", 503) from exc
-        raise
-    if getattr(response, "errors_count", 0) or not response.primary_results:
-        raise NodeViewError(f"Kusto returned an incomplete node view (client request ID: {props.client_request_id})", 503)
-    return Result.from_response(response).dicts()
 
 
 def _status(ts, now):
@@ -159,7 +122,49 @@ def _local_health_row(runtime, node, now):
     }
 
 
-def node_view(db, query, *, now=None, read=_read, local_health=None, shared_health=None, local_inventory=None):
+def _session_view(reader, view, scope, p, sid, since, until, now):
+    local = normalize_node_id(local_node_id())
+    node = local if scope == "local" else None
+    if scope == "node":
+        try:
+            node = "" if p["node_id"].strip().lower() == "legacy" else normalize_node_id(p["node_id"])
+        except ValueError as exc:
+            raise NodeViewError(str(exc)) from exc
+    params = node_scope(node)
+    out = {
+        "view": view, "scope": scope, "local_node": {
+            "node_id": local, "source": NODE_ENV if NODE_ENV in os.environ else "hostname",
+        },
+        "fleet_available": True, "generated_at": now, "read_only": True,
+    }
+    try:
+        if view == "nodes":
+            result = reader.read("nodes.inventory", {**(params if scope == "node" else {}), "limit": MAX_NODES})
+            return {
+                **out, "rows": [r | {"node_id": r["node_id"] or "legacy"} for r in result.rows],
+                "truncated": result.truncated,
+            }
+        if view == "session":
+            row = session_row(reader, sid, params)
+            if row is None:
+                raise NodeViewError("Session not found on the selected node", 404)
+            return {**out, "rows": [node_session(row)]}
+        result = reader.read("nodes.sessions", {
+            **params, "since": since, "until": until,
+            "node_limit": MAX_NODES + 1, "session_limit": MAX_SESSIONS + 1,
+            "limit": MAX_NODES + MAX_SESSIONS + 3,
+        })
+        return {
+            **out, **node_overview(result, max_nodes=MAX_NODES, max_sessions=MAX_SESSIONS),
+            "since": since, "until": until,
+        }
+    except StoreError as exc:
+        raise NodeViewError(str(exc), 503) from exc
+
+
+def node_view(db, query, *, reader: Reader | None = None, now=None, local_health=None,
+              shared_health=None, local_inventory=None):
+    reader = reader if reader is not None else configured_reader(db)
     now = time.time() if now is None else now
     valid = {"view", "scope", "node_id", "session_id", "since", "until"}
     if set(query) - valid or any(len(values) != 1 for values in query.values()):
@@ -186,7 +191,11 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
     if since >= until:
         raise NodeViewError("since must be earlier than until")
 
-    settings = getattr(db, "_kusto", None)
+    fleet_available = has_history(reader)
+    if view in ("session", "overview") or (view == "nodes" and fleet_available):
+        return _session_view(reader, view, scope, p, sid, since, until, now)
+
+    settings = reader_feature(reader, "connection_info")
     local = settings.node_id if settings else normalize_node_id(local_node_id())
     source = settings.node_id_source if settings else NODE_ENV if NODE_ENV in os.environ else "hostname"
     node = local if scope == "local" else None
@@ -199,19 +208,17 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
         "view": view,
         "scope": scope,
         "local_node": {"node_id": local, "source": source},
-        "fleet_available": settings is not None,
+        "fleet_available": fleet_available,
         "generated_at": now,
         "rows": [],
         "read_only": True,
     }
     if view == "identity":
         return out
-    if view == "nodes" and not settings and (scope != "node" or node == local):
+    if view == "nodes" and not fleet_available and (scope != "node" or node == local):
         return {**out, "rows": [{"node_id": local, "captured_at": None}]}
-    if scope != "local" and not settings and not (scope == "node" and node == local):
+    if scope != "local" and not fleet_available and not (scope == "node" and node == local):
         raise NodeViewError("Fleet history requires a shared Kusto store", 409)
-    if db is None:
-        raise NodeViewError("History store unavailable", 503)
     if view == "runtime" and (scope == "local" or node == local) and local_health is not None:
         row = _local_health_row(local_health(), local, now)
         row["agents"] = local_inventory() if local_inventory is not None else None
@@ -250,40 +257,29 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
                     "node_source": source,
                     "captured_at": now,
                     "status": "reported",
-                    "capture": db.capture,
+                    "capture": capture_mode(db),
                     "ingestion": settings.ingestion if settings else None,
-                    "retention_days": db._retention_days,
-                    "content_retention_days": db._content_retention_days,
+                    "retention_days": getattr(db, "_retention_days", None),
+                    "content_retention_days": getattr(db, "_content_retention_days", None),
                 }
             ],
         }
 
-    # Filter by the physical identity before reducing versions. Only the display
-    # layer calls the empty pre-upgrade identity "legacy".
-    scoped = (
-        f" | where node_id == {json.dumps(node)}" if node is not None and (view != "nodes" or scope == "node") else ""
-    )
-    samples = f'system_snapshots | extend node_id=column_ifexists("node_id", ""){scoped}'
-    sessions = f'sessions | extend node_id=column_ifexists("node_id", ""){scoped}'
-    histories = (
-        sessions
-        if getattr(db, "current_history", False)
-        else sessions.replace("sessions |", "sessions_observations |", 1)
-    )
+    reports = []
+    truncated = False
+    if fleet_available:
+        params = node_scope(node) | {
+            "report_mode": view, "include_unreported": scope == "fleet" and view in ("health", "settings"),
+            "limit": MAX_NODES,
+        }
+        if view == "runtime":
+            params["since"] = now - STALE_AFTER
+        try:
+            answer = reader.read("nodes.reports", params)
+        except StoreError as exc:
+            raise NodeViewError(str(exc), 503) from exc
+        reports, truncated = answer.rows, answer.truncated
     if view == "runtime":
-        recent = (
-            samples + f" | where node_id != '' and ts >= {now - STALE_AFTER!r}"
-            ' | project node_id, ts, _v, _deleted, active_sessions=live_sessions, active_processes,'
-            ' cpu_percent=column_ifexists("host_cpu_percent",real(null)),'
-            ' memory_used_mb=column_ifexists("host_memory_used_mb",real(null)),'
-            ' memory_total_mb=column_ifexists("host_memory_total_mb",real(null)),'
-            ' daemon_pid=column_ifexists("daemon_pid",long(null)), counter_sample=column_ifexists("node_health_counters","")'
-            " | summarize arg_max(_v, *) by node_id, ts | where not(_deleted)"
-            " | summarize arg_max(ts, active_sessions, active_processes, cpu_percent, memory_used_mb, memory_total_mb, daemon_pid),"
-            " arg_max(iff(isnotempty(counter_sample), ts, real(null)), counter_sample) by node_id"
-            f" | order by node_id asc | take {MAX_NODES + 1}"
-        )
-        reports = read(settings, recent) if settings and node != "" else []
         rows = []
         for r in reports[:MAX_NODES]:
             rows.append(_fields(r, ("node_id", "active_sessions", "active_processes", "cpu_percent",
@@ -296,27 +292,9 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
             if row["status"] == "reported" and (stored is None or row["activity_at"] >= stored["activity_at"]):
                 row["agents"] = local_inventory() if local_inventory is not None else None
                 rows = [r for r in rows if r["node_id"] != local] + [row]
-        return {**out, "rows": sorted(rows, key=lambda r: r["node_id"]), "truncated": len(reports) > MAX_NODES}
-    inventory = (
-        "union ("
-        + samples
-        + " | summarize captured_at=max(ts) by node_id), ("
-        + histories
-        + " | summarize by node_id | extend captured_at=real(null))"
-        + " | summarize captured_at=max(captured_at) by node_id"
-    )
+        return {**out, "rows": sorted(rows, key=lambda r: r["node_id"]), "truncated": truncated}
     if view == "nodes":
-        # Discovery is on demand, not another polling loop. Include history-only
-        # nodes even when they have never published a health sample.
-        rows = read(
-            settings,
-            inventory + f" | order by node_id asc | take {MAX_NODES + 1}",
-        )
-        return {
-            **out,
-            "rows": [r | {"node_id": r["node_id"] or "legacy"} for r in rows[:MAX_NODES]],
-            "truncated": len(rows) > MAX_NODES,
-        }
+        raise NodeViewError("No store configured", 503)
     if view in ("health", "settings"):
         settings_view = view == "settings"
         health_cols = (
@@ -331,44 +309,9 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
         )
         settings_cols = ("node_source", "capture", "ingestion", "retention_days", "content_retention_days")
         cols = settings_cols if settings_view else health_cols
-        if settings:
-            projection = (
-                'captured_at=column_ifexists("settings_captured_at",real(null)), node_source=column_ifexists("node_source",""),'
-                ' capture=column_ifexists("capture_mode",""), ingestion=column_ifexists("ingestion_mode",""),'
-                ' retention_days=column_ifexists("retention_days",long(null)), content_retention_days=column_ifexists("content_retention_days",long(null))'
-                if settings_view
-                else 'captured_at=ts, cpu_percent=column_ifexists("host_cpu_percent",real(null)),'
-                ' memory_used_mb=column_ifexists("host_memory_used_mb",real(null)),'
-                ' memory_total_mb=column_ifexists("host_memory_total_mb",real(null)), active_sessions=live_sessions,'
-                ' active_processes=iff(isnotnull(column_ifexists("daemon_pid",long(null))),active_processes,long(null)),'
-                ' inbound_bps=column_ifexists("live_in_rate",real(null)), outbound_bps=column_ifexists("live_out_rate",real(null)),'
-                ' daemon_pid=column_ifexists("daemon_pid",long(null))'
-            )
-            # Do not let a tombstone resurface an older version of the same sample.
-            latest = (
-                samples
-                + " | project node_id, ts, _v, _deleted, "
-                + projection
-                + ("" if settings_view else ', counter_sample=column_ifexists("node_health_counters","")')
-                + " | summarize arg_max(_v, *) by node_id, ts | where not(_deleted)"
-                + (" | summarize arg_max(captured_at, *) by node_id" if settings_view else
-                   " | summarize arg_max(captured_at, " + ", ".join(health_cols) + "),"
-                   " arg_max(iff(isnotempty(counter_sample), ts, real(null)), counter_sample) by node_id")
-            )
-            if scope == "fleet":
-                # Nodes with session history but no samples have no observed health/settings.
-                latest = (
-                    f"let reported = materialize({latest});\nunion (reported), "
-                    f"({histories} | distinct node_id | join kind=leftanti (reported | project node_id) on node_id)"
-                )
-            rows = read(settings, latest + f" | order by node_id asc | take {MAX_NODES + 1}")
-        else:
-            cursor = db._conn().execute(
-                "SELECT ts AS captured_at, NULL AS cpu_percent,NULL AS memory_used_mb,NULL AS memory_total_mb,"
-                "live_sessions AS active_sessions,active_processes,live_in_rate AS inbound_bps,"
-                "live_out_rate AS outbound_bps FROM system_snapshots ORDER BY ts DESC LIMIT 1"
-            )
-            rows = [dict(zip((c[0] for c in cursor.description), r, strict=True)) | {"node_id": local} for r in cursor]
+        rows = reports
+        if not settings_view:
+            rows = [row if row.get("daemon_pid") is not None else row | {"active_processes": None} for row in rows]
         if node is not None and not rows:
             rows = [{"node_id": node, "captured_at": None}]
         return {
@@ -383,73 +326,7 @@ def node_view(db, query, *, now=None, read=_read, local_health=None, shared_heal
                 | ({} if settings_view else {"client_sample": _client_sample(r, now), "activity_at": r.get("captured_at")})
                 for r in rows[:MAX_NODES]
             ],
-            "truncated": len(rows) > MAX_NODES,
+            "truncated": truncated,
         }
 
-    if settings and not getattr(db, "current_history", False):
-        raise NodeViewError(
-            "This database retains unresolved observations; canonical session totals are unavailable", 409
-        )
-    if settings:
-        if view == "session":
-            sessions += f" | where session_id == {json.dumps(sid)}"
-        sessions += f" | project node_id, _v, _deleted, {SESSION_FIELDS} | summarize arg_max(_v, *) by node_id, session_id | where not(_deleted)"
-        if view == "session":
-            details = read(settings, sessions + f" | project node_id, {SESSION_FIELDS} | take 1")
-        else:
-            # Compute totals before bounding lists; neither a session list cap nor
-            # a fleet larger than the node list cap changes the totals.
-            q = (
-                f"let s = materialize({sessions} | where started_at >= {since!r} and started_at < {until!r}"
-                " | project-away _v, _deleted);\n"
-                "let grouped = s | summarize sessions=count(), requests=sum(request_count), input_tokens=sum(input_tokens),"
-                " output_tokens=sum(output_tokens), cost_usd=sum(cost_usd) by node_id;\n"
-                f"union (grouped | order by node_id asc | take {MAX_NODES + 1} | extend row_type='node'),"
-                "(grouped | summarize " + ", ".join(f"{m}=sum({m})" for m in METRICS) + " | extend row_type='total'),"
-                f"(s | order by started_at desc, node_id asc, session_id asc | take {MAX_SESSIONS + 1}"
-                f" | project node_id, {SESSION_FIELDS} | extend row_type='session')"
-            )
-            rows = read(settings, q)
-            summaries = [_fields(r, ("node_id", *METRICS)) for r in rows if r["row_type"] == "node"]
-            totals = [_fields(r, METRICS) for r in rows if r["row_type"] == "total"]
-            if len(totals) != 1:
-                raise NodeViewError("Incomplete session totals", 503)
-            details = [_fields(r, ("node_id", *SESSION_FIELDS.split(", "))) for r in rows if r["row_type"] == "session"]
-    else:
-        read_scope = getattr(db, "read_scope", None)
-        with (
-            read_scope(session=sid or None, since=None if sid else since, until=None if sid else until)
-            if read_scope
-            else contextlib.nullcontext()
-        ):
-            conn = db._conn()
-            where, args = (
-                ("session_id=?", (sid,)) if view == "session" else ("started_at>=? AND started_at<?", (since, until))
-            )
-            c = conn.execute(
-                f"SELECT {SESSION_FIELDS} FROM sessions WHERE {where} ORDER BY started_at DESC, session_id LIMIT {MAX_SESSIONS + 1}",
-                args,
-            )
-            details = [dict(zip((col[0] for col in c.description), r, strict=True)) | {"node_id": local} for r in c]
-            if view == "overview":
-                c = conn.execute(
-                    f"SELECT COUNT(*),SUM(request_count),SUM(input_tokens),SUM(output_tokens),SUM(cost_usd) FROM sessions WHERE {where}",
-                    args,
-                )
-                totals = [dict(zip(METRICS, (v or 0 for v in c.fetchone()), strict=True))]
-                summaries = [{"node_id": local, **totals[0]}]
-    for row in details:
-        row["node_id"] = row["node_id"] or "legacy"
-    if view == "session":
-        if not details:
-            raise NodeViewError("Session not found on the selected node", 404)
-        return {**out, "rows": details}
-    return {
-        **out,
-        "rows": [r | {"node_id": r["node_id"] or "legacy"} for r in summaries[:MAX_NODES]],
-        "sessions": details[:MAX_SESSIONS],
-        "totals": totals[0],
-        "since": since,
-        "until": until,
-        "truncated": len(details) > MAX_SESSIONS or len(summaries) > MAX_NODES,
-    }
+    raise NodeViewError("Node view is unavailable", 503)

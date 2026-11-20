@@ -4,7 +4,7 @@
 
 ## Before you run
 
-1. Install aictl with the Kusto extra: `pipx install "aictl[all]"`.
+1. Install aictl. The required Kusto SDKs are installed with it.
 2. Sign in: `az login`. The local emulator needs no sign-in.
 3. Point aictl at the store. Use the cluster and the database that `aictl daemon serve --kusto-cluster URL` writes to.
 

@@ -834,13 +834,13 @@ The current install is 1 launcher, normally in `.local\bin` (`.local/bin` on mac
 
 ## Store the history in a Kusto cluster
 
-SQLite is the default backend and needs no setup. The alternative backend is a Kusto (Azure Data Explorer, or Fabric Eventhouse) database: the daemon then serves entirely from the cluster and writes no SQLite file. Getting a cluster (the free emulator, an Azure Data Explorer dev cluster, a Fabric Eventhouse), access and identities, the config keys, the first start and troubleshooting are on their own page: [docs/kusto-cluster.md](docs/kusto-cluster.md). The short version:
+Kusto is the history store. Without a configured destination, the daemon serves live runtime data but does not capture history. The Azure Kusto SDKs are installed with aictl. For setup, see [docs/kusto-cluster.md](docs/kusto-cluster.md). The short version:
 
 ```bash
 aictl daemon serve --kusto-cluster https://<name>.westeurope.kusto.windows.net --kusto-database aictl
 ```
 
-The remote default (`auto`) queues telemetry through DM and keeps state/configuration tables, including `path_defs`, synchronous through inline ingestion. An `ingest-` endpoint is accepted: aictl derives the engine endpoint for reads and synchronous writes. Select `--kusto-ingestion queued`, `streaming` or `inline` for an explicit global mode; repeat `--kusto-table-ingestion TABLE=MODE` for overrides. For example, `--kusto-ingestion queued --kusto-table-ingestion path_defs=inline` queues every table except `path_defs`. Queued commits confirm submission, not ingestion; updates and conflict checks can wait for DM. See [ingestion modes](docs/kusto-cluster.md#global-ingestion-mode-and-per-table-overrides) for TOML/environment configuration, precedence and consistency limits.
+The remote default (`auto`) selects streaming or queued ingestion per table. Inline ingestion is only for the emulator. Queued submission does not mean that rows are queryable yet. Run `aictl db schema` for the default mode and retention of each table.
 
 ## Control how much is stored
 
@@ -849,15 +849,13 @@ aictl treats storage as a disposable cache. Set `[storage]` in `aictl config pat
 ```toml
 [storage]
 capture = "full"             # full, metadata or off
-max_total_mb = 1024          # budget for the database, its journal and logs
-content_retention_days = 14  # with full: blank conversation text older than this
 ```
 
 | `capture` | What is kept |
 |---|---|
-| `full` | Conversation text within the limits above. Session metadata stays after its text is trimmed. |
+| `full` | Session metadata and separate conversation text with shorter retention. |
 | `metadata` | Sessions, tokens, cost, timings, tool names and sizes. No prompt, response or tool payload text. |
-| `off` | Nothing on disk: no database, journal or log files. The live dashboard runs from memory, and history resets on restart. |
+| `off` | No history capture. The live dashboard remains available. |
 
 To try a mode for one run:
 
@@ -865,34 +863,26 @@ To try a mode for one run:
 aictl daemon serve --capture off
 ```
 
-If the database is corrupt, full or stays locked, the daemon continues in memory and the dashboard
-reports it.
+If Kusto cannot be reached, the daemon continues to show live data. The writer queues rows in
+memory up to its configured limits. Health shows the queue depth, dropped rows, and last error.
 
 ### Shrink an existing database
 
-Stop the daemon first, and look before you delete:
+Check logical row counts and physical extent metadata before removing text:
 
 ```bash
 aictl db stats
-aictl db compact --dry-run
 ```
 
-- **Remove text, keep every number:**
+- **Remove retained text for this node:**
 
   ```bash
   aictl db trim-text --dry-run
   aictl db trim-text
   ```
 
-- **Delete old rows and reclaim the space:**
-
-  ```bash
-  aictl db compact --retention-days 90
-  ```
-
-**Compact deletes history.** It removes `requests` and `events` older than the retention window, and
-session rows stay. On a database whose last data is older than the window, that means all of those
-rows. Check `--dry-run` and pick the window on purpose. The default is 30 days.
+Kusto retention policies remove old data automatically. Soft delete removes matching text from
+queries, but does not free extent space immediately.
 
 ## See which model and settings are really in force
 

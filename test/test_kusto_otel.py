@@ -1,4 +1,4 @@
-"""OTLP export requests to collector-compatible Kusto rows (aictl.kusto.otel), no cluster."""
+"""OTLP export requests to collector-compatible Kusto rows, without a cluster."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import math
 
 import pytest
 
-from aictl.kusto import otel
-from aictl.kusto.otel import (
+from aictl.stores.kusto import otel
+from aictl.stores.kusto.otel import (
     BAG_BYTES,
     CHUNK_BYTES,
     PAYLOADS,
@@ -891,7 +891,7 @@ def test_keep_text_false_stores_no_log_text():
 
 
 def test_keep_text_false_follows_the_stores_rule():
-    from aictl.storage import strip_event_text
+    from aictl.records import strip_event_text
 
     detail = {"prompt": "p", "n": 1, "long": "x" * 300, "name": "Bash", "inner": {"command": "ls", "ok": True}}
     assert otel._no_text(detail) == strip_event_text(detail)

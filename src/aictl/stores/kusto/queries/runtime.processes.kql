@@ -1,0 +1,14 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', restrict_tools:bool = false,
+                         requested_tools:dynamic = dynamic([]), row_limit:long);
+let current = materialize(session_processes
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by node_id, ['project'], session_id, pid
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+      and (not(restrict_tools) or tool in (requested_tools))
+    | project node_id, ['project'], session_id, pid, tool, role, joined_at);
+union (current | summarize total=count() | extend row_type='total'),
+      (current | order by joined_at desc nulls last, node_id asc, pid asc, session_id asc, ['project'] asc
+               | take 1000 | extend row_type='process')
+| order by row_type desc, joined_at desc nulls last, node_id asc, pid asc, session_id asc, ['project'] asc
+| take row_limit
+| project-away ['project']

@@ -163,22 +163,22 @@ def _summarize_hook(event: str, rule: dict, server_port: int | None = None) -> d
     }
 
 
-def _hook_event_counts(db, cutoff: float) -> dict[str, Any]:
+def _activity(reader, cutoff: float, *, counts_only: bool = False) -> dict[str, list[dict]]:
+    from .projections.history import complete_rows, local_scope
+
+    grouped: dict[str, list[dict]] = {}
+    if reader is not None:
+        for row in complete_rows(reader.read("hooks.activity", {
+            **local_scope(), "since": cutoff, "counts_only": counts_only, "limit": 20_000,
+        })):
+            grouped.setdefault(row["row_type"], []).append(row)
+    return grouped
+
+
+def _hook_event_counts(activity) -> dict[str, Any]:
     out: dict[str, Any] = {"total": 0, "last_fire_ts": None, "by_tool": {}, "by_kind": {}, "by_tool_kind": {}}
-    if db is None:
-        return out
-    conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
-    rows = conn.execute(
-        """
-        SELECT tool, kind, COUNT(*) AS n, MAX(ts) AS last_ts
-          FROM events
-         WHERE kind LIKE 'hook:%' AND ts >= ?
-           AND COALESCE(json_extract(detail, '$._aictl_verify'), 0) = 0
-         GROUP BY tool, kind
-        """,
-        (cutoff,),
-    ).fetchall()
-    for tool, kind, count, last_ts in rows:
+    for row in activity.get("hook", ()):
+        tool, kind, count, last_ts = (row[k] for k in ("tool", "kind", "count", "last_ts"))
         event = str(kind)[5:] if str(kind).startswith("hook:") else str(kind)
         count = int(count or 0)
         last_ts = float(last_ts or 0)
@@ -194,33 +194,11 @@ def _hook_event_counts(db, cutoff: float) -> dict[str, Any]:
     return out
 
 
-def _store_tool_usage(db, cutoff: float) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
-    """Counts of stored tool calls and skill uses since *cutoff*.
-
-    Returns ``(skills, tool_calls)``, each ``{tool: {name: count}}``. These come
-    from ``tool_invocations`` and ``skill_uses``, which every source writes
-    (hooks, OTel and transcripts), so an agent that never fires an aictl hook is
-    still counted. A row that stored no tool takes the tool of its session.
-    """
-    from ..storage import _VERIFY_SESSION_ID, UNATTRIBUTED_IDS, _effective_tool_sql, _placeholders, _session_join
-
-    skills: dict[str, dict[str, int]] = {}
-    calls: dict[str, dict[str, int]] = {}
-    conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
-    unattributed = list(UNATTRIBUTED_IDS)
-    for table, name_col, target in (("tool_invocations", "tool_name", calls), ("skill_uses", "name", skills)):
-        rows = conn.execute(
-            f"SELECT {_effective_tool_sql('t', 's')} AS etool, COALESCE(NULLIF(t.{name_col}, ''), 'unknown') AS ename,"
-            f" COUNT(*) FROM {table} t{_session_join('t', 's')}"
-            f" WHERE t.ts >= ? AND t.session_id != ? GROUP BY etool, ename",
-            [*unattributed, cutoff, _VERIFY_SESSION_ID],
-        ).fetchall()
-        for tool, name, count in rows:
-            if name == "Skill" and table == "tool_invocations":
-                continue  # counted as a skill use below, not as a general tool call
-            bucket = target.setdefault(str(tool or "unknown"), {})
-            bucket[str(name)] = bucket.get(str(name), 0) + int(count or 0)
-    return skills, calls
+def _named_counts(rows) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        counts.setdefault(row["tool"], {})[row["name"]] = row["count"]
+    return counts
 
 
 def _merge_max(into: dict[str, dict[str, int]], other: dict[str, dict[str, int]]) -> None:
@@ -235,7 +213,7 @@ def _merge_max(into: dict[str, dict[str, int]], other: dict[str, dict[str, int]]
             bucket[name] = max(bucket.get(name, 0), count)
 
 
-def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, Any]]:
+def _post_tool_use_usage(activity) -> tuple[dict[str, Any], dict[str, Any]]:
     """Skill uses and general tool calls in the window → ``(skill_usage, tool_calls)``.
 
     Read from the stored facts (``tool_invocations``, ``skill_uses``) and from the
@@ -243,46 +221,10 @@ def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, A
     """
     skills: dict[str, Any] = {"total_calls_24h": 0, "by_skill": [], "by_tool": {}, "by_tool_skill": {}}
     tools: dict[str, Any] = {"total_calls_24h": 0, "by_name": [], "by_tool": {}, "by_tool_name": {}}
-    if db is None:
-        return skills, tools
-    conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
-    rows = conn.execute(
-        """
-        SELECT tool,
-               COALESCE(json_extract(detail, '$.tool_name'), json_extract(detail, '$.name'), 'unknown') AS name,
-               COALESCE(
-                 json_extract(detail, '$.skill_name'),
-                 json_extract(detail, '$.tool_input.skill'),
-                 json_extract(detail, '$.tool_input.name'),
-                 json_extract(detail, '$.input.skill'),
-                 json_extract(detail, '$.input.name'),
-                 'unknown'
-               ) AS skill,
-               COUNT(*) AS n
-          FROM events
-         WHERE kind = 'hook:PostToolUse'
-           AND ts >= ?
-           AND COALESCE(json_extract(detail, '$._aictl_verify'), 0) = 0
-         GROUP BY tool, name, skill
-        """,
-        (cutoff,),
-    ).fetchall()
-    tool_skill: dict[str, dict[str, int]] = {}
-    tool_name: dict[str, dict[str, int]] = {}
-    for tool, name, skill, count in rows:
-        count = int(count or 0)
-        tool = str(tool)
-        name = str(name or "unknown")
-        if name == "Skill":
-            skill = str(skill or "unknown")
-            bucket = tool_skill.setdefault(tool, {})
-            bucket[skill] = bucket.get(skill, 0) + count
-        else:
-            bucket = tool_name.setdefault(tool, {})
-            bucket[name] = bucket.get(name, 0) + count
-    store_skills, store_calls = _store_tool_usage(db, cutoff)
-    _merge_max(tool_skill, store_skills)
-    _merge_max(tool_name, store_calls)
+    tool_skill = _named_counts(activity.get("hook_skill", ()))
+    tool_name = _named_counts(activity.get("hook_call", ()))
+    _merge_max(tool_skill, _named_counts(activity.get("skill", ())))
+    _merge_max(tool_name, _named_counts(activity.get("call", ())))
 
     by_skill: dict[str, int] = {}
     by_name: dict[str, int] = {}
@@ -307,32 +249,15 @@ def _post_tool_use_usage(db, cutoff: float) -> tuple[dict[str, Any], dict[str, A
     return skills, tools
 
 
-def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
-    if db is None:
-        return {"starts_24h": 0, "stops_24h": 0, "by_tool": {}, "recent": []}
-    conn = db._conn()  # noqa: SLF001 - read-only dashboard aggregation
-    where = """
-         WHERE ts >= ?
-           AND COALESCE(json_extract(detail, '$._aictl_verify'), 0) = 0
-           AND (kind IN ('hook:SubagentStart', 'hook:SubagentStop') OR lower(kind) LIKE '%subagent%')
-    """
+def _subagent_usage(activity) -> dict[str, Any]:
     by_tool: dict[str, dict[str, int]] = {}
-    for tool, kind, count in conn.execute(f"SELECT tool, kind, COUNT(*) FROM events{where} GROUP BY tool, kind", (cutoff,)):
+    for row in activity.get("subagent", ()):
+        tool, kind, count = (row[k] for k in ("tool", "kind", "count"))
         bucket = by_tool.setdefault(str(tool), {"starts": 0, "stops": 0})
         bucket["stops" if "stop" in str(kind).lower() else "starts"] += int(count or 0)
-    rows = conn.execute(
-        f"""
-        SELECT ts, tool, kind,
-               COALESCE(json_extract(detail, '$.agent_id'), json_extract(detail, '$.subagent_id'), '') AS agent_id,
-               COALESCE(json_extract(detail, '$.agent_type'), '') AS agent_type
-          FROM events{where}
-         ORDER BY ts DESC
-         LIMIT 10
-        """,
-        (cutoff,),
-    ).fetchall()
     recent = []
-    for ts, tool, kind, agent_id, agent_type in rows:
+    for row in activity.get("recent", ()):
+        ts, tool, kind, agent_id, agent_type = (row[k] for k in ("ts", "tool", "kind", "agent_id", "agent_type"))
         event = str(kind)[5:] if str(kind).startswith("hook:") else str(kind)
         recent.append(
             {
@@ -345,11 +270,8 @@ def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
         )
     # Stored agent rows (transcripts, OTel and hooks alike): per tool, keep the
     # larger of the hook-event count and the stored count.
-    for tool, started, stopped in conn.execute(
-        "SELECT tool, SUM(started_at >= ?), SUM(ended_at IS NOT NULL AND ended_at >= ?)"
-        " FROM agents WHERE is_sidechain = 1 AND (started_at >= ? OR COALESCE(ended_at, 0) >= ?) GROUP BY tool",
-        (cutoff, cutoff, cutoff, cutoff),
-    ).fetchall():
+    for row in activity.get("agent", ()):
+        tool, started, stopped = (row[k] for k in ("tool", "starts", "stops"))
         bucket = by_tool.setdefault(str(tool or "unknown"), {"starts": 0, "stops": 0})
         bucket["starts"] = max(bucket["starts"], int(started or 0))
         bucket["stops"] = max(bucket["stops"], int(stopped or 0))
@@ -358,19 +280,8 @@ def _subagent_usage(db, cutoff: float) -> dict[str, Any]:
     return {"starts_24h": starts, "stops_24h": stops, "by_tool": by_tool, "recent": recent[:10]}
 
 
-def collect_hooks_status(db, root: Path, **kwargs: Any) -> dict[str, Any]:
-    """Hook health and recent hook activity; a history split by project reads the hook window only."""
-    scope = getattr(db, "read_scope", None)
-    if scope is None:
-        return _collect_hooks_status(db, root, **kwargs)
-    now = kwargs.get("now")
-    now = time.time() if now is None else now
-    with scope(since=now - HOOK_WINDOW_SECONDS, until=now):
-        return _collect_hooks_status(db, root, **kwargs)
-
-
-def _collect_hooks_status(
-    db,
+def collect_hooks_status(
+    reader,
     root: Path,
     *,
     now: float | None = None,
@@ -417,7 +328,8 @@ def _collect_hooks_status(
         _src("copilot-vscode", "project", "vscode_project", "vscode", vscode_project_enabled, vscode_project_reason),
     ]
 
-    counts = _hook_event_counts(db, cutoff)
+    activity = _activity(reader, cutoff)
+    counts = _hook_event_counts(activity)
     tools: dict[str, dict[str, Any]] = {}
     warnings: list[dict[str, str]] = []
     for source in sources:
@@ -486,7 +398,7 @@ def _collect_hooks_status(
         else:
             bucket["status"] = "missing"
 
-    skill_usage, tool_calls = _post_tool_use_usage(db, cutoff)
+    skill_usage, tool_calls = _post_tool_use_usage(activity)
     return {
         "generated_at": now,
         "window_seconds": HOOK_WINDOW_SECONDS,
@@ -505,6 +417,6 @@ def _collect_hooks_status(
             "hook_files_locations": vscode_settings.get("chat.hookFilesLocations", {}),
         },
         "skill_usage": skill_usage,
-        "subagents": _subagent_usage(db, cutoff),
+        "subagents": _subagent_usage(activity),
         "tool_calls": tool_calls,
     }

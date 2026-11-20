@@ -15,219 +15,89 @@ import click
 from ..cli_context import CliContext
 from ..kusto import kusto_settings
 from ..platforms import config_path, show_config, write_default_config
+from ..stores.base import StoreError
 
 # ─── db ─────────────────────────────────────────────────────────────────────
 
 
-def _resolve_db_path(db_path: str | None) -> Path:
-    """Return db Path, exiting with error if it doesn't exist."""
-    from ..storage import DEFAULT_DB_PATH
-
-    path = Path(db_path) if db_path else DEFAULT_DB_PATH
-    if not path.exists():
-        raise click.ClickException(f"Database not found: {path}")
-    return path
-
-
-def _project_files(path: Path) -> list[Path]:
-    """The project stores of a machine store: each database with its WAL."""
-    from ..project_stores import project_store_files
-
-    return [f for f in project_store_files(path) if not f.name.endswith("-shm")]
-
-
-def _history_bytes(path: Path) -> tuple[int, int]:
-    """Bytes of the machine store and its project stores, and of the machine store's WAL."""
-    wal = path.with_name(path.name + "-wal")
-    stores = sum(f.stat().st_size for f in _project_files(path))
-    return path.stat().st_size + stores, wal.stat().st_size if wal.exists() else 0
-
-
 @click.group()
-@click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
+@click.option("--db", "db_path", default=None, type=click.Path(), hidden=True)
 @click.pass_context
 def db(ctx, db_path):
-    """Database maintenance — compact, vacuum, stats."""
+    """Inspect or maintain stored history."""
     ctx.ensure_object(CliContext)
     ctx.obj.db_path = db_path
 
 
-@db.command()
-@click.option("--vacuum/--no-vacuum", default=True, help="Run VACUUM after compaction to reclaim disk space")
-@click.option("--dry-run", is_flag=True, help="Print what would be removed and the expected size; change nothing")
-@click.option("--retention-days", type=int, default=None, help="Override [storage] retention_days for this run")
-@click.pass_context
-def compact(ctx, vacuum, dry_run, retention_days):
-    """Compact the database — downsample old data, delete expired rows, reclaim space.
-
-    \b
-    Retention policy:
-      Samples:  full res 1h → 1-min buckets 24h → 5-min buckets 7d → delete
-      Metrics:  full res 24h → 1-min buckets 7d → 5-min buckets 30d → delete
-      Events:   30 days → delete
-      Telemetry: 30 days → delete
-
-    The running daemon never removes history from before its first run until
-    one retention period has passed; this command does so on request. Stop the
-    daemon first: VACUUM needs exclusive access and free disk equal to the
-    size of the live data.
-    """
-    from ..platforms import load_config
-    from ..project_stores import ProjectStores
-
-    db_path = ctx.obj.db_path
-    path = _resolve_db_path(db_path)
-    if retention_days is None:
-        retention_days = load_config().retention_days
-
-    # The machine store and every project store next to it.
-    size_before, wal_size = _history_bytes(path)
-    click.echo(f"Database: {path}")
-    click.echo(f"Size before: {size_before / 1024**2:.1f} MB (+ {wal_size / 1024**2:.1f} MB WAL)")
-
-    if dry_run:
-        # flush_interval=0: no background writer for a read-only forecast.
-        with ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days, kusto=kusto_settings()) as est_db:
-            est = est_db.compact_estimate()
-        mb = 1024**2
-        click.echo(f"Free pages inside the file: {est['free_bytes'] / mb:.1f} MB")
-        click.echo(f"Retention: {est['retention_days']} days (metrics: 7 days)")
-        for table, n in sorted(est["expired_rows"].items()):
-            if n:
-                click.echo(f"  {table}: {n:,} of {est['total_rows'][table]:,} rows expired")
-        click.echo(f"Expired data: about {est['expired_bytes_estimate'] / mb:.1f} MB")
-        click.echo(f"Expected size after compact: about {est['estimated_after_bytes'] / mb:.1f} MB")
-        click.echo("Dry run: nothing was changed.")
-        return
-
-    hist_db = ProjectStores(db_path=path, flush_interval=0, retention_days=retention_days, kusto=kusto_settings())
-
-    click.echo("Compacting...")
-    t0 = time.time()
-    result = hist_db.compact()
-    elapsed = time.time() - t0
-
-    click.echo(f"Compacted in {elapsed:.1f}s:")
-    for k, v in sorted(result.items()):
-        if v:
-            click.echo(f"  {k}: {v:,}")
-
-    if vacuum:
-        click.echo("Running VACUUM (reclaiming disk space)...")
-        t0 = time.time()
-        hist_db.vacuum()
-        click.echo(f"VACUUM done in {time.time() - t0:.1f}s")
-
-    hist_db.close()
-
-    size_after = _history_bytes(path)[0]
-    saved = size_before - size_after
-    click.echo(f"\nSize after:  {size_after / 1024**2:.1f} MB")
-    if saved > 0:
-        click.echo(f"Reclaimed:   {saved / 1024**2:.1f} MB ({saved / size_before * 100:.0f}%)")
+def _admin_settings(ctx):
+    if ctx.obj and ctx.obj.db_path:
+        raise click.ClickException("This operation no longer supports --db. Configure a Kusto store.")
+    settings = kusto_settings()
+    if settings is None:
+        raise click.ClickException("No store configured")
+    return settings
 
 
 @db.command("trim-text")
-@click.option("--dry-run", is_flag=True, help="Print how much text would go; change nothing")
-@click.option("--older-than-days", type=float, default=0, help="Only text older than this (default: all text)")
+@click.option("--dry-run", is_flag=True, help="Check the trim predicates without deleting records")
+@click.option("--older-than-days", type=click.FloatRange(min=0), default=0, help="Only text older than this")
 @click.pass_context
 def trim_text(ctx, dry_run, older_than_days):
-    """Remove stored conversation text and tool payloads, keep all metadata.
+    """Soft-delete text for this node. Keep metadata in separate tables."""
+    from ..stores.kusto.maintenance import trim_text as trim
 
-    Tokens, cost, timings, tool names and sizes stay. Run this when moving an
-    existing DB to capture = "metadata", then `aictl db compact` to shrink the file.
-    """
-    from ..project_stores import ProjectStores
-
-    db_path = ctx.obj.db_path
-    path = _resolve_db_path(db_path)
-    with ProjectStores(db_path=path, flush_interval=0, kusto=kusto_settings()) as hist_db:
-        if dry_run:
-            for name, chars in sorted(hist_db.trim_text_estimate().items()):
-                if chars:
-                    click.echo(f"  {name}: {chars / 1024**2:.1f} MB of text")
-            click.echo("Event details are stripped as well. Dry run: nothing was changed.")
-            return
-        changed = hist_db.trim_text(before=time.time() - older_than_days * 86400)
-    click.echo(f"Trimmed text in {changed:,} rows. Run `aictl db compact` to shrink the file.")
+    settings = _admin_settings(ctx)
+    try:
+        tables = trim(settings, time.time() - older_than_days * 86400, dry_run=dry_run)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"{'Dry run checked' if dry_run else 'Trim completed for'} {len(tables)} text tables in {settings.uri}.")
 
 
 @db.command()
 @click.pass_context
 def stats(ctx):
-    """Show database size, row counts, and time ranges."""
-    from ..project_stores import ProjectStores
+    """Show current logical rows and physical extent metadata."""
+    from datetime import datetime, timezone
 
-    db_path = ctx.obj.db_path
-    path = _resolve_db_path(db_path)
+    from ..stores.kusto.maintenance import store_stats
 
-    hist_db = ProjectStores(db_path=path, flush_interval=0, kusto=kusto_settings())
-    s = hist_db.stats()
-    hist_db.close()
-
-    click.echo(f"Database: {path}")
-    click.echo(f"Project stores: {s.get('project_stores', 0)}")
-    click.echo(f"File size: {s['file_size_bytes'] / 1024**2:.1f} MB")
-    click.echo()
-
-    click.echo("Table                  Rows")
-    click.echo("-" * 40)
-    for k in sorted(s):
-        if k.endswith("_count"):
-            name = k.replace("_count", "")
-            click.echo(f"{name:22s} {s[k]:>12,}")
-
-    if s.get("earliest_ts") and s.get("latest_ts"):
-        import datetime
-
-        earliest = datetime.datetime.fromtimestamp(s["earliest_ts"])
-        latest = datetime.datetime.fromtimestamp(s["latest_ts"])
-        span = latest - earliest
-        click.echo(
-            f"\nTime range: {earliest:%Y-%m-%d %H:%M} — {latest:%Y-%m-%d %H:%M} ({span.days}d {span.seconds // 3600}h)"
-        )
-
-    if s.get("files_tracked"):
-        click.echo(
-            f"Files tracked: {s['files_tracked']:,} ({s['files_total_bytes'] / 1024**2:.1f} MB, {s['files_total_tokens']:,} tokens)"
-        )
+    settings = _admin_settings(ctx)
+    try:
+        details, logical = store_stats(settings)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Database: {settings.uri}")
+    click.echo("\nCurrent logical rows (selected history tables, all nodes)")
+    for row in logical:
+        click.echo(f"{row['table']:32s} {row['rows']:>12,}")
+        if row.get("earliest_ts") is not None and row.get("latest_ts") is not None:
+            start = datetime.fromtimestamp(row["earliest_ts"], timezone.utc)
+            end = datetime.fromtimestamp(row["latest_ts"], timezone.utc)
+            click.echo(f"  Time range: {start.isoformat()} to {end.isoformat()}")
+    click.echo("\nPhysical extent metadata (includes old versions and tombstones)")
+    click.echo(f"{'Table':32s} {'Extents':>10s} {'Extent rows':>14s} {'Extent bytes':>14s}")
+    for row in sorted(details, key=lambda row: row["TableName"]):
+        counts = ["—" if row[k] is None else f"{row[k]:,}" for k in ("TotalExtents", "TotalRowCount", "TotalExtentSize")]
+        click.echo(f"{row['TableName']:32s} {counts[0]:>10s} {counts[1]:>14s} {counts[2]:>14s}")
 
 
 @db.command()
-@click.option("--markdown", is_flag=True, help="The full reference as Markdown (what docs/kusto-schema.md holds)")
-@click.option("--json", "as_json", is_flag=True, help="One JSON object per column, as the aictl_information_schema table holds it")
+@click.option("--markdown", is_flag=True, help="Print as Markdown")
+@click.option("--json", "as_json", is_flag=True, help="Print one JSON object per table")
 def schema(markdown, as_json):
-    """The store's information schema: every table, its key, scope and columns.
+    """Print native Kusto table keys, columns, retention and ingestion modes."""
+    from ..stores.kusto.maintenance import schema_rows
 
-    Includes the Kusto-only OpenTelemetry tables. On a cluster the table
-    aictl_information_schema describes these columns.
-    """
-    import json as _json
-
-    from ..kusto import schema as kusto_schema
-
-    tables = kusto_schema.store_schema()
-    if markdown:
-        click.echo(kusto_schema.render_markdown(tables), nl=False)
-        return
-    if as_json:
-        for row in kusto_schema.information_rows(tables):
-            click.echo(_json.dumps(row))
-        return
-    for title, names in kusto_schema.TABLE_GROUPS:
-        click.echo(f"\n{title}")
-        for name in names:
-            table = tables.get(name)
-            if table is None:
-                continue
-            unique = "; unique " + ", ".join("(" + ",".join(u) + ")" for u in table.unique_sets) if table.unique_sets else ""
-            click.echo(f"  {name}  [key: {', '.join((kusto_schema.NODE, *table.key))}{unique}]")
-            click.echo("    " + ", ".join(f"{c.name}:{c.kusto_type}" for c in table.columns))
-    from ..kusto.otel import TABLES
-
-    click.echo("\nOpenTelemetry")
-    for raw in TABLES:
-        click.echo(f"  {raw.name}\n    " + ", ".join(f"{c.name}:{c.kusto_type}" for c in raw.columns))
+    if markdown and not as_json:
+        click.echo("# aictl Kusto tables")
+    for row in schema_rows():
+        if as_json:
+            click.echo(json.dumps(row))
+            continue
+        click.echo(f"\n{'## ' if markdown else ''}{row['table']}")
+        click.echo(f"Key: {', '.join(row['key'])}; retention: {row['retention_days']} days; ingestion: {row['ingestion']}")
+        click.echo("    " + ", ".join(f"{name}:{kind}" for name, kind in row["columns"].items()))
 
 
 def _report_settings(cluster: str | None, database: str | None):
@@ -333,11 +203,6 @@ def report(
             "(and AICTL_KUSTO_DATABASE) in this terminal, or set kusto_cluster in config.toml (see docs/kusto-cluster.md). "
             "On Windows, a variable set with setx reaches only terminals opened after it."
         )
-    try:
-        import azure.kusto.data  # noqa: F401
-    except ImportError as exc:
-        raise click.ClickException('The Kusto client is not installed: pipx install "aictl[all]" (see docs/kusto-cluster.md).') from exc
-
     known = {s.name: s for s in kusto_report.SECTIONS}
     wanted = [n.strip() for n in names.split(",") if n.strip()] if names else list(known)
     unknown = [n for n in wanted if n not in known]
@@ -419,41 +284,17 @@ def _report_values(result) -> None:
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def reset(ctx, yes):
-    """Delete the database and start fresh.
+    """Clear aictl tables on the configured store. Stop all writers first."""
+    from ..stores.kusto.maintenance import reset_history
 
-    \b
-    Removes the existing history database and initialises an empty one.
-    All recorded metrics, events, and telemetry are permanently deleted.
-    """
-    from ..storage import DEFAULT_DB_PATH, HistoryDB
-
-    db_path = ctx.obj.db_path
-    path = Path(db_path) if db_path else DEFAULT_DB_PATH
-
-    from ..project_stores import project_store_files, remove_project_stores
-
-    if path.exists() or project_store_files(path):
-        size_mb = (_history_bytes(path)[0] if path.exists() else 0) / 1024**2
-        click.echo(f"Database: {path}")
-        click.echo(f"Size: {size_mb:.1f} MB (with {len(_project_files(path))} project store files)")
-        if not yes:
-            click.confirm(
-                "Permanently delete ALL data and start a new database?",
-                abort=True,
-            )
-        # The project stores too: a store left behind would bring its history back.
-        # Only files that are project stores go; anything else in that folder stays.
-        for f in [path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")]:
-            f.unlink(missing_ok=True)
-        remove_project_stores(path)
-        click.secho("Database deleted.", fg="yellow")
-    else:
-        click.echo(f"Database: {path}")
-        click.echo("(does not exist yet — will be created fresh)")
-
-    # Initialise a fresh empty database by opening it.
-    HistoryDB(db_path=str(path), kusto=kusto_settings()).close()
-    click.secho(f"Fresh database initialised: {path}", fg="green")
+    settings = _admin_settings(ctx)
+    if not yes:
+        click.confirm(f"Clear aictl tables for ALL nodes in {settings.uri}?", abort=True)
+    try:
+        count = reset_history(settings)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Cleared {count} aictl tables in {settings.uri}.")
 
 
 # ─── config ──────────────────────────────────────────────────────────────────
@@ -943,16 +784,12 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
       aictl catalog sync                   # re-sync DB from YAML files
       aictl catalog validate               # check for gaps
     """
+    ctx.ensure_object(CliContext)
+    ctx.obj.db_path = db_path
     if ctx.invoked_subcommand is not None:
-        ctx.ensure_object(CliContext)
-        ctx.obj.db_path = db_path
         return
 
-    from ..storage import HistoryDB
-
-    db = HistoryDB(db_path=db_path, kusto=kusto_settings())
-    entries = db.query_datapoint_catalog(tab=tab, source_type=source_type)
-    db.close()
+    entries = _read_catalog(_admin_settings(ctx), tab=tab, source_type=source_type)
 
     if not entries:
         raise click.ClickException("No catalog entries found. Run 'aictl catalog sync' to seed the DB.")
@@ -973,19 +810,40 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
 @catalog.command()
 @click.pass_context
 def sync(ctx):
-    """Re-sync the datapoint catalog from YAML source files.
+    """Send changed catalog definitions to the configured store."""
+    click.echo(f"Synced {_sync_catalog(_admin_settings(ctx))} changed catalog entries")
 
-    Reads datapoint-catalog.yaml and datapoint-queries.yaml from the
-    aictl data directory and upserts all entries into the DB. Safe to
-    run repeatedly — uses INSERT OR REPLACE.
-    """
-    from ..storage import HistoryDB
 
-    db_path = ctx.obj.db_path if ctx.obj else None
-    db = HistoryDB(db_path=db_path, kusto=kusto_settings())
-    count = db.sync_datapoint_catalog()
-    db.close()
-    click.echo(f"Synced {count} catalog entries to DB")
+def _read_catalog(settings, **filters):
+    from ..dashboard.projections.metrics import catalog_entries
+    from ..stores import open_store
+
+    try:
+        return catalog_entries(open_store("kusto", settings=settings, read_only=True).reader, **filters)
+    except StoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _sync_catalog(settings) -> int:
+    from ..collection_status import DatapointCatalog
+    from ..state_file import StateFile, restart_directory
+    from ..stores import open_store
+
+    directory = restart_directory(settings.cluster, settings.database, settings.node_id)
+    writer = open_store("kusto", settings=settings).writer
+    try:
+        state = StateFile(directory / "datapoint_catalog.json")
+        catalog = DatapointCatalog(writer, state)
+        catalog.state = None
+        count = catalog.sync()
+        writer.flush()
+        if errors := [t["last_error"] for t in writer.health()["tables"].values() if t["last_error"]]:
+            raise click.ClickException("; ".join(errors))
+        if catalog.changed:
+            state.replace(catalog.rows)
+        return count
+    finally:
+        writer.close()
 
 
 @catalog.command()
@@ -1000,11 +858,7 @@ def validate(ctx, fix):
       - No duplicate keys
       - YAML and DB are in sync
     """
-    from ..storage import HistoryDB
-
-    db_path = ctx.obj.db_path if ctx.obj else None
-    db = HistoryDB(db_path=db_path, kusto=kusto_settings())
-    entries = db.query_datapoint_catalog()
+    entries = _read_catalog(_admin_settings(ctx))
 
     issues = []
     # Check required fields
@@ -1052,8 +906,6 @@ def validate(ctx, fix):
         if missing_queries:
             issues.append(f"In catalog YAML but no query: {sorted(missing_queries)}")
 
-    db.close()
-
     # Report
     by_type = Counter(e["source_type"] for e in entries)
     dynamic = sum(1 for e in entries if e.get("dynamic_source"))
@@ -1071,9 +923,7 @@ def validate(ctx, fix):
             click.echo(f"  - {issue}")
         if fix:
             click.echo("\nRe-syncing from YAML...")
-            db2 = HistoryDB(db_path=db_path, kusto=kusto_settings())
-            count = db2.sync_datapoint_catalog()
-            db2.close()
+            count = _sync_catalog(_admin_settings(ctx))
             click.echo(f"Synced {count} entries. Re-run validate to check.")
         else:
             click.echo("\nRun with --fix to auto-sync from YAML files.")

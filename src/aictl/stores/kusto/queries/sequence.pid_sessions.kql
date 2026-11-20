@@ -1,0 +1,14 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_pid:long, since:real, until:real, row_limit:long);
+let owners = sessions
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'],node_id,session_id
+    | where not(column_ifexists('_deleted',false)) and (isnull(ended_at) or ended_at >= since) and started_at <= until
+    | distinct ['project'],node_id,session_id;
+session_processes
+| where (all_nodes or node_id == requested_node) and pid == requested_pid
+| summarize arg_max(_v, *) by ['project'],node_id,session_id,pid
+| where not(column_ifexists('_deleted',false))
+| join kind=leftsemi owners on ['project'],node_id,session_id
+| distinct node_id,session_id
+| order by node_id asc,session_id asc
+| take row_limit

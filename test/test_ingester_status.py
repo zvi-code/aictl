@@ -17,7 +17,7 @@ from pathlib import Path
 
 from aictl.dashboard.ingester_runner import IngesterHandle, collect_status
 from aictl.ingesters.vscode_chat_logs import VSCodeChatLogsIngester
-from aictl.storage import HistoryDB
+from core_store_fakes import message_facts, quality, written
 
 
 class _FakeIngester:
@@ -117,17 +117,13 @@ def _write_valid_session(path: Path, sid: str) -> None:
     path.write_text(json.dumps(snap) + "\n", encoding="utf-8")
 
 
-def _quality_status(db: HistoryDB, component: str) -> str | None:
-    conn = db._conn()
-    row = conn.execute(
-        "SELECT status FROM data_quality_status WHERE component = ?",
-        (component,),
-    ).fetchone()
-    return row[0] if row else None
+def _quality_status(facts, component: str) -> str | None:
+    rows = quality(facts, component)
+    return rows[0]["status"] if rows else None
 
 
 def test_vscode_ingester_retries_broken_file_and_records_quality(tmp_path):
-    db = HistoryDB(db_path=str(tmp_path / "vs.db"), flush_interval=0)
+    db = message_facts(tmp_path)
     log_dir = tmp_path / "workspaceStorage"
     ws = log_dir / "abc123" / "chatSessions"
     ws.mkdir(parents=True)
@@ -161,8 +157,7 @@ def test_vscode_ingester_retries_broken_file_and_records_quality(tmp_path):
     assert str(broken) not in ingester.last_cursor
 
     # The valid conversation's rows landed despite the sibling failure.
-    n = db._conn().execute("SELECT COUNT(*) FROM vscode_chat_messages").fetchone()[0]
-    assert n >= 1
+    assert written(db.writer, "vscode_chat_messages")
 
     # A data-quality event marks the poll as having parse failures.
     assert _quality_status(db, "ingester:vscode-chat-logs") == "parse_failed"
@@ -174,83 +169,15 @@ def test_vscode_ingester_retries_broken_file_and_records_quality(tmp_path):
     assert str(broken) in ingester.last_cursor
     assert _quality_status(db, "ingester:vscode-chat-logs") == "ok"
 
-    db.close()
 
 
-def test_a_locked_database_does_not_stop_the_ingester(caplog):
-    """A health row failed with "database is locked", and that aborted each poll."""
-    import sqlite3
-
+def test_a_failed_health_write_does_not_stop_the_ingester(caplog):
     from aictl.ingesters._common import record_quality
+    from aictl.stores.base import StoreError
 
-    class LockedStore:
+    class RefusedStore:
         def record_data_quality(self, *_a, **_k):
-            raise sqlite3.OperationalError("database is locked")
+            raise StoreError("write refused")
 
-        def active_writes(self):
-            return ["compact (12 s)"]
-
-    record_quality(LockedStore(), "copilot-session-store", "x.db", "not_applicable")
-    assert "compact (12 s)" in caplog.text
-
-
-def test_a_busy_store_skips_the_poll_round_with_one_line_and_no_traceback(caplog):
-    import logging
-    import sqlite3
-    import threading
-
-    from aictl.dashboard.ingester_runner import _poll_loop
-
-    stop = threading.Event()
-
-    class _Locked:
-        store = None
-        polls = 0
-
-        def poll(self) -> int:
-            self.polls += 1
-            if self.polls >= 3:
-                stop.set()
-            raise sqlite3.OperationalError("database is locked")
-
-    ingester = _Locked()
-    with caplog.at_level(logging.DEBUG, logger="aictl.dashboard.ingester_runner"):
-        _poll_loop(ingester, stop, 0.0, "transcript-usage")
-    assert ingester.polls == 3
-    lines = [r for r in caplog.records if "store busy" in r.getMessage()]
-    assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
-    assert not any(r.exc_info for r in caplog.records)
-
-
-def test_a_store_busy_for_long_marks_the_ingester_failed_and_warns_again(caplog, monkeypatch):
-    import logging
-    import sqlite3
-    import threading
-
-    from aictl.dashboard import ingester_runner
-
-    clock = iter([0.0, 10.0, 400.0, 410.0])
-    monkeypatch.setattr(ingester_runner.time, "monotonic", lambda: next(clock))
-    stop = threading.Event()
-    failures: list[str] = []
-
-    class _Store:
-        def record_data_quality(self, component, status, **_k):
-            failures.append(status)
-
-    class _Locked:
-        store = _Store()
-        polls = 0
-
-        def poll(self) -> int:
-            self.polls += 1
-            if self.polls >= 4:
-                stop.set()
-            raise sqlite3.OperationalError("database is locked")
-
-    with caplog.at_level(logging.DEBUG, logger="aictl.dashboard.ingester_runner"):
-        ingester_runner._poll_loop(_Locked(), stop, 0.0, "transcript-usage")
-    lines = [r for r in caplog.records if "store busy" in r.getMessage()]
-    # First skip warns, short ones are quiet, a lock past LOCKED_REPORT_S warns and fails the ingester.
-    assert [r.levelno for r in lines] == [logging.WARNING, logging.DEBUG, logging.WARNING, logging.DEBUG]
-    assert failures == ["failed"]
+    record_quality(RefusedStore(), "copilot-session-store", "x.db", "not_applicable")
+    assert "Cannot record health of copilot-session-store: write refused" in caplog.text

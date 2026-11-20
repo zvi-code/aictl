@@ -36,6 +36,11 @@ files are a separate stream and REST snapshot set; do not interleave them with
 the main files. A Kusto client fake can match a scrubbed statement and return
 the corresponding primary result data. It cannot answer arbitrary new KQL.
 
+`r1-kusto.jsonl.gz` records bounded reader views from the fixed Phase 0 node in
+`aictl_perf_test`. Use `scripts\recording\record_r1_views.py --out <new-path>` to
+record these views again. The replay matches the exact KQL text. The fixed
+capture has events but no canonical session or request rows for that node.
+
 The REST snapshots contain 45 GET attempts per source at each boundary,
 including multiple views of a route where applicable. These are sample
 arguments, not every filter or session. The recorder chooses recent session,
@@ -49,6 +54,18 @@ A recorder argument error skipped `/api/board/tool` and `/api/board/skill`
 at the boundaries. The script now sends both requests. The two HTTP 200
 responses in `supplemental-main-rest.jsonl.gz` were taken later on the main
 daemon; they are not boundary responses or isolated-daemon responses.
+
+The dashboard primitive gallery uses a small JSON fixture, not a live replay.
+It takes agent rows and CPU samples from `main-sse` and one file excerpt from
+`main-rest` in each window. To regenerate the fixture from the repository root:
+
+```powershell
+node src\aictl\dashboard\ui\test\fixtures\gallery\extract.mjs
+```
+
+In the UI directory, start Vite with `npm run dev`. Open `/gallery.html`.
+Add `?theme=dark` to start in dark mode. The production build does not include
+the gallery.
 
 ## Capture and privacy
 
@@ -130,10 +147,12 @@ observed counts.
 | `tool_stats` | 6 |
 | `vscode_chat_messages` | 5,711 |
 
-Run this only when no other test writer is using these tables:
+The counts above describe the historical recording. It is not a native store
+fixture and must not be loaded into the native schema. To load a sanitized
+native recording, run this only when no other writer is using the test tables:
 
 ```powershell
 $env:PYTHONPATH = 'src'
 $env:PYTHONDONTWRITEBYTECODE = '1'
-python scripts\recording\load_perf_test_db.py --reset-test-tables
+python scripts\recording\load_perf_test_db.py --recording path\to\native-kusto.jsonl.gz --reset-test-tables
 ```

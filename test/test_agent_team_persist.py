@@ -13,17 +13,23 @@ started within seconds of daemon start).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from aictl.orchestrator import SnapshotPersistence
-from aictl.storage import HistoryDB
+from aictl.stores.testing import MemoryWriter
 
 
 @pytest.fixture()
-def db():
-    d = HistoryDB(db_path=":memory:", flush_interval=0)
-    yield d
-    d.close()
+def writer():
+    return MemoryWriter()
+
+
+def _session_rows(writer, table):
+    rows = [row for _, name, batch in writer.operations if name == table for row in batch]
+    assert {row["session_id"] for row in rows} == {SESSION_UUID}
+    return rows
 
 
 SESSION_UUID = "fb1fced0-59a8-4c9e-b6cf-1e6b1f4d9a01"
@@ -73,7 +79,7 @@ def _turn(source_ts, in_tok=10, out_tok=5):
 
 
 class TestRequestTimestamps:
-    def test_request_ts_is_source_ts_not_ingest_time(self, db):
+    def test_request_ts_is_source_ts_not_ingest_time(self, writer):
         """Every backfilled request must be dated by its JSONL timestamp.
 
         The old code stamped ``ts=snapshot_ts``, so MIN(ts) across a
@@ -81,85 +87,76 @@ class TestRequestTimestamps:
         that ran hours earlier.
         """
         turns = [_turn(SOURCE_T0 + 10), _turn(SOURCE_T0 + 120), _turn(SOURCE_T0 + 700)]
-        p = SnapshotPersistence(db)
+        p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team([_agent(turns=turns)])], SNAPSHOT_TS)
-        db.flush()
 
-        rows = db.query_requests(session_id=SESSION_UUID)
+        rows = _session_rows(writer, "requests")
         assert len(rows) == 3
         got_ts = sorted(r["ts"] for r in rows)
         assert got_ts == [SOURCE_T0 + 10, SOURCE_T0 + 120, SOURCE_T0 + 700]
         assert all(r["ts"] < SNAPSHOT_TS for r in rows), "no request may be dated at ingest time"
 
-    def test_request_ts_falls_back_to_ingest_time_without_source_ts(self, db):
+    def test_request_ts_falls_back_to_ingest_time_without_source_ts(self, writer):
         """A turn whose JSONL line had no parseable timestamp keeps the
         (only remaining) ingest time rather than ts=0."""
-        p = SnapshotPersistence(db)
+        p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team([_agent(turns=[_turn(0.0)])])], SNAPSHOT_TS)
-        db.flush()
 
-        rows = db.query_requests(session_id=SESSION_UUID)
+        rows = _session_rows(writer, "requests")
         assert len(rows) == 1
         assert rows[0]["ts"] == SNAPSHOT_TS
 
 
 class TestSessionStartedAt:
-    def test_session_started_at_uses_agent_source_times(self, db):
+    def test_session_started_at_uses_agent_source_times(self, writer):
         """The upserted session row starts when the earliest agent did —
         not when the daemon ingested the JSONL."""
         agents = [
             _agent("agent-1", started_at="2025-03-26T14:40:00+00:00"),
             _agent("agent-2", started_at="2025-03-26T15:00:00+00:00"),
         ]
-        p = SnapshotPersistence(db)
+        p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team(agents)], SNAPSHOT_TS)
-        db.flush()
 
-        sess = db.get_session(SESSION_UUID)
-        assert sess is not None
-        # 2025-03-26T14:40:00+00:00 == 1742999. + ... — compare via the
-        # same parser the production path uses.
-        from aictl.monitoring.tool_telemetry import _parse_iso_ts
-
-        expected = _parse_iso_ts("2025-03-26T14:40:00+00:00")
+        [sess] = _session_rows(writer, "sessions")
+        expected = datetime.fromisoformat("2025-03-26T14:40:00+00:00").timestamp()
         assert sess["started_at"] == expected
         assert sess["started_at"] < SNAPSHOT_TS
 
-    def test_session_started_at_falls_back_to_turn_source_ts(self, db):
+    def test_session_started_at_falls_back_to_turn_source_ts(self, writer):
         """Agents without a parseable started_at (missing first-line
         timestamp) fall back to the earliest turn timestamp instead of
         the ingest time."""
         agent = _agent(started_at="", turns=[_turn(SOURCE_T0 + 30), _turn(SOURCE_T0 + 300)])
-        p = SnapshotPersistence(db)
+        p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team([agent])], SNAPSHOT_TS)
-        db.flush()
 
-        sess = db.get_session(SESSION_UUID)
-        assert sess is not None
+        [sess] = _session_rows(writer, "sessions")
         assert sess["started_at"] == SOURCE_T0 + 30
 
-    def test_session_started_at_ingest_time_only_as_last_resort(self, db):
+    def test_session_started_at_ingest_time_only_as_last_resort(self, writer):
         """No source timestamps anywhere → snapshot_ts is the only choice."""
         agent = _agent(started_at="", turns=[])
-        p = SnapshotPersistence(db)
+        p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team([agent])], SNAPSHOT_TS)
-        db.flush()
 
-        sess = db.get_session(SESSION_UUID)
-        assert sess is not None
+        [sess] = _session_rows(writer, "sessions")
         assert sess["started_at"] == SNAPSHOT_TS
 
 
 class TestProjectFolder:
     """Each session file records the folder its agent ran in; the rows keep it."""
 
-    def test_requests_and_the_session_take_the_agent_folder(self, db):
+    def test_requests_and_the_session_take_the_agent_folder(self, writer):
         main = {**_agent(turns=[_turn(SOURCE_T0 + 10)]), "cwd": "/work/repo"}
         side = {**_agent(agent_id="agent-2", turns=[_turn(SOURCE_T0 + 20)]), "cwd": "/work/repo/sub", "is_sidechain": True}
-        p = SnapshotPersistence(db)
+        p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team([main, side])], SNAPSHOT_TS)
-        db.flush()
-        rows = {r["agent_id"]: r["project_path"] for r in db.query_requests(session_id=SESSION_UUID)}
+
+        requests = _session_rows(writer, "requests")
+        assert len(requests) == 2
+        rows = {r["agent_id"]: r["project_path"] for r in requests}
         assert rows == {"agent-1": "/work/repo", "agent-2": "/work/repo/sub"}
-        got = db._conn().execute("SELECT project_path FROM sessions WHERE session_id = ?", (SESSION_UUID,)).fetchone()[0]
-        assert got == "/work/repo"
+        assert all(r["project"] == r["project_path"] for r in requests)
+        [session] = _session_rows(writer, "sessions")
+        assert session["project_path"] == session["project"] == "/work/repo"

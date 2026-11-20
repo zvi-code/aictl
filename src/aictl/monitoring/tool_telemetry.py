@@ -19,7 +19,6 @@ import itertools
 import json
 import logging
 import re
-import sqlite3
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -30,7 +29,7 @@ from ..data.model_pricing import cost_usd as usd_cost_of
 from ..data.provenance import COPILOT_COST_REASON
 from ..data.schema import load_telemetry_sources
 from ..fsutil import safe_glob, safe_iterdir
-from ..ingesters._common import open_readonly
+from ..ingesters._common import SQLITE_UNAVAILABLE, open_readonly
 from ..platforms import (
     IS_WINDOWS,
     claude_global_dir,
@@ -688,6 +687,8 @@ def _copilot_app_session_ids(copilot_home: Path) -> set[str]:
     key = (str(db_path), st.st_mtime_ns, st.st_size)
     if _copilot_app_sessions_cache is not None and _copilot_app_sessions_cache[0] == key:
         return _copilot_app_sessions_cache[1]
+    import sqlite3
+
     conn = open_readonly(db_path, "copilot telemetry")
     if conn is None:
         return set()
@@ -716,12 +717,17 @@ def parse_copilot_telemetry(
     session_dir = copilot_session_dir()
     if not session_dir.is_dir():
         return None
-    app_ids = _copilot_app_session_ids(copilot_home)
     want_app = tool == "copilot-desktop"
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
     # At most 10 sessions from 7 days: a sample, not a total. /api/usage has totals.
     report.token_quality = "partial"
+    try:
+        app_ids = _copilot_app_session_ids(copilot_home)
+    except ImportError:
+        log.warning("%s: %s", tool, SQLITE_UNAVAILABLE)
+        report.cost_reason = SQLITE_UNAVAILABLE
+        return report
 
     # Find recent session directories (modified in last 7 days).
     # Stat once per entry and sort on the cached value — directories can
@@ -1043,11 +1049,16 @@ def parse_cursor_telemetry(
     its globalStorage directory.  We read token counters and model info
     from the ``ItemTable`` key-value store.
     """
-    import sqlite3
-
     vscdb = cursor_user_dir() / "globalStorage" / "state.vscdb"
     if not vscdb.is_file():
         return None
+
+    try:
+        import sqlite3
+    except ImportError:
+        log.warning("%s: %s", tool, SQLITE_UNAVAILABLE)
+        return ToolTelemetryReport(tool=tool, source=source, confidence=confidence,
+                                   token_quality="partial", cost_reason=SQLITE_UNAVAILABLE)
 
     report = ToolTelemetryReport(tool=tool, source=source, confidence=confidence)
 

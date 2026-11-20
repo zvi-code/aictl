@@ -6,7 +6,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,14 +13,16 @@ import pytest
 from aictl.dashboard import board_api
 from aictl.health import ObservedKustoClient, OperationStats
 from aictl.kusto import KustoSettings
-from aictl.kusto.connection import KustoClientFactory
-from aictl.kusto.ingest import InlineIngester
+from aictl.stores import Store
+from aictl.stores.kusto.client import KustoClientFactory
+from aictl.stores.kusto.ingest import InlineIngester
+from aictl.stores.kusto.reader import KustoReader
 
 
 @pytest.fixture
 def cached_health(monkeypatch):
     data = {
-        "volume": {"stats": {"events_count": 4, "file_size_bytes": 8192}, "checked_at": 1000.0, "status": "cached"},
+        "volume": {"stats": {"events_count": 4}, "checked_at": 1000.0, "status": "cached"},
         "quality": [],
         "hooks": {},
     }
@@ -65,14 +66,19 @@ def test_recent_latency_excludes_old_completions(monkeypatch):
     assert current["recent_failures"] == 0 and current["failed"] == 1
 
 
-def test_health_reports_sqlite_http_not_sql_and_unknown_volume(cached_health):
+def _kusto_store(settings, client=None, ingester=None):
+    reader = KustoReader(client, settings.database, settings=settings)
+    writer = SimpleNamespace(_ingester=ingester, health=lambda: {"status": "ok"}) if ingester else None
+    return SimpleNamespace(snapshot=None, history_store=Store(reader=reader, writer=writer))
+
+
+def test_unconfigured_store_reports_http_reads_and_unknown_volume(cached_health):
     reads = OperationStats()
     reads.call(lambda: None)
-    db = SimpleNamespace(_path=Path("history.db"), _budget_bytes=50000)
-    health = board_api.compute_health(db, SimpleNamespace(snapshot=None), http_reads=reads)
+    health = board_api.compute_health(None, SimpleNamespace(snapshot=None), http_reads=reads)
     assert health["pipeline"]["self"]["db_rows"] == 4
-    assert health["store"]["volume"]["bytes"] == 8192
-    assert health["store"]["kind"] == "sqlite"
+    assert health["store"]["volume"]["bytes"] is None
+    assert health["store"]["kind"] == "memory"
     assert health["store"]["reads"]["total"] == 1
     assert health["store"]["writes"] is None
     assert health["store"]["ingestion_capacity"] is None
@@ -98,11 +104,8 @@ def test_kusto_health_uses_existing_clients_without_discovery(cached_health, mon
     client.execute("history", "x | count")
     ingester = InlineIngester(client, "history", slots=2)
     ingester.ingest_lines("events", ['{"x":1}', '{"x":2}'])
-    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, ingester))
     monkeypatch.setattr(KustoClientFactory, "client", lambda *_: pytest.fail("must not create clients"))
-    health = board_api.compute_health(
-        SimpleNamespace(_kusto=settings, _path=settings.uri), SimpleNamespace(snapshot=None)
-    )
+    health = board_api.compute_health(None, _kusto_store(settings, client, ingester))
     store = health["store"]
     assert store["cluster_url"] == "https://cluster.kusto.windows.net"
     assert store["reads"]["total"] == 1
@@ -119,18 +122,16 @@ def test_health_objects_do_not_wait_for_client_initialization():
         assert KustoClientFactory.health_objects(settings) == (None, None)
 
 
-def test_latest_client_failure_is_degraded_and_recovery_is_ok(cached_health, monkeypatch):
+def test_latest_client_failure_is_degraded_and_recovery_is_ok(cached_health):
     settings = KustoSettings("https://cluster.kusto.windows.net", ingestion="inline")
     client = ObservedKustoClient(SimpleNamespace())
     started = client.reads.begin()
     client.reads.finish(started, error="permission denied")
-    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
-    db = SimpleNamespace(_kusto=settings, _path=settings.uri)
-    store = SimpleNamespace(snapshot=None)
-    health = board_api.compute_health(db, store)["store"]["health"]
+    store = _kusto_store(settings, client)
+    health = board_api.compute_health(None, store)["store"]["health"]
     assert health["state"] == "degraded" and health["last_error"] == "permission denied"
     client.reads.call(lambda: None)
-    recovered = board_api.compute_health(db, store)["store"]
+    recovered = board_api.compute_health(None, store)["store"]
     assert recovered["health"]["state"] == "ok" and recovered["health"]["last_error"] is None
     assert recovered["reads"]["failed"] == 1
 
@@ -159,43 +160,55 @@ def test_ingester_start_does_not_invent_a_success(monkeypatch):
 
 
 def test_stats_cache_preserves_measurement_time_and_last_good_counts_on_failure(monkeypatch):
+    from aictl.stores.base import ReadResult, StoreError
+
     clock = [1000.0]
     monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
     monkeypatch.setattr(board_api, "_db_stats_memo", {})
 
-    def scan():
+    def scan(view, _params):
+        assert view == "health.totals"
         clock[0] += 3
-        return {"requests_count": 0}
+        return ReadResult([{"table": "requests", "rows": 0}])
 
-    db = SimpleNamespace(_path="counts", stats=scan)
-    first = board_api._db_stats_sample(db)
+    db = SimpleNamespace(_path="counts")
+    reader = FakeStatsReader(scan)
+    first = board_api._db_stats_sample(db, reader)
     assert (first["started_at"], first["checked_at"], first["stats"]["requests_count"]) == (1000.0, 1003.0, 0)
     clock[0] += 20
-    assert board_api._db_stats_sample(db) == first
-    clock[0] += 60
-    db.stats = lambda: (_ for _ in ()).throw(RuntimeError("temporarily unavailable"))
-    stale = board_api._db_stats_sample(db)
+    assert board_api._db_stats_sample(db, reader) == first
+    clock[0] += board_api.KUSTO_VOLUME_TTL_S
+    reader.read = lambda *_: (_ for _ in ()).throw(StoreError("temporarily unavailable"))
+    stale = board_api._db_stats_sample(db, reader)
     assert stale["status"] == "stale" and stale["last_error"]
-    assert (stale["checked_at"], stale["attempted_at"], stale["stats"]) == (1003.0, 1083.0, first["stats"])
-    db._path = "unmeasured"
-    missing = board_api._db_stats_sample(db)
+    assert (stale["checked_at"], stale["attempted_at"], stale["stats"]) == (1003.0, clock[0], first["stats"])
+    missing = board_api._db_stats_sample(db, FakeStatsReader(reader.read))
     assert missing["status"] == "error" and missing.get("checked_at") is None
+
+
+class FakeStatsReader:
+    def __init__(self, read):
+        self.read = read
+
+    def health(self):
+        return {"status": "ok"}
 
 
 def test_cluster_capacity_preserves_zero_and_does_not_retimestamp_on_probe_failure(monkeypatch):
     from test_kusto_connection import FakeClient, response
 
-    db = SimpleNamespace(_kusto=KustoSettings("https://cluster.kusto.windows.net"))
+    settings = KustoSettings("https://cluster.kusto.windows.net")
+    reader = KustoReader(None, settings.database, settings=settings)
     client = FakeClient(on_mgmt=lambda _: response(
         [("Resource", "string"), ("Total", "long"), ("Consumed", "long"), ("Remaining", "long")],
         [["Ingestions", 12, 12, 0]],
     ))
     monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
-    sample = board_api._health_kusto_capacity(db)
+    sample = board_api._health_kusto_capacity(reader)
     assert (sample["total"], sample["in_use"], sample["available"]) == (12, 12, 0)
-    assert board_api._health_kusto_capacity(db, sample) == sample and len(client.commands) == 1
+    assert board_api._health_kusto_capacity(reader, sample) == sample and len(client.commands) == 1
     client.on_mgmt = lambda _: (_ for _ in ()).throw(RuntimeError("denied"))
-    stale = board_api._health_kusto_capacity(db, {**sample, "attempted_at": 0})
+    stale = board_api._health_kusto_capacity(reader, {**sample, "attempted_at": 0})
     assert stale["status"] == "stale" and stale["checked_at"] == sample["checked_at"] and stale["last_error"]
 
 
@@ -210,20 +223,21 @@ def test_native_inventory_distinguishes_empty_zero_unknown_stale_and_recovery(mo
 
     clock = [1000.0]
     monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0]))
-    db = SimpleNamespace(_kusto=KustoSettings("https://cluster.kusto.windows.net"))
+    settings = KustoSettings("https://cluster.kusto.windows.net")
+    reader = KustoReader(None, settings.database, settings=settings)
     monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (None, None))
-    sample = board_api._health_table_inventory(db)
+    sample = board_api._health_table_inventory(reader)
     assert sample["status"] == "pending" and sample["attempted_at"] is None
 
     client = FakeClient(on_mgmt=lambda _: SimpleNamespace(primary_results=[]))
     monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
-    error = board_api._health_table_inventory(db, sample)
+    error = board_api._health_table_inventory(reader, sample)
     assert error["status"] == "error" and error["checked_at"] is None and error["last_error"]
     assert error["attempted_at"] == clock[0] and error["tables"] == []
-    assert board_api._health_table_inventory(db, error) == error and len(client.commands) == 1
+    assert board_api._health_table_inventory(reader, error) == error and len(client.commands) == 1
     clock[0] += error["refresh_interval_s"]
     client.on_mgmt = lambda _: response(_TABLE_DETAILS_COLUMNS, [["OTELLogs", 0, 0, 0.0, None, 0.0]])
-    sample = board_api._health_table_inventory(db, error)
+    sample = board_api._health_table_inventory(reader, error)
     assert sample["tables"] == [{
         "name": "OTELLogs", "rows": 0, "extent_count": 0, "extent_bytes": 0, "original_bytes": None,
         "hot_bytes": 0, "compressed_bytes": None,
@@ -231,20 +245,20 @@ def test_native_inventory_distinguishes_empty_zero_unknown_stale_and_recovery(mo
     assert sample["status"] == "cached" and sample["last_error"] is None and sample["truncated"] is False
     clock[0] += sample["refresh_interval_s"]
     client.on_mgmt = lambda _: (_ for _ in ()).throw(RuntimeError("permission denied"))
-    stale = board_api._health_table_inventory(db, sample)
+    stale = board_api._health_table_inventory(reader, sample)
     assert stale["status"] == "stale" and stale["tables"] == sample["tables"] and stale["last_error"]
     assert stale["checked_at"] == sample["checked_at"] < stale["attempted_at"] == clock[0]
-    assert board_api._health_table_inventory(db, stale) == stale and len(client.commands) == 3
+    assert board_api._health_table_inventory(reader, stale) == stale and len(client.commands) == 3
     clock[0] += stale["refresh_interval_s"]
     client.on_mgmt = lambda _: response(_TABLE_DETAILS_COLUMNS, [])
-    empty = board_api._health_table_inventory(db, stale)
+    empty = board_api._health_table_inventory(reader, stale)
     assert (empty["status"], empty["tables"], empty["last_error"], empty["checked_at"]) == ("cached", [], None, clock[0])
 
 
 def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeypatch):
     from test_kusto_connection import response
 
-    from aictl.kusto import health_metrics
+    from aictl.stores.base import ReadResult
 
     clock = [1000.0]
     monkeypatch.setattr(board_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]))
@@ -257,16 +271,16 @@ def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeyp
     def record(name):
         calls.append((name, threading.current_thread()))
 
-    def stats():
+    def stats(view, _params):
+        assert view == "health.totals"
         record("logical")
         entered.set()
         assert release.wait(3)
-        return {"sessions_count": 7}
+        return ReadResult([{"table": "sessions", "rows": 7}])
 
     settings = KustoSettings("https://cluster.kusto.windows.net", database="selected_db")
-    db = SimpleNamespace(_kusto=settings, _path=settings.uri, stats=stats)
-    machine_db = SimpleNamespace(**vars(db))  # Different view, same database.
-    store = SimpleNamespace(snapshot=None)
+    db = SimpleNamespace(_path=settings.uri)
+    machine_db = SimpleNamespace(**vars(db))
     inv = ".show tables details"
     cap = ".show capacity ingestions"
     inventory_calls = []
@@ -284,22 +298,25 @@ def test_health_and_machine_share_background_adx_probes_and_logical_scan(monkeyp
         return response([("Policy", "string")], [])
 
     client = SimpleNamespace(execute_mgmt=execute)
+    store = _kusto_store(settings, client)
+    reader = store.history_store.reader
+    monkeypatch.setattr(reader, "read", stats)
     monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
     cluster = {"status": "cached", "samples": {"cpu_percent": {"value": 21.0, "at": clock[0]}}}
     previous = []
 
-    def read_metrics(db, sample):
+    def read_metrics(sample):
         record("metrics hook")
         previous.append(sample)
         return cluster
 
-    monkeypatch.setattr(health_metrics, "read_cluster_metrics", read_metrics)
+    monkeypatch.setattr(reader, "cluster_resources", read_metrics)
     monkeypatch.setattr(board_api, "_hooks_by_tool", lambda *_: record("hooks") or {})
     monkeypatch.setattr(board_api, "_quality_rows", lambda *_: record("quality") or [])
 
     def wait_refresh():
         deadline = time.monotonic() + 2
-        while board_api._health_cache[board_api._health_store_key(db)]["refreshing"]:
+        while board_api._health_cache[reader]["refreshing"]:
             assert time.monotonic() < deadline
             time.sleep(0.005)
 
@@ -380,21 +397,26 @@ def test_health_resources_keep_process_host_and_component_sample_times_distinct(
 
 
 def test_health_does_not_wait_for_uncached_database_queries(monkeypatch):
+    from aictl.stores.base import ReadResult
+
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def stats():
+    def stats(view, _params):
+        assert view == "health.totals"
         entered.set()
         release.wait(5)
         finished.set()
-        return {"events_count": 2}
+        return ReadResult([{"table": "events", "rows": 2}])
 
-    db = SimpleNamespace(_path="slow-health-store", stats=stats)
+    db = SimpleNamespace(_path="slow-health-store")
+    reader = FakeStatsReader(stats)
+    store = SimpleNamespace(snapshot=None, history_store=Store(reader=reader))
     monkeypatch.setattr(board_api, "_quality_rows", lambda *_: [])
     monkeypatch.setattr(board_api, "_hooks_by_tool", lambda *_: {})
     board_api._health_cache.clear()
     started = time.perf_counter()
     try:
-        body = board_api.compute_health(db, SimpleNamespace(snapshot=None))
+        body = board_api.compute_health(db, store)
         assert time.perf_counter() - started < 1
         assert body["pipeline"]["self"]["db_rows"] is None
         assert entered.wait(1)
@@ -402,10 +424,10 @@ def test_health_does_not_wait_for_uncached_database_queries(monkeypatch):
         release.set()
         assert finished.wait(2)
     deadline = time.monotonic() + 2
-    key = (id(db), "slow-health-store")
+    key = reader
     while board_api._health_cache[key]["refreshing"] and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert board_api.compute_health(db, SimpleNamespace(snapshot=None))["pipeline"]["self"]["db_rows"] == 2
+    assert board_api.compute_health(db, store)["pipeline"]["self"]["db_rows"] == 2
 
 
 def test_health_route_is_local_and_works_before_first_snapshot(tmp_path, cached_health):
@@ -439,15 +461,13 @@ def test_health_route_is_local_and_works_before_first_snapshot(tmp_path, cached_
         thread.join(2)
 
 
-def test_traffic_groups_partition_shared_raw_and_history_ingestion(cached_health, monkeypatch):
+def test_traffic_groups_partition_shared_raw_and_history_ingestion(cached_health):
     settings = KustoSettings("https://cluster.kusto.windows.net", ingestion="inline")
     client = ObservedKustoClient(SimpleNamespace(execute_mgmt=lambda *_: None))
     ingester = InlineIngester(client, "history", slots=2)
     for table in ("OTELLogs", "hook_calls", "sessions", "system_snapshots", "tool_config", "maintenance_state"):
         ingester.ingest_lines(table, ['{"x":1}', '{"x":2}'])
-    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, ingester))
-    db = SimpleNamespace(_kusto=settings, _path=settings.uri)
-    store = board_api.compute_health(db, SimpleNamespace(snapshot=None))["store"]
+    store = board_api.compute_health(None, _kusto_store(settings, client, ingester))["store"]
     groups = store["traffic_groups"]
     assert [g["id"] for g in groups] == ["otel", "hooks", "live-session", "monitoring", "files-config", "other"]
     assert sum(g["requests"] for g in groups) == store["writes"]["total"] == 6
@@ -463,8 +483,8 @@ def test_traffic_groups_partition_shared_raw_and_history_ingestion(cached_health
     assert store["ingestion_traffic"]["queued"]["rows"] == 0
 
 
-def test_sqlite_group_traffic_is_unreported_not_zero(cached_health):
-    store = board_api.compute_health(SimpleNamespace(_path=Path("history.db")), SimpleNamespace(snapshot=None))["store"]
+def test_unconfigured_group_traffic_is_unreported_not_zero(cached_health):
+    store = board_api.compute_health(None, SimpleNamespace(snapshot=None))["store"]
     assert all(g["rows"] is None and g["requests"] is None for g in store["traffic_groups"])
     assert store["ingestion_details"] is None
     assert store["ingestion_traffic"] is None
@@ -486,22 +506,23 @@ def test_database_policy_probe_is_cached_and_http_only_uses_its_result(cached_he
 
     client = ObservedKustoClient(SimpleNamespace(execute_mgmt=execute))
     monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, None))
-    db = SimpleNamespace(_kusto=settings, _path=settings.uri)
-    policies = board_api._health_kusto_policies(db)
+    store = _kusto_store(settings, client)
+    reader = store.history_store.reader
+    policies = board_api._health_kusto_policies(reader)
     assert policies["streaming"] == {"IsEnabled": True}
     assert policies["checked_at"] and policies["last_error"] is None
-    assert board_api._health_kusto_policies(db, policies) == policies
+    assert board_api._health_kusto_policies(reader, policies) == policies
     assert len(calls) == 2
     cached_health["policies"] = policies
-    details = board_api.compute_health(db, SimpleNamespace(snapshot=None))["store"]["ingestion_details"]
+    details = board_api.compute_health(None, store)["store"]["ingestion_details"]
     assert details["policies"]["age_s"] is not None
     assert len(calls) == 2
 
 
-def test_actual_ingesters_keep_mixed_group_modes_and_failures_separate(cached_health, monkeypatch):
+def test_actual_ingesters_keep_mixed_group_modes_and_failures_separate(cached_health):
     from azure.kusto.ingest.base_ingest_client import IngestionStatus
 
-    from aictl.kusto.ingest import make_ingester
+    from aictl.stores.kusto.ingest import make_ingester
 
     settings = KustoSettings(
         "https://cluster.kusto.windows.net",
@@ -514,9 +535,8 @@ def test_actual_ingesters_keep_mixed_group_modes_and_failures_separate(cached_he
     ingester = make_ingester(settings, client, streaming_client, queued_client=queued_client)
     for table, count in (("OTELLogs", 1), ("events", 2), ("requests", 3), ("hook_calls", 4)):
         ingester.ingest_lines(table, ['{"x":1}'] * count)
-    monkeypatch.setattr(KustoClientFactory, "health_objects", lambda *_: (client, ingester))
-    db = SimpleNamespace(_kusto=settings, _path=settings.uri)
-    store = board_api.compute_health(db, SimpleNamespace(snapshot=None))["store"]
+    history = _kusto_store(settings, client, ingester)
+    store = board_api.compute_health(None, history)["store"]
     modes = store["ingestion_traffic"]
     assert (modes["queued"]["requests"], modes["streaming"]["requests"], modes["inline"]["requests"]) == (2, 1, 1)
     assert (modes["queued"]["rows"], modes["streaming"]["rows"], modes["inline"]["rows"]) == (3, 3, 4)
@@ -532,6 +552,6 @@ def test_actual_ingesters_keep_mixed_group_modes_and_failures_separate(cached_he
     queued_client.ingest_from_stream = lambda *_: (_ for _ in ()).throw(ValueError("DM unavailable"))
     with pytest.raises(ValueError):
         ingester.ingest_lines("events", ['{"x":1}'])
-    after = board_api.compute_health(db, SimpleNamespace(snapshot=None))["store"]["ingestion_traffic"]
+    after = board_api.compute_health(None, history)["store"]["ingestion_traffic"]
     assert after["queued"]["failed"] == 1 and after["queued"]["rows"] == 3
     assert after["streaming"]["failed"] == after["inline"]["failed"] == 0

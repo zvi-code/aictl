@@ -1,0 +1,61 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real = real(null), until:real = real(null),
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long
+);
+let officials = sessions
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by node_id, ['project'], session_id
+    | where not(coalesce(column_ifexists('_deleted', false), false)) and isnotempty(session_id)
+    | summarize arg_max(_v, tool) by node_id, session_id
+    | project node_id, session_id, session_tool=tool;
+let hooks = materialize(events
+    | where (all_nodes or node_id == requested_node) and kind in ('hook:PreToolUse', 'hook:PostToolUse')
+    | extend facts=parse_json(detail)
+    | extend call_id=tostring(facts.tool_use_id)
+    | where isnotempty(call_id)
+    | project node_id, session_id, tool, call_id, kind, ts,
+              tool_name=tostring(facts.tool_name), is_error=tolong(tobool(facts.is_error)));
+let pairs = materialize(hooks
+    | where kind == 'hook:PreToolUse'
+    | where (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
+    | join kind=inner (hooks | where kind == 'hook:PostToolUse'
+        | project node_id, session_id, call_id, end_ts=ts, failed=is_error) on node_id, session_id, call_id
+    | project node_id, session_id, tool, tool_name, ts, duration_ms=(end_ts-ts)*1000.0, is_error=failed
+    | join kind=leftouter officials on node_id, session_id
+    | extend cli_tool=iff(tool in ('', 'any', 'unknown'), session_tool, tool)
+    | project cli_tool, tool_name, ts, duration_ms, is_error);
+let use_hooks = toscalar(pairs
+    | where isnotnull(since) or isnotnull(until) or not(restrict_tools) or cli_tool in (requested_tools)
+    | take 1 | count) > 0;
+let invocations = tool_invocations
+    | where not(use_hooks)
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by node_id, ['project'], fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
+    | project node_id, session_id, tool, tool_name, ts, duration_ms=coalesce(duration_ms, 0.0), is_error
+    | join kind=leftouter officials on node_id, session_id
+    | extend cli_tool=iff(tool in ('', 'any', 'unknown'), session_tool, tool)
+    | project cli_tool, tool_name, ts, duration_ms, is_error;
+let calls = materialize(union (pairs | where use_hooks), invocations);
+let selected = materialize(calls | where not(restrict_tools) or cli_tool in (requested_tools));
+let sampled_calls = materialize(selected
+    | project tool_name, ts, duration_ms
+    | sort by tool_name asc, ts desc
+    | extend duration_rank=row_number(1, prev(tool_name) != tool_name)
+    | where duration_rank <= 500);
+let sample_size = sampled_calls | summarize n=count() by tool_name;
+let latencies = sampled_calls
+    | sort by tool_name asc, duration_ms asc
+    | extend rank=row_number(0, prev(tool_name) != tool_name)
+    | join kind=inner sample_size on tool_name
+    | summarize p95_ms=maxif(duration_ms, rank == min_of(tolong(n * 0.95), n - 1)) by tool_name;
+union
+    (calls | summarize hidden=countif(restrict_tools and cli_tool in ('', 'any', 'unknown')) | extend row_type='hidden'),
+    (selected | summarize count=count(), avg_ms=avg(duration_ms), error_count=countif(is_error != 0) by tool_name
+              | join kind=leftouter latencies on tool_name
+              | project row_type='tool', tool_name, count, avg_ms, p95_ms, error_count),
+    (selected | where use_hooks | summarize count=count() by tool_name, cli_tool | extend row_type='cli')
+| order by row_type asc, count desc, tool_name asc
+| take row_limit

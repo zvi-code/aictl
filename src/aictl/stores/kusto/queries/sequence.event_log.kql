@@ -1,0 +1,26 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real, requested_session:string='',
+    requested_tool:string='', requested_pid:long=0, requested_kinds:dynamic=dynamic([]), row_limit:long);
+let found = materialize(events
+    | where all_nodes or node_id == requested_node
+    | extend key=iff(isempty(source_key),strcat(ts,':',tool,':',kind,':',seq),source_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)) and ts between (since .. until)
+    | where isempty(requested_tool) or tool == requested_tool
+    | where requested_pid == 0 or pid == requested_pid
+    | where array_length(requested_kinds) == 0 or kind in (requested_kinds)
+    | order by ts desc,node_id asc,seq asc,tool asc,kind asc,key asc);
+let retained = union isfuzzy=true
+    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:string,_deleted:bool)[]),
+    (events_text | project ['project'],node_id,source_key,_v,detail,_deleted=column_ifexists('_deleted',false))
+    | where (all_nodes or node_id == requested_node) and source_key in (found | project source_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,source_key
+    | where not(_deleted)
+    | project ['project'],node_id,key=source_key,retained_detail=detail;
+found
+| join kind=leftouter retained on ['project'],node_id,key
+| extend detail=coalesce(retained_detail,detail)
+| where isempty(requested_session) or session_id == requested_session
+    or tostring(parse_json(detail).session_id) == requested_session
+| order by ts desc,node_id asc,seq asc,tool asc,kind asc,key asc
+| take row_limit
+| project ts,tool,kind,detail,session_id,pid

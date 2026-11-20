@@ -6,7 +6,6 @@ import fnmatch
 import json
 import re
 from collections import defaultdict
-from dataclasses import asdict
 from functools import lru_cache
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +32,26 @@ def _policy_index(all_platforms: bool) -> dict:
 
 
 INVENTORY_COLUMNS = ("path", "tool", "category", "scope", "size_bytes", "tokens", "lines", "mtime", "meta")
+TELEMETRY_COLUMNS = ("ts", "tool", "source", "confidence", "input_tokens", "output_tokens", "cache_read_tokens",
+                     "cache_creation_tokens", "total_sessions", "total_messages", "cost_usd", "model", "by_model", "by_project")
+
+
+def inventory_rows(rows):
+    return [tuple(row[k] for k in INVENTORY_COLUMNS) for row in rows]
+
+
+def telemetry_rows(rows):
+    def breakdown(value):
+        try:
+            data = json.loads(value) if isinstance(value, str) else value
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    return [
+        {k: breakdown(row[k]) if k in ("by_model", "by_project") else row[k] for k in TELEMETRY_COLUMNS}
+        for row in rows
+    ]
 
 
 def inventory_snapshot(rows, telemetry, current=None, *, reported=False) -> Any:
@@ -87,22 +106,19 @@ def inventory_snapshot(rows, telemetry, current=None, *, reported=False) -> Any:
     )
 
 
-def context_snapshot(db: Any, current: Any) -> Any:
+def context_snapshot(db: Any, current: Any, *, history=None) -> Any:
     """No discovery, stat, transcript, or local telemetry read supplies inventory."""
-    rows = db._conn().execute(f"SELECT {', '.join(INVENTORY_COLUMNS)} FROM files")
-    return inventory_snapshot(rows, [asdict(row) for row in db.latest_telemetry().values()], current)
+    from .projections.history import HistoryScope
+
+    history = history or HistoryScope.local(db)
+    return inventory_snapshot(inventory_rows(history.read("files.inventory")),
+                              telemetry_rows(history.read("context.telemetry")), current)
 
 
-def session_context_files(conn: Any, folder: str, loaded: list[dict], tool: str = "") -> dict:
+def session_context_files(folder: str, loaded: list[dict], tool: str = "", *, history) -> dict:
     """The historical inventory and loaded-file evidence, without a tree walk."""
-    prefix = folder.replace("\\", "/").rstrip("/")
-    escaped = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-    where = "(path = ? OR path LIKE ? ESCAPE '!' OR scope IN ('global', 'user'))"
-    params: list[Any] = [prefix, escaped + "/%"]
-    if tool:
-        where += " AND (tool = ? OR tool = '')"
-        params.append(tool)
-    paths = {row[0] for row in conn.execute(f"SELECT path FROM files WHERE {where}", params)}
+    paths = {r["path"] for r in history.read("files.session_inventory", requested_path=folder,
+                                            requested_tool=tool)}
     loaded_paths = {row["path"] for row in loaded}
     paths.update(loaded_paths)
     from .board_api import MAX_LIST_ROWS, _basename

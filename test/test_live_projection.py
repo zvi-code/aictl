@@ -1,58 +1,15 @@
 """Live projection tests with fake readers and in-memory query results only."""
 
-import sqlite3
 import threading
 import time
 from types import SimpleNamespace
 
 from aictl.dashboard.live_hub import LiveHub
 from aictl.dashboard.live_projection import LiveDashboard, board_entities
-from aictl.dashboard.live_queries import ProjectionQueries
 
 
-def test_query_memo_invalidates_only_changed_table_dependencies():
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        "CREATE TABLE requests (id INTEGER, value INTEGER);"
-        "CREATE TABLE files (path TEXT);"
-        "INSERT INTO requests VALUES (1, 5); INSERT INTO files VALUES ('one');"
-    )
-    trace = []
-    conn.set_trace_callback(trace.append)
-    queries = ProjectionQueries()
-    assert queries.execute(conn, "SELECT SUM(value) FROM requests").fetchone()[0] == 5
-    assert queries.execute(conn, "SELECT path FROM files").fetchone()[0] == "one"
-    assert queries.execute(conn, "SELECT SUM(value) FROM requests").fetchone()[0] == 5
-    queries.invalidate(("files",))
-    assert queries.execute(conn, "SELECT SUM(value) FROM requests").fetchone()[0] == 5
-    conn.execute("INSERT INTO files VALUES ('two')")
-    assert len(queries.execute(conn, "SELECT path FROM files").fetchall()) == 2
-    assert sum(sql == "SELECT SUM(value) FROM requests" for sql in trace) == 1
-    conn.execute("UPDATE requests SET value=9")
-    queries.invalidate(("requests",))
-    assert queries.execute(conn, "SELECT SUM(value) FROM requests").fetchone()[0] == 9
-    assert sum(sql == "SELECT SUM(value) FROM requests" for sql in trace) == 2
-    conn.close()
 
 
-def test_nested_dependency_and_bounded_result_eviction_never_drop_query_rows():
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        "CREATE TABLE requests (id INTEGER); CREATE TABLE sessions (id INTEGER);"
-        "INSERT INTO requests VALUES (1); INSERT INTO sessions VALUES (1);"
-    )
-    queries = ProjectionQueries(max_entries=1, max_bytes=1024)
-    sql = "SELECT id FROM sessions WHERE EXISTS (SELECT 1 FROM requests WHERE requests.id=sessions.id)"
-    assert queries.execute(conn, sql).fetchone()[0] == 1
-    conn.execute("DELETE FROM requests")
-    queries.invalidate(("requests",))
-    assert queries.execute(conn, sql).fetchall() == []
-    queries.execute(conn, "SELECT id FROM sessions").fetchall()
-    assert len(queries._answers) <= 1 and queries._bytes <= 1024
-    tiny = ProjectionQueries(max_bytes=1)
-    assert tiny.execute(conn, "SELECT id FROM sessions").fetchall() == [(1,)]
-    assert not tiny._answers
-    conn.close()
 
 
 def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority():
@@ -101,90 +58,66 @@ def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority()
     assert old_id == new_id
 
 
-def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch):
+def test_existing_board_aggregate_math_works_through_the_result_memo(monkeypatch, kusto_store):
     from aictl.dashboard import board_api
     from aictl.dashboard.live_projection import _ProjectionDB
-    from aictl.storage import HistoryDB
 
     monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
     monkeypatch.setattr(board_api, "_skill_file", lambda *_: {"scope": None, "path": None, "description": None})
-    db = HistoryDB(db_path=":memory:", flush_interval=0)
-    try:
-        conn = db._conn()
-        conn.executescript(
-            "INSERT INTO sessions(session_id,tool,project_path,started_at,ended_at)"
-            " VALUES ('s','copilot-cli','project',100,190);"
-            "INSERT INTO requests(ts,session_id,tool,project_path,model,input_tokens,output_tokens)"
-            " VALUES (120,'s','copilot-cli','project','gpt-5',7,3);"
-            "INSERT INTO skill_uses(ts,session_id,tool,project_path,name)"
-            " VALUES (130,'s','copilot-cli','project','example');"
-            "INSERT INTO tool_invocations(ts,session_id,tool,project_path,tool_name,target)"
-            " VALUES (140,'s','copilot-cli','project','Bash','pytest tests');"
-            "INSERT INTO session_prompts(ts,session_id,tool,project_path,text,prompt_file)"
-            " VALUES (110,'s','copilot-cli','project','prompt','example.prompt.md');"
-        )
-        filters = board_api.Filters(90, 200, buckets=4)
-        expected = board_api.compute_board(db, filters, now=200)
-        actual = board_api.compute_board(_ProjectionDB(db, ProjectionQueries(), "offline"), filters, now=200)
-        assert actual["kpis"] == expected["kpis"]
-        assert actual["agents"] == expected["agents"]
-        assert actual["series"] == expected["series"]
-        assert actual["skills"] == expected["skills"]
-        assert board_entities("scope", actual)
-    finally:
-        db.close()
+    db = kusto_store
+    fields = {"session_id": "s", "tool": "copilot-cli", "project_path": "project"}
+    db.insert("sessions", **fields, started_at=100, ended_at=190)
+    db.insert("requests", **fields, ts=120, model="gpt-5", input_tokens=7, output_tokens=3)
+    db.insert("skill_uses", **fields, ts=130, name="example")
+    call = db.insert("tool_invocations", **fields, ts=140, tool_name="Bash")
+    db.insert("tool_invocations_text", dedup_key=call["dedup_key"], target="pytest tests")
+    db.insert("session_prompts", **fields, ts=110, text="prompt", prompt_file="example.prompt.md")
+    filters = board_api.Filters(90, 200, buckets=4)
+    expected = board_api.compute_board(db, filters, now=200)
+    actual = board_api.compute_board(_ProjectionDB(db, "offline"), filters, now=200)
+    assert actual["kpis"] == expected["kpis"]
+    assert actual["agents"] == expected["agents"]
+    assert actual["series"] == expected["series"]
+    assert actual["skills"] == expected["skills"]
+    assert board_entities("scope", actual)
 
 
-def test_equal_timestamp_prompts_use_native_ids_not_list_positions(monkeypatch):
+def test_equal_timestamp_prompts_use_native_ids_not_list_positions(monkeypatch, kusto_store):
     from aictl.dashboard import board_api
     from aictl.dashboard.live_projection import _ProjectionDB
-    from aictl.storage import HistoryDB
 
     monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
-    db = HistoryDB(db_path=":memory:", flush_interval=0)
-    try:
-        conn = db._conn()
-        conn.executescript(
-            "INSERT INTO sessions(session_id,tool,started_at,ended_at) VALUES ('s','copilot-cli',100,190);"
-            "INSERT INTO session_prompts(ts,session_id,tool,text) VALUES (110,'s','copilot-cli','first');"
-            "INSERT INTO session_prompts(ts,session_id,tool,text) VALUES (110,'s','copilot-cli','second');"
-        )
-        filters = board_api.Filters(90, 200, buckets=4)
-        live_db = _ProjectionDB(db, ProjectionQueries(), "offline-prompts")
-        payload = board_api.compute_board(live_db, filters, now=200)
-        assert len({row["id"] for row in payload["prompts"]}) == 2
-        identities = {
-            data["value"]["id"]: entity_id
-            for topic, entity_id, data, _ in board_entities("scope", payload)
-            if data["field"] == "prompts" and data.get("key")
-        }
-        assert len(identities) == 2
-        assert all("id" not in row for row in board_api.compute_board(db, filters, now=200)["prompts"])
-    finally:
-        db.close()
+    db = kusto_store
+    db.insert("sessions", session_id="s", tool="copilot-cli", started_at=100, ended_at=190)
+    for prompt in ("first", "second"):
+        db.insert("session_prompts", ts=110, session_id="s", tool="copilot-cli", text=prompt)
+    filters = board_api.Filters(90, 200, buckets=4)
+    live_db = _ProjectionDB(db, "offline-prompts")
+    payload = board_api.compute_board(live_db, filters, now=200)
+    assert len({row["id"] for row in payload["prompts"]}) == 2
+    identities = {
+        data["value"]["id"]: entity_id
+        for topic, entity_id, data, _ in board_entities("scope", payload)
+        if data["field"] == "prompts" and data.get("key")
+    }
+    assert len(identities) == 2
+    assert all("id" not in row for row in board_api.compute_board(db, filters, now=200)["prompts"])
 
 
-def test_live_status_filter_selects_queryable_usage_by_runtime_not_hook_activity(monkeypatch):
+def test_live_status_filter_selects_queryable_usage_by_runtime_not_hook_activity(monkeypatch, kusto_store):
     from aictl.dashboard import board_api
-    from aictl.storage import HistoryDB
 
     monkeypatch.setattr(board_api, "_prompt_files_on_disk", lambda _: ([], []))
-    db = HistoryDB(db_path=":memory:", flush_interval=0)
-    try:
-        conn = db._conn()
-        conn.executescript(
-            "INSERT INTO sessions(session_id,tool,started_at) VALUES ('s','copilot-cli',100);"
-            "INSERT INTO requests(ts,session_id,tool,model,input_tokens,output_tokens)"
-            " VALUES (120,'s','copilot-cli','gpt-5',7,3);"
-        )
-        legacy = board_api.Filters(90, 200, status="idle", buckets=4)
-        current = board_api.Filters(90, 200, status="idle", buckets=4, runtime_statuses=(("s", "idle"),))
-        assert board_api.compute_board(db, legacy, now=200)["kpis"]["tokens"] == 0
-        payload = board_api.compute_board(db, current, now=200)
-        assert payload["kpis"]["tokens"] == 10
-        assert payload["agents"][0]["status"] == "running"  # Still the historical status, not a copied runtime fact.
-    finally:
-        db.close()
+    db = kusto_store
+    db.insert("sessions", session_id="s", tool="copilot-cli", started_at=100)
+    db.insert("requests", ts=120, session_id="s", tool="copilot-cli", model="gpt-5",
+              input_tokens=7, output_tokens=3)
+    legacy = board_api.Filters(90, 200, status="idle", buckets=4)
+    current = board_api.Filters(90, 200, status="idle", buckets=4, runtime_statuses=(("s", "idle"),))
+    assert board_api.compute_board(db, legacy, now=200)["kpis"]["tokens"] == 0
+    payload = board_api.compute_board(db, current, now=200)
+    assert payload["kpis"]["tokens"] == 10
+    assert payload["agents"][0]["status"] == "running"  # Still the historical status, not a copied runtime fact.
 
 
 class FakeReader:

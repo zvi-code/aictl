@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -25,18 +24,52 @@ from aictl.dashboard import board_api
 from aictl.ingesters import context_items, context_items_backfill
 from aictl.ingesters.context_items import Item, claude_attachment, copilot_system_prompt
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.project_stores import PROJECT_TABLES, ProjectStores, store_key
-from aictl.storage import CallFacts, ContextItemRow, HistoryDB
+from aictl.records import CallFacts, ContextItemRow
+from aictl.session_facts import SessionFacts
+from aictl.stores.testing import MemoryWriter
 
 SESSION = "11111111-1111-4111-8111-111111111111"
 COPILOT_SID = "22222222-2222-4222-8222-222222222222"
 
 
 @pytest.fixture
-def db(tmp_path):
-    store = HistoryDB(tmp_path / "history.db", flush_interval=0)
-    yield store
-    store.close()
+def db():
+    return SessionFacts(MemoryWriter(), keeps_text=lambda: True, content_days=36500)
+
+
+def _ingest(db, root):
+    ingester = make_ingester(None, root, fact_target=db, backfill_days=36500)
+    ingester.poll()
+    ingester.facts.flush()
+
+
+def _context_facts(db, sid, until=float("inf")):
+    def rows(table):
+        return sorted((r for r in db.writer.written(table) if r["session_id"] == sid and r["ts"] <= until),
+                      key=lambda r: r["ts"])
+
+    def values(row, keys):
+        return tuple(row.get(k) for k in keys.split())
+
+    items = {(r["agent_id"], r["kind"], r["name"]): r for r in rows("session_context_items")}
+    events = rows("context_events")
+    return {
+        "item": [values(r, "agent_id kind name path tokens removed ts chars")
+                 for r in sorted(items.values(), key=lambda r: r["ts"])],
+        "call": [(r["agent_id"], sum(r.get(k, 0) or 0 for k in ("input_tokens", "cache_read_tokens", "cache_creation_tokens")),
+                  *values(r, "tool_tokens max_prompt_tokens request_bytes available_tools ts tool model output_tokens"))
+                 for r in rows("requests")],
+        "compaction": [values(r, "agent_id ts tool trigger before_tokens after_tokens duration_ms")
+                       for r in events if r["kind"] == "compaction"],
+        "split": [values(r, "ts current_tokens system_tokens conversation_tokens tool_tokens")
+                  for r in events if r["kind"] == "split"],
+        "tool": [values(r, "agent_id ts tool_name output_bytes") for r in rows("tool_invocations")],
+        "prompt": [(r["agent_id"], r["ts"], len(r["text"])) for r in rows("session_prompts")],
+    }
+
+
+def _agent_context(db, sid, agent, root):
+    return board_api._agent_context(None, sid, agent, root, facts=_context_facts(db, sid))
 
 
 def attachment(ago: float, att: dict, **extra) -> dict:
@@ -109,12 +142,9 @@ SKILLS = {
 
 
 def items_of(db, sid: str) -> dict:
-    return {
-        (kind, name): (chars, tokens, removed)
-        for kind, name, chars, tokens, removed in db._conn().execute(
-            "SELECT kind, name, chars, tokens, removed FROM session_context_items WHERE session_id = ?", (sid,)
-        )
-    }
+    return {(r["kind"], r["name"]): (r["chars"], r["tokens"], r["removed"])
+            for r in sorted(db.writer.written("session_context_items"), key=lambda r: r["ts"])
+            if r["session_id"] == sid}
 
 
 # ── Claude Code attachments ───────────────────────────────────────────
@@ -200,19 +230,15 @@ def _claude_session(tmp_path) -> None:
 class TestClaudeIngest:
     def test_a_resend_after_compaction_keeps_the_latest_and_drops_what_was_not_sent(self, db, tmp_path):
         _claude_session(tmp_path)
-        make_ingester(db, tmp_path).poll()
+        _ingest(db, tmp_path)
         rows = items_of(db, SESSION)
         assert rows[("memory_file", "/work/proj/AGENTS.md")] == (1200, 300, 0)
         assert rows[("tools_listed", "Read")] == (0, 0, 1)
         assert ("reset", "*") in rows
         # Nothing of the content is kept.
-        assert (
-            not db._conn()
-            .execute("SELECT 1 FROM session_context_items WHERE name LIKE '%uuu%' OR path LIKE '%ppp%'")
-            .fetchall()
-        )
+        assert all("uuu" not in r["name"] and "ppp" not in r["path"] for r in db.writer.written("session_context_items"))
 
-        b = board_api._agent_context(db._conn(), SESSION, SESSION, True)["breakdown"]
+        b = _agent_context(db, SESSION, SESSION, True)["breakdown"]
         assert b["total"] == 3150 and b["limit"] is None
         parts = {p["key"]: p for p in b["parts"]}
         # Skills were not re-sent. The only call after the compaction is the fixed part: no conversation yet.
@@ -236,8 +262,8 @@ class TestClaudeIngest:
 
     def test_before_the_compaction_the_older_items_count(self, db, tmp_path):
         _claude_session(tmp_path)
-        make_ingester(db, tmp_path).poll()
-        rows = board_api._context_item_rows(db._conn(), SESSION, "", True, NOW - 880)
+        _ingest(db, tmp_path)
+        rows = board_api._context_item_rows(None, SESSION, "", True, NOW - 880, facts=_context_facts(db, SESSION, NOW - 880))
         assert ("skills", "backlog", "", rows[[r[1] for r in rows].index("backlog")][3]) in rows
         assert ("mcp_instructions", "beta", "", 20) in rows
 
@@ -251,12 +277,11 @@ class TestClaudeIngest:
                 c_assistant("m2", "r2", 280),
             ],
         )
-        make_ingester(db, tmp_path).poll()
-        conn = db._conn()
-        sub = board_api._agent_context(conn, SESSION, "agent-1", False)
+        _ingest(db, tmp_path)
+        sub = _agent_context(db, SESSION, "agent-1", False)
         assert [p["key"] for p in sub["breakdown"]["parts"]] == ["memory_files", "conversation"]
         # The main agent has no attachments of its own: only the measured parts.
-        main = board_api._agent_context(conn, SESSION, SESSION, True)["breakdown"]
+        main = _agent_context(db, SESSION, SESSION, True)["breakdown"]
         assert [p["key"] for p in main["parts"]] == ["conversation"]
 
 
@@ -334,8 +359,8 @@ class TestCopilotSections:
 
     def test_without_a_split_the_system_prompt_is_estimated_and_tools_measured(self, db, tmp_path):
         self._events(tmp_path, shutdown=False)
-        make_ingester(db, tmp_path).poll()
-        b = board_api._agent_context(db._conn(), COPILOT_SID, COPILOT_SID, True)["breakdown"]
+        _ingest(db, tmp_path)
+        b = _agent_context(db, COPILOT_SID, COPILOT_SID, True)["breakdown"]
         assert b["total"] == 5000 and b["limit"] == 200000
         parts = {p["key"]: p for p in b["parts"]}
         assert set(parts) == {"system_prompt", "tool_definitions"}
@@ -356,8 +381,8 @@ class TestCopilotSections:
 
     def test_with_the_shutdown_split_the_three_parts_are_measured_and_rest_never_negative(self, db, tmp_path):
         self._events(tmp_path, shutdown=True)
-        make_ingester(db, tmp_path).poll()
-        b = board_api._agent_context(db._conn(), COPILOT_SID, COPILOT_SID, True)["breakdown"]
+        _ingest(db, tmp_path)
+        b = _agent_context(db, COPILOT_SID, COPILOT_SID, True)["breakdown"]
         assert [(p["key"], p["tokens"], p["estimated"]) for p in b["parts"]] == [
             ("conversation", 3300, False),
             ("tool_definitions", 1500, False),
@@ -376,8 +401,8 @@ class TestCopilotSections:
                 usage_record(340, inp=10, read=10, write=10, api="c2", toolTokenCount=900),
             ],
         )
-        make_ingester(db, tmp_path).poll()
-        b = board_api._agent_context(db._conn(), COPILOT_SID, COPILOT_SID, True)["breakdown"]
+        _ingest(db, tmp_path)
+        b = _agent_context(db, COPILOT_SID, COPILOT_SID, True)["breakdown"]
         sp = next(p for p in b["parts"] if p["key"] == "system_prompt")
         assert [i["name"] for i in sp["items"]] == ["tools"]
 
@@ -388,7 +413,7 @@ class TestCopilotSections:
 def _request(
     db, ts: float, size: int, out: int = 0, agent: str = "", sid: str = "s", tool: str = "claude-code"
 ) -> None:
-    from aictl.storage import RequestRow
+    from aictl.records import RequestRow
 
     db.write_call_facts(
         CallFacts(
@@ -408,13 +433,12 @@ def _request(
 
 
 def _breakdown(db, sid="s", tool="claude-code", at_ts=1e9, total=None, **kw):
-    conn = db._conn()
+    facts = _context_facts(db, sid)
     if total is None:
-        total = conn.execute(
-            "SELECT input_tokens FROM requests WHERE session_id = ? AND agent_id = '' ORDER BY ts DESC LIMIT 1", (sid,)
-        ).fetchone()[0]
+        total = facts["call"][-1][1]
     args = {"limit": None, "tool_tokens": None, "split": None, **kw}
-    return board_api._context_breakdown(conn, sid, "", True, tool=tool, at_ts=at_ts, total=total, **args)
+    return board_api._context_breakdown(None, sid, "", True, tool=tool, at_ts=at_ts,
+                                        total=total, facts=facts, **args)
 
 
 def test_fixed_parts_are_scaled_to_fit_and_rest_is_what_they_leave(db):
@@ -452,23 +476,15 @@ def test_fixed_parts_are_scaled_to_fit_and_rest_is_what_they_leave(db):
 
 
 def test_conversation_is_measured_from_call_deltas_and_compaction_starts_a_segment(db):
-    from aictl.storage import ContextEventRow, SessionPromptRow, ToolInvocationRow
+    from aictl.records import ContextEventRow
 
     for ts, size, out in ((10.0, 1000, 50), (20.0, 1200, 30), (30.0, 5200, 40), (40.0, 5100, 10), (50.0, 5600, 0)):
         _request(db, ts, size, out)
-    db.write_call_facts(
-        CallFacts(
-            tools=[
-                ToolInvocationRow(
-                    dedup_key="t1", ts=21.0, session_id="s", tool="claude-code", tool_name="Read", output_bytes=16000
-                ),
-                ToolInvocationRow(
-                    dedup_key="t2", ts=22.0, session_id="s", tool="claude-code", tool_name="Bash", output_bytes=0
-                ),
-            ],
-            prompts=[SessionPromptRow(dedup_key="p1", ts=45.0, session_id="s", tool="claude-code", text="x" * 1960)],
-        )
-    )
+    db.writer.append("tool_invocations", [
+        dict(ts=21.0, session_id="s", agent_id="", tool_name="Read", output_bytes=16000),
+        dict(ts=22.0, session_id="s", agent_id="", tool_name="Bash", output_bytes=0),
+    ])
+    db.writer.append("session_prompts", [dict(ts=45.0, session_id="s", agent_id="", text="x" * 1960)])
     b = _breakdown(db)
     conv = next(p for p in b["parts"] if p["key"] == "conversation")
     assert b["fixed"] == 1000 and conv["tokens"] == 4600 and conv["estimated"] is False
@@ -551,71 +567,6 @@ def test_kinds_are_the_api_values():
 # ── Schema v36, project stores, backfill ─────────────────────────────
 
 
-def test_a_v35_store_gets_the_table_and_a_rerun_changes_nothing(tmp_path):
-    from aictl.storage_migrations import CURRENT_VERSION, m036_session_context_items
-
-    path = tmp_path / "old.db"
-    HistoryDB(db_path=str(path), flush_interval=0).close()
-    conn = sqlite3.connect(path)
-    conn.execute("DROP TABLE session_context_items")
-    conn.execute("DELETE FROM schema_version WHERE version > 35")
-    conn.commit()
-    conn.close()
-    store = HistoryDB(db_path=str(path), flush_interval=0)
-    try:
-        conn = store._conn()
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == CURRENT_VERSION >= 36
-        m036_session_context_items.apply(conn)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(session_context_items)")]
-        assert cols == [
-            "session_id",
-            "agent_id",
-            "kind",
-            "name",
-            "ts",
-            "path",
-            "chars",
-            "tokens",
-            "estimated",
-            "removed",
-            "tool",
-        ]
-    finally:
-        store.close()
-
-
-def test_project_stores_write_the_rows_to_the_session_store(tmp_path):
-    from aictl.storage import SessionRow
-
-    assert "session_context_items" in PROJECT_TABLES
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    stores = ProjectStores(db_path=tmp_path / "config" / "history.db", flush_interval=0)
-    try:
-        stores.upsert_session(
-            SessionRow(session_id="s", tool="claude-code", project_path=str(repo), started_at=NOW - 200)
-        )
-        stores.write_call_facts(
-            CallFacts(
-                context_items=[
-                    ContextItemRow(
-                        session_id="s", kind="skills", name="x", ts=NOW - 100, chars=8, tokens=2, project_path=str(repo)
-                    ),
-                ]
-            )
-        )
-        conn = sqlite3.connect(stores._file_of(store_key(str(repo))))
-        try:
-            assert conn.execute("SELECT session_id, kind, name FROM session_context_items").fetchall() == [
-                ("s", "skills", "x")
-            ]
-        finally:
-            conn.close()
-        assert stores._conn().execute("SELECT name FROM session_context_items").fetchall() == [("x",)]
-    finally:
-        stores.close()
-
-
 def _factory(root: Path):
     def make(target):
         return TranscriptUsageIngester(
@@ -630,26 +581,32 @@ def _factory(root: Path):
     return make
 
 
-def test_the_backfill_writes_only_context_items_and_runs_once(db, tmp_path):
+def test_the_backfill_writes_only_context_items_and_runs_once(tmp_path):
+    from aictl.session_facts import SessionFacts
+    from aictl.state_file import StateFile
+    from aictl.stores.testing import MemoryWriter
+
     old = {"type": "attachment", "timestamp": iso(90 * 86400), "sessionId": SESSION, "attachment": instructions(40, 40)}
     path = claude_path(tmp_path)
     write_lines(path, [old])
     stamp = NOW - 90 * 86400
     os.utime(path, (stamp, stamp))
-    assert context_items_backfill.run(db, _factory(tmp_path)) is True
-    assert set(items_of(db, SESSION)) == {
+    writer = MemoryWriter()
+    target = SessionFacts(writer)
+    state = StateFile(tmp_path / "context.json")
+    assert context_items_backfill.run(target, state, _factory(tmp_path)) is True
+    [(op, table, rows)] = writer.operations
+    assert (op, table) == ("append", "session_context_items")
+    assert {(r["kind"], r["name"]) for r in rows} == {
         ("memory_file", "/home/u/.claude/CLAUDE.md"),
         ("memory_file", "/work/proj/AGENTS.md"),
     }
-    conn = db._conn()
-    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM session_loaded_files").fetchone()[0] == 0
-    assert db.state_value(context_items_backfill.STATE_KEY) is not None
+    assert state.read().get(context_items_backfill.STATE_KEY)
 
     def never(target):
         raise AssertionError("the backfill ran twice")
 
-    assert context_items_backfill.run(db, never) is True
+    assert context_items_backfill.run(target, state, never) is True
 
 
 # ── Claude Code /context report ───────────────────────────────────────
@@ -735,8 +692,8 @@ def test_the_latest_report_is_served_and_gives_the_limit(db, tmp_path):
             c_assistant("m2", "r2", 600, inp=100, read=2000, write=200),
         ],
     )
-    make_ingester(db, tmp_path).poll()
-    b = board_api._agent_context(db._conn(), SESSION, SESSION, True)["breakdown"]
+    _ingest(db, tmp_path)
+    b = _agent_context(db, SESSION, SESSION, True)["breakdown"]
     rep = b["reported"]
     assert rep["total"] == 131000 and rep["limit"] == 600000 and rep["model"] == "claude-test-1"
     assert rep["source"] == "claude /context" and rep["ts"] == pytest.approx(NOW - 700, abs=1)
@@ -747,7 +704,7 @@ def test_the_latest_report_is_served_and_gives_the_limit(db, tmp_path):
     # The model of the report is not the model of the calls: its limit is not used.
     assert b["limit"] is None
     b = board_api._context_breakdown(
-        db._conn(),
+        None,
         SESSION,
         "",
         True,
@@ -758,5 +715,6 @@ def test_the_latest_report_is_served_and_gives_the_limit(db, tmp_path):
         tool_tokens=None,
         split=None,
         model="claude-test-1",
+        facts=_context_facts(db, SESSION),
     )
     assert b["limit"] == 600000

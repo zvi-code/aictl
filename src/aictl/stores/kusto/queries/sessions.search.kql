@@ -1,0 +1,89 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=real(null), until:real=real(null),
+    restrict_tools:bool=false, requested_tools:dynamic=dynamic([]), search_text:string='', moving_sessions:dynamic=dynamic([]),
+    page_offset:long=0, page_size:long=200, row_limit:long);
+let candidates = materialize(sessions
+    | where (all_nodes or node_id == requested_node) and isnotempty(session_id)
+    | summarize arg_max(_v, *) by ['project'],node_id,session_id
+    | where not(column_ifexists('_deleted',false))
+    | summarize arg_max(_v, *) by node_id,session_id
+    | where (isnull(since) or started_at >= since) and (isnull(until) or started_at <= until)
+    | where not(restrict_tools) or tool in (requested_tools)
+    | project node_id,session_id,tool,project_path,started_at,ended_at);
+let candidate_ids = candidates | project node_id,session_id;
+let prompts = materialize(session_prompts
+    | where all_nodes or node_id == requested_node
+    | join kind=leftsemi candidate_ids on node_id,session_id
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)));
+let eligible = union
+    (requests | where all_nodes or node_id == requested_node
+        | join kind=leftsemi candidate_ids on node_id,session_id
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) | project node_id,session_id),
+    (tool_invocations | where all_nodes or node_id == requested_node
+        | join kind=leftsemi candidate_ids on node_id,session_id
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) | project node_id,session_id),
+    (session_usage | where all_nodes or node_id == requested_node
+        | join kind=leftsemi candidate_ids on node_id,session_id
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id
+        | where not(column_ifexists('_deleted',false)) | project node_id,session_id),
+    (prompts | project node_id,session_id),
+    (candidates | where session_id in (moving_sessions) | project node_id,session_id)
+    | distinct node_id,session_id;
+let hits = union
+    (candidates | where isnotempty(search_text) and project_path contains search_text
+        | project node_id,session_id,rank=1,match_text=project_path,stamp=0.0),
+    (prompts | where isnotempty(search_text) and text contains search_text
+        | project node_id,session_id,rank=2,match_text=text,stamp=ts),
+    (session_artifacts | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
+        | join kind=leftsemi candidate_ids on node_id,session_id
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,path
+        | where not(column_ifexists('_deleted',false)) and path contains search_text
+        | project node_id,session_id,rank=3,match_text=path,stamp=-mtime),
+    (file_write_events | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
+        | join kind=leftsemi candidate_ids on node_id,session_id
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false)) and path contains search_text
+        | project node_id,session_id,rank=4,match_text=path,stamp=-ts),
+    (session_commits | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
+        | join kind=leftsemi candidate_ids on node_id,session_id
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,sha
+        | where not(column_ifexists('_deleted',false)) and subject contains search_text
+        | project node_id,session_id,rank=5,match_text=subject,stamp=-ts)
+    | order by rank asc,stamp asc,match_text asc
+    | serialize priority=row_number()
+    | summarize arg_min(priority,rank,match_text) by node_id,session_id;
+let found = materialize(candidates
+    | join kind=leftsemi eligible on node_id,session_id
+    | lookup kind=leftouter hits on node_id,session_id
+    | where isempty(search_text) or isnotnull(rank)
+    | extend logical_id=coalesce(extract(@"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                                        0,session_id),session_id));
+let groups = materialize(found | summarize last_start=max(started_at) by node_id,logical_id);
+let page_groups = materialize(groups
+    | order by last_start desc nulls last,node_id asc,logical_id asc
+    | serialize page_n=row_number()
+    | where page_n > page_offset
+    | take page_size);
+let page = materialize(found | lookup kind=inner page_groups on node_id,logical_id);
+let titles = prompts | where isempty(agent_id) and isnotempty(text)
+    | join kind=leftsemi (page | project node_id,session_id) on node_id,session_id
+    | order by ts asc,key asc
+    | serialize position=row_number()
+    | summarize arg_min(position, ts,text) by node_id,session_id;
+union
+    (groups | summarize total=count() by node_id | project row_type='count',node_id,total),
+    (page | lookup kind=leftouter titles on node_id,session_id
+        | order by page_n asc, started_at desc, session_id asc
+        | summarize data=make_list(bag_pack('session_id',session_id,'tool',tool,'project',project_path,
+                    'started_at',started_at,'ended_at',ended_at,'title',text,'title_ts',ts,
+                    'rank',rank,'match_text',match_text)) by node_id,logical_id,page_n
+        | project row_type='item',node_id,session_id=logical_id,page_n,data)
+| order by row_type asc,page_n asc,node_id asc
+| take row_limit
+| project row_type, total, node_id, session_id, data

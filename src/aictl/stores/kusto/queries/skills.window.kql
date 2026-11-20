@@ -1,0 +1,13 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, session_keys:dynamic, row_limit:long
+);
+skill_uses
+| where all_nodes or node_id == requested_node
+| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+| summarize arg_max(_v, *) by ['project'], node_id, fact_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where ts between (since .. until)
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| order by ts asc, node_id asc, id asc, fact_key asc
+| take row_limit
+| project node_id, name, session_id, ts, agent_id

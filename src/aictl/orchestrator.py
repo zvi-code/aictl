@@ -12,6 +12,7 @@ Contains:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -25,10 +26,17 @@ from .monitoring.pace import PACE  # noqa: E402
 
 log = logging.getLogger(__name__)
 
+from . import stores
 from .dashboard.models import DashboardSnapshot, DashboardTool
 from .data.schema import metric_name as M
+from .file_inventory import FileInventory, inventory_row
 from .monitoring.tool_config import collect_tool_configs
 from .monitoring.tool_telemetry import collect_tool_telemetry, scan_agent_teams
+from .session_facts import SessionFacts
+from .collection_status import CollectionStatus, DatapointCatalog
+from .session_evidence import SessionEvidence
+from .state_file import StateFile, TextWatermark, restart_directory
+from .tool_calls import ToolCalls, call_key
 from .tools import (
     TOOL_LABELS,
     ResourceFile,
@@ -36,7 +44,6 @@ from .tools import (
     collect_agent_memory,
     collect_mcp_status,
     discover_all,
-    files_to_sample,
     get_registry,
     tool_hosts,
     tool_is_meta,
@@ -379,18 +386,6 @@ def collect(
             emit(M("aictl.discovery.size"), float(sum(f.size for f in tool_res.files)), tags, ts=ts)
             emit(M("aictl.discovery.processes"), float(len(tool_res.processes)), tags, ts=ts)
             emit(M("aictl.discovery.mcp_servers"), float(len(tool_res.mcp_servers)), tags, ts=ts)
-            # Per-file metrics: only emit on change (not every cycle).
-            # The sink's dedup handles this — we just need a stable cache key.
-            for f in files_to_sample(tool_res.files):
-                ftags = {
-                    "aictl.tool": tool,
-                    "file.path": f.path,
-                    "aictl.file.kind": f.kind,
-                    "aictl.file.scope": f.scope,
-                    "aictl.file.sent_to_llm": f.sent_to_llm,
-                }
-                emit(M("aictl.file.tokens"), float(f.tokens), ftags, ts=ts)
-                emit(M("aictl.file.bytes"), float(f.size), ftags, ts=ts)
             for m in tool_res.mcp_servers:
                 mname = m.get("name", "")
                 if mname:
@@ -625,31 +620,27 @@ def _kill_stale_server(port: int) -> None:
 # ─── Collection service (UI-independent) ─────────────────────────
 
 
-class MaintenanceLoop(threading.Thread):
-    """Runs retention and WAL upkeep on its own thread, away from collection."""
+class LogMaintenanceLoop(threading.Thread):
+    """Keep the daemon log within its size limit."""
 
     FIRST_RUN_DELAY_S = 600.0
     INTERVAL_S = 1800.0
-    # In memory the ceiling is close and nothing else makes room.
-    MEMORY_INTERVAL_S = 60.0
     LOG_MAX_BYTES = 5 * 1024 * 1024
 
-    def __init__(self, db) -> None:
-        super().__init__(daemon=True, name="aictl-db-maintenance")
-        self._db = db
+    def __init__(self) -> None:
+        super().__init__(daemon=True, name="aictl-log-maintenance")
         self._stop_event = threading.Event()
 
     def run(self) -> None:
-        delay = self.MEMORY_INTERVAL_S if self._db.in_memory else self.FIRST_RUN_DELAY_S
+        delay = self.FIRST_RUN_DELAY_S
         while not self._stop_event.wait(delay):
-            delay = self.MEMORY_INTERVAL_S if self._db.in_memory else self.INTERVAL_S
+            delay = self.INTERVAL_S
             try:
-                self._db.auto_maintain()
                 from .platforms import cap_log_file, load_config
 
                 cap_log_file(load_config().effective_log_file(), self.LOG_MAX_BYTES)
             except Exception as exc:
-                log.warning("DB maintenance failed: %s", exc)
+                log.warning("Log maintenance failed: %s", exc)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -658,12 +649,12 @@ class MaintenanceLoop(threading.Thread):
 class CollectionService:
     """The data-collection half of aictl, fully independent of any UI.
 
-    Owns the live collection engine — datapoint logger, SQLite history DB,
+    Owns the live collection engine — datapoint logger, history writer,
     metric sink, persistent monitor, periodic refresh loop, and per-tool
-    ingesters — and exposes the resulting data through ``store`` / ``db``.
+    ingesters — and exposes the resulting data through ``store``.
 
     The web server (:func:`start_server`) and the TUI are pure *consumers*:
-    they read from ``store`` and ``db`` and never construct collectors
+    they read from ``store`` and never construct collectors
     themselves. This lets collection run on its own (headless, low resource,
     from startup) with visualization attached on demand via web or CLI.
     """
@@ -679,26 +670,27 @@ class CollectionService:
         self.root = root
         self.interval = interval
         self.include_live_monitor = include_live_monitor
-        self._db_path = db_path
         # Populated by start()
-        self.db = None
+        self.history_store = stores.Store()
+        self._history_stop = threading.Event()
+        self._history_thread: threading.Thread | None = None
         self.sink = None
         self.store: SnapshotStore | None = None
         self.allowed = AllowedPaths()
         self._dp_logger = None
         self._monitor: PersistentMonitor | None = None
         self._refresh: RefreshLoop | None = None
-        self._maintenance: MaintenanceLoop | None = None
+        self._maintenance: LogMaintenanceLoop | None = None
+        self._ingesters = {}
 
     def start(self, *, quiet: bool = False) -> None:
         """Build and start the collection engine. Non-blocking."""
         self.open_stores(quiet=quiet)
         self.run(quiet=quiet)
-        # The HTTP server starts the supervised ingester instead.
-        if self.db is not None:
-            from .ingesters.cursor_conversations import start_background_poller
+        # The HTTP server starts its own supervised ingesters.
+        from .dashboard.ingester_runner import start_ingesters
 
-            start_background_poller(self.db)
+        self._ingesters = start_ingesters(self.store)
 
     def open_stores(self, *, quiet: bool = False) -> None:
         """The fast part of the start: the stores, the sink and an empty snapshot store.
@@ -735,67 +727,71 @@ class CollectionService:
             _say(f"  warning: datapoint logger unavailable ({exc})")
 
         # History persistence
-        kusto = None
-        try:
-            from .kusto import kusto_settings
-            from .platforms import load_config as _load_config
-            from .project_stores import ProjectStores
+        from .kusto import kusto_settings
+        from .platforms import load_config
 
-            store_cfg = _load_config()
-            kusto = kusto_settings()
-            log_paths = [store_cfg.effective_log_file()]
-            if store_cfg.logging_enabled:
-                log_paths.append(Path(store_cfg.logging_dir).resolve())
-            # One store per git repository next to the machine store: an import in one
-            # project never holds the write lock of another.
-            self.db = ProjectStores(
-                db_path=self._db_path,
-                datapoint_logger=self._dp_logger,
-                retention_days=store_cfg.retention_days,
-                capture=store_cfg.capture,
-                max_total_mb=store_cfg.max_total_mb,
-                content_retention_days=store_cfg.content_retention_days,
-                log_paths=tuple(log_paths),
-                memory_fallback=True,
-                say=_say,
-                kusto=kusto,
-            )
-            if kusto is not None:
-                _say(f"  history store: {kusto.uri} (Kusto, {kusto.auth_mode} auth; no SQLite file)")
-            else:
-                _say(f"  history db: {self._db_path or '~/.config/aictl/history.db'}")
-            if kusto is not None:
-                pass
-            elif self.db.projects_dir is None:
-                _say("  warning: the history is in memory, so it is not split by project and is lost on exit")
-            else:
-                _say(f"  project stores: {self.db.projects_dir}")
-        except Exception as exc:
-            if kusto is not None:
-                raise
-            _say(f"  warning: history db unavailable ({exc})")
+        store_cfg = load_config()
+        settings = kusto_settings()
+        restart_dir = None
+        watermark = None
+        if settings is not None and store_cfg.capture != "off":
+            restart_dir = restart_directory(settings.cluster, settings.database, settings.node_id)
+            watermark = TextWatermark(StateFile(restart_dir / "text_trim.json"))
+            self.history_store = stores.open_store("kusto", settings=settings, trim_before=watermark)
+            _say(f"  history store: {settings.uri} (Kusto, {settings.auth_mode} auth)")
+        else:
+            self.history_store = stores.Store()
+            _say("  history store: capture is off" if settings is not None else "  history store: no store configured")
 
         # Metric sink
+        from .observe.collect import capture_mode
         from .sink import SampleSink
 
-        self.sink = SampleSink(db=self.db, buffer_size=5000, datapoint_logger=self._dp_logger)
-        self.store = SnapshotStore(db=self.db, sink=self.sink)
-        if getattr(self.db, "_kusto", None) is not None:
-            from .dashboard.live_hub import LiveHub
-            from .monitoring.live_sources import LiveRuntimeSources
-            from .observe.collect import capture_mode
+        def mode():
+            return capture_mode() if store_cfg.capture == "full" else store_cfg.capture
 
-            self.store.live_hub = LiveHub()
-            self.store.live_sources = LiveRuntimeSources(
-                self.store.live_hub,
-                self.root,
-                capture_mode=lambda: (
-                    capture_mode()
-                    if getattr(self.db, "capture", "off") == "full"
-                    else getattr(self.db, "capture", "off")
-                ),
-            )
-            self.store.live_sources.start()
+        writer = stores.writer_or_discard(self.history_store.writer)
+        inventory = None
+        if restart_dir is not None:
+            from .records import _is_sensitive_path
+
+            inventory = FileInventory(writer, StateFile(restart_dir / "file_inventory.json"),
+                                      keeps_text=lambda: mode() == "full", sensitive=_is_sensitive_path)
+        self.store = SnapshotStore(sink=self.sink, history_store=self.history_store,
+                                   inventory=inventory, keeps_text=lambda: mode() == "full",
+                                   restart_dir=restart_dir, content_days=store_cfg.content_retention_days,
+                                   trim_before=watermark or (lambda: 0.0))
+        self.sink = self.store._sink = SampleSink(datapoint_logger=self._dp_logger,
+                                                 history_store=self.history_store,
+                                                 quality=self.store.collection_status)
+        from .dashboard.live_hub import LiveHub
+        from .monitoring.live_sources import LiveRuntimeSources
+
+        self.store.live_hub = LiveHub()
+        self.store.live_sources = LiveRuntimeSources(self.store.live_hub, self.root, capture_mode=mode)
+        self.store.live_sources.start()
+        self.store._persistence.capture_mode = mode
+        if restart_dir is not None:
+            from .stores.kusto.tables import TABLES
+
+            self.store._persistence.node_settings = {
+                "node_source": settings.node_id_source,
+                "ingestion_mode": settings.ingestion,
+                "retention_days": TABLES["system_snapshots"].retention_days,
+                "content_retention_days": TABLES["session_step_text"].retention_days,
+            }
+
+            def flush_history():
+                while not self._history_stop.wait(1):
+                    writer.flush()
+                    try:
+                        self.store.session_facts.save()
+                        self.store.collection_status.save()
+                    except OSError:
+                        log.warning("Could not save session restart state", exc_info=True)
+
+            self._history_thread = threading.Thread(target=flush_history, name="history-writer", daemon=True)
+            self._history_thread.start()
 
     def run(self, *, quiet: bool = False) -> None:
         """The slow part of the start: the live monitor, the first snapshot and the loops."""
@@ -834,15 +830,16 @@ class CollectionService:
         )
         self._refresh.start()
 
-        if self.db is not None:
-            self._maintenance = MaintenanceLoop(self.db)
-            self._maintenance.start()
+        self._maintenance = LogMaintenanceLoop()
+        self._maintenance.start()
 
     def stop(self) -> None:
         """Stop background collection. Best-effort; safe to call once."""
         from . import tree_walk
 
         tree_walk.set_lazy(False)
+        for handle in self._ingesters.values():
+            handle.stop_event.set()
         if self._maintenance is not None:
             self._maintenance.stop()
         if self._refresh is not None:
@@ -853,10 +850,17 @@ class CollectionService:
             self._monitor.stop()
         if self.sink is not None:
             self.sink.close()
+        self._history_stop.set()
+        if self._history_thread is not None:
+            self._history_thread.join(timeout=2)
+            try:
+                self.store.session_facts.save()
+                self.store.collection_status.save()
+            except OSError:
+                log.warning("Could not save session restart state", exc_info=True)
         if self.store is not None and self.store.live_hub is not None:
             self.store.live_hub.close()
-        if self.db is not None:
-            self.db.close()
+        stores.close_writer(self.history_store)
 
 
 def start_collector(
@@ -923,8 +927,6 @@ def start_server(
     service.open_stores()
     store = service.store
     allowed = service.allowed
-    db = service.db
-
     # Kill any existing aictl on this port before binding
     _kill_stale_server(port)
 
@@ -944,10 +946,6 @@ def start_server(
 
     server.ingesters = start_ingesters(store)
     server.attach_live_ingesters()
-
-    # Wire session analyzer as an event listener on the database
-    if db is not None:
-        db.add_event_listener(server.session_analyzer.ingest_event)
 
     url = f"http://{host}:{port}"
     print(f"  aictl daemon serve — dashboard at {url}", file=sys.stderr)
@@ -980,7 +978,6 @@ from .dashboard.models import DashboardSnapshot as _DashboardSnapshot
 
 if _TYPE_CHECKING:
     from .sink import SampleSink as _SampleSink
-    from .storage import HistoryDB as _HistoryDB
 
 
 # ─── Metric emission ────────────────────────────────────────────
@@ -1023,13 +1020,13 @@ class SnapshotState:
         # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
         self._tool_history: dict[str, collections.deque] = {}
 
-    def load_from_db(self, db: _HistoryDB) -> None:
-        """Populate ring buffers from SQLite so charts start with history."""
-        if not db:
-            return
+    def load_history(self, reader) -> None:
+        """Populate ring buffers from the history reader."""
+        from .dashboard.projections.metrics import system_history, tool_history
+
         try:
             since = _time.time() - 3600  # load last 1 hour
-            data = db.query_metrics(since=since)
+            data = system_history(reader, since=since)
             if data["ts"]:
                 me_list = data.get("memory_entries") or [0] * len(data["ts"])
                 for i in range(len(data["ts"])):
@@ -1049,14 +1046,14 @@ class SnapshotState:
                     )
                     self._history.append(row)
             # Per-tool history
-            tool_data = db.query_tool_metrics(since=since)
+            tool_data = tool_history(reader, since=since)
             for tool_name, td in tool_data.items():
                 dq = collections.deque(maxlen=120)
                 for i in range(len(td["ts"])):
                     dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i], td["tokens"][i], td["traffic"][i]))
                 self._tool_history[tool_name] = dq
         except Exception as exc:
-            log.warning("Failed to load history from DB: %s", exc)
+            log.warning("Could not load store history: %s", exc)
 
     def update(self, snap: _DashboardSnapshot, serializer: SnapshotSerializer) -> list[tuple]:
         """Update state, pre-serialize, notify waiters. Returns tool_rows."""
@@ -1158,7 +1155,7 @@ class SnapshotSerializer:
     @staticmethod
     def serialize_history(rows: list[tuple], tool_history: dict[str, list[tuple]]) -> str:
         """Return time-series history as column-major JSON (uPlot format)."""
-        from .storage import METRICS_KEYS
+        from .records import METRICS_KEYS
 
         if not rows:
             return _json.dumps({k: [] for k in METRICS_KEYS})
@@ -1201,49 +1198,38 @@ TELEMETRY_HEARTBEAT_S = 300.0
 
 
 class SnapshotPersistence:
-    """Writes snapshot data to HistoryDB (injected dependency)."""
+    """Write snapshot facts through the configured store writer."""
 
-    def __init__(self, db: _HistoryDB | None) -> None:
-        self._db = db
+    def __init__(self, _unused=None, writer=None, inventory: FileInventory | None = None,
+                 session_facts: SessionFacts | None = None, quality=None, catalog=None) -> None:
+        self._writer = stores.writer_or_discard(writer)
+        self._inventory = inventory
         self._last_file_sync = 0.0
+        self._last_samples: dict[str, tuple[dict, float]] = {}
+        self.capture_mode = lambda: ""
+        self.node_settings: dict = {}
+        self.runtime_sample = None
+        self.transport_sample = None
+        self._next_health_sample = 0.0
         # Unchanged data is not written again (see _changed_telemetry, persist).
         self._telemetry_last: dict[tuple[str, str], tuple[tuple, float]] = {}
         self._team_signatures: dict[str, tuple] = {}
+        self._facts = session_facts or SessionFacts(writer)
+        self._quality = quality or CollectionStatus(writer)
+        self._catalog = catalog or DatapointCatalog(writer)
 
     def persist(self, snap: _DashboardSnapshot, tool_rows: list[tuple]) -> None:
-        """Persist metrics, events, telemetry, and agent teams to SQLite."""
-        if not self._db:
-            return
+        """Send changed samples, file inventory, and session facts."""
         try:
-            from .storage import EventRow, MetricsRow, ToolMetricsRow
-
-            self._db.append_metrics(
-                MetricsRow(
-                    ts=snap.timestamp,
-                    files=snap.total_files,
-                    tokens=snap.total_tokens,
-                    cpu=snap.total_cpu,
-                    cpu_per_core=snap.cpu_per_core,
-                    active_processes=snap.total_processes,
-                    mem_mb=snap.total_mem_mb,
-                    mcp=snap.total_mcp_servers,
-                    mem_tokens=snap.total_memory_tokens,
-                    memory_entries=snap.total_memory_entries,
-                    live_sessions=snap.total_live_sessions,
-                    live_tokens=snap.total_live_estimated_tokens,
-                    live_in_rate=snap.total_live_inbound_rate_bps,
-                    live_out_rate=snap.total_live_outbound_rate_bps,
-                )
-            )
-            self._db.append_tool_metrics(
-                [
-                    ToolMetricsRow(ts=snap.timestamp, tool=name, cpu=cpu, mem_mb=mem, tokens=tok, traffic=tr)
-                    for name, cpu, mem, tok, tr in tool_rows
-                ]
-            )
+            self._persist_samples(snap, tool_rows)
+        except Exception:
+            log.warning("Snapshot samples could not be handed to the writer", exc_info=True)
+        self._sync_files(snap)
+        try:
+            from .records import EventRow
             # Persist events from live monitor
             if snap.events:
-                self._db.append_events(
+                self._facts.events(
                     [
                         EventRow(
                             ts=e.get("ts", snap.timestamp),
@@ -1255,41 +1241,14 @@ class SnapshotPersistence:
                         )
                         for e in snap.events
                         if e.get("tool") and e.get("kind")
-                    ]
+                    ],
+                    source="monitor",
                 )
                 # Also write to sessions table for session_start/end events
                 self._persist_session_events(snap.events, snap.timestamp)
-            # Persist telemetry snapshots (from stats-cache, events.jsonl, etc.)
-            if snap.tool_telemetry:
-                from .storage import TelemetryRow
-
-                self._db.append_telemetry_batch(
-                    [
-                        TelemetryRow(
-                            ts=snap.timestamp,
-                            tool=t.get("tool", ""),
-                            source=t.get("source", ""),
-                            confidence=t.get("confidence", 0),
-                            input_tokens=t.get("input_tokens", 0),
-                            output_tokens=t.get("output_tokens", 0),
-                            cache_read_tokens=t.get("cache_read_tokens", 0),
-                            cache_creation_tokens=t.get("cache_creation_tokens", 0),
-                            total_sessions=t.get("total_sessions", 0),
-                            total_messages=t.get("total_messages", 0),
-                            cost_usd=t.get("cost_usd", 0),
-                            model=t.get("model", ""),
-                            by_model=t.get("by_model", {}),
-                        )
-                        for t in self._changed_telemetry(snap.tool_telemetry, snap.timestamp)
-                    ]
-                )
             # Persist agent teams (agents + per-turn requests)
             if snap.agent_teams:
                 self._persist_agent_teams(snap.agent_teams, snap.timestamp)
-
-            # Sync discovered files into the KV file store (throttled;
-            # failure-isolated inside _sync_files).
-            self._sync_files(snap)
 
             # All metric emission now happens at collection time
             # (collectors + DiscoveryCollector + collect() enrichment).
@@ -1297,13 +1256,74 @@ class SnapshotPersistence:
 
             # Refresh dynamic source provenance for the datapoint catalog.
             try:
-                from .sink import update_provenance
-
-                update_provenance(self._db, snap)
+                self._catalog.refresh(snap)
             except Exception as exc:
                 log.debug("Provenance update failed: %s", exc)
         except Exception as exc:
             log.warning("DB write failed: %s", exc)
+
+    def _persist_samples(self, snap: _DashboardSnapshot, tool_rows: list[tuple]) -> None:
+        writer = self._writer
+        ts = snap.timestamp
+        host = dict(
+            cpu_percent=round(snap.total_cpu, 2), cpu_per_core=json.dumps(snap.cpu_per_core),
+            active_processes=snap.total_processes, memory_used_mb=round(snap.total_mem_mb, 1),
+            files=snap.total_files, tokens=snap.total_tokens, mcp=snap.total_mcp_servers,
+            mem_tokens=snap.total_memory_tokens, memory_entries=snap.total_memory_entries,
+            live_sessions=snap.total_live_sessions, live_tokens=snap.total_live_estimated_tokens,
+            live_in_rate=round(snap.total_live_inbound_rate_bps, 2),
+            live_out_rate=round(snap.total_live_outbound_rate_bps, 2),
+        )
+        sample_health = (self.runtime_sample is not None or self.transport_sample is not None) and ts >= self._next_health_sample
+        if self._sample_changed("host", host, ts) or sample_health:
+            from .health import host_memory
+
+            memory = host_memory()
+            used, total = memory["memory_used_bytes"], memory["memory_total_bytes"]
+            host.update(project="", ts=ts, daemon_pid=os.getpid(), capture_mode=self.capture_mode(),
+                        settings_captured_at=ts,
+                        host_cpu_percent=(sum(snap.cpu_per_core) / len(snap.cpu_per_core)
+                                          if snap.cpu_per_core else None),
+                        host_memory_used_mb=used / (1024 ** 2) if used is not None else None,
+                        host_memory_total_mb=total / (1024 ** 2) if total is not None else None)
+            host.update(self.node_settings)
+            if sample_health:
+                self._next_health_sample = ts + 30
+                try:
+                    host["node_health_counters"] = json.dumps(
+                        {"pid": os.getpid(), "at": ts,
+                         "store": self.transport_sample() if self.transport_sample is not None else {},
+                         "runtime": self.runtime_sample() if self.runtime_sample is not None else {}},
+                        separators=(",", ":"),
+                    )
+                except Exception:
+                    log.debug("Node runtime sample failed", exc_info=True)
+            writer.append("system_snapshots", [host])
+        processes = []
+        for tool, cpu, mem, _, _ in tool_rows:
+            pid = int(call_key(tool), 16) % 2_000_000_000
+            row = dict(tool=tool, pid=pid, cpu_percent=round(cpu, 2), memory_rss_mb=round(mem, 1))
+            if self._sample_changed(tool, row, ts):
+                processes.append(row | {"project": "", "ts": ts})
+        if processes:
+            writer.append("process_snapshots", processes)
+        telemetry = [
+            {name: t.get(name, default) for name, default in (
+                ("tool", ""), ("source", ""), ("confidence", 0), ("input_tokens", 0),
+                ("output_tokens", 0), ("cache_read_tokens", 0), ("cache_creation_tokens", 0),
+                ("total_sessions", 0), ("total_messages", 0), ("cost_usd", 0), ("model", ""),
+            )} | dict(project="", ts=ts, by_model=json.dumps(t.get("by_model", {})), by_project="{}")
+            for t in self._changed_telemetry(snap.tool_telemetry or [], ts)
+        ]
+        if telemetry:
+            writer.append("tool_stats", telemetry)
+
+    def _sample_changed(self, key: str, values: dict, ts: float) -> bool:
+        previous = self._last_samples.get(key)
+        if previous is not None and previous[0] == values and ts - previous[1] < 300:
+            return False
+        self._last_samples[key] = values.copy(), ts
+        return True
 
     def _changed_telemetry(self, reports: list[dict], ts: float) -> list[dict]:
         """Reports whose totals changed, plus one per tool every TELEMETRY_HEARTBEAT_S.
@@ -1330,7 +1350,7 @@ class SnapshotPersistence:
         Throttled to one pass per ``FILE_SYNC_INTERVAL``. Failures are
         logged + recorded as data-quality signals and never propagate.
         """
-        if not self._db:
+        if self._inventory is None:
             return
         now = _time.time() if now is None else now
         if now - self._last_file_sync < FILE_SYNC_INTERVAL:
@@ -1338,19 +1358,12 @@ class SnapshotPersistence:
         # Set before the pass so a failing sync also waits out the interval.
         self._last_file_sync = now
         try:
-            # ResourceFile → discovery dict, de-duplicated by path
-            # (prefer the entry with a non-empty tool).
+            from .tools import files_to_sample
+
             discovered: dict[str, dict] = {}
             for tool_rec in snap.tools:
-                for f in tool_rec.files:
-                    entry = {
-                        "path": f.path,
-                        "tool": getattr(f, "tool", "") or tool_rec.tool,
-                        "category": getattr(f, "kind", ""),
-                        "scope": getattr(f, "scope", ""),
-                        "mtime": getattr(f, "mtime", 0.0),
-                        "size": getattr(f, "size", 0),
-                    }
+                for f in files_to_sample(tool_rec.files):
+                    entry = inventory_row(f, tool_rec.tool)
                     prev = discovered.get(f.path)
                     if prev is None or (not prev.get("tool") and entry["tool"]):
                         discovered[f.path] = entry
@@ -1358,42 +1371,32 @@ class SnapshotPersistence:
                 # Empty discovery (e.g. transient failure) must not wipe
                 # the file store via removed-files handling.
                 return
-            stats = self._db.sync_files_from_discovery(list(discovered.values()), read_content=True)
+            stats = self._inventory.sync(discovered.values(), now=now)
             log.debug("File sync: %s", stats)
-            if hasattr(self._db, "record_data_quality"):
-                self._db.record_data_quality(
-                    "file-sync",
-                    "ok",
-                    kind="persistence",
-                    detail=stats,
-                )
+            self._quality.record_data_quality("file-sync", "ok", kind="persistence", detail=stats)
         except Exception as exc:
             log.warning("File sync failed: %s", exc)
             try:
-                if hasattr(self._db, "record_data_quality"):
-                    self._db.record_data_quality(
-                        "file-sync",
-                        "failed",
-                        kind="persistence",
-                        severity="warning",
-                        message=f"File sync failed: {type(exc).__name__}",
-                        detail={"error": str(exc)},
-                    )
+                self._quality.record_data_quality(
+                    "file-sync", "failed", kind="persistence", severity="warning",
+                    message=f"File sync failed: {type(exc).__name__}", detail={"error": str(exc)},
+                )
             except Exception:
                 log.debug("file-sync: failed to record data-quality signal", exc_info=True)
 
     def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
         """Write agent team data to the sessions, agents, and requests tables."""
-        if not self._db or not agent_teams:
+        if not agent_teams:
             return
         try:
             from .monitoring.tool_telemetry import _parse_iso_ts
-            from .storage import AgentRow, RequestRow, SessionRow
+            from .records import AgentRow, RequestRow, SessionRow
 
             # Written once after the loop: a statement per session and per agent was
             # a request each on a Kusto store, several hundred on a first refresh.
             session_rows: list[SessionRow] = []
             agent_rows: list[AgentRow] = []
+            requests: list[RequestRow] = []
             for team in agent_teams:
                 session_id = team.get("session_id", "")
                 # A team writes dozens of rows with one commit each: 22 MB/s of
@@ -1466,7 +1469,7 @@ class SnapshotPersistence:
                     # read ts, so stamping ingest time (snapshot_ts) put
                     # every backfilled request at daemon start time.
                     for turn in agent.get("turns", []):
-                        self._db.append_request(
+                        requests.append(
                             RequestRow(
                                 ts=turn.get("source_ts", 0.0) or snapshot_ts,
                                 source_ts=turn.get("source_ts", 0.0),
@@ -1482,61 +1485,43 @@ class SnapshotPersistence:
                                 project_path=agent.get("cwd", "") or team_folder,
                             )
                         )
-            self._db.upsert_sessions(session_rows)
-            self._db.upsert_agents(agent_rows)
+            self._facts.sessions((row, 0.0, False) for row in session_rows)
+            self._facts.agents(agent_rows)
+            self._facts.requests(requests)
         except Exception as exc:
             log.warning("Agent team persistence failed: %s", exc)
 
     def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
         """Write session_start/session_end events to the sessions table."""
-        if not self._db:
-            return
         try:
-            from .storage import SessionRow
+            from .records import SessionRow
 
-            started: list[SessionRow] = []
-            links: list[tuple[str, int, str, str]] = []
-
-            def write_started() -> None:
-                # The starts seen so far, as one write each for sessions and their processes.
-                self._db.upsert_sessions(started)
-                self._db.link_session_processes(links)
-                started.clear()
-                links.clear()
-
+            updates = []
+            links = []
             for e in events:
                 kind = e.get("kind", "")
                 detail = e.get("detail", {})
                 sid = detail.get("session_id", "")
                 if not sid:
                     continue
+                ts = e.get("ts", fallback_ts)
+                tool = e.get("tool", "")
+                project = detail.get("project", "")
                 if kind == "session_start":
                     ev_pid = int(detail.get("pid", 0) or 0)
-                    started.append(
-                        SessionRow(
-                            session_id=sid,
-                            tool=e.get("tool", ""),
-                            pid=ev_pid,
-                            started_at=e.get("ts", fallback_ts),
-                            project_path=detail.get("project", ""),
-                            source="correlator",
-                        )
-                    )
-                    links.append((sid, ev_pid, e.get("tool", ""), "lead"))
+                    row = SessionRow(sid, tool, ev_pid, project, started_at=ts, source="correlator")
+                    updates.append((row, ts, False))
+                    links.append((sid, ev_pid, tool, ts, "lead", project))
                 elif kind == "session_end":
-                    # An end follows its start: the starts go in first.
-                    write_started()
-                    self._db.update_session_end(
-                        sid,
-                        ended_at=e.get("ts", fallback_ts),
-                        tool=e.get("tool", ""),
-                        project_path=detail.get("project", ""),
-                        source="correlator",
+                    row = SessionRow(
+                        sid, tool, project_path=project, started_at=ts, ended_at=ts, source="correlator",
                         input_tokens=detail.get("input_tokens", 0),
                         output_tokens=detail.get("output_tokens", 0),
                         files_modified=detail.get("files_modified", 0),
                     )
-            write_started()
+                    updates.append((row, ts, True))
+            self._facts.sessions(updates)
+            self._facts.links(links)
         except Exception as exc:
             log.warning("Session event persistence failed: %s", exc)
 
@@ -1544,24 +1529,47 @@ class SnapshotPersistence:
 class SnapshotStore:
     """Facade composing state, serialization, and persistence.
 
-    Optionally backed by a HistoryDB for persistence across restarts.
+    Uses the configured store for history and local files for restart state.
     Uses SampleSink for universal metric emission.
     """
 
-    def __init__(self, db: _HistoryDB | None = None, sink: _SampleSink | None = None) -> None:
+    def __init__(
+        self, db=None, sink: _SampleSink | None = None, *,
+        history_store: stores.Store | None = None, inventory: FileInventory | None = None,
+        keeps_text=lambda: False, restart_dir: Path | None = None, content_days: int = 14,
+        trim_before=lambda: 0.0,
+    ) -> None:
         self._state = SnapshotState()
         self._serializer = SnapshotSerializer()
-        self._persistence = SnapshotPersistence(db)
+        self.history_store = history_store or stores.Store()
+        self.tool_calls = ToolCalls(self.history_store.writer, keeps_text=keeps_text)
+        self.restart_dir = restart_dir
+        def state(name: str):
+            return StateFile(restart_dir / f"{name}.json") if restart_dir is not None else None
+
+        writer = stores.writer_or_discard(self.history_store.writer)
+        session_state = state("session_lifecycle")
+        self.session_facts = SessionFacts(self.history_store.writer, keeps_text=keeps_text, state=session_state,
+                                          content_days=content_days, trim_before=trim_before)
+        self.collection_status = CollectionStatus(writer, state("collection_status"))
+        self.session_evidence = SessionEvidence(self.session_facts, state("session_artifacts"), self.collection_status)
+        catalog = DatapointCatalog(writer, state("datapoint_catalog"))
+        self._persistence = SnapshotPersistence(writer=writer, inventory=inventory, session_facts=self.session_facts,
+                                                quality=self.collection_status, catalog=catalog)
+        from .health import node_transport_counters
+
+        self._persistence.transport_sample = lambda: node_transport_counters(
+            stores.reader_feature(self.history_store.history_reader(), "transport_diagnostics", writer) or {}
+        )
         # Exposed for callers that access these directly
         self._db = db
         self._sink = sink
-        # Kusto-only incremental channels. SQLite callers continue to use snapshots.
+        # Incremental channels are configured by the dashboard runtime.
         self.live_hub = None
         self.live_sources = None
         # The refresh loop waits on this; request_refresh sets it.
         self.refresh_requested = _threading.Event()
-        if db:
-            self._state.load_from_db(db)
+        self._state.load_history(stores.reader_or_empty(self.history_store.reader))
 
     def update(self, snap: _DashboardSnapshot) -> None:
         tool_rows = self._state.update(snap, self._serializer)
@@ -1574,10 +1582,6 @@ class SnapshotStore:
         """
         if PACE.watched():
             self.refresh_requested.set()
-            # The rows are in a write buffer: flushed now, the board read after the refresh sees them.
-            flush_soon = getattr(self._db, "flush_soon", None)
-            if flush_soon is not None:
-                flush_soon()
 
     def wait_for_update(self, known_version: int, timeout: float = 30.0) -> tuple[_DashboardSnapshot | None, int]:
         """Block until a new version is available or timeout."""

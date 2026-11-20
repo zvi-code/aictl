@@ -1,0 +1,433 @@
+"""Read a named KQL view with request parameters and a bounded result."""
+
+from __future__ import annotations
+
+import json
+import math
+import threading
+import time
+import uuid
+from collections.abc import Mapping
+from functools import lru_cache
+from datetime import timedelta
+from importlib.resources import files
+from itertools import islice
+from typing import Any
+
+from ..base import ReadResult, StoreError, UnknownViewError
+from .client import QUERY_TIMEOUT, retrying
+
+_SCOPE = "all_nodes requested_node requested_project"
+_EVENT = f"{_SCOPE} since until requested_tool requested_kinds requested_session raw_session"
+_SESSION = "session_id tool model project_path started_at ended_at request_count input_tokens output_tokens cost_usd"
+_TIME = "all_nodes requested_node since until"
+_WINDOW = f"{_TIME} grid"
+_BOARD_ID = "node_id session_id agent_id"
+_VIEWS = {
+    "analytics.requests": (f"{_TIME} restrict_tools requested_tools page_size", "row_type hidden count model avg_ms p50_ms p95_ms max_ms input_tokens output_tokens ts duration_ms cache_read_tokens session_id agent_id finish_reason cost_usd is_error"),
+    "analytics.memory": (f"{_TIME} restrict_tools requested_tools", "row_type hidden count path ts size_bytes tokens growth_bytes"),
+    "analytics.tools": (f"{_TIME} restrict_tools requested_tools", "row_type hidden count tool_name cli_tool avg_ms p95_ms error_count"),
+    "analytics.profiles": (_TIME, "session_id tool project_path model started_at input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd request_count tool_call_count tokens_source tokens_quality cost_quality"),
+    "health.nodes": ("requested_project requested_node", "node_id samples last_sample"),
+    "health.totals": ("all_nodes requested_node", "table rows earliest_ts latest_ts files_total_bytes files_total_tokens"),
+    "health.quality": ("all_nodes requested_node", "component source kind status severity message updated_at last_ok_at count detail"),
+    "nodes.reports": (f"{_TIME} report_mode include_unreported", "node_id captured_at"),
+    "runtime.processes": ("all_nodes requested_node restrict_tools requested_tools", "row_type node_id session_id pid tool role joined_at total"),
+    "runtime.resources": (f"{_WINDOW} restrict_tools requested_tools", "tool b cpu mem"),
+    "hooks.activity": (f"{_TIME} counts_only", "row_type tool kind count last_ts ts agent_id agent_type name starts stops"),
+    "board.revision": ("all_nodes requested_node", "rows version"),
+    "history.system": (f"{_TIME}", "ts files tokens cpu mem_mb mcp mem_tokens memory_entries live_sessions live_tokens live_in_rate live_out_rate"),
+    "history.tools": (f"{_TIME} requested_tool", "ts tool cpu mem_mb"),
+    "samples.page": (f"{_TIME} requested_metric metric_prefix tag_filter ascending", "ts metric value tags"),
+    "samples.metrics": ("all_nodes requested_node metric_prefix", "metric count latest_ts last_value"),
+    "catalog.entries": (
+        "all_nodes requested_node requested_tab requested_key requested_source_type",
+        "key label tab section explanation source_static source_type unit update_freq otel_metric dynamic_source source_dynamic query calc updated_at",
+    ),
+    "nodes.inventory": ("all_nodes requested_node", "node_id captured_at"),
+    "nodes.sessions": (
+        f"{_SCOPE} since until node_limit session_limit",
+        f"row_type node_id {_SESSION} sessions requests",
+    ),
+    "sessions.lookup": (
+        f"{_SCOPE} requested_session session_fragment",
+        f"node_id {_SESSION} pid git_branch git_commit source cache_read_tokens cache_creation_tokens tool_call_count files_modified",
+    ),
+    "sessions.processes": (
+        f"{_SCOPE} requested_session", "row_type pid tool role joined_at count",
+    ),
+    "sessions.first_activity": (f"{_SCOPE} requested_session", "first_ts"),
+    "sessions.first_activities": ("all_nodes requested_node session_keys", "node_id session_id first_ts"),
+    "agents.resolve": (f"{_SCOPE} requested_agent", "node_id session_id agent_id priority"),
+    "events.page": (_EVENT, "ts tool kind detail session_id pid seq"),
+    "events.count": (_EVENT, "count"),
+    "requests.models": (
+        f"{_SCOPE} requested_session requested_agent since until",
+        "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd",
+    ),
+    "usage.sessions": (
+        f"{_SCOPE} since until requested_session without_requests session_keys",
+        "node_id session_id tool project_path model models_json daily_json input_tokens output_tokens cache_read_tokens "
+        "cache_creation_tokens request_count tool_call_count turn_count started_at last_activity_at cost_usd billing_unit "
+        "billing_amount premium_requests",
+    ),
+    "requests.cells": (
+        f"{_WINDOW} requested_session session_keys",
+        f"{_BOARD_ID} model g tool project_path calls input_tokens output_tokens cache_read_tokens cache_creation_tokens "
+        "errors first_ts last_ts last_error duration_count max_duration ttft_count max_ttft cost_usd",
+    ),
+    "requests.long": (
+        f"{_WINDOW} requested_session session_keys requested_models min_tokens",
+        f"{_BOARD_ID} model g input_tokens output_tokens cache_read_tokens cache_creation_tokens ts",
+    ),
+    "tools.agent_totals": (
+        f"{_TIME} requested_session session_keys",
+        f"{_BOARD_ID} calls failures asked denied pending first_ts last_ts last_error tool project_path",
+    ),
+    "prompts.series": (f"{_WINDOW} requested_session session_keys", f"{_BOARD_ID} g prompts tool project_path"),
+    "board.sessions": ("all_nodes requested_node session_keys", "node_id session_id tool project_path model pid started_at ended_at"),
+    "board.agents": ("all_nodes requested_node session_keys", f"{_BOARD_ID} task model started_at ended_at completed"),
+    "requests.ended": ("all_nodes requested_node session_keys", "node_id session_id"),
+    "tools.activity": (f"{_WINDOW} session_keys", f"{_BOARD_ID} g calls"),
+    "tools.series": (
+        f"{_WINDOW} session_keys",
+        "tool_name g calls failures max_duration timed durations input_bytes input_count output_bytes output_count",
+    ),
+    "requests.latency": (
+        f"{_WINDOW} session_keys requested_model", "node_id session_id model g durations firsts duration_count first_count",
+    ),
+    "requests.error_series": (
+        f"{_WINDOW} session_keys requested_model", "node_id session_id error_type http_status g calls last_ts",
+    ),
+    "requests.live_owner": (
+        "all_nodes requested_node requested_tool project_path_key fold_project", "node_id session_id",
+    ),
+    "sessions.pid_owners": ("all_nodes requested_node session_keys pids", "node_id session_id pid"),
+    "sessions.runs": (
+        "all_nodes requested_node requested_tool requested_path since until",
+        "node_id session_id started_at ended_at input_tokens output_tokens files_modified cost_usd",
+    ),
+    "tools.activity_rows": (
+        f"{_TIME} requested_session kind_filter session_keys",
+        f"{_BOARD_ID} ts tool_name target is_error exit_code duration_ms confirm confirm_wait_ms result_summary input_signature",
+    ),
+    "board.previous": (
+        f"{_TIME} requested_model project_path_key fold_project restrict_tools requested_tools restrict_sessions session_keys",
+        "row_type model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd tool_calls prompts",
+    ),
+    "prompts.page": (
+        f"{_TIME} session_keys preview", f"{_BOARD_ID} id ts project_path text prompt_file",
+    ),
+    "requests.intervals": (
+        "all_nodes requested_node requested_model intervals", "node_id session_id start_ts end_ts tokens",
+    ),
+    "skills.window": (f"{_TIME} session_keys", f"{_BOARD_ID} name ts"),
+    "prompts.titles": ("all_nodes requested_node session_keys", f"{_BOARD_ID} text"),
+    "board.search_hits": (f"{_TIME} session_keys search_text extended", "node_id session_id"),
+    "prompts.detail": (
+        "all_nodes requested_node requested_session prompt_ts open_end",
+        "text prompt_file project_path input_tokens output_tokens cache_read_tokens cache_creation_tokens "
+        "reply_ms cost_usd calls subagent_calls tool_calls",
+    ),
+    "prompts.turns": (
+        "all_nodes requested_node requested_session requested_agent",
+        "ts text tools model input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd subagent_calls reply_ms",
+    ),
+    "tools.detail": (
+        f"{_TIME} requested_session requested_agent requested_tool_name query_mode restrict_sessions session_keys real_calls inclusive_end "
+        "requested_skill restrict_tools requested_tools",
+        f"{_BOARD_ID} row_type total ts tool tool_name target project_path duration_ms is_error confirm input_bytes output_bytes result_summary exit_code",
+    ),
+    "requests.errors": (
+        f"{_TIME} requested_session requested_agent requested_model requested_error restrict_error restrict_sessions session_keys",
+        f"{_BOARD_ID} ts error_type http_status",
+    ),
+    "tools.totals": (
+        "all_nodes requested_node requested_session requested_agent",
+        "tool_name calls failures timed durations input_bytes input_count output_bytes output_count max_output_bytes total_duration last_ts",
+    ),
+    "sessions.commits": (f"{_SCOPE} requested_session", "sha author_name author_email ts subject"),
+    "sessions.commit_counts": ("all_nodes requested_node session_keys", "node_id session_id count"),
+    "skills.agents": ("all_nodes requested_node requested_session requested_agent", "name uses agents started_by first_ts last_ts"),
+    "skills.detail": (
+        f"{_TIME} requested_skill requested_tools restrict_tools query_mode session_keys",
+        f"{_BOARD_ID} row_type ts tool project_path trigger uses agents total first_ts last_ts projects",
+    ),
+    "board.activity_facts": ("all_nodes requested_node", "tool fact"),
+    "board.sources": ("all_nodes requested_node", "tool source last_ts"),
+    "prompts.files": (f"{_TIME} restrict_sessions session_keys", "node_id session_id path project_path uses last_ts"),
+    "requests.records": (
+        f"{_SCOPE} requested_session example_limit",
+        "row_type ts session_id model input_tokens output_tokens duration_ms is_error error_type http_status finish_reason "
+        "calls errors times timed",
+    ),
+    "sequence.flow": (f"{_TIME} requested_session keep_text text_floor", "row_type values"),
+    "sequence.stamp": (f"{_TIME} requested_session", "versions newest in_window"),
+    "sequence.event_log": (f"{_TIME} requested_session requested_tool requested_pid requested_kinds",
+                           "ts tool kind detail session_id pid"),
+    "sequence.pid_sessions": (f"{_TIME} requested_pid", "node_id session_id"),
+    "sequence.skills": (f"{_TIME} requested_session", "row_type values"),
+    "sequence.evidence": (
+        f"{_TIME} requested_session keep_text text_floor evidence_filters search_terms context_group "
+        "page_offset include_detail include_spans", "data",
+    ),
+    "sequence.otel": (f"{_TIME} requested_session", "row_type values"),
+    "sequence.context": (f"{_TIME} requested_session", "row_type values"),
+    "files.changes": (
+        f"{_TIME} requested_session session_keys restrict_sessions requested_paths",
+        "node_id path project_path session_id edits agents added removed last_ts tool",
+    ),
+    "files.inventory": (
+        f"{_TIME} requested_tool requested_path requested_paths inventory_mode",
+        "node_id path tool category scope size_bytes tokens lines mtime meta last_changed",
+    ),
+    "files.session_inventory": ("all_nodes requested_node requested_tool requested_path", "path"),
+    "files.artifacts": (
+        f"{_TIME} session_keys counts_only", "row_type node_id session_id values",
+    ),
+    "files.recorded": (f"{_TIME} requested_paths", "found"),
+    "files.detail": (
+        f"{_TIME} requested_path keep_text edit_limit",
+        "row_type node_id ts session_id detail source_event_id input content found_blob",
+    ),
+    "files.recent_writes": (f"{_TIME}", "ts session_id tool tool_name path"),
+    "context.daily": (
+        f"{_TIME} calendar_starts calendar_days requested_tools restrict_tools",
+        "node_id day model calls input output cache_read cache_write stored ri ro rcr rcw last_ts",
+    ),
+    "context.growth": (f"{_TIME} growth_points calendar_bins", "node_id ts mem_tokens memory_entries"),
+    "context.telemetry": (f"{_TIME}", "node_id ts tool source confidence"),
+    "sessions.search": (
+        f"{_TIME} restrict_tools requested_tools search_text moving_sessions page_offset page_size",
+        "row_type total node_id session_id data",
+    ),
+}
+_PARAMETER_TYPES = {
+    "include_unreported": bool,
+    "ascending": bool,
+    "all_nodes": bool,
+    "without_requests": bool,
+    "fold_project": bool,
+    "restrict_tools": bool,
+    "restrict_sessions": bool,
+    "preview": bool,
+    "real_calls": bool,
+    "inclusive_end": bool,
+    "restrict_error": bool,
+    "extended": bool,
+    "raw_session": bool,
+    "keep_text": bool,
+    "include_detail": bool,
+    "include_spans": bool,
+    "calendar_bins": bool,
+    "counts_only": bool,
+    "since": float,
+    "until": float,
+    "text_floor": float,
+    "prompt_ts": float,
+    "open_end": float,
+    "node_limit": int,
+    "session_limit": int,
+    "grid": int,
+    "min_tokens": int,
+    "example_limit": int,
+    "growth_points": int,
+    "edit_limit": int,
+    "page_size": int,
+    "requested_pid": int,
+    "requested_kinds": list,
+    "requested_models": list,
+    "requested_tools": list,
+    "session_keys": list,
+    "requested_paths": list,
+    "moving_sessions": list,
+    "search_terms": list,
+    "calendar_days": list,
+    "pids": tuple,
+}
+_MAX_ROWS = 20_000
+
+
+def _parameter(name: str, value: Any) -> str:
+    if name == "tag_filter" and isinstance(value, (tuple, list)) and all(
+        isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(s, str) for s in item)
+        for item in value
+    ):
+        return f"dynamic({json.dumps(value)})"
+    if name == "page_offset" and type(value) is int and 0 <= value <= 20_000:
+        return str(value)
+    if name == "calendar_starts" and isinstance(value, (tuple, list)) and all(
+        type(item) in (float, int) and math.isfinite(item) for item in value
+    ):
+        return f"dynamic({json.dumps(value)})"
+    if name == "evidence_filters" and isinstance(value, Mapping) and all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        return f"dynamic({json.dumps(dict(value))})"
+    if name == "intervals":
+        if isinstance(value, (tuple, list)) and all(
+            isinstance(item, (tuple, list)) and len(item) == 4 and
+            all(isinstance(s, str) for s in item[:2]) and
+            all(type(t) in (float, int) and math.isfinite(t) for t in item[2:])
+            for item in value
+        ):
+            return f"dynamic({json.dumps(value)})"
+        raise ValueError("intervals must contain a node, session and two finite timestamps")
+    expected = _PARAMETER_TYPES.get(name, str)
+    if expected is float and type(value) in (float, int) and math.isfinite(value):
+        return str(float(value))
+    if expected is int and type(value) is int and 1 <= value < 2**63:
+        return str(value)
+    if expected is bool and type(value) is bool:
+        return "true" if value else "false"
+    if expected is list and isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+        return f"dynamic({json.dumps(value)})"
+    if expected is tuple and isinstance(value, (list, tuple)) and all(type(item) is int for item in value):
+        return f"dynamic({json.dumps(value)})"
+    if expected is str and isinstance(value, str):
+        return value
+    raise ValueError(f"{name} must be a valid {expected.__name__} parameter")
+
+
+@lru_cache
+def _query(view: str) -> str:
+    return files(__package__).joinpath("queries", view + ".kql").read_text(encoding="utf-8").strip()
+
+
+class KustoReader:
+    def __init__(self, client: Any, database: str, *, settings=None) -> None:
+        self._client = client
+        self._database = database
+        self._settings = settings
+        self._lock = threading.Lock()
+        self._queries = 0
+        self._failures = 0
+        self._last_latency_ms: float | None = None
+        self._error: str | None = None
+
+    def connection_info(self):
+        if self._settings is not None:
+            return self._settings
+        from ...kusto import kusto_settings
+        from .client import KustoClientFactory
+
+        # A replay reader must not inherit the daemon's destination.
+        with KustoClientFactory._lock:
+            if not any(self._client is client for client in KustoClientFactory._clients.values()):
+                return None
+        settings = kusto_settings()
+        if settings is not None and settings.database == self._database:
+            return settings
+        return None
+
+    def health_metadata(self):
+        from .health_metadata import HealthMetadata
+
+        settings = self.connection_info()
+        return HealthMetadata.initialized(settings) if settings is not None else None
+
+    def cluster_resources(self, previous):
+        from .health_metrics import read_cluster_metrics
+
+        return read_cluster_metrics(self.connection_info(), previous)
+
+    def live_feed(self):
+        from .live_reader import shared_reader
+
+        settings = self.connection_info()
+        return shared_reader(settings) if settings is not None else None
+
+    def transport_diagnostics(self, writer):
+        from .ingest import INLINE_MAX_BYTES, QUEUED_MAX_BYTES, QUEUED_PENDING_ROWS, STREAMING_MAX_BYTES
+        from .otel_sink import LINGER_S, MAX_PENDING_BYTES
+
+        return {
+            "reads": getattr(self._client, "reads", None),
+            "commands": getattr(self._client, "commands", None),
+            "ingester": getattr(writer, "_ingester", None),
+            "client_limits": {
+                "inline_max_bytes": INLINE_MAX_BYTES,
+                "streaming_max_bytes": STREAMING_MAX_BYTES,
+                "queued_max_bytes": QUEUED_MAX_BYTES,
+                "queued_pending_rows": QUEUED_PENDING_ROWS,
+                "otel_linger_s": LINGER_S,
+                "otel_max_pending_bytes": MAX_PENDING_BYTES,
+            },
+        }
+
+    def capabilities(self) -> dict[str, Any]:
+        return {
+            "views": {name: {"fields": fields.split()} for name, (_, fields) in _VIEWS.items()},
+            "topics": [],
+            "detail_routes": [],
+            "change_feed": False,
+            "query_languages": ["kql"],
+        }
+
+    def read(self, view: str, params: Mapping[str, Any]) -> ReadResult:
+        from azure.kusto.data import ClientRequestProperties
+
+        if view not in _VIEWS:
+            raise UnknownViewError(f"Unknown Kusto view {view!r}")
+        names, _ = _VIEWS[view]
+        allowed = names.split()
+        if unexpected := params.keys() - {*allowed, "limit"}:
+            raise ValueError(f"{view}: unexpected parameters: {', '.join(sorted(unexpected))}")
+        limit = params.get("limit", 100)
+        if type(limit) is not int or not 1 <= limit <= _MAX_ROWS:
+            raise ValueError(f"{view}: limit must be an integer from 1 to {_MAX_ROWS}")
+        props = ClientRequestProperties()
+        props.set_option(ClientRequestProperties.request_timeout_option_name, QUERY_TIMEOUT)
+        props.set_option("request_readonly", True)
+        if view == "nodes.reports":
+            props.client_request_id = f"aictl.NodeView;{uuid.uuid4()}"
+            props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=15))
+            props.set_option("request_readonly_hardline", True)
+            props.set_option("deferpartialqueryfailures", False)
+            props.set_option("query_fanout_threads_percent", 1)
+            props.set_option("max_memory_consumption_per_query_per_node", 128 * 1024**2)
+        for key, value in params.items():
+            if key != "limit":
+                props.set_parameter(key, _parameter(key, value))
+        props.set_parameter("row_limit", str(limit + 1))
+
+        start = time.monotonic()
+        error = None
+        try:
+            text = _query(view)
+            response = retrying(lambda: self._client.execute_query(self._database, text, props), f"read {view}")
+            if getattr(response, "errors_count", 0):
+                raise StoreError("Kusto returned an incomplete result")
+            tables = response.primary_results
+            if not tables:
+                return ReadResult([])
+            table = tables[0]
+            names = tuple(c.column_name for c in table.columns)
+            real = {c.column_name for c in table.columns if c.column_type == "real"}
+            rows = [
+                {name: None if name in real and (value == "NaN" or isinstance(value, float) and not math.isfinite(value))
+                 else value for name, value in zip(names, row, strict=True)}
+                for row in islice(table, limit + 1)
+            ]
+            return ReadResult(rows[:limit], truncated=len(rows) > limit)
+        except Exception as exc:  # noqa: BLE001 - treat SDK and transport errors as read failures
+            error = str(exc)
+            if view == "nodes.reports":
+                error = f"{error} (client request ID: {props.client_request_id})"
+            raise StoreError(f"Kusto view {view} failed: {error}") from exc
+        finally:
+            with self._lock:
+                self._queries += 1
+                self._failures += error is not None
+                self._error = error
+                self._last_latency_ms = (time.monotonic() - start) * 1000
+
+    def health(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "status": "unavailable" if self._error is not None else "ready" if self._queries else "not checked",
+                "queries": self._queries,
+                "query_failures": self._failures,
+                "last_latency_ms": self._last_latency_ms,
+                "last_error": self._error,
+            }

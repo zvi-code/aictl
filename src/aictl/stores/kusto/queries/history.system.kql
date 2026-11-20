@@ -1,0 +1,9 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20, row_limit:long);
+system_snapshots
+| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+| summarize arg_max(_v, *) by node_id, ['project'], ts
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| order by ts asc, node_id asc, ['project'] asc
+| take row_limit
+| project ts, files, tokens, cpu=cpu_percent, mem_mb=memory_used_mb, mcp, mem_tokens, memory_entries,
+          live_sessions, live_tokens, live_in_rate, live_out_rate

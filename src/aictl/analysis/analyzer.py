@@ -16,7 +16,7 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-from ..storage import EventRow
+from ..records import EventRow
 from .session_id import SessionIdentity, resolve_session_id
 from .transcript import Action, ActionKind, SessionTranscript, Turn
 

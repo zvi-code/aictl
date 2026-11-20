@@ -12,14 +12,17 @@ from __future__ import annotations
 import functools
 import logging
 import re
-import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlsplit
 
+if TYPE_CHECKING:
+    import sqlite3
+
 log = logging.getLogger(__name__)
+SQLITE_UNAVAILABLE = "unavailable: Python sqlite3 module missing"
 
 
 def open_readonly(db_path: Path, log_prefix: str) -> sqlite3.Connection | None:
@@ -33,6 +36,8 @@ def open_readonly(db_path: Path, log_prefix: str) -> sqlite3.Connection | None:
     """
     if not db_path.exists():
         return None
+    import sqlite3
+
     try:
         return sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro&immutable=1", uri=True, timeout=1.0)
     except sqlite3.Error as exc:
@@ -63,15 +68,8 @@ def record_quality(
                 source=str(source),
                 detail=detail,
             )
-        except sqlite3.OperationalError as exc:
-            # A health row must never stop the ingester that reports it.
-            writes = store.active_writes() if hasattr(store, "active_writes") else []
-            log.warning(
-                "Cannot record health of %s: %s. Writes running in this process: %s",
-                ingester_id,
-                exc,
-                ", ".join(writes) or "none",
-            )
+        except Exception as exc:  # noqa: BLE001 - health reporting must not stop ingestion
+            log.warning("Cannot record health of %s: %s", ingester_id, exc)
 
 
 def decode_file_uri(value: str) -> str:
@@ -174,30 +172,3 @@ def coerce_ts(raw: Any) -> float:
         except ValueError:
             return 0.0
     return 0.0
-
-
-def writer_conn(store: Any) -> Any:
-    """The connection for an ingester's own tables and watermarks.
-
-    A history split by project keeps them in its machine store: this connection
-    writes there and never holds project store files open.
-    """
-    return getattr(store, "machine", store)._conn()
-
-
-def session_tool(store: Any, session_id: str) -> str | None:
-    """The tool of a stored session, or None. A split history looks in that session's store."""
-    from ..kusto.observations import retains_unresolved_facts
-
-    if retains_unresolved_facts(store):
-        return None  # The source supplies attribution; unknown is retained without a lookup.
-    row = store.get_session(session_id)
-    return str(row.get("tool") or "") if row else None
-
-
-def provision_session(store: Any, provisioned: set[str], row: Any) -> None:
-    """Create a placeholder session once per process; a known one is left as it is."""
-    if row.session_id in provisioned:
-        return
-    store.upsert_session(row)
-    provisioned.add(row.session_id)

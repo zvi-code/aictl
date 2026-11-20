@@ -21,7 +21,7 @@ from aictl.analysis.transcript import (
     TranscriptSummary,
     Turn,
 )
-from aictl.storage import EventRow
+from aictl.records import EventRow
 
 # ══════════════════════════════════════════════════════════════
 # session_id tests

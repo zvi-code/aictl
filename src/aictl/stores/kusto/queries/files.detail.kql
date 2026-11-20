@@ -1,0 +1,53 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_path:string,
+    since:real=0.0, until:real=1.0e20, keep_text:bool=true, edit_limit:long=200, row_limit:long);
+let edits = materialize(file_write_events
+    | where all_nodes or node_id == requested_node
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)) and path == requested_path and ts between (since .. until)
+    | order by ts desc,node_id asc,key asc
+    | take edit_limit);
+let source_edits = edits | where keep_text and isnotempty(source_event_id) | distinct node_id,source_event_id;
+let matching_tools = materialize(tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)) and ts <= until
+    | join kind=leftsemi source_edits on node_id,source_event_id
+    | summarize arg_max(ts, *) by node_id,source_event_id);
+let tool_text = union isfuzzy=true
+    (datatable(['project']:string,node_id:string,dedup_key:string,_v:datetime,input:string,_deleted:bool)[]),
+    (tool_invocations_text | project ['project'],node_id,dedup_key,_v,input,_deleted=column_ifexists('_deleted',false))
+    | where keep_text and (all_nodes or node_id == requested_node) and dedup_key in (matching_tools | project dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,dedup_key
+    | where not(_deleted)
+    | project ['project'],node_id,key=dedup_key,retained_input=input;
+let inputs = matching_tools | join kind=leftouter tool_text on ['project'],node_id,key
+    | project node_id,source_event_id,input=coalesce(retained_input,column_ifexists('input',''));
+let revisions = materialize(file_history
+    | where keep_text and not(all_nodes) and node_id == requested_node and path == requested_path and ts <= until
+    | summarize arg_max(_v, *) by ['project'],node_id,path,ts
+    | where not(column_ifexists('_deleted',false))
+    | order by ts desc,['project'] asc | take 2);
+let blobs = file_blobs
+    | where keep_text and not(all_nodes) and node_id == requested_node and hash in (revisions | project blob_hash)
+    | summarize arg_max(_v, *) by ['project'],node_id,hash
+    | where not(column_ifexists('_deleted',false)) and created_at <= until
+    | project ['project'],node_id,blob_hash=hash,blob_content=content,found_blob=true;
+let texts = union isfuzzy=true
+    (datatable(['project']:string,node_id:string,path:string,ts:real,_v:datetime,content:string,_deleted:bool)[]),
+    (file_history_text | project ['project'],node_id,path,ts,_v,content,_deleted=column_ifexists('_deleted',false))
+    | where keep_text and not(all_nodes) and node_id == requested_node and path == requested_path and ts <= until
+    | summarize arg_max(_v, *) by ['project'],node_id,path,ts
+    | where not(_deleted)
+    | project ['project'],node_id,path,ts,retained_content=content;
+union
+    (edits | join kind=leftouter inputs on node_id,source_event_id
+        | project row_type='edit',node_id,ts,session_id,detail,source_event_id,input,key),
+    (revisions | join kind=leftouter blobs on ['project'],node_id,blob_hash
+        | join kind=leftouter texts on ['project'],node_id,path,ts
+        | project row_type='revision',node_id,ts,content=iff(coalesce(found_blob,false),blob_content,
+            coalesce(retained_content,column_ifexists('content',''))),found_blob)
+| order by row_type asc,ts desc,node_id asc,key asc
+| take row_limit
+| project-away key

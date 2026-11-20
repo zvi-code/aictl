@@ -1,0 +1,28 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
+    session_keys:dynamic, counts_only:bool=false, row_limit:long);
+let index_rows = materialize(session_artifacts
+    | where (all_nodes or node_id == requested_node) and strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
+    | summarize arg_max(_v, *) by ['project'],node_id,session_id,path
+    | where not(column_ifexists('_deleted',false)) and (isnull(mtime) or mtime between (since .. until)));
+let folder_rows = session_folders
+    | where (all_nodes or node_id == requested_node) and strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
+    | summarize arg_max(_v, *) by ['project'],node_id,session_id
+    | where not(column_ifexists('_deleted',false)) and (isnull(scanned_at) or scanned_at between (since .. until));
+let writes = file_write_events
+    | where (all_nodes or node_id == requested_node) and strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false)) and ts between (since .. until)
+    | summarize writes=count(), first_ts=min(ts), last_ts=max(ts), size=max(size_bytes) by node_id,session_id,path;
+let indexed = index_rows | summarize indexed=count_distinct(path) by node_id,session_id;
+union
+    (index_rows | where not(counts_only)
+        | project row_type='index',node_id,session_id,path,values=pack_array(path,folder,size_bytes,mtime)),
+    (folder_rows | summarize files_total=sum(files_total),bytes_total=sum(bytes_total) by node_id,session_id
+        | join kind=leftouter indexed on node_id,session_id
+        | project row_type='folder',node_id,session_id,values=pack_array(files_total,bytes_total,coalesce(indexed,0))),
+    (writes | join kind=leftouter (index_rows | distinct node_id,session_id,path | extend in_index=true) on node_id,session_id,path
+        | project row_type='write',node_id,session_id,path,values=pack_array(path,writes,first_ts,last_ts,size,coalesce(in_index,false)))
+| order by node_id asc,session_id asc,row_type asc,path asc
+| take row_limit
+| project row_type,node_id,session_id,values

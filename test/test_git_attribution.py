@@ -20,13 +20,16 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from kusto_replay import NOW
 
 from aictl.analysis.git_attribution import (
-    attribute_session,
     commits_in_window,
     is_reachable,
 )
-from aictl.storage import HistoryDB, SessionRow
+from aictl.session_evidence import SessionEvidence
+from aictl.session_facts import SessionFacts
+from aictl.stores import Store
+from aictl.stores.testing import MemoryWriter
 
 
 def _git(cwd: Path, *args: str, env: dict | None = None) -> None:
@@ -135,81 +138,44 @@ def test_is_reachable_false_for_missing(tmp_repo: Path) -> None:
     assert is_reachable(tmp_repo, "deadbeef", "") is False
 
 
-def test_session_commits_migration_and_storage(tmp_path: Path) -> None:
-    db = HistoryDB(db_path=str(tmp_path / "mig.db"), flush_interval=0)
-    # Table exists and helpers work.
-    db.upsert_session_commits(
-        "sess-x",
-        [
-            {
-                "sha": "abc123",
-                "author_name": "A",
-                "author_email": "a@e",
-                "ts": 100.0,
-                "subject": "first",
-            },
-            {
-                "sha": "def456",
-                "author_name": "B",
-                "author_email": "b@e",
-                "ts": 200.0,
-                "subject": "second",
-            },
-        ],
-    )
-    assert db.count_session_commits("sess-x") == 2
-    rows = db.get_session_commits("sess-x")
-    assert [r["sha"] for r in rows] == ["abc123", "def456"]
-
-    # Idempotent on duplicate sha.
-    db.upsert_session_commits(
-        "sess-x",
-        [{"sha": "abc123", "author_name": "A", "author_email": "a@e", "ts": 100.0, "subject": "first"}],
-    )
-    assert db.count_session_commits("sess-x") == 2
-    db.close()
-
-
-def test_attribute_session_persists(tmp_repo: Path, tmp_path: Path) -> None:
+def test_attribute_session_persists(tmp_repo: Path) -> None:
     now = time.time()
     _commit_at(tmp_repo, "one", now - 120)
     _commit_at(tmp_repo, "two", now - 60)
-    db = HistoryDB(db_path=str(tmp_path / "attr.db"), flush_interval=0)
-    commits = attribute_session(db, "sess-1", tmp_repo, now - 180, now)
-    assert len(commits) == 2
-    assert db.count_session_commits("sess-1") == 2
-    db.close()
+    writer = MemoryWriter()
+    SessionEvidence(SessionFacts(writer)).commits("sess-1", str(tmp_repo), now - 180, now)
+    assert {row["subject"] for row in writer.written("session_commits")} == {"one", "two"}
+    assert {row["session_id"] for row in writer.written("session_commits")} == {"sess-1"}
 
 
 # ── API endpoint ──────────────────────────────────────────────────
 
 
 @pytest.fixture()
-def api_server(tmp_repo: Path, tmp_path: Path):
+def api_server(tmp_repo: Path, tmp_path: Path, kusto_store):
     from pathlib import Path as _P
 
     from aictl.dashboard.models import DashboardSnapshot
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore
 
-    now = time.time()
+    now = NOW
     _commit_at(tmp_repo, "alpha", now - 300)
     _commit_at(tmp_repo, "beta", now - 200)
 
-    db = HistoryDB(db_path=str(tmp_path / "api.db"), flush_interval=0)
-    db.upsert_session(
-        SessionRow(
-            session_id="sess-api",
-            tool="claude-code",
-            project_path=str(tmp_repo),
-            git_branch="main",
-            started_at=now - 360,
-            source="test",
-        )
+    writer = MemoryWriter()
+    kusto_store.insert(
+        "sessions",
+        session_id="sess-api",
+        tool="claude-code",
+        project_path=str(tmp_repo),
+        git_branch="main",
+        started_at=now - 360,
+        ended_at=now - 60,
+        source="test",
     )
-    db.update_session_end("sess-api", ended_at=now - 60)
 
-    store = SnapshotStore(db=db)
+    store = SnapshotStore(history_store=Store(reader=kusto_store.history_store.reader, writer=writer))
     store.update(DashboardSnapshot(timestamp=now, root=str(tmp_repo), tools=[], sessions=[]))
     srv = _DashboardHTTPServer(
         ("127.0.0.1", 0),
@@ -221,13 +187,13 @@ def api_server(tmp_repo: Path, tmp_path: Path):
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-    yield f"http://127.0.0.1:{port}", db
+    yield f"http://127.0.0.1:{port}", writer
     srv.shutdown()
-    db.close()
+    srv.server_close()
 
 
 def test_session_commits_endpoint(api_server) -> None:
-    base, db = api_server
+    base, writer = api_server
     with urllib.request.urlopen(base + "/api/session-commits?session_id=sess-api", timeout=5) as r:
         data = json.loads(r.read())
     assert data["session_id"] == "sess-api"
@@ -239,7 +205,7 @@ def test_session_commits_endpoint(api_server) -> None:
     # Both commits are reachable from main (they were committed on main).
     assert all(x["current_branch_match"] for x in data["commits"])
     # Lazy attribution persisted to DB.
-    assert db.count_session_commits("sess-api") == 2
+    assert len(writer.written("session_commits")) == 2
 
 
 def test_session_commits_endpoint_missing_sid(api_server) -> None:

@@ -15,27 +15,25 @@ import time
 import pytest
 
 from aictl.analysis.mcp_usage import configured_servers, session_mcp_calls
-from aictl.storage import EventRow, HistoryDB
+from aictl.stores.base import ReadResult
 
 
 @pytest.fixture()
-def db(tmp_path):
-    h = HistoryDB(db_path=str(tmp_path / "aictl.db"), flush_interval=0)
-    yield h
-    h.close()
+def db():
+    class Reader:
+        rows = []
+
+        def read(self, view, params):
+            assert view == "events.page"
+            rows = [r for r in self.rows if r["session_id"] == params["requested_session"]]
+            return ReadResult(rows[:params["row_limit"]])
+
+    return Reader()
 
 
 def _ev(db, *, session_id, kind, detail, ts=None):
-    db.append_event(
-        EventRow(
-            ts=ts if ts is not None else time.time(),
-            tool="copilot-vscode",
-            kind=kind,
-            detail=detail,
-            session_id=session_id,
-            pid=0,
-        )
-    )
+    db.rows.append(dict(ts=ts if ts is not None else time.time(), tool="copilot-vscode",
+                        kind=kind, detail=json.dumps(detail), session_id=session_id, pid=0))
 
 
 def test_aggregates_calls_by_server(db):
@@ -47,7 +45,6 @@ def test_aggregates_calls_by_server(db):
         detail={"aictl.mcp.server": "github", "duration_ms": 7.5}, ts=base + 10)
     _ev(db, session_id=sid, kind="otel:mcp.tool.call",
         detail={"mcp.server": "filesystem", "duration_ms": 3.0, "is_error": True}, ts=base + 20)
-    db.flush()
     servers = session_mcp_calls(db, sid)
     by_name = {s["server_name"]: s for s in servers}
     assert "github" in by_name
@@ -64,7 +61,6 @@ def test_extracts_from_service_name_prefix(db):
     sid = "sess-2"
     _ev(db, session_id=sid, kind="otel:mcp.tool.call",
         detail={"service.name": "mcp:memory"})
-    db.flush()
     servers = session_mcp_calls(db, sid)
     assert servers and servers[0]["server_name"] == "memory"
 
@@ -74,7 +70,6 @@ def test_ignores_non_mcp_events(db):
     _ev(db, session_id=sid, kind="otel:claude_code.api_request",
         detail={"model": "claude-opus"})
     _ev(db, session_id=sid, kind="hook:UserPromptSubmit", detail={"prompt": "hi"})
-    db.flush()
     assert session_mcp_calls(db, sid) == []
 
 

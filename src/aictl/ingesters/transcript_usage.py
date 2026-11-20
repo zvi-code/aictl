@@ -39,20 +39,19 @@ import json
 import logging
 import os
 import socket
-import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
-from ..storage import AgentRow, RequestRow, SessionRow, is_lock_error
-from ._common import coerce_ts, decode_file_uri, open_readonly, project_root, record_quality, writer_conn
+from ..state_file import StateFile
+from ._common import SQLITE_UNAVAILABLE, coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
 from .call_facts import (
     ClaudeFacts,
     CopilotFacts,
@@ -67,6 +66,9 @@ from .call_facts import (
 from .transcript_tail import records
 from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
 from .vscode_chat_logs import snapshot_events
+
+if TYPE_CHECKING:
+    import sqlite3
 
 log = logging.getLogger(__name__)
 
@@ -695,6 +697,7 @@ class CopilotStoreReader:
         self.app_totals: dict[str, tuple] = {}
         self._last_id = 0
         self._data_sig: tuple[float, int] | None = None
+        self.unavailable = ""
 
     def surface(self, session_id: str) -> str:
         kind = self.app_types.get(session_id)
@@ -704,6 +707,12 @@ class CopilotStoreReader:
         """Add new rows and return the ids of sessions that changed."""
         touched: set[str] = set()
         self._read_app_sessions(touched)
+        try:
+            import sqlite3
+        except ImportError:
+            self.unavailable = SQLITE_UNAVAILABLE
+            return touched
+        self.unavailable = ""
         conn = open_readonly(self.store_path, "transcript-usage")
         if conn is None:
             return touched
@@ -744,6 +753,8 @@ class CopilotStoreReader:
         return touched
 
     def _add_call_fact(self, conn: sqlite3.Connection, sid: str, model: Any, tokens: tuple, ts: float, call: list) -> None:
+        from ..records import AgentRow, RequestRow
+
         """One row per call. The key matches the events file's, so a call in both stays one row."""
         if self.facts is None:
             return
@@ -810,6 +821,11 @@ class CopilotStoreReader:
             return
         sig = (st.st_mtime, st.st_size)
         if sig == self._data_sig:
+            return
+        try:
+            import sqlite3
+        except ImportError:
+            self.unavailable = SQLITE_UNAVAILABLE
             return
         conn = open_readonly(self.data_path, "transcript-usage")
         if conn is None:
@@ -1031,8 +1047,15 @@ class TranscriptUsageIngester:
         vscode_workspaces: Path | None = None,
         backfill_days: float = BACKFILL_DAYS,
         defer_old: bool = False,
+        tool_calls=None,
+        fact_target=None,
+        checkpoint: StateFile | None = None,
+        quality=None,
     ) -> None:
         self.store = our_store
+        self.quality = our_store if quality is None else quality
+        self._fact_target = our_store if fact_target is None else fact_target
+        self._checkpoint = checkpoint
         # The daemon's ingester defers the old files of a first run; a backfill or a
         # command reads every file in one pass.
         self.defer_old = defer_old
@@ -1042,7 +1065,7 @@ class TranscriptUsageIngester:
         # With its default folders, the reader also follows the homes found on this machine.
         self._discover = not (claude_projects or codex_sessions or copilot_state)
         self.vscode_workspaces = vscode_workspaces or vscode_chat_default_log_dir()
-        self.facts = FactBuffer(our_store, time.time() - backfill_days * 86400)
+        self.facts = FactBuffer(self._fact_target, time.time() - backfill_days * 86400, tool_calls=tool_calls)
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
         self.facts.surface = self._store.surface
         self._claude_facts = ClaudeFacts(self.facts)
@@ -1110,37 +1133,30 @@ class TranscriptUsageIngester:
                     observer(path, tool)
 
     def _load_checkpoints(self) -> dict[Path, tuple[int, int]]:
-        if not callable(getattr(getattr(self.store, "machine", self.store), "_conn", None)):
+        if self._checkpoint is None:
             return {}
         try:
-            row = (
-                writer_conn(self.store)
-                .execute("SELECT text, value FROM maintenance_state WHERE key = ?", (self._checkpoint_key,))
-                .fetchone()
-            )
-            saved = json.loads(row[0]) if row and row[0] else {}
+            entry = self._checkpoint.read().get(self._checkpoint_key, {})
+            saved = entry.get("files", {})
             checkpoints = {Path(path): (int(mtime), int(size)) for path, (mtime, size) in saved.items()}
-            self._resume_before = float(row[1]) - RESTART_GRACE_S if row else 0.0
+            self._resume_before = float(entry["ts"]) - RESTART_GRACE_S if entry else 0.0
             return checkpoints
-        except (sqlite3.Error, ValueError, TypeError, AttributeError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
             log.warning("transcript-usage: checkpoints unavailable; source files will be read again: %s", exc)
             return {}
 
     def _save_checkpoints(self, ts: float) -> None:
-        if not callable(getattr(getattr(self.store, "machine", self.store), "_conn", None)):
+        if self._checkpoint is None or not self._read_complete:
             return
         cutoff_ns = int((ts - self.backfill_days * 86400) * 1e9)
         self._checkpoints = {p: sig for p, sig in self._checkpoints.items() if sig[0] >= cutoff_ns}
         self._checkpoints.update(self._read_complete)
-        self._read_complete.clear()
         try:
-            conn = writer_conn(self.store)
-            conn.execute(
-                "INSERT OR REPLACE INTO maintenance_state(key, value, text) VALUES(?,?,?)",
-                (self._checkpoint_key, ts, json.dumps({str(p): sig for p, sig in self._checkpoints.items()})),
-            )
-            conn.commit()
-        except (sqlite3.Error, AttributeError) as exc:
+            self._checkpoint.replace({self._checkpoint_key: {
+                "ts": ts, "files": {str(p): sig for p, sig in self._checkpoints.items()},
+            }})
+            self._read_complete.clear()
+        except OSError as exc:
             log.warning("transcript-usage: checkpoints not saved; the next poll will retry: %s", exc)
 
     def _changed(self, paths: Iterable[Path], cutoff: float) -> list[Path]:
@@ -1330,9 +1346,8 @@ class TranscriptUsageIngester:
         self._claude_facts.flush_open_agents()
         self.facts.flush(retry=False)
         self._check_fact_write()
-        clear_stale = getattr(self.store, "clear_stale_pending_confirms", None)
-        if clear_stale is not None:
-            clear_stale(now - PENDING_CONFIRM_MAX_AGE_S)
+        if self.facts.tool_calls is not None:
+            self.facts.tool_calls.expire(now - PENDING_CONFIRM_MAX_AGE_S)
         self._persist(touched.values(), now, published)
         written = len(published)
         self.last_poll_ts = now
@@ -1342,18 +1357,20 @@ class TranscriptUsageIngester:
         if not pending:
             touched.clear()
             self._save_checkpoints(now)
+        self.unavailable = self._store.unavailable
         record_quality(
-            self.store,
+            self.quality,
             "transcript-usage",
             self.claude_projects.parent,
-            "degraded" if errors or pending else "ok",
-            severity="warning" if errors or pending else "info",
+            "unavailable" if self.unavailable else "degraded" if errors or pending else "ok",
+            severity="warning" if self.unavailable or errors or pending else "info",
             message=(
-                f"{pending} fact row(s) waiting for storage"
+                self.unavailable
+                or (f"{pending} fact row(s) waiting for storage"
                 if pending
                 else f"{errors} transcript file(s) unreadable"
                 if errors
-                else f"{written} session(s) updated"
+                else f"{written} session(s) updated")
             ),
             detail={"older_files_waiting": len(self._deferred), "pending_fact_rows": pending},
         )
@@ -1399,17 +1416,12 @@ class TranscriptUsageIngester:
 
     def _mark_desktop_sessions(self) -> None:
         """A session's rows may predate the app's listing of it, so correct them once."""
-        setter = getattr(self.store, "set_sessions_tool", None)
+        attribute = getattr(self._fact_target, "attribution", None)
         new = [s for s in self._store.app_types if s not in self._desktop_marked and self._store.surface(s) == "copilot-desktop"]
-        if setter is not None and new:
-            try:
-                setter(new, "copilot-desktop")
-            except sqlite3.OperationalError as exc:
-                if not is_lock_error(exc):
-                    raise
-                # Not marked: the next poll tries again.
-                log.debug("Copilot desktop sessions not marked yet, store busy: %s", exc)
-                return
+        if attribute is not None and new:
+            attribute(new, "copilot-desktop")
+            if self.facts.tool_calls is not None:
+                self.facts.tool_calls.attribute(new, "copilot-desktop")
             self._desktop_marked.update(new)
 
     def _pick_copilot_source(self, sid: str) -> SessionUsage:
@@ -1450,9 +1462,13 @@ class TranscriptUsageIngester:
             fingerprint = (row, s.git_branch)
             if self._written.get(s.session_id) == fingerprint:
                 continue
-            self.store.upsert_session_usage(row)
+            if self._fact_target is None:
+                continue
+            from ..records import SessionRow
+
+            self._fact_target.upsert_session_usage(row)
             idle = now - s.last_activity_at > IDLE_END_S
-            self.store.upsert_session(
+            self._fact_target.upsert_session(
                 SessionRow(
                     session_id=s.session_id,
                     tool=s.tool,

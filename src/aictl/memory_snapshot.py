@@ -9,8 +9,8 @@ Memory files live at:
   * ``~/.claude/projects/<hash>/memory/*.md`` — per-project learnings
   * ``~/.claude/CLAUDE.md``                    — user-global memory
 
-Snapshots are stored in the ``memory_snapshots`` table (see migration
-``m024_memory_snapshots``).
+The hook publishes each phase from the files on disk. Diff calculation uses
+the two snapshots supplied by its caller.
 """
 
 from __future__ import annotations
@@ -18,8 +18,6 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
-import sqlite3
-import time
 from pathlib import Path
 from typing import Any
 
@@ -86,58 +84,16 @@ def snapshot_claude_memory(
     symmetry but only used by callers that persist the snapshot.
     """
     _ = session_id  # reserved for future per-session scoping
-    result: dict[str, str] = {}
-    for rel, abs_path in _iter_memory_files(project_hash):
-        result[rel] = _sha256(_read_text(abs_path))
-    return result
+    return {rel: _sha256(_read_text(path)) for rel, path in _iter_memory_files(project_hash)}
 
 
-def record_snapshot(
-    conn: sqlite3.Connection,
-    session_id: str,
-    project_hash: str | None,
-    phase: str,
-    ts: float | None = None,
-) -> int:
-    """Read all memory files and write rows to ``memory_snapshots``.
-
-    Returns the number of files snapshotted. Best-effort: swallows any
-    per-file IO error but raises on DB failure so the caller can log.
-    """
-    if phase not in ("start", "end"):
-        raise ValueError(f"phase must be 'start' or 'end', got {phase!r}")
-    now = ts if ts is not None else time.time()
-    rows = []
-    for rel, abs_path in _iter_memory_files(project_hash):
-        content = _read_text(abs_path)
-        rows.append((session_id, phase, rel, _sha256(content), content, now))
-    conn.executemany(
-        "INSERT OR REPLACE INTO memory_snapshots "
-        "(session_id, phase, path, sha, content, ts) VALUES (?,?,?,?,?,?)",
-        rows,
-    )
-    conn.commit()
-    return len(rows)
+Snapshot = tuple[dict[str, str], dict[str, str]]
 
 
-def load_snapshot(
-    conn: sqlite3.Connection, session_id: str, phase: str
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Return ``(shas, contents)`` dicts for one phase of a session."""
-    try:
-        cur = conn.execute(
-            "SELECT path, sha, content FROM memory_snapshots "
-            "WHERE session_id=? AND phase=?",
-            (session_id, phase),
-        )
-    except sqlite3.OperationalError:
-        return {}, {}
-    shas: dict[str, str] = {}
-    contents: dict[str, str] = {}
-    for path, sha, content in cur.fetchall():
-        shas[path] = sha
-        contents[path] = content
-    return shas, contents
+def read_snapshot(project_hash: str | None) -> Snapshot:
+    """Return the hashes and contents of the current files."""
+    contents = {rel: _read_text(path) for rel, path in _iter_memory_files(project_hash)}
+    return {path: _sha256(text) for path, text in contents.items()}, contents
 
 
 def _unified_diff(path: str, before: str, after: str) -> tuple[str, int, int]:
@@ -202,7 +158,7 @@ def diff_snapshots(
 
 
 def build_session_memory_diff(
-    conn: sqlite3.Connection, session_id: str
+    start: Snapshot | None, end: Snapshot | None
 ) -> dict[str, Any]:
     """Return the API-shaped diff payload for one session.
 
@@ -211,10 +167,10 @@ def build_session_memory_diff(
     the UI uses this to render an empty state rather than treating the
     absence as "everything was deleted" (or added).
     """
-    start_shas, start_contents = load_snapshot(conn, session_id, "start")
-    end_shas, end_contents = load_snapshot(conn, session_id, "end")
-    if not start_shas or not end_shas:
+    if start is None or end is None:
         return {"files": [], "summary": {"added": 0, "modified": 0, "removed": 0}}
+    start_shas, start_contents = start
+    end_shas, end_contents = end
     files = diff_snapshots(start_shas, end_shas, start_contents, end_contents)
     summary = {
         "added": sum(1 for f in files if f["change"] == "added"),
@@ -227,7 +183,6 @@ def build_session_memory_diff(
 __all__ = [
     "snapshot_claude_memory",
     "diff_snapshots",
-    "record_snapshot",
-    "load_snapshot",
+    "read_snapshot",
     "build_session_memory_diff",
 ]

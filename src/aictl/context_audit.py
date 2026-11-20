@@ -24,7 +24,6 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 import statistics
 import subprocess
 import tempfile
@@ -1547,6 +1546,13 @@ def _collect_copilot_desktop(inv: _Inventory, findings: list[Finding], path: Pat
     """
     tool = "copilot-desktop"
     try:
+        import sqlite3
+    except ImportError:
+        from .ingesters._common import SQLITE_UNAVAILABLE
+
+        inv.dynamic(tool, f"{path}#unavailable", "app-store", SQLITE_UNAVAILABLE, transient=True)
+        return
+    try:
         conn = sqlite3.connect(f"file:{path}?immutable=1", uri=True, timeout=0.5)
     except sqlite3.Error:
         inv.dynamic(tool, f"{path}#unreadable", "app-store", "The app's database could not be opened read-only", transient=True)
@@ -2167,34 +2173,14 @@ def _claude_transcripts(project: Path) -> list[dict]:
     return out
 
 
-def _db_rows(sql: str, params: tuple) -> list[sqlite3.Row]:
-    """Query history.db read-only when it exists. No DB is a normal state."""
-    path = config_dir() / "history.db"
-    if not path.is_file():
-        return []
-    # A read-only WAL connection can create the -shm file when none exists, so
-    # it opens immutable unless a live writer already made one.
-    query = "mode=ro" if Path(f"{path}-shm").exists() else "immutable=1"
-    try:
-        conn = sqlite3.connect(f"file:{path}?{query}", uri=True, timeout=0.5)
-    except sqlite3.Error:
-        return []
-    try:
-        conn.row_factory = sqlite3.Row
-        return conn.execute(sql, params).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-
-
-def _db_writes(since: float) -> list[dict]:
-    rows = _db_rows("SELECT ts, session_id, tool, tool_name, path FROM file_write_events WHERE ts >= ? ORDER BY ts DESC LIMIT 2000", (since,))
+def _db_writes(since: float, *, history, now: float) -> list[dict]:
+    rows = history.read("files.recent_writes", since=since, until=now, limit=2000, page=True)
     return [{"path": r["path"], "ts": r["ts"], "session_id": r["session_id"], "via": r["tool_name"] or r["tool"]} for r in rows]
 
 
-def _db_loaded_paths() -> list[str]:
-    rows = _db_rows("SELECT detail FROM events WHERE kind = 'hook:InstructionsLoaded' ORDER BY ts DESC LIMIT 500", ())
+def _db_loaded_paths(*, history, now: float) -> list[str]:
+    rows = history.read("sequence.event_log", since=0.0, until=now, requested_kinds=["hook:InstructionsLoaded"],
+                        limit=500, page=True)
     out = []
     for row in rows:
         try:
@@ -2657,6 +2643,7 @@ def run_audit(
     now: float | None = None,
     baseline_file: str | Path | None = None,
     progress: Callable[[str], None] | None = None,
+    history=None,
 ) -> dict:
     """Run every layer and return ``{sources, findings, drift, unattributed, ...}``.
 
@@ -2746,7 +2733,16 @@ def run_audit(
     _drift_findings(drift, findings)
     writes = [w for t in transcripts for w in t["writes"]] + _copilot_session_writes(root)
     baseline_at = entry.get("scanned_at") if entry else None
-    writes += _db_writes(baseline_at if baseline_at is not None else now - 7 * 86400)
+    if history is None:
+        from .dashboard.projections.history import HistoryScope
+        from .kusto import kusto_settings
+        from .stores import local_node_id, open_store, reader_or_empty
+
+        settings = kusto_settings()
+        store = open_store("kusto" if settings else None, settings=settings, read_only=True)
+        history = HistoryScope(reader_or_empty(store.reader), local_node_id())
+    writes += step("stored writes", lambda: _db_writes(
+        baseline_at if baseline_at is not None else now - 7 * 86400, history=history, now=now), [])
     agent_writes = _agent_writes(writes, sources, baseline_at, findings, now)
     if baseline_at is not None:
         _record_events(baseline, drift, agent_writes, now, project_key)
@@ -2758,7 +2754,8 @@ def run_audit(
     _save_baseline(baseline, mode, baseline_file)
     mark = lap("drift", mark)
 
-    loaded = [p for t in transcripts for p in t["loaded"]] + _db_loaded_paths()
+    loaded = [p for t in transcripts for p in t["loaded"]] + step(
+        "stored instruction loads", lambda: _db_loaded_paths(history=history, now=now), [])
     unknown = _unknown_sources(loaded, sources, root, findings)
     _mark_loaded_sessions(sources, transcripts)
     unattributed = _unattributed(transcripts, sources, dynamic_tokens, findings)

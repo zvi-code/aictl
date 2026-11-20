@@ -1,0 +1,14 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+union
+    (requests | where all_nodes or node_id == requested_node
+        | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+        | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | project tool, source, ts),
+    (session_usage | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id
+        | where not(coalesce(column_ifexists('_deleted', false), false))
+        | project tool, source, ts=last_activity_at)
+| summarize last_ts=max(ts) by tool, source
+| order by tool asc, source asc
+| take row_limit

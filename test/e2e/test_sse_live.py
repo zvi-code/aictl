@@ -54,26 +54,12 @@ class SSEReader:
             req = Request(self.url)
             with urlopen(req, timeout=self.timeout) as resp:
                 self._started.set()
-                buf = b""
                 while not self._stop.is_set():
-                    try:
-                        chunk = resp.read(4096)
-                    except TimeoutError:
-                        continue
-                    if not chunk:
+                    line = resp.readline()
+                    if not line:
                         break
-                    buf += chunk
-                    # Parse SSE frames
-                    while b"\n\n" in buf:
-                        frame, buf = buf.split(b"\n\n", 1)
-                        for line in frame.split(b"\n"):
-                            line_str = line.decode("utf-8", errors="replace")
-                            if line_str.startswith("data: "):
-                                try:
-                                    data = json.loads(line_str[6:])
-                                    self.events.append(data)
-                                except json.JSONDecodeError:
-                                    pass
+                    if line.startswith(b"data: "):
+                        self.events.append(json.loads(line[6:]))
         except (OSError, TimeoutError):
             pass
         finally:
@@ -90,9 +76,6 @@ class TestSSEConnection:
             reader.start()
             events = reader.wait_for_events(min_count=1, timeout=10)
             assert len(events) >= 1, "No initial SSE snapshot received"
-            # Initial event should have dashboard summary fields
-            first = events[0]
-            assert "timestamp" in first or "root" in first or "total_files" in first
         finally:
             reader.stop()
 
@@ -138,8 +121,7 @@ class TestSSEDataIntegrity:
             assert len(events) >= 1
             data = events[0]
 
-            # SSE summary should have standard fields
-            expected_fields = {"timestamp", "root"}
+            expected_fields = {"timestamp", "version"}
             present = set(data.keys())
             missing = expected_fields - present
             assert not missing, f"SSE payload missing fields: {missing}"

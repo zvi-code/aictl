@@ -57,7 +57,7 @@ aictl/
 ├── utils.py                # Token estimation, safe writes, overlays
 ├── sink.py                 # Thread-safe metric emission pipeline
 ├── store.py                # In-memory snapshot storage + ring buffers
-├── storage.py              # SQLite time-series persistence (HistoryDB)
+├── records.py              # Typed rows and normalization helpers
 ├── orchestrator.py         # Server lifecycle — wires collectors, server, storage
 ├── client.py               # HTTP client for connecting to running aictl daemon serve
 │
@@ -114,8 +114,7 @@ aictl/
 │   ├── live_protocol.py    #   Kusto live source authority, stable IDs, wire capabilities
 │   ├── live_hub.py         #   Bounded entity state, replay, and client backpressure
 │   ├── live_projection.py  #   Shared history projection and independent operational health
-│   ├── live_queries.py     #   Dependency-invalidated Kusto SELECT-result memo, no SQLite mirror
-│   ├── queryable_context.py #  Queryable history adapter for context/file details
+│   ├── queryable_context.py #  Named store views and projections for context and file details
 │   ├── api_handlers.py     #   REST endpoint handlers (budget, events, kill, …)
 │   ├── analytics.py        #   Cached analytics queries + cache health reporting
 │   ├── otel_receiver.py    #   OTLP metrics/logs/traces parser (defensive)
@@ -345,7 +344,7 @@ The monitoring subsystem provides live observability for active AI tool sessions
                       │
                       ▼
               ┌──────────────┐
-              │  SampleSink  │──▶ HistoryDB (SQLite)
+              │  SampleSink  │──▶ Store writer (Kusto)
               │ (thread-safe)│──▶ SnapshotStore (ring buffers)
               └──────────────┘
 ```
@@ -389,49 +388,37 @@ sink.emit("process.cpu.utilization", 45.2, {"process.pid": 1234, "aictl.tool": "
 sink.emit("aictl.file.tokens", 2040, {"path": "/project/CLAUDE.md"})
 ```
 
-The sink dispatches to registered handlers: `HistoryDB` for persistence, `SnapshotStore` for in-memory ring buffers.
+The sink hands typed metric rows to the store writer and sends live samples to dashboard subscribers.
 
 ---
 
 ## 4. Storage
 
-Two backends behind one `HistoryDB` interface: SQLite (the default, a local file) and a Kusto cluster (the alternative, chosen by `kusto_cluster`). The store, ingester and existing REST interfaces remain compatible. The incremental live UI described below is Kusto-only; SQLite keeps its existing snapshot and polling behavior.
+### Kusto store (`stores/kusto/`)
 
-### SQLite Persistence (`storage.py`, default)
+Onboarding and access to a remote cluster: [kusto-cluster.md](kusto-cluster.md). Run `aictl db schema` for the current table definitions.
 
-`HistoryDB` provides zero-dependency time-series storage:
+Set `kusto_cluster` in `config.toml`, pass `aictl daemon serve --kusto-cluster URL`, or set `AICTL_KUSTO_CLUSTER` to enable history. One Kusto database holds rows for all projects and reporting nodes. Without a configured store, live collection continues but the history reader reports that no store is configured.
 
-- **Write-behind batching**: metrics buffered in memory, flushed every 10 seconds, or within a second of a hook or telemetry batch while a dashboard client is attached
-- **WAL mode**: concurrent readers with single writer
-- **Auto-compaction**: full resolution for 24h, 1-minute averages for 7 days, 5-minute averages for 30 days, then deleted
-- **Default location**: `~/.config/aictl/history.db`
+- `tables.py` defines native keys, columns, retention, and ingestion modes. `schema.py` creates or widens tables and applies the retention policies. `aictl db schema` lists those definitions.
+- Producers hand off typed rows without reading history. The writer adds a node and version, and queues bounded batches. Deletes use a tombstone on tables that support it. Flushes run outside collector threads; a failed batch stays queued for retry until it is sent, evicted, or counted as lost at shutdown.
+- `kusto_ingestion` chooses `auto`, `queued`, `streaming`, or `inline`; `kusto_table_ingestion` overrides the mode per table. Inline and streaming calls submit directly to the engine. Queued acknowledgement does not mean the rows are queryable yet. See [ingestion mode configuration](kusto-cluster.md#global-ingestion-mode-and-per-table-overrides).
+- `stores/kusto/otel.py` converts raw exports to `OTELLogs`, `OTELMetrics`, `OTELTraces`, and `OTELPayloads`. The OTLP sink sends those tables separately from the derived session and event facts.
+- Retention runs in Kusto. Text tables have separate retention; the text-trim watermark also prevents queued or replayed rows from restoring expired text.
+- `kusto_auth = auto` uses the Azure CLI login for Azure clusters and no credentials for the local emulator. Other modes are `device`, `managed-identity`, and `none`.
 
-Tables:
-- `metrics` — aggregate system metrics (files, tokens, CPU, memory, MCP, live sessions)
-- `tool_metrics` — per-tool time series (CPU, memory, tokens, traffic, model)
-- `events` — chronological event log (tool, kind, detail)
-- `samples` — raw metric samples with labels (OpenTelemetry-style)
-- `sessions` — session state snapshots
-- `telemetry_kv` — key-value telemetry pairs per tool
+### Storage plugin foundation (`stores/`)
 
-### Kusto Store (`kusto/`, alternative backend)
-
-Onboarding and access to a remote cluster: [kusto-cluster.md](kusto-cluster.md). Every table: [kusto-schema.md](kusto-schema.md).
-
-With `kusto_cluster` set in `config.toml` (or `aictl daemon serve --kusto-cluster URL`, or `AICTL_KUSTO_CLUSTER`), the history lives in one database of a Kusto (Azure Data Explorer) cluster and the daemon serves from it alone: no SQLite file is opened for the store. The code keeps issuing its SQLite statements; `kusto/connection.py` is a `sqlite3.Connection` look-alike that hands each statement to `kusto/translate.py` and runs the result on the cluster.
-
-- `schema.py` parses `_SCHEMA_SQL`: every table becomes a Kusto table of the same name and columns plus `rowid:long`, `_v:datetime` and `_deleted:bool`. On every start one `.show database schema` is compared with the code's schema and only a missing or narrower table gets a `.create-merge table` (which widens, never drops); the streaming ingestion policy is enabled at the database level if any history table uses streaming. Inline-only mode does not enable or disable that policy. There is no migration path: a Kusto store starts from the current schema, and an existing SQLite history is not moved.
-- Rows are versions. A read keeps the newest version of each key (`PRIMARY KEY`, else `UNIQUE`, else `rowid`) and drops deleted ones (`schema.current`): every store table a query names gets a `let` binding with that pipeline. Hook-call retries reconcile by `call_id` at read time. Remote `auto` streams live telemetry, keeps mutable state/configuration inline, and queues remaining tables; the emulator uses inline for all tables. `kusto_ingestion` selects the global mode (`auto`, `queued`, `streaming`, `inline`), and `kusto_table_ingestion` overrides it per table; [configuration and automatic inline table list](kusto-cluster.md#global-ingestion-mode-and-per-table-overrides). Inline avoids RowStore but consumes ingestion-command capacity and can create many small extents. Streaming and inline finish ingestion before returning; queued ingestion returns after upload and enqueue, leaving DM to batch and ingest without a forced flush. Ordinary reads of queued tables are eventually consistent.
-- `INSERT OR REPLACE` relies on the newest version winning; `INSERT OR IGNORE` and `ON CONFLICT DO UPDATE` read the current key first. An `UPDATE` or `DELETE` runs as a KQL query over the current rows (`| where ... | extend ...`, with `_deleted = true` for a delete) and its result rows use the same selected backend as inserts, as new versions stamped by this process. Before a mutation or conflict check, the shared ingester waits for its relevant queued `(rowid, _v)` pairs to appear in raw history tables, including tombstones. The translator records the tables each mutation reads, so an upsert or `INSERT ... SELECT` does not wait for unrelated queued tables. The wait has a 600 s timeout and does not resubmit acknowledged sources. A 50,000-row receipt budget also applies backpressure; receipts are process-local, not durable or shared across configurations/processes. See [consistency limits](kusto-cluster.md#queued-writes-and-dependent-operations). Inline/streaming transient errors receive bounded retries; queued uploads use SDK storage retries. Immediate failures propagate without backend fallback; later DM failures require ingestion diagnostics.
-- `rowid` is assigned by the connection (time-ordered 64-bit), and is the value of an `INTEGER PRIMARY KEY` column.
-- The schema is also data: `aictl_information_schema` (one row per column: type, key position, unique sets, scope, group) is rewritten on every start, `aictl db schema` prints it, and [docs/kusto-schema.md](kusto-schema.md) is generated from the same code (a test keeps it current).
-- `PRAGMA` statements are answered from the parsed schema; `sqlite_master` is a `datatable` of the schema; indexes, triggers, `ATTACH`, `VACUUM` and transactions are no-ops. Inserts are buffered per connection until `commit()` or a subsequent read requires a flush. For queued ingestion this flush confirms submission, not visibility.
-- Append-oriented telemetry (`events`, `metrics`, system/process snapshots, tool stats and hook calls) bypasses SQL conflict resolution and the SQLite flush buffer. Remote `auto` mode streams these tables, raw OTLP and typed mutable-fact companion observations. Samples are retained before change/sensitivity/flood reduction; producers hand off their existing batches without client-side statistical aggregation.
-- Mutable fact writers append typed evidence to `*_observations` tables, not replacement canonical rows. Intermediate `FactBuffer` versions are copied before coalescing. Source revisions and source field presence remain unknown unless actually supplied; arrival order does not establish authority. A synchronous setup marker records the retain-unresolved cutover. Canonical SQL reads, report sections and live projections report incomplete/stale data, including when evidence is queued or unavailable. The legacy SQL compatibility connection remains available for control/inspection, but observation-mode canonical writes are blocked. [Cutover contract and limitations](kusto-cluster.md#mutable-observations-retain-unresolved-do-not-guess-canonical-totals).
-- OTLP requests are also stored as sent: `kusto/otel.py` converts exports to `OTELLogs`, `OTELMetrics`, `OTELTraces` and oversized text chunks in `OTELPayloads`. The HTTP path calls `OtelSink.ingest` directly, without its legacy asynchronous queue/linger path, and rejects failed handoffs. Derived requests and session/trace links use the same no-read evidence path. Explicit queued ingestion confirms submission, not DM completion. Failed late-trace link handoffs retain their links for retry.
-- A commit sends streaming tables concurrently; inline commands and queued submissions run in its foreground loop. Inline commands are held to the cluster's ingestion capacity (`ingest.ingestion_capacity`). Rows leave the connection buffer after synchronous ingestion or queued acknowledgement, not after queued visibility.
-- The store is never split by project on a cluster: one database holds every project. Retention and the size budget still run (`compact`, `trim_text`); the budget sees no file size on a cluster, so it never evicts.
-- Authentication: `kusto_auth = auto` uses the Azure CLI's login, or none for a local emulator (`http://localhost:8080`, `docker run --platform linux/amd64 -e ACCEPT_EULA=Y -m 4G -p 8080:8080 mcr.microsoft.com/azuredataexplorer/kustainer-linux`); `device`, `managed-identity` and `none` are the other modes. The dependencies are the `kusto` extra (`pip install aictl[kusto]`: azure-kusto-data, azure-kusto-ingest, sqlglot).
+`stores.open_store()` loads only the selected plugin. With no store selected, it
+returns no reader or writer and Health reports `no store configured`. The Kusto
+plugin owns its table definitions and parameterized `.kql` views. Its writer
+uses caller-supplied source keys scoped by project and node. It stamps full row
+versions and tombstones, then ingests them from bounded queues without querying
+the store. Health reports the queue, drop, and failure counts. Text tables use
+14-day retention; other tables use 30 days. The native defaults stream live data
+and formerly inline tables, and queue the other tables. Only the emulator uses
+inline ingestion. The SQLite history backend and its SQL adapter are removed.
+External tool databases, such as a Copilot session store, are read-only inputs.
 
 ### In-Memory Store (`store.py`)
 
@@ -490,8 +477,8 @@ A real-time interactive dashboard built with Vite + Preact + htm tagged template
 | `/api/file?path=...` | GET | File content (restricted to discovered files) |
 | `/api/budget` | GET | Token budget analysis |
 | `/api/stream` | GET | Legacy snapshot-version SSE notifications; unchanged |
-| `/api/live/capabilities` | GET | Cheap incremental protocol/source capabilities; disabled for SQLite |
-| `/api/live/stream` | GET | Kusto-only scoped entity baseline, changes, and replay |
+| `/api/live/capabilities` | GET | Incremental protocol and source capabilities |
+| `/api/live/stream` | GET | Scoped entity baseline, changes, and replay |
 | `/api/history?range=1h\|6h\|24h\|7d` | GET | Time-series history |
 | `/api/events?tool=...&since=...` | GET | Filtered event log |
 | `/api/samples?metric=...&since=...` | GET | Prometheus-style metric samples |
@@ -564,14 +551,10 @@ or ingestion receipt advances historical UI state.
 Reader API, query plans, policy/RowStore limits and the read-only validation scope
 are specified in [Kusto live reader](kusto-live-reader.md).
 
-The history worker reuses the existing board aggregate calculations. Its
-SELECT-result memo is shared across active filter scopes and invalidated by the
-reader's changed-table dependencies, parsed with the existing SQLite SQL grammar.
-Unchanged queries are not rerun for every notification; runtime gauge changes
-never invalidate historical queries. There is **no raw-fact mirror, persistent
-read cache, or SQLite connection** in this path. Result-cache eviction causes a
-later Kusto read, not loss of historical rows or altered analytics mathematics.
-Historical analytics and drawer details remain on demand.
+The history worker builds the Board from named store views. Store revisions
+refresh the shared projection for active filters. Runtime gauge changes do not
+invalidate historical views. If the reader has no change feed, the worker polls
+on its refresh interval. Historical analytics and drawer details remain on demand.
 Current-state filters select queryable historical usage using proven runtime
 session identities/statuses, not event-derived running/idle guesses. A status
 membership change recomposes that selected population; a CPU/RSS change does
@@ -698,7 +681,6 @@ an unavailable loading policy is reported unknown and excluded from known-policy
 budget totals without removing its file. Historical artifacts use indexed size/
 mtime; current local presence is unknown. Historical transcripts do not merge the
 unpersisted analyzer, and historical commit GETs do not run local git attribution.
-SQLite paths retain their existing behavior.
 
 | Part | Files | Purpose |
 |------|-------|---------|
@@ -750,7 +732,7 @@ All three rendering targets can operate in two modes:
 ```
 start_server(root, port, interval)
     │
-    ├── Create HistoryDB (SQLite persistence)
+    ├── Open the configured store plugin (or run without history)
     ├── Create SampleSink (metric router)
     ├── Create SnapshotStore (in-memory + ring buffers)
     │
@@ -763,8 +745,7 @@ start_server(root, port, interval)
     │   └── Every {interval} seconds (× 6 when idle), or 1.5 s after a hook
     │       or OTel batch arrives while a dashboard client is attached:
     │       1. collect() — discovery + live monitor merge
-    │       2. SnapshotStore.set_snapshot()
-    │       3. SampleSink flush to SQLite
+    │       2. SnapshotStore.update() — publish live state and hand off changed facts
     │
     └── Start HTTP server (ThreadingHTTPServer)
         └── Serves REST API + SSE + static frontend
@@ -790,11 +771,13 @@ Main Thread
         ├── NetworkCollector (1s)
         └── SessionCorrelator
 
-Write-Behind Thread (from HistoryDB)
-└── Flushes metric samples to SQLite every 10s, sooner when a hook arrives while a client watches
+History Writer Thread
+└── Flushes bounded native writer queues and saves local restart state
 ```
 
-Synchronization: `SampleSink` uses `threading.Lock`, `SnapshotStore` uses `threading.Condition` for version-based notification, `HistoryDB` uses SQLite WAL mode for concurrent readers.
+Synchronization: `SampleSink` uses `threading.Lock`; `SnapshotStore` uses
+`threading.Condition` for version-based notification. Store writes and history reads
+use separate plugin interfaces.
 
 ---
 
@@ -842,7 +825,7 @@ Commands are organized into three groups plus top-level commands. All implementa
 | `audit` | `commands/disable.py` | Inspect the mutation-ledger audit log (`tail`, `path`) |
 | `config` | `commands/admin.py` | Read/write `~/.config/aictl/config.toml` |
 | `catalog` | `commands/admin.py` | Inspect/sync the datapoint catalog |
-| `db` | `commands/admin.py` | Inspect/maintain the SQLite history store |
+| `db` | `commands/admin.py` | Inspect the schema, report on history, and maintain the configured Kusto store |
 | `build-ui` | `commands/admin.py` | Rebuild the dashboard UI bundle |
 | `reinstall` | `commands/admin.py` | Reinstall aictl (cross-platform, no Makefile needed) |
 
@@ -869,7 +852,8 @@ filesystem_enabled = true
 telemetry_enabled = true
 
 [storage]
-db_path = "~/.config/aictl/history.db"
+kusto_cluster = "https://mycluster.westus.kusto.windows.net"
+kusto_database = "aictl"
 ```
 
 CLI flags override config values.
@@ -928,8 +912,8 @@ columns only, so nothing still in its write-ahead log is seen. Windows adds poli
 PowerShell profiles read as text. For Microsoft 365 Copilot only repository agent packages
 are visible; the deployed agent, tenant policy, connectors and memory live in the service.
 
-The audit does not use `history.db`. When that database exists it adds
-`file_write_events` and `InstructionsLoaded` as extra evidence, read-only. The
+When a Kusto reader is available, the audit uses stored file-write and instruction-load
+events as extra evidence. The
 baseline is `context-baseline.json` in aictl's config dir, capped at 2 MB, with
 hashes and metadata only; `--baseline PATH` moves it. With `[storage] capture = off`
 it stays in memory. Hooks and MCP servers are parsed and never run. Files are
@@ -943,10 +927,9 @@ parsing every store. `--json` output carries a `schema_version`.
 
 ## Storage bounds
 
-`[storage] capture` selects `full`, `metadata` or `off`, and `max_total_mb` caps the database, journal and
-logs. Storage failures never stop collection: on a corrupt, full or locked database the daemon falls back
-to a bounded in-memory store and reports `storage_degraded` in `/api/self-status`. Collection is adaptive
-and writes on change. See [storage-schema.md](storage-schema.md#bounds-and-capture-modes).
+`[storage] capture` selects `full`, `metadata`, or `off`. Kusto policies control table retention.
+After an ingestion failure, the writer retries from bounded in-memory queues. Health shows the
+queue depth and dropped rows per table. There is no local fallback database.
 
 ## Hooks fail open
 
