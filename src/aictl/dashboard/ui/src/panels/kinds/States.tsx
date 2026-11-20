@@ -22,7 +22,7 @@ export function States(props: {
       onRetry={state() === 'error' ? props.retry : undefined} />}>
       <Show when={stale() || props.reserveStaleSpace}>
         <div class={styles.staleNotice} aria-hidden={stale() ? undefined : 'true'}>
-          <PanelState state="stale" inline message={notice()} />
+          <PanelState state="stale" inline message={notice()} updatedAt={props.result().updatedAt} />
         </div>
       </Show>
       {props.children}

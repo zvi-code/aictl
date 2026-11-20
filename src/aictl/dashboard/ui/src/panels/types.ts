@@ -14,6 +14,7 @@ export type Row = Readonly<Record<string, unknown>>
 export type Read = {
   state: 'loading' | 'empty' | 'error' | 'unavailable' | 'stale' | 'ready'
   value?: unknown
+  updatedAt?: number
   rowKeys?: readonly string[]
   message?: string
 }

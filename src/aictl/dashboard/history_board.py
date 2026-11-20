@@ -14,7 +14,7 @@ from .history_scope import ScopeError, label, parse_scope
 from .projections.history import HistoryScope
 
 _PANEL_FIELDS = (
-    "range", "series", "agents", "attention", "by_model", "by_role", "capture_mode", "changes", "confirms",
+    "range", "series", "generated_at", "agents", "attention", "by_model", "by_role", "capture_mode", "changes", "confirms",
     "coverage", "credits", "errors", "kpis", "latency", "loops", "memory_files", "options", "project_prompts",
     "project_prompts_searched", "projects", "prompts", "prompts_total", "saved_usd", "scope", "skills",
     "sources", "tests", "tests_piped", "tool_labels", "tools", "unpriced",

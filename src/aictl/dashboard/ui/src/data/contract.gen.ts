@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 1d5d19a667e611746942f8231150ad2f7272bac7e36af46df219fb909f873ed2
+// Schema digest: be820db150909c13dea51680142263251ceddf16ad4357846f4fe1d93a26574c
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -868,6 +868,7 @@ export type DetailBoardHistory = {
   node_scope: BoardNodeScope;
   range: BoardRange;
   series: BoardSeries;
+  generated_at?: BoardGeneratedAt;
   agents?: BoardAgents;
   attention?: BoardAttention;
   by_model?: BoardByModel;

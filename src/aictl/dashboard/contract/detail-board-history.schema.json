@@ -8,6 +8,7 @@
     "node_scope": {"$ref": "board-node-scope.schema.json"},
     "range": {"$ref": "board-range.schema.json"},
     "series": {"$ref": "board-series.schema.json"},
+    "generated_at": {"$ref": "board-generated-at.schema.json"},
     "agents": {"$ref": "board-agents.schema.json"},
     "attention": {"$ref": "board-attention.schema.json"},
     "by_model": {"$ref": "board-by-model.schema.json"},

@@ -99,10 +99,12 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   const read = (source: Source): Read => {
     if ('route' in source) return { state: 'unavailable' }
     let value: unknown, rowKeys: readonly string[] | undefined
+    let updatedAt: number | undefined
     let stale = ctx.paused(), pending = false, fault: string | undefined
     if ('field' in source && (ctx.scope() !== 'local' || (source.wholeRange && ctx.filters().sel))) {
       const resource = source.wholeRange && ctx.filters().sel ? whole() : remote()
       value = at(at(resource?.data, source.field), source.path)
+      updatedAt = resource?.data?.generated_at
       pending = !resource || resource.status === 'loading'
       stale ||= resource?.status === 'stale' || resource?.status === 'refreshing'
       if (resource?.error) fault = String(resource.error)
@@ -127,14 +129,20 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
       }
       const relevant = sourceStatuses().filter(status => ('topic' in status && status.topic === name) ||
         ('topics' in status && status.topics.includes(name)))
+      if ('field' in source) {
+        const generated = store.boardField('generated_at').value
+        const history = relevant.find((status): status is Extract<TopicSourceStatus, { component: 'history' }> =>
+          'component' in status && status.component === 'history')
+        updatedAt = typeof generated === 'number' ? generated : history?.computed_at
+      }
       pending = !store.meta.ready || relevant.some(status => 'pending' in status && status.pending)
       fault = relevant.flatMap(status => 'error' in status && status.error ? [status.error] : [])[0] ?? ctx.client.status.error?.message
       stale ||= Boolean(fault) || relevant.some(status => ('stale' in status && status.stale) || ('pending' in status && status.pending))
     }
     if (value == null) return { state: fault ? 'error' : pending ? 'loading' : 'unavailable', message: fault }
-    if (stale) return { state: 'stale', value, rowKeys }
-    if (Array.isArray(value) && !value.length) return { state: 'empty', value, rowKeys }
-    return { state: 'ready', value, rowKeys }
+    if (stale) return { state: 'stale', value, rowKeys, updatedAt }
+    if (Array.isArray(value) && !value.length) return { state: 'empty', value, rowKeys, updatedAt }
+    return { state: 'ready', value, rowKeys, updatedAt }
   }
   return {
     read,
