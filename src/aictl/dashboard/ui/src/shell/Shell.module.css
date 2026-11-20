@@ -13,13 +13,45 @@
 .filterSelect { max-inline-size: var(--panel-sm); text-overflow: ellipsis; }
 .quiet { composes: button focus from "../ui/control.module.css"; }
 .controls .quiet { background: transparent; border-color: transparent; font-weight: var(--weight-strong); }
-.sections:not([hidden]) { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.sections a { padding: var(--space-2) var(--space-4); color: var(--color-accent); }
-.sections a[aria-current="location"] { color: var(--color-text); background: var(--color-raised); }
+.sections:not([hidden]) { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.sections a { padding: var(--space-3) var(--space-4); color: var(--color-text); text-decoration: none; }
+.sections a:hover { background: var(--color-raised); }
+.sections a[aria-current="location"] { background: var(--color-raised); box-shadow: inset var(--focus-size) 0 var(--color-focus); font-weight: var(--weight-strong); }
 .sections a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
 .work { min-inline-size: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--space-4); }
 .work h1 { margin: 0 0 var(--space-5); font-size: var(--text-2xl); }
 .overview h1 { margin: 0; }
+.canvas { min-inline-size: 0; display: grid; align-content: start; gap: var(--space-4); }
+@media (min-width: 64rem) {
+  .work[data-rail] { grid-template-columns: minmax(var(--panel-sm), 12%) minmax(0, 1fr); column-gap: var(--space-6); }
+  .work[data-rail] > .controls { grid-column: 1 / -1; }
+  .work[data-rail] > .sections {
+    display: grid;
+    align-self: start;
+    position: sticky;
+    top: calc(var(--app-header-height) + var(--space-4));
+    background: var(--color-surface);
+    border-block-start: var(--border-size) solid var(--color-border);
+  }
+  .sections a { border-block-end: var(--border-size) solid var(--color-border); }
+}
+.startBody {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--panel-md)), 1fr));
+  gap: var(--space-7);
+  padding: var(--space-6);
+  margin-block-start: var(--space-4);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.startBody h2 { margin: 0; font-size: var(--text-lg); }
+.startBody p { margin: var(--space-4) 0; }
+.runtime > p strong { margin-inline-end: var(--space-2); font: var(--weight-strong) var(--text-3xl)/1 var(--font-ui); }
+.runtime > div { max-inline-size: min(100%, var(--overlay-md)); margin-block: var(--space-4); --meter-track-size: var(--space-5); }
+.runtime small, .historyStatus p:not([role]) { color: var(--color-muted); }
+.historyStatus details { margin-block: var(--space-4); overflow-wrap: anywhere; }
+.historyStatus .controls { margin-block-start: var(--space-5); }
 .popup {
   max-inline-size: min(var(--overlay-md), calc(100vw - var(--space-6)));
   max-block-size: var(--overlay-md);

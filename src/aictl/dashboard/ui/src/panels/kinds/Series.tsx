@@ -121,5 +121,5 @@ export function SeriesView(props: {
       </Loading>}>
       <Show when={!props.compact}>{plot()}</Show>
     </Show>
-  </States>{props.summary}</>
+  </States><Show when={source().value != null || result().state !== 'loading'}>{props.summary}</Show></>
 }

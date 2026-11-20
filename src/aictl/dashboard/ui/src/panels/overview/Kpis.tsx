@@ -1,11 +1,12 @@
 import { createMemo, For, Show, untrack } from 'solid-js'
 import { Stat } from '../../ui/Stat'
-import type { BoardKpis, DetailNodes } from '../../data/contract.gen'
+import type { BoardKpis } from '../../data/contract.gen'
 import { fmtMs, sparkPath } from '../../design/format'
 import { at } from '../data'
 import type { PanelProps } from '../types'
 import { presentation, scalar } from '../kinds/model'
 import { States } from '../kinds/States'
+import { monitoredReport } from './monitoredReport'
 import styles from '../kinds/kinds.module.css'
 
 const metrics = [
@@ -31,12 +32,7 @@ export default function Kpis(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
   const history = createMemo(() => ctx.read({ field: 'kpis' }))
   const data = () => history().value as BoardKpis | undefined
-  const report = ctx.detail<Extract<DetailNodes, { view: 'runtime' }>>(() => {
-    if (ctx.scope() === 'local') return
-    const query = new URLSearchParams({ view: 'runtime', scope: ctx.scope() })
-    if (ctx.scope() === 'node') query.set('node_id', ctx.nodeId() ?? '')
-    return `/api/board/nodes?${query}`
-  })
+  const report = monitoredReport(ctx)
   const runtime = createMemo(() => {
     if (ctx.scope() !== 'local') return
     const index = ctx.client.store.topic('runtime.agent')
@@ -57,16 +53,7 @@ export default function Kpis(props: PanelProps) {
     return { running, idle, children, unknown, sessions: sessions.size }
   })
   const monitored = createMemo(() => {
-    if (ctx.scope() !== 'local') {
-      const current = report()?.data
-      if (current?.view !== 'runtime' || current.scope !== ctx.scope() ||
-          !Array.isArray(current.rows) || (ctx.scope() === 'node' && current.rows.some(row => row.node_id !== ctx.nodeId()))) return
-      const now = Date.now() / 1000
-      const rows = current.rows.filter(row => row.activity_at != null && now - row.activity_at <= 300 && row.activity_at <= now + 60 &&
-        Number.isSafeInteger(row.active_sessions) && row.active_sessions! >= 0)
-      if (rows.length) return { count: rows.reduce((sum, row) => sum + row.active_sessions!, 0), hosts: rows.length }
-      return
-    }
+    if (ctx.scope() !== 'local') return report()
     return runtime() ? { count: runtime()!.sessions, hosts: 1 } : undefined
   })
   const format = (key: string, value: unknown) => {

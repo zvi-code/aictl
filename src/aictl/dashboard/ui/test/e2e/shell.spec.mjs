@@ -35,7 +35,8 @@ test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overvi
   await expect(page).toHaveURL(/#sec-usage$/);
   await page.keyboard.press('/');
   await expect(page.getByRole('searchbox', { name: 'Find' })).toBeFocused();
-  await page.keyboard.press('s');
+  // Test the screen shortcut, without entering a search the tape does not contain.
+  await page.getByRole('searchbox', { name: 'Find' }).dispatchEvent('keydown', { key: 's', bubbles: true });
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   const sections = page.getByRole('button', { name: 'Sections', exact: true });
   await sections.click();
@@ -51,6 +52,52 @@ test('Overview snapshot', async ({ page, snapshotReplay }) => {
   await captureFrame(page);
   await expect(page).toHaveScreenshot('overview.png');
 });
+
+for (const state of ['pending', 'failed']) {
+  test(`SHL-03/BRD-01: ${state} history shows the available runtime, then recovers`, async ({ page, snapshotReplay }) => {
+    let monitored;
+    const cold = await startReplay({ dist, speed: 10, boardWindow: true, bootstrapOnly: true, supplemental: true,
+      mapBootstrap: data => {
+        monitored = new Set(data.entities.filter(e => e.topic === 'runtime.agent' && e.data.running === true &&
+          !e.data.parent_id && e.data.session_id).map(e => e.data.session_id)).size;
+        return { ...data, entities: data.entities.filter(e => e.topic !== 'history.board').map(e =>
+          e.topic === 'source.status' && e.data.component === 'history' ? { ...e, data: { ...e.data,
+            ready: false, pending: state === 'pending', stale: state === 'failed',
+            error: state === 'failed' ? 'Inventory read did not complete' : null,
+          } } : e) };
+      },
+    });
+    try {
+      await provideCatalog(page);
+      await page.goto(cold.url + boardUrl);
+      const history = page.getByRole('region', { name: 'Selected history' });
+      await expect(history.getByRole('status')).toHaveText(state === 'pending'
+        ? 'Waiting for the first history result.' : 'History could not be loaded.');
+      const runtime = page.getByRole('region', { name: 'Monitored sessions by tool' });
+      expect(monitored).toBeGreaterThan(0);
+      await expect(runtime).toContainText(`${monitored} monitored sessions`);
+      await expect(runtime.getByRole('meter').first()).toBeVisible();
+      await expect(page.locator('#p-tokens, #p-cacheRate')).toHaveCount(0);
+      if (state === 'failed') {
+        await history.locator('summary').press('Enter');
+        await expect(history).toContainText('Inventory read did not complete');
+      } else {
+        await captureFrame(page);
+        await expect(page).toHaveScreenshot('overview-waiting.png');
+      }
+      await checkAxe(page, '[data-screen="board"]', 'Overview startup');
+      // The next connection has a complete bootstrap for the same selected scope.
+      await page.route('**/api/live/stream?**', route => {
+        const url = new URL(route.request().url());
+        return route.continue({ url: snapshotReplay.url + url.pathname + url.search });
+      });
+      await history.getByRole('button', { name: 'Retry history' }).press('Enter');
+      await expect(page.locator('#p-kpis')).toContainText('18,065');
+      await expect(page.locator('#p-tokens canvas')).toBeInViewport();
+      await expect(history).toHaveCount(0);
+    } finally { await page.goto('about:blank'); await cold.close(); }
+  });
+}
 
 test('SHL-01: Health navigation and snapshot', async ({ page, snapshotReplay, capture }) => {
   await goToBoard(page, snapshotReplay);

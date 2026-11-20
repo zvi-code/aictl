@@ -237,7 +237,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     { id: 'theme', label: `Use ${theme() === 'light' ? 'dark' : 'light'} theme`, run: () => setTheme(theme() === 'light' ? 'dark' : 'light') },
     { id: 'density', label: `Use ${density() === 'compact' ? 'comfortable' : 'compact'} density`, run: () => setDensity(density() === 'compact' ? 'comfortable' : 'compact') },
     ...screen() === 'settings' ? [] : [{ id: 'layout', label: 'Edit layout', run: () => {
-      document.querySelector<HTMLButtonElement>('[data-edit-layout]')?.click()
+      const edit = () => document.querySelector<HTMLButtonElement>('[data-edit-layout]')?.click()
+      const browse = document.querySelector<HTMLButtonElement>('[data-browse-panels]')
+      if (browse) { browse.click(); requestAnimationFrame(edit) } else edit()
     } }],
     { id: 'shortcuts', label: 'Show keyboard shortcuts', run: () => setShortcuts(true) },
     ...agents().slice(0, 100).map(agent => ({ id: `agent-${agent.id}`, label: `Open agent: ${agent.title}`, run: () => ctx.openAgent(agent.id) })),
@@ -332,7 +334,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     navigation={<nav class={styles.controls} aria-label="Screens"><For each={Object.keys(screenNames) as Screen[]}>{id =>
       <button class={styles.button} type="button" aria-current={screen() === id ? 'page' : undefined}
         onClick={() => changeScreen(id)}>{screenNames[id]}</button>}</For></nav>}>
-    <div class={styles.work}>
+    <div class={styles.work} data-rail={rail() && screen() === 'board' ? '' : undefined}>
         <div class={styles.controls}>
           <Show when={screen() === 'board'}>
             <button class={styles.quiet} type="button" aria-controls="overview-sections" aria-expanded={rail() ? 'true' : 'false'}
@@ -358,18 +360,22 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
         <Show when={screen() === 'board'}>
           <nav class={styles.sections} id="overview-sections" aria-label="Overview sections" hidden={!rail()}>
             <For each={sectionList()} keyed={section => section.id}>{section =>
-              <a href={`#sec-${section().id}`} aria-current={query().hash === `#sec-${section().id}` ? 'location' : undefined}
+              <a href={`#sec-${section().id}`} aria-current={(query().hash || '#sec-top') === `#sec-${section().id}` ? 'location' : undefined}
                 onClick={event => { event.preventDefault(); jump(section().id) }}>{section().title}</a>}</For>
           </nav>
+        </Show>
+        <div class={styles.canvas}>
+        <Show when={screen() === 'board'}>
           <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} custom={custom()} setCustom={setCustom} text={findText()} search={searchFor} />
         </Show>
         <Loading fallback={<PanelState state="loading" />}>
           <Switch>
-            <Match when={screen() === 'board'}><Overview ctx={ctx} order={sectionOrder} /></Match>
+            <Match when={screen() === 'board'}><Overview ctx={ctx} anchor={query().hash} order={sectionOrder} /></Match>
             <Match when={screen() === 'health'}><Health ctx={ctx} order={sectionOrder} /></Match>
             <Match when={screen() === 'settings'}><Settings ctx={ctx} /></Match>
           </Switch>
         </Loading>
+        </div>
     </div>
     <Show when={stack().length}>
       <Loading fallback={<div class={styles.drawerLoading}><PanelState state="loading" message="Loading detail…" /></div>}>

@@ -17,14 +17,13 @@ async function recordedAgent(replay) {
 test('DRW-01: tabs load on selection and update the drawer URL', async ({ page, snapshotReplay, capture }) => {
   const id = (await recordedUrl(snapshotReplay, '/api/board/agent')).searchParams.get('id');
   await prepare(page);
-  const chunks = new Set();
+  let transcriptLoaded = false;
   page.on('request', request => {
-    const chunk = new URL(request.url()).pathname.match(/\/assets\/([^/]+)-[^/]+\.js$/)?.[1];
-    if (chunk) chunks.add(chunk);
+    if (/\/assets\/Transcript-[^/]+\.js$/.test(new URL(request.url()).pathname)) transcriptLoaded = true;
   });
   await page.goto(agentUrl(snapshotReplay, id, 'flow'));
   await expect(drawer(page).getByRole('tab', { name: 'Flow', exact: true })).toHaveAttribute('aria-selected', 'true');
-  expect(chunks.has('Transcript')).toBe(false);
+  expect(transcriptLoaded).toBe(false);
   for (const [label, key] of [
     ['Transcript', 'transcript'], ['Context', 'context'], ['Overview', 'overview'],
     ['Instructions', 'instructions'], ['Timeline', 'timeline'], ['Turns', 'turns'], ['Tool calls', 'tools'],
@@ -37,7 +36,7 @@ test('DRW-01: tabs load on selection and update the drawer URL', async ({ page, 
     await expect(tab).toHaveAttribute('aria-selected', 'true');
     await expect(page).toHaveURL(new RegExp(`[?&]tab=${key}(?:&|$)`));
   }
-  expect(chunks.has('Transcript')).toBe(true);
+  expect(transcriptLoaded).toBe(true);
   const resize = drawer(page).getByRole('separator');
   const width = async () => (await drawer(page).boundingBox()).width;
   const original = await width();

@@ -6,6 +6,7 @@ import styles from './Chart.module.css'
 
 const colors = ['--color-chart-1', '--color-chart-2', '--color-chart-3', '--color-chart-4'] as const
 const marks = [styles.first, styles.second, styles.third, styles.fourth]
+const tickNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumSignificantDigits: 3 })
 type ChartSeries = { label: string; color?: 0 | 1 | 2 | 3; paths?: uPlot.Series.PathBuilder; visible?: boolean }
 type YRange = readonly [number, number]
 
@@ -59,7 +60,7 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
           series: [{}, ...series.map((item, index) => ({
             label: item.label,
             show: item.visible !== false,
-            width: parseFloat(color('--chart-line-width')) || 1,
+            width: parseFloat(color('--chart-line-width')) || 2,
             stroke: () => color(colors[item.color ?? index % colors.length]),
             ...(props.stack && index === 0 ? { fill: () => `${color(colors[item.color ?? 0])}55` } : {}),
             ...(item.paths ? { paths: item.paths } : {}),
@@ -68,9 +69,9 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
             // uPlot needs the computed pixel size to scale text for the device.
             font: `${Math.round(parseFloat(style.fontSize))}px ${style.fontFamily}`,
             stroke: () => color('--color-muted'),
-            grid: { stroke: () => color('--chart-grid-color') || color('--color-border'), width: parseFloat(color('--chart-grid-width')) || 2 },
+            grid: { stroke: () => color('--chart-grid-color'), width: parseFloat(color('--chart-grid-width')) || 1 },
             ticks: { stroke: () => color('--color-border') },
-            ...(index === 1 && unit ? { values: (_plot: uPlot, ticks: number[]) => ticks.map(tick => `${tick}${unit}`) } : {}),
+            ...(index === 1 ? { values: (_plot: uPlot, ticks: number[]) => ticks.map(tick => `${tickNumber.format(tick)}${unit ?? ''}`) } : {}),
           })),
           legend: { show: false },
           bands: props.stack ? series.slice(1).map((item, index) => ({

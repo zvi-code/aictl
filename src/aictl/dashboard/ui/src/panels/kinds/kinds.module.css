@@ -5,7 +5,14 @@
 }
 .stats a { color: var(--color-accent); text-decoration: none; }
 .stats a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
-.kpiStats { gap: var(--space-3) var(--space-4); font-size: var(--text-sm); line-height: var(--leading-tight); }
+.kpiStats {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-8) * 4)), 1fr));
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+}
+.kpiStats > * { min-inline-size: 0; padding-inline-start: var(--space-4); border-inline-start: var(--border-size) solid var(--color-border); }
+.kpiStats > :first-child { border-inline-start-color: transparent; padding-inline-start: 0; }
 .kpiStats dl { gap: 0; }
 .kpiStats dd:first-of-type { font-size: var(--text-lg); }
 .kpiDetail { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-2); }
@@ -19,7 +26,7 @@
 .chartTools.compactChart { gap: var(--space-1) var(--space-3); font-size: var(--text-sm); }
 .compactChart .chartBucket { min-inline-size: 0; }
 .compactChart .button { padding-inline: var(--space-3); }
-.compactPlot { block-size: max(var(--panel-sm), calc(100% - var(--panel-sm))); }
+.compactPlot { block-size: calc(var(--panel-sm) + var(--space-8) * 2); }
 .treeCell { display: flex; align-items: center; gap: var(--space-1); min-inline-size: 0; }
 .foldButton { flex: 0 0 var(--space-5); align-self: flex-start; }
 .tableTools { float: inline-start; margin-inline-end: var(--space-4); margin-block-end: var(--space-2); }
