@@ -307,7 +307,7 @@ test('BRD-37: reserve the wrapped stale notice when sources become current', asy
     const stale = panel.locator('[data-status="stale"]', { hasText: 'Not all settings sources' });
     await expect(table).toBeVisible();
     await expect(stale).toBeVisible();
-    const textBounds = () => stale.locator('[role=status] span').evaluate(text => {
+    const textBounds = () => stale.locator('[role=status]').evaluate(text => {
       const range = document.createRange();
       range.selectNodeContents(text);
       return { height: text.getBoundingClientRect().height, lines: range.getClientRects().length };
