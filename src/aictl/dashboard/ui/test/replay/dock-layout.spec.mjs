@@ -73,12 +73,15 @@ test('SHL-05: direct moves persist and retain keyboard focus', async ({ page }) 
   const before = await ordering();
   await agents.locator('#p-agentsT').scrollIntoViewIfNeeded();
   const up = agents.getByRole('button', { name: 'Move Agents and subagents up', exact: true });
-  await up.press('Enter');
-  await expect(agents.getByRole('button', { name: 'Move Agents and subagents down', exact: true })).toBeFocused();
-  const moved = [...before], index = before.indexOf('p-agentsT');
-  [moved[index - 1], moved[index]] = [moved[index], moved[index - 1]];
-  await expect.poll(ordering).toEqual(moved);
-  await expect(mode(page).getByRole('status').filter({ hasText: `Moved Agents and subagents to position ${index}` })).toBeAttached();
+  const down = agents.getByRole('button', { name: 'Move Agents and subagents down', exact: true });
+  const moved = [...before];
+  for (let index = before.indexOf('p-agentsT'); index > 0; index--) {
+    await up.press('Enter');
+    await expect(index === 1 ? down : up).toBeFocused();
+    [moved[index - 1], moved[index]] = [moved[index], moved[index - 1]];
+    await expect.poll(ordering).toEqual(moved);
+  }
+  await expect(mode(page).getByRole('status').filter({ hasText: 'Moved Agents and subagents to position 1' })).toBeAttached();
   const earlier = page.getByRole('button', { name: 'Move Agents section up' });
   await earlier.press('Enter');
   await expect(earlier).toBeFocused();

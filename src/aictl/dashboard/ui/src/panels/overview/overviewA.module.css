@@ -12,6 +12,11 @@
   font: inherit;
 }
 .note { margin-block: 0 var(--space-2); color: var(--color-muted); }
+@media (min-width: 40rem) and (max-width: 48rem) {
+  /* Let Agent and Tool share the available width instead of reserving 42% for Agent. */
+  :global(#p-agentsT) th:first-child { inline-size: auto; }
+  :global(#p-agentsT) th button { overflow-wrap: normal; }
+}
 .attentionStatus { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-5); }
 .attentionStatus[data-warning] { color: var(--color-warning); }
 .measures { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-block: 0 var(--space-2); }

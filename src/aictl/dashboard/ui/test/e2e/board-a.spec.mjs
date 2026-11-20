@@ -251,6 +251,47 @@ test('BRD-03: partial history keeps a reported zero model without inventing time
   } finally { await replay.close(); }
 });
 
+test('BRD-03: the 768px agent list fits whole metric headings and two-line tool names', async ({ page, snapshotReplay }) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  await provideCatalog(page);
+  await page.goto(snapshotReplay.url + boardUrl + '#sec-agents');
+  await agentsFrame(page);
+  const panel = page.locator('#p-agentsT');
+  await panel.evaluate(node => {
+    const header = document.querySelector('header').getBoundingClientRect();
+    window.scrollBy(0, node.getBoundingClientRect().top - header.bottom);
+  });
+  const table = panel.getByRole('table', { name: 'Agents and subagents' });
+  await expect(table.getByRole('columnheader')).toHaveText(['Agent', 'Status', 'Tool', 'Messages', 'Tool calls', 'Failures']);
+  await expect(table.locator('tbody tr').first().getByRole('cell').nth(2)).toHaveText('anon_2c2f5bb3489bbb651fa965a6');
+  await expect(page).toHaveScreenshot('agents-list-768-light.png');
+  const next = panel.getByRole('button', { name: 'Next page' });
+  for (;;) {
+    const layout = await table.evaluate(el => {
+      const rects = cell => {
+        const range = document.createRange();
+        range.selectNodeContents(cell);
+        return [...range.getClientRects()].filter(rect => rect.width > 0);
+      };
+      const lines = cell => new Set(rects(cell).map(rect => rect.top)).size;
+      const headings = [...el.tHead.rows[0].cells];
+      const tools = [...el.tBodies[0].rows].map(row => row.cells[2]);
+      return {
+        metricLines: [3, 5].map(i => lines(headings[i].querySelector('button').firstChild)),
+        wrappedTools: tools.filter(cell => lines(cell) > 2 || rects(cell).some(rect => {
+          const box = cell.getBoundingClientRect();
+          return rect.left < box.left - 1 || rect.right > box.right + 1 || rect.bottom > box.bottom + 1;
+        })).map(cell => cell.textContent),
+        tableOverflow: el.parentElement.scrollWidth - el.parentElement.clientWidth,
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    expect(layout).toEqual({ metricLines: [1, 1], wrappedTools: [], tableOverflow: 0, pageOverflow: 0 });
+    if (await next.getAttribute('aria-disabled') === 'true') break;
+    await next.press('Enter');
+  }
+});
+
 test('BRD-03: readable agent names, keyboard paging, sorting, grouping and folding', async ({ page, snapshotReplay }, testInfo) => {
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'agentsT');
