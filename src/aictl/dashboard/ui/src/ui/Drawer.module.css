@@ -2,7 +2,7 @@
   position: fixed;
   z-index: var(--z-drawer);
   inset: 0 0 0 auto;
-  inline-size: min(var(--overlay-lg), 100%);
+  inline-size: min(var(--drawer-width, var(--overlay-lg)), 100%);
   box-sizing: border-box;
   background: var(--color-surface);
   color: var(--color-text);
@@ -11,13 +11,18 @@
 }
 .drawer:not([hidden]) { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-5);
   padding: var(--space-5);
   border-block-end: var(--border-size) solid var(--color-border);
 }
 .header h3 { margin: 0; font-size: var(--text-lg); }
-.body { overflow: auto; padding: var(--space-6); }
+.header h3, .metadata { overflow-wrap: anywhere; }
+.metadata { grid-column: 1 / -1; }
+.actions { display: flex; align-items: center; gap: var(--space-2); }
+.body { composes: focus from "./control.module.css"; overflow: auto; padding: var(--space-6); }
 .close { composes: button from "./control.module.css"; }
+.grip { position: absolute; inset: 0 auto 0 0; inline-size: var(--space-4); cursor: ew-resize; touch-action: none; }
+.grip:hover, .grip:focus-visible { background: var(--color-accent); }

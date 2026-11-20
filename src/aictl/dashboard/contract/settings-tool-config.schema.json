@@ -33,6 +33,7 @@
       "items": {
         "type": "object",
         "properties": {
+          "id": {"type": "string"},
           "title": {"type": "string"},
           "key": {"type": "string"},
           "label": {"type": "string"},
@@ -45,7 +46,51 @@
                 "label": {"type": "string"},
                 "value": {"type": ["object", "array", "string", "number", "boolean", "null"]},
                 "source": {"type": ["string", "null"]},
-                "set": {"type": "boolean"}
+                "set": {"type": "boolean"},
+                "kind": {"type": "string"},
+                "group": {"type": ["string", "null"]},
+                "scope": {"type": "string"},
+                "line": {"type": "integer"},
+                "note": {"type": "string"},
+                "wins": {"type": "integer"},
+                "locked": {"type": "boolean"},
+                "danger": {"type": "boolean"},
+                "documented": {"type": "boolean"},
+                "chain": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "scope": {"type": "string"},
+                      "value": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+                      "source": {"type": ["string", "null"]},
+                      "line": {"type": "integer"},
+                      "set": {"type": "boolean"},
+                      "locked": {"type": "boolean"},
+                      "wins": {"type": "boolean"}
+                    }
+                  }
+                },
+                "agent": {
+                  "type": "object",
+                  "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "model": {"type": "string"},
+                    "model_policy": {"type": "string"},
+                    "effort": {"type": "string"},
+                    "context_tier": {"type": "string"},
+                    "target": {"type": "string"},
+                    "tools": {"type": "array", "items": {"type": "string"}},
+                    "defined_in": {"type": "string"},
+                    "defined_line": {"type": "integer"},
+                    "pinned_in": {"type": "string"},
+                    "pinned_line": {"type": "integer"},
+                    "inherits": {"type": "boolean"},
+                    "scope_defined": {"type": "string"},
+                    "scope_pinned": {"type": "string"}
+                  }
+                }
               },
               "required": ["key"]
             }
@@ -59,10 +104,15 @@
       "items": {
         "type": "object",
         "properties": {
+          "id": {"type": "string"},
           "path": {"type": "string"},
           "scope": {"type": "string"},
           "label": {"type": "string"},
-          "name": {"type": "string"}
+          "name": {"type": "string"},
+          "exists": {"type": "boolean"},
+          "changeable": {"type": "boolean"},
+          "note": {"type": "string"},
+          "vars": {"type": "array", "items": {"type": "string"}}
         }
       }
     },
@@ -75,6 +125,19 @@
           "key": {"type": "string"},
           "value": {"type": ["string", "null"]},
           "set": {"type": "boolean"},
+          "masked": {"type": "boolean"},
+          "in_process": {"type": "boolean"},
+          "process": {"type": ["string", "null"]},
+          "label": {"type": "string"},
+          "description": {"type": "string"},
+          "drives": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {"key": {"type": "string"}, "label": {"type": "string"}},
+              "required": ["key", "label"]
+            }
+          },
           "persisted": {
             "type": "array",
             "items": {

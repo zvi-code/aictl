@@ -45,26 +45,34 @@ def test_daemon_and_cli_without_sqlite(tmp_path):
 
 
 def _dashboard_requests(root):
+    removed = {"/api/board", "/api/budget", "/api/history", "/api/self-status", "/api/board/health"}
     paths = {}
     for tape in (RECORDINGS / "quiet" / "isolated-rest.jsonl.gz", RECORDINGS / "supplemental-main-rest.jsonl.gz"):
         with gzip.open(tape, "rt", encoding="utf-8") as file:
             for record in map(json.loads, file):
-                paths[record["route"]] = record["path"]
+                if record["route"] not in removed:
+                    paths[record["route"]] = record["path"]
     paths.update(
         {
             path: path
             for path in (
                 "/",
                 "/api/snapshot",
-                "/api/budget",
-                "/api/history",
                 "/api/datapoints",
-                "/api/self-status",
                 "/api/copilot-sessions",
+                "/api/live/capabilities",
                 "/api/live/stream?history=1",
+                "/api/history/board?since=1795130000&until=1795135200&view=charts",
+                "/api/history/board?since=1795130000&until=1795135200&scope=fleet",
+                "/api/board/terminal/events",
+                "/api/board/terminal/file",
+                "/api/board/terminal/metrics",
+                "/api/board/terminal/resources",
+                "/api/board/terminal/sessions",
             )
         }
     )
+    paths["/api/board/machine"] = "/api/board/machine?scope=fleet"
     asset = next((root / "src" / "aictl" / "dashboard" / "dist" / "assets").glob("*.js"), None)
     paths["asset"] = "/assets/" + (asset.name if asset else "no-sqlite-probe.js")
     for path in paths.values():
@@ -73,11 +81,17 @@ def _dashboard_requests(root):
         yield "POST", path
     for path in ("/api/tool-config/copilot-cli", "/api/settings/file"):
         yield "PUT", path
+    for path in sorted(removed):
+        yield "ABSENT", path
 
 
 def _request(port, method, path):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
     try:
+        if method == "ABSENT":
+            connection.request("GET", path)
+            assert connection.getresponse().status == 404, path
+            return
         headers = {"Content-Type": "application/json"} if method != "GET" else {}
         connection.request(method, path, body="{}" if headers else None, headers=headers)
         response = connection.getresponse()
@@ -93,7 +107,7 @@ def _request(port, method, path):
             assert any(line.startswith(b"data:") for line in lines), "No initial SSE frame"
             if route == "/api/live/stream":
                 assert b"event: bootstrap" in lines, "No live bootstrap event"
-        elif method == "GET" and route in ("/", "/api/snapshot", "/api/live/capabilities"):
+        elif method == "GET" and route in ("/", "/api/snapshot", "/api/live/capabilities", "/api/history/board"):
             assert response.status == 200, f"HTTP {response.status}"
     finally:
         connection.close()
@@ -141,6 +155,13 @@ def _supplement_replay(client, settings):
     response("command", ".show tables details | project TableName, TotalExtents, TotalRowCount, TotalExtentSize",
              [("TableName", "string"), ("TotalExtents", "long"), ("TotalRowCount", "long"),
               ("TotalExtentSize", "long")], [["sessions", 0, 0, 0]])
+    response(
+        "command",
+        ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
+        "TotalOriginalSize, HotExtentSize, RetentionPolicy | top 513 by TableName asc",
+        [("TableName", "string"), ("RetentionPolicy", "dynamic")],
+        [["sessions", {"SoftDeletePeriod": "30.00:00:00"}]],
+    )
     for name in names:
         if name in TABLES:
             response("command", f".clear table {quote(name)} data")
@@ -156,10 +177,10 @@ def _supplement_replay(client, settings):
                             f" | where node_id == {node} | where {age}")
     # Ungrouped summaries return one row even when their source is empty.
     for view, columns, rows in (
-        ("board.revision", [("rows", "long"), ("version", "datetime")], [[0, None]]),
         ("events.count", [("count", "long")], [[0]]),
         ("sessions.first_activity", [("first_ts", "real")], [[None]]),
         ("sequence.stamp", [("versions", "long"), ("newest", "datetime"), ("in_window", "long")], [[0, None, 0]]),
+        ("runtime.processes", [("row_type", "string"), ("total", "long")], [["total", 0]]),
         ("tools.detail", [("row_type", "string"), ("total", "long")], [["count", 0]]),
         ("skills.detail",
          [("row_type", "string"), ("uses", "long"), ("agents", "long"), ("total", "long"),

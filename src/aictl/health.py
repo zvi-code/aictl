@@ -290,7 +290,7 @@ def ingestion_traffic(
     return result
 
 
-def node_transport_counters(transport: dict) -> dict:
+def node_transport_counters(transport: dict, writer: dict | None = None) -> dict:
     """Keep only counters (not request or error text) in stored health reports."""
     operations = getattr(transport.get("ingester"), "operations", None)
     fields = ("total", "successful_requests", "in_flight", "failed", "recent_completed", "recent_avg_ms", "avg_ms",
@@ -315,6 +315,16 @@ def node_transport_counters(transport: dict) -> dict:
                 "groups": [{"id": key, **numeric(value)} for key, value in groups.items()]
             }
         result["ingestion_traffic"] = modes
+    if writer is not None and isinstance(writer.get("status"), str):
+        names = ("queue_depth", "queue_bytes", "in_flight", "rows_sent", "rows_dropped", "lost_at_exit",
+                 "ingest_requests", "ingest_failures", "bytes_sent", "last_sent_at", "last_error_at")
+        result["writer"] = {
+            "status": writer["status"],
+            "tables": {
+                name: {key: counters[key] for key in names if isinstance(counters.get(key), (int, float))}
+                for name, counters in writer.get("tables", {}).items()
+            },
+        }
     return result
 
 

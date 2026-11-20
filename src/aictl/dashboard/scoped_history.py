@@ -16,8 +16,6 @@ from .projections.history import HistoryScope, configured_reader, scoped_records
 from .session_evidence import EvidenceInputError, session_evidence
 
 logger = logging.getLogger(__name__)
-_lock = threading.Lock()
-_boards: dict[tuple, tuple[float, bytes]] = {}
 _aux_locks = {name: threading.Lock() for name in ("machine", "context")}
 _aux_cache: dict[str, dict[tuple, tuple[float, bytes]]] = {name: {} for name in _aux_locks}
 
@@ -119,24 +117,6 @@ def route(db, scope, path, query, params, now, *, reader=None):
 
     history = HistoryScope(reader, scope.node, qualified=True)
     try:
-        if path == "/api/board":
-            filters = board.parse_filters(query, now)
-            span = filters.until - filters.since
-            if span > 31 * 86400:
-                raise ScopeError("Node history supports a time range of up to 31 days", 422, "history_limit")
-            if abs(filters.until - now) <= 10:
-                filters = board._clock_range(filters)
-            key = (reader, scope, filters)
-            with _lock:
-                hit = _boards.get(key)
-                if hit and time.monotonic() - hit[0] < (120 if span > 86400 else 45):
-                    return 200, hit[1]
-                status, body = result(200, board.compute_board(db, filters, now=now, history=history))
-                _boards[key] = (time.monotonic(), body)
-                if len(_boards) > 12:
-                    _boards.pop(next(iter(_boards)))
-                return status, body
-
         lo, hi = number("since"), number("until")
         if lo is not None and hi is not None and lo >= hi:
             raise ScopeError("since must be earlier than until")

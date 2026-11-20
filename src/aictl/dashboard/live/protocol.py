@@ -73,6 +73,7 @@ TOPICS = {
     "configuration.loaded": {"sources": ["runtime.evidence", "runtime.native"], "delivery": "latest"},
     "configuration.board": {"sources": ["filesystem.config"], "delivery": "latest"},
     "history.board": {"sources": ["kusto.queryable"], "delivery": "latest"},
+    "history.agent": {"sources": ["kusto.queryable"], "delivery": "latest"},
     "catalog.board": {"sources": ["catalog"], "delivery": "latest"},
     "source.status": {"sources": ["runtime.operational"], "delivery": "latest"},
 }
@@ -94,7 +95,8 @@ SOURCE_POLICY = {
     "activity": "kusto.queryable",
 }
 
-_CONTROL_PARAMS = frozenset({"cursor", "history"})
+_CONTROL_PARAMS = frozenset({"cursor", "history", "agent_watch"})
+AGENT_VIEWS = frozenset({"detail", "flow", "transcript"})
 
 
 def stable_id(*parts: object) -> str:
@@ -110,6 +112,21 @@ def canonical_scope(query: str) -> str:
     return urlencode(
         sorted((key, value) for key, value in parse_qsl(query, keep_blank_values=True) if key not in _CONTROL_PARAMS)
     )
+
+
+def parse_agent_watch(query: str) -> tuple[str, str] | None:
+    watches = [value for key, value in parse_qsl(query, keep_blank_values=True) if key == "agent_watch"]
+    if not watches:
+        return None
+    view, sep, agent_id = watches[0].partition(":")
+    if (len(watches) != 1 or view not in AGENT_VIEWS or not sep or not agent_id or
+            len(agent_id) > 512 or any(ord(char) < 32 for char in agent_id)):
+        raise ValueError("Invalid agent watch")
+    return view, agent_id
+
+
+def watched_agent_id(watch: tuple[str, str]) -> str:
+    return stable_id(*watch)
 
 
 def validate_source(topic: str, source: str) -> None:
@@ -146,8 +163,10 @@ def capabilities() -> dict:
     }
 
 
-def entity_visible(entity: dict, scope: str, history: bool) -> bool:
+def entity_visible(entity: dict, scope: str, history: bool, agent_entity: str | None = None) -> bool:
     topic = entity["topic"]
+    if topic == "history.agent":
+        return history and entity["id"] == agent_entity
     data = entity.get("data") or {}
     entity_scope = data.get("scope", entity.get("scope"))
     if entity_scope is not None and (not history or entity_scope != scope):

@@ -1,7 +1,7 @@
-"""Compatibility fields for Health and self-status."""
+"""Operational health projections."""
 
 from ...stores import store_for
-from .history import capture_mode, complete_rows, local_scope
+from .history import complete_rows, local_scope
 
 _COUNT_NAMES = {
     "system_snapshots": "metrics", "process_snapshots": "tool_metrics", "files": "file_store",
@@ -43,18 +43,3 @@ def store_health(store):
             if table.get("last_error"):
                 table["last_error"] = mask_secrets(str(table["last_error"]))
     return health
-
-
-def storage_fields(db, reader):
-    """Keep the original fields for store health."""
-    degraded = getattr(db, "degraded_reason", "") or ""
-    return {
-        "capture_mode": capture_mode(db),
-        "storage_bytes": None,
-        "storage_live_bytes": None,
-        "storage_budget_bytes": None,
-        "storage_degraded": bool(degraded),
-        "storage_degraded_reason": degraded or (
-            "No store configured" if reader.health().get("status") == "no store configured" else ""
-        ),
-    }

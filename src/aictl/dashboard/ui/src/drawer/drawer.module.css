@@ -1,0 +1,45 @@
+.body { display: grid; align-content: start; gap: var(--space-4); min-inline-size: 0; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); min-inline-size: 0; }
+.section { display: grid; align-content: start; min-inline-size: 0; gap: var(--space-3); padding: var(--space-4); border: var(--border-size) solid var(--color-border); border-radius: var(--radius-md); }
+.section h3 { margin: 0; font-size: var(--text-md); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12ch), 1fr)); gap: var(--space-3); }
+.button { composes: button from "../ui/control.module.css"; }
+.field { display: grid; gap: var(--space-1); min-inline-size: 0; font-size: var(--text-sm); }
+.field :is(input, select, textarea) { box-sizing: border-box; max-inline-size: 100%; }
+.muted { color: var(--color-muted); font-size: var(--text-sm); }
+.meta { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); overflow-wrap: anywhere; }
+.meta span { font-variant-numeric: tabular-nums; }
+.code { font-family: var(--font-mono); width: 100%; min-block-size: 12em; }
+.scroll { overflow: auto; overflow-anchor: none; min-block-size: 0; block-size: min(52dvh, var(--overlay-lg)); border: var(--border-size) solid var(--color-border); border-radius: var(--radius-sm); }
+.scroll:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
+.virtual { position: relative; }
+.virtualRow { position: absolute; inset: 0 0 auto; padding: var(--space-2); box-sizing: border-box; }
+.turn { display: grid; gap: var(--space-2); padding: var(--space-3); border: var(--border-size) solid var(--color-border); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.track { display: flex; gap: var(--space-1); block-size: var(--space-2); }
+.track span { border-radius: var(--radius-sm); background: var(--color-chart-1); }
+.track span:nth-child(2) { background: var(--color-chart-2); }
+.track span:nth-child(3) { background: var(--color-chart-3); }
+.stack { display: grid; gap: var(--space-3); }
+.stack[hidden] { display: none; }
+.pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.suggestions { list-style: none; margin: 0; padding: var(--space-2); background: var(--color-raised); border-radius: var(--radius-sm); }
+.suggestions li { cursor: pointer; padding: var(--space-2) var(--space-4); font-family: var(--font-mono); }
+.suggestions li:hover, .suggestions li[aria-selected="true"] { background: var(--color-accent); color: var(--color-on-accent); }
+.lanes { overflow-x: auto; min-inline-size: 0; }
+.laneGrid { min-inline-size: calc(var(--lane-count) * 9rem); }
+.laneHeader, .laneRow { display: grid; grid-template-columns: repeat(var(--lane-count), minmax(0, 1fr)); align-items: center; }
+.laneHeader span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: var(--space-2); font-weight: 600; border-inline-start: var(--border-size) solid var(--color-border); }
+.laneEdge { grid-row: 1; background: var(--color-chart-2); block-size: var(--border-size); margin-inline: var(--space-3); }
+.laneEdge::after { content: '›'; float: right; translate: 0 -50%; color: var(--color-chart-2); }
+.laneEdge[data-direction="left"]::after { content: '‹'; float: left; }
+.laneEvent { composes: button from "../ui/control.module.css"; grid-row: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-inline-size: 0; z-index: 1; }
+.laneEvent[aria-pressed="true"] { border-color: var(--color-accent); }
+.gap { color: var(--color-muted); font-size: var(--text-sm); border-block-end: var(--border-size) dashed var(--color-border); }
+.timeBar { composes: button from "../ui/control.module.css"; display: grid; grid-template-columns: minmax(12ch, 1fr) minmax(4ch, 2fr) minmax(5ch, auto); align-items: center; gap: var(--space-2); inline-size: 100%; text-align: start; font-variant-numeric: tabular-nums; }
+.timeTrack { background: var(--color-raised); block-size: var(--space-3); border-radius: var(--radius-sm); }
+.timeValue, .timeValue span { display: block; block-size: 100%; border-radius: inherit; background: var(--color-chart-1); }
+.timeValue span { background: var(--color-chart-2); }
+.agentLane { display: grid; grid-template-columns: minmax(12ch, 1fr) 3fr; align-items: center; gap: var(--space-3); }
+.agentLane .timeTrack { position: relative; }
+.agentLane button { position: absolute; inset-block: 0; min-inline-size: var(--space-3); padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--color-chart-2); cursor: pointer; }

@@ -97,14 +97,17 @@ class Dashboard:
         with ThreadPoolExecutor(max_workers=3) as pool:
             sessions = pool.submit(get, "/api/board/sessions", q="", limit=20, offset=0)
             settings = pool.submit(get, "/api/settings/files")
-            board = pool.submit(get, "/api/board", since=round(time.time() - 900))
+            identity = get("/api/board/nodes#identity", view="identity", scope="local") or {}
+            node = (identity.get("local_node") or {}).get("node_id", "capture-missing-node")
+            board = pool.submit(get, "/api/history/board", since=round(time.time() - 900), scope="node", node_id=node)
             base = [pool.submit(get, name) for name in (
-                "/api/live/capabilities", "/api/board/health", "/api/board/machine", "/api/board/context",
+                "/api/live/capabilities", "/api/board/context",
                 "/api/settings/tools", "/api/effective-models", "/api/otel-status", "/api/hooks-status",
                 "/api/stream",
             )]
             base += [
                 pool.submit(get, "/api/context-audit", nowait=1),
+                pool.submit(get, "/api/board/machine", scope="fleet"),
                 pool.submit(get, "/api/board/nodes#overview", view="overview", scope="fleet"),
                 pool.submit(get, "/api/board/nodes#health", view="health", scope="fleet"),
             ]
@@ -122,7 +125,7 @@ class Dashboard:
             board_data = board.result() or {}
             agents = board_data.get("agents", []) if isinstance(board_data, dict) else []
             agent = next((entry for entry in agents if isinstance(entry, dict) and entry.get("id")), {})
-            agent_id = agent.get("id") or session.get("agent_id") or session.get("id") or sid
+            agent_id = json.loads(agent["id"])[1] if agent else session.get("agent_id") or session.get("id") or sid
             errors = board_data.get("errors", []) if isinstance(board_data, dict) else []
             error = next((entry.get("key") for entry in errors if isinstance(entry, dict) and entry.get("key")),
                          "capture-missing-error")
@@ -148,10 +151,6 @@ class Dashboard:
             }
             for name in ("session-processes", "session-stats", "session-commits", "session-mcp-usage"):
                 values[f"/api/{name}"] = {"session_id": sid}
-            identity = get("/api/board/nodes#identity", view="identity", scope="local") or {}
-            node_rows = identity.get("rows", []) if isinstance(identity, dict) else []
-            node = next((entry.get("node_id") for entry in node_rows if isinstance(entry, dict)
-                         and entry.get("node_id")), "capture-missing-node")
             qualified = json.dumps([node, sid], ensure_ascii=True, separators=(",", ":"))
             values["/api/board/nodes#session"] = {
                 "view": "session", "scope": "node", "node_id": node, "session_id": sid,

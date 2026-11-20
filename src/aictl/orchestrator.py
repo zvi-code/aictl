@@ -967,7 +967,6 @@ def start_server(
 
 # ── SnapshotStore / AllowedPaths ────────────────────────────────────
 
-import collections
 import json as _json
 import os as _os
 import threading as _threading
@@ -1005,7 +1004,7 @@ HISTORY_TUPLE_LEN = 11  # bump when adding fields to the history tuple
 
 
 class SnapshotState:
-    """Version-tracked snapshot with ring buffers and change notification."""
+    """Version-tracked snapshot with change notification."""
 
     def __init__(self) -> None:
         self._snap: _DashboardSnapshot | None = None
@@ -1014,73 +1013,12 @@ class SnapshotState:
         self._version: int = 0
         self._lock = _threading.Lock()
         self._condition = _threading.Condition(self._lock)
-        # Ring buffer for global time-series sparklines.
-        # At ~5.86s/tick, 360 entries ≈ 35 min.
-        self._history: collections.deque[tuple] = collections.deque(maxlen=360)
-        # Per-tool history: {tool_name: deque[(ts, cpu, mem_mb, tokens, traffic_bps)]}
-        self._tool_history: dict[str, collections.deque] = {}
-
-    def load_history(self, reader) -> None:
-        """Populate ring buffers from the history reader."""
-        from .dashboard.projections.metrics import system_history, tool_history
-
-        try:
-            since = _time.time() - 3600  # load last 1 hour
-            data = system_history(reader, since=since)
-            if data["ts"]:
-                me_list = data.get("memory_entries") or [0] * len(data["ts"])
-                for i in range(len(data["ts"])):
-                    row = (
-                        data["ts"][i],
-                        data["files"][i],
-                        data["tokens"][i],
-                        data["cpu"][i],
-                        data["mem_mb"][i],
-                        data["mcp"][i],
-                        data["mem_tokens"][i],
-                        me_list[i],
-                        data["live_sessions"][i],
-                        data["live_tokens"][i],
-                        data["live_in_rate"][i],
-                        data["live_out_rate"][i],
-                    )
-                    self._history.append(row)
-            # Per-tool history
-            tool_data = tool_history(reader, since=since)
-            for tool_name, td in tool_data.items():
-                dq = collections.deque(maxlen=120)
-                for i in range(len(td["ts"])):
-                    dq.append((td["ts"][i], td["cpu"][i], td["mem_mb"][i], td["tokens"][i], td["traffic"][i]))
-                self._tool_history[tool_name] = dq
-        except Exception as exc:
-            log.warning("Could not load store history: %s", exc)
 
     def update(self, snap: _DashboardSnapshot, serializer: SnapshotSerializer) -> list[tuple]:
-        """Update state, pre-serialize, notify waiters. Returns tool_rows."""
+        """Publish the new snapshot and return per-tool samples for storage."""
         with self._condition:
             self._snap = snap
             self._version += 1
-            row = (
-                snap.timestamp,
-                snap.total_files,
-                snap.total_tokens,
-                snap.total_cpu,
-                snap.total_mem_mb,
-                snap.total_mcp_servers,
-                snap.total_memory_tokens,
-                snap.total_memory_entries,
-                snap.total_live_sessions,
-                snap.total_live_estimated_tokens,
-                snap.total_live_inbound_rate_bps,
-                snap.total_live_outbound_rate_bps,
-            )
-            # Clear history if schema changed (prevents zip unpack crash)
-            if self._history and len(self._history[0]) != len(row):
-                self._history.clear()
-            self._history.append(row)
-
-            # Per-tool history
-            ts = snap.timestamp
             tool_rows: list[tuple] = []
             for t in snap.tools:
                 if t.tool == "aictl":
@@ -1091,9 +1029,6 @@ class SnapshotState:
                 traffic = 0.0
                 if t.live:
                     traffic = float(t.live.get("outbound_rate_bps", 0)) + float(t.live.get("inbound_rate_bps", 0))
-                if t.tool not in self._tool_history:
-                    self._tool_history[t.tool] = collections.deque(maxlen=120)  # ~12 min
-                self._tool_history[t.tool].append((ts, cpu, mem, tok, traffic))
                 tool_rows.append((t.tool, cpu, mem, tok, traffic))
 
             # Serialize on first read, once per version: with no client attached
@@ -1128,21 +1063,8 @@ class SnapshotState:
         with self._lock:
             return self._version
 
-    def history_data(self) -> tuple[list[tuple], dict[str, list[tuple]]]:
-        """Extract a consistent copy of the ring buffer data for serialization.
-
-        Deep-copies under the lock so serializers never iterate deques
-        that ``update()`` (RefreshLoop thread) is concurrently appending
-        to — that raises RuntimeError and turns /api/history into a 500.
-        """
-        with self._lock:
-            rows = list(self._history)
-            tool_history = {tool: list(dq) for tool, dq in self._tool_history.items()}
-        return rows, tool_history
-
-
 class SnapshotSerializer:
-    """Pre-serializes snapshots to JSON/SSE formats."""
+    """Serialize a snapshot to JSON."""
 
     @staticmethod
     def serialize_snapshot(snap: _DashboardSnapshot) -> bytes:
@@ -1151,43 +1073,6 @@ class SnapshotSerializer:
             return snap.to_json_slim().encode("utf-8")
         except Exception:
             return b""
-
-    @staticmethod
-    def serialize_history(rows: list[tuple], tool_history: dict[str, list[tuple]]) -> str:
-        """Return time-series history as column-major JSON (uPlot format)."""
-        from .records import METRICS_KEYS
-
-        if not rows:
-            return _json.dumps({k: [] for k in METRICS_KEYS})
-        # Transpose rows → columns; order must match METRICS_KEYS
-        cols = zip(*rows)
-        _ROUND2 = {"cpu", "live_in_rate", "live_out_rate"}
-        _ROUND1 = {"mem_mb"}
-        result: dict = {}
-        for key, col in zip(METRICS_KEYS, cols):
-            vals = list(col)
-            if key in _ROUND1:
-                result[key] = [round(v, 1) for v in vals]
-            elif key in _ROUND2:
-                result[key] = [round(v, 2) for v in vals]
-            else:
-                result[key] = vals
-        # Per-tool history
-        tool_hist: dict[str, dict] = {}
-        for tool_name, dq in tool_history.items():
-            if not dq:
-                continue
-            t_ts, t_cpu, t_mem, t_tok, t_traffic = zip(*dq)
-            tool_hist[tool_name] = {
-                "ts": list(t_ts),
-                "cpu": [round(v, 1) for v in t_cpu],
-                "mem_mb": [round(v, 1) for v in t_mem],
-                "tokens": list(t_tok),
-                "traffic": [round(v, 2) for v in t_traffic],
-            }
-        result["by_tool"] = tool_hist
-        return _json.dumps(result)
-
 
 # Minimum seconds between file-store sync passes. The ~5s refresh cadence
 # never pays file-sync cost more than once a minute.
@@ -1559,7 +1444,8 @@ class SnapshotStore:
         from .health import node_transport_counters
 
         self._persistence.transport_sample = lambda: node_transport_counters(
-            stores.reader_feature(self.history_store.history_reader(), "transport_diagnostics", writer) or {}
+            stores.reader_feature(self.history_store.history_reader(), "transport_diagnostics", writer) or {},
+            self.history_store.writer.health() if self.history_store.writer is not None else None,
         )
         # Exposed for callers that access these directly
         self._db = db
@@ -1569,7 +1455,6 @@ class SnapshotStore:
         self.live_sources = None
         # The refresh loop waits on this; request_refresh sets it.
         self.refresh_requested = _threading.Event()
-        self._state.load_history(stores.reader_or_empty(self.history_store.reader))
 
     def update(self, snap: _DashboardSnapshot) -> None:
         tool_rows = self._state.update(snap, self._serializer)
@@ -1599,12 +1484,6 @@ class SnapshotStore:
     @property
     def version(self) -> int:
         return self._state.version
-
-    def history_json(self) -> str:
-        """Return time-series history as column-major JSON (uPlot native format)."""
-        rows, tool_history = self._state.history_data()
-        return self._serializer.serialize_history(rows, tool_history)
-
 
 # A path's real path is looked up again after this long; a symlink seldom changes.
 REALPATH_TTL_S = 300.0

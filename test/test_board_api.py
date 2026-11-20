@@ -116,10 +116,6 @@ def _insert_many(db, table, columns, rows):
         _insert(db, table, **dict(zip(columns.split(), row, strict=True)))
 
 
-def _snapshot_store(db, version=1, snapshot=None):
-    return SimpleNamespace(version=version, snapshot=snapshot, history_store=db.history_store)
-
-
 def seed(db: SeededStore, now: float) -> None:
     """Five sessions, with hand-countable numbers.
 
@@ -221,14 +217,8 @@ def _no_state_from_other_tests():
         board_api._facts_memo,
         board_api._sources_memo,
         board_api._disk_prompts_memo,
-        board_api._BASE_TIMES,
-        board_api._SENT,
-        board_api._COMPUTED_AT,
-        board_api._COMPUTED_REVISIONS,
     ):
         memo.clear()
-    board_api._MEMO._entries.clear()
-    board_api._BASE_MEMO._entries.clear()
     board_api._self_memo[:] = [0.0, None]
 
 
@@ -240,10 +230,11 @@ def _no_real_process_times(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def board_clock(monkeypatch):
-    from aictl.dashboard import web_server
+    from aictl.dashboard import history_board, web_server
 
     frozen = SimpleNamespace(**(vars(time) | {"time": lambda: NOW}))
     monkeypatch.setattr(board_api, "time", frozen)
+    monkeypatch.setattr(history_board, "time", frozen)
     monkeypatch.setattr(web_server, "time", frozen)
     monkeypatch.setitem(globals(), "time", frozen)
     return frozen
@@ -1236,227 +1227,6 @@ class TestLiveProcessSessions:
         assert agent_detail(db, "real", snapshot, NOW)[1]["agent"]["status"] == "idle"
 
 
-class TestRangeKey:
-    def test_a_client_clock_that_moves_keeps_one_answer(self, db, monkeypatch):
-        store = _snapshot_store(db)
-        when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-        runs = []
-        real = board_api.compute_board
-        monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: runs.append(1) or real(*a, **k))
-        first = board_api.board_bytes(db, store, f"since={when - DAY}&until={when}", when)
-        again = board_api.board_bytes(db, store, f"since={when - DAY + 5}&until={when + 5}", when + 5)
-        assert again == first
-        assert len(runs) == 1
-
-    def test_old_rows_stay_in_their_buckets_while_the_clock_moves(self, db):
-        """The range moves in steps, so an answer with no new data does not change."""
-        store = _snapshot_store(db)
-        step = 30 * DAY / 48 / 4
-        when = int(NOW / step) * step + 1.0  # just after a step line
-        conn = db
-        for k in range(2000):
-            _request(conn, when - 20 * DAY + k * 60, "bulk", "claude-code", "/p/alpha", SONNET, i=1)
-
-        first = board_api.board_bytes(db, store, f"since={when - 30 * DAY}&until={when}", when)
-        later = when + 3 * board_api.MEMO_TTL_S
-        again = board_api.board_bytes(db, store, f"since={later - 30 * DAY}&until={later}", later)
-        assert again == first
-        rng = json.loads(first)["range"]
-        assert rng["until"] - rng["since"] == pytest.approx(30 * DAY)
-        assert 0 <= rng["until"] - when <= step
-
-    def test_a_range_in_the_past_keeps_its_own_key(self, db, monkeypatch):
-        store = _snapshot_store(db)
-        when = NOW
-        one = json.loads(board_api.board_bytes(db, store, f"since={when - 3 * DAY}&until={when - DAY}", when))
-        two = json.loads(board_api.board_bytes(db, store, f"since={when - 4 * DAY}&until={when - 2 * DAY}", when))
-        assert one["range"]["until"] == pytest.approx(when - DAY)
-        assert two["range"]["until"] == pytest.approx(when - 2 * DAY)
-
-
-class TestRefreshBehind:
-    def _when(self):
-        return int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-
-    def _wait(self):
-        if board_api._refresh_thread is not None:
-            board_api._refresh_thread.join(10)
-
-    def test_a_poll_answers_from_memory_and_the_next_one_has_the_new_data(self, db):
-        store = _snapshot_store(db)
-        first = board_api.board_bytes(db, store, "", time.time(), background=True)
-        conn = db
-        _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-
-        # Computed moments ago: the old answer stays and no refresh starts.
-        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
-        key = next(iter(board_api._COMPUTED_AT))
-        rest = max(board_api.REFRESH_MIN_S, board_api._COMPUTE_TOOK[key] * board_api.REFRESH_REST_RATIO)
-        board_api._COMPUTED_AT[key] -= min(rest, board_api.MAX_STALE_S / 2)
-        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
-        self._wait()
-        assert b'"fresh"' in board_api.board_bytes(db, store, "", time.time(), background=True)
-
-    def test_a_request_that_waited_for_a_slow_compute_takes_its_answer(self, db, monkeypatch):
-        """Two polls on a slow store compute once: the second takes the answer that finished while it waited."""
-        import threading
-
-        store = _snapshot_store(db)
-        real = board_api.compute_board
-        calls = []
-        computing, release, second_waits = threading.Event(), threading.Event(), threading.Event()
-
-        def slow(*args, **kwargs):
-            calls.append(1)
-            computing.set()
-            assert release.wait(10)
-            return real(*args, **kwargs)
-
-        class SeenLock:
-            """The compute lock; the second poll says when it has come to wait for it."""
-
-            def __init__(self):
-                self._lock = threading.Lock()
-
-            def __enter__(self):
-                if threading.current_thread().name == "second":
-                    second_waits.set()
-                self._lock.acquire()
-
-            def __exit__(self, *exc):
-                self._lock.release()
-
-        monkeypatch.setattr(board_api, "compute_board", slow)
-        monkeypatch.setattr(board_api, "_COMPUTE_LOCK", SeenLock())
-        out = {}
-        later = time.time() + board_api.MEMO_TTL_S  # another store version, so the memo alone would not answer
-
-        def first():
-            out["a"] = board_api.board_bytes(db, store, "", time.time(), background=True)
-
-        def second():
-            out["b"] = board_api.board_bytes(db, store, "", later, background=True)
-
-        # The order is made, not waited for: the first poll is inside its compute when
-        # the second one comes to the lock, and only then does the compute finish.
-        t1 = threading.Thread(target=first, name="first")
-        t1.start()
-        assert computing.wait(10)
-        t2 = threading.Thread(target=second, name="second")
-        t2.start()
-        assert second_waits.wait(10)
-        release.set()
-        t1.join(timeout=30)
-        assert not t1.is_alive(), "t1 did not finish: a hang fails the test instead of stalling the run"
-        t2.join(timeout=30)
-        assert not t2.is_alive(), "t2 did not finish: a hang fails the test instead of stalling the run"
-        assert len(calls) == 1
-        assert out["a"] == out["b"]
-
-    def test_a_locked_store_answers_with_the_last_board(self, db, monkeypatch):
-        from aictl.stores.base import StoreError
-
-        store = _snapshot_store(db)
-        first = board_api.board_bytes(db, store, "", time.time(), background=True)
-
-        def locked(*_a, **_k):
-            raise StoreError("database is locked")
-
-        monkeypatch.setattr(board_api, "_store_version", locked)
-        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
-        with pytest.raises(StoreError):
-            board_api.board_bytes(db, store, "tool=codex-cli", time.time(), background=True)
-
-    def test_an_answer_too_old_is_not_served(self, db):
-        store = _snapshot_store(db)
-        first = board_api.board_bytes(db, store, "", time.time(), background=True)
-        conn = db
-        _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-
-        key = next(iter(board_api._COMPUTED_AT))
-        board_api._COMPUTED_AT[key] -= board_api.MAX_STALE_S
-        assert board_api.board_bytes(db, store, "", time.time(), background=True) != first
-
-    def test_a_new_filter_is_answered_for_that_filter(self, db):
-        store = _snapshot_store(db)
-        board_api.board_bytes(db, store, "", time.time(), background=True)
-        payload = json.loads(board_api.board_bytes(db, store, "tool=codex-cli", time.time(), background=True))
-        assert [a["id"] for a in payload["agents"]] == ["usage"]
-
-    def test_a_failed_refresh_leaves_the_answer(self, db, monkeypatch):
-        store = _snapshot_store(db)
-        first = board_api.board_bytes(db, store, "", time.time(), background=True)
-        monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: 1 / 0)
-        conn = db
-        _request(conn, time.time() - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-
-        key = next(iter(board_api._COMPUTED_AT))
-        board_api._COMPUTED_AT[key] -= board_api.REFRESH_MIN_S
-        assert board_api.board_bytes(db, store, "", time.time(), background=True) == first
-        self._wait()
-
-
-class TestUnchangedAnswers:
-    """A polling client pays a 304 unless the data changed."""
-
-    def _when(self):
-        return int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-
-    def test_a_recompute_with_the_same_data_returns_the_same_bytes(self, db):
-        store = _snapshot_store(db)
-        when = self._when()
-        first = board_api.board_bytes(db, store, f"since={when - DAY}&until={when + 900}", when)
-        again = board_api.board_bytes(db, store, f"since={when - DAY}&until={when + 900}", when + board_api.MEMO_TTL_S)
-        assert again == first
-
-    def test_clock_following_range_and_live_load_do_not_change_the_bytes(self, db):
-        def snapshot(cpu):
-            proc = SimpleNamespace(pid=4, name="c", cpu_pct=str(cpu), mem_mb=str(cpu), process_type="cli")
-            return SimpleNamespace(
-                sessions=[{**_live("claude-code:4:1", "claude-code", "/p/beta", [4], 1000.0), "cpu_percent": cpu}],
-                tools=[SimpleNamespace(tool="claude-code", meta=False, processes=[proc])],
-            )
-
-        # A range that follows the clock ends on a step line (a quarter bucket). Taken from
-        # NOW alone, one start in thirty sat on a line, and the tick moved the range on.
-        # So the clock sits just before the next line, and a tick later still ends on it.
-        def end(t):
-            return board_api._clock_range(board_api.parse_filters(f"since={t - DAY}", t)).until
-
-        when = end(self._when()) - board_api.MEMO_TTL_S
-        assert end(when) == end(when + board_api.MEMO_TTL_S)
-        store = _snapshot_store(db, snapshot=snapshot(1.0))
-        first = board_api.board_bytes(db, store, f"since={when - DAY}", when)
-        store.snapshot = snapshot(50.0)
-        store.version = 2
-        assert board_api.board_bytes(db, store, f"since={when - DAY}", when + board_api.MEMO_TTL_S) == first
-
-    def test_new_data_changes_the_bytes(self, db, monkeypatch):
-        monkeypatch.setattr(board_api, "time", SimpleNamespace(time=time.time, monotonic=lambda: 100.0))
-        store = _snapshot_store(db)
-        when = self._when()
-        first = board_api.board_bytes(db, store, f"since={when - DAY}", when)
-        conn = db
-        _request(conn, when - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-
-        assert board_api.board_bytes(db, store, f"since={when - DAY}", when + 1) != first
-
-    def test_the_bytes_are_sent_anew_after_a_while(self, db):
-        store = _snapshot_store(db)
-        when = self._when()
-        query = f"since={when - DAY}&until={when + 900}"
-        first = json.loads(board_api.board_bytes(db, store, query, when))
-        later = json.loads(board_api.board_bytes(db, store, query, when + board_api.RESEND_AFTER_S + 1))
-        assert later["generated_at"] > first["generated_at"]
-
-    def test_http_answers_304_after_a_recompute(self, db, monkeypatch, server):
-        _status, _body, headers = _http(f"{server}/api/board", headers={"Accept-Encoding": "gzip"})
-        board_api._MEMO._entries.clear()  # as when the store version moves on
-        board_api._COMPUTED_AT.clear()  # and the answer has to be computed again
-        status, _body, _ = _http(f"{server}/api/board", headers={"Accept-Encoding": "gzip", "If-None-Match": headers["ETag"]})
-        assert status == 304
-
-
 class TestStatusRules:
     def test_recent_activity_without_live_session_is_active(self, db):
         assert _agent(_board(db), "looper")["status"] == "looping"
@@ -2025,83 +1795,39 @@ def _http(url, data=None, headers=None):
 
 class TestHttp:
     def test_board_contract_keys(self, server):
-        status, body, _ = _http(f"{server}/api/board")
-        assert status == 200
+        from test_contract import validate_detail
+
+        path = "/api/history/board"
+        since = NOW - 7 * DAY
+        status, body, _ = _http(f"{server}{path}?since={since}&until={NOW}&view=charts")
+        assert status == 200, body
         payload = json.loads(body)
-        assert set(payload) >= {
-            "generated_at",
-            "capture_mode",
-            "range",
-            "options",
-            "scope",
-            "kpis",
-            "attention",
-            "agents",
-            "by_model",
-            "by_role",
-            "series",
-            "saved_usd",
-            "projects",
-            "prompts",
-            "project_prompts",
-            "skills",
-            "tools",
-            "confirms",
-            "errors",
-            "latency",
-            "loops",
-            "changes",
-            "tests",
-            "memory_files",
-            "processes",
-            "sources",
-            "coverage",
-            "self",
-        }
-        assert set(payload["agents"][0]) >= {
-            "id",
-            "short",
-            "title",
-            "parent_id",
-            "role",
-            "status",
-            "tool",
-            "project",
-            "models",
-            "msgs",
-            "input",
-            "output",
-            "cache_read",
-            "cache_write",
-            "cached_share",
-            "cost_usd",
-            "tool_calls",
-            "failures",
-            "confirms_asked",
-            "confirms_denied",
-            "pending",
-            "cpu_percent",
-            "mem_mb",
-            "pids",
-            "started_at",
-            "ended_at",
-            "activity",
-        }
+        validate_detail(path, payload)
+        assert set(payload) == {"node_scope", "range", "series"}
+        assert payload["node_scope"] == {"kind": "local", "node_id": None}
+        assert payload["range"]["bucket_starts"][0] == since
+        assert len(payload["series"]["tokens"]["input"]) == len(payload["range"]["bucket_starts"])
 
     def test_gzip_and_etag(self, server):
-        status, body, headers = _http(f"{server}/api/board", headers={"Accept-Encoding": "gzip"})
-        assert status == 200
+        url = f"{server}/api/history/board?since={NOW - 7 * DAY}&until={NOW}&view=charts"
+        status, body, headers = _http(url, headers={"Accept-Encoding": "gzip"})
+        assert status == 200, body
         assert headers["Content-Encoding"] == "gzip"
         json.loads(gzip.decompress(body))
-        repeat, _, _ = _http(f"{server}/api/board", headers={"Accept-Encoding": "gzip", "If-None-Match": headers["ETag"]})
+        repeat, _, _ = _http(url, headers={"Accept-Encoding": "gzip", "If-None-Match": headers["ETag"]})
         assert repeat == 304
 
     def test_query_filters(self, server):
-        _status, body, _ = _http(f"{server}/api/board?tool=codex-cli")
-        assert [a["id"] for a in json.loads(body)["agents"]] == ["usage"]
+        url = f"{server}/api/history/board?since={NOW - 7 * DAY}&until={NOW}&view=charts"
+        all_status, all_body, _ = _http(url)
+        status, body, _ = _http(url + "&tool=copilot-vscode,codex-cli")
+        assert status == all_status == 200, (body, all_body)
+        assert 0 < sum(json.loads(body)["series"]["tokens"]["input"]) < sum(
+            json.loads(all_body)["series"]["tokens"]["input"]
+        )
 
     def test_bad_query_is_400(self, server):
-        status, body, _ = _http(f"{server}/api/board?status=nope")
+        status, body, _ = _http(f"{server}/api/history/board?status=nope")
         assert status == 400
         assert "status" in json.loads(body)["error"]
 
@@ -2122,7 +1848,7 @@ class TestHttp:
         assert _http(server + path)[0] == code
 
     def test_routes_answer_only_this_machine(self, server):
-        for path in ("/api/board", "/api/board/agent?id=done"):
+        for path in ("/api/history/board", "/api/board/agent?id=done"):
             assert _http(server + path, headers={"Host": "evil.example"})[0] == 403
 
     def test_action_without_confirm_is_refused(self, server):
@@ -2149,93 +1875,19 @@ class TestHttp:
     def test_action_bad_json(self, server):
         assert _http(f"{server}/api/board/action", data=b"not json")[0] == 400
 
-    def test_no_store(self, tmp_path):
-        status, body = board_api.handle_get("/api/board", "", None, None)
-        assert status == 503
-        assert "error" in json.loads(body)
+def test_percentiles_of_a_large_set_use_a_sample_and_keep_thin_groups(db):
+    ts = NOW - 3 * DAY
+    for k in range(100):
+        _request(db, ts + k, "wide", "claude-code", "/p/wide", SONNET, i=1, duration=float(k + 1))
+    _request(db, ts, "rare", "claude-code", "/p/rare", "claude-opus-4-5", i=1, duration=7777.0)
 
-
-class TestMemo:
-    def test_same_key_and_version_reuse_the_answer(self, db, monkeypatch):
-        board_api._MEMO._entries.clear()
-        store = _snapshot_store(db)
-        runs = []
-        real = board_api.compute_board
-        monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: runs.append(1) or real(*a, **k))
-        when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-        first = board_api.board_bytes(db, store, "", when)
-        assert board_api.board_bytes(db, store, "", when + 1) == first
-        assert len(runs) == 1
-        board_api.board_bytes(db, store, "tool=claude-code", when + 1)
-        assert len(runs) == 2
-
-    def test_new_rows_refresh_at_once_and_merged_rows_within_the_ttl(self, db):
-        board_api._MEMO._entries.clear()
-        store = _snapshot_store(db)
-        when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-        board_api.board_bytes(db, store, "", when)
-        conn = db
-        _request(conn, when - 5, "fresh", "claude-code", "/p/alpha", SONNET, i=5)
-
-        assert b'"fresh"' in board_api.board_bytes(db, store, "", when)
-        db.replace("requests", where={"session_id": "fresh"}, input_tokens=6)
-
-        payload = json.loads(board_api.board_bytes(db, store, "", when + board_api.MEMO_TTL_S))
-        assert _agent(payload, "fresh")["input"] == 6
-
-    def test_a_new_monitor_cycle_alone_does_not_recompute(self, db, monkeypatch):
-        board_api._MEMO._entries.clear()
-        store = _snapshot_store(db)
-        when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-        first = board_api.board_bytes(db, store, "", when)
-        store.version = 2
-        monkeypatch.setattr(board_api, "compute_board", lambda *a, **k: pytest.fail("recomputed"))
-        assert board_api.board_bytes(db, store, "", when + 1) == first
-
-    def test_a_change_of_filter_reuses_the_read_of_the_window(self, db, monkeypatch):
-        board_api._MEMO._entries.clear()
-        board_api._BASE_MEMO._entries.clear()
-        board_api._BASE_TIMES.clear()
-        store = _snapshot_store(db)
-        reads = []
-        real = board_api._Board._load_cells
-        monkeypatch.setattr(board_api._Board, "_load_cells", lambda self: reads.append(1) or real(self))
-        when = int(NOW / board_api.MEMO_TTL_S) * board_api.MEMO_TTL_S
-        everything = json.loads(board_api.board_bytes(db, store, "", when))
-        one_tool = json.loads(board_api.board_bytes(db, store, "tool=codex-cli", when + 1))
-        project = json.loads(board_api.board_bytes(db, store, "project=/p/beta", when + 2))
-        assert len(reads) == 1
-        assert [a["id"] for a in one_tool["agents"]] == ["usage"]
-        assert project["kpis"]["tokens"] == 2200 + 20
-        assert everything["kpis"]["tokens"] == 5845
-        # Another time range reads again.
-        board_api.board_bytes(db, store, f"since={NOW - DAY}", when + 3)
-        assert len(reads) == 2
-        fresh = compute_board(db, parse_filters("tool=codex-cli", NOW), None, NOW)
-        assert one_tool["kpis"]["tokens"] == fresh["kpis"]["tokens"]
-        assert one_tool["kpis"]["cost_usd"] == fresh["kpis"]["cost_usd"]
-
-    def test_percentiles_of_a_large_set_use_a_sample_and_keep_thin_groups(self, db, monkeypatch):
-        conn = db
-        ts = NOW - 3 * DAY
-        for k in range(100):
-            _request(conn, ts + k, "wide", "claude-code", "/p/wide", SONNET, i=1, duration=float(k + 1))
-        _request(conn, ts, "rare", "claude-code", "/p/rare", "claude-opus-4-5", i=1, duration=7777.0)
-
-        payload = _board(db)
-        row = next(r for r in payload["latency"] if r["what"] == "Model reply")
-        # Count and maximum stay exact.
-        assert row["count"] == 7 + 100 + 1
-        assert row["max_ms"] == 7777.0
-        rare = next(m for m in payload["by_model"] if m["model"] == "claude-opus-4-5")
-        assert rare["p95_ms"] == 7777.0
-        assert next(p for p in payload["projects"] if p["project"] == "/p/rare")["p95_ms"] == 7777.0
-
-    def test_memo_stays_bounded(self):
-        memo = board_api._Memo()
-        for k in range(board_api.MEMO_MAX_KEYS * 3):
-            memo.put((k,), b"x")
-        assert len(memo._entries) == board_api.MEMO_MAX_KEYS
+    payload = _board(db)
+    row = next(r for r in payload["latency"] if r["what"] == "Model reply")
+    assert row["count"] == 7 + 100 + 1
+    assert row["max_ms"] == 7777.0
+    rare = next(m for m in payload["by_model"] if m["model"] == "claude-opus-4-5")
+    assert rare["p95_ms"] == 7777.0
+    assert next(p for p in payload["projects"] if p["project"] == "/p/rare")["p95_ms"] == 7777.0
 
 
 # ─── Budget ───────────────────────────────────────────────────────
@@ -2465,25 +2117,6 @@ class TestFileExcerpt:
 )
 def test_who_can_start_a_skill(front, expected):
     assert board_api._skill_starter(f"---\nname: x\n{front}---\nBody\n").startswith(expected)
-
-
-def test_a_slow_board_refreshes_less_often(db, monkeypatch):
-    """A 3.5 s range refreshed every 10 s while the page polled: a third of one core."""
-    refreshes = []
-    monkeypatch.setattr(board_api, "_refresh_behind", lambda *a: refreshes.append(a))
-    query = "since=1000&until=2000&buckets=10"
-    filters = board_api.parse_filters(query, 5000.0)
-    store = _snapshot_store(db)
-    board_api.board_bytes(db, store, query, 5000.0, background=True)
-    history = board_api.HistoryScope.local(store)
-    key = ((history.reader, history.node), filters)
-    board_api._COMPUTE_TOOK[key] = 2.0
-    board_api._COMPUTED_AT[key] = 5000.0
-    monkeypatch.setattr(board_api, "_store_version", lambda *_a: ("changed",))
-    board_api.board_bytes(db, store, query, 5015.0, background=True)
-    assert refreshes == []
-    board_api.board_bytes(db, store, query, 5021.0, background=True)
-    assert len(refreshes) == 1
 
 
 class TestLoopInputs:

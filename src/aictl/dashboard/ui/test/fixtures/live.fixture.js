@@ -16,6 +16,7 @@ export const liveCapabilities = {
     'configuration.loaded': { sources: ['runtime.evidence', 'runtime.native'], delivery: 'latest' },
     'configuration.board': { sources: ['filesystem.config'], delivery: 'latest' },
     'catalog.board': { sources: ['catalog'], delivery: 'latest' },
+    'history.agent': { sources: ['kusto.queryable'], delivery: 'latest' },
     'history.board': { sources: ['kusto.queryable'], delivery: 'latest' },
     'source.status': { sources: ['runtime.operational'], delivery: 'latest' },
   },

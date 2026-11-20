@@ -1,7 +1,8 @@
 import { createEffect, createSignal, createUniqueId } from 'solid-js'
+import type { JSX } from '@solidjs/web'
 import styles from './Tooltip.module.css'
 
-export function Tooltip(props: { label: string; text: string; onClick: () => void }) {
+export function Tooltip(props: { label: string; text: string; onClick: () => void; children?: JSX.Element; class?: string }) {
   const id = createUniqueId()
   const [hovered, setHovered] = createSignal(false)
   const [focused, setFocused] = createSignal(false)
@@ -32,9 +33,9 @@ export function Tooltip(props: { label: string; text: string; onClick: () => voi
       setHovered(true)
     }}
     onPointerLeave={() => setHovered(false)}>
-    <button ref={trigger} type="button" class={styles.trigger} aria-describedby={id}
+    <button ref={trigger} type="button" class={props.class ?? styles.trigger} aria-label={props.children ? props.label : undefined} aria-describedby={id}
       onClick={() => props.onClick()} onFocus={() => { setDismissed(false); setFocused(true) }}
-      onBlur={() => setFocused(false)}>{props.label}</button>
+      onBlur={() => setFocused(false)}>{props.children ?? props.label}</button>
     <span ref={tip} id={id} role="tooltip" popover="manual" class={styles.tip}>{props.text}</span>
   </span>
 }

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-samples.schema.json",
+  "title": "DetailSamples",
+  "description": "Rows returned by the metric sample-page query, not the metrics catalog or the series response.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "ts": {"type": "number"},
+      "value": {"type": ["number", "null"]},
+      "tags": {"type": "object"}
+    },
+    "required": ["ts", "value", "tags"]
+  }
+}

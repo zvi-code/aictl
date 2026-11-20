@@ -11,8 +11,9 @@ from typing import Any
 
 from ...stores import OBSERVATION_FAMILIES, UnresolvedObservationsError, reader_feature, retains_unresolved_facts
 from ..projections.history import configured_reader
+from .drawer import project_agent
 from .hub import LiveCapacityError, LiveHub
-from .protocol import canonical_scope, stable_id
+from .protocol import canonical_scope, parse_agent_watch, stable_id, watched_agent_id
 
 logger = logging.getLogger(__name__)
 _BOARD_TOPICS = {"history.board", "configuration.board", "catalog.board", "source.status"}
@@ -174,9 +175,12 @@ class LiveDashboard:
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
         self._wake = threading.Event()
+        self._agent_wake = threading.Event()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._scopes: dict[str, _Scope] = {}
+        self._agent_refs: dict[tuple[str, str], int] = {}
+        self._agent_refresh: dict[tuple[str, str], tuple[int, float]] = {}
         self._reader: Any = None
         self._reader_handle: Any = None
         self._poll_history = False
@@ -209,6 +213,9 @@ class LiveDashboard:
         from ..board_api import CLOCK_RANGE_SLACK_S, parse_filters
 
         scope = canonical_scope(query)
+        watch = parse_agent_watch(query)
+        if not history:
+            watch = None
         read_history = history
         if history:
             filters = parse_filters(scope, time.time())
@@ -237,27 +244,33 @@ class LiveDashboard:
                 read_history = not entry.blocked
         with self._lock:
             self._clients += 1
+            if watch:
+                self._agent_refs[watch] = self._agent_refs.get(watch, 0) + 1
         subscription = None
         try:
-            subscription = self.hub.subscribe(scope, history=history, cursor=cursor)
+            subscription = self.hub.subscribe(
+                scope, history=history, cursor=cursor, agent_entity=watched_agent_id(watch) if watch else None,
+            )
             self._ensure_started(read_history)
         except Exception:
             if subscription is not None:
                 subscription.close()
-            with self._lock:
-                self._clients -= 1
+            self._release_client(watch)
             if history:
                 self._release(scope)
             raise
         self._wake.set()
-        return _DashboardSubscription(self, subscription, scope, history)
+        if watch:
+            self._agent_wake.set()
+        return _DashboardSubscription(self, subscription, scope, history, watch)
 
     def _ensure_started(self, history: bool) -> None:
         with self._start_lock:
             if self._stop.is_set():
                 raise RuntimeError("Live dashboard is closed")
             if not self._threads:
-                for name, target in (("live-health", self._health_loop), ("live-history", self._history_loop)):
+                for name, target in (("live-health", self._health_loop), ("live-history", self._history_loop),
+                                     ("live-agent", self._agent_loop)):
                     thread = threading.Thread(target=target, name=name, daemon=True)
                     self._threads.append(thread)
                     thread.start()
@@ -332,6 +345,50 @@ class LiveDashboard:
             # contiguous ordered delivery after discarding a client's old queue.
             self.hub.invalidate(batch.reason, ordered_gap=True)
         self._wake.set()
+        self._agent_wake.set()
+
+    def _agent_loop(self) -> None:
+        while not self._stop.is_set():
+            self._agent_wake.wait(1.0)
+            self._agent_wake.clear()
+            with self._lock:
+                if not self._agent_refs:
+                    continue
+                blocked = retains_unresolved_facts(self.db)
+                if not blocked and not self._baseline_allowed:
+                    continue
+                generation = self._generation
+                now = time.monotonic()
+                candidates = [watch for watch in self._agent_refs
+                              if (last := self._agent_refresh.get(watch)) is None or
+                              (last[0] != generation and now >= last[1]) or
+                              (self._poll_history and now >= last[1] + 4)]
+            for watch in candidates:
+                if self._stop.is_set():
+                    return
+                try:
+                    status, payload = ((503, {}) if blocked else project_agent(self._projection_db, self.store, watch))
+                except Exception:
+                    logger.exception("Live agent projection failed")
+                    status, payload = 503, {}
+                with self._lock:
+                    if watch not in self._agent_refs or self._stop.is_set():
+                        continue
+                    self._agent_refresh[watch] = generation, time.monotonic() + 1
+                    self._publish_agent(watch, status, payload)
+
+    def _publish_agent(self, watch: tuple[str, str], status: int, payload: dict) -> None:
+        entity_id = watched_agent_id(watch)
+        view, agent_id = watch
+        data = {"agent_id": agent_id, "view": view, "status": status, "value": payload if status == 200 else None}
+        try:
+            self.hub.publish("history.agent", entity_id, data, source="kusto.queryable")
+        except LiveCapacityError:
+            try:
+                self.hub.publish("history.agent", entity_id, {**data, "status": 413, "value": None},
+                                 source="kusto.queryable")
+            except LiveCapacityError:
+                logger.warning("Live history capacity reached while publishing agent availability")
 
     def _scope_status(self, scope: str, **fields: Any) -> None:
         entity_id = f"history:{stable_id(scope)}"
@@ -594,13 +651,22 @@ class LiveDashboard:
                 entry.refs = max(0, entry.refs - 1)
                 entry.last_used = time.monotonic()
 
-    def _release_client(self) -> None:
+    def _release_client(self, watch: tuple[str, str] | None = None) -> None:
         with self._lock:
             self._clients = max(0, self._clients - 1)
+            if watch:
+                refs = self._agent_refs[watch] - 1
+                if refs:
+                    self._agent_refs[watch] = refs
+                else:
+                    del self._agent_refs[watch]
+                    self._agent_refresh.pop(watch, None)
+                    self.hub.remove("history.agent", watched_agent_id(watch), source="kusto.queryable")
 
     def close(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._agent_wake.set()
         with self._start_lock:
             if self._reader_handle is not None:
                 self._reader_handle.close()
@@ -611,11 +677,15 @@ class LiveDashboard:
 
 
 class _DashboardSubscription:
-    def __init__(self, dashboard: LiveDashboard, subscription: Any, scope: str, history: bool) -> None:
+    def __init__(
+        self, dashboard: LiveDashboard, subscription: Any, scope: str, history: bool,
+        watch: tuple[str, str] | None = None,
+    ) -> None:
         self._dashboard = dashboard
         self._subscription = subscription
         self._scope = scope
         self._history = history
+        self._watch = watch
         self._closed = False
 
     def next(self, timeout: float = 30.0) -> tuple[str, dict] | None:
@@ -626,6 +696,6 @@ class _DashboardSubscription:
             return
         self._closed = True
         self._subscription.close()
-        self._dashboard._release_client()
+        self._dashboard._release_client(self._watch)
         if self._history:
             self._dashboard._release(self._scope)

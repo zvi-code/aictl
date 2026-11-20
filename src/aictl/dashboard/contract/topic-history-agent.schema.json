@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/topic-history-agent.schema.json",
+  "title": "TopicHistoryAgent",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": {"type": "string"},
+        "view": {"const": "detail"},
+        "status": {"const": 200},
+        "value": {"$ref": "detail-agent.schema.json"}
+      },
+      "required": ["agent_id", "view", "status", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": {"type": "string"},
+        "view": {"const": "flow"},
+        "status": {"const": 200},
+        "value": {"$ref": "detail-agent-flow.schema.json"}
+      },
+      "required": ["agent_id", "view", "status", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": {"type": "string"},
+        "view": {"const": "transcript"},
+        "status": {"const": 200},
+        "value": {"$ref": "detail-agent-transcript.schema.json"}
+      },
+      "required": ["agent_id", "view", "status", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": {"type": "string"},
+        "view": {"enum": ["detail", "flow", "transcript"]},
+        "status": {"type": "integer", "minimum": 400},
+        "value": {"type": "null"}
+      },
+      "required": ["agent_id", "view", "status", "value"],
+      "additionalProperties": false
+    }
+  ]
+}

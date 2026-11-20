@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, untrack } from 'solid-js'
-import type { BoardFields, LiveTopicData, TopicSourceStatus } from '../data/contract.gen'
+import type { BoardFields, DetailResponses, LiveTopicData, TopicSourceStatus } from '../data/contract.gen'
 import { createResourceCache } from '../data/resource'
 import { boardQuery, windowOf, type Screen } from '../data/filters'
 import type { DetailState, PanelContext, Read, Row, Source } from './types'
@@ -55,11 +55,11 @@ function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, ke
 export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' | 'detail'>, screen: () => Screen) {
   const historyCache = createResourceCache({
     load: async (path, signal) => {
-      const data = await json<Partial<BoardFields>>(path, { signal })
+      const data = await json<DetailResponses['/api/history/board']>(path, { signal })
       const request = new URL(path, location.origin).searchParams
-      const scope = request.get('scope')
-      if (scope && (data.node_scope?.kind !== scope ||
-          (scope === 'node' && data.node_scope?.node_id !== request.get('node_id')))) {
+      const scope = request.get('scope') ?? 'local'
+      if (data.node_scope?.kind !== scope ||
+          (scope === 'node' && data.node_scope.node_id !== request.get('node_id'))) {
         throw new Error('The server did not confirm the requested node scope.')
       }
       return data
@@ -70,9 +70,10 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     const filters = ctx.filters()
     const win = !whole && filters.sel ? filters.sel : windowOf(filters.range, ctx.startedAt)
     const query = new URLSearchParams(boardQuery(filters, ctx.tools(), win))
+    if (whole) query.set('view', 'charts')
     if (ctx.scope() !== 'local') query.set('scope', ctx.scope())
     if (ctx.scope() === 'node') query.set('node_id', ctx.nodeId() ?? '')
-    return `/api/board?${query}`
+    return `/api/history/board?${query}`
   }
   const remote = useRead(historyCache, () => path(false), ctx.revision)
   const whole = useRead(historyCache, () => ctx.filters().sel ? path(true) : undefined, ctx.revision)
@@ -101,7 +102,7 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     let stale = ctx.paused(), pending = false, fault: string | undefined
     if ('field' in source && (ctx.scope() !== 'local' || (source.wholeRange && ctx.filters().sel))) {
       const resource = source.wholeRange && ctx.filters().sel ? whole() : remote()
-      value = at(resource?.data?.[source.field], source.path)
+      value = at(at(resource?.data, source.field), source.path)
       pending = !resource || resource.status === 'loading'
       stale ||= resource?.status === 'stale' || resource?.status === 'refreshing'
       if (resource?.error) fault = String(resource.error)

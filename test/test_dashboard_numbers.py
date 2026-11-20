@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from aictl.dashboard.api_handlers import tool_history_for_api
 from kusto_replay import NOW
 
 from aictl.dashboard.hooks_status import _activity, _post_tool_use_usage, _subagent_usage
@@ -89,7 +88,7 @@ def test_large_file_gets_a_size_based_token_estimate(tmp_path, monkeypatch):
     assert tools._file_tokens(small, small.stat()) == 100
 
 
-# ── 7. Events count and per-tool history ──────────────────────────
+# ── 7. Events count ──────────────────────────────────────────────
 
 
 def test_count_events_ignores_the_page_limit(kusto_store):
@@ -102,13 +101,6 @@ def test_count_events_ignores_the_page_limit(kusto_store):
     assert history.read("events.count", requested_tool="claude-code", **params)[0]["count"] == 12
     assert history.read("events.count", **params)[0]["count"] == 13
     assert history.read("events.count", sid="t", **params)[0]["count"] == 1
-
-
-def test_history_api_leaves_out_series_the_store_does_not_keep():
-    out = tool_history_for_api(
-        {"claude-code": {"ts": [1, 2], "cpu": [3.0, 4.0], "mem_mb": [5.0, 6.0], "tokens": [0, 0], "traffic": [0, 0]}}
-    )
-    assert out == {"claude-code": {"ts": [1, 2], "cpu": [3.0, 4.0], "mem_mb": [5.0, 6.0]}}
 
 
 # ── 8. CPU is the sum over a session's processes ──────────────────

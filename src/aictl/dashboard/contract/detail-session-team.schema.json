@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-session-team.schema.json",
+  "title": "DetailSessionTeam",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "session_id": {"type": "string"},
+        "agents": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "agent_id": {"type": "string"},
+            "parent_agent_id": {"type": "string"},
+            "state": {"type": "string"},
+            "task": {"type": "string"},
+            "agent_type": {"type": "string"},
+            "relationship": {"type": "string"},
+            "started_at": {"type": "number"},
+            "ended_at": {"type": ["number", "null"]},
+            "duration_s": {"type": "number"},
+            "input_tokens": {"type": "integer"},
+            "output_tokens": {"type": "integer"},
+            "tool_calls": {"type": "integer"},
+            "model": {"type": "string"}
+          },
+          "required": ["agent_id"]
+        }},
+        "tasks": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "task_id": {"type": "string"},
+            "agent_id": {"type": "string"},
+            "name": {"type": "string"},
+            "state": {"type": "string"},
+            "created_at": {"type": "number"},
+            "completed_at": {"type": ["number", "null"]}
+          },
+          "required": ["task_id"]
+        }}
+      },
+      "required": ["session_id", "agents", "tasks"]
+    },
+    {
+      "type": "object",
+      "properties": {"error": {"type": "string", "minLength": 1}},
+      "required": ["error"]
+    }
+  ]
+}

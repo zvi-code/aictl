@@ -81,7 +81,7 @@ export function windowOf(range: Range, nowS = Date.now() / 1000): TimeWindow {
   return { since: until - r.buckets * r.bucket_s, until, buckets: r.buckets };
 }
 
-/** Query params for /api/board. tools null means all, [] means none. */
+/** Board history parameters shared by live and detail reads. Tools null means all, [] means none. */
 export function boardQuery(filters: Filters, tools: Tools, win: TimeWindow) {
   const p = new URLSearchParams();
   p.set('since', String(win.since));

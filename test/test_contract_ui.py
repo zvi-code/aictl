@@ -79,9 +79,6 @@ def test_synthetic_detail_fixtures(ui_fixtures):
         ),
         types=("$.agent.pids", "$.process.pids", "$.subagents[].pids", "$.turns[].tools"),
     )
-    _check_fixture(details["/api/board/file"], ui_fixtures["file"], missing=("$.diff_as_of",))
-    _check_fixture(shared["machine-local"], ui_fixtures["machine"], missing=("$.cpu_cores",))
-    shared["machine-pipeline"].validate(ui_fixtures["machine"]["pipeline"])
 
 
 def test_synthetic_live_fixtures(ui_fixtures):

@@ -3,6 +3,8 @@ import { render } from '@solidjs/web'
 import { boardLiveRequest, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
 import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, toolsToParams, type UrlPatch } from '../data/urlState'
+import { agentView, selectAgentWatch, supportsLiveAgent } from '../drawer/liveAgent'
+import { drawerStack } from '../drawer/navigation'
 import { at, json, panelData, statuses, topic } from '../panels/data'
 import { sections } from '../panels/layout'
 import type { Command, NodeScope, PanelContext } from '../panels/types'
@@ -21,7 +23,7 @@ import styles from './Shell.module.css'
 const Overview = lazy(() => import('./Overview'))
 const Health = lazy(() => import('./Health'))
 const Settings = lazy(() => import('./Settings'))
-const Drawer = lazy(() => import('./DrawerIsland'))
+const Drawer = lazy(() => import('../drawer/DrawerView'))
 const screenNames = { board: 'Overview', health: 'Health', settings: 'Settings' }
 const posted = (value: object): RequestInit => ({
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
@@ -56,17 +58,29 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   const [pending, setPending] = createSignal(false)
   const [notice, noticeOf] = createSignal<{ text: string; undo?: () => void }>()
   const [stopped, setStopped] = createSignal<ReadonlySet<string>>(new Set())
-  const [stack, setStack] = createSignal<readonly DrawerEntry[]>(readDrawer(search()) ? [readDrawer(search())!] : [])
+  const [stack, setStack] = createSignal(drawerStack(search(), history.state))
+  createEffect(() => {
+    const entry = stack().at(-1)
+    if (scope() !== 'local' || entry?.type !== 'agent' || !supportsLiveAgent(client)) return ''
+    return `${agentView(entry.tab)}:${entry.id}`
+  }, key => {
+    const entry = untrack(stack).at(-1)
+    if (key && entry?.type === 'agent') selectAgentWatch(client, entry.id, entry.tab)
+    else selectAgentWatch(client)
+  })
   let landOnFlow = !location.search && !location.hash
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
   let findTimer: ReturnType<typeof setTimeout> | undefined
   let find: HTMLInputElement | undefined
   let drawerReturn: HTMLElement | undefined
 
-  const go = (target: string, replace = false) => {
+  const go = (target: string, replace = false, boardDrawers?: readonly DrawerEntry[]) => {
     const same = target === location.pathname + location.search + location.hash
-    if (!same) {
-      try { history[replace ? 'replaceState' : 'pushState'](replace ? history.state : null, '', target) }
+    if (!same || boardDrawers) {
+      try {
+        const state = replace ? history.state : null
+        history[replace ? 'replaceState' : 'pushState'](boardDrawers ? { ...state, boardDrawers } : state, '', target)
+      }
       catch { /* Continue with local navigation when history is disabled. */ }
     }
     setAddress(target)
@@ -103,20 +117,21 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   const open = (entry: DrawerEntry, resetStack = false) => {
     landOnFlow = false
     if (!stack().length) drawerReturn = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-    setStack(old => resetStack ? [entry] : [...old, entry])
-    navigate(drawerPatch(entry))
+    const next = resetStack ? [entry] : [...stack(), entry]
+    setStack(next)
+    go(nextAddress(drawerPatch(entry)), false, next)
   }
   const close = () => {
     landOnFlow = false
     setStack([])
-    navigate(clearDrawer)
+    go(nextAddress(clearDrawer), true, [])
     drawerReturn?.focus()
   }
   const back = () => {
     if (stack().length < 2) { close(); return }
     const next = stack().slice(0, -1)
     setStack(next)
-    navigate(drawerPatch(next.at(-1)))
+    go(nextAddress(drawerPatch(next.at(-1))), true, next)
   }
   const copy = (text: string) => {
     const task = navigator.clipboard?.writeText(text)
@@ -231,8 +246,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     clearTimeout(findTimer)
     const next = redirectOf(location.search)
     go(location.pathname + (next ?? location.search) + location.hash, true)
-    const entry = readDrawer(location.search)
-    setStack(entry ? [entry] : [])
+    setStack(drawerStack(location.search, history.state))
     setDecision(undefined)
   }
   const onHash = () => setAddress(location.pathname + location.search + location.hash)
@@ -349,7 +363,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
           <Switch>
             <Match when={screen() === 'board'}><Overview ctx={ctx} reset={reset} order={sectionOrder} /></Match>
             <Match when={screen() === 'health'}><Health ctx={ctx} reset={reset} order={sectionOrder} /></Match>
-            <Match when={screen() === 'settings'}><Settings ctx={ctx} theme={theme()} density={density()} /></Match>
+            <Match when={screen() === 'settings'}><Settings ctx={ctx} /></Match>
           </Switch>
         </Loading>
       </div>
@@ -361,8 +375,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
             const last = stack().at(-1)
             if (last?.type !== 'agent') return
             const next = { ...last, tab }
-            setStack(old => [...old.slice(0, -1), next])
-            go(nextAddress(drawerPatch(next)), true)
+            const updated = [...stack().slice(0, -1), next]
+            setStack(updated)
+            go(nextAddress(drawerPatch(next)), true, updated)
           }} />
       </Loading>
     </Show>

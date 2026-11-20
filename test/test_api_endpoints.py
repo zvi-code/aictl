@@ -278,15 +278,9 @@ class TestObservabilitySubstrateAPI:
         assert len(data) >= 1
         assert all(s["tags"]["tool"] == "claude-code" for s in data)
 
-    def test_history_catalog_and_self_status(self, metrics_server):
-        data = _get_json(f"{metrics_server}/api/history?since=96400&until=100000&tool=claude-code")
-        assert data["cpu"] == [42]
-        assert data["by_tool"]["claude-code"]["cpu"] == [8]
+    def test_catalog_filters_by_tab(self, metrics_server):
         rows = _get_json(f"{metrics_server}/api/datapoints?tab=machine")
         assert [row["key"] for row in rows] == ["runtime.cpu"]
-        status = _get_json(f"{metrics_server}/api/self-status")
-        assert status["db"]["samples_count"] == 5
-        assert status["store_health"]["reader"]["status"] == "ready"
 
     def test_empty_db_returns_empty(self):
         """Samples endpoint with no DB returns []."""
@@ -1474,6 +1468,10 @@ class TestSettingsFileEditor:
 # not, so the server answers 404 for them; a route added back here must have
 # a caller first.
 REMOVED_ROUTES = (
+    "/api/board",
+    "/api/budget",
+    "/api/history",
+    "/api/self-status",
     "/api/session-timeline",
     "/api/sessions",
     "/api/file-writes",

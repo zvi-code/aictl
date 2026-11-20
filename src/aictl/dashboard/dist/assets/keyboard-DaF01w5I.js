@@ -1,0 +1,1 @@
+function e(e,t,n,r){if(!t.length||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey)return;let i=t.indexOf(e.target),a;if(e.key===`Home`)a=0;else if(e.key===`End`)a=t.length-1;else if(e.key===n)a=(Math.max(0,i)+t.length-1)%t.length;else if(e.key===r)a=(i+1)%t.length;else return;return e.preventDefault(),t[a].focus(),t[a]}export{e as t};

@@ -91,19 +91,35 @@ def test_session_and_totals_use_node_qualified_keys_and_bound_session_identifier
         node_view(project(), query("overview", since="10", until="1"), reader=reader)
 
 
-def test_health_sample_uses_only_current_process_counters_and_shared_resource_scope(kusto_store, node_reader):
+def test_health_sample_uses_only_current_process_counters_and_shared_resource_scope(node_reader, monkeypatch):
+    from aictl.health import node_transport_counters
+    from test_contract import validate_detail
+
+    writer = node_transport_counters({}, {"status": "active", "warning": "private",
+        "tables": {"events": {"queue_depth": 0, "rows_sent": 9, "ingest_failures": 1, "last_error": "private"}}})
+    rows = []
     for node, at, pid in (("current", 598, 7), ("old-process", 598, 6), ("stale", 100, 7)):
-        kusto_store.insert("system_snapshots", node_id=node, ts=600, daemon_pid=7, live_in_rate=240, live_out_rate=0,
-                           node_health_counters=json.dumps({"at": at, "pid": pid, "store": {"reads": {"total": 123}}}))
+        rows.append({"node_id": node, "captured_at": 600, "daemon_pid": 7, "inbound_bps": 240, "outbound_bps": 0,
+                     "counter_sample": json.dumps({"at": at, "pid": pid, "store": writer})})
+
+    def read(view, _params):
+        assert view == "nodes.reports"
+        return SimpleNamespace(rows=rows, truncated=False)
+
+    monkeypatch.setattr(node_reader, "read", read)
     report = node_view(project(), query("health", "fleet"), now=600, reader=node_reader,
                        shared_health=lambda: {"capacity": {"available": 0, "total": 12},
                                               "table_inventory": {"tables": [{"name": "events", "rows": 200}]},
                                               "cluster_resources": {"native": {"nodes": 3}}, "quality": ["private"]})
     assert [r["client_sample"] is not None for r in report["rows"]] == [True, False, False]
+    assert report["rows"][0]["client_sample"]["store"]["writer"]["tables"]["events"] == {
+        "queue_depth": 0, "rows_sent": 9, "ingest_failures": 1,
+    }
     assert (report["rows"][0]["inbound_bps"], report["rows"][0]["outbound_bps"]) == (240, 0)
     assert report["shared_kusto"]["capacity_available"] == 0
     assert report["shared_kusto"]["table_inventory"]["tables"][0]["rows"] == 200
     assert "private" not in json.dumps(report)
+    validate_detail("/api/board/nodes", {**report, "shared_kusto": report["shared_kusto"] | {"table_inventory": None}})
 
 
 def test_runtime_reports_keep_monitored_counts_independent_of_agent_inventory(kusto_store, node_reader):
@@ -279,16 +295,24 @@ def history(monkeypatch, kusto_store):
     db = project(_conn=no_local)
 
     def call(endpoint="", now=4000, **params):
+        query = urlencode({"scope": "fleet"} | params)
+        if not endpoint:
+            from aictl.dashboard.history_board import read_board
+
+            return 200, json.loads(read_board(kusto_store, query, now=now))
         path = endpoint if endpoint.startswith("/api/") else "/api/board" + endpoint
-        status, body = board_api.handle_get(path, urlencode({"scope": "fleet"} | params), db, kusto_store, now=now)
+        status, body = board_api.handle_get(path, query, db, kusto_store, now=now)
         return status, json.loads(body)
 
     yield SimpleNamespace(call=call, sid=sid, calls=calls, add=add)
 
 
 def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
+    from test_contract import validate_detail
+
     status, board = history.call(since=1000, until=2000, buckets=2)
     assert status == 200 and not history.calls
+    validate_detail("/api/history/board", board)
     assert board["node_scope"] == {"kind": "fleet", "node_id": None}
     assert board["kpis"]["tokens"] == 520
     assert board["kpis"]["cached_share"] == pytest.approx(130 / 520, abs=1e-4)
@@ -304,8 +328,11 @@ def test_fleet_board_aggregates_winners_once_and_reuses_history(history):
     assert {r["node_id"] for r in board["agents"]} == {"host-a", "host-b", "legacy"}
     assert len({r["id"] for r in board["prompts"]}) == 3
     assert len({r["id"] for r in board["changes"]["files"]}) == 3
-    assert board["processes"] == [] and board["self"] is None and board["settings_at"] is None
+    assert not ({"processes", "self", "settings_at", "generated_at"} & board.keys())
     assert history.call(since=1000, until=2000, buckets=2)[1] == board
+    assert history.call(since=1000, until=2000, buckets=2, view="charts")[1] == {
+        key: board[key] for key in ("node_scope", "range", "series")
+    }
     _, filtered = history.call(
         since=1000,
         until=2000,
@@ -436,11 +463,18 @@ def test_context_machine_and_session_records_keep_colliding_paths_and_pids_separ
 
 
 def test_history_errors_do_not_become_empty_or_local(monkeypatch, kusto_store):
-    from aictl.dashboard import board_api
+    from aictl.dashboard.history_board import serve
     from aictl.stores.base import StoreError
+    from test_live_routes import handler
 
-    db = SimpleNamespace(_conn=lambda: pytest.fail("Must not fall back"))
-    assert board_api.handle_get("/api/board", "scope=fleet", db, None)[0] == 422
+    def request(query, store=None):
+        req = handler("/api/history/board?" + query)
+        req.server.store = store
+        serve(req, query)
+        return req.status, json.loads(req.wfile.getvalue())
+
+    assert request("scope=fleet")[0] == 422
+    assert request("view=charts")[0] == 503
     for query_string in (
         "scope=other",
         "scope=node",
@@ -449,14 +483,14 @@ def test_history_errors_do_not_become_empty_or_local(monkeypatch, kusto_store):
         "scope=local&scope=fleet",
         "node_id=host-a",
     ):
-        assert board_api.handle_get("/api/board", query_string, db, None)[0] == 400
+        assert request(query_string)[0] == 400
 
     def failure(*_args):
         raise StoreError("timeout")
 
     monkeypatch.setattr(kusto_store.history_store.reader, "read", failure)
-    status, body = board_api.handle_get("/api/board", "scope=fleet", project(), kusto_store)
-    assert status == 503 and json.loads(body)["reason"] == "query_failed"
+    status, body = request("scope=fleet", kusto_store)
+    assert status == 503 and body["reason"] == "query_failed"
 
 
 def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(tmp_path, monkeypatch, kusto_store):

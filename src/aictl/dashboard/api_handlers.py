@@ -20,10 +20,7 @@ from pathlib import Path
 from ..data.token_usage import TokenUsage
 from ..stores import store_for
 from ..stores.base import StoreConfigurationError, StoreError
-from ..tool_scope import selection_block
-from ..tools import budget_tools, compute_token_budget
 from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
-from .projections.health import logical_stats, store_health
 from .projections.history import (
     HistoryScope,
     configured_reader,
@@ -34,7 +31,7 @@ from .projections.history import (
     session_processes,
     session_row,
 )
-from .projections.metrics import catalog_entries, sample_metrics, sample_page, sample_series, system_history, tool_history
+from .projections.metrics import catalog_entries, sample_metrics, sample_page, sample_series
 
 # Synthesized process-based session_id format: "tool:pid:timestamp".
 # Used by copilot-vscode (and other tools that don't emit their own ids)
@@ -95,16 +92,6 @@ def self_usage(pid: int | None = None) -> dict:
         "daemon_memory_rss_bytes": daemon["memory_rss_bytes"],
         "children": children,
     }
-
-
-def tool_history_for_api(tool_data: dict[str, dict[str, list]]) -> dict[str, dict[str, list]]:
-    """Per-tool history series for ``/api/history``, without the series the store does not keep.
-
-    The store samples CPU and memory per process; it keeps no per-tool token or
-    traffic series over time. Those keys are left out, so the page shows them as
-    not available instead of a flat line of zeros.
-    """
-    return {t: {k: v for k, v in series.items() if k not in ("tokens", "traffic")} for t, series in tool_data.items()}
 
 
 def _one_row_per_session(rows: list[dict]) -> list[dict]:
@@ -176,7 +163,6 @@ def _kill_session_pids(pids: list[int], sig_name: str) -> dict[str, list[int]]:
 
 # ─── Budget cache ────────────────────────────────────────────────
 
-_budget_cache: tuple[tuple[int, tuple[str, ...] | None], dict] | None = None
 
 
 # ─── Settings files: every file aictl reads, grouped by location ──
@@ -377,46 +363,6 @@ class _APIHandlersMixin:
     Methods access ``self.server``, ``self._db``, ``self._qs_get``, etc.
     which are defined on the actual handler class.
     """
-
-    def _serve_self_status(self) -> None:
-        """Return aictl's own resource usage and DB stats."""
-        import os
-
-        result = {}
-        try:
-            import psutil
-
-            proc = psutil.Process(os.getpid())
-            mem = proc.memory_info()
-            # interval=0 returns since last call — non-blocking.
-            # CollectorHealth polls every 15s so the measurement window is fine.
-            result["pid"] = os.getpid()
-            result.update(self_usage(os.getpid()))
-            result["memory_vms_bytes"] = mem.vms
-            result["threads"] = proc.num_threads()
-            result["uptime_s"] = round(time.time() - proc.create_time(), 1)
-        except Exception:
-            result["pid"] = os.getpid()
-        db = self._db
-        reader = configured_reader(self.server.store)
-        try:
-            result["db"] = logical_stats(reader)
-        except StoreConfigurationError:
-            pass
-        except StoreError:
-            result["db"] = {}
-        result["store_health"] = store_health(self.server.store)
-        # Sink stats (emission rates, flood protection)
-        sink = getattr(self.server.store, "_sink", None)
-        if sink:
-            try:
-                result["sink"] = sink.stats()
-            except Exception:
-                result["sink"] = {}
-        from .projections.health import storage_fields
-
-        result.update(storage_fields(db, reader))
-        self._json_response(result)
 
     def _serve_settings_files(self) -> None:
         """Every file aictl reads, grouped by location. Never starts an audit scan."""
@@ -839,56 +785,6 @@ class _APIHandlersMixin:
         }
 
         self._json_response({"calls": calls[:limit], "summary": summary})
-
-    def _serve_budget(self) -> None:
-        global _budget_cache
-        snap = self.server.store.snapshot
-        if snap is None:
-            self.send_error(503, "No data yet")
-            return
-        version = self.server.store.version
-        selection = self._qs_tools()
-        key = (version, selection)
-        if _budget_cache is None or _budget_cache[0] != key:
-            _budget_cache = (key, compute_token_budget(budget_tools(snap.tools, selection), snap.root))
-        budget = {**_budget_cache[1], "selection": selection_block(selection)}
-        self._json_response(budget, indent=2)
-
-    def _serve_history(self) -> None:
-        """Serve time-series history.
-
-        Without ?range or ?since, returns in-memory ring buffer (fast, ~35 min).
-        With range or since, reads stored history.
-        """
-        import json
-
-        range_str = self._qs_get("range")
-        since_str = self._qs_get("since")
-        tool_filter = self._qs_get("tool")
-
-        if range_str or since_str:
-            reader = configured_reader(self.server.store)
-            import time as _time
-
-            if since_str:
-                since = float(since_str)
-            else:
-                range_map = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
-                secs = range_map.get(range_str, 3600)
-                since = _time.time() - secs
-            until = self._qs_float_opt("until")
-            try:
-                data = system_history(reader, since=since, until=until)
-                tool_data = tool_history(reader, requested_tool=tool_filter, since=since, until=until)
-            except StoreError as exc:
-                self._json_response({"error": str(exc)}, status=503)
-                return
-            data["by_tool"] = tool_history_for_api(tool_data)
-            body = json.dumps(data).encode("utf-8")
-        else:
-            body = self.server.store.history_json().encode("utf-8")
-
-        self._json_response_raw(body)
 
     def _serve_samples(self) -> None:
         """Serve universal samples.

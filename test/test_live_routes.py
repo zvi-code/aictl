@@ -77,20 +77,24 @@ def test_live_payloads_keep_existing_loopback_access_rule():
 
 @pytest.mark.parametrize("route", ["context", "board"])
 def test_unresolved_history_is_a_structured_conflict_not_a_server_error(monkeypatch, caplog, route):
-    from aictl.dashboard import board_api
+    from aictl.dashboard import board_api, history_board
     from aictl.kusto.observations import UnresolvedObservationsError
 
     def unresolved(*_args, **_kwargs):
         raise UnresolvedObservationsError(("requests",))
 
-    monkeypatch.setattr(board_api, "context_bytes" if route == "context" else "handle_get", unresolved)
-    request = handler("/api/board/context" if route == "context" else "/api/board")
+    if route == "context":
+        monkeypatch.setattr(board_api, "context_bytes", unresolved)
+    else:
+        monkeypatch.setattr(history_board, "read_board", unresolved)
+    request = handler("/api/board/context" if route == "context" else "/api/history/board")
     request.server.store = SimpleNamespace(_db=object())
     request.server.allowed = SimpleNamespace(is_allowed=lambda _: True)
     if route == "context":
         request._serve_board_context()
     else:
-        request._serve_board("/api/board")
+        request._wait_ready = lambda: True
+        request._do_GET()
     body = json.loads(request.wfile.getvalue())
     assert request.status == 409
     assert body["incomplete"] is True and body["retryable"] is False

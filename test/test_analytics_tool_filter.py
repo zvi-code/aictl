@@ -8,11 +8,7 @@ and the Budget HTTP endpoint.
 
 from __future__ import annotations
 
-import json
-import threading
 import time
-import urllib.request
-from pathlib import Path
 
 import pytest
 
@@ -23,8 +19,6 @@ from aictl.dashboard.analytics import (
     _compute_tools,
     analytics_key,
 )
-from aictl.dashboard.models import DashboardSnapshot, DashboardTool
-from aictl.orchestrator import AllowedPaths, SnapshotStore
 from aictl.stores import Store
 from aictl.stores.testing import FixtureReader
 from aictl.tool_scope import (
@@ -35,7 +29,7 @@ from aictl.tool_scope import (
     selection_block,
     stored_ids_for,
 )
-from aictl.tools import ResourceFile, ToolResources, budget_tools, compute_token_budget
+from aictl.tools import ToolResources, budget_tools, compute_token_budget
 
 BASE = 1_700_000_000.0
 SINCE, UNTIL = BASE - 10, BASE + 10_000
@@ -323,75 +317,6 @@ class TestCacheKey:
         for i in range(20):
             cache.request_range(SINCE, UNTIL, [f"tool-{i}"])
         assert len(cache._wanted) <= cache._MAX_KEYS
-
-
-# ── HTTP ──────────────────────────────────────────────────────────
-
-
-@pytest.fixture()
-def server(tmp_path):
-    from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
-
-    def resource(path, tokens, tool):
-        return ResourceFile(
-            path=path,
-            kind="instructions",
-            tokens=tokens,
-            tool=tool,
-            scope="global",
-            sent_to_llm="yes",
-            loaded_when="every-call",
-        )
-
-    snap = DashboardSnapshot(
-        timestamp=time.time(),
-        root="/work",
-        tools=[
-            DashboardTool("claude-code", "Claude Code", files=[resource("/h/c.md", 100, "claude-code")]),
-            DashboardTool("codex-cli", "Codex CLI", files=[resource("/h/x.md", 7000, "codex-cli")]),
-            DashboardTool("copilot", "Copilot", files=[resource("/h/v.md", 30, "copilot")]),
-            DashboardTool("copilot-cli", "Copilot CLI", files=[resource("/h/l.md", 5, "copilot-cli")]),
-            DashboardTool("aictl", "aictl", files=[resource("/h/a.md", 900, "aictl")]),
-        ],
-    )
-    store = SnapshotStore()
-    store.update(snap)
-    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/work"))
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
-
-
-def _json(url):
-    with urllib.request.urlopen(url, timeout=5) as resp:
-        return json.loads(resp.read())
-
-
-class TestBudgetEndpoint:
-    def test_all_tools_by_default(self, server):
-        body = _json(f"{server}/api/budget")
-        assert body["selection"] == {"all_tools": True, "tools": None}
-        assert body["always_loaded_tokens"] == 100 + 7000 + 30 + 5 + 900
-
-    def test_selected_tools_only(self, server):
-        body = _json(f"{server}/api/budget?tools=claude-code")
-        assert body["selection"] == {"all_tools": False, "tools": ["claude-code"]}
-        assert body["always_loaded_tokens"] == 100
-
-    def test_copilot_vscode_includes_the_copilot_card_but_not_copilot_cli(self, server):
-        assert _json(f"{server}/api/budget?tools=copilot-vscode")["always_loaded_tokens"] == 30
-        assert _json(f"{server}/api/budget?tools=copilot-cli")["always_loaded_tokens"] == 5
-
-    def test_empty_selection_is_zero(self, server):
-        body = _json(f"{server}/api/budget?tools=")
-        assert body["selection"] == {"all_tools": False, "tools": []}
-        assert body["always_loaded_tokens"] == 0 and body["total_potential_tokens"] == 0
-
-    def test_the_cache_is_per_selection(self, server):
-        one = _json(f"{server}/api/budget?tools=claude-code")["always_loaded_tokens"]
-        two = _json(f"{server}/api/budget?tools=codex-cli")["always_loaded_tokens"]
-        again = _json(f"{server}/api/budget?tools=claude-code")["always_loaded_tokens"]
-        assert (one, two, again) == (100, 7000, 100)
 
 
 class TestBudgetTools:

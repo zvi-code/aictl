@@ -250,6 +250,7 @@ def test_cluster_capacity_preserves_zero_and_does_not_retimestamp_on_probe_failu
 _TABLE_DETAILS_COLUMNS = [
     ("TableName", "string"), ("TotalRowCount", "long"), ("TotalExtents", "long"),
     ("TotalExtentSize", "real"), ("TotalOriginalSize", "real"), ("HotExtentSize", "real"),
+    ("RetentionPolicy", "dynamic"),
 ]
 
 
@@ -271,12 +272,16 @@ def test_native_inventory_distinguishes_empty_zero_unknown_stale_and_recovery(mo
     assert error["attempted_at"] == clock[0] and error["tables"] == []
     assert board_api._health_table_inventory(reader, error) == error and len(client.commands) == 1
     clock[0] += error["refresh_interval_s"]
-    client.on_mgmt = lambda _: response(_TABLE_DETAILS_COLUMNS, [["OTELLogs", 0, 0, 0.0, None, 0.0]])
+    client.on_mgmt = lambda _: response(_TABLE_DETAILS_COLUMNS, [
+        ["OTELLogs", 0, 0, 0.0, None, 0.0, {"SoftDeletePeriod": "7.12:00:00"}],
+        ["OTELMetrics", 0, 0, 0.0, None, 0.0, None],
+    ])
     sample = board_api._health_table_inventory(reader, error)
-    assert sample["tables"] == [{
+    assert sample["tables"][0] == {
         "name": "OTELLogs", "rows": 0, "extent_count": 0, "extent_bytes": 0, "original_bytes": None,
-        "hot_bytes": 0, "compressed_bytes": None,
-    }]
+        "hot_bytes": 0, "compressed_bytes": None, "retention_days": 7.5,
+    }
+    assert sample["tables"][1]["retention_days"] is None
     assert sample["status"] == "cached" and sample["last_error"] is None and sample["truncated"] is False
     clock[0] += sample["refresh_interval_s"]
     client.on_mgmt = lambda _: (_ for _ in ()).throw(RuntimeError("permission denied"))
@@ -324,8 +329,8 @@ def test_health_shares_background_adx_probes_and_logical_scan(monkeypatch):
         if command.startswith(inv):
             inventory_calls.append((database, command, props.get_option("servertimeout", None)))
             return response(_TABLE_DETAILS_COLUMNS, [
-                ["sessions", 3, 1, 21.0, 38.0, 12.0],
-                *[[f"t{i:04}", 0, 0, 0, 0, 0] for i in range(board_api.TABLE_INVENTORY_LIMIT)],
+                ["sessions", 3, 1, 21.0, 38.0, 12.0, None],
+                *[[f"t{i:04}", 0, 0, 0, 0, 0, None] for i in range(board_api.TABLE_INVENTORY_LIMIT)],
             ])
         if command == cap:
             return response([("Resource", "string"), ("Total", "long")], [["Ingestions", 12]])
@@ -363,7 +368,7 @@ def test_health_shares_background_adx_probes_and_logical_scan(monkeypatch):
         inv_sample = again["store"]["table_inventory"]
         assert inv_sample["tables"][0] == {
             "name": "sessions", "rows": 3, "extent_count": 1, "extent_bytes": 21,
-            "hot_bytes": 12, "original_bytes": 38, "compressed_bytes": None,
+            "hot_bytes": 12, "original_bytes": 38, "compressed_bytes": None, "retention_days": None,
         }
         assert inv_sample["truncated"] and len(inv_sample["tables"]) == inv_sample["limit"]
         assert "sealed extents" in inv_sample["scope"]
@@ -383,7 +388,7 @@ def test_health_shares_background_adx_probes_and_logical_scan(monkeypatch):
     assert database == settings.database and timeout.total_seconds() == 5
     assert command == (
         ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
-        f"TotalOriginalSize, HotExtentSize | top {inv_sample['limit'] + 1} by TableName asc"
+        f"TotalOriginalSize, HotExtentSize, RetentionPolicy | top {inv_sample['limit'] + 1} by TableName asc"
     )
 
 

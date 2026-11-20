@@ -1,6 +1,6 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Data behind the panel dashboard: ``/api/board`` and its detail routes.
+"""Board projections and detail routes for the dashboard.
 
 Every number comes from the fact tables. ``requests`` is the only source of
 token totals and time series; a session with usage in ``session_usage`` and no
@@ -80,14 +80,6 @@ _TURN_ENDED_REASONS = ("end_turn", "stop", "stop_sequence")
 IDLE_AFTER_S = 120.0
 MAX_TURN_SAMPLE = 500
 SELF_TTL_S = 10.0
-# An answer that differs only in clock-driven or live load numbers is served again for this long.
-RESEND_AFTER_S = 60.0
-# A polled answer comes from memory: a newer one is computed behind it, this often at most.
-REFRESH_MIN_S = 10.0
-# A background refresh waits this many times as long as the last one took, so a slow
-# range on a big database uses at most about a tenth of one core while the page polls.
-REFRESH_REST_RATIO = 10.0
-MAX_STALE_S = 60.0
 CLOCK_RANGE_SLACK_S = 120.0
 MEMO_TTL_S = 15.0
 MEMO_MAX_KEYS = 8
@@ -611,49 +603,6 @@ class _ToolAgg:
     project: str = ""
 
 
-class _BaseMemo:
-    """What one read of the time window produced, for the next change of filter."""
-
-    def __init__(self, keep: int = 2) -> None:
-        self._keep = keep
-        self._lock = threading.Lock()
-        self._entries: dict[tuple, dict] = {}
-
-    def get(self, key: tuple | None) -> dict | None:
-        with self._lock:
-            return self._entries.get(key)
-
-    def put(self, key: tuple | None, value: dict) -> None:
-        with self._lock:
-            self._entries[key] = value
-            while len(self._entries) > self._keep:
-                self._entries.pop(next(iter(self._entries)))
-
-
-# Set by Board.load before the filters apply, and never changed after that.
-_BASE_ATTRS = (
-    "cells",
-    "tool_agg",
-    "prompt_agg",
-    "prompt_rows",
-    "meta",
-    "sub_rows",
-    "session_tool",
-    "session_project",
-    "live_by_sid",
-    "placeholders",
-    "pid_cpu",
-    "test_rows",
-    "failure_rows",
-    "confirm_rows",
-    "loops",
-    "status",
-    "sub_status",
-    "last_activity",
-    "agents_by_root",
-)
-
-
 class _Board:
     """One computation of the board for one set of filters."""
 
@@ -719,28 +668,21 @@ class _Board:
 
     # ── Loading ────────────────────────────────────────────────
 
-    def load(self, base_memo: _BaseMemo | None = None, base_key: tuple | None = None, counts_only: bool = False) -> _Board:
-        """Read the window, then apply the filters. A change of filter reuses what was read.
+    def load(self, counts_only: bool = False) -> _Board:
+        """Read the window, then apply the filters.
 
         *counts_only* leaves out the test runs, failures and loops: they change a row's
         status, never its tokens, cost, tool calls or prompts.
         """
-        base = base_memo.get(base_key) if base_memo is not None else None
-        if base is not None:
-            for name in _BASE_ATTRS:
-                setattr(self, name, base[name])
-        else:
-            self._load_identity()
-            self._price_cells()
-            self._match_live()
-            if not counts_only:
-                self._load_tests()
-                self._load_failures()
-                self._load_loops()
-            self._load_confirms()
-            self._assign_status()
-            if base_memo is not None:
-                base_memo.put(base_key, {name: getattr(self, name) for name in _BASE_ATTRS})
+        self._load_identity()
+        self._price_cells()
+        self._match_live()
+        if not counts_only:
+            self._load_tests()
+            self._load_failures()
+            self._load_loops()
+        self._load_confirms()
+        self._assign_status()
         self._apply_filters()
         self._rollup()
         self._index_pending()
@@ -3176,24 +3118,12 @@ def compute_board(
     filters: Filters,
     snapshot: Any = None,
     now: float | None = None,
-    base_memo: _BaseMemo | None = None,
-    base_key: tuple | None = None,
     *,
     history: HistoryScope | None = None,
+    charts_only: bool = False,
 ) -> dict:
-    """Everything ``GET /api/board`` returns, for one set of filters."""
-    return _compute_board(db, filters, snapshot, now, base_memo, base_key, history or HistoryScope.local(db))
-
-
-def _compute_board(
-    db: Any,
-    filters: Filters,
-    snapshot: Any,
-    now: float | None,
-    base_memo: _BaseMemo | None,
-    base_key: tuple | None,
-    history: HistoryScope,
-) -> dict:
+    """Project one history window for the live board or a historical read."""
+    history = history or HistoryScope.local(db)
     now = time.time() if now is None else now
     history.require_reader()
     from types import SimpleNamespace
@@ -3202,7 +3132,7 @@ def _compute_board(
                            _live_projection=getattr(db, "_live_projection", False) is True)
     memo_key = str(getattr(db, "_path", "memory"))
     facts = _store_facts(memo_key, history)
-    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load(base_memo, base_key)
+    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load()
     f = filters
 
     agents = board.agents()
@@ -3447,6 +3377,13 @@ def _compute_board(
         "cpu": cpu,
         "mem": mem,
     }
+    chart_fields = {"range": {
+        "since": f.since, "until": f.until, "bucket_s": f.bucket_s,
+        "bucket_starts": [f.since + i * f.bucket_s for i in range(n)],
+        "partial_bucket": n - 1 if f.until > now and n else None,
+    }, "series": series}
+    if charts_only:
+        return chart_fields
 
     runs = []
     historical = history.qualified
@@ -3481,14 +3418,7 @@ def _compute_board(
         # When the settings records last changed: the settings screen reads them again on a new value.
         "settings_at": None if historical else tool_configs_at(),
         "capture_mode": None if historical else capture_mode(db, default="full"),
-        "range": {
-            "since": f.since,
-            "until": f.until,
-            "bucket_s": f.bucket_s,
-            "bucket_starts": [f.since + i * f.bucket_s for i in range(n)],
-            # The last bucket ends after now, so its figures are not complete yet.
-            "partial_bucket": n - 1 if f.until > now and n else None,
-        },
+        **chart_fields,
         "options": options,
         "scope": {
             "shown_agents": _count_agents(board, board.scope),
@@ -3500,7 +3430,6 @@ def _compute_board(
         "agents": agents,
         "by_model": by_model,
         "by_role": by_role,
-        "series": series,
         "saved_usd": _usd(board.total.saved),
         "unpriced": _unpriced_section(board),
         "credits": _credits_section(board),
@@ -5542,100 +5471,6 @@ def prompt_detail(db: Any, ts: float, session_id: str, now: float | None = None,
 # ─── HTTP entry points ────────────────────────────────────────────
 
 
-class _Memo:
-    """Finished answers by filter key and store version. Bounded and short-lived."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._entries: dict[tuple, bytes] = {}
-
-    def get(self, key: tuple) -> bytes | None:
-        with self._lock:
-            return self._entries.get(key)
-
-    def put(self, key: tuple, body: bytes) -> None:
-        with self._lock:
-            self._entries.pop(key, None)
-            self._entries[key] = body
-            while len(self._entries) > MEMO_MAX_KEYS:
-                self._entries.pop(next(iter(self._entries)))
-
-
-_MEMO = _Memo()
-_BASE_MEMO = _BaseMemo()
-_BASE_TIMES: dict[tuple, tuple[float, float, float]] = {}
-_SENT: dict[tuple, tuple[str, float, bytes]] = {}
-_COMPUTED_AT: dict[tuple, float] = {}
-_COMPUTED_REVISIONS: dict[tuple, int] = {}
-_COMPUTE_TOOK: dict[tuple, float] = {}
-_refresh_lock = threading.Lock()
-_refresh_thread: threading.Thread | None = None
-_COMPUTE_LOCK = threading.Lock()
-
-
-def _store_version(history: HistoryScope, now: float) -> tuple:
-    """Changes when rows arrive, and every MEMO_TTL_S for rows merged in place and for live state.
-
-    The live snapshot's own version is left out: it moves on every monitor cycle, so
-    a dashboard that polls would recompute each time with nothing new to show.
-    """
-    from ..orchestrator import tool_configs_at
-
-    row, = history.read("board.revision", limit=1)
-    return (row["rows"], row["version"], int(now / MEMO_TTL_S), tool_configs_at())
-
-
-def _change_digest(payload: dict) -> str:
-    """A digest that ignores what moves with the clock or with live load alone."""
-    stable = {k: v for k, v in payload.items() if k not in ("generated_at", "range", "self", "processes", "tool_labels", "series", "agents")}
-    stable["series"] = {k: v for k, v in payload["series"].items() if k not in ("cpu", "mem")}
-    stable["agents"] = [{k: v for k, v in row.items() if k not in ("cpu_percent", "mem_mb")} for row in payload["agents"]]
-    return hashlib.blake2b(json.dumps(stable).encode("utf-8"), digest_size=16).hexdigest()
-
-
-def board_bytes(db: Any, store: Any, query: str, now: float | None = None, background: bool = False) -> bytes:
-    """The answer for ``/api/board``, reused while the store and the filters stay the same.
-
-    A recomputed answer with no change in its data returns the earlier bytes, so a
-    polling client gets a 304. It is sent anew after RESEND_AFTER_S for the clock and
-    the live load numbers.
-
-    With *background*, a filter key that was answered recently answers from memory
-    at once and a newer answer is computed behind it, as the analytics cache does.
-    """
-    now = time.time() if now is None else now
-    filters = parse_filters(query, now)
-    # A range that ends about now follows the clock, whether the client says so or sends
-    # its own clock: it keeps one key, by the range's length.
-    key_filters = filters
-    if abs(now - filters.until) <= CLOCK_RANGE_SLACK_S:
-        key_filters = replace(filters, until=0.0, since=float(round((filters.until - filters.since) / 60.0)))
-    history = HistoryScope.local(store)
-    path = (history.reader, history.node)
-    try:
-        version = _store_version(history, now)
-    except StoreError:
-        # A locked or busy store: the last answer for these filters beats an error
-        # that empties the board. With none yet, the error goes to the client.
-        sent = _SENT.get((path, key_filters))
-        if sent is None:
-            raise
-        logger.info("Board answered from memory: the history is busy")
-        return sent[2]
-    body = _MEMO.get((path, key_filters, version))
-    if body is not None:
-        return body
-    if background:
-        sent = _SENT.get((path, key_filters))
-        computed = _COMPUTED_AT.get((path, key_filters))
-        if sent is not None and computed is not None and now - computed < MAX_STALE_S:
-            rest = max(REFRESH_MIN_S, _COMPUTE_TOOK.get((path, key_filters), 0.0) * REFRESH_REST_RATIO)
-            if now - computed >= min(rest, MAX_STALE_S / 2):
-                _refresh_behind(db, store, query, key_filters, version)
-            return sent[2]
-    return _compute_bytes(db, store, query, key_filters, version, now)
-
-
 def _clock_range(filters: Filters) -> Filters:
     """A range that follows the clock, moved in steps of a quarter bucket.
 
@@ -5646,74 +5481,6 @@ def _clock_range(filters: Filters) -> Filters:
     step = max(MEMO_TTL_S, span / filters.buckets / 4)
     until = math.ceil(filters.until / step) * step
     return replace(filters, since=until - span, until=until)
-
-
-def _compute_bytes(db: Any, store: Any, query: str, key_filters: Filters, version: tuple, now: float) -> bytes:
-    history = HistoryScope.local(store)
-    path = (history.reader, history.node)
-    key = (path, key_filters, version)
-    filters = parse_filters(query, now)
-    if key_filters.until == 0.0:
-        filters = _clock_range(filters)
-    revision_before = _COMPUTED_REVISIONS.get((path, key_filters), 0)
-    with _COMPUTE_LOCK:
-        body = _MEMO.get(key)
-        if body is not None:
-            return body
-        # An answer for these filters finished while this request waited for the
-        # lock: it is as new as a compute begun now would be, and on a slow store a
-        # client that asks again each tick would otherwise never get one.
-        sent = _SENT.get((path, key_filters))
-        if sent is not None and _COMPUTED_REVISIONS.get((path, key_filters), 0) != revision_before:
-            return sent[2]
-        started = time.monotonic()
-        base_key = (path, key_filters.since, key_filters.until, filters.buckets, version)
-        stamp = _BASE_TIMES.get(base_key)
-        if stamp is not None:
-            # One read of the window means one grid, so the filters take its exact range.
-            filters = replace(filters, since=stamp[0], until=stamp[1])
-            now = stamp[2]
-        else:
-            _BASE_TIMES.clear()
-            _BASE_TIMES[base_key] = (filters.since, filters.until, now)
-        payload = compute_board(db, filters, getattr(store, "snapshot", None), now, _BASE_MEMO, base_key,
-                                history=history)
-        digest = _change_digest(payload)
-        sent = _SENT.get((path, key_filters))
-        if sent is not None and sent[0] == digest and now - sent[1] < RESEND_AFTER_S:
-            body = sent[2]
-        else:
-            body = json.dumps(payload).encode("utf-8")
-            _SENT[(path, key_filters)] = (digest, now, body)
-            while len(_SENT) > MEMO_MAX_KEYS:
-                _SENT.pop(next(iter(_SENT)))
-        _COMPUTED_AT[(path, key_filters)] = now
-        _COMPUTED_REVISIONS[(path, key_filters)] = _COMPUTED_REVISIONS.get((path, key_filters), 0) + 1
-        _COMPUTE_TOOK[(path, key_filters)] = time.monotonic() - started
-        while len(_COMPUTED_AT) > MEMO_MAX_KEYS:
-            oldest = next(iter(_COMPUTED_AT))
-            _COMPUTED_AT.pop(oldest)
-            _COMPUTED_REVISIONS.pop(oldest, None)
-            _COMPUTE_TOOK.pop(oldest, None)
-        _MEMO.put(key, body)
-    return body
-
-
-def _refresh_behind(db: Any, store: Any, query: str, key_filters: Filters, version: tuple) -> None:
-    """Compute a newer answer on one background thread. A running refresh is not doubled."""
-    global _refresh_thread
-
-    def run() -> None:
-        try:
-            _compute_bytes(db, store, query, key_filters, version, time.time())
-        except Exception:  # noqa: BLE001 - the next request reports a failure; this thread has no client
-            logger.debug("Board refresh failed", exc_info=True)
-
-    with _refresh_lock:
-        if _refresh_thread is not None and _refresh_thread.is_alive():
-            return
-        _refresh_thread = threading.Thread(target=run, daemon=True, name="board-refresh")
-        _refresh_thread.start()
 
 
 def handle_get(
@@ -5735,9 +5502,6 @@ def handle_get(
         # A scoped deep link is never interpreted as a local native ID.
         if any(identity_parts(one(key)) for key in ("id", "session_id")):
             raise ScopeError("A node-qualified record requires a historical scope")
-        if path == "/api/board":
-            history.require_reader()
-            return 200, board_bytes(db, store, query, now, background=True)
         if path in {"/api/board/agent", "/api/board/sessions", "/api/board/file"}:
             history.require_reader()
         snapshot = getattr(store, "snapshot", None)
@@ -5924,6 +5688,7 @@ def _health_table_inventory(reader, previous: dict | None = None) -> dict:
                 "extent_count": _as_int(row.get("TotalExtents")), "extent_bytes": _as_int(row.get("TotalExtentSize")),
                 "original_bytes": _as_int(row.get("TotalOriginalSize")), "hot_bytes": _as_int(row.get("HotExtentSize")),
                 "compressed_bytes": None,
+                "retention_days": row.get("retention_days"),
             })
         return {**result, "tables": tables, "truncated": len(rows) > TABLE_INVENTORY_LIMIT,
                 "status": "cached", "checked_at": time.time(), "attempted_at": attempted, "last_error": None}

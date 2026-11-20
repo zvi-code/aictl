@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/settings-permission-write.schema.json",
+  "title": "SettingsPermissionWrite",
+  "type": "object",
+  "properties": {
+    "scope": {"type": "string"},
+    "expected_mtime": {"type": ["number", "null"]},
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "allow": {"type": "array", "items": {"type": "string"}},
+        "ask": {"type": "array", "items": {"type": "string"}},
+        "deny": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["allow", "deny"]
+    }
+  },
+  "required": ["scope", "expected_mtime", "permissions"]
+}

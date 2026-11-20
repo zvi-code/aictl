@@ -37,7 +37,6 @@ from ..orchestrator import AllowedPaths, SnapshotStore
 from ..platforms import IS_WINDOWS
 from ..records import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvocationRow
 from ..sink import OtelMetricGate
-from ..tool_scope import parse_tools_param
 from .api_handlers import _APIHandlersMixin
 from .live import stream as live_stream
 from .models import DashboardSnapshot
@@ -172,7 +171,7 @@ _GZIP_MEMO = _GzipMemo()
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # These read whole conversations or any project, so they answer this machine only.
-_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/session-evidence", "/api/context-audit", "/api/effective-models", "/api/board", "/api/live", "/api/settings/file", "/api/settings/tools")
+_LOCAL_ONLY_ROUTES = ("/api/copilot-sessions", "/api/session-evidence", "/api/context-audit", "/api/effective-models", "/api/board/", "/api/history/board", "/api/live", "/api/settings/file", "/api/settings/tools")
 
 
 def _local_request(client_host: str, host_header: str | None) -> bool:
@@ -567,6 +566,11 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         if path.startswith(_LOCAL_ONLY_ROUTES) and not _local_request(self.client_address[0], self.headers.get("Host")):
             self._json_response({"error": "This route answers requests from this machine only."}, status=403)
             return
+        if path == "/api/history/board":
+            from .history_board import serve
+
+            serve(self, url.query)
+            return
         if path.startswith("/api/") and path != "/api/board/nodes":
             from .history_scope import ScopeError, identity_parts, parse_scope
 
@@ -580,7 +584,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     return
                 if scope.kind != "local":
                     history = path in {
-                        "/api/board", "/api/board/sessions", "/api/board/agent", "/api/board/agent/flow",
+                        "/api/board/sessions", "/api/board/agent", "/api/board/agent/flow",
                         "/api/board/agent/transcript", "/api/board/prompt", "/api/board/tool", "/api/board/error",
                         "/api/board/skill", "/api/board/file", "/api/board/context", "/api/board/machine",
                         "/api/board/session/records", "/api/session-evidence",
@@ -605,10 +609,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             live_stream.serve_capabilities(self)
         elif path == "/api/live/stream":
             live_stream.serve_stream(self)
-        elif path == "/api/budget":
-            self._serve_budget()
-        elif path == "/api/history":
-            self._serve_history()
         elif path == "/api/copilot-sessions" or path.startswith("/api/copilot-sessions/"):
             from .copilot_sessions_api import handle
 
@@ -653,11 +653,21 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._send_body(json.dumps(body).encode("utf-8"), "application/json", cache_control="no-store", cors=False)
         elif path == "/api/board/context":
             self._serve_board_context()
+        elif path == "/api/board/agent/kql":
+            from .drawer_kql import kql_templates
+
+            keys = ("preset", "session", "reporting_node", "model", "tool", "keyword", "since", "until", "include_all_sessions")
+            try:
+                body = kql_templates({key: self._qs_get(key, "") for key in keys})
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, status=400)
+            else:
+                self._json_response(body)
         elif path == "/api/board/agent/flow":
             self._serve_board_agent_flow()
         elif path == "/api/board/agent/transcript":
             self._serve_board_agent_transcript()
-        elif path == "/api/board" or path.startswith("/api/board/"):
+        elif path.startswith("/api/board/"):
             self._serve_board(path)
         elif path.startswith("/api/samples"):
             self._serve_samples()
@@ -691,8 +701,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
             self._serve_events()
         elif path.startswith("/api/datapoints"):
             self._serve_datapoint_catalog()
-        elif path.startswith("/api/self-status"):
-            self._serve_self_status()
         elif path.startswith("/assets/"):
             self._serve_static(path)
         else:
@@ -1239,11 +1247,7 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
                     break
 
     def _write_sse(self, snap: DashboardSnapshot, version: int = 0) -> None:
-        """One small message per snapshot: the board fetches what it shows from /api/board.
-
-        The stream used to carry a summary of the whole snapshot, diffed per client
-        on every tick; the board only ever used it as the signal to fetch.
-        """
+        """One small notification per snapshot for the recording tool."""
         self.wfile.write(f'data: {{"timestamp": {snap.timestamp}, "version": {version}}}\n\n'.encode())
         self.wfile.flush()
 
@@ -1428,14 +1432,6 @@ class _DashboardHandler(_APIHandlersMixin, BaseHTTPRequestHandler):
         """Parse a float from query string, returning default if absent."""
         v = self._qs_get(key)
         return float(v) if v else default
-
-    def _qs_tools(self) -> tuple[str, ...] | None:
-        """The dashboard tool selection from ``?tools=a,b``.
-
-        None when the parameter is absent (every tool); an empty tuple for an
-        empty ``tools=`` (no tool).
-        """
-        return parse_tools_param(urlparse(self.path).query)
 
     def _qs_float_opt(self, key: str) -> float | None:
         """Parse an optional float from query string, returning None if absent."""

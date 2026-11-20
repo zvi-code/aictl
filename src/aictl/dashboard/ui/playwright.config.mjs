@@ -20,6 +20,8 @@ export default defineConfig({
   },
   projects: [
     { name: 'legacy', testMatch: ['**/legacy.spec.mjs', '**/replay.spec.mjs'] },
+    { name: 'drawer', testMatch: '**/drawer.spec.mjs' },
+    { name: 'settings', testMatch: '**/settings.spec.mjs' },
     { name: 'board', testMatch: ['**/shell.spec.mjs', '**/board-a.spec.mjs', '**/board-b.spec.mjs', '**/health.spec.mjs'] },
     { name: 'dock-layout', testDir: './test/replay', testMatch: '**/dock-layout.spec.mjs' },
     { name: 'gallery', testMatch: '**/gallery.spec.mjs' },

@@ -19,6 +19,7 @@ from aictl.dashboard.web_server import (
     _local_request,
     _names_another_machine,
 )
+from aictl.health import OperationStats
 from aictl.observe.sessions import ArtifactRefused, confine
 
 
@@ -54,6 +55,7 @@ def _get(port: int, path: str, host: str) -> int:
 def test_each_route_refuses_a_rebound_name_through_the_real_handler(route, tmp_path):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _DashboardHandler)
     server.root = tmp_path
+    server.health_reads = OperationStats()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

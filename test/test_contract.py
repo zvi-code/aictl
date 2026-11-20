@@ -128,7 +128,10 @@ def test_recorded_rest_payloads():
         "/api/copilot-sessions", "/api/copilot-sessions/{id}", "/api/copilot-sessions/{id}/artifact",
         "/api/copilot-sessions/{id}/artifacts", "/api/tool-config/{tool}",
     }
-    no_capture = local_file_routes | {"/api/board/error", "/api/board/prompt"} | TERMINAL_DETAILS
+    # Board history is exercised against seeded local and scoped readers.
+    no_capture = local_file_routes | {
+        "/api/board/error", "/api/board/prompt", "/api/board/agent/kql", "/api/history/board",
+    } | TERMINAL_DETAILS
     assert (set(VALIDATORS["details"]) | {"/api/board"}) - seen <= no_capture
 
 
@@ -231,7 +234,16 @@ def test_recorded_live_entity_payloads():
                     f"{tape.relative_to(RECORDINGS)}: {topic}",
                 )
                 seen.add(topic)
-    assert seen == TOPICS.keys()
+    # Historic captures predate opt-in agent watches. Exercise that envelope separately.
+    assert seen == TOPICS.keys() - {"history.agent"}
+
+
+def test_agent_watch_entity_contract():
+    topic = "history.agent"
+    _validate(ENTITY_VALIDATORS[topic], {
+        "topic": topic, "id": "watched-agent", "revision": 1, "source": "kusto.queryable",
+        "data": {"agent_id": "example", "view": "transcript", "status": 404, "value": None},
+    }, topic)
 
 
 @pytest.fixture(scope="module")

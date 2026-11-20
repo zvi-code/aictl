@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 22ec47a4a88342a41f5cb4c231046424d1b643f66bed4751c18a11f01afcfe12
+// Schema digest: 200b054f82bdd7ee7eb27a7c762a5b899cf8a30dc17c019fb4d42661f77f2b7c
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -638,10 +638,10 @@ export type DetailAgentFlow = {
     end: number | null;
     matched: number;
     total: number;
-    agents: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
+    agents: Array<string>;
     tools: Array<string>;
     models: Array<string>;
-    skills: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
+    skills: Array<string>;
   };
 };
 
@@ -864,6 +864,41 @@ export type DetailApiCalls = {
   };
 };
 
+export type DetailBoardHistory = {
+  node_scope: BoardNodeScope;
+  range: BoardRange;
+  series: BoardSeries;
+  agents?: BoardAgents;
+  attention?: BoardAttention;
+  by_model?: BoardByModel;
+  by_role?: BoardByRole;
+  capture_mode?: BoardCaptureMode;
+  changes?: BoardChanges;
+  confirms?: BoardConfirms;
+  coverage?: BoardCoverage;
+  credits?: BoardCredits;
+  errors?: BoardErrors;
+  kpis?: BoardKpis;
+  latency?: BoardLatency;
+  loops?: BoardLoops;
+  memory_files?: BoardMemoryFiles;
+  options?: BoardOptions;
+  project_prompts?: BoardProjectPrompts;
+  project_prompts_searched?: BoardProjectPromptsSearched;
+  projects?: BoardProjects;
+  prompts?: BoardPrompts;
+  prompts_total?: BoardPromptsTotal;
+  saved_usd?: BoardSavedUsd;
+  scope?: BoardScope;
+  skills?: BoardSkills;
+  sources?: BoardSources;
+  tests?: BoardTests;
+  tests_piped?: BoardTestsPiped;
+  tool_labels?: BoardToolLabels;
+  tools?: BoardTools;
+  unpriced?: BoardUnpriced;
+};
+
 export type DetailContextAudit = {
   status: string;
   elapsed_s: number;
@@ -878,7 +913,18 @@ export type DetailContextAudit = {
   sources: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
   sources_per_tool: Record<string, number>;
   transcripts_read: number;
-  findings: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
+  findings: Array<{
+    rule?: string;
+    severity?: string;
+    tool?: string;
+    tools?: Array<string>;
+    path?: string;
+    line?: number;
+    snippet?: string;
+    why?: string;
+    action?: string;
+    session_id?: string;
+  }>;
   drift: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>;
   unknown_loaded: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
   unattributed: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
@@ -1053,6 +1099,25 @@ export type DetailHooksStatus = {
   };
 };
 
+export type DetailKqlTemplates = {
+  presets: Array<{
+    id: string;
+    label: string;
+    title: string;
+    description: string;
+    model: boolean;
+    tool: boolean;
+    keyword: boolean;
+    fleet: boolean;
+    all_sessions: boolean;
+  }>;
+  tables: Array<string>;
+  fields: Array<string>;
+  operators: Array<string>;
+} | {
+  query: string;
+};
+
 export type DetailMachine = (MachineLocal) & ({
   pipeline: MachinePipeline;
   node_scope?: NodeScope;
@@ -1221,6 +1286,22 @@ export type DetailNodes = {
       pid?: number;
       store?: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null> & {
         query_cpu?: QueryCpu;
+        writer?: {
+          status: string;
+          tables: Record<string, {
+            queue_depth?: number;
+            queue_bytes?: number;
+            in_flight?: number;
+            rows_sent?: number;
+            rows_dropped?: number;
+            lost_at_exit?: number;
+            ingest_requests?: number;
+            ingest_failures?: number;
+            bytes_sent?: number;
+            last_sent_at?: number;
+            last_error_at?: number;
+          }>;
+        };
       };
       runtime?: Record<string, unknown>;
     } | null;
@@ -1295,6 +1376,12 @@ export type DetailPrompt = {
   tool_calls: number;
   node_scope?: NodeScope;
 };
+
+export type DetailSamples = Array<{
+  ts: number;
+  value: number | null;
+  tags: Record<string, unknown>;
+}>;
 
 export type DetailSessionCommits = {
   session_id: string;
@@ -1390,6 +1477,35 @@ export type DetailSessionRecords = {
     total_errors: number;
     by_model: Record<string, number>;
   };
+};
+
+export type DetailSessionTeam = {
+  session_id: string;
+  agents: Array<{
+    agent_id: string;
+    parent_agent_id?: string;
+    state?: string;
+    task?: string;
+    agent_type?: string;
+    relationship?: string;
+    started_at?: number;
+    ended_at?: number | null;
+    duration_s?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    tool_calls?: number;
+    model?: string;
+  }>;
+  tasks: Array<{
+    task_id: string;
+    agent_id?: string;
+    name?: string;
+    state?: string;
+    created_at?: number;
+    completed_at?: number | null;
+  }>;
+} | {
+  error: string;
 };
 
 export type DetailSessions = {
@@ -1626,6 +1742,7 @@ export type DetailToolConfig = {
   path: string;
   exists: boolean;
   mtime: number | null;
+  backup_path?: string | null;
   editable_fields: Array<string>;
   permissions: Record<string, Array<string>>;
   raw: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>;
@@ -1662,6 +1779,11 @@ export type FlowEvent = {
   agent_name?: string | null;
   api_calls?: number;
   confirm?: string | null;
+  compaction_count?: number | null;
+  before_tokens?: number | null;
+  after_tokens?: number | null;
+  context_tokens?: number | null;
+  completed?: boolean | null;
   cost_usd?: number | null;
   duration_ms?: number | null;
   end_ts?: number | null;
@@ -1670,6 +1792,11 @@ export type FlowEvent = {
   from?: string | null;
   input_preview?: string | null;
   is_error?: boolean;
+  error_type?: string | null;
+  error_message?: string | null;
+  hook_name?: string | null;
+  hook_input?: string | null;
+  hook_output?: string | null;
   message?: string | null;
   model?: string | null;
   name?: string | null;
@@ -1680,6 +1807,15 @@ export type FlowEvent = {
   prompt_length?: number;
   redacted?: boolean;
   result_summary?: string | null;
+  result_size?: number | null;
+  result_preview?: string | null;
+  reported_spans?: number | null;
+  request_preview?: string | null;
+  response?: string | null;
+  response_preview?: string | null;
+  subtype?: string | null;
+  decision?: string | null;
+  cwd?: string | null;
   step_key?: string | null;
   success?: boolean | null;
   target?: string | null;
@@ -1688,6 +1824,12 @@ export type FlowEvent = {
   tokens?: UsageTokens;
   ttft_ms?: number | null;
   turn_id?: string | null;
+  round_id?: string | null;
+  request_id?: string | null;
+  message_id?: string | null;
+  tool_call_id?: string | null;
+  span_id?: string | null;
+  trace_id?: string | null;
   wall_ms?: number | null;
 };
 
@@ -1945,6 +2087,12 @@ export type LiveEntity = {
   revision: number;
   source: "runtime.evidence" | "runtime.native";
   data: TopicConfigurationLoaded;
+} | {
+  topic: "history.agent";
+  id: string;
+  revision: number;
+  source: "kusto.queryable";
+  data: TopicHistoryAgent;
 } | {
   topic: "history.board";
   id: string;
@@ -2254,6 +2402,16 @@ export type SessionProcessRow = {
   joined_at: number | null;
 };
 
+export type SettingsPermissionWrite = {
+  scope: string;
+  expected_mtime: number | null;
+  permissions: {
+    allow: Array<string>;
+    ask?: Array<string>;
+    deny: Array<string>;
+  };
+};
+
 export type SettingsToolConfig = {
   tool: string;
   model?: string | null;
@@ -2268,6 +2426,7 @@ export type SettingsToolConfig = {
   feature_groups?: Record<string, Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
   settings?: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>;
   sections?: Array<{
+    id?: string;
     title?: string;
     key?: string;
     label?: string;
@@ -2277,19 +2436,68 @@ export type SettingsToolConfig = {
       value?: Record<string, unknown> | Array<unknown> | string | number | boolean | null;
       source?: string | null;
       set?: boolean;
+      kind?: string;
+      group?: string | null;
+      scope?: string;
+      line?: number;
+      note?: string;
+      wins?: number;
+      locked?: boolean;
+      danger?: boolean;
+      documented?: boolean;
+      chain?: Array<{
+        scope?: string;
+        value?: Record<string, unknown> | Array<unknown> | string | number | boolean | null;
+        source?: string | null;
+        line?: number;
+        set?: boolean;
+        locked?: boolean;
+        wins?: boolean;
+      }>;
+      agent?: {
+        name?: string;
+        description?: string;
+        model?: string;
+        model_policy?: string;
+        effort?: string;
+        context_tier?: string;
+        target?: string;
+        tools?: Array<string>;
+        defined_in?: string;
+        defined_line?: number;
+        pinned_in?: string;
+        pinned_line?: number;
+        inherits?: boolean;
+        scope_defined?: string;
+        scope_pinned?: string;
+      };
     }>;
   }>;
   scopes?: Array<{
+    id?: string;
     path?: string;
     scope?: string;
     label?: string;
     name?: string;
+    exists?: boolean;
+    changeable?: boolean;
+    note?: string;
+    vars?: Array<string>;
   }>;
   env_vars?: Array<{
     name?: string;
     key?: string;
     value?: string | null;
     set?: boolean;
+    masked?: boolean;
+    in_process?: boolean;
+    process?: string | null;
+    label?: string;
+    description?: string;
+    drives?: Array<{
+      key: string;
+      label: string;
+    }>;
     persisted?: Array<{
       origin: string;
       kind: string;
@@ -2330,6 +2538,7 @@ export type TableInventory = {
     extent_count: number | null;
     hot_bytes: number | null;
     original_bytes: number | null;
+    retention_days?: number | null;
   }>;
 };
 
@@ -2449,6 +2658,28 @@ export type TopicConfigurationLoaded = {
     source: string;
     value: Record<string, unknown> | Array<unknown> | string | number | boolean | null;
   }>;
+};
+
+export type TopicHistoryAgent = {
+  agent_id: string;
+  view: "detail";
+  status: 200;
+  value: DetailAgent;
+} | {
+  agent_id: string;
+  view: "flow";
+  status: 200;
+  value: DetailAgentFlow;
+} | {
+  agent_id: string;
+  view: "transcript";
+  status: 200;
+  value: DetailAgentTranscript;
+} | {
+  agent_id: string;
+  view: "detail" | "flow" | "transcript";
+  status: number;
+  value: null;
 };
 
 export type TopicHistoryBoard = {
@@ -3028,6 +3259,7 @@ export interface LiveTopicData {
   "configuration.board": TopicConfigurationBoard;
   "configuration.file": TopicConfigurationFile;
   "configuration.loaded": TopicConfigurationLoaded;
+  "history.agent": TopicHistoryAgent;
   "history.board": TopicHistoryBoard;
   "runtime.agent": TopicRuntimeAgent;
   "runtime.health": TopicRuntimeHealth;
@@ -3041,6 +3273,7 @@ export interface DetailResponses {
   "/api/api-calls": DetailApiCalls;
   "/api/board/agent": DetailAgent;
   "/api/board/agent/flow": DetailAgentFlow;
+  "/api/board/agent/kql": DetailKqlTemplates;
   "/api/board/agent/transcript": DetailAgentTranscript;
   "/api/board/context": DetailContext;
   "/api/board/error": DetailError;
@@ -3066,12 +3299,15 @@ export interface DetailResponses {
   "/api/effective-models": DetailEffectiveModels;
   "/api/events": DetailEvents;
   "/api/events/count": DetailEventsCount;
+  "/api/history/board": DetailBoardHistory;
   "/api/hooks-status": DetailHooksStatus;
   "/api/otel-status": DetailOtelStatus;
+  "/api/samples": DetailSamples;
   "/api/session-commits": DetailSessionCommits;
   "/api/session-evidence": DetailSessionEvidence;
   "/api/session-mcp-usage": DetailSessionMcpUsage;
   "/api/session-processes": DetailSessionProcesses;
+  "/api/session-stats": DetailSessionTeam;
   "/api/settings/file": DetailSettingsFile;
   "/api/settings/files": DetailSettingsFiles;
   "/api/settings/tools": DetailSettingsTools;

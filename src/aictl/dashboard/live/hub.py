@@ -223,7 +223,7 @@ class LiveHub:
 
     @staticmethod
     def _is_history(key: tuple[str, str]) -> bool:
-        return key[0] in {"history.board", "configuration.board", "catalog.board"}
+        return key[0] in {"history.board", "history.agent", "configuration.board", "catalog.board"}
 
     def _envelope(self, **fields: Any) -> dict:
         return {
@@ -234,13 +234,15 @@ class LiveHub:
             **fields,
         }
 
-    def _bootstrap_locked(self, scope: str, history: bool, reason: str, ordered_gap: bool = False) -> dict:
+    def _bootstrap_locked(
+        self, scope: str, history: bool, reason: str, ordered_gap: bool = False, agent_entity: str | None = None,
+    ) -> dict:
         return self._envelope(
             scope=scope,
             capabilities=capabilities(),
             reason=reason,
             ordered_gap=ordered_gap,
-            entities=[value for value in self._state.values() if entity_visible(value, scope, history)],
+            entities=[value for value in self._state.values() if entity_visible(value, scope, history, agent_entity)],
             retention={
                 "native_output": {
                     "max_entries": self.limits.output_entries,
@@ -256,16 +258,18 @@ class LiveHub:
             },
         )
 
-    def subscribe(self, scope: str = "", *, history: bool = True, cursor: str | None = None) -> LiveSubscription:
+    def subscribe(
+        self, scope: str = "", *, history: bool = True, cursor: str | None = None, agent_entity: str | None = None,
+    ) -> LiveSubscription:
         with self._condition:
             if self._closed:
                 raise RuntimeError("Live hub is closed")
-            subscription = LiveSubscription(self, scope, history)
+            subscription = LiveSubscription(self, scope, history, agent_entity)
             replay_after = self._resume_sequence(cursor)
             if replay_after is None:
                 reason = "initial" if not cursor else "resume_miss"
                 subscription._initial.append(
-                    ("bootstrap", self._bootstrap_locked(scope, history, reason, bool(cursor)))
+                    ("bootstrap", self._bootstrap_locked(scope, history, reason, bool(cursor), agent_entity))
                 )
             else:
                 for change, _, sizes in self._journal:
@@ -321,10 +325,11 @@ class LiveHub:
 class LiveSubscription:
     """Latest-value slots and a separate ordered queue, both bounded by bytes."""
 
-    def __init__(self, hub: LiveHub, scope: str, history: bool) -> None:
+    def __init__(self, hub: LiveHub, scope: str, history: bool, agent_entity: str | None = None) -> None:
         self.hub = hub
         self.scope = scope
         self.history = history
+        self.agent_entity = agent_entity
         self._initial: deque[tuple[str, dict]] = deque()
         self._latest: dict[tuple[str, str], tuple[int, str, dict, int]] = {}
         self._ordered: deque[tuple[int, str, dict, int]] = deque()
@@ -339,7 +344,7 @@ class LiveSubscription:
             return
         for kind in ("upserts", "removals"):
             for entity in change[kind]:
-                if not entity_visible(entity, self.scope, self.history):
+                if not entity_visible(entity, self.scope, self.history, self.agent_entity):
                     continue
                 size = sizes[(kind, entity["topic"], entity["id"])]
                 item = (change["sequence"], kind, entity, size)
@@ -374,7 +379,9 @@ class LiveSubscription:
                     return self._initial.popleft()
                 if self._reset:
                     self._reset = False
-                    result = self.hub._bootstrap_locked(self.scope, self.history, self._reset_reason, self._ordered_gap)
+                    result = self.hub._bootstrap_locked(
+                        self.scope, self.history, self._reset_reason, self._ordered_gap, self.agent_entity,
+                    )
                     self._reset_reason = "overflow"
                     self._ordered_gap = False
                     return "bootstrap", result

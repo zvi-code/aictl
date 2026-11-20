@@ -56,10 +56,10 @@ aictl/
 ├── config.py               # TOML config loading + platform defaults
 ├── utils.py                # Token estimation, safe writes, overlays
 ├── sink.py                 # Thread-safe metric emission pipeline
-├── store.py                # In-memory snapshot storage + ring buffers
 ├── records.py              # Typed rows and normalization helpers
-├── orchestrator.py         # Server lifecycle — wires collectors, server, storage
+├── orchestrator.py         # Server lifecycle and in-memory SnapshotStore
 ├── client.py               # HTTP client for connecting to running aictl daemon serve
+├── stores/                 # Store plugin interfaces and Kusto implementation
 │
 ├── commands/               # CLI command implementations (grouped by domain)
 │   ├── ctx_pipeline.py     #   aictl ctx: deploy, scan, diff, validate, init
@@ -116,27 +116,23 @@ aictl/
 │   │   ├── hub.py          #     Bounded entity state, replay, and client backpressure
 │   │   ├── projection.py   #     Store history and independent operational health
 │   │   └── stream.py       #     HTTP live capabilities and SSE handlers
-│   ├── queryable_context.py #  Named store views and projections for context and file details
-│   ├── api_handlers.py     #   REST endpoint handlers (budget, events, kill, …)
-│   ├── analytics.py        #   Cached analytics queries + cache health reporting
-│   ├── otel_receiver.py    #   OTLP metrics/logs/traces parser (defensive)
+│   ├── contract/           #   JSON Schemas for live topics and HTTP details
+│   ├── projections/       #   Dashboard projections over named store views
+│   ├── history_board.py    #   Scoped panel and whole-window chart reads
+│   ├── queryable_context.py #  Context inventory and file details
+│   ├── api_handlers.py     #   REST handlers for details and actions
 │   ├── tool_config_editor.py #  Read/write tool config edits (audited)
 │   ├── tui.py              #   Textual TUI app
 │   ├── html_report.py      #   Self-contained static HTML report
 │   ├── collector.py        #   One-shot snapshot (used by TUI standalone)
 │   ├── dist/               #   Built Vite static assets (served by web_server)
-│   └── ui/                 #   Frontend source (Vite + Preact + htm)
+│   └── ui/                 #   Frontend source (Vite + Solid + TypeScript)
 │       └── src/
-│           ├── main.js, root.js    # Entry; root rewrites old ?tab= links and renders the board
-│           ├── api.js, useSse.js   # All fetch calls; SSE hook for /api/stream
-│           ├── utils.js            # Formatters and constants
-│           ├── hooks/              # urlState, useBoardFilters, useTheme, useTools
-│           ├── utils/              # a11y, auditScope, customRange, paths, platform, tools, toolScope
-│           └── components/
-│               ├── board/          # The board screen, board.css (rewrite: see docs/ui/design.md)
-│               │   └── agent/      #   Agent drawer tabs and their models
-│               ├── settings/       # Settings screen (settings.css)
-│               └── ui/             # Markdown, TextView, Segmented, Icon, small shared pieces
+│           ├── main.ts            # Browser entry
+│           ├── shell/             # Navigation, scope/range controls, and screens
+│           ├── data/              # Generated contract, live store, and detail resources
+│           ├── panels/            # Board panels and their data sources
+│           └── ui/                # Shared Solid UI primitives
 │
 └── data/                   # CSV registries and schema files
     ├── paths-unix.csv      #   Tool file paths for Linux/macOS
@@ -347,7 +343,7 @@ The monitoring subsystem provides live observability for active AI tool sessions
                       ▼
               ┌──────────────┐
               │  SampleSink  │──▶ Store writer (Kusto)
-              │ (thread-safe)│──▶ SnapshotStore (ring buffers)
+              │ (thread-safe)│──▶ Live dashboard samples
               └──────────────┘
 ```
 
@@ -396,46 +392,36 @@ The sink hands typed metric rows to the store writer and sends live samples to d
 
 ## 4. Storage
 
-### Kusto store (`stores/kusto/`)
+Kusto is the only persistent history backend. `stores.open_store()` supplies
+the configured plugin's reader and writer. Without a configured store, live
+collection continues and history is unavailable; there is no SQLite fallback.
+Third-party tool databases, including Copilot session stores, are read-only
+collection inputs, not aictl history.
 
-Onboarding and access to a remote cluster: [kusto-cluster.md](kusto-cluster.md). Run `aictl db schema` for the current table definitions.
+The plugin under `stores/kusto/` owns the native table definitions, schema and
+retention management, and parameterized `.kql` views. Dashboard projections
+request named views instead of issuing KQL. Producers hand typed rows to the
+writer, which stamps node and version identifiers and submits bounded batches
+outside collector threads. Deletes use tombstones on tables that support them.
+Raw OTLP exports use separate tables from derived session and event records.
+Queued acknowledgement does not establish that rows are queryable.
 
-Set `kusto_cluster` in `config.toml`, pass `aictl daemon serve --kusto-cluster URL`, or set `AICTL_KUSTO_CLUSTER` to enable history. One Kusto database holds rows for all projects and reporting nodes. Without a configured store, live collection continues but the history reader reports that no store is configured.
+Retention runs in Kusto; text tables have separate policies and use a trim
+watermark to keep late uploads from restoring expired text. Health reports
+writer telemetry separately from store inventory and retention metadata.
+`SnapshotStore` in `orchestrator.py` holds the daemon's current snapshot, not
+persistent history. `AllowedPaths` controls which local files can be inspected.
 
-- `tables.py` defines native keys, columns, retention, and ingestion modes. `schema.py` creates or widens tables and applies the retention policies. `aictl db schema` lists those definitions.
-- Producers hand off typed rows without reading history. The writer adds a node and version, and queues bounded batches. Deletes use a tombstone on tables that support it. Flushes run outside collector threads; a failed batch stays queued for retry until it is sent, evicted, or counted as lost at shutdown.
-- `kusto_ingestion` chooses `auto`, `queued`, `streaming`, or `inline`; `kusto_table_ingestion` overrides the mode per table. Inline and streaming calls submit directly to the engine. Queued acknowledgement does not mean the rows are queryable yet. See [ingestion mode configuration](kusto-cluster.md#global-ingestion-mode-and-per-table-overrides).
-- `stores/kusto/otel.py` converts raw exports to `OTELLogs`, `OTELMetrics`, `OTELTraces`, and `OTELPayloads`. The OTLP sink sends those tables separately from the derived session and event facts.
-- Retention runs in Kusto. Text tables have separate retention; the text-trim watermark also prevents queued or replayed rows from restoring expired text.
-- `kusto_auth = auto` uses the Azure CLI login for Azure clusters and no credentials for the local emulator. Other modes are `device`, `managed-identity`, and `none`.
-
-### Storage plugin foundation (`stores/`)
-
-`stores.open_store()` loads only the selected plugin. With no store selected, it
-returns no reader or writer and Health reports `no store configured`. The Kusto
-plugin owns its table definitions and parameterized `.kql` views. Its writer
-uses caller-supplied source keys scoped by project and node. It stamps full row
-versions and tombstones, then ingests them from bounded queues without querying
-the store. Health reports the queue, drop, and failure counts. Text tables use
-14-day retention; other tables use 30 days. The native defaults stream live data
-and formerly inline tables, and queue the other tables. Only the emulator uses
-inline ingestion. The SQLite history backend and its SQL adapter are removed.
-External tool databases, such as a Copilot session store, are read-only inputs.
-
-### In-Memory Store (`store.py`)
-
-`SnapshotStore` provides real-time access for the dashboard:
-
-- Thread-safe snapshot storage with version-based change notification
-- Ring buffers for sparkline history (360 entries, ~30 minutes at 5s intervals)
-- Per-tool history (120 entries for detail views)
-- `AllowedPaths` whitelist for safe file content inspection
+See [Kusto setup and ingestion configuration](kusto-cluster.md) and
+`aictl db schema` for the current native tables.
 
 ---
 
 ## 5. Dashboard
 
-Three rendering targets share the same `DashboardSnapshot` data model.
+The daemon collects a `DashboardSnapshot` for local runtime state. Web and
+terminal clients read projections of that state and queryable history; the
+static HTML report renders a snapshot directly.
 
 ### Data Model (`dashboard/models.py`)
 
@@ -468,35 +454,30 @@ class DashboardSnapshot:
 
 ### Web Dashboard (`dashboard/web_server.py` + `dashboard/ui/`)
 
-A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). The daemon always offers the incremental subscription below. The legacy snapshot stream remains available. For the rewrite's tokens, primitives and accessibility rules, see [`docs/ui/design.md`](ui/design.md).
+`web_server.py` serves the Vite assets and dispatches HTTP routes. The Solid
+shell presents the board, Health and Settings. `ui/src/data/` applies the live
+baseline and changes to a keyed store and caches on-demand detail requests.
+Panels consume typed sources through `panels/data.ts`. See
+[UI design](ui/design.md) for tokens, primitives and accessibility rules.
 
-**Backend** — `ThreadingHTTPServer` with REST API:
+The [contract index](../src/aictl/dashboard/contract/index.json) maps live
+topics and detail routes to JSON Schemas. `npm run gen:contract` generates the
+browser's `contract.gen.ts` from those schemas.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Static HTML + JS (from `dist/`) |
-| `/api/snapshot` | GET | Current snapshot JSON |
-| `/api/file?path=...` | GET | File content (restricted to discovered files) |
-| `/api/budget` | GET | Token budget analysis |
-| `/api/stream` | GET | Legacy snapshot-version SSE notifications; unchanged |
-| `/api/live/capabilities` | GET | Incremental protocol and source capabilities |
-| `/api/live/stream` | GET | Scoped entity baseline, changes, and replay |
-| `/api/history?range=1h\|6h\|24h\|7d` | GET | Time-series history |
-| `/api/events?tool=...&since=...` | GET | Filtered event log |
-| `/api/samples?metric=...&since=...` | GET | Prometheus-style metric samples |
-| `/api/session-processes` | GET | Process tree for a session |
-| `/api/session-commits` | GET | Git commits attributed to a session |
-| `/api/session-stats` | GET | Aggregate stats for a session |
-| `/api/session-mcp-usage` | GET | MCP server usage for a session |
-| `/api/session-kill` | POST | Signal a live session's process tree (TERM/KILL) |
-| `/api/otel-status` | GET | OTel receiver diagnostics |
-| `/api/hooks-status` | GET | Per-tool hook installation status |
-| `/api/hooks` | PUT | Install/repair tool hooks |
-| `/api/tool-config/...` | GET, PUT | Read/write a tool's config (PUT is audited) |
-| `/api/api-calls` | GET | Recorded API/network calls |
-| `/api/datapoints` | GET | Datapoint catalog |
-| `/api/self-status` | GET | aictl's own runtime status |
-| `/api/board/health` | GET | Unified collection, ingestion, request and backend health; available before the first snapshot |
+| Read | Purpose |
+|------|---------|
+| `/api/live/capabilities` | Protocol version, supported topics and source authority |
+| `/api/live/stream` | Scoped entity baseline, changes and cursor replay; includes local board history and `runtime.health` |
+| `/api/history/board` | Historical panels for a named node or fleet; `view=charts` returns only `node_scope`, `range` and `series` |
+| Contract detail routes | On-demand records such as node reports, context, sessions and file details |
+
+A time-range selection changes the board's panel window. Its chart keeps the
+whole displayed range through a separate historical read. The browser checks the
+returned scope before using that read. Remote Health reports node writer
+counters only from fresh samples for the reported daemon process; shared Kusto
+inventory (including retention when known) is not attributed to those nodes.
+The snapshot endpoints `/api/snapshot` and `/api/stream` remain in use by
+integration or recording tools; they are not the Solid board data path.
 
 **Python clients** — The CLI and TUI check `/api/live/capabilities` before
 opening `/api/live/stream`. They use live entities for process and session
@@ -505,24 +486,6 @@ its state when the daemon sends a new bootstrap. The local
 `/api/board/terminal/*` details supply resource metadata, session counters,
 recent events, metric samples, and previews of discovered files. `aictl board`
 reads the scoped `/api/board/nodes` detail directly.
-
-**Frontend** — Preact 10 with htm/preact tagged template literals. The UI has one screen, the board
-(`components/board/`), with Settings at `?screen=settings` and aictl Health at
-`?screen=health`. Charts are plain SVG.
-
-The Health screen uses the shared live stream and does not require a
-board-history baseline. Its default overview has four compact stages
-(collection, queued DM, engine ingestion, and
-queryable storage/reads), one destination-group traffic matrix, and source,
-collector, ingester and issue summaries. Queued acknowledgements remain separate
-from cached stored volume and are not confirmed queryable. Store totals, upload
-sizes, table memberships, policies and the existing collection/data-quality
-panels are available in expandable details. Health uses its own responsive
-arrangement rather than stored board panel sizes or visibility; it does not
-reset board layouts, density, or sidebar preferences.
-Machine CPU and process views remain on Machine. Backend operation counters are
-process-local; cached storage volume and Kusto capacity carry their own scope and
-timestamps. Unknown measurements remain unreported rather than becoming zero.
 
 ### Live source contract
 
@@ -695,28 +658,6 @@ budget totals without removing its file. Historical artifacts use indexed size/
 mtime; current local presence is unknown. Historical transcripts do not merge the
 unpersisted analyzer, and historical commit GETs do not run local git attribution.
 
-| Part | Files | Purpose |
-|------|-------|---------|
-| Shell: rail, filters, screens | `BoardScreen.js`, `filters.js`, `useBoardData.js` | Section rail, time and tool filters, `board` and `settings` screens, data from `/api/board` |
-| Layout | `layout.js`, `Panel.js` | Sections and default panel layout (stored under `aictl-board-layout-v1`), panel frame and menu |
-| Summary strip | `summary.js` | KPI strip and the one line per section in the rail |
-| Agents section | `panels.js` | Attention list, agents and subagents table, usage by model and role |
-| Usage and cost | `panels.js`, `Chart.js`, `chartModel.js` | Token, cache, cost and message charts, project table |
-| Prompts and skills | `panels.js`, `contextPanels.js` | Prompts, project prompts, skills used, workflows and prompt files |
-| Context | `contextPanels.js` | Context window budget, token split, context map, agent memory, file inventory (`/api/board/context`) |
-| Tools, failures and speed | `panels.js` | Tool calls, confirmations, errors, latency, loops |
-| Changes and testing | `panels.js` | Changes, tests, memory and instruction files |
-| Machine | `panels.js` | CPU, RAM, processes, network (`/api/board/machine`) |
-| Settings in effect | `panels.js`, `findings.js` | Hidden changes and conflicts, values in force |
-| Data sources | `panels.js` | Data sources, collectors, ingesters, what each tool reports |
-| Tables and charts | `Table.js`, `tableModel.js`, `Chart.js`, `tip.js` | Shared table and SVG chart components, one shared tooltip |
-| Drawers | `Drawer.js`, `agent/*` | Agent (Overview, Transcript, Flow, Timeline, Events, Team, Processes, Integrations), file, skill, prompt and hidden-context drawers |
-| Command palette | `CommandPalette.js` | Cmd/Ctrl+K palette and the shortcuts dialog |
-| Settings screen | `settings/SettingsWorkspace.js`, `ToolView.js`, `TopicView.js`, `FilesView.js`, `FindingsView.js`, `Inspector.js` | Settings by tool, topic, file and finding (`/api/settings/tools`, `/api/settings/files`) |
-
-Settings freshness: `collect_tool_configs()` records every file and folder a parser reads (settings files, agent folders, shell profiles, `env.sh`), and the refresh loop stats them each tick, so an edit shows on the next tick; without a change they are read again every `TOOL_CONFIGS_RECHECK_S` for what a stat cannot see (the registry). The board payload carries `settings_at`, the time the records last changed, and the UI reads `/api/settings/tools` again only on a new value (or every five minutes). Environment values are what a new session gets: a settings file's `env` block, else a shell profile, `env.sh` or the registry, else the daemon's own environment, which is fixed when it starts and shown apart as `process`.
-| Shared UI | `ui/Markdown.js`, `TextView.js`, `Segmented.js`, `Icon.js` | Markdown to vnodes (no innerHTML), Rendered/Source toggle, segmented control, icons |
-
 ### Terminal Dashboard (`dashboard/tui.py`)
 
 Textual-based TUI with live-updating stat cards, per-tool summaries, sparkline history, and tabbed views (Files, File Content, Processes, MCP Servers, Agent Memory, Live Monitor). Connects to a running `aictl daemon serve` instance when available, falls back to local collection.
@@ -727,7 +668,7 @@ Self-contained static HTML with embedded CSS/JS. Expandable tool cards, process/
 
 ### Client Mode (`client.py`)
 
-All three rendering targets can operate in two modes:
+The CLI and TUI can operate in two modes:
 
 | Mode | Condition | Data source | Capabilities |
 |------|-----------|-------------|--------------|
@@ -747,7 +688,7 @@ start_server(root, port, interval)
     │
     ├── Open the configured store plugin (or run without history)
     ├── Create SampleSink (metric router)
-    ├── Create SnapshotStore (in-memory + ring buffers)
+    ├── Create SnapshotStore (current snapshot in memory)
     │
     ├── Start PersistentMonitor (background thread)
     │   └── asyncio event loop

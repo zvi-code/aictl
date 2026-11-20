@@ -6,7 +6,7 @@ import json
 
 from aictl.dashboard.models import DashboardSnapshot, DashboardTool
 from aictl.dashboard.web_server import _DashboardHandler
-from aictl.orchestrator import SnapshotStore, collect
+from aictl.orchestrator import collect
 from aictl.records import EventRow
 from aictl.tools import ResourceFile, ToolResources
 
@@ -142,84 +142,6 @@ def test_collect_merges_csv_discovery_with_live_monitor(monkeypatch, tmp_path):
     assert tools["codex-cli"].live["outbound_rate_bps"] == 40.0
     assert snapshot.total_live_tools == 2
     assert snapshot.total_live_estimated_tokens == 1530
-
-
-def test_snapshot_store_history_tracks_live_rates():
-    snapshot = DashboardSnapshot(
-        timestamp=10.0,
-        root="/tmp/project",
-        tools=[
-            DashboardTool(
-                tool="copilot-vscode",
-                label="Copilot (VS Code)",
-                live={
-                    "tool": "copilot-vscode",
-                    "label": "Copilot (VS Code)",
-                    "session_count": 1,
-                    "pid_count": 1,
-                    "inbound_bytes": 500,
-                    "outbound_bytes": 1000,
-                    "inbound_rate_bps": 55.5,
-                    "outbound_rate_bps": 88.8,
-                    "files_touched": 1,
-                    "file_events": 2,
-                    "token_estimate": {
-                        "input_tokens": 100,
-                        "output_tokens": 25,
-                        "confidence": 0.4,
-                        "source": "network-inference",
-                    },
-                    "mcp": {"detected": False, "confidence": 0.0, "loops": 0},
-                    "confidence": 0.3,
-                    "workspaces": ["/tmp/project"],
-                },
-            )
-        ],
-    )
-    store = SnapshotStore()
-
-    store.update(snapshot)
-    history = json.loads(store.history_json())
-
-    assert history["live_sessions"] == [1]
-    assert history["live_tokens"] == [125]
-    assert history["live_in_rate"] == [55.5]
-    assert history["live_out_rate"] == [88.8]
-
-
-def test_history_data_snapshot_is_independent_of_updates():
-    """history_data() must deep-copy under the lock.
-
-    It used to return the live _tool_history deques: serialize_history
-    (HTTP request thread) iterated them while update() (RefreshLoop
-    thread) appended, raising RuntimeError → /api/history 500s.
-    """
-    import collections
-
-    from aictl.orchestrator import SnapshotState
-
-    state = SnapshotState()
-    state._history.append((1.0, 1, 100, 5.0, 256.0, 0, 0, 0, 1, 100, 1.0, 2.0))
-    dq = collections.deque(maxlen=120)
-    dq.append((1.0, 5.0, 256.0, 100, 3.0))
-    state._tool_history["claude-code"] = dq
-
-    rows, tool_history = state.history_data()
-
-    # Mutating the live structures must not affect the returned copy.
-    state._history.append((2.0, 2, 200, 6.0, 300.0, 0, 0, 0, 1, 200, 1.0, 2.0))
-    state._tool_history["claude-code"].append((2.0, 6.0, 300.0, 200, 4.0))
-    state._tool_history["gemini-cli"] = collections.deque([(2.0, 1.0, 1.0, 1, 1.0)])
-
-    assert len(rows) == 1
-    assert len(tool_history["claude-code"]) == 1
-    assert "gemini-cli" not in tool_history
-
-    # And the copy serializes cleanly even while the source keeps moving.
-    from aictl.orchestrator import SnapshotSerializer
-
-    payload = json.loads(SnapshotSerializer.serialize_history(rows, tool_history))
-    assert payload["by_tool"]["claude-code"]["ts"] == [1.0]
 
 
 # ─── SSE ↔ Snapshot contract tests ──────────────────────────────

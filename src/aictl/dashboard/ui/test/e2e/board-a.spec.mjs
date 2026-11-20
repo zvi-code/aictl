@@ -93,9 +93,11 @@ async function replayBrush(page, replay) {
   const whole = Object.fromEntries(bootstrap.entities
     .filter(({ data }) => ['range', 'series'].includes(data.field) && data.key == null)
     .map(({ data }) => [data.field, data.value]));
-  await page.route('**/api/board?**', route => {
+  await page.route('**/api/history/board?**', route => {
     const params = new URL(route.request().url()).searchParams;
-    return params.size === 3 && params.get('buckets') === '14' ? route.fulfill({ json: whole }) : route.fallback();
+    return params.get('view') === 'charts' && params.get('buckets') === '14'
+      ? route.fulfill({ json: { node_scope: { kind: 'local', node_id: null }, ...whole } })
+      : route.fallback();
   });
   await page.route('**/api/live/stream?**', route => {
     const params = new URL(route.request().url()).searchParams;
@@ -260,7 +262,7 @@ for (const [id, panelId, title, legend, summary] of [
     await Promise.all([
       page.waitForResponse(response => {
         const url = new URL(response.url());
-        return url.pathname === '/api/board' && url.searchParams.get('buckets') === '14' && response.ok();
+        return url.pathname === '/api/history/board' && url.searchParams.get('buckets') === '14' && response.ok();
       }),
       bucket.press('Enter'),
     ]);

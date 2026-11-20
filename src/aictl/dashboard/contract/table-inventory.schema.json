@@ -24,7 +24,11 @@
           "extent_bytes": {"type": ["integer", "null"]},
           "extent_count": {"type": ["integer", "null"]},
           "hot_bytes": {"type": ["integer", "null"]},
-          "original_bytes": {"type": ["integer", "null"]}
+          "original_bytes": {"type": ["integer", "null"]},
+          "retention_days": {
+            "type": ["number", "null"],
+            "description": "Reported soft-delete retention in days. Null when table policy metadata does not report it."
+          }
         },
         "required": [
           "name",

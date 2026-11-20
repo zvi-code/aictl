@@ -20,19 +20,13 @@
         "total": {"type": "integer"},
         "agents": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
-          }
+          "items": {"type": "string"}
         },
         "tools": {"type": "array", "items": {"type": "string"}},
         "models": {"type": "array", "items": {"type": "string"}},
         "skills": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
-          }
+          "items": {"type": "string"}
         }
       },
       "required": ["start", "end", "matched", "total", "agents", "tools", "models", "skills"]

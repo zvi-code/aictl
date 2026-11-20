@@ -1,9 +1,26 @@
 """Bounded management reads using the existing Kusto client."""
 
 import json
+import re
 from datetime import timedelta
 
 from .client import KustoClientFactory, Result, quote
+
+_TIMESPAN = re.compile(r"(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)")
+
+
+def _retention_days(raw):
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    duration = raw.get("SoftDeletePeriod") if isinstance(raw, dict) else None
+    parts = _TIMESPAN.fullmatch(duration) if isinstance(duration, str) else None
+    if not parts:
+        return None
+    days, hours, minutes, seconds = parts.groups()
+    return int(days or 0) + (3600 * int(hours) + 60 * int(minutes) + float(seconds)) / 86400
 
 
 class HealthMetadata:
@@ -26,11 +43,12 @@ class HealthMetadata:
     def table_inventory(self, limit):
         details = self._read(
             ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
-            f"TotalOriginalSize, HotExtentSize | top {limit + 1} by TableName asc"
+            f"TotalOriginalSize, HotExtentSize, RetentionPolicy | top {limit + 1} by TableName asc"
         )
         if "TableName" not in details.names:
             raise ValueError("TableName missing from ADX table metadata")
-        return details.dicts()
+        return [row | {"retention_days": _retention_days(row.get("RetentionPolicy"))}
+                for row in details.dicts()]
 
     def ingestion_capacity(self):
         rows = self._read(".show capacity ingestions").dicts()

@@ -9,6 +9,7 @@
     "path": {"type": "string"},
     "exists": {"type": "boolean"},
     "mtime": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+    "backup_path": {"type": ["string", "null"]},
     "editable_fields": {"type": "array", "items": {"type": "string"}},
     "permissions": {
       "type": "object",

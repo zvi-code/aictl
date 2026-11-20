@@ -325,7 +325,35 @@
                       "store": {
                         "allOf": [
                           {"type": "object", "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}},
-                          {"type": "object", "properties": {"query_cpu": {"$ref": "query-cpu.schema.json"}}}
+                          {"type": "object", "properties": {
+                            "query_cpu": {"$ref": "query-cpu.schema.json"},
+                            "writer": {
+                              "type": "object",
+                              "properties": {
+                                "status": {"type": "string"},
+                                "tables": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "object",
+                                    "properties": {
+                                      "queue_depth": {"type": "integer"},
+                                      "queue_bytes": {"type": "integer"},
+                                      "in_flight": {"type": "integer"},
+                                      "rows_sent": {"type": "integer"},
+                                      "rows_dropped": {"type": "integer"},
+                                      "lost_at_exit": {"type": "integer"},
+                                      "ingest_requests": {"type": "integer"},
+                                      "ingest_failures": {"type": "integer"},
+                                      "bytes_sent": {"type": "integer"},
+                                      "last_sent_at": {"type": "number"},
+                                      "last_error_at": {"type": "number"}
+                                    }
+                                  }
+                                }
+                              },
+                              "required": ["status", "tables"]
+                            }
+                          }}
                         ]
                       },
                       "runtime": {"type": "object"}
