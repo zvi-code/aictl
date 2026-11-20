@@ -1,1 +1,4 @@
 node_modules/
+test/e2e/__screenshots__/*
+!test/e2e/__screenshots__/win32/
+!test/e2e/__screenshots__/win32/**/*.png

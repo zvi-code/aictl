@@ -1018,4 +1018,4 @@ No CI workflow is configured in this repository, so run `make test-all` before m
 | [docs/memory.md](docs/memory.md) | Memory swap per (root, profile), outside-repo files |
 | [docs/storage-schema.md](docs/storage-schema.md) | SQLite schema — sessions, events, requests, samples, file history |
 | [docs/datapoint-catalog.md](docs/datapoint-catalog.md) | Every datapoint the dashboard shows: source, query, meaning |
-| [docs/dashboard-design-system.md](docs/dashboard-design-system.md) | Dashboard UI design tokens, patterns, accessibility status |
+| [docs/ui/design.md](docs/ui/design.md) | Dashboard rewrite: design tokens, primitives and accessibility rules |

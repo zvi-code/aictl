@@ -1,0 +1,41 @@
+import { createEffect, createSignal, createUniqueId, Errored, Loading, Show } from 'solid-js'
+import type { JSX } from '@solidjs/web'
+import { PanelState } from './PanelState'
+import styles from './Panel.module.css'
+
+export function Panel(props: {
+  title: string
+  size?: 'small' | 'medium' | 'large'
+  active?: boolean
+  observeViewport?: boolean
+  actions?: JSX.Element
+  children: JSX.Element
+}) {
+  const title = createUniqueId()
+  const [visible, setVisible] = createSignal(false)
+  const showContent = () => props.active !== false && (props.observeViewport === false || visible())
+  let box!: HTMLElement
+  createEffect(() => props.active !== false && props.observeViewport !== false, observe => {
+    if (!observe) {
+      setVisible(false)
+      return
+    }
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting))
+    observer.observe(box)
+    return () => observer.disconnect()
+  })
+
+  return <section ref={box} class={styles.panel} data-size={props.size ?? 'medium'} aria-labelledby={title}>
+    <header class={styles.header}>
+      <h3 id={title} class={styles.title}>{props.title}</h3>
+      {props.actions}
+    </header>
+    <div class={styles.content} role="region" aria-label={`${props.title} content`} tabindex={showContent() ? 0 : undefined}>
+      <Show when={showContent()}>
+        <Errored fallback={(_error, reset) => <PanelState state="error" onRetry={reset} />}>
+          <Loading fallback={<PanelState state="loading" />}>{props.children}</Loading>
+        </Errored>
+      </Show>
+    </div>
+  </section>
+}

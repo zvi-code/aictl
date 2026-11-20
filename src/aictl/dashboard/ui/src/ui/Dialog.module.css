@@ -1,0 +1,14 @@
+.dialog {
+  box-sizing: border-box;
+  inline-size: min(var(--overlay-md), calc(100% - var(--space-8)));
+  padding: var(--space-7);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--elevation-2);
+}
+.dialog::backdrop { background: var(--color-scrim); }
+.title { margin: 0 0 var(--space-5); font-size: var(--text-xl); }
+.actions { display: flex; justify-content: end; gap: var(--space-4); margin-block-start: var(--space-6); }
+.close { composes: button from "./control.module.css"; }

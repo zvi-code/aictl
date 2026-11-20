@@ -7,7 +7,7 @@ These files record the phase-0 work of the dashboard and storage rewrite. Later 
 | 1. Parity inventory | [`../ui/spec.md`](../ui/spec.md) |
 | 2. Consumer audit | [`consumer-audit.md`](consumer-audit.md) |
 | 3. Recordings | [`../../test/recordings/README.md`](../../test/recordings/README.md) |
-| 4. UI baseline | Not done in phase 0. The measurement replays the recordings in Chromium, which needs the Playwright replay harness of phase 1, item 6. It is measured with that harness before phase 3 changes the UI. The bundle sizes are in [`ledger-baseline.md`](ledger-baseline.md). |
+| 4. UI baseline | [`ui-baseline.md`](ui-baseline.md) records the legacy UI measurements and coverage of the phase-1 Playwright replay harness. The bundle-size ledger is in [`ledger-baseline.md`](ledger-baseline.md). |
 | 5. The 9 failing UI tests | [`../ui/spec.md`](../ui/spec.md) |
 | 6. Ledger script and baseline | `C:\OSS\aictl\scripts\ledger.mjs`, [`ledger-baseline.md`](ledger-baseline.md) |
 | 7. Write-path audit | [`write-path-audit.md`](write-path-audit.md) |

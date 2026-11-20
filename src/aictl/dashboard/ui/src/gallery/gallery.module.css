@@ -1,0 +1,30 @@
+:global(html) { background: var(--color-page); color: var(--color-text); }
+:global(body) { margin: 0; }
+.gallery { display: grid; gap: var(--space-8); max-inline-size: calc(var(--overlay-lg) * 2); margin-inline: auto; }
+.hero > :is(h1, p), .section > h2 { margin-block: 0; }
+.gallery a, :global(nav a) { color: var(--color-accent); }
+.gallery a:focus-visible, :global(nav a:focus-visible) { outline: var(--focus-size) solid var(--color-focus); }
+.hero { display: grid; gap: var(--space-2); padding-block: var(--space-5); }
+.hero h1 { font-size: var(--text-3xl); line-height: var(--leading-tight); }
+.hero p { color: var(--color-muted); }
+.section { min-inline-size: 0; display: grid; gap: var(--space-5); }
+.gallery, .section > h2 { scroll-margin-block-start: calc(var(--control-size) + var(--space-8)); }
+.section > h2 { font-size: var(--text-xl); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--overlay-sm)), 1fr)); gap: var(--space-5); }
+.state {
+  min-inline-size: 0;
+  padding: var(--space-5);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow-wrap: anywhere;
+}
+.state[data-wide] { grid-column: 1 / -1; }
+.state > .stateName {
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  color: var(--color-muted);
+  margin: 0 0 var(--space-4);
+}
+.button { composes: button from "../ui/control.module.css"; }
+.inline { display: inline-flex; gap: var(--space-3); align-items: center; }

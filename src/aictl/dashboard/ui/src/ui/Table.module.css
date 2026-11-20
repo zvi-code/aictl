@@ -1,0 +1,42 @@
+.viewport {
+  composes: focus from "./control.module.css";
+  position: relative;
+  block-size: 100%;
+  max-block-size: var(--panel-lg);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+.ruler { position: absolute; inset: 0 auto auto 0; block-size: var(--row-size); pointer-events: none; }
+.table {
+  inline-size: 100%;
+  min-inline-size: var(--overlay-sm);
+  table-layout: fixed;
+  border-spacing: 0;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.table thead { position: sticky; inset-block-start: 0; background: var(--color-raised); }
+.table th, .cell {
+  box-sizing: border-box;
+  block-size: var(--row-size);
+  padding: 0 var(--space-3);
+  border-block-end: var(--border-size) solid var(--color-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Keep the text start fixed when a live number gains or loses digits. */
+  text-align: start;
+}
+.sort, .action {
+  composes: button from "./control.module.css";
+  max-inline-size: 100%;
+  min-block-size: 0;
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  overflow: hidden;
+  display: inline-block;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+.spacer > td { padding: 0; }

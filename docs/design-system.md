@@ -3,7 +3,7 @@
 > Cross-cutting design decisions covering CLI output, plugin structure,
 > `.aictx` format conventions, error handling, and shared utilities.
 > For web dashboard UI design tokens and patterns, see
-> [`dashboard-design-system.md`](dashboard-design-system.md).
+> [`docs/ui/design.md`](ui/design.md).
 
 Last updated: 2026-03-28
 

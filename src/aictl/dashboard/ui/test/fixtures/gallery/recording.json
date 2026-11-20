@@ -1,0 +1,1072 @@
+{
+  "quiet": {
+    "agents": [
+      {
+        "key": "anon_7c085f2b45f6a96e41abaef6",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 92
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_b501e15e10406f3a126ed80a",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": 23,
+          "assistant": 800,
+          "tool": 1134
+        },
+        "input": 47865,
+        "output": 788733
+      },
+      {
+        "key": "anon_1b2e4743ce903de935ac4137",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 93
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_f4dd6eb7aa1a41fa9b08c466",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 25
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_e120a3049a9783f49957fa8d",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 72
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_4f592929fe3b401e8348a14a",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 75
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_fa44005a22b80e810ae0cd88",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 32
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_f248237b373095ff2ad277d8",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 23
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_4c8963b784ef0e6811fd619a",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": 4,
+          "assistant": 80,
+          "tool": 184
+        },
+        "input": 1011786,
+        "output": 112753
+      },
+      {
+        "key": "anon_7aa1baac6b1abe18bd4c84fe",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 8,
+          "assistant": 173,
+          "tool": 298
+        },
+        "input": 14771,
+        "output": 84658
+      },
+      {
+        "key": "anon_3a97d70401088b131065a4e2",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 44,
+          "tool": 81
+        },
+        "input": 4340,
+        "output": 14372
+      },
+      {
+        "key": "anon_be3d05200740fe8c80a62ae0",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 2,
+          "assistant": 26,
+          "tool": 38
+        },
+        "input": 5434,
+        "output": 11949
+      },
+      {
+        "key": "anon_b03b761a07cadbbc35868ba3",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 44,
+          "assistant": 1011,
+          "tool": 2344
+        },
+        "input": 12380958,
+        "output": 691215
+      },
+      {
+        "key": "anon_421569982488c1d08addc470",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 1,
+          "assistant": 82,
+          "tool": 151
+        },
+        "input": 981354,
+        "output": 62268
+      },
+      {
+        "key": "anon_1139859ae9bbf7401192eb31",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 3,
+          "assistant": 111,
+          "tool": 203
+        },
+        "input": 354971,
+        "output": 53134
+      },
+      {
+        "key": "anon_77a5d97f8f5b0591e0974cf3",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 1,
+          "assistant": 18,
+          "tool": 94
+        },
+        "input": 160278,
+        "output": 15239
+      },
+      {
+        "key": "anon_103c106f606bf1c68d351bd6",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 15,
+          "tool": 78
+        },
+        "input": 45,
+        "output": 16365
+      },
+      {
+        "key": "anon_ce1bfb3f206a6accbf186e3f",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 12,
+          "tool": 71
+        },
+        "input": 36,
+        "output": 14024
+      },
+      {
+        "key": "anon_fd78c49469240c5669de4189",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 24,
+          "tool": 148
+        },
+        "input": 72,
+        "output": 17389
+      },
+      {
+        "key": "anon_c6694941cdaf68cc2aec104b",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 38
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_f89d0352c1de6f4fb6bbc256",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 81
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_589cbeb7d3a5c210c0001b98",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 151
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_678a593e68fa2fe5522e9d20",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 94
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_d0ccd5995538be1b34256fe4",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 203
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_d3f72e3ef69f4f22cba9aaad",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 8,
+          "tool": 27
+        },
+        "input": 3342,
+        "output": 4237
+      },
+      {
+        "key": "anon_5da2e10edb08de2541d4932f",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 6,
+          "tool": 23
+        },
+        "input": 2029,
+        "output": 1822
+      },
+      {
+        "key": "anon_1fa3fe8c215fcda873ef2eb9",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 48,
+          "assistant": 746,
+          "tool": 1837
+        },
+        "input": 11509267,
+        "output": 568705
+      },
+      {
+        "key": "anon_517421664539e53a72c27a6a",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 21,
+          "tool": 50
+        },
+        "input": 239400,
+        "output": 18749
+      },
+      {
+        "key": "anon_86de2a8d0a5bef25a79055a4",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 7,
+          "assistant": 56,
+          "tool": 99
+        },
+        "input": 638400,
+        "output": 44694
+      },
+      {
+        "key": "anon_0aae545eac54bda26b06178e",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 28,
+          "tool": 76
+        },
+        "input": 319200,
+        "output": 24539
+      },
+      {
+        "key": "anon_e1070a3f8b3553f5ef8372cb",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 8,
+          "assistant": 60,
+          "tool": 98
+        },
+        "input": 688161,
+        "output": 47140
+      },
+      {
+        "key": "anon_d5c449bcd4b1c204b764947c",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 31,
+          "tool": 95
+        },
+        "input": 353400,
+        "output": 26676
+      },
+      {
+        "key": "anon_0e8be9e72e7de37f9026320f",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 36,
+          "tool": 74
+        },
+        "input": 410400,
+        "output": 24921
+      },
+      {
+        "key": "anon_c1f571198763e40503bcdc6d",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 3,
+          "assistant": 45,
+          "tool": 96
+        },
+        "input": 518392,
+        "output": 43109
+      },
+      {
+        "key": "anon_1fcf7a72d8fe7646a9a91731",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 1,
+          "assistant": 23,
+          "tool": 58
+        },
+        "input": 262200,
+        "output": 12240
+      },
+      {
+        "key": "anon_57f1ba281155f6a3d2891b7d",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 61,
+          "assistant": 620,
+          "tool": 1471
+        },
+        "input": 9835608,
+        "output": 478831
+      }
+    ],
+    "cpu": [
+      {
+        "x": 1795134731.5085657,
+        "values": [
+          77.6,
+          78.4
+        ]
+      },
+      {
+        "x": 1795134784.3460562,
+        "values": [
+          77.6,
+          78.4
+        ]
+      },
+      {
+        "x": 1795134832.4780898,
+        "values": [
+          77.6,
+          78.4
+        ]
+      },
+      {
+        "x": 1795134846.7391338,
+        "values": [
+          77.6,
+          78.4
+        ]
+      },
+      {
+        "x": 1795134894.212218,
+        "values": [
+          77.6,
+          78.4
+        ]
+      },
+      {
+        "x": 1795134936.9732144,
+        "values": [
+          77.6,
+          78.4
+        ]
+      },
+      {
+        "x": 1795134980.1611028,
+        "values": [
+          68.5,
+          71.8
+        ]
+      },
+      {
+        "x": 1795135022.9528542,
+        "values": [
+          68.5,
+          71.8
+        ]
+      },
+      {
+        "x": 1795135042.6919396,
+        "values": [
+          68.3,
+          72.4
+        ]
+      },
+      {
+        "x": 1795135064.9792812,
+        "values": [
+          69.7,
+          68.9
+        ]
+      },
+      {
+        "x": 1795135079.1784046,
+        "values": [
+          66.7,
+          67.4
+        ]
+      },
+      {
+        "x": 1795135093.2480714,
+        "values": [
+          64.9,
+          77
+        ]
+      },
+      {
+        "x": 1795135107.280188,
+        "values": [
+          62.1,
+          70
+        ]
+      },
+      {
+        "x": 1795135153.2346027,
+        "values": [
+          64.4,
+          69.1
+        ]
+      },
+      {
+        "x": 1795135176.3564897,
+        "values": [
+          69.2,
+          63.1
+        ]
+      },
+      {
+        "x": 1795135190.2142022,
+        "values": [
+          69.2,
+          63.1
+        ]
+      }
+    ],
+    "excerpt": [
+      {
+        "n": 1,
+        "text": "anon_b76dcbb25fa2b7fc58c49546"
+      },
+      {
+        "n": 2,
+        "text": "anon_19211c4642333683f409d98d"
+      },
+      {
+        "n": 3,
+        "text": "anon_a04a49ebd3db887ece7c8f26"
+      },
+      {
+        "n": 4,
+        "text": "anon_4caf1f61c3682e399f317af5"
+      }
+    ],
+    "topics": [
+      "runtime.machine"
+    ]
+  },
+  "busy": {
+    "agents": [
+      {
+        "key": "anon_33186031882f5bc3b1a54036",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 62
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_9d14ee69e491f961d99f6c36",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 32
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_a07c55a4c10ba8efce1b0949",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 63
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_a2aed5eb071bb44f4ee71948",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 58
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_5c535d9e48ad9249b7afe5f3",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 23
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_f7d5f7cd32a7d02d8fcbe98f",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 55
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_83bd845694774809d45a1352",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": 23,
+          "assistant": 800,
+          "tool": 1129
+        },
+        "input": 47865,
+        "output": 788733
+      },
+      {
+        "key": "anon_95782bbb1afc307bf546adc7",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": 4,
+          "assistant": 80,
+          "tool": 184
+        },
+        "input": 1011786,
+        "output": 112753
+      },
+      {
+        "key": "anon_f0c0769c71b7d870818476b9",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 8,
+          "assistant": 173,
+          "tool": 298
+        },
+        "input": 14771,
+        "output": 84658
+      },
+      {
+        "key": "anon_6fdd90ab1d038ca564af26ef",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 44,
+          "tool": 81
+        },
+        "input": 4340,
+        "output": 14372
+      },
+      {
+        "key": "anon_781690c0ddb4bd4845ed2bf1",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 2,
+          "assistant": 26,
+          "tool": 38
+        },
+        "input": 5434,
+        "output": 11949
+      },
+      {
+        "key": "anon_02126efd1e67943016c632d2",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 44,
+          "assistant": 1011,
+          "tool": 2344
+        },
+        "input": 12380958,
+        "output": 691215
+      },
+      {
+        "key": "anon_ea3064d4e813d9ac6df50a09",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 1,
+          "assistant": 82,
+          "tool": 151
+        },
+        "input": 981354,
+        "output": 62268
+      },
+      {
+        "key": "anon_e6ca113266ff6d953e12735c",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 3,
+          "assistant": 111,
+          "tool": 203
+        },
+        "input": 354971,
+        "output": 53134
+      },
+      {
+        "key": "anon_5764401d8a3ae3489df73bd7",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 1,
+          "assistant": 18,
+          "tool": 94
+        },
+        "input": 160278,
+        "output": 15239
+      },
+      {
+        "key": "anon_c3cd3f4275baed990866f408",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 15,
+          "tool": 78
+        },
+        "input": 45,
+        "output": 16365
+      },
+      {
+        "key": "anon_6c788536ea08e27b161e1408",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 12,
+          "tool": 71
+        },
+        "input": 36,
+        "output": 14024
+      },
+      {
+        "key": "anon_39f12d158dd5e8df0c02e630",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 24,
+          "tool": 148
+        },
+        "input": 72,
+        "output": 17389
+      },
+      {
+        "key": "anon_0fd0c0a5363b1ad47d3426aa",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 38
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_31d92163bf68c5a9ab60c2bc",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 81
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_e76c5af7e9195761d4e9db7f",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 151
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_cff4dda710857e4e756d661a",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 94
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_f9d693776b2967018991e9b4",
+        "tool": "copilot-vscode",
+        "msgs": {
+          "user": null,
+          "assistant": null,
+          "tool": 203
+        },
+        "input": null,
+        "output": null
+      },
+      {
+        "key": "anon_163e6a9ed2a147190c0b7e0e",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 8,
+          "tool": 27
+        },
+        "input": 3342,
+        "output": 4237
+      },
+      {
+        "key": "anon_726084ee9c4594165d769884",
+        "tool": "copilot-cli",
+        "msgs": {
+          "user": 1,
+          "assistant": 6,
+          "tool": 23
+        },
+        "input": 2029,
+        "output": 1822
+      },
+      {
+        "key": "anon_eecd35c3eed8e3803ba9bb41",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 48,
+          "assistant": 746,
+          "tool": 1837
+        },
+        "input": 11509267,
+        "output": 568705
+      },
+      {
+        "key": "anon_448a74e2feb3e4b4e63b581c",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 21,
+          "tool": 50
+        },
+        "input": 239400,
+        "output": 18749
+      },
+      {
+        "key": "anon_7776257bf2ab6a596ed30770",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 7,
+          "assistant": 56,
+          "tool": 99
+        },
+        "input": 638400,
+        "output": 44694
+      },
+      {
+        "key": "anon_944e22c11117419dabd047bb",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 28,
+          "tool": 76
+        },
+        "input": 319200,
+        "output": 24539
+      },
+      {
+        "key": "anon_87fc133b725de13bc47fbe87",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 8,
+          "assistant": 60,
+          "tool": 98
+        },
+        "input": 688161,
+        "output": 47140
+      },
+      {
+        "key": "anon_f57d5ed48b15c362590e73d4",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 31,
+          "tool": 95
+        },
+        "input": 353400,
+        "output": 26676
+      },
+      {
+        "key": "anon_c98aa963f40468df2ed006c0",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 36,
+          "tool": 74
+        },
+        "input": 410400,
+        "output": 24921
+      },
+      {
+        "key": "anon_2889527441e652d18cb02fea",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 3,
+          "assistant": 45,
+          "tool": 96
+        },
+        "input": 518392,
+        "output": 43109
+      },
+      {
+        "key": "anon_3039a60887c3ee446bfca836",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 1,
+          "assistant": 23,
+          "tool": 58
+        },
+        "input": 262200,
+        "output": 12240
+      },
+      {
+        "key": "anon_f3e26764224c8fb733be006f",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 61,
+          "assistant": 620,
+          "tool": 1471
+        },
+        "input": 9835608,
+        "output": 478831
+      },
+      {
+        "key": "anon_c585a70baa644994b9735de5",
+        "tool": "copilot-desktop",
+        "msgs": {
+          "user": 2,
+          "assistant": 21,
+          "tool": 50
+        },
+        "input": 239400,
+        "output": 18749
+      }
+    ],
+    "cpu": [
+      {
+        "x": 1795134075.4123287,
+        "values": [
+          78.7,
+          77.6
+        ]
+      },
+      {
+        "x": 1795134133.8245788,
+        "values": [
+          78.7,
+          77.6
+        ]
+      },
+      {
+        "x": 1795134146.7868915,
+        "values": [
+          78.7,
+          77.6
+        ]
+      },
+      {
+        "x": 1795134163.7651405,
+        "values": [
+          78,
+          75.9
+        ]
+      },
+      {
+        "x": 1795134186.2079391,
+        "values": [
+          78.5,
+          81.2
+        ]
+      },
+      {
+        "x": 1795134231.7888865,
+        "values": [
+          78.5,
+          81.2
+        ]
+      },
+      {
+        "x": 1795134244.2820473,
+        "values": [
+          78.5,
+          81.2
+        ]
+      },
+      {
+        "x": 1795134257.1615403,
+        "values": [
+          71.3,
+          75.6
+        ]
+      },
+      {
+        "x": 1795134269.3638887,
+        "values": [
+          71.3,
+          75.6
+        ]
+      },
+      {
+        "x": 1795134283.4576964,
+        "values": [
+          71.3,
+          75.6
+        ]
+      },
+      {
+        "x": 1795134296.1872754,
+        "values": [
+          91.9,
+          91.2
+        ]
+      },
+      {
+        "x": 1795134309.754018,
+        "values": [
+          84.5,
+          82.8
+        ]
+      },
+      {
+        "x": 1795134359.7401342,
+        "values": [
+          84.5,
+          82.8
+        ]
+      },
+      {
+        "x": 1795134371.7497146,
+        "values": [
+          70.4,
+          74.5
+        ]
+      },
+      {
+        "x": 1795134384.4599879,
+        "values": [
+          70.5,
+          74.2
+        ]
+      },
+      {
+        "x": 1795134397.9722972,
+        "values": [
+          70.5,
+          74.2
+        ]
+      }
+    ],
+    "excerpt": [
+      {
+        "n": 1,
+        "text": "anon_63c6d2496b49857bb284d166"
+      },
+      {
+        "n": 2,
+        "text": "anon_5116ba210794b2f713c7011c"
+      },
+      {
+        "n": 3,
+        "text": "anon_662fb7015c155fdbdd0ee271"
+      },
+      {
+        "n": 4,
+        "text": "anon_6f7a9a87dca5df77636ad04c"
+      }
+    ],
+    "topics": [
+      "runtime.machine"
+    ]
+  }
+}

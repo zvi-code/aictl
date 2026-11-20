@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "screen": "gallery",
+  "tree": {
+    "direction": "row",
+    "panels": [
+      { "id": "recorded-cpu", "params": {} }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+.drawer {
+  position: fixed;
+  z-index: var(--z-drawer);
+  inset: 0 0 0 auto;
+  inline-size: min(var(--overlay-lg), 100%);
+  box-sizing: border-box;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-inline-start: var(--border-size) solid var(--color-border);
+  box-shadow: var(--elevation-2);
+}
+.drawer:not([hidden]) { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  border-block-end: var(--border-size) solid var(--color-border);
+}
+.header h3 { margin: 0; font-size: var(--text-lg); }
+.body { overflow: auto; padding: var(--space-6); }
+.close { composes: button from "./control.module.css"; }

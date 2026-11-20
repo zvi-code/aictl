@@ -1,5 +1,5 @@
 // Test setup — provide browser globals that the dashboard expects
-import '@testing-library/jest-dom';
+import '@testing-library/jest-dom/vitest';
 
 // Provide window globals that Python injects at serve time
 globalThis.COLORS = globalThis.COLORS ?? {};

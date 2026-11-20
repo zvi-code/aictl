@@ -1,0 +1,31 @@
+.markdown { min-inline-size: 0; overflow-wrap: anywhere; }
+.markdown > :first-child { margin-block-start: 0; }
+.markdown > :last-child { margin-block-end: 0; }
+.markdown :is(h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, hr, section) { margin-block: var(--space-4); }
+.markdown :is(h1, h2) { font-size: var(--text-xl); }
+.markdown h3 { font-size: var(--text-lg); }
+.markdown :is(h4, h5, h6) { font-size: var(--text-md); }
+.markdown li > p { display: inline; }
+.markdown a { color: var(--color-accent); }
+.markdown a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
+.markdown :not(pre) > code {
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: var(--color-raised);
+  font: var(--text-sm) var(--font-mono);
+}
+.markdown blockquote {
+  margin-inline: 0;
+  padding-inline-start: var(--space-5);
+  border-inline-start: var(--focus-size) solid var(--color-border);
+  color: var(--color-muted);
+}
+.markdown hr { border: 0; border-block-start: var(--border-size) solid var(--color-border); }
+.scroll { composes: focus from "./control.module.css"; overflow: auto; margin-block: var(--space-4); }
+.markdown table { border-collapse: collapse; }
+.markdown :is(caption, th, td) { padding: var(--space-3) var(--space-4); text-align: start; }
+.markdown :is(th, td) { border: var(--border-size) solid var(--color-border); }
+.markdown th { background: var(--color-raised); }
+.image, .task { color: var(--color-muted); }
+.task { margin-inline-end: var(--space-2); }

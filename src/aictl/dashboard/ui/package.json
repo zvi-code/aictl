@@ -8,23 +8,40 @@
     "watch": "vite build --watch",
     "preview": "vite preview",
     "lint": "eslint src test",
-    "test": "vitest run",
+    "test": "tsc --noEmit && vitest run",
+    "build:ui-test": "vite build --outDir node_modules/.cache/aictl-ui-baseline --emptyOutDir",
+    "test:ui": "playwright test",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@solidjs/web": "2.0.0-rc.21",
+    "@tanstack/table-core": "^9.3.1",
+    "@tanstack/virtual-core": "^3.19.11",
+    "dockview-core": "^8.9.0",
     "htm": "^3.1.1",
+    "lucide": "^1.72.0",
     "lucide-preact": "^1.8.0",
-    "preact": "^10.25.4"
+    "preact": "^10.25.4",
+    "solid-js": "2.0.0-rc.21",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
-    "@preact/preset-vite": "^2.8.0",
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.0",
+    "@preact/preset-vite": "^2.10.6",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/preact": "^3.2.4",
+    "@types/node": "^26.6.6",
     "axe-core": "^4.11.3",
-    "eslint": "^8.57.1",
-    "eslint-plugin-react-hooks": "^4.6.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-solid": "^0.19.0",
+    "globals": "^17.14.0",
     "jsdom": "^29.0.1",
-    "vite": "^5.0.0",
-    "vitest": "^4.1.2"
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8",
+    "vite-plugin-solid": "npm:@solidjs/vite-plugin@3.0.0-next.57",
+    "vitest": "^4.1.12"
   }
 }

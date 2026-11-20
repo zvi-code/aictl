@@ -1,0 +1,24 @@
+.trigger { composes: button from "./control.module.css"; }
+.menu {
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  margin: var(--space-2) 0;
+  padding: var(--space-2);
+  min-inline-size: min(var(--overlay-sm), 90vw);
+  max-inline-size: 90vw;
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--elevation-2);
+  font: var(--text-md)/var(--leading-normal) var(--font-ui);
+}
+.item {
+  composes: button from "./control.module.css";
+  display: flex;
+  justify-content: start;
+  inline-size: 100%;
+  border-color: transparent;
+  text-align: start;
+}
+.item[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed; }

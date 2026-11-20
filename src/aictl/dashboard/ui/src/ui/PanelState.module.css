@@ -1,0 +1,11 @@
+.box { display: grid; align-content: center; justify-items: center; gap: var(--space-4); min-block-size: 100%; }
+.box[data-status="stale"] { align-content: start; justify-items: stretch; }
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-muted);
+}
+[data-status="error"] > .notice { color: var(--color-danger); }
+[data-status="stale"] > .notice { color: var(--color-warning); }
+.retry { composes: button from "./control.module.css"; }

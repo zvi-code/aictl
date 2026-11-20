@@ -1,0 +1,15 @@
+.wrapper { display: inline-flex; }
+.trigger { composes: button from "./control.module.css"; }
+.tip {
+  position-area: block-start;
+  position-try-fallbacks: flip-block, block-start span-inline-end, block-end span-inline-end;
+  margin: 0;
+  max-inline-size: min(var(--overlay-sm), 90vw);
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-raised);
+  color: var(--color-text);
+  box-shadow: var(--elevation-1);
+  font: var(--text-sm)/var(--leading-normal) var(--font-ui);
+}

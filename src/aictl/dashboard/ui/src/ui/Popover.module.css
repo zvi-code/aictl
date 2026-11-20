@@ -1,0 +1,15 @@
+.button { composes: button from "./control.module.css"; }
+.surface {
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  margin: var(--space-2) 0;
+  padding: var(--space-5);
+  max-inline-size: min(var(--overlay-md), 90vw);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--elevation-2);
+  font: var(--text-md)/var(--leading-normal) var(--font-ui);
+}
+.content { margin-block: var(--space-4); }

@@ -132,7 +132,7 @@ aictl/
 │           ├── hooks/              # urlState, useBoardFilters, useTheme, useTools
 │           ├── utils/              # a11y, auditScope, customRange, paths, platform, tools, toolScope
 │           └── components/
-│               ├── board/          # The board screen, board.css (see docs/dashboard-design-system.md)
+│               ├── board/          # The board screen, board.css (rewrite: see docs/ui/design.md)
 │               │   └── agent/      #   Agent drawer tabs and their models
 │               ├── settings/       # Settings screen (settings.css)
 │               └── ui/             # Markdown, TextView, Segmented, Icon, small shared pieces
@@ -479,7 +479,7 @@ class DashboardSnapshot:
 
 ### Web Dashboard (`dashboard/web_server.py` + `dashboard/ui/`)
 
-A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). Kusto uses the incremental subscription below; SQLite and older daemons retain snapshot notifications and polling. Design tokens, component patterns, and accessibility status are documented in [`docs/dashboard-design-system.md`](dashboard-design-system.md).
+A real-time interactive dashboard built with Vite + Preact + htm tagged templates (not JSX). Kusto uses the incremental subscription below; SQLite and older daemons retain snapshot notifications and polling. For the rewrite's tokens, primitives and accessibility rules, see [`docs/ui/design.md`](ui/design.md).
 
 **Backend** — `ThreadingHTTPServer` with REST API:
 
