@@ -216,17 +216,20 @@ Default limits are configurable through `ReaderConfig`:
 - Four SDK requests per worker poll, including discovery/policy work.
 - Four tables per cursor detection query (`tables_per_probe`).
 - 15-second server timeout, bounded result rows and 4 MB result bytes.
-- 128 MiB memory per query iterator and per query per node, plus a 25% query
-  thread fan-out setting.
+- 128 MiB per iterator, 512 MiB total per query per node, and 1% query thread
+  fan-out. The total must cover the scan and all operators, even for a
+  one-row cursor probe. Probes, key pages and winner reads have distinct
+  `aictl.live.*` client request IDs in `.show queries`.
 - 8,192 duplicate-hint entries with a separate 4 MB byte limit.
 - Sixteen pending batches per subscriber, at most 64 subscribers.
 - Adaptive idle delay up to 15 seconds and bounded error backoff.
 
-To give **only cursor probes** more memory, set `AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB`
+To override the per-node budget for **only cursor probes**, set `AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB`
 before starting the daemon (for example, `$env:AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB = '256'`
 in PowerShell). An explicit `ReaderConfig` uses its `probe_memory_bytes` instead,
-defaulting to `query_memory_bytes`. This changes the two request memory limits
-for probes, not the cluster policy, paging, preview, or reconciliation limits.
+defaulting to `query_memory_bytes`. A lower total also bounds each iterator;
+a higher total does not remove the iterator cap. This does not change the
+cluster policy, paging, preview, or reconciliation limits.
 It does not reserve memory or guarantee that a request will succeed.
 
 Queries, Python result processing, mailboxes and callbacks run outside runtime

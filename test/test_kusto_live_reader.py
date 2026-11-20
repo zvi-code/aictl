@@ -911,9 +911,9 @@ def test_query_properties_bound_work_and_disable_stale_result_caching():
     assert props.get_option("request_readonly_hardline", None)
     assert props.get_option("servertimeout", None).total_seconds() == reader.config.query_timeout_s
     assert props.get_option("truncationmaxsize", None) == reader.config.result_bytes
-    assert props.get_option("maxmemoryconsumptionperiterator", None) == reader.config.query_memory_bytes
+    assert props.get_option("maxmemoryconsumptionperiterator", None) == reader.config.iterator_memory_bytes
     assert props.get_option("max_memory_consumption_per_query_per_node", None) == reader.config.query_memory_bytes
-    assert props.get_option("query_fanout_threads_percent", None) == 25
+    assert props.get_option("query_fanout_threads_percent", None) == 1
     assert not props.get_option("deferpartialqueryfailures", None)
 
 
@@ -928,8 +928,10 @@ def test_memory_override_is_applied_only_to_probes(monkeypatch):
     assert any(q.startswith("print [") for q in sdk.queries)
     for query, props in zip(sdk.queries, sdk.properties, strict=True):
         memory = 256 * 1024**2 if query.startswith("print [") else reader.config.query_memory_bytes
-        assert props.get_option("maxmemoryconsumptionperiterator", None) == memory
+        assert props.get_option("maxmemoryconsumptionperiterator", None) == min(memory, reader.config.iterator_memory_bytes)
         assert props.get_option("max_memory_consumption_per_query_per_node", None) == memory
+        if query.startswith("print ["):
+            assert props.client_request_id.startswith("aictl.live.probe;")
     monkeypatch.setenv("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB", "-1")
     with pytest.raises(ValueError, match="AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB"):
         SharedKustoReader(SETTINGS, client=sdk, tables={"sessions": TABLE})

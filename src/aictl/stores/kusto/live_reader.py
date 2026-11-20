@@ -20,6 +20,7 @@ import math
 import os
 import threading
 import time
+import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -54,10 +55,11 @@ class ReaderConfig:
     dedup_entities: int = 8192
     dedup_bytes: int = 4_000_000
     result_bytes: int = 4_000_000
-    query_memory_bytes: int = 134_217_728
+    query_memory_bytes: int = 512 * 1024**2
     failures_before_resync: int = 3
     tables_per_probe: int = 4
     probe_memory_bytes: int | None = None
+    iterator_memory_bytes: int = 128 * 1024**2
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
@@ -344,6 +346,7 @@ class SharedKustoReader:
                     "queries_per_poll": self.config.queries_per_poll,
                     "tables_per_probe": self.config.tables_per_probe,
                     "query_memory_bytes": self.config.query_memory_bytes,
+                    "iterator_memory_bytes": self.config.iterator_memory_bytes,
                     "probe_memory_bytes": self.config.probe_memory_bytes or self.config.query_memory_bytes,
                     "subscriber_batches": self.config.subscriber_batches,
                     "dedup_entities": self.config.dedup_entities,
@@ -443,11 +446,13 @@ class SharedKustoReader:
         for subscription in subscriptions:
             subscription._offer(batch)
 
-    def _execute(self, text: str, *, management: bool = False, memory_bytes: int | None = None) -> list[dict[str, Any]]:
+    def _execute(self, text: str, *, management: bool = False, memory_bytes: int | None = None,
+                 operation: str = "read") -> list[dict[str, Any]]:
         from azure.kusto.data import ClientRequestProperties
         from azure.kusto.data.exceptions import KustoApiError, KustoMultiApiError
 
         props = ClientRequestProperties()
+        props.client_request_id = f"aictl.live.{operation};{uuid.uuid4()}"
         props.set_option("servertimeout", timedelta(seconds=self.config.query_timeout_s))
         props.set_option("queryconsistency", "strongconsistency")
         props.set_option("query_results_cache_max_age", timedelta(0))
@@ -459,9 +464,9 @@ class SharedKustoReader:
             "truncationmaxrecords", 20_000 if management else max(2 + len(self._known), self.config.page_size + 1)
         )
         memory = memory_bytes or self.config.query_memory_bytes
-        props.set_option("maxmemoryconsumptionperiterator", memory)
+        props.set_option("maxmemoryconsumptionperiterator", min(memory, self.config.iterator_memory_bytes))
         props.set_option("max_memory_consumption_per_query_per_node", memory)
-        props.set_option("query_fanout_threads_percent", 25)
+        props.set_option("query_fanout_threads_percent", 1)
         if self._client is None:
             self._client = KustoClientFactory.client(self.settings)
         call = self._client.execute_mgmt if management else self._client.execute
@@ -608,7 +613,8 @@ class SharedKustoReader:
             for name in names
         ]
         try:
-            rows = self._execute("print " + ",\n".join(flags), memory_bytes=self.config.probe_memory_bytes)
+            rows = self._execute("print " + ",\n".join(flags), memory_bytes=self.config.probe_memory_bytes,
+                                 operation="probe")
         except _QueryMemoryError:
             self._defer_cursor([_Scan(name, "probe", self._frontier[name], upper) for name in names])
             return
@@ -701,7 +707,7 @@ class SharedKustoReader:
         spec = self._available[scan.table]
         if not scan.pending:
             limit = scan.page_size or self.config.page_size
-            raw = self._execute(self._key_page_query(spec, scan, limit))
+            raw = self._execute(self._key_page_query(spec, scan, limit), operation="keys")
             if len(raw) > limit + 1:
                 raise ReaderQueryError("Kusto page exceeded the row budget")
             keys = {}
@@ -719,7 +725,7 @@ class SharedKustoReader:
 
         keyed = {}
         if scan.pending:
-            for value in self._execute(self._winner_query(spec, scan)):
+            for value in self._execute(self._winner_query(spec, scan), operation="winners"):
                 token = value.get("aictl_live_key")
                 if not isinstance(token, str) or token in keyed:
                     raise ReaderQueryError("Invalid or repeated Kusto winner identity")
