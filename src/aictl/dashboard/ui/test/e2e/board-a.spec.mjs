@@ -1,9 +1,11 @@
-import { boardUrl, captureFrame, checkAxe, checkConsole, dist, expect, goToBoard, recordedUrl, test } from './fixtures.mjs';
+import { boardUrl, captureFrame, checkAxe, checkConsole, dist, expect, goToBoard, provideCatalog, recordedUrl, test } from './fixtures.mjs';
+import { agentsFrame } from '../replay/agents-frame.mjs';
 import { startReplay } from '../replay/server.mjs';
 
 const sessionMiss = '/api/board/sessions?limit=50&offset=0&q=';
 const unavailable = 'Not available from this source';
 const inventory = [
+  ['BRD-03', 'agents', 'agentActivity', 'Recorded agent activity'],
   ['BRD-02', 'agents', 'attention', 'Needs you now'], ['BRD-03', 'agents', 'agentsT', 'Agents and subagents'],
   ['BRD-04', 'agents', 'byModel', 'Usage by model'],
   ['BRD-05', 'agents', 'byRole', 'Main agents and subagents'], ['BRD-06', 'sessions', 'sessionsT', 'Find a session'],
@@ -166,6 +168,89 @@ test('Overview A panels are in their default sections', async ({ page, snapshotR
   }
 });
 
+for (const [width, theme] of [[1440, 'light'], [1440, 'dark'], [768, 'light']]) {
+  test(`BRD-02–04: Agents first screen at ${width} in ${theme}`, async ({ page, snapshotReplay }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ colorScheme: theme });
+    await page.addInitScript(theme => localStorage.setItem('aictl-theme', theme), theme);
+    await provideCatalog(page);
+    await page.goto(snapshotReplay.url + boardUrl + '#sec-agents');
+    await agentsFrame(page);
+    const activity = page.locator('#p-agentActivity');
+    await expect(activity.getByText('Final bucket partial', { exact: false })).toBeVisible();
+    await expect(activity).toContainText('78 recorded agents · 52 sessions');
+    await expect(activity).toContainText(/Nov 13.*Nov 20/s);
+    const ranking = activity.getByRole('region', { name: 'Tokens by model' });
+    const meters = ranking.getByRole('meter');
+    await expect(meters).toHaveCount(4);
+    await expect(meters.first()).toHaveAttribute('aria-valuetext', '701,991,452 tokens');
+    await expect(activity.getByRole('meter', { name: 'Failure rate' })).toHaveAttribute('aria-valuetext', '4.1%');
+    const positions = await activity.evaluate(node => {
+      const top = document.querySelector('header').getBoundingClientRect().bottom;
+      const bottom = Math.min(innerHeight, document.querySelector('#p-agentsT').getBoundingClientRect().top);
+      return [...node.querySelectorAll('canvas, meter')].map(el => {
+        const box = el.getBoundingClientRect();
+        return box.width > 0 && box.height > 0 && box.top >= top && box.bottom <= bottom;
+      });
+    });
+    expect(positions.every(Boolean)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+    await expect(page).toHaveScreenshot(`agents-${width}-${theme}.png`);
+    await checkAxe(page, '#sec-agents', 'Agents overview and drill-down');
+  });
+}
+
+test('BRD-03/04: inspect bucket values and filter a ranked model by keyboard, then return', async ({ page, snapshotReplay }) => {
+  await replayFacet(page, snapshotReplay, 'model', 'by_model');
+  await provideCatalog(page);
+  const url = snapshotReplay.url + boardUrl + '#sec-agents';
+  await page.goto(url);
+  await agentsFrame(page);
+  const panel = page.locator('#p-agentActivity');
+  const values = panel.getByRole('button', { name: 'Show bucket values' });
+  await values.press('Enter');
+  const table = panel.getByRole('table', { name: 'Message counts by bucket' });
+  await expect(table).toHaveAttribute('aria-rowcount', '49');
+  await table.getByRole('button', { name: 'Tool', exact: true }).press('Enter');
+  await table.getByRole('button', { name: 'Tool', exact: true }).press('Enter');
+  await expect(table.locator('tbody tr').first()).toContainText('2,540');
+  await panel.getByRole('button', { name: 'Show message chart' }).press('Space');
+  await expect(values).toBeFocused();
+  const model = 'anon_eb574eb0c91a8699ae7f3fe7';
+  const filter = panel.getByRole('button', { name: `Filter by model ${model}`, exact: true });
+  await filter.focus();
+  await expect(panel.getByText('701,991,452 tokens', { exact: true })).toBeVisible();
+  await filter.press('Enter');
+  await expect(panel.getByRole('button', { name: `Clear filter for model ${model}` })).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByText('Top 1 of 1 reported totals', { exact: false })).toBeVisible();
+  const selected = new URL(page.url());
+  expect([selected.searchParams.get('range'), selected.searchParams.get('model'), selected.hash]).toEqual(['7d', model, '#sec-agents']);
+  await page.goBack();
+  await expect(page).toHaveURL(url);
+  await expect(panel.getByText('Top 4 of 8 reported totals', { exact: false })).toBeInViewport();
+});
+
+test('BRD-03: partial history keeps a reported zero model without inventing time, counts or freshness', async ({ page }) => {
+  const replay = await startReplay({ dist, speed: 10, boardWindow: true, bootstrapOnly: true, supplemental: true,
+    mapBootstrap: recorded => ({ ...recorded, entities: recorded.entities.filter(({ data }) =>
+      !['range', 'scope', 'kpis', 'generated_at'].includes(data.field) &&
+      !(data.field === 'by_model' && data.key && data.value.tokens !== 0)).map(entity =>
+      entity.data.component === 'history' ? { ...entity, data: { ...entity.data, computed_at: undefined } } : entity) }),
+  });
+  try {
+    await provideCatalog(page);
+    await page.goto(replay.url + boardUrl + '#sec-agents');
+    const activity = await showPanel(page, 'agentActivity');
+    await expect(activity.getByText('Message counts by time are not available from this source.')).toBeVisible();
+    await expect(activity.locator('canvas, time')).toHaveCount(0);
+    await expect(activity.getByText('Last updated: unknown')).toBeVisible();
+    await expect(activity).toContainText('N/A recorded agents · N/A sessions');
+    const rank = activity.getByRole('region', { name: 'Tokens by model' });
+    await expect(rank.getByText('0', { exact: true })).toBeVisible();
+    await expect(activity.getByRole('region', { name: 'Tool call outcomes' })).toContainText(unavailable);
+  } finally { await replay.close(); }
+});
+
 test('BRD-03: readable agent names, keyboard paging, sorting, grouping and folding', async ({ page, snapshotReplay }, testInfo) => {
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'agentsT');
@@ -184,7 +269,7 @@ test('BRD-03: readable agent names, keyboard paging, sorting, grouping and foldi
   await expect(table.getByRole('columnheader')).toHaveText(['Agent', 'Status', 'Tool', 'Messages', 'Tool calls', 'Failures']);
   await expect(panel.getByRole('region', { name: 'Agents and subagents scroll area' })).toHaveCount(0);
   await expect(table.locator('tbody tr')).toHaveCount(10);
-  await page.locator('#sec-agents').evaluate(section => section.scrollIntoView());
+  await panel.evaluate(tablePanel => tablePanel.scrollIntoView());
   expect(await table.locator('tbody tr').evaluateAll(rows => rows.filter(row => {
     const bounds = row.getBoundingClientRect();
     return bounds.top >= 0 && bounds.bottom <= innerHeight;
