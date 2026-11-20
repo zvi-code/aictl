@@ -1,6 +1,9 @@
 :global(body) { margin: 0; background: var(--color-page); }
 :global(:root[data-density="compact"]) { --row-size: calc(var(--control-size) - var(--space-2)); }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
+@media (max-width: 48rem) {
+  .headerControls { display: contents; }
+}
 .button, .input { composes: button focus from "../ui/control.module.css"; }
 .input { cursor: auto; max-inline-size: 100%; }
 .button[aria-current="page"], .button[aria-current="page"]:hover:not(:disabled) {

@@ -18,7 +18,7 @@ export const attentionOptions = ({ ctx, def }: PanelProps): VisualRowOptions => 
         case 'loading': return 'Checking attention…'
         case 'unavailable': return 'Attention data is not available from this source.'
         case 'error': return 'Could not load attention data.'
-        case 'stale': return 'Attention data is stale.'
+        case 'stale': return 'Attention data is stale. Current waits and loops are unknown.'
         case 'empty': return read().updatedAt ? 'Nothing needs attention.' : 'No attention items reported.'
       }
     }

@@ -35,3 +35,7 @@
   transform: translateY(calc(-100% - var(--space-7)));
 }
 .skip:focus { transform: none; }
+@media (max-width: 48rem) {
+  .header { gap: var(--space-2) var(--space-4); padding-block: var(--space-3); }
+  .actions { display: contents; }
+}

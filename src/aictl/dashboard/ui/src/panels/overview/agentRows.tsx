@@ -86,18 +86,24 @@ export function agentRows({ ctx, def }: PanelProps) {
   })
   const result = (): Read => {
     const base = history()
-    if (rows().length && (base.state !== 'ready' || runtime().state === 'stale' || remote()?.status === 'stale')) {
-      return { state: 'stale', value: agents(), message: base.message }
+    if (!rows().length) return base.state === 'ready' ? { ...base, state: 'empty' } : base
+    const runtimeStale = runtime().state === 'stale' || remote()?.status === 'stale'
+    if (base.state === 'stale' && !runtimeStale) return { ...base, message: 'recorded history is stale' }
+    if ((base.state !== 'ready' && base.state !== 'empty') || runtimeStale) {
+      return { state: 'stale', value: agents(), message: base.state === 'stale' ? 'history and runtime reports are stale'
+        : runtimeStale ? 'runtime reports are stale' : 'recorded history is not available' }
     }
-    return rows().length ? base : base.value == null ? base : { state: 'empty' }
+    return { ...base, state: 'ready', value: agents() }
   }
   const placeholders = createMemo(() => records().filter(agent => agent.placeholder).length)
+  const runtimeOnly = createMemo(() => agents().filter(agent => !agent.queryable).length)
   return {
     result, rows,
     flowColumns: ['title', 'status', 'tool', 'messages', 'tool_calls', 'failures'],
     controls: <Choice label="Group agents by" items={groupOptions} value={group} change={setGroup} />,
     description: <p class={css.note}>
-      Recorded agents: {ctx.board('scope')?.shown_agents?.toLocaleString() ?? missing}.
+      Recorded agents in selection: {ctx.board('scope')?.shown_agents?.toLocaleString() ?? missing}.
+      <Show when={agents().length}> Listed here: {agents().length - runtimeOnly()} with history · {runtimeOnly()} from runtime only.</Show>
       <Show when={placeholders()}> {placeholders()} with processes only.</Show>
       <Show when={ctx.scope() !== 'local'}>
         {' '}Agent lists: {hosts() ? `${covered()?.length ?? 0} of ${hosts()!.length} nodes` : missing}.

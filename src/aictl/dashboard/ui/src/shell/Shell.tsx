@@ -314,7 +314,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     if (sourceRows().some(row => 'error' in row && row.error || 'stale' in row && row.stale)) return 'Live — some sources are delayed or unavailable'
     return 'Live connected'
   }
-  const actions = <div class={styles.controls}>
+  const actions = <div class={`${styles.controls} ${styles.headerControls}`}>
     <NodePicker scope={scope()} nodeId={nodeId()} select={selectScope} />
     <button class={styles.button} type="button" disabled={scope() !== 'local'} onClick={() => setPaused(old => !old)}>
       {paused() ? 'Resume live' : 'Pause live'}</button>
