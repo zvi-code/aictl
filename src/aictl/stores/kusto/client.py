@@ -50,12 +50,7 @@ def _throttled(exc: BaseException) -> bool:
     return status in (429, 503) or "throttled" in str(exc).lower()
 
 
-def _transient(exc: BaseException) -> bool:
-    """Whether the service itself says the request may succeed when repeated."""
-    if _throttled(exc):
-        return True
-    if type(exc).__name__ == "KustoAuthenticationError" and "failed to invoke the azure cli" in str(exc).lower():
-        return True
+def _api_errors(exc: BaseException) -> list:
     errors = []
     for getter in ("get_api_error", "get_api_errors"):
         fn = getattr(exc, getter, None)
@@ -65,7 +60,25 @@ def _transient(exc: BaseException) -> bool:
             except Exception:  # noqa: BLE001 - a malformed error body is not a reason to retry
                 got = None
             errors.extend(got if isinstance(got, list) else [got] if got is not None else [])
-    permanence = [e.permanent for e in errors if getattr(e, "permanent", None) is not None]
+    return errors
+
+
+def query_memory_error(exc: BaseException) -> bool:
+    parts = [str(exc), _server_message(exc)]
+    for error in _api_errors(exc):
+        parts.extend(str(getattr(error, attr, "")) for attr in ("code", "description", "message"))
+    return any(marker in part.lower() for part in parts for marker in (
+        "e_low_memory_condition", "lowmemorycondition", "e_runaway_query", "memory budget", "80da0007",
+    ))
+
+
+def _transient(exc: BaseException) -> bool:
+    """Whether the service itself says the request may succeed when repeated."""
+    if _throttled(exc):
+        return True
+    if type(exc).__name__ == "KustoAuthenticationError" and "failed to invoke the azure cli" in str(exc).lower():
+        return True
+    permanence = [e.permanent for e in _api_errors(exc) if getattr(e, "permanent", None) is not None]
     if permanence:
         return not all(permanence)
     response = getattr(exc, "http_response", None)
@@ -93,11 +106,13 @@ def retrying(
     *,
     delays: tuple[float, ...] | None = None,
     budget: float | None = None,
+    stop: Callable[[BaseException], bool] | None = None,
 ) -> Any:
     """Run *call*, waiting out throttling and transient service errors before giving up.
 
     *also* names a failure that is worth repeating for this call only, on top of what
-    the service itself marks as transient. Time spent in failed requests consumes
+    the service itself marks as transient. *stop* vetoes retries even for those failures.
+    Time spent in failed requests consumes
     the retry budget too; an individual request is bounded by its SDK timeout.
     """
     deadline = time.monotonic() + (RETRY_BUDGET_S if budget is None else budget)
@@ -105,6 +120,8 @@ def retrying(
         try:
             return call()
         except Exception as exc:  # noqa: BLE001 - only a transient failure is retried; the rest is raised below
+            if stop is not None and stop(exc):
+                raise
             if not _transient(exc) and not (also is not None and also(exc)):
                 raise
             if time.monotonic() + delay >= deadline:

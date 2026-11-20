@@ -1,0 +1,5 @@
+declare query_parameters(row_limit:long);
+metrics
+| summarize by start=bin(ts, 300.0)
+| order by start asc nulls first
+| take row_limit

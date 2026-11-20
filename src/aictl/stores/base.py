@@ -36,6 +36,7 @@ class UnknownViewError(StoreError, LookupError):
 class ReadResult:
     rows: list[Row]
     truncated: bool = False
+    stale: bool = False
 
 
 class Reader(Protocol):

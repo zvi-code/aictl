@@ -1,0 +1,8 @@
+declare query_parameters(since:real = 0.0, until:real = 0.0, null_timestamp:bool = false, row_limit:long);
+metrics
+| where (null_timestamp and isnull(ts)) or (not(null_timestamp) and ts >= since and ts < until)
+| extend deleted=column_ifexists('_deleted', false)
+| summarize arg_max(_v, deleted) by node_id, ['project'], metric, ts, seq
+| where not(coalesce(deleted, false))
+| summarize rows=count()
+| take row_limit

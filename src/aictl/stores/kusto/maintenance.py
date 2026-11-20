@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from ...state_file import StateFile, TextWatermark, restart_directory
 from ..base import StoreError
-from .client import KustoClientFactory, Result, kql_literal, quote, retrying
+from .client import KustoClientFactory, Result, kql_literal, query_memory_error, quote, retrying
 from .tables import TABLES
 
 
@@ -17,10 +17,37 @@ def store_stats(settings):
     command = ".show tables details | project TableName, TotalExtents, TotalRowCount, TotalExtentSize"
     response = retrying(lambda: client.execute_mgmt(settings.database, command), "Read table details")
     details = [row for row in Result.from_response(response).dicts() if row["TableName"] in TABLES]
-    counts = KustoReader(client, settings.database).read("health.totals", {"limit": 100})
+    reader = KustoReader(client, settings.database)
+    counts = reader.read("health.totals", {"limit": 100})
     if counts.truncated:
         raise StoreError("Kusto returned incomplete logical counts")
-    return details, counts.rows
+    sample_count = _logical_sample_count(reader)
+    rows = counts.rows + [{"table": "metrics", "rows": sample_count, "earliest_ts": None, "latest_ts": None,
+                           "files_total_bytes": None, "files_total_tokens": None}]
+    return details, sorted(rows, key=lambda row: row["table"])
+
+
+def _logical_sample_count(reader):
+    """Five-minute ranges are disjoint by logical key. Count them serially, never in the dashboard poll."""
+    buckets = reader.read("health.sample_buckets", {"limit": 20_000})
+    if buckets.truncated:
+        raise StoreError("Kusto returned incomplete sample count ranges")
+
+    def count(since, until):
+        params = {"null_timestamp": True} if since is None else {"since": since, "until": until}
+        try:
+            answer = reader.read("health.sample_count", params | {"limit": 1})
+        except StoreError as exc:
+            if since is None or until - since <= 1 or not query_memory_error(exc.__cause__ or exc):
+                raise
+            midpoint = (since + until) / 2
+            return count(since, midpoint) + count(midpoint, until)
+        if answer.truncated or len(answer.rows) != 1:
+            raise StoreError("Kusto returned an incomplete sample count")
+        return answer.rows[0]["rows"]
+
+    return sum(count(start, None if start is None else start + 300)
+               for start in (row["start"] for row in buckets.rows))
 
 
 def schema_rows():

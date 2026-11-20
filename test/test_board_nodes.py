@@ -30,23 +30,62 @@ def query(view, scope="local", **p):
     return {k: [v] for k, v in {"view": view, "scope": scope, **p}.items()}
 
 
-def test_node_report_bounds_kusto_scan_concurrency_and_exposes_partial_memory_failures():
+def test_cold_node_report_does_not_retry_low_memory_or_return_empty_success():
     from aictl.stores.kusto.reader import KustoReader
 
     requests = []
 
     def execute(_db, _kql, props):
         requests.append(props)
-        raise RuntimeError("partial query failure: E_LOW_MEMORY_CONDITION")
+        exc = RuntimeError("partial query failure: E_LOW_MEMORY_CONDITION")
+        exc.http_response = SimpleNamespace(status_code=503)
+        raise exc
 
     reader = KustoReader(SimpleNamespace(execute_query=execute), "aictl_perf_test")
-    with pytest.raises(NodeViewError, match="E_LOW_MEMORY_CONDITION") as err:
-        node_view(project(), query("health", "fleet"), reader=reader)
+    for _ in range(2):
+        with pytest.raises(NodeViewError, match="E_LOW_MEMORY_CONDITION") as err:
+            node_view(project(), query("health", "fleet"), reader=reader)
     props, = requests
     assert err.value.status == 503 and props.client_request_id in str(err.value)
     assert props.get_option("query_fanout_threads_percent", None) == 1
-    assert props.get_option("max_memory_consumption_per_query_per_node", None) == 128 * 1024**2
+    assert props.client_request_id.startswith("aictl.nodes.reports;")
+    assert props.get_option("max_memory_consumption_per_query_per_node", None) is None
     assert props.get_option("deferpartialqueryfailures", None) is False
+
+
+def test_warm_node_failure_returns_marked_sample_with_original_time(monkeypatch):
+    from aictl.stores.kusto import reader as kusto_reader
+
+    calls = []
+
+    def execute(_db, _kql, props):
+        calls.append(props.client_request_id)
+        if len(calls) > 1:
+            raise RuntimeError("E_LOW_MEMORY_CONDITION")
+        columns = [SimpleNamespace(column_name=k, column_type="real") for k in ("node_id", "captured_at")]
+
+        class Table(list):
+            pass
+
+        table = Table([("host-a", 600)])
+        table.columns = columns
+        return SimpleNamespace(primary_results=[table])
+
+    elapsed = 100.0
+    monkeypatch.setattr(kusto_reader.time, "monotonic", lambda: elapsed)
+    reader = kusto_reader.KustoReader(SimpleNamespace(execute_query=execute), "db")
+
+    def load():
+        return node_view(project(), query("health", "fleet"), now=610, reader=reader)["rows"][0]
+
+    assert load()["status"] == "reported"
+    elapsed += 6
+    assert load()["status"] == "stale"
+    assert load()["captured_at"] == 600
+    assert len(set(calls)) == len(calls) == 2
+    elapsed += 300
+    with pytest.raises(NodeViewError, match="E_LOW_MEMORY_CONDITION"):
+        load()
 
 
 def test_fleet_discovery_and_health_do_not_substitute_the_serving_node(kusto_store, node_reader):

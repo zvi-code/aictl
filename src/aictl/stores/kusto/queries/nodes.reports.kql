@@ -1,31 +1,46 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20,
                          report_mode:string, include_unreported:bool = false, row_limit:long);
-let reported = materialize(system_snapshots
+let snapshots = materialize(system_snapshots
     | where (all_nodes or node_id == requested_node) and ts between (since .. until)
     | where report_mode != 'runtime' or isnotempty(node_id)
-    | summarize arg_max(_v, *) by node_id, ['project'], ts
-    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | project node_id, ['project'], ts, _v, deleted=column_ifexists('_deleted', false),
+              settings_captured_at, files, ai_token_rate, daemon_pid, node_source,
+              capture_mode, ingestion_mode, retention_days, content_retention_days,
+              live_sessions, active_processes, host_cpu_percent, host_memory_used_mb,
+              host_memory_total_mb, live_in_rate, live_out_rate, node_health_counters
+    | summarize arg_max(_v, deleted, settings_captured_at, files, ai_token_rate, daemon_pid, node_source,
+                          capture_mode, ingestion_mode, retention_days, content_retention_days,
+                          live_sessions, active_processes, host_cpu_percent, host_memory_used_mb,
+                          host_memory_total_mb, live_in_rate, live_out_rate, node_health_counters)
+        by node_id, ['project'], ts
+    | where not(coalesce(deleted, false))
     | extend captured_at=iff(report_mode == 'settings', settings_captured_at, ts)
     | project node_id, captured_at, ts, _v, ['project'], files, ai_token_rate, daemon_pid, node_source,
               capture=capture_mode, ingestion=ingestion_mode, retention_days, content_retention_days,
               active_sessions=live_sessions, active_processes, cpu_percent=host_cpu_percent,
               memory_used_mb=host_memory_used_mb, memory_total_mb=host_memory_total_mb,
-              inbound_bps=live_in_rate, outbound_bps=live_out_rate, counter_sample=node_health_counters
-    | sort by captured_at desc nulls last, ts desc, _v desc, ['project'] asc
-    | serialize rn=row_number()
-    | as ranked
-    | summarize arg_min(rn, *) by node_id
-    | project-away rn, _v, ['project'], counter_sample
+              inbound_bps=live_in_rate, outbound_bps=live_out_rate, counter_sample=node_health_counters);
+// Take the top row per node without a fleet-wide sort/row number or a lossy composite key.
+let reported = materialize(snapshots
+    | partition hint.strategy=native by node_id (
+        sort by captured_at desc nulls last, ts desc, _v desc, ['project'] asc
+        | take 1
+      )
+    | project-away _v, ['project'], counter_sample
     | join kind=leftouter (
-        ranked | where isnotempty(counter_sample) and report_mode in ('runtime','health')
-        | summarize arg_min(rn, counter_sample) by node_id
+        snapshots | where isnotempty(counter_sample) and report_mode in ('runtime','health')
+        | partition hint.strategy=native by node_id (
+            sort by ts desc, _v desc, ['project'] asc | take 1
+          )
         | project node_id, counter_sample
       ) on node_id
     | project-away node_id1);
 union reported,
       (sessions | where include_unreported and (all_nodes or node_id == requested_node)
-        | summarize arg_max(_v, *) by node_id, ['project'], session_id
-        | where not(coalesce(column_ifexists('_deleted', false), false))
-        | distinct node_id | join kind=leftanti (reported | project node_id) on node_id)
+        | join kind=leftanti (reported | project node_id) on node_id
+        | project node_id, ['project'], session_id, _v, deleted=column_ifexists('_deleted', false)
+        | summarize arg_max(_v, deleted) by node_id, ['project'], session_id
+        | where not(coalesce(deleted, false))
+        | distinct node_id)
 | order by node_id asc
 | take row_limit

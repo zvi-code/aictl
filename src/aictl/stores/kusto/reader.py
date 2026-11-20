@@ -7,15 +7,19 @@ import math
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Mapping
-from functools import lru_cache
+from concurrent.futures import Future
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import timedelta
+from functools import lru_cache
 from importlib.resources import files
 from itertools import islice
 from typing import Any
 
 from ..base import ReadResult, StoreError, UnknownViewError
-from .client import QUERY_TIMEOUT, retrying
+from .client import QUERY_TIMEOUT, query_memory_error, retrying
 
 _SCOPE = "all_nodes requested_node requested_project"
 _EVENT = f"{_SCOPE} since until requested_tool requested_kinds requested_session raw_session"
@@ -30,6 +34,8 @@ _VIEWS = {
     "analytics.profiles": (_TIME, "session_id tool project_path model started_at input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd request_count tool_call_count tokens_source tokens_quality cost_quality"),
     "health.nodes": ("requested_project requested_node", "node_id samples last_sample"),
     "health.totals": ("all_nodes requested_node", "table rows earliest_ts latest_ts files_total_bytes files_total_tokens"),
+    "health.sample_buckets": ("", "start"),
+    "health.sample_count": ("since until null_timestamp", "rows"),
     "health.quality": ("all_nodes requested_node", "component source kind status severity message updated_at last_ok_at count detail"),
     "nodes.reports": (f"{_TIME} report_mode include_unreported", "node_id captured_at"),
     "runtime.processes": ("all_nodes requested_node restrict_tools requested_tools", "row_type node_id session_id pid tool role joined_at total"),
@@ -203,6 +209,7 @@ _VIEWS = {
     ),
 }
 _PARAMETER_TYPES = {
+    "null_timestamp": bool,
     "include_unreported": bool,
     "ascending": bool,
     "all_nodes": bool,
@@ -246,6 +253,20 @@ _PARAMETER_TYPES = {
     "pids": tuple,
 }
 _MAX_ROWS = 20_000
+_CACHE_TTL_S = {"health.totals": 300.0, "nodes.reports": 5.0}
+_NODE_STALE_MAX_S = 300.0
+_FAILURE_COOLDOWN_S = 5.0
+_CACHE_SIZE = 64
+# These views had lower measured peaks with reduced fanout; other reads keep the service default.
+_LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
+
+
+@dataclass
+class _CachedRead:
+    result: ReadResult | None = None
+    saved_at: float = 0.0
+    error: str | None = None
+    retry_at: float = 0.0
 
 
 def _parameter(name: str, value: Any) -> str:
@@ -306,6 +327,8 @@ class KustoReader:
         self._database = database
         self._settings = settings
         self._lock = threading.Lock()
+        self._cache: OrderedDict[tuple, _CachedRead] = OrderedDict()
+        self._inflight: dict[tuple, Future[ReadResult]] = {}
         self._queries = 0
         self._failures = 0
         self._last_latency_ms: float | None = None
@@ -386,31 +409,98 @@ class KustoReader:
         props = ClientRequestProperties()
         props.set_option(ClientRequestProperties.request_timeout_option_name, QUERY_TIMEOUT)
         props.set_option("request_readonly", True)
-        if view == "nodes.reports":
-            props.client_request_id = f"aictl.NodeView;{uuid.uuid4()}"
-            props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=15))
-            props.set_option("request_readonly_hardline", True)
-            props.set_option("deferpartialqueryfailures", False)
+        props.set_option("request_readonly_hardline", True)
+        props.set_option("deferpartialqueryfailures", False)
+        if view in _LOW_FANOUT_VIEWS:
             props.set_option("query_fanout_threads_percent", 1)
-            props.set_option("max_memory_consumption_per_query_per_node", 128 * 1024**2)
-        for key, value in params.items():
-            if key != "limit":
-                props.set_parameter(key, _parameter(key, value))
-        props.set_parameter("row_limit", str(limit + 1))
+        if view == "nodes.reports" or view.startswith("health.sample_"):
+            props.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=15))
+        bound = {key: _parameter(key, value) for key, value in params.items() if key != "limit"}
+        bound["row_limit"] = str(limit + 1)
+        for key, value in bound.items():
+            props.set_parameter(key, value)
 
+        ttl = _CACHE_TTL_S.get(view)
+        if ttl is None:
+            return self._execute(view, props, limit)
+        return self._cached_read(view, tuple(sorted(bound.items())), ttl, props, limit)
+
+    def _cached_read(self, view: str, bound: tuple, ttl: float, props, limit: int) -> ReadResult:
+        key = (view, bound)
+
+        def stale(entry: _CachedRead, now: float) -> ReadResult | None:
+            if (view == "nodes.reports" and entry.result is not None and entry.result.rows
+                    and now - entry.saved_at <= _NODE_STALE_MAX_S):
+                return replace(entry.result, stale=True)
+            return None
+
+        with self._lock:
+            now = time.monotonic()
+            entry = self._cache.get(key)
+            if entry is not None:
+                self._cache.move_to_end(key)
+                if entry.result is not None and entry.error is None and now - entry.saved_at < ttl:
+                    return deepcopy(entry.result)
+                if entry.error is not None and now < entry.retry_at:
+                    fallback = stale(entry, now)
+                    if fallback is not None:
+                        return deepcopy(fallback)
+                    raise StoreError(entry.error)
+            pending = self._inflight.get(key)
+            leader = pending is None
+            if pending is None:
+                pending = self._inflight[key] = Future()
+        if not leader:
+            return deepcopy(pending.result())
+
+        entry = entry or _CachedRead()
+        try:
+            result = self._execute(view, props, limit)
+        except BaseException as exc:  # noqa: BLE001 - resolve waiters even if the leader is interrupted
+            now = time.monotonic()
+            if isinstance(exc, StoreError):
+                entry = replace(entry, error=str(exc), retry_at=now + _FAILURE_COOLDOWN_S)
+                fallback = stale(entry, now)
+            else:
+                fallback = None
+            if fallback is None:
+                pending.set_exception(exc)
+            else:
+                pending.set_result(fallback)
+        else:
+            entry = _CachedRead(result=result, saved_at=time.monotonic())
+            pending.set_result(result)
+        finally:
+            with self._lock:
+                self._cache[key] = entry
+                self._cache.move_to_end(key)
+                while len(self._cache) > _CACHE_SIZE:
+                    self._cache.popitem(last=False)
+                del self._inflight[key]
+        return deepcopy(pending.result())
+
+    def _execute(self, view: str, props, limit: int) -> ReadResult:
         start = time.monotonic()
         error = None
         try:
             text = _query(view)
 
             def execute():
+                props.client_request_id = f"aictl.{view};{uuid.uuid4()}"
                 return self._client.execute_query(self._database, text, props)
 
-            response = retrying(execute if self._observed else lambda: self._query_cpu.call(execute), f"read {view}")
+            response = retrying(
+                execute if self._observed else lambda: self._query_cpu.call(execute),
+                f"read {view}",
+                budget=4.0 if view == "nodes.reports" else None,
+                stop=query_memory_error,
+            )
             if getattr(response, "errors_count", 0):
                 raise StoreError("Kusto returned an incomplete result")
             tables = response.primary_results
             if not tables:
+                if view in _CACHE_TTL_S or view.startswith("health.sample_"):
+                    raise StoreError("Kusto returned no result table")
                 return ReadResult([])
             table = tables[0]
             names = tuple(c.column_name for c in table.columns)
@@ -422,9 +512,7 @@ class KustoReader:
             ]
             return ReadResult(rows[:limit], truncated=len(rows) > limit)
         except Exception as exc:  # noqa: BLE001 - treat SDK and transport errors as read failures
-            error = str(exc)
-            if view == "nodes.reports":
-                error = f"{error} (client request ID: {props.client_request_id})"
+            error = f"{exc} (client request ID: {props.client_request_id})"
             raise StoreError(f"Kusto view {view} failed: {error}") from exc
         finally:
             with self._lock:

@@ -24,7 +24,9 @@ class NodeViewError(ValueError):
         self.status = status
 
 
-def _status(ts, now):
+def _status(ts, now, *, stale=False):
+    if stale:
+        return "stale"
     if not isinstance(ts, (float, int)) or not math.isfinite(ts) or ts <= 0 or ts > now + 60:
         return "unknown"
     return "stale" if now - ts > STALE_AFTER else "reported"
@@ -267,6 +269,7 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
 
     reports = []
     truncated = False
+    stale = False
     if fleet_available:
         params = node_scope(node) | {
             "report_mode": view, "include_unreported": scope == "fleet" and view in ("health", "settings"),
@@ -279,13 +282,14 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
         except StoreError as exc:
             raise NodeViewError(str(exc), 503) from exc
         reports, truncated = answer.rows, answer.truncated
+        stale = getattr(answer, "stale", False)
     if view == "runtime":
         rows = []
         for r in reports[:MAX_NODES]:
             rows.append(_fields(r, ("node_id", "active_sessions", "active_processes", "cpu_percent",
                                     "memory_used_mb", "memory_total_mb", "daemon_pid")) |
-                        {"captured_at": r["ts"], "activity_at": r["ts"], "status": _status(r["ts"], now),
-                         "agents": _agent_sample(r, now)})
+                        {"captured_at": r["ts"], "activity_at": r["ts"], "status": _status(r["ts"], now, stale=stale),
+                         "agents": None if stale else _agent_sample(r, now)})
         if scope == "fleet" and local_health is not None:
             row = _local_health_row(local_health(), local, now)
             stored = next((r for r in rows if r["node_id"] == local), None)
@@ -321,9 +325,10 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
                 | {
                     "node_id": r["node_id"] or "legacy",
                     "captured_at": r["captured_at"],
-                    "status": _status(r["captured_at"], now),
+                    "status": _status(r["captured_at"], now, stale=stale),
                 }
-                | ({} if settings_view else {"client_sample": _client_sample(r, now), "activity_at": r.get("captured_at")})
+                | ({} if settings_view else {"client_sample": None if stale else _client_sample(r, now),
+                                              "activity_at": r.get("captured_at")})
                 for r in rows[:MAX_NODES]
             ],
             "truncated": truncated,

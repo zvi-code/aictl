@@ -973,7 +973,8 @@ def compute_health(
             "tables": payload["pipeline"]["self"]["db_tables"],
             **{k: cached.get("volume", {}).get(k) for k in ("started_at", "checked_at", "attempted_at", "last_error")},
             "scope": "Current logical rows of selected history tables (store stats names); excludes raw OTel export "
-                     "tables. Not physical extent rows, submitted rows, or a cluster-wide total.",
+                     "tables and metric samples. See physical ADX table inventory for sample volume. "
+                     "Not physical extent rows, submitted rows, or a cluster-wide total.",
             "status": cached.get("volume", {}).get("status", "pending"),
             "refresh_interval_s": _volume_interval(db),
         },

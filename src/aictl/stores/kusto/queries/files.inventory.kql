@@ -3,8 +3,10 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', since:re
     inventory_mode:string='all', row_limit:long);
 files
 | where all_nodes or node_id == requested_node
-| summarize arg_max(_v, *) by ['project'],node_id,path
-| where not(column_ifexists('_deleted',false))
+| extend deleted=column_ifexists('_deleted',false)
+| summarize arg_max(_v,deleted,tool,category,scope,size_bytes,tokens,lines,mtime,meta,last_changed)
+    by ['project'],node_id,path
+| where not(deleted)
 | where (isnull(last_changed) or last_changed between (since .. until))
 | where isempty(requested_tool) or tool in (requested_tool,'')
 | where array_length(requested_paths)==0 or path in (requested_paths)

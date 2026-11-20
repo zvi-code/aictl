@@ -12,7 +12,7 @@ from ..stores import UnresolvedObservationsError, has_history
 from ..stores.base import StoreError
 from ..tool_scope import is_selected, normalize_selection, stored_ids_for
 from .history_scope import ScopeError, identity, label, parse_identity
-from .projections.history import HistoryScope, configured_reader, scoped_records
+from .projections.history import HistoryScope, complete_rows, configured_reader, node_scope, scoped_records
 from .session_evidence import EvidenceInputError, session_evidence
 
 logger = logging.getLogger(__name__)
@@ -49,14 +49,17 @@ def _reported_context(history, tools, now):
 def _reported_machine(history, tools, now):
     from .node_views import _status
 
+    reports = history.require_reader().read("nodes.reports", {
+        **node_scope(history.node), "report_mode": "machine", "limit": 20_000,
+    })
     hosts = [
-        {"node_id": label(r["node_id"]), "status": _status(r["ts"], now), "ts": r["ts"],
+        {"node_id": label(r["node_id"]), "status": _status(r["ts"], now, stale=reports.stale), "ts": r["ts"],
          "host_cpu_percent": r["cpu_percent"], "host_memory_used_mb": r["memory_used_mb"],
          "host_memory_total_mb": r["memory_total_mb"], "live_sessions": r["active_sessions"],
          "active_processes": r["active_processes"] if r["daemon_pid"] else None,
          "daemon_pid": r["daemon_pid"], "files": r["files"], "live_in_rate": r["inbound_bps"],
          "live_out_rate": r["outbound_bps"], "ai_token_rate": r["ai_token_rate"]}
-        for r in history.read("nodes.reports", report_mode="machine")
+        for r in complete_rows(reports)
     ]
     rows = history.read("runtime.processes", limit=1001, restrict_tools=tools is not None,
                         requested_tools=list(stored_ids_for(tools)) if tools is not None else [])

@@ -2,38 +2,66 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', since:real, until:real,
     requested_session:string = '', kind_filter:string, session_keys:dynamic = dynamic([]), row_limit:long
 );
-let calls = materialize(
-    tool_invocations
+let raw_calls = () { tool_invocations
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
-    | where not(coalesce(column_ifexists('_deleted', false), false))
-    | where ts between (since .. until) and isnotempty(session_id)
-    | where isempty(requested_session) or session_id == requested_session
-    | where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
-    | where case(
-        kind_filter == 'confirms', isnotempty(confirm),
-        kind_filter == 'failures', is_error == 1 and not(tool_name startswith_cs 'permission:'),
-        kind_filter == 'loops', not(tool_name startswith_cs 'permission:'),
-        kind_filter == 'tests')
+};
+let eligible = (t:real, n:string, s:string, name:string, error:long, confirmation:string) {
+    t between (since .. until) and isnotempty(s)
+    and (isempty(requested_session) or s == requested_session)
+    and (array_length(session_keys) == 0 or strcat(strlen(n), ':', n, s) in (session_keys))
+    and case(kind_filter == 'confirms', isnotempty(confirmation),
+             kind_filter == 'failures', error == 1 and not(name startswith_cs 'permission:'),
+             kind_filter == 'loops', not(name startswith_cs 'permission:'),
+             kind_filter == 'tests')
+};
+// Select possible keys, then apply the same filters to the winning versions.
+let keys = raw_calls() | where eligible(ts,node_id,session_id,tool_name,is_error,confirm) | distinct fact_key;
+let calls = materialize(raw_calls()
+    | where fact_key in (keys)
+    | extend deleted=column_ifexists('_deleted', false), target=column_ifexists('target', '')
+    | extend inline_test=kind_filter == 'tests' and (target contains 'test' or target contains 'jest' or target contains 'tox')
+    | summarize arg_max(_v, deleted, id, ts, session_id, agent_id, tool_name, is_error, exit_code, duration_ms,
+                          confirm, confirm_wait_ms, inline_test, dedup_key) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and eligible(ts,node_id,session_id,tool_name,is_error,confirm)
+    | project-away deleted
 );
-let text_rows = union isfuzzy=true
+let retained = () { union isfuzzy=true
     (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, input:string, result_summary:string, target:string, _deleted:bool)[]),
     (tool_invocations_text | project ['project'], node_id, dedup_key, _v, input, result_summary, target,
                                     _deleted=column_ifexists('_deleted', false))
-    | where all_nodes or node_id == requested_node
-    | where dedup_key in (calls | project dedup_key)
-    | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
+    | where (all_nodes or node_id == requested_node) and dedup_key in (calls | project dedup_key)
+};
+let test_targets = retained()
+    | where kind_filter == 'tests'
+    | extend has_target=isnotempty(target), is_test=target contains 'test' or target contains 'jest' or target contains 'tox'
+    | summarize arg_max(_v, _deleted, has_target, is_test) by ['project'], node_id, dedup_key
     | where not(coalesce(_deleted, false))
-    | project ['project'], node_id, fact_key=dedup_key, retained_input=input, retained_summary=result_summary, retained_target=target;
-calls
+    | project ['project'], node_id, fact_key=dedup_key, has_target, is_test;
+let page = materialize(calls
+    | lookup kind=leftouter test_targets on ['project'], node_id, fact_key
+    | where kind_filter != 'tests' or iff(has_target, is_test, inline_test)
+    | sort by ts asc, node_id asc, id asc, fact_key asc
+    | take row_limit
+    | project-away has_target, is_test, inline_test, dedup_key);
+let inline_text = raw_calls()
+    | where fact_key in (page | project fact_key)
+    | project ['project'], node_id, fact_key, _v, target=column_ifexists('target', ''),
+              result_summary=column_ifexists('result_summary', ''), input=column_ifexists('input', '')
+    | summarize take_any(target, result_summary, input) by ['project'], node_id, fact_key, _v;
+let text_rows = retained()
+    | where dedup_key in (page | project fact_key)
+    | summarize arg_max(_v, _deleted, input, result_summary, target) by ['project'], node_id, dedup_key
+    | where not(coalesce(_deleted, false))
+    | project ['project'], node_id, fact_key=dedup_key,
+              retained_signature=iff(kind_filter == 'loops' and isnotempty(input), hash_sha256(input), ''),
+              retained_summary=result_summary, retained_target=target;
+page
+| join kind=leftouter inline_text on ['project'], node_id, fact_key, _v
+| project-away ['project1'], node_id1, fact_key1, _v1
 | join kind=leftouter text_rows on ['project'], node_id, fact_key
-| extend target=coalesce(retained_target, column_ifexists('target', '')),
-         result_summary=coalesce(retained_summary, column_ifexists('result_summary', '')),
-         input=coalesce(retained_input, column_ifexists('input', ''))
-| where kind_filter != 'tests' or target contains 'test' or target contains 'jest' or target contains 'tox'
-| extend input_signature=iff(kind_filter == 'loops' and isnotempty(input), hash_sha256(input), '')
+| extend target=coalesce(retained_target, target), result_summary=coalesce(retained_summary, result_summary),
+         input_signature=coalesce(retained_signature, iff(kind_filter == 'loops' and isnotempty(input), hash_sha256(input), ''))
 | order by ts asc, node_id asc, id asc, fact_key asc
-| take row_limit
 | project node_id, session_id, agent_id, ts, tool_name, target, is_error, exit_code, duration_ms, confirm, confirm_wait_ms,
           result_summary, input_signature

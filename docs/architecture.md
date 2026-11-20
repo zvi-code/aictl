@@ -623,7 +623,26 @@ to the interval.
 | Process CPU/RSS/presence | The daemon's process interval is configurable and defaults to 5 s. Its existing adaptive pace multiplies polling intervals by six when unwatched and inactive. Observations wake a separate publishing worker, whose fallback wait is 0.1 s; latest gauges coalesce. No history query is on this path. |
 | Native output and loaded evidence | Filesystem events wake the native worker; its follow-up poll is 0.5 s. Explicit fallback inventory reconciliation is every 5 s. It follows at most 64 runtime-proven active files, initially at most a 128 KiB suffix, and processes at most 512 KiB per file/pass. Oversized records/rewrites declare gaps; text is capped at 8,000 characters with truncation metadata. |
 | Configured-on-disk settings | Signature checks run every 1 s on an independent worker. The shared parser rechecks after 60 s even without a signature change for registry/non-file evidence. Parse/IO duration is additional; disk freshness does not establish loaded-agent freshness. |
-| Health | The independent health producer runs every 1 s while watched. Backend client operation counters are process-local. Cached storage volume uses the existing 60 s cache; Health policy reads use a 300 s cache. Both retain their observed timestamps. The existing self-CPU helper has a 10 s cache. |
+| Health | The independent health producer runs every 1 s while watched. Backend client operation counters are process-local. Logical storage volume and Health policy reads use a 300 s cache and retain their observed timestamps. The self-CPU helper has a 10 s cache. |
+
+Kusto logical volume resolves the latest version of each history key before counting live rows.
+The dashboard excludes the high-cardinality `metrics` samples table from that total; the physical
+ADX inventory still lists it. `aictl db stats` includes an exact logical sample count by reading
+disjoint timestamp ranges serially, so it can take longer than the dashboard refresh. On a
+failed refresh, Health keeps the preceding volume sample and marks it `stale`; without a
+previous sample, the state is `error`, not zero rows.
+
+The named Kusto reader coalesces identical node-report and logical-total requests by scope
+and parameters. The scoped Health panel refreshes node reports every 30 seconds while
+visible and on visibility changes. Runtime and settings node views and the scoped
+Machine endpoint also use this report query. The 5-second cache absorbs concurrent
+and closely spaced requests without extending the Health panel's refresh interval.
+On an error, a prior nonempty result
+can be served for up to 5 minutes with its original capture times and existing `stale` row
+status. Without such a result the endpoint returns 503. Identical failures have a 5-second
+cooldown. Named-view attempts appear in `.show queries` as `aictl.<view>;<uuid>`; memory
+errors are not retried unchanged. The node query uses the service memory budget instead
+of a fixed 128 MiB client cap. Reduced fanout is limited to measured views.
 | Machine per-core CPU and discovery diagnostics | These remain runtime snapshot observations, normally collected on the daemon's 5 s snapshot refresh (also subject to adaptive pace and collection duration). Sending that value on a 1 s health tick does **not** make it a newly sampled per-core gauge. Process-level stream gauges do not wait for this snapshot. |
 | Queryable history | Reader polling adapts from 0.5 s to 15 s idle delay. A poll allows four SDK requests total, including policy/discovery work, and pages at most 250 identity hints plus lookahead. Preview's 2 s setting is a target sharing that budget, not an independent 2 s guaranteed timer. |
 | History fallback/recovery | Reader queries have a 15 s server timeout; errors can back off to 60 s. Schema/policy checks target 60/300 s. Eight-partition reconciliation targets a 300 s rotation; many tables, multi-page partitions and failures can extend it. Streaming cursor assignment can trail queryability by up to 60 s; preview reduces but does not bound that delay. |

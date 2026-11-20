@@ -2,6 +2,8 @@ import gzip
 import json
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,6 +80,8 @@ def test_reader_binds_parameters_and_limits_returned_rows():
         assert supplied not in text and text.startswith("declare query_parameters(")
         assert props.get_parameter("requested_node", None) == supplied
         assert props.get_parameter("row_limit", None) == "2"
+        assert props.client_request_id.startswith("aictl.health.nodes;")
+        assert props.get_option("request_readonly_hardline", None) is True
         return response(("node_id",), (("a",), ("b",), ("c",)))
 
     reader = KustoReader(SimpleNamespace(execute_query=execute), "db")
@@ -89,6 +93,31 @@ def test_reader_binds_parameters_and_limits_returned_rows():
         reader.read("../secrets", {})
     with pytest.raises(ValueError, match="unexpected"):
         reader.read("health.nodes", {"row_limit": 123})
+
+
+def test_health_totals_coalesces_concurrent_reads_and_caches_by_scope():
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def execute(_db, query, props):
+        assert "arg_max(_v, *)" not in query and "(metrics |" not in query
+        calls.append(props.get_parameter("requested_node", None))
+        entered.set()
+        assert release.wait(5)
+        return response(("table", "rows"), (("events", 2),))
+
+    reader = KustoReader(SimpleNamespace(execute_query=execute), "db")
+    params = {"all_nodes": False, "requested_node": "node-a"}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(reader.read, "health.totals", params)
+        assert entered.wait(5)
+        second = pool.submit(reader.read, "health.totals", params)
+        release.set()
+        first.result(timeout=5).rows.clear()
+        assert second.result(timeout=5).rows == [{"table": "events", "rows": 2}]
+    assert reader.read("health.totals", params).rows == [{"table": "events", "rows": 2}]
+    reader.read("health.totals", params | {"requested_node": "node-b"})
+    assert calls == ["node-a", "node-b"]
 
 
 @pytest.mark.parametrize(("payloads", "expected"), [

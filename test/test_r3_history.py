@@ -17,6 +17,7 @@ from aictl.dashboard.projections.metrics import (
 )
 from aictl.dashboard.scoped_history import _reported_machine
 from aictl.stores import Store
+from aictl.stores.kusto.maintenance import _logical_sample_count
 
 
 def test_runtime_averages_per_node_before_summing(kusto_store):
@@ -59,7 +60,11 @@ def test_history_catalog_samples_and_logical_totals(kusto_store):
     assert sample_series(reader, since=99, requested_metric="x") == {"ts": [100, 100], "value": [7, 9]}
     assert sample_metrics(reader, metric_prefix="x") == [{"metric": "x", "count": 2, "latest_ts": 100, "last_value": 9}]
     stats = logical_stats(reader)
-    assert (stats["metrics_count"], stats["samples_count"], stats["file_store_count"]) == (1, 2, 0)
+    assert (stats["metrics_count"], stats["file_store_count"]) == (1, 0)
+    assert "samples_count" not in stats  # Exact sample counts are opt-in through db stats, not Health.
+    seed("metrics", ts=100, seq=2, metric="x", value=12, _v="2026-01-03")
+    seed("metrics", ts=300, seq=2, metric="x", value=13)
+    assert _logical_sample_count(reader) == 3
     assert stats["file_size_bytes"] is None
 
 
@@ -68,6 +73,8 @@ def test_hooks_ignore_verification_and_merge_sources_without_counting_twice(kust
     seed("events", ts=100, tool="copilot-cli", kind="hook:PostToolUse", detail='{"name":"Read"}')
     seed("events", ts=101, tool="copilot-cli", kind="hook:PostToolUse", detail='{"name":"Read","_aictl_verify":true}')
     seed("events", ts=102, tool="copilot-cli", kind="hook:SubagentStop", detail='{"agent_id":"a"}')
+    seed("events", source_key="corrected", ts=103, kind="hook:PostToolUse", detail='{"name":"Old"}')
+    seed("events", source_key="corrected", ts=103, kind="unrelated", _v="2026-01-02")
     seed("sessions", session_id="s", tool="copilot-cli")
     seed("tool_invocations", ts=100, session_id="s", tool_name="Read")
     seed("agents", agent_id="a", is_sidechain=1, tool="copilot-cli", started_at=100, ended_at=102)
@@ -77,6 +84,27 @@ def test_hooks_ignore_verification_and_merge_sources_without_counting_twice(kust
     assert _post_tool_use_usage(rows)[1]["total_calls_24h"] == 1
     assert _subagent_usage(rows)["stops_24h"] == 1
     assert _hook_event_counts(_activity(reader, 99, counts_only=True))["last_fire_ts"] == 102
+
+
+def test_sequence_and_tool_pages_prune_keys_without_resurrecting_old_versions(kusto_store):
+    seed = kusto_store.insert
+    reader = kusto_store.history_store.reader
+    for table, key in (("events", "source_key"), ("tool_invocations", "dedup_key")):
+        dims = {"kind": "hook:PostToolUse"} if table == "events" else {"tool_name": "Bash", "is_error": 1}
+        seed(table, **dims, **{key: "moved"}, ts=100, session_id="s")
+        seed(table, **dims, **{key: "moved"}, ts=300, session_id="s", _v="2026-01-02")
+        seed(table, **dims, **{key: "visible"}, ts=120, session_id="s")
+    seed("tool_invocations", dedup_key="deleted", ts=130, session_id="s", is_error=1)
+    seed("tool_invocations", dedup_key="deleted", _deleted=True, _v="2026-01-02")
+    seed("events_text", source_key="visible", detail='{"session_id":"retained","message":"kept"}')
+    seed("tool_invocations_text", dedup_key="visible", target="pytest", result_summary="kept")
+    window = {"since": 99, "until": 200, "limit": 1}
+    events = reader.read("sequence.event_log", window | {
+        "requested_session": "retained", "requested_kinds": ["hook:PostToolUse"],
+    })
+    assert not events.truncated and [json.loads(row["detail"])["message"] for row in events.rows] == ["kept"]
+    tools = reader.read("tools.activity_rows", window | {"kind_filter": "failures"})
+    assert not tools.truncated and [row["result_summary"] for row in tools.rows] == ["kept"]
 
 
 def test_health_exposes_per_table_writer_counters_and_missing_store():
