@@ -85,6 +85,8 @@ DEFERRED_BYTES_PER_POLL = 128 * 1024 * 1024
 # that looks unchanged is measured through its own handle.
 HELD_FILE_RECHECK_S = 2 * 86400
 BACKFILL_DAYS = 30
+# The age limit that means none: every session file still on disk is read.
+ALL_DAYS = 36500
 # A session idle this long gets ended_at = its last activity; a transcript has
 # no explicit end event, and an open row would show as live forever.
 IDLE_END_S = 900.0
@@ -1051,7 +1053,10 @@ class TranscriptUsageIngester:
         fact_target=None,
         checkpoint: StateFile | None = None,
         quality=None,
+        source_index: Callable[[list[dict]], None] | None = None,
     ) -> None:
+        if backfill_days <= 0:
+            backfill_days = ALL_DAYS
         self.store = our_store
         self.quality = our_store if quality is None else quality
         self._fact_target = our_store if fact_target is None else fact_target
@@ -1065,6 +1070,9 @@ class TranscriptUsageIngester:
         # With its default folders, the reader also follows the homes found on this machine.
         self._discover = not (claude_projects or codex_sessions or copilot_state)
         self.vscode_workspaces = vscode_workspaces or vscode_chat_default_log_dir()
+        # With its default folder, the reader also follows the other VS Code editions
+        # and profiles, and the chats of windows that had no folder open.
+        self._discover_vscode = vscode_workspaces is None
         self.facts = FactBuffer(self._fact_target, time.time() - backfill_days * 86400, tool_calls=tool_calls)
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
         self.facts.surface = self._store.surface
@@ -1076,6 +1084,12 @@ class TranscriptUsageIngester:
         self._chat_logs = VSCodeChatSessionAccumulator()
         self._copilot_finished: dict[str, SessionUsage] = {}
         self.backfill_days = backfill_days
+        # The index of session files: every file found, with its size and how far it was read.
+        self._source_index = source_index
+        self._found: dict[Path, tuple[str, int, int]] = {}
+        self._outside_window: set[Path] = set()
+        self._indexed: dict[Path, tuple] = {}
+        self.source_counts: dict[str, int] = {}
         self.last_poll_ts = 0.0
         self.last_poll_inserted = 0
         self._claude = ClaudeAccumulator()
@@ -1159,7 +1173,7 @@ class TranscriptUsageIngester:
         except OSError as exc:
             log.warning("transcript-usage: checkpoints not saved; the next poll will retry: %s", exc)
 
-    def _changed(self, paths: Iterable[Path], cutoff: float) -> list[Path]:
+    def _changed(self, paths: Iterable[Path], cutoff: float, tool: str = "") -> list[Path]:
         found: list[tuple[float, Path]] = []
         now = time.time()
         for p in paths:
@@ -1170,11 +1184,14 @@ class TranscriptUsageIngester:
             saved = self._checkpoints.get(p)
             offset = self._offsets.get(p, saved[1] if saved else 0)
             size = _current_size(p, st.st_size, st.st_mtime, offset, now)
+            if tool:
+                self._found[p] = (tool, st.st_mtime_ns, size)
             if p not in self._offsets:
                 if saved == (st.st_mtime_ns, size) and st.st_mtime < self._resume_before:
                     continue
                 held = platforms.IS_WINDOWS and st.st_mtime < now - RECENT_FIRST_S and _held(p)
                 if st.st_mtime < cutoff and not held:
+                    self._outside_window.add(p)
                     continue
                 if self.defer_old and saved is None and st.st_mtime < now - RECENT_FIRST_S and not held:
                     if self._defer_budget <= 0:
@@ -1203,6 +1220,8 @@ class TranscriptUsageIngester:
         published: set[str] = set()
         errors = 0
         self.facts.cutoff = cutoff
+        self._found.clear()
+        self._outside_window.clear()
         self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
         # Publish only path identities before any replay or storage work. Native
         # output follows active append-only tails, never this history backlog.
@@ -1241,7 +1260,7 @@ class TranscriptUsageIngester:
                 errors += 1
                 log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
 
-        for path in self._changed(claude_files, cutoff):
+        for path in self._changed(claude_files, cutoff, "claude-code"):
             sid = _claude_session_id(path)
             agent_id, role = self._claude_agent(path)
             for obj in read(path, _CLAUDE_RECORD_TYPES):
@@ -1251,7 +1270,7 @@ class TranscriptUsageIngester:
                 touched[sid] = self._claude.sessions[sid]
             self._check_fact_write()
 
-        for path in self._changed(codex_files, cutoff):
+        for path in self._changed(codex_files, cutoff, "codex-cli"):
             acc = self._codex.setdefault(path, CodexAccumulator(self._codex_sessions, path.stem))
             for obj in read(path):
                 acc.feed(obj)
@@ -1261,7 +1280,7 @@ class TranscriptUsageIngester:
 
         copilot_ids: set[str] = set()
         # Copilot files are independent sessions, not Claude's cross-file replays.
-        copilot_files = list(reversed(self._changed(copilot_files, cutoff)))
+        copilot_files = list(reversed(self._changed(copilot_files, cutoff, "copilot-cli")))
         if platforms.IS_WINDOWS:
             copilot_files.sort(key=_held, reverse=True)
         for path in copilot_files:
@@ -1291,7 +1310,11 @@ class TranscriptUsageIngester:
         self._check_fact_write()
 
         debug_ids: set[str] = set()
-        for path in self._changed(self.vscode_workspaces.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl"), cutoff):
+        workspace_roots, empty_window_dirs = self._vscode_dirs()
+        debug_files = [p for root in workspace_roots for p in root.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl")]
+        chat_files = [p for root in workspace_roots for p in root.glob("*/chatSessions/*.jsonl")]
+        chat_files += [p for folder in empty_window_dirs for p in folder.glob("*.jsonl")]
+        for path in self._changed(debug_files, cutoff, "copilot-vscode"):
             sid = path.parent.name
             debug_ids.add(sid)
             debug_facts = self._debug_facts_for(path, sid)
@@ -1321,7 +1344,7 @@ class TranscriptUsageIngester:
                     self._offsets[path] = end
             yield from read(path)
 
-        for path in self._changed(self.vscode_workspaces.glob("*/chatSessions/*.jsonl"), cutoff):
+        for path in self._changed(chat_files, cutoff, "copilot-vscode"):
             sid = path.stem
             chat_facts = self._chat_facts_for(path, sid)
             # The debug log has per-request numbers for such a session, so the
@@ -1357,6 +1380,7 @@ class TranscriptUsageIngester:
         if not pending:
             touched.clear()
             self._save_checkpoints(now)
+        self._index_sources(now)
         self.unavailable = self._store.unavailable
         record_quality(
             self.quality,
@@ -1372,7 +1396,12 @@ class TranscriptUsageIngester:
                 if errors
                 else f"{written} session(s) updated")
             ),
-            detail={"older_files_waiting": len(self._deferred), "pending_fact_rows": pending},
+            detail={
+                "older_files_waiting": len(self._deferred),
+                "pending_fact_rows": pending,
+                "session_files": dict(self.source_counts),
+                "history_days": 0 if self.backfill_days >= ALL_DAYS else self.backfill_days,
+            },
         )
         return written
 
@@ -1387,6 +1416,60 @@ class TranscriptUsageIngester:
         from .. import tool_homes
 
         return [default, *(d for d in tool_homes.session_dirs(tool) if d != default)]
+
+    def _index_sources(self, now: float) -> None:
+        """Record every session file found and how far it was read.
+
+        A file is ``complete`` when all of it is stored, ``reading`` when part of it
+        is, ``waiting`` when it is in the backlog, and ``outside_window`` when
+        ``history_days`` excludes it. Only rows that changed are written.
+        """
+        counts: dict[str, int] = {}
+        rows: list[dict] = []
+        for path, (tool, mtime_ns, size) in self._found.items():
+            offset = self._offsets.get(path, 0)
+            if self._checkpoints.get(path) == (mtime_ns, size):
+                status, done = "complete", size
+            elif path in self._outside_window:
+                status, done = "outside_window", 0
+            elif offset:
+                status, done = "reading", min(offset, size)
+            else:
+                status, done = "waiting", 0
+            counts[status] = counts.get(status, 0) + 1
+            state = (mtime_ns, size, status, done)
+            if self._source_index is None or self._indexed.get(path) == state:
+                continue
+            self._indexed[path] = state
+            sid = self._source_session(tool, path)
+            rows.append(dict(
+                project="", source_file=str(path), session_id=sid,
+                tool=self._store.surface(sid) if tool == "copilot-cli" else tool,
+                size_bytes=size, mtime=mtime_ns / 1e9, bytes_read=done, status=status, indexed_at=now,
+            ))
+        self.source_counts = counts
+        for path in self._indexed.keys() - self._found.keys():
+            del self._indexed[path]
+        if rows:
+            self._source_index(rows)
+
+    @staticmethod
+    def _source_session(tool: str, path: Path) -> str:
+        """The session a file belongs to, from where the tool puts it."""
+        if path.name == "events.jsonl" or "debug-logs" in path.parts:
+            return path.parent.name
+        if tool == "claude-code" and path.parent.name == "subagents":
+            return path.parents[1].name
+        return path.stem
+
+    def _vscode_dirs(self) -> tuple[list[Path], list[Path]]:
+        """``workspaceStorage`` folders, then the folders of chats that had no folder open."""
+        if not self._discover_vscode:
+            return [self.vscode_workspaces], []
+        from ..observe.sessions import chat_session_dirs
+
+        workspaces, empty_windows = chat_session_dirs()
+        return [self.vscode_workspaces, *(d for d in workspaces if d != self.vscode_workspaces)], empty_windows
 
     def _claude_agent(self, path: Path) -> tuple[str, str]:
         """(agent id, role) of a file under ``subagents/``, or empty for a main session."""
@@ -1495,5 +1578,6 @@ class TranscriptUsageIngester:
 
     def source_exists(self) -> bool:
         return any(
-            p.is_dir() for p in (self.claude_projects, self.codex_sessions, self.copilot_state, self.vscode_workspaces)
+            p.is_dir()
+            for p in (self.claude_projects, self.codex_sessions, self.copilot_state, *(d for ds in self._vscode_dirs() for d in ds))
         )

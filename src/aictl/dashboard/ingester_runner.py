@@ -142,7 +142,8 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── VS Code Copilot Chat logs (Slice 3.4a) ─────────────────
     vscode_path = vscode_chat_default_log_dir()
-    vscode_enabled = vscode_path.exists()
+    v_ing = VSCodeChatLogsIngester(vscode_path, messages("vscode_messages"), discover=True)
+    vscode_enabled = any(d.is_dir() for dirs in v_ing.scan_dirs() for d in dirs)
     v_handle = IngesterHandle(
         name="vscode-chat-logs",
         enabled=vscode_enabled,
@@ -150,7 +151,6 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
         source_exists=vscode_enabled,
     )
     if vscode_enabled:
-        v_ing = VSCodeChatLogsIngester(vscode_path, messages("vscode_messages"))
         v_handle.ingester = v_ing
         v_thread = threading.Thread(
             target=_poll_loop,
@@ -164,7 +164,11 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── Transcript usage: exact tokens for Claude Code, Codex, Copilot CLI ──
     checkpoint = StateFile(restart_dir / "transcript_usage.json")
+    from ..platforms import load_config
+
     t_ing = TranscriptUsageIngester(None, defer_old=True, tool_calls=store.tool_calls,
+                                    backfill_days=load_config().history_days,
+                                    source_index=lambda rows: store.history_store.writer.upsert("session_sources", rows),
                                     fact_target=store.session_facts, checkpoint=checkpoint,
                                     quality=store.collection_status)
     t_enabled = t_ing.source_exists()

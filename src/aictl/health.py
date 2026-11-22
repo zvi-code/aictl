@@ -164,7 +164,7 @@ TRAFFIC_LABELS = {
 SESSION_TABLES = frozenset({
     "sessions", "requests", "tool_invocations", "session_prompts", "session_steps", "session_step_text",
     "turn_request_links", "session_usage", "skill_uses", "file_write_events", "context_events", "agents",
-    "session_commits", "session_processes", "session_folders", "session_artifacts", "session_loaded_files",
+    "session_commits", "session_processes", "session_folders", "session_artifacts", "session_sources", "session_loaded_files",
     "session_context_items", "events", "hook_calls",
 })
 

@@ -42,6 +42,11 @@ AGENTS.md
 .lsp.json
 .claudeignore
 .copilot-mcp.json
+# Codex copies of the skills and its local MCP config
+.agents/
+.codex/
+# Playwright MCP screenshots, page snapshots and console logs
+.playwright-mcp/
 
 # generated state files
 wip

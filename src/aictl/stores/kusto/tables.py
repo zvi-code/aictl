@@ -611,6 +611,24 @@ TABLES = MappingProxyType(
             "streaming",
             tombstone="_deleted",
         ),
+        # One row per session file found on disk, and how much of it has been read.
+        "session_sources": Table(
+            (
+                ("source_file", "string"),
+                ("session_id", "string"),
+                ("tool", "string"),
+                ("size_bytes", "long"),
+                ("mtime", "real"),
+                ("bytes_read", "long"),
+                ("status", "string"),
+                ("indexed_at", "real"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "source_file"),
+            "streaming",
+        ),
         "session_loaded_files": Table(
             (
                 ("session_id", "string"),

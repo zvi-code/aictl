@@ -98,6 +98,9 @@ class VSCodeChatLogsIngester:
         Directory to scan. Must be the root ``workspaceStorage``
         directory; we recurse to find ``*/chatSessions/*.jsonl`` files.
         ``None`` uses :func:`default_log_dir`.
+    discover:
+        Also read the other VS Code editions and profiles, and the chats
+        of windows that had no folder open.
     our_store:
         Message facts and session attribution.
     last_cursor:
@@ -116,8 +119,10 @@ class VSCodeChatLogsIngester:
         *,
         idle_after_s: float = 2 * POLL_INTERVAL_S,
         checkpoint: StateFile | None = None,
+        discover: bool = False,
     ) -> None:
         self.log_dir = Path(log_dir).expanduser() if log_dir else default_log_dir()
+        self._discover = discover
         self.store = our_store
         self._checkpoint = checkpoint if checkpoint is not None else our_store.state
         self._manifest: dict[str, dict[str, list]] = {}
@@ -173,12 +178,22 @@ class VSCodeChatLogsIngester:
             self.store, "vscode-chat-logs", self.log_dir, status, severity=severity, message=message, detail=detail
         )
 
+    def scan_dirs(self) -> tuple[list[Path], list[Path]]:
+        """``workspaceStorage`` folders, then chat folders that belong to no workspace."""
+        if not self._discover:
+            return [self.log_dir], []
+        from ..observe.sessions import chat_session_dirs
+
+        workspaces, empty_windows = chat_session_dirs()
+        return [self.log_dir, *(d for d in workspaces if d != self.log_dir)], empty_windows
+
     # ── public API ─────────────────────────────────────────────
 
     def poll(self) -> int:
         """Scan for new/changed chat session files and ingest any new turns."""
         self.last_poll_ts = time.time()
-        if not self.log_dir.exists() or not self.log_dir.is_dir():
+        workspace_roots, chat_dirs = self.scan_dirs()
+        if not any(d.is_dir() for d in (*workspace_roots, *chat_dirs)):
             self._quality(
                 "source_missing",
                 severity="warning",
@@ -192,10 +207,13 @@ class VSCodeChatLogsIngester:
         advanced = False
         file_entries: list[tuple[Path, os.stat_result]] = []
         try:
-            for ws_entry in os.scandir(self.log_dir):
-                if not ws_entry.is_dir(follow_symlinks=False):
+            for root in workspace_roots:
+                if not root.is_dir():
                     continue
-                chat_dir = os.path.join(ws_entry.path, "chatSessions")
+                for ws_entry in os.scandir(root):
+                    if ws_entry.is_dir(follow_symlinks=False):
+                        chat_dirs.append(Path(ws_entry.path, "chatSessions"))
+            for chat_dir in chat_dirs:
                 try:
                     with os.scandir(chat_dir) as chat_it:
                         for entry in chat_it:

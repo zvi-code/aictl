@@ -2563,10 +2563,19 @@ class TestCoverageLimits:
         for key in ("cpu", "ram"):
             assert next(r for r in rows if r["key"] == key)["cells"]["copilot365"]["state"] == "Not reported"
 
-    def test_a_note_says_how_far_back_the_files_are_read(self, db):
+    def test_a_note_says_how_far_back_the_files_are_read(self, db, monkeypatch):
+        from aictl import platforms
+
+        monkeypatch.setattr(platforms, "load_config", lambda: platforms.AictlConfig(history_days=30))
         notes = _board(db)["coverage"]["notes"]
         vscode = next(n for n in notes if n["tool"] == "copilot-vscode")
         assert "older than 30 days" in vscode["text"]
+
+    def test_no_note_when_every_file_on_disk_is_read(self, db, monkeypatch):
+        from aictl import platforms
+
+        monkeypatch.setattr(platforms, "load_config", lambda: platforms.AictlConfig(history_days=0))
+        assert _board(db)["coverage"]["notes"] == []
 
 
 class TestSubagentsInTheWindow:

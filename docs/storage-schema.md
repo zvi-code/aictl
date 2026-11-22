@@ -306,6 +306,27 @@ direct subfolders) did not change. Each folder is one short write.
 | `files_total`, `bytes_total` | INTEGER | Count and size of all files, also past the row cap |
 | `scanned_at` | REAL | Epoch seconds of the last scan |
 
+### `session_sources` — One row per session file found on disk
+
+The transcript reader (`aictl.ingesters.transcript_usage`) finds every session
+file of every tool home, every VS Code edition and profile, and the chats of
+windows that had no folder open. It writes a row when a file is found and when
+its status changes, so the table shows which sessions are not fully stored.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `source_file` | TEXT PK | Absolute path of the session file |
+| `session_id` | TEXT | The session the file belongs to |
+| `tool` | TEXT | `copilot-vscode`, `copilot-cli`, `copilot-desktop`, `claude-code` or `codex-cli` |
+| `size_bytes`, `mtime` | INTEGER, REAL | Size and modification time at the last scan |
+| `bytes_read` | INTEGER | How much of the file is stored |
+| `status` | TEXT | `waiting` (found, in the backlog), `reading`, `complete`, or `outside_window` (excluded by `history_days`) |
+| `indexed_at` | REAL | Epoch seconds when this row was written |
+
+A first run reads the files of the last two days at once. Older files stay
+`waiting` and are read in the background, 128 MB a minute. A restart continues
+from the saved read positions.
+
 ### `session_artifacts` — One row per indexed file
 
 | Column | Type | Description |
@@ -397,6 +418,7 @@ wrapped_calls
 db_path = ""          # Empty = auto (~/.config/aictl/history.db)
 flush_interval = 10.0 # Seconds between batch writes
 retention_days = 30   # Delete data older than this
+history_days = 0      # Read session files changed in the last N days; 0 = every file on disk
 capture = "full"      # full, metadata or off; see "Bounds and capture modes"
 max_total_mb = 1024   # Budget for the database, journal and logs
 content_retention_days = 14  # With full: blank conversation text older than this

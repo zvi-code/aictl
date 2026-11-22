@@ -157,6 +157,20 @@ def _global_storages(user_dir: Path) -> list[Path]:
     return out
 
 
+def chat_session_dirs() -> tuple[list[Path], list[Path]]:
+    """Where VS Code keeps chat files, for every edition and profile found.
+
+    The first list holds the ``workspaceStorage`` folders, the second the folders
+    of chats started in a window with no folder open.
+    """
+    workspaces: list[Path] = []
+    empty_windows: list[Path] = []
+    for user in vscode_user_dirs():
+        workspaces.append(user / "workspaceStorage")
+        empty_windows += [gs / "emptyWindowChatSessions" for gs in _global_storages(user)]
+    return workspaces, empty_windows
+
+
 def search_locations() -> list[str]:
     """Every location the index reads, expanded, for "not found" messages."""
     home = platforms.copilot_global_dir()

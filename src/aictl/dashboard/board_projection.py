@@ -2668,16 +2668,18 @@ def _refresh_facts_quietly(key: tuple, history: HistoryScope) -> None:
         logger.debug("board facts refresh failed", exc_info=True)
 
 
-# Tools whose usage aictl reads from session files on disk. Only files changed in the last
-# BACKFILL_DAYS days are read, so older usage that the store does not already hold is missing.
+# Tools whose usage aictl reads from session files on disk. With a ``history_days`` limit only
+# files changed in that window are read, so older usage that the store does not already hold is missing.
 _FILE_HISTORY_TOOLS = ("copilot-vscode", "copilot-cli", "copilot-desktop", "claude-code", "codex-cli")
 
 
 def coverage_notes(tool_ids: list[str]) -> list[dict]:
     """Limits of the data that the table cannot show in a cell."""
-    from ..ingesters.transcript_usage import BACKFILL_DAYS
+    from ..platforms import load_config
 
-    days = int(BACKFILL_DAYS)
+    days = load_config().history_days
+    if days <= 0:
+        return []
     return [
         {
             "tool": tool,

@@ -647,6 +647,7 @@ log_file = ""  # Empty = auto (aictl.log next to this file)
 db_path = ""  # Empty = auto (history.db next to this file)
 flush_interval = 10.0  # Seconds between batch writes to SQLite
 retention_days = 30  # Delete data older than this
+history_days = 0  # Read session files changed in the last N days; 0 = every session file still on disk
 capture = "full"  # full: text kept but bounded | metadata: no text | off: memory only, no files
 max_total_mb = 1024  # Budget for DB + WAL + logs; oldest data is evicted first
 content_retention_days = 14  # capture = "full": blank conversation text older than this
@@ -711,6 +712,7 @@ class AictlConfig:
     db_path: str = ""
     flush_interval: float = 10.0
     retention_days: int = 30
+    history_days: int = 0
     capture: str = "full"
     max_total_mb: int = 1024
     content_retention_days: int = 14
@@ -768,6 +770,7 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("db_path", "db_path", str),
         ("flush_interval", "flush_interval", float),
         ("retention_days", "retention_days", int),
+        ("history_days", "history_days", int),
         ("capture", "capture", str),
         ("max_total_mb", "max_total_mb", int),
         ("content_retention_days", "content_retention_days", int),

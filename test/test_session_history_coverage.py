@@ -1,0 +1,123 @@
+"""Every session file on disk is found, indexed and read, whatever its age. All files here are synthetic."""
+
+import json
+import os
+import time
+
+import pytest
+
+import aictl.observe.sessions as index
+from aictl import platforms
+from aictl.ingesters.transcript_usage import TranscriptUsageIngester
+from aictl.ingesters.vscode_chat_logs import VSCodeChatLogsIngester
+from aictl.session_facts import SessionFacts
+from aictl.state_file import StateFile
+from aictl.stores.kusto.tables import TABLES
+from aictl.stores.testing import MemoryWriter
+
+DAY = 86400.0
+
+
+def old_session(root, name, age_days):
+    path = root / "session-state" / name / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"type": "session.start", "data": {"context": {"cwd": str(root)}}}) + "\n")
+    stamp = time.time() - age_days * DAY
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def reader(root, rows, **options):
+    return TranscriptUsageIngester(
+        SessionFacts(MemoryWriter()), copilot_state=root / "session-state", codex_sessions=root / "codex",
+        claude_projects=root / "claude", vscode_workspaces=root / "vscode",
+        checkpoint=StateFile(root / "state.json"), source_index=rows.extend, **options,
+    )
+
+
+def latest(rows):
+    return {row["session_id"]: row for row in rows}
+
+
+def test_a_session_older_than_any_window_is_read_and_indexed(tmp_path):
+    path = old_session(tmp_path, "ancient", 400)
+    rows = []
+    reader(tmp_path, rows, backfill_days=0).poll()
+    row = latest(rows)["ancient"]
+    assert (row["status"], row["bytes_read"], row["size_bytes"]) == ("complete", path.stat().st_size, path.stat().st_size)
+    assert (row["tool"], row["source_file"]) == ("copilot-cli", str(path))
+    assert set(row) <= {name for name, _ in TABLES["session_sources"].columns}
+
+
+def test_a_window_leaves_older_files_indexed_but_unread(tmp_path):
+    old_session(tmp_path, "ancient", 400)
+    rows = []
+    ingester = reader(tmp_path, rows, backfill_days=30)
+    ingester.poll()
+    assert latest(rows)["ancient"]["status"] == "outside_window"
+    assert ingester.source_counts == {"outside_window": 1}
+
+
+def test_the_backlog_is_indexed_first_and_read_on_later_polls(tmp_path):
+    old_session(tmp_path, "ancient", 400)
+    old_session(tmp_path, "today", 0)
+    rows = []
+    ingester = reader(tmp_path, rows, backfill_days=0, defer_old=True)
+    ingester.poll()
+    assert {sid: row["status"] for sid, row in latest(rows).items()} == {"ancient": "waiting", "today": "complete"}
+    ingester.poll()
+    assert latest(rows)["ancient"]["status"] == "complete"
+    assert ingester.source_counts == {"complete": 2}
+
+
+def test_an_unchanged_file_is_written_to_the_index_once_and_stays_complete_after_restart(tmp_path):
+    old_session(tmp_path, "ancient", 400)
+    rows = []
+    ingester = reader(tmp_path, rows, backfill_days=0)
+    ingester.poll()
+    ingester.poll()
+    assert len(rows) == 1
+    again = []
+    restarted = reader(tmp_path, again, backfill_days=0, defer_old=True)
+    restarted.poll()
+    assert [row["status"] for row in again] == ["complete"]
+    assert not restarted._offsets
+
+
+@pytest.fixture
+def vscode_homes(tmp_path, monkeypatch):
+    appdata = tmp_path / "AppData" / "Roaming"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setattr(platforms, "IS_WINDOWS", True)
+    monkeypatch.setattr(platforms, "IS_MACOS", False)
+    monkeypatch.setattr(index, "expand_location",
+                        lambda raw, env=None, windows=None: raw.replace("%APPDATA%", str(appdata)).replace("\\", "/"))
+    stable = appdata / "Code" / "User" / "workspaceStorage"
+    insiders = appdata / "Code - Insiders" / "User" / "workspaceStorage" / "hash2" / "chatSessions"
+    no_folder = appdata / "Code" / "User" / "profiles" / "-abc" / "globalStorage" / "emptyWindowChatSessions"
+    for folder in (stable / "hash1" / "chatSessions", insiders, no_folder):
+        folder.mkdir(parents=True)
+    (insiders / "insiders-chat.jsonl").write_text("{}\n")
+    (no_folder / "no-folder-chat.jsonl").write_text("{}\n")
+    return stable, insiders, no_folder
+
+
+def test_every_vscode_edition_and_no_folder_chats_are_indexed(tmp_path, vscode_homes):
+    rows = []
+    ingester = TranscriptUsageIngester(
+        SessionFacts(MemoryWriter()), copilot_state=tmp_path / "session-state", codex_sessions=tmp_path / "codex",
+        claude_projects=tmp_path / "claude", source_index=rows.extend,
+    )
+    ingester.poll()
+    found = latest(rows)
+    assert {"insiders-chat", "no-folder-chat"} <= set(found)
+    assert found["no-folder-chat"]["tool"] == "copilot-vscode"
+
+
+def test_the_message_reader_scans_the_same_folders(tmp_path, vscode_homes):
+    stable, insiders, no_folder = vscode_homes
+    messages = VSCodeChatLogsIngester(None, None, last_cursor={}, checkpoint=StateFile(tmp_path / "messages.json"), discover=True)
+    workspaces, chats = messages.scan_dirs()
+    assert workspaces[0] == stable
+    assert insiders.parents[1] in workspaces
+    assert no_folder in chats

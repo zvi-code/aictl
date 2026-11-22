@@ -71,6 +71,7 @@ AUTO_INLINE_TABLES = frozenset(
         "file_write_events",
         "session_folders",
         "session_artifacts",
+        "session_sources",
         "session_loaded_files",
         "session_context_items",
         "maintenance_state",
