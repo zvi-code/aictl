@@ -106,6 +106,27 @@ def test_reader_binds_parameters_and_limits_returned_rows():
         reader.read("health.nodes", {"row_limit": 123})
 
 
+def test_view_timings_rank_what_reached_the_cluster_and_skip_cached_answers():
+    def execute(_db, _query, props):
+        if props.client_request_id.startswith("aictl.health.totals;"):
+            return response(("table", "rows"), (("events", 2), ("sessions", 1)))
+        raise RuntimeError("cluster refused")
+
+    reader = KustoReader(SimpleNamespace(execute_query=execute), "db")
+    assert reader.view_timings() == []
+    reader.read("health.totals", {})
+    reader.read("health.totals", {})  # answered from the cache
+    with pytest.raises(StoreError):
+        reader.read("health.nodes", {"limit": 5})
+    timings = {row["view"]: row for row in reader.view_timings()}
+    totals = timings["health.totals"]
+    assert (totals["queries"], totals["failures"], totals["rows"]) == (1, 0, 2)
+    assert totals["total_ms"] >= totals["max_ms"] >= 0 and totals["avg_ms"] == totals["total_ms"]
+    assert timings["health.nodes"]["failures"] == timings["health.nodes"]["queries"] >= 1
+    ranked = [row["total_ms"] for row in reader.view_timings()]
+    assert ranked == sorted(ranked, reverse=True)
+
+
 def test_health_totals_coalesces_concurrent_reads_and_caches_by_scope():
     entered, release = threading.Event(), threading.Event()
     calls = []

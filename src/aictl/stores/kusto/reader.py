@@ -20,6 +20,7 @@ from typing import Any
 
 from ..base import ReadResult, StoreError, UnknownViewError
 from .client import QUERY_TIMEOUT, query_memory_error, retrying
+from .query_cpu import _cpu_ticks
 
 _SCOPE = "all_nodes requested_node requested_project"
 _EVENT = f"{_SCOPE} since until requested_tool requested_kinds requested_session raw_session"
@@ -353,6 +354,27 @@ class KustoReader:
         self._failures = 0
         self._last_latency_ms: float | None = None
         self._error: str | None = None
+        # Per view: queries, failures, total ms, slowest ms, rows returned, CPU ticks the cluster reported.
+        self._view_timings: dict[str, list] = {}
+
+    def view_timings(self) -> list[dict[str, Any]]:
+        """What each view cost since the daemon started, the most expensive first.
+
+        Cached answers are not counted: these are the queries that reached the cluster.
+        """
+        with self._lock:
+            timings = {view: list(values) for view, values in self._view_timings.items()}
+        return sorted(
+            (
+                {
+                    "view": view, "queries": queries, "failures": failures,
+                    "total_ms": round(total, 1), "avg_ms": round(total / queries, 1), "max_ms": round(slowest, 1),
+                    "rows": rows, "cluster_cpu_s": round(ticks / 10_000_000, 3),
+                }
+                for view, (queries, failures, total, slowest, rows, ticks) in timings.items()
+            ),
+            key=lambda row: -row["total_ms"],
+        )
 
     def connection_info(self):
         if self._settings is not None:
@@ -503,6 +525,7 @@ class KustoReader:
     def _execute(self, view: str, props, limit: int) -> ReadResult:
         start = time.monotonic()
         error = None
+        returned = ticks = 0
         try:
             text = _query(view)
 
@@ -518,6 +541,10 @@ class KustoReader:
             )
             if getattr(response, "errors_count", 0):
                 raise StoreError("Kusto returned an incomplete result")
+            try:
+                ticks = _cpu_ticks(response) or 0
+            except Exception:  # noqa: BLE001 - optional SDK metadata must not fail a read
+                ticks = 0
             tables = response.primary_results
             if not tables:
                 if view in _CACHE_TTL_S or view in _PAGED_VIEWS or view.startswith("health.sample_"):
@@ -533,6 +560,7 @@ class KustoReader:
             ]
             more = len(rows) > limit
             page = rows[:limit]
+            returned = len(page)
             cursor = None
             if view in _PAGED_VIEWS:
                 for row in page:
@@ -546,7 +574,14 @@ class KustoReader:
                 self._queries += 1
                 self._failures += error is not None
                 self._error = error
-                self._last_latency_ms = (time.monotonic() - start) * 1000
+                elapsed = self._last_latency_ms = (time.monotonic() - start) * 1000
+                timing = self._view_timings.setdefault(view, [0, 0, 0.0, 0.0, 0, 0])
+                timing[0] += 1
+                timing[1] += error is not None
+                timing[2] += elapsed
+                timing[3] = max(timing[3], elapsed)
+                timing[4] += returned
+                timing[5] += ticks
 
     def health(self) -> dict[str, Any]:
         with self._lock:

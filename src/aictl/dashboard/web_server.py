@@ -71,6 +71,7 @@ GET_ROUTES = {
     "/api/session-stats": "_serve_session_stats",
     "/api/session-mcp-usage": "_serve_session_mcp_usage",
     "/api/otel-status": "_serve_otel_status",
+    "/api/query-timings": "_serve_query_timings",
     "/api/hooks-status": "_serve_hooks_status",
     "/api/tool-config/{tool}": "_serve_tool_config_get",
     "/api/api-calls": "_serve_api_calls",

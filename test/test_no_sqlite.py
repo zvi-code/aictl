@@ -74,6 +74,7 @@ def _dashboard_requests(root):
         "/api/board/terminal/resources": "/api/board/terminal/resources",
         "/api/board/terminal/sessions": "/api/board/terminal/sessions",
         "/api/datapoints": "/api/datapoints",
+        "/api/query-timings": "/api/query-timings",
         **{route: recorded[route] for route in (
             "/api/api-calls", "/api/board/agent", "/api/board/agent/flow", "/api/board/agent/transcript",
             "/api/board/context", "/api/board/error", "/api/board/excerpt", "/api/board/file",

@@ -13,7 +13,7 @@ import time
 from collections import Counter
 
 from ..data.token_usage import TokenUsage
-from ..stores import store_for
+from ..stores import reader_feature, store_for
 from ..stores.base import StoreConfigurationError, StoreError
 from .otel_receiver import API_ERROR_EVENTS, API_REQUEST_EVENTS, _num
 from .projections.history import (
@@ -184,6 +184,14 @@ class SessionRoutes:
             # What reached the cluster's OTel tables, what waits and what was dropped.
             status["kusto"] = sink.stats()
         self._json_response(status)
+
+    def _serve_query_timings(self) -> None:
+        """What each store view cost since the daemon started, the most expensive first.
+
+        GET /api/query-timings. Counts only queries that reached the cluster.
+        """
+        timings = reader_feature(configured_reader(self.server.store), "view_timings")
+        self._json_response({"views": timings or []})
 
     def _serve_session_mcp_usage(self) -> None:
         """Return per-session MCP server usage.
