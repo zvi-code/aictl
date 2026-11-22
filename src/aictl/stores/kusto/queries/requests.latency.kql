@@ -2,14 +2,23 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
     session_keys:dynamic, requested_model:string = '', row_limit:long
 );
-requests
-| where all_nodes or node_id == requested_node
-| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+let wanted = (t:real, n:string, s:string, m:string, d:real, f:real) {
+    t between (since .. until) and (d > 0 or f > 0)
+    and (isempty(requested_model) or m == requested_model)
+    and strcat(strlen(n), ':', n, s) in (session_keys)
+};
+let versions = requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key);
+// A request's newest version is in the window only if one of its versions is. The keys of the
+// window are read first, so the cost follows the window and not the size of the table.
+let keys = versions | where wanted(ts, node_id, session_id, model, duration_ms, ttft_ms) | distinct ['project'], node_id, fact_key;
+versions
+| join kind=inner keys on ['project'], node_id, fact_key
+| project-away ['project1'], node_id1, fact_key1
 | summarize arg_max(_v, *) by ['project'], node_id, fact_key
 | where not(coalesce(column_ifexists('_deleted', false), false))
-| where ts between (since .. until) and (duration_ms > 0 or ttft_ms > 0)
-| where (isempty(requested_model) or model == requested_model)
-    and strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| where wanted(ts, node_id, session_id, model, duration_ms, ttft_ms)
 | extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
 | summarize durations=make_list_if(duration_ms, duration_ms > 0, 20000), firsts=make_list_if(ttft_ms, ttft_ms > 0, 20000),
             duration_count=countif(duration_ms > 0), first_count=countif(ttft_ms > 0)
