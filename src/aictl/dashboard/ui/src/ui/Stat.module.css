@@ -9,4 +9,4 @@
 }
 [data-tone="positive"] > .value { color: var(--color-success); }
 [data-tone="warning"] > .value { color: var(--color-warning); }
-.unit, .detail, .missing { margin: 0; font-size: var(--text-sm); color: var(--color-muted); }
+.unit, .detail, .missing { margin: 0; font-size: var(--text-sm); font-weight: normal; color: var(--color-muted); }

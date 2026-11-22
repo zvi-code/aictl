@@ -146,14 +146,23 @@ class _Scope:
     retry_at: float = 0.0
     blocked: bool = False
     status: dict = dataclass_field(default_factory=dict)
+    running: bool = False
+    started_at: float | None = None
 
 
 class LiveDashboard:
-    """One reader, one history worker, and an independent operational-health worker."""
+    """One reader, a few history workers, and an independent operational-health worker."""
 
     MAX_SCOPES = 8
-    IDLE_SCOPE_S = 60.0
+    # An unwatched scope keeps its last board this long, so a return to it shows that board at once.
+    IDLE_SCOPE_S = 600.0
     HEALTH_INTERVAL_S = 1.0
+    # A new scope does not wait behind the refresh of another one.
+    HISTORY_WORKERS = 3
+    AGENT_WORKERS = 2
+    # A wider range changes less, relative to its size, per new row: it is refreshed less often.
+    REFRESH_SPAN_DIVISOR = 8640.0
+    MAX_REFRESH_INTERVAL_S = 60.0
 
     def __init__(
         self,
@@ -181,6 +190,10 @@ class LiveDashboard:
         self._scopes: dict[str, _Scope] = {}
         self._agent_refs: dict[tuple[str, str], int] = {}
         self._agent_refresh: dict[tuple[str, str], tuple[int, float]] = {}
+        self._agent_running: set[tuple[str, str]] = set()
+        # The last failure of each watched agent, so that a failure that repeats on each refresh
+        # is logged once with its traceback.
+        self._agent_errors: dict[tuple[str, str], str] = {}
         self._reader: Any = None
         self._reader_handle: Any = None
         self._poll_history = False
@@ -294,13 +307,13 @@ class LiveDashboard:
             return
         consumer_gap = batch.kind == "resync" and batch.reason in {"subscriber_overflow", "subscriber_error"}
         if batch.kind in {"bootstrap", "changes", "resync"}:
-            from ..board_projection import _facts_lock, _facts_memo, _sources_memo
+            from ..board_projection import _facts_lock, _sources_memo
 
+            # The per-tool facts scan the whole store; their cache refreshes itself in the background.
             with _facts_lock:
-                for memo in (_facts_memo, _sources_memo):
-                    for key in tuple(memo):
-                        if key[0] == self._projection_db._path:
-                            del memo[key]
+                for key in tuple(_sources_memo):
+                    if key[0] == self._projection_db._path:
+                        del _sources_memo[key]
         with self._lock:
             self._frontier = dict(batch.frontier)
             self._reader_ready, self._reader_stale = batch.ready, batch.stale
@@ -313,6 +326,8 @@ class LiveDashboard:
                 self._generation += 1
                 for entry in self._scopes.values():
                     entry.dirty = True
+                    if consumer_gap:
+                        entry.started_at = None
             stale_scopes = (
                 [entry for entry in self._scopes.values() if not entry.blocked] if batch.stale or consumer_gap else []
             )
@@ -348,34 +363,75 @@ class LiveDashboard:
         self._agent_wake.set()
 
     def _agent_loop(self) -> None:
-        while not self._stop.is_set():
-            self._agent_wake.wait(1.0)
-            self._agent_wake.clear()
-            with self._lock:
-                if not self._agent_refs:
-                    continue
-                blocked = retains_unresolved_facts(self.db)
-                if not blocked and not self._baseline_allowed:
-                    continue
-                generation = self._generation
-                now = time.monotonic()
-                candidates = [watch for watch in self._agent_refs
-                              if (last := self._agent_refresh.get(watch)) is None or
-                              (last[0] != generation and now >= last[1]) or
-                              (self._poll_history and now >= last[1] + 4)]
-            for watch in candidates:
-                if self._stop.is_set():
-                    return
-                try:
-                    status, payload = ((503, {}) if blocked else project_agent(self._projection_db, self.store, watch))
-                except Exception:
-                    logger.exception("Live agent projection failed")
-                    status, payload = 503, {}
+        from concurrent.futures import ThreadPoolExecutor
+
+        pool = ThreadPoolExecutor(max_workers=self.AGENT_WORKERS, thread_name_prefix="live-agent-watch")
+        try:
+            while not self._stop.is_set():
+                self._agent_wake.wait(1.0)
+                self._agent_wake.clear()
                 with self._lock:
-                    if watch not in self._agent_refs or self._stop.is_set():
+                    if not self._agent_refs:
                         continue
-                    self._agent_refresh[watch] = generation, time.monotonic() + 1
-                    self._publish_agent(watch, status, payload)
+                    blocked = retains_unresolved_facts(self.db)
+                    if not blocked and not self._baseline_allowed:
+                        continue
+                    generation = self._generation
+                    now = time.monotonic()
+                    busy = len(self._agent_running)
+                    candidates = [
+                        watch for watch in self._agent_refs
+                        if watch not in self._agent_running and (
+                            (last := self._agent_refresh.get(watch)) is None
+                            or (last[0] != generation and now >= last[1])
+                            or (self._poll_history and now >= last[1] + 4)
+                        )
+                    ]
+                    # A newly opened tab/agent with no data yet goes ahead of background refreshes.
+                    candidates.sort(key=lambda watch: watch in self._agent_refresh)
+                    launched = []
+                    for watch in candidates:
+                        if busy >= self.AGENT_WORKERS:
+                            break
+                        self._agent_running.add(watch)
+                        busy += 1
+                        launched.append(watch)
+                for watch in launched:
+                    pool.submit(self._refresh_agent, watch, generation, blocked)
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def _refresh_agent(self, watch: tuple[str, str], generation: int, blocked: bool) -> None:
+        started = time.monotonic()
+        failure = None
+        try:
+            if self._stop.is_set():
+                return
+            try:
+                status, payload = ((503, {}) if blocked else project_agent(self._projection_db, self.store, watch))
+            except Exception as exc:
+                failure = f"{type(exc).__name__}: {exc}"
+                if self._agent_errors.get(watch) != failure:
+                    logger.exception("Live agent projection failed")
+                else:
+                    logger.debug("Live agent projection failed again: %s", failure)
+                status, payload = 503, {}
+            elapsed = time.monotonic() - started
+            cooldown = max(1.0, min(self.MAX_REFRESH_INTERVAL_S, elapsed * 2.0)) if failure is None else 10.0
+            with self._lock:
+                if failure is None:
+                    self._agent_errors.pop(watch, None)
+                else:
+                    self._agent_errors[watch] = failure
+                if watch not in self._agent_refs or self._stop.is_set():
+                    return
+                # A slow or failed projection waits longer before the next try.
+                self._agent_refresh[watch] = generation, time.monotonic() + cooldown
+                self._publish_agent(watch, status, payload)
+        finally:
+            with self._lock:
+                self._agent_running.discard(watch)
+            self._agent_wake.set()
 
     def _publish_agent(self, watch: tuple[str, str], status: int, payload: dict) -> None:
         entity_id = watched_agent_id(watch)
@@ -449,122 +505,175 @@ class LiveDashboard:
             filters = replace(filters, runtime_statuses=tuple(sorted(statuses.items())))
         return filters
 
+    def _refresh_interval(self, entry: _Scope) -> float:
+        return min(self.MAX_REFRESH_INTERVAL_S, entry.span / self.REFRESH_SPAN_DIVISOR)
+
     def _history_loop(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
         from ..board_projection import compute_board
         from ..projections.history import HistoryScope
 
         compute = self._compute or (
             lambda db, filters, **kwargs: compute_board(db, filters, history=HistoryScope.local(self.store), **kwargs)
         )
-        while not self._stop.is_set():
-            self._wake.wait(1.0)
-            self._wake.clear()
-            with self._lock:
-                self._expire_scopes_locked()
-                now_mono = time.monotonic()
-                if self._poll_history and now_mono >= self._next_poll:
-                    self._next_poll = now_mono + 5.0
-                    for entry in self._scopes.values():
-                        if entry.refs and not entry.blocked:
-                            entry.dirty = True
-                candidates = [
-                    entry
-                    for entry in self._scopes.values()
-                    if self._baseline_allowed
-                    and entry.refs
-                    and not entry.blocked
-                    and time.monotonic() >= entry.retry_at
-                ]
-            for entry in candidates:
-                if self._stop.is_set():
-                    return
-                now = time.time()
-                filters = self._filters_now(entry, now)
-                if filters is None:
-                    self._scope_status(
-                        entry.query,
-                        ready=False,
-                        pending=True,
-                        stale=entry.has_data,
-                        error=None,
-                        reason="runtime_baseline_pending",
-                    )
-                    continue
-                grid = (filters.since, filters.until, filters.buckets, filters.runtime_statuses)
+        pool = ThreadPoolExecutor(max_workers=self.HISTORY_WORKERS, thread_name_prefix="live-history-scope")
+        try:
+            while not self._stop.is_set():
+                self._wake.wait(1.0)
+                self._wake.clear()
                 with self._lock:
-                    if not entry.dirty and entry.grid == grid:
-                        continue
-                    entry.dirty = False
-                    frontier, generation = dict(self._frontier), self._generation
-                    reset_generation = self._reset_generation
-                self._scope_status(
-                    entry.query,
-                    ready=entry.status.get("ready", entry.has_data),
-                    pending=not entry.status.get("ready", entry.has_data),
-                    error=None,
-                    refresh_pending=True,
-                    attempted_at=now,
-                )
-                try:
-                    payload = compute(self._projection_db, filters, snapshot=None, now=now)
-                    entities = board_entities(entry.query, payload)
-                    with self._lock:
-                        if reset_generation != self._reset_generation:
-                            entry.dirty = True
-                            continue
-                        refresh_pending = generation != self._generation
-                        status = {
-                            "scope": entry.query,
-                            "component": "history",
-                            "topic": "history.board",
-                            "ready": True,
-                            "pending": False,
-                            "error": None,
-                            "stale": self._reader_stale,
-                            "reader_ready": self._reader_ready,
-                            "reason": (
-                                self._safe_reason(self._reader_reason)
-                                if self._reader_stale or not self._reader_ready
-                                else None
-                            ),
-                            "frontier": frontier,
-                            "computed_at": time.time(),
-                            "refresh_pending": refresh_pending,
-                            "consistency": "queryable results; input frontier is not a cluster-wide atomic snapshot",
-                        }
-                    entities.append(
-                        ("source.status", f"history:{stable_id(entry.query)}", status, "runtime.operational")
-                    )
+                    self._expire_scopes_locked()
+                    now_mono = time.monotonic()
+                    if self._poll_history and now_mono >= self._next_poll:
+                        self._next_poll = now_mono + 5.0
+                        for entry in self._scopes.values():
+                            if entry.refs and not entry.blocked:
+                                entry.dirty = True
+                    busy = sum(1 for entry in self._scopes.values() if entry.running)
+                    candidates = [
+                        entry
+                        for entry in self._scopes.values()
+                        if self._baseline_allowed
+                        and entry.refs
+                        and not entry.blocked
+                        and not entry.running
+                        and now_mono >= entry.retry_at
+                    ]
+                    # A scope that shows nothing yet goes first, then the one used last.
+                    candidates.sort(key=lambda entry: (entry.has_data, -entry.last_used))
+                for entry in candidates:
                     if self._stop.is_set():
                         return
-                    with self._lock:
-                        if self._scopes.get(entry.query) is not entry or not entry.refs:
-                            continue
-                        if reset_generation != self._reset_generation:
-                            entry.dirty = True
-                            continue
-                        self.hub.replace_topics(entry.query, entities, _BOARD_TOPICS)
-                        entry.has_data = True
-                        entry.grid = grid
-                        entry.retry_at = 0.0
-                        entry.status = status
-                except UnresolvedObservationsError as exc:
-                    self._block_history(entry, exc)
-                except Exception as exc:  # noqa: BLE001 - a failed source must preserve the last complete projection
-                    error = self._safe_reason(exc) or type(exc).__name__
-                    logger.warning("Live history projection failed: %s", error)
-                    with self._lock:
-                        entry.retry_at = time.monotonic() + 5.0
-                    self._scope_status(
-                        entry.query,
-                        ready=entry.has_data,
-                        pending=False,
-                        stale=True,
-                        error=error,
-                        reason=error,
-                        frontier=frontier,
-                        refresh_pending=False,
-                    )
+                    if busy >= self.HISTORY_WORKERS:
+                        break
+                    job = self._start_refresh(entry)
+                    if job is not None:
+                        busy += 1
+                        pool.submit(self._refresh_scope, compute, entry, *job)
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def _start_refresh(self, entry: _Scope) -> tuple | None:
+        """Claim *entry* for one refresh, or None when it needs none yet."""
+        now = time.time()
+        filters = self._filters_now(entry, now)
+        if filters is None:
+            self._scope_status(
+                entry.query,
+                ready=False,
+                pending=True,
+                stale=entry.has_data,
+                error=None,
+                reason="runtime_baseline_pending",
+            )
+            return None
+        grid = (filters.since, filters.until, filters.buckets, filters.runtime_statuses)
+        with self._lock:
+            if entry.running or (not entry.dirty and entry.grid == grid):
+                return None
+            now_mono = time.monotonic()
+            if (entry.has_data and entry.started_at is not None
+                    and now_mono < entry.started_at + self._refresh_interval(entry)):
+                return None
+            entry.dirty = False
+            entry.running = True
+            entry.started_at = now_mono
+            return filters, grid, now, dict(self._frontier), self._generation, self._reset_generation
+
+    def _refresh_scope(self, compute: Any, entry: _Scope, filters: Any, grid: tuple, now: float,
+                       frontier: dict, generation: int, reset_generation: int) -> None:
+        try:
+            self._compute_scope(compute, entry, filters, grid, now, frontier, generation, reset_generation)
+        finally:
+            with self._lock:
+                entry.running = False
+            self._wake.set()
+
+    def _compute_scope(self, compute: Any, entry: _Scope, filters: Any, grid: tuple, now: float,
+                       frontier: dict, generation: int, reset_generation: int) -> None:
+        self._scope_status(
+            entry.query,
+            ready=entry.status.get("ready", entry.has_data),
+            pending=not entry.status.get("ready", entry.has_data),
+            error=None,
+            refresh_pending=True,
+            attempted_at=now,
+        )
+        try:
+            payload = compute(self._projection_db, filters, snapshot=None, now=now)
+            entities = board_entities(entry.query, payload)
+            with self._lock:
+                if reset_generation != self._reset_generation:
+                    entry.dirty = True
+                    return
+                refresh_pending = generation != self._generation
+                status = {
+                    "scope": entry.query,
+                    "component": "history",
+                    "topic": "history.board",
+                    "ready": True,
+                    "pending": False,
+                    "error": None,
+                    "stale": self._reader_stale,
+                    "reader_ready": self._reader_ready,
+                    "reason": (
+                        self._safe_reason(self._reader_reason)
+                        if self._reader_stale or not self._reader_ready
+                        else None
+                    ),
+                    "frontier": frontier,
+                    "computed_at": time.time(),
+                    "refresh_pending": refresh_pending,
+                    "consistency": "queryable results; input frontier is not a cluster-wide atomic snapshot",
+                }
+            entities.append(
+                ("source.status", f"history:{stable_id(entry.query)}", status, "runtime.operational")
+            )
+            if self._stop.is_set():
+                return
+            with self._lock:
+                if self._scopes.get(entry.query) is not entry or not entry.refs:
+                    return
+                if reset_generation != self._reset_generation:
+                    entry.dirty = True
+                    return
+                self._replace_scope_topics(entry.query, entities)
+                entry.has_data = True
+                entry.grid = grid
+                entry.retry_at = 0.0
+                entry.status = status
+        except UnresolvedObservationsError as exc:
+            self._block_history(entry, exc)
+        except Exception as exc:  # noqa: BLE001 - a failed source must preserve the last complete projection
+            error = self._safe_reason(exc) or type(exc).__name__
+            logger.warning("Live history projection failed: %s", error)
+            with self._lock:
+                entry.retry_at = time.monotonic() + 5.0
+            self._scope_status(
+                entry.query,
+                ready=entry.has_data,
+                pending=False,
+                stale=True,
+                error=error,
+                reason=error,
+                frontier=frontier,
+                refresh_pending=False,
+            )
+
+    def _replace_scope_topics(self, scope: str, entities: list) -> None:
+        """Publish a scope's board; unwatched scopes give up their space first. Call under the lock."""
+        while True:
+            try:
+                self.hub.replace_topics(scope, entities, _BOARD_TOPICS)
+                return
+            except LiveCapacityError:
+                idle = [other for other, entry in self._scopes.items() if not entry.refs and other != scope]
+                if not idle:
+                    raise
+                oldest = min(idle, key=lambda other: self._scopes[other].last_used)
+                self.hub.replace_topics(oldest, [], _BOARD_TOPICS)
+                self._scopes.pop(oldest)
 
     def _health_loop(self) -> None:
         ready = False
@@ -661,6 +770,7 @@ class LiveDashboard:
                 else:
                     del self._agent_refs[watch]
                     self._agent_refresh.pop(watch, None)
+                    self._agent_errors.pop(watch, None)
                     self.hub.remove("history.agent", watched_agent_id(watch), source="kusto.queryable")
 
     def close(self) -> None:

@@ -10,18 +10,20 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 from ..utils import estimate_tokens_from_size
 from .board_filters import SPARK_POINTS, _detail_filters
 from .board_projection import (
-    _activity_facts,
     _api_error_key,
     _Board,
     _cost_of,
     _fallback_models,
     _fallback_rows,
+    _gather,
     _list_cost,
+    _store_facts,
     _test_failed,
     _tool_error_key,
     is_command_tool,
@@ -53,6 +55,9 @@ from .projections.history import (
     node_scope,
     session_events,
 )
+
+# Lets the detail's board and its own reads run side by side, as the board does; no other flag is set.
+_CLUSTER_READS = SimpleNamespace(_live_latency_bound=True)
 
 
 def live_pids_of(store: Any, snapshot: Any, agent_id: str, now: float | None = None,
@@ -87,7 +92,7 @@ def _session_board(db: Any, conn: Any, sid: str, snapshot: Any, now: float,
     filters = _detail_filters(now)
     if first and first < filters.until:
         filters = replace(filters, since=first)
-    facts = _activity_facts(history)
+    facts = _store_facts(str(getattr(db, "_path", "memory")), history)
     return _Board(conn, filters, now, snapshot, only_session=sid, facts=facts, history=history).load(counts_only=counts_only)
 
 
@@ -99,8 +104,7 @@ def session_numbers(db: Any, sid: str, now: float | None = None, *, history: His
     """
     now = time.time() if now is None else now
     history = history or HistoryScope.local(db)
-    conn = None
-    board = _session_board(db, conn, sid, None, now, history, counts_only=True)
+    board = _session_board(db, _CLUSTER_READS, sid, None, now, history, counts_only=True)
     if sid not in board.scope:
         return None
     row = board._agent_row(sid, sid, "", [0] * SPARK_POINTS)
@@ -119,20 +123,147 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     history = history or HistoryScope.local(db)
     conn = None
     sid, agent = _resolve_agent(history, agent_id)
-    board = _session_board(db, conn, sid, snapshot, now, history)
+    board = _session_board(db, _CLUSTER_READS, sid, snapshot, now, history)
     if sid not in board.scope:
         return 404, {"error": "No such agent"}
     root = agent == sid
-    titles = board._titles([(sid, a) for a in {sid, *board.agents_by_root.get(sid, ())}])
-    activity = board._activity_for(list(titles))
+    requested_agent = "" if root else history.split(agent)[1]
+    detail_scope = {"sid": sid, "requested_agent": requested_agent}
+    from .projections.history import typed_rows
+
+    keys = [(sid, a) for a in {sid, *board.agents_by_root.get(sid, ())}]
+    # None of these reads needs another's result, so on a cluster they run side by side.
+    # More reads than workers: the slowest ones are listed first so that none of them waits for a worker.
+    (activity, otel_facts, page, by_model, turns, test_rows, context_facts, error_rows, tool_totals, write_summary,
+     titles, lm_by_extension, api_error_rows, session, skills) = _gather(_CLUSTER_READS, [
+        lambda: board._activity_for(keys),
+        lambda: typed_rows(history.read("sequence.otel", sid=sid)) if root else {},
+        lambda: history.read("tools.detail", limit=MAX_DETAIL_ROWS + 1, page=True, **detail_scope),
+        lambda: _agent_models(history, sid, requested_agent, root, now),
+        lambda: _agent_turns(history, sid, requested_agent),
+        lambda: history.read("tools.detail", query_mode="tests", real_calls=False, **detail_scope),
+        lambda: typed_rows(history.read("sequence.context", sid=sid)),
+        lambda: history.read("tools.detail", limit=MAX_DETAIL_ROWS, page=True, query_mode="errors", **detail_scope),
+        # The call list is capped, so the figures per tool come from all calls.
+        lambda: _tool_totals(history.read("tools.totals", **detail_scope)),
+        lambda: history.read("files.changes", sid=sid, limit=MAX_DETAIL_ROWS, page=True) if root else [],
+        lambda: board._titles(keys),
+        lambda: _lm_by_extension(history, sid) if root else None,
+        lambda: history.read("requests.errors", limit=MAX_DETAIL_ROWS, page=True, **detail_scope),
+        lambda: _session_row(history, sid),
+        lambda: _agent_skills(history, sid, agent, root),
+    ])
     row = board._agent_row(sid, agent, titles.get((sid, agent), _short(agent)), activity.get((sid, agent), [0] * SPARK_POINTS))
     subagents = [
         board._agent_row(sid, a, titles[(sid, a)], activity[(sid, a)])
         for a in sorted(board.agents_by_root.get(sid, ()))
         if a != sid and root
     ]
+    git, runs, record = _gather(_CLUSTER_READS, [
+        lambda: _agent_git(history, session, sid),
+        lambda: _agent_runs(history, session, sid, row, now) if root else [],
+        lambda: _agent_record(db, conn, session, sid, row, root, history, context_facts=context_facts),
+    ])
 
-    requested_agent = "" if root else history.split(agent)[1]
+    live = board.live_by_sid.get(sid) if root else None
+    process = {
+        "cpu_percent": row["cpu_percent"],
+        "mem_mb": row["mem_mb"],
+        "pids": row["pids"],
+        "started_at": row["started_at"],
+    }
+    if live is None:
+        process["cpu_percent"] = process["mem_mb"] = None
+
+    fields = ("ts", "tool_name", "target", "duration_ms", "is_error", "confirm", "input_bytes", "output_bytes")
+    tool_calls = [
+        {
+            "ts": ts,
+            "name": name,
+            "target": _one_line(target, 300),
+            "duration_ms": duration or None,
+            "failed": bool(failed),
+            "confirm": confirm or None,
+            "input_bytes": in_bytes,
+            "output_bytes": out_bytes,
+        }
+        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes
+        in (tuple(r[k] for k in fields) for r in page if r["row_type"] == "item")
+    ]
+    files = [
+        {"path": path, "lines_added": _maybe_int(added), "lines_removed": _maybe_int(removed), "edits": edits}
+        for path, added, removed, edits in ((r["path"], r["added"], r["removed"], r["edits"]) for r in write_summary)
+    ]
+    tests = []
+    for r in test_rows:
+        ts, name, target, is_error, exit_code, duration = (
+            r[k] for k in ("ts", "tool_name", "target", "is_error", "exit_code", "duration_ms")
+        )
+        if is_command_tool(name) and is_test_command(target):
+            tests.append(
+                {
+                    "ts": ts,
+                    "command": _one_line(target, 200),
+                    "passed": not _test_failed(is_error, exit_code),
+                    "duration_ms": duration or None,
+                }
+            )
+        if len(tests) >= MAX_DETAIL_ROWS:
+            break
+    errors = []
+    for r in error_rows:
+        ts, name, summary = r["ts"], r["tool_name"], r["result_summary"]
+        errors.append({"ts": ts, "key": _tool_error_key(name, summary), "detail": _one_line(summary, 500)})
+    for r in api_error_rows:
+        ts, error_type, status = r["ts"], r["error_type"], r["http_status"]
+        errors.append(
+            {
+                "ts": ts,
+                "key": _api_error_key(error_type, status),
+                "detail": " ".join(str(p) for p in (error_type, status) if p),
+            }
+        )
+    errors.sort(key=lambda e: e["ts"], reverse=True)
+    otel = _agent_otel(conn, sid, root, [t.get("mcp_server") or t["name"] for t in tool_totals], facts=otel_facts)
+    own_loops = [loop for loop in board.loops if loop["agent_id"] == agent or (root and loop["session_id"] == sid)]
+    loop = None
+    if own_loops:
+        newest = own_loops[0]
+        loop = {
+            "pattern": newest["pattern"],
+            "repeats": newest["repeats"],
+            "since_ts": newest["since_ts"],
+            "at_end": newest["at_end"],
+            "tokens": newest.get("tokens"),
+            "cost_usd": newest.get("cost_usd"),
+        }
+    return 200, {
+        "agent": row,
+        "by_model": by_model,
+        "subagents": subagents,
+        "process": process,
+        "skills": skills,
+        "context": _agent_context(conn, sid, agent, root, facts=context_facts, raw_agent=history.split(agent)[1],
+                                  raw_sid=history.split(sid)[1]),
+        "turns": turns,
+        "tool_totals": tool_totals,
+        "tool_calls": tool_calls,
+        "files": files,
+        "tests": tests,
+        "loop": loop,
+        "errors": errors[:MAX_DETAIL_ROWS],
+        "git": git,
+        "runs": runs,
+        "resources": _agent_resources(db, conn, board, sid, row, root, now, otel_facts=otel_facts,
+                                      lm_by_extension=lm_by_extension),
+        "otel": otel,
+        "sources": _agent_sources(conn, sid, otel, facts=otel_facts) if root else None,
+        **record,
+    }
+
+
+def _agent_models(history: HistoryScope, sid: str, requested_agent: str, root: bool, now: float) -> list[dict]:
+    """Calls, tokens and cost per model. A main agent without request rows uses its fallback usage, as estimates."""
     by_model = []
     for model_row in history.read("requests.models", sid=sid, requested_agent=requested_agent):
         model, n, i, o, cr, cw, ts, stored = (
@@ -173,112 +304,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
                         "estimated": True,
                     }
                 )
-
-    live = board.live_by_sid.get(sid) if root else None
-    process = {
-        "cpu_percent": row["cpu_percent"],
-        "mem_mb": row["mem_mb"],
-        "pids": row["pids"],
-        "started_at": row["started_at"],
-    }
-    if live is None:
-        process["cpu_percent"] = process["mem_mb"] = None
-
-    turns = _agent_turns(history, sid, requested_agent)
-    detail_scope = {"sid": sid, "requested_agent": requested_agent}
-    page = history.read("tools.detail", limit=MAX_DETAIL_ROWS + 1, page=True, **detail_scope)
-    fields = ("ts", "tool_name", "target", "duration_ms", "is_error", "confirm", "input_bytes", "output_bytes")
-    tool_calls = [
-        {
-            "ts": ts,
-            "name": name,
-            "target": _one_line(target, 300),
-            "duration_ms": duration or None,
-            "failed": bool(failed),
-            "confirm": confirm or None,
-            "input_bytes": in_bytes,
-            "output_bytes": out_bytes,
-        }
-        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes
-        in (tuple(r[k] for k in fields) for r in page if r["row_type"] == "item")
-    ]
-    # The call list above is capped, so the figures per tool come from all calls.
-    tool_totals = _tool_totals(history.read("tools.totals", **detail_scope))
-    write_summary = history.read("files.changes", sid=sid, limit=MAX_DETAIL_ROWS, page=True) if root else []
-    files = [
-        {"path": path, "lines_added": _maybe_int(added), "lines_removed": _maybe_int(removed), "edits": edits}
-        for path, added, removed, edits in ((r["path"], r["added"], r["removed"], r["edits"]) for r in write_summary)
-    ]
-    tests = []
-    for r in history.read("tools.detail", query_mode="tests", real_calls=False, **detail_scope):
-        ts, name, target, is_error, exit_code, duration = (
-            r[k] for k in ("ts", "tool_name", "target", "is_error", "exit_code", "duration_ms")
-        )
-        if is_command_tool(name) and is_test_command(target):
-            tests.append(
-                {
-                    "ts": ts,
-                    "command": _one_line(target, 200),
-                    "passed": not _test_failed(is_error, exit_code),
-                    "duration_ms": duration or None,
-                }
-            )
-        if len(tests) >= MAX_DETAIL_ROWS:
-            break
-    errors = []
-    for r in history.read("tools.detail", limit=MAX_DETAIL_ROWS, page=True, query_mode="errors", **detail_scope):
-        ts, name, summary = r["ts"], r["tool_name"], r["result_summary"]
-        errors.append({"ts": ts, "key": _tool_error_key(name, summary), "detail": _one_line(summary, 500)})
-    for r in history.read("requests.errors", limit=MAX_DETAIL_ROWS, page=True, **detail_scope):
-        ts, error_type, status = r["ts"], r["error_type"], r["http_status"]
-        errors.append(
-            {
-                "ts": ts,
-                "key": _api_error_key(error_type, status),
-                "detail": " ".join(str(p) for p in (error_type, status) if p),
-            }
-        )
-    errors.sort(key=lambda e: e["ts"], reverse=True)
-    session = _session_row(history, sid)
-    from .projections.history import typed_rows
-
-    otel_facts = typed_rows(history.read("sequence.otel", sid=sid)) if root else {}
-    context_facts = typed_rows(history.read("sequence.context", sid=sid))
-    otel = _agent_otel(conn, sid, root, [t.get("mcp_server") or t["name"] for t in tool_totals], facts=otel_facts)
-    own_loops = [loop for loop in board.loops if loop["agent_id"] == agent or (root and loop["session_id"] == sid)]
-    loop = None
-    if own_loops:
-        newest = own_loops[0]
-        loop = {
-            "pattern": newest["pattern"],
-            "repeats": newest["repeats"],
-            "since_ts": newest["since_ts"],
-            "at_end": newest["at_end"],
-            "tokens": newest.get("tokens"),
-            "cost_usd": newest.get("cost_usd"),
-        }
-    return 200, {
-        "agent": row,
-        "by_model": by_model,
-        "subagents": subagents,
-        "process": process,
-        "skills": _agent_skills(history, sid, agent, root),
-        "context": _agent_context(conn, sid, agent, root, facts=context_facts, raw_agent=history.split(agent)[1],
-                                  raw_sid=history.split(sid)[1]),
-        "turns": turns,
-        "tool_totals": tool_totals,
-        "tool_calls": tool_calls,
-        "files": files,
-        "tests": tests,
-        "loop": loop,
-        "errors": errors[:MAX_DETAIL_ROWS],
-        "git": _agent_git(history, session, sid),
-        "runs": _agent_runs(history, session, sid, row, now) if root else [],
-        "resources": _agent_resources(db, conn, board, sid, row, root, now, otel_facts=otel_facts),
-        "otel": otel,
-        "sources": _agent_sources(conn, sid, otel, facts=otel_facts) if root else None,
-        **_agent_record(db, conn, session, sid, row, root, history, context_facts=context_facts),
-    }
+    return by_model
 
 
 def _agent_record(db: Any, conn: Any, session: dict, sid: str, row: dict, root: bool,
@@ -641,7 +667,8 @@ def _lm_by_extension(history: HistoryScope, sid: str) -> list[dict] | None:
     from ..analysis.lm_usage import lm_usage
 
     node, raw = history.split(sid)
-    usage = lm_usage(session_events(history.require_reader(), raw, node_scope(node), raw_session=history.qualified))
+    usage = lm_usage(session_events(history.require_reader(), raw, node_scope(node), raw_session=history.qualified,
+                                    view="events.lm_usage"))
     rows = [
         {
             "extension": ext,
@@ -658,7 +685,8 @@ def _lm_by_extension(history: HistoryScope, sid: str) -> list[dict] | None:
 
 
 def _agent_resources(
-    db: Any, conn: Any, board: _Board, sid: str, row: dict, root: bool, now: float, *, otel_facts=None
+    db: Any, conn: Any, board: _Board, sid: str, row: dict, root: bool, now: float, *, otel_facts=None,
+    lm_by_extension: list[dict] | None = None,
 ) -> dict:
     """Network, state writes, peak CPU and processes from the live monitor, plus rates from the store.
 
@@ -682,7 +710,7 @@ def _agent_resources(
     if not root:
         return out
     out["rate_limit"] = _rate_limit(conn, sid, facts=otel_facts)
-    out["lm_by_extension"] = _lm_by_extension(board.history, sid)
+    out["lm_by_extension"] = lm_by_extension
     live = _live_matches(board, sid) if sid in board.live_by_sid else []
     if not live:
         return out

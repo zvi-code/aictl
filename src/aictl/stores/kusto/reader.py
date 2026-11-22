@@ -37,6 +37,20 @@ _VIEWS = {
     "health.sample_buckets": ("", "start"),
     "health.sample_count": ("since until null_timestamp", "rows"),
     "health.quality": ("all_nodes requested_node", "component source kind status severity message updated_at last_ok_at count detail"),
+    "health.series": (
+        f"{_TIME} step",
+        "node_id t samples restarts host_cpu host_cpu_max host_mem_mb host_mem_total_mb tools_cpu tools_mem_mb "
+        "daemon_cpu daemon_cpu_max daemon_rss_mb daemon_threads sessions processes in_rate out_rate reads_per_s "
+        "writes_per_s commands_per_s read_ms read_ms_max write_ms write_ms_max reads_in_flight writes_in_flight "
+        "query_cpu bytes_per_s streaming_rows_per_s queued_rows_per_s inline_rows_per_s otel_metrics_per_s "
+        "otel_events_per_s queue_depth queue_bytes read_failures write_failures command_failures ingest_failures "
+        "rows_dropped otel_errors otel_dropped sink_dropped",
+    ),
+    "health.flows": (
+        f"{_TIME} step",
+        "row_type node_id table t mode rows_per_s bytes_per_s requests_per_s failures rows_dropped queue_depth nodes "
+        "rows bytes requests peak_rows_per_s last_at",
+    ),
     "nodes.reports": (f"{_TIME} report_mode include_unreported", "node_id captured_at"),
     "runtime.processes": ("all_nodes requested_node restrict_tools requested_tools", "row_type node_id session_id pid tool role joined_at total"),
     "runtime.resources": (f"{_WINDOW} restrict_tools requested_tools", "tool b cpu mem"),
@@ -67,6 +81,7 @@ _VIEWS = {
     "agents.resolve": (f"{_SCOPE} requested_agent", "node_id session_id agent_id priority"),
     "events.page": (_EVENT, "ts tool kind detail session_id pid seq"),
     "events.count": (_EVENT, "count"),
+    "events.lm_usage": (f"{_SCOPE} requested_session raw_session", "ts tool kind detail session_id pid seq"),
     "requests.models": (
         f"{_SCOPE} requested_session requested_agent since until",
         "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd",
@@ -167,7 +182,7 @@ _VIEWS = {
         "row_type ts session_id model input_tokens output_tokens duration_ms is_error error_type http_status finish_reason "
         "calls errors times timed",
     ),
-    "sequence.flow": (f"{_TIME} requested_session keep_text text_floor", "row_type values"),
+    "sequence.flow": (f"{_TIME} requested_session keep_text text_floor after_row", "row_type values"),
     "sequence.stamp": (f"{_TIME} requested_session", "versions newest in_window"),
     "sequence.event_log": (f"{_TIME} requested_session requested_tool requested_pid requested_kinds",
                            "ts tool kind detail session_id pid"),
@@ -230,6 +245,7 @@ _PARAMETER_TYPES = {
     "counts_only": bool,
     "since": float,
     "until": float,
+    "step": float,
     "text_floor": float,
     "prompt_ts": float,
     "open_end": float,
@@ -253,13 +269,16 @@ _PARAMETER_TYPES = {
     "pids": tuple,
 }
 _MAX_ROWS = 20_000
-_CACHE_TTL_S = {"health.totals": 300.0, "nodes.reports": 5.0}
+# Each page of these views runs the whole query again, so one large page costs much less
+# than many small ones.
+_VIEW_MAX_ROWS = {"tools.activity_rows": 100_000}
+_CACHE_TTL_S = {"health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0}
 _NODE_STALE_MAX_S = 300.0
 _FAILURE_COOLDOWN_S = 5.0
 _CACHE_SIZE = 64
 # These views had lower measured peaks with reduced fanout; other reads keep the service default.
 _LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
-_PAGED_VIEWS = {"files.inventory", "tools.activity_rows"}
+_PAGED_VIEWS = {"files.inventory", "sequence.flow", "tools.activity_rows"}
 
 
 @dataclass
@@ -405,8 +424,9 @@ class KustoReader:
         if unexpected := params.keys() - {*allowed, "limit"}:
             raise ValueError(f"{view}: unexpected parameters: {', '.join(sorted(unexpected))}")
         limit = params.get("limit", 100)
-        if type(limit) is not int or not 1 <= limit <= _MAX_ROWS:
-            raise ValueError(f"{view}: limit must be an integer from 1 to {_MAX_ROWS}")
+        most = _VIEW_MAX_ROWS.get(view, _MAX_ROWS)
+        if type(limit) is not int or not 1 <= limit <= most:
+            raise ValueError(f"{view}: limit must be an integer from 1 to {most}")
         props = ClientRequestProperties()
         props.set_option(ClientRequestProperties.request_timeout_option_name, QUERY_TIMEOUT)
         props.set_option("request_readonly", True)

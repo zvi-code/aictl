@@ -73,6 +73,24 @@ def test_the_page_loads_at_once_while_starting(starting, monkeypatch):
         assert resp.status == 200 and "text/html" in resp.headers["Content-Type"]
 
 
+def test_a_burst_of_connections_waits_for_the_accept_loop(kusto_store):
+    """A browser, hooks and OpenTelemetry connect at once; the default queue of 5 refused the rest."""
+    store = SnapshotStore(history_store=kusto_store.history_store, keeps_text=lambda: True)
+    srv = _DashboardHTTPServer(("127.0.0.1", 0), _DashboardHandler, store, AllowedPaths(), Path("/tmp"),
+                               start_ingesters_now=False)
+    clients: list[socket.socket] = []
+    try:
+        for _ in range(40):  # the accept loop is not running, so every connection waits in the queue
+            client = socket.socket()
+            clients.append(client)
+            client.settimeout(2)
+            client.connect(srv.server_address)
+    finally:
+        for client in clients:
+            client.close()
+        srv.server_close()
+
+
 def test_the_wait_stays_under_the_socket_timeout():
     assert web_server.READY_WAIT_S < _DashboardHandler.timeout
 

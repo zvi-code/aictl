@@ -119,7 +119,8 @@ function Skill(props: Props) {
         action={{ label: row => `Open ${row.title}`, run: row => props.shell.open({ type: 'agent', id: row.agent_id, tab: 'flow', initialSkills: true }) }} />
     </Section>
     <Section title="Skill locations">
-      <Rows label="Skill locations" rows={data().locations} identity={['path', 'scope']} columns={['path', 'scope', 'owner', 'reach', 'git_state']}
+      <Rows label="Skill locations" rows={data().locations} identity={['path', 'scope']}
+        columns={[['path', 'Path', 'path'], 'scope', 'owner', 'reach', 'git_state']} actionColumn="path"
         action={{ label: row => `Inspect ${row.path}`, run: row => inspect(row.path) }} />
       <Show when={data().locations?.find(row => row.path === location())}>{row => <>
         <Markdown text={row().content || row().description || 'No retained text.'} />

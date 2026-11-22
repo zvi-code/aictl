@@ -7,7 +7,7 @@ See the [Phase 1 spike decisions and measurements](../ui/spikes.md).
 
 ## Reproduce
 
-Run these commands in `C:\OSS\aictl\src\aictl\dashboard\ui` with the installed
+Run these commands in `src\aictl\dashboard\ui` with the installed
 Playwright Chromium headless shell. The build goes to an ignored cache directory.
 It does not replace the tracked dashboard `dist`.
 

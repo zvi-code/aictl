@@ -1,6 +1,5 @@
 import { createEffect, createSignal, createUniqueId, Show } from 'solid-js'
 import type { JSX } from '@solidjs/web'
-import { X } from 'lucide'
 import { Icon } from './Icon'
 import styles from './Drawer.module.css'
 
@@ -58,7 +57,7 @@ export function Drawer(props: {
     <header class={styles.header}>
       <h3 id={title}>{props.title}</h3>
       <div class={styles.actions}>{props.actions}<button ref={close} type="button" class={styles.close}
-        aria-label={props.resizable ? 'Close' : `Close ${props.title}`} onClick={() => props.onClose()}><Icon data={X} /></button></div>
+        aria-label={props.resizable ? 'Close' : `Close ${props.title}`} onClick={() => props.onClose()}><Icon glyph="close" /></button></div>
       <Show when={props.metadata}><div class={styles.metadata}>{props.metadata}</div></Show>
     </header>
     <div class={styles.body} role="region" aria-label="Drawer content" tabindex={0}><Show when={props.open}>{props.children}</Show></div>

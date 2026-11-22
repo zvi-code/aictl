@@ -4,23 +4,23 @@ This file records the measurement that plan item 11 asks for: the load that the 
 
 ## Scope
 
-- Cluster `https://zaictl.swedencentral.dev.kusto.windows.net`, database `aictl_current`.
+- Cluster `https://example.swedencentral.dev.kusto.windows.net`, database `aictl_current`.
 - Window: 2026-11-19 23:46 to 2026-11-20 00:46 UTC (60 minutes), selected by `ingestion_time()` for rows and by `StartedOn` for queries and commands.
-- Node: `desktop-1c0ea28` only. The daemon ran from the editable install at commit `2cf86cf`, which contains both fixes. It started at 23:45:23 UTC.
+- Node: `node-example` only. The daemon ran from the editable install at commit `2cf86cf`, which contains both fixes. It started at 23:45:23 UTC.
 - The two other dev daemons (`cpc-zvisc-aepnw`, `cpc-zvisc-a0w17`) sent no `metrics` rows in the 15 minutes before 00:12 UTC. They were not updated or measured. Their part of the item is open.
 - Query: [`queries/item11.kql`](queries/item11.kql). Run each statement with Kusto.Cli against the database.
 
 ## Conditions that affect the numbers
 
 - Several AI agent sessions ran on the machine during the whole window, so file and hook activity was high.
-- In the second half of the window, the phase-0 recorder (`C:\OSS\aictl\scripts\recording\record_daemon.py`) sent HTTP requests to this daemon's REST routes and live stream. Its stored recordings cover 00:21 to 00:27 UTC (busy) and 00:32 to 00:40 UTC (quiet); trial runs came before them. The recorder also started a separate daemon that wrote to the `aictl_perf_test` database (not counted here). The REST requests increase the daemon query count below, so the query count is higher than the query count of an idle dashboard.
-- The recording script wrote files under `C:\OSS\aictl\test\recordings`. These are real file changes, and they appear in the `file_modified` events.
+- In the second half of the window, the phase-0 recorder (`scripts\recording\record_daemon.py`) sent HTTP requests to this daemon's REST routes and live stream. Its stored recordings cover 00:21 to 00:27 UTC (busy) and 00:32 to 00:40 UTC (quiet); trial runs came before them. The recorder also started a separate daemon that wrote to the `aictl_perf_test` database (not counted here). The REST requests increase the daemon query count below, so the query count is higher than the query count of an idle dashboard.
+- The recording script wrote files under `test\recordings`. These are real file changes, and they appear in the `file_modified` events.
 
 ## Results
 
 ### `metrics` rows by group
 
-"Repeated" counts rows whose value equals the previous row of the same series (`metric` + `tags`) in the window. The share is of all rows except the first row of each series. An unchanged series is written again every 300 seconds (`DEDUP_STALE_SECONDS` in `C:\OSS\aictl\src\aictl\sink.py`), so repeated rows are expected.
+"Repeated" counts rows whose value equals the previous row of the same series (`metric` + `tags`) in the window. The share is of all rows except the first row of each series. An unchanged series is written again every 300 seconds (`DEDUP_STALE_SECONDS` in `src\aictl\sink.py`), so repeated rows are expected.
 
 | Group | Rows | Rows per minute | Series | Repeated |
 |---|---:|---:|---:|---:|
@@ -34,7 +34,7 @@ This file records the measurement that plan item 11 asks for: the load that the 
 
 The plan predicted at most about 1,120 `aictl.file.*` rows per minute plus real changes. The hour average is 313 rows per minute, and the highest 5-minute bin is 1,377 rows per minute during the busy recording. The result does not show a defect. Before the fix, the same node group wrote 47,178 `aictl.file.*` rows per minute (plan section 3.1.1, three nodes). Only one node is measured here, so the two numbers are not a like-for-like comparison.
 
-### Rows per table, node `desktop-1c0ea28`
+### Rows per table, node `node-example`
 
 | Table | Rows per minute |
 |---|---:|

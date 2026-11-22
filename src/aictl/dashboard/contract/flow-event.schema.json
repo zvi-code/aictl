@@ -9,6 +9,7 @@
     "source": {"type": "string"},
     "rt_tokens": {"type": ["integer", "null"]},
     "cum_tokens": {"type": ["integer", "null"]},
+    "turn_index": {"type": ["integer", "null"]},
     "agent_id": {"type": ["string", "null"]},
     "parent_agent_id": {"type": ["string", "null"]},
     "agent_name": {"type": ["string", "null"]},

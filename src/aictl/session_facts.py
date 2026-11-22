@@ -373,6 +373,9 @@ class SessionFacts:
                 metadata.append(data)
             self.writer.append("session_steps", metadata)
             self.writer.append("session_step_text", text)
+        pace = getattr(self.writer, "pace", None)
+        if callable(pace):
+            pace()
         return count
 
     write_call_facts = write

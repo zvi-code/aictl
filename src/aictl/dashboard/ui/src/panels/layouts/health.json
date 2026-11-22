@@ -6,6 +6,7 @@
       "id": "health", "title": "Health highlights",
       "bands": [
         [{"id":"healthHighlights"}],
+        [{"id":"healthTrends"}],
         [{"id":"healthDiagnostics"}],
         [{"id":"storeHealth"}],
         [{"id":"ingestionTraffic"}],

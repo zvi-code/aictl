@@ -1,8 +1,9 @@
-import { For } from 'solid-js'
+import { For, Show } from 'solid-js'
+import { Icon, type Glyph } from './Icon'
 import { moveFocus } from './keyboard'
 import styles from './Segmented.module.css'
 
-export type Choice = { id: string; label: string; disabled?: boolean }
+export type Choice = { id: string; label: string; disabled?: boolean; glyph?: Glyph }
 
 export function Segmented(props: {
   label: string
@@ -25,7 +26,7 @@ export function Segmented(props: {
       <button type="button" class={props.value === option().id ? styles.selected : styles.option}
         role="radio" aria-checked={props.value === option().id ? 'true' : 'false'} tabindex={option().id === tabStop() ? 0 : -1}
         disabled={props.disabled || option().disabled} onClick={() => props.onChange(option().id)}>
-        {option().label}
+        <Show when={option().glyph}>{glyph => <Icon glyph={glyph()} small />}</Show>{option().label}
       </button>
     }</For>
   </div>

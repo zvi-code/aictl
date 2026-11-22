@@ -10,7 +10,8 @@ export default function Changes(props: TabProps) {
     <Section title="Files changed">
       <Stats items={[{ label: 'Files', value: data().files?.length }, { label: 'Tests', value: data().tests?.length },
         { label: 'Recorded added lines', value: lines('lines_added') }, { label: 'Recorded removed lines', value: lines('lines_removed') }]} />
-      <Rows label="Changed files" rows={data().files} identity={['path']} columns={['path', 'lines_added', 'lines_removed', 'edits']}
+      <Rows label="Changed files" rows={data().files} identity={['path']}
+        columns={[['path', 'Path', 'path'], 'lines_added', 'lines_removed', 'edits']} actionColumn="path"
         action={{ label: row => `Open ${row.path}`, run: row => props.shell.open({ type: 'file', path: row.path, record: props.entry.id }) }} />
     </Section>
     <Section title="Test runs"><Rows label="Test runs" rows={data().tests} identity={['ts', 'command']}

@@ -14,6 +14,8 @@ export type Field<T> = {
   compact?: (value: number) => string | undefined
   sortable?: boolean
   numeric?: boolean
+  /** Clip long text at its start, so a path keeps its file name visible. */
+  clip?: 'start'
   action?: { label: (row: T) => string | undefined; run: (row: T) => void }
 }
 
@@ -29,6 +31,12 @@ export function formatValue<T>(field: Field<T>, value: ReturnType<Field<T>['read
   if (value == null) return missingField
   if (field.format) return field.format(value)
   return typeof value === 'number' ? number.format(value) : String(value)
+}
+
+// A cell action button shows the cell value, so its accessible name must contain
+// that value (WCAG 2.5.3, Label in Name).
+export function actionName(visible: string, label: string) {
+  return label.toLocaleLowerCase().includes(visible.toLocaleLowerCase()) ? label : `${visible}, ${label}`
 }
 
 export function compareFieldValues(left: ReturnType<Field<unknown>['read']>, right: ReturnType<Field<unknown>['read']>, desc = false) {

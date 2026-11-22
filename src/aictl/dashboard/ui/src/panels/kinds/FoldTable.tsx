@@ -1,6 +1,6 @@
 import { createMemo, createSignal, Show } from 'solid-js'
 import { Table } from '../../ui/Table'
-import { compareFieldValues, type Field } from '../../ui/tableModel'
+import { actionName, compareFieldValues, type Field } from '../../ui/tableModel'
 import type { KeyedRow } from '../types'
 import table from '../../ui/Table.module.css'
 import styles from './kinds.module.css'
@@ -57,7 +57,7 @@ export default function FoldTable(props: {
           </button>
         </Show>
         <Show when={props.action(entry().row)} fallback={content}>{action =>
-          <button class={table.action} type="button" aria-label={action().label}
+          <button class={table.action} type="button" aria-label={actionName(text(), action().label)}
             onClick={() => action().run()}>{content}</button>
         }</Show>
       </span>} />

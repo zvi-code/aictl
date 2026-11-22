@@ -1384,7 +1384,7 @@ def editor_server(tmp_path):
     root = tmp_path / "project"
     (root / ".claude").mkdir(parents=True)
     f = root / ".claude" / "settings.json"
-    f.write_text('{\n  "a": 1\n}\n')
+    f.write_text('{\n  "a": 1\n}\n', newline="\n")
     other = root / ".claude" / "other.json"
     other.write_text("{}\n")
     store = SnapshotStore()

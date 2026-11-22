@@ -24,7 +24,10 @@
     "ttft_ms": {"type": ["number", "null"]},
     "hooks": {"type": "integer"},
     "shown_events": {"type": "integer"},
-    "omitted_events": {"type": "integer"}
+    "omitted_events": {"type": "integer"},
+    "offset": {"type": "integer"},
+    "matched_events": {"type": "integer"},
+    "turn_marks": {"type": "array", "items": {"$ref": "turn-mark.schema.json"}}
   },
   "required": [
     "total_input_tokens",

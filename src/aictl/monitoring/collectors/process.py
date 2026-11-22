@@ -75,22 +75,33 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
     if _CSV_PATTERNS is not None:
         return _CSV_PATTERNS
     try:
-        from ...tools import get_registry
+        from ...tools import _data_path, _load_process_csv, get_registry
 
         patterns: list[tuple[re.Pattern, str]] = []
         raw_parts: list[str] = []
-        for spec in get_registry().process_specs():
+        specs = list(get_registry().process_specs())
+        if IS_WINDOWS:
+            specs.extend(_load_process_csv(_data_path("processes-unix.csv")))
+        seen_patterns: set[tuple[str, str]] = set()
+        exact_names: list[tuple[re.Pattern, str]] = []
+        for spec in specs:
             if not spec.ps_grep_pattern:
                 continue
             for pat_str in spec.ps_grep_pattern.split("|"):
                 pat_str = pat_str.strip()
-                if not pat_str:
+                if not pat_str or (pat_str, spec.ai_tool) in seen_patterns:
                     continue
+                seen_patterns.add((pat_str, spec.ai_tool))
                 try:
-                    patterns.append((re.compile(pat_str, re.IGNORECASE), spec.ai_tool))
+                    compiled = (re.compile(pat_str, re.IGNORECASE), spec.ai_tool)
+                    if pat_str.startswith("^") and pat_str.endswith("$"):
+                        exact_names.append(compiled)
+                    else:
+                        patterns.append(compiled)
                     raw_parts.append(f"(?:{pat_str})")
                 except re.error:
                     continue
+        patterns.extend(exact_names)
         _CSV_PATTERNS = patterns
         try:
             _CSV_ANY_PATTERN = re.compile("|".join(raw_parts), re.IGNORECASE) if raw_parts else None
@@ -449,10 +460,10 @@ class PsutilProcessCollector(BaseCollector):
 
 def _is_under(path: str, roots: tuple[str, ...]) -> bool:
     """True when ``path`` is one of ``roots`` or below it, as this OS compares paths."""
-    candidate = os.path.normcase(path)
+    candidate = os.path.normcase(path).replace("\\", "/")
     for root in roots:
-        norm = os.path.normcase(root)
-        if candidate == norm or candidate.startswith(norm.rstrip(os.sep) + os.sep):
+        norm = os.path.normcase(root).replace("\\", "/")
+        if candidate == norm or candidate.startswith(norm.rstrip("/") + "/"):
             return True
     return False
 

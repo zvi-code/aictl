@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -16,6 +17,26 @@ MAX_NODES = 256
 MAX_SESSIONS = 100
 MAX_RUNTIME_AGENTS = 128
 STALE_AFTER = 300
+SERIES_BUCKETS = 240
+SERIES_MIN_STEP = 30
+SERIES_MAX_ROWS = 20_000
+SERIES_FIELDS = (
+    "samples", "restarts", "host_cpu", "host_cpu_max", "host_mem_mb", "host_mem_total_mb", "tools_cpu",
+    "tools_mem_mb", "daemon_cpu", "daemon_cpu_max", "daemon_rss_mb", "daemon_threads", "sessions", "processes",
+    "in_rate", "out_rate", "reads_per_s", "writes_per_s", "commands_per_s", "read_ms", "read_ms_max", "write_ms",
+    "write_ms_max", "reads_in_flight", "writes_in_flight", "query_cpu", "bytes_per_s", "streaming_rows_per_s",
+    "queued_rows_per_s", "inline_rows_per_s", "otel_metrics_per_s", "otel_events_per_s", "queue_depth",
+    "queue_bytes", "read_failures", "write_failures", "command_failures", "ingest_failures", "rows_dropped",
+    "otel_errors", "otel_dropped", "sink_dropped",
+)
+FLOW_TABLE_FIELDS = ("rows_per_s", "bytes_per_s", "requests_per_s", "failures", "rows_dropped", "queue_depth", "nodes")
+FLOW_NODE_FIELDS = ("rows", "bytes", "requests", "failures", "rows_dropped", "peak_rows_per_s", "queue_depth", "last_at")
+BACKEND_SERIES_FIELDS = ("commands", "failed", "cpu_s", "memory_peak")
+BACKEND_VIEW_FIELDS = ("commands", "failed", "cpu_s", "mean_ms", "max_ms", "memory_peak")
+BACKEND_WORK = ("aictl_queries", "other_queries", "ingestion", "maintenance")
+BACKEND_TTL_S = 30.0
+_backend_cache: dict[tuple, tuple[float, dict | str]] = {}
+_backend_lock = threading.Lock()
 
 
 class NodeViewError(ValueError):
@@ -44,6 +65,53 @@ def _time(params, key, default):
 
 def _fields(row, names):
     return {k: row.get(k) for k in names}
+
+
+def _rounded(row, names):
+    """Rates and byte counts need no more than millisecond precision; full doubles triple the payload."""
+    return {k: round(v, 3) if isinstance(v, float) else v for k, v in _fields(row, names).items()}
+
+
+def series_window(since, until):
+    """Align bucket edges to multiples of the step so repeated reads share buckets and cache keys."""
+    span = until - since
+    step = max(SERIES_MIN_STEP, math.ceil(span / SERIES_BUCKETS / SERIES_MIN_STEP) * SERIES_MIN_STEP)
+    return float(math.floor(since / step) * step), float(math.ceil(until / step) * step), float(step)
+
+
+def backend_usage(reader, since, until, step):
+    """Cluster-recorded work for the configured database. Viewers of one window share one read."""
+    metadata = reader_feature(reader, "health_metadata")
+    if metadata is None:
+        raise NodeViewError("The Kusto management client is not ready", 503)
+    key = (metadata.database, since, until, step)
+    with _backend_lock:
+        saved = _backend_cache.get(key)
+        if saved is not None and time.monotonic() - saved[0] < BACKEND_TTL_S:
+            if isinstance(saved[1], str):
+                raise NodeViewError(saved[1], 503)
+            return saved[1]
+    try:
+        series, views = metadata.backend_usage(since, until, step)
+        result = {
+            "database": metadata.database, "checked_at": time.time(),
+            "series": [{"t": r["t"], "work": r["work"], **_fields(r, BACKEND_SERIES_FIELDS)}
+                       for r in series if r.get("work") in BACKEND_WORK],
+            "views": [{"view": r.get("view") or "unnamed", **_fields(r, BACKEND_VIEW_FIELDS)} for r in views],
+            "measurement_scope": (
+                "Commands and queries that the cluster recorded for this database from all clients visible to the "
+                "signed-in principal. CPU is the total CPU time each command used on the cluster."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 - permissions and command-log retention vary by cluster
+        result = f"Kusto command history is unavailable ({type(exc).__name__})"
+    with _backend_lock:
+        if len(_backend_cache) >= 16:
+            _backend_cache.pop(next(iter(_backend_cache)))
+        _backend_cache[key] = (time.monotonic(), result)
+    if isinstance(result, str):
+        raise NodeViewError(result, 503)
+    return result
 
 
 def _client_sample(row, now):
@@ -173,7 +241,8 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
         raise NodeViewError("Unknown or repeated node view parameter")
     p = {k: v[0] for k, v in query.items()}
     view, scope = p.get("view", "nodes"), p.get("scope", "local")
-    if view not in ("identity", "nodes", "health", "runtime", "settings", "overview", "session") or scope not in (
+    if view not in ("identity", "nodes", "health", "runtime", "settings", "overview", "session", "series", "flows",
+                    "backend") or scope not in (
         "local",
         "node",
         "fleet",
@@ -186,10 +255,10 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
     sid = p.get("session_id", "")
     if view == "session" and (not sid or len(sid) > 384 or any(ord(c) < 32 for c in sid)):
         raise NodeViewError("Invalid session_id")
-    if view != "overview" and ({"since", "until"} & p.keys()):
-        raise NodeViewError("Time bounds apply to overview only")
+    if view not in ("overview", "series", "flows", "backend") and ({"since", "until"} & p.keys()):
+        raise NodeViewError("Time bounds apply to overview, series, flows and backend only")
     until = _time(p, "until", now + 1)
-    since = _time(p, "since", max(0, until - 7 * 86400))
+    since = _time(p, "since", max(0, until - (7 * 86400 if view == "overview" else 3600)))
     if since >= until:
         raise NodeViewError("since must be earlier than until")
 
@@ -217,6 +286,47 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
     }
     if view == "identity":
         return out
+    if view in ("flows", "backend"):
+        del out["rows"]
+    if view == "series":
+        if not fleet_available:
+            raise NodeViewError("Health history requires a Kusto store", 409)
+        start, end, step = series_window(since, until)
+        try:
+            result = reader.read("health.series", node_scope(node) | {
+                "since": start, "until": end, "step": step, "limit": SERIES_MAX_ROWS,
+            })
+        except StoreError as exc:
+            raise NodeViewError(str(exc), 503) from exc
+        rows = [
+            {"node_id": r.get("node_id") or "legacy", "t": r["t"], **_fields(r, SERIES_FIELDS)}
+            for r in result.rows
+        ]
+        return {**out, "rows": rows, "since": start, "until": end, "step": step, "truncated": result.truncated}
+    if view == "flows":
+        if not fleet_available:
+            raise NodeViewError("Health history requires a Kusto store", 409)
+        start, end, step = series_window(since, until)
+        try:
+            result = reader.read("health.flows", node_scope(node) | {
+                "since": start, "until": end, "step": step, "limit": SERIES_MAX_ROWS,
+            })
+        except StoreError as exc:
+            raise NodeViewError(str(exc), 503) from exc
+        tables, nodes = [], []
+        for r in result.rows:
+            if r.get("row_type") == "table":
+                tables.append({"table": r["table"], "t": r["t"], **_rounded(r, FLOW_TABLE_FIELDS)})
+            elif r.get("row_type") == "node":
+                nodes.append({"node_id": r.get("node_id") or "legacy", "table": r["table"],
+                              "mode": r.get("mode") or None, **_rounded(r, FLOW_NODE_FIELDS)})
+        return {**out, "tables": tables, "nodes": nodes, "since": start, "until": end, "step": step,
+                "truncated": result.truncated}
+    if view == "backend":
+        if not fleet_available:
+            raise NodeViewError("Health history requires a Kusto store", 409)
+        start, end, step = series_window(since, until)
+        return {**out, **backend_usage(reader, start, end, step), "since": start, "until": end, "step": step}
     if view == "nodes" and not fleet_available and (scope != "node" or node == local):
         return {**out, "rows": [{"node_id": local, "captured_at": None}]}
     if scope != "local" and not fleet_available and not (scope == "node" and node == local):

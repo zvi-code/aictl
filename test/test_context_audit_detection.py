@@ -214,7 +214,9 @@ def test_symlink_leaving_project_is_flagged(repo, tmp_path):
 
 
 def test_auto_memory_and_enabled_plugins_are_covered(repo, home):
-    encoded = str(repo.resolve()).replace("/", "-").replace(".", "-").replace("_", "-")
+    import re
+
+    encoded = re.sub(r"[^A-Za-z0-9-]", "-", str(repo.resolve()))
     memory = write(home / ".claude" / "projects" / encoded / "memory" / "MEMORY.md", "- note\n")
     topic = write(memory.parent / "topic.md", "details\n")
     plugin = home / "plugins" / "p1"
@@ -380,7 +382,9 @@ def test_explicit_baseline_path_is_used(repo, home, tmp_path):
 
 
 def _transcript(home, repo, name, lines):
-    encoded = str(repo.resolve()).replace("/", "-").replace(".", "-").replace("_", "-")
+    import re
+
+    encoded = re.sub(r"[^A-Za-z0-9-]", "-", str(repo.resolve()))
     path = home / ".claude" / "projects" / encoded / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")

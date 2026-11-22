@@ -935,3 +935,20 @@ def test_memory_override_is_applied_only_to_probes(monkeypatch):
     monkeypatch.setenv("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB", "-1")
     with pytest.raises(ValueError, match="AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB"):
         SharedKustoReader(SETTINGS, client=sdk, tables={"sessions": TABLE})
+
+
+def test_multipage_reconcile_and_preview_pace_each_page_across_polls():
+    sdk = FakeSDK(policy=False)
+    for sid in ("a", "b", "c"):
+        sdk.add(sid, "2026-01-01T00:00:00Z", assigned=False, ingestion=None)
+    reader = make_reader(sdk, page_size=1, queries_per_poll=4, reconcile_interval_s=30)
+    initialize(reader)
+    sdk.queries.clear()
+    reader._capture_next = float("inf")
+    reader._reconcile_next = 0
+    batches = reader.poll_once()
+    assert [row.key for row in row_hints(batches)] == [("a",)]
+    # One key page + one winner page ran, then reconciliation waited for its next interval.
+    assert len(sdk.queries) == 2
+    assert reader._reconcile is not None and reader._reconcile_next > 0
+

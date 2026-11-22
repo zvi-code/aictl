@@ -16,7 +16,7 @@ const Rows = lazy(() => import('./kinds/Rows'))
 const Chart = lazy(() => import('./kinds/Series'))
 const Stats = lazy(() => import('./kinds/Stats'))
 const custom = new WeakMap<NonNullable<PanelDef['load']>, Component<PanelProps>>()
-const intrinsicHeight = new Set(['kpis', 'attention', 'agentsT', 'byModel', 'byRole'])
+const intrinsicHeight = new Set(['kpis', 'attention', 'agentsT', 'byModel', 'byRole', 'healthHighlights'])
 
 function panelView(def: PanelDef) {
   if (!def.load) return def.kind === 'chart' ? Chart : def.kind === 'stat' ? Stats : Rows
@@ -36,7 +36,8 @@ export default function DockScreen(props: {
 }) {
   const owner = getOwner()
   const defaults = untrack(() => sections[props.screen])
-  const flow = untrack(() => props.screen === 'board')
+  // Board and Health are pages: panels take their content height and the page scrolls.
+  const flow = untrack(() => props.screen === 'board' || props.screen === 'health')
   const defs = createMemo(() => new Map(props.definitions.filter(def =>
     eligible(def, props.ctx.client.store.meta.capabilities)).map(def => [def.id, def])))
   const [width, setWidth] = createSignal(1200)
@@ -272,17 +273,21 @@ export default function DockScreen(props: {
   }
   const panels = new Map<string, ReturnType<typeof panel>>()
   const visibility = new Map<Element, ReturnType<typeof panel>>()
+  // Mount near the viewport, but unmount only far away. One shared margin let
+  // live height changes move edge panels in and out, which remounted their charts.
   const viewport = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      const box = visibility.get(entry.target)
-      if (entry.isIntersecting) box?.show()
-      else if (!entry.target.contains(document.activeElement)) box?.hide()
-    }
+    for (const entry of entries) if (entry.isIntersecting) visibility.get(entry.target)?.show()
   }, { rootMargin: '96px 0px' })
+  const retained = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting && !entry.target.contains(document.activeElement)) visibility.get(entry.target)?.hide()
+    }
+  }, { rootMargin: '150% 0px' })
   const boxResize = new ResizeObserver(() => setWidth(root.clientWidth || 1200))
   onCleanup(() => {
     disposed = true
     viewport.disconnect()
+    retained.disconnect()
     boxResize.disconnect()
     for (const box of panels.values()) box.hide()
   })
@@ -303,10 +308,12 @@ export default function DockScreen(props: {
     if (!visibility.has(element)) {
       visibility.set(element, selection)
       viewport.observe(element)
+      retained.observe(element)
     }
     return () => queueMicrotask(() => {
       if (selection.lease !== lease || element.parentNode !== host || disposed) return
       viewport.unobserve(element)
+      retained.unobserve(element)
       visibility.delete(element)
       selection.hide()
       element.remove()

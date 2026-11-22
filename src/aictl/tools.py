@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import time
 from collections.abc import Callable
@@ -941,14 +942,14 @@ def files_to_sample(files: list[ResourceFile]) -> list[ResourceFile]:
 
 def _file_resource(path: Path, kind: str) -> ResourceFile | None:
     """Create a ResourceFile if path exists, else None."""
-    if not path.is_file():
-        return None
     try:
         st = path.stat()
-        size = st.st_size
-        mtime = st.st_mtime
     except OSError:
         return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    size = st.st_size
+    mtime = st.st_mtime
     rf = ResourceFile(str(path), kind, size, _file_tokens(path, st))
     rf.mtime = mtime
     return rf
@@ -1005,7 +1006,7 @@ def discover_all(
     results_by_tool: dict[str, ToolResources] = {}
 
     # Phase 1: CSV-driven file discovery via batch resolution
-    specs = registry.path_specs(tools=tools)
+    specs = [s for s in registry.path_specs(tools=tools) if not s.path_template.endswith(("/", "\\"))]
     resolved = batch_resolve_paths(specs, root)
 
     for spec, paths in resolved:
@@ -1182,6 +1183,25 @@ _SKIP_COMMS = frozenset(
 _cmdline_cache: dict[tuple[int, str], str] = {}
 
 
+def _proc_stats(pid: int, cpu: str = "0.0", rss_kb: str = "0") -> tuple[str, str]:
+    """Read (cpu_percent, rss_kb) for a matched PID when _parse_ps_output deferred them."""
+    if cpu != "0.0" or rss_kb != "0":
+        return cpu, rss_kb
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        with proc.oneshot():
+            cpu_val = proc.cpu_percent()
+            mem = proc.memory_info()
+        return (
+            f"{cpu_val:.1f}" if cpu_val is not None else "0.0",
+            str((mem.rss // 1024) if mem else 0),
+        )
+    except Exception:  # noqa: BLE001
+        return cpu, rss_kb
+
+
 def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
     """Return process rows as (pid, cpu, rss_kb, comm, args).
 
@@ -1193,21 +1213,22 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
         rows = []
         # The command line changes only on exec, which also changes the name. On Windows
         # reading it means reading another process's memory, so it is kept per (pid, name).
+        # CPU and RSS are read only for matched processes so protected system processes are skipped.
         cmdlines: dict[tuple[int, str], str] = {}
-        for proc in psutil.process_iter(["pid", "cpu_percent", "memory_info", "name"]):
+        for proc in psutil.process_iter(["pid", "name"]):
             try:
                 info = proc.info
                 pid = int(info["pid"])
-                cpu_val = info["cpu_percent"]
-                cpu = f"{cpu_val:.1f}" if cpu_val is not None else "0.0"
-                rss_kb = str((info["memory_info"].rss // 1024) if info["memory_info"] else 0)
                 comm = info["name"] or ""
                 key = (pid, comm)
                 args = _cmdline_cache.get(key)
                 if args is None:
-                    args = " ".join(proc.cmdline() or []) or comm
+                    try:
+                        args = " ".join(proc.cmdline() or []) or comm
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        args = comm
                 cmdlines[key] = args
-                rows.append((str(pid), cpu, rss_kb, comm, args))
+                rows.append((str(pid), "0.0", "0", comm, args))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
         _cmdline_cache.clear()
@@ -1299,6 +1320,7 @@ def _discover_processes_csv(
 
         for spec, pattern in compiled:
             if pattern.search(comm) or pattern.search(args):
+                cpu, rss = _proc_stats(pid, cpu, rss)
                 mem_mb_actual, mem_mb_str = _rss_to_mb(rss)
 
                 anomalies = _detect_anomalies(mem_mb_actual, pid, spec)
@@ -1333,7 +1355,7 @@ def _discover_processes_csv(
     # Track globally to avoid same PID appearing under multiple tools.
     global_mcp_pids: set[int] = set(matched_pids)
     for tr in results.values():
-        new_procs = _find_mcp_processes(tr.mcp_servers, tr.processes, global_mcp_pids)
+        new_procs = _find_mcp_processes(tr.mcp_servers, tr.processes, global_mcp_pids, rows=rows)
         tr.processes.extend(new_procs)
         global_mcp_pids.update(p.pid for p in new_procs)
 
@@ -1394,6 +1416,8 @@ def _find_mcp_processes(
     mcp_servers: list[dict],
     already: list[ProcessInfo],
     global_exclude_pids: set[int] | None = None,
+    *,
+    rows: list[tuple[str, str, str, str, str]] | None = None,
 ) -> list[ProcessInfo]:
     """Try to find running processes matching configured MCP servers."""
     if not mcp_servers:
@@ -1414,7 +1438,8 @@ def _find_mcp_processes(
     already_pids = {p.pid for p in already}
     if global_exclude_pids:
         already_pids |= global_exclude_pids
-    rows = _parse_ps_output()
+    if rows is None:
+        rows = _parse_ps_output()
     found = []
     for pid_s, cpu, rss, comm, args in rows:
         pid = int(pid_s)
@@ -1422,6 +1447,7 @@ def _find_mcp_processes(
             continue
         for srv_name, pattern in search_terms:
             if pattern and re.search(pattern, args):
+                cpu, rss = _proc_stats(pid, cpu, rss)
                 _, mem_mb = _rss_to_mb(rss)
                 found.append(
                     ProcessInfo(

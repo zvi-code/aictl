@@ -15,6 +15,30 @@ const routes: Record<string, (event: FlowEvent) => [string, string]> = {
 const tokens = (event: FlowEvent) => (event.tokens?.input ?? 0) + (event.tokens?.output ?? 0)
 export type PlacedEvent = FlowEvent & { _turnIndex: number; _from: string; _to: string }
 
+export type EventKind = 'prompt' | 'model' | 'reply' | 'tool' | 'agent' | 'hook' | 'skill' | 'context' | 'error' | 'other'
+const kinds: Record<string, EventKind> = {
+  user_message: 'prompt', api_call: 'model', api_response: 'reply', tool_use: 'tool', subagent: 'agent',
+  subagent_end: 'agent', hook: 'hook', skill_event: 'skill', compaction: 'context', error: 'error',
+}
+export const kindLabels: Record<EventKind, string> = {
+  prompt: 'Prompt', model: 'Model call', reply: 'Reply', tool: 'Tool use', agent: 'Subagent', hook: 'Hook',
+  skill: 'Skill', context: 'Context', error: 'Failure', other: 'Event',
+}
+export const failedEvent = (event: FlowEvent) => event.type === 'error' || !!event.is_error || event.success === false
+export const kindOf = (event: FlowEvent): EventKind => failedEvent(event) ? 'error' : kinds[event.type] ?? 'other'
+export const eventTokens = (event: FlowEvent) => event.tokens ? tokens(event) : undefined
+export function durationOf(event: FlowEvent) {
+  const measured = event.duration_ms ?? event.wall_ms
+  if (measured != null && measured > 0) return measured
+  return event.end_ts != null && event.end_ts > event.ts ? (event.end_ts - event.ts) * 1000 : undefined
+}
+const pad = (value: number) => String(value).padStart(2, '0')
+/** Local wall-clock time with seconds, for events that are seconds apart. */
+export function clockTime(ts: number) {
+  const date = new Date(ts * 1000)
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 export function mergeSplitPrompts(events: readonly FlowEvent[]) {
   const merged: FlowEvent[] = []
   for (let index = 0; index < events.length; index++) {
@@ -45,7 +69,7 @@ export function flowModel(raw: readonly FlowEvent[], summary?: Pick<FlowSummary,
   const events: PlacedEvent[] = merged.map(event => {
     if (event.type === 'user_message') turn++
     const [from, to] = routes[event.type]?.(event) ?? ['Session', 'Session']
-    return { ...event, _turnIndex: turn, _from: from, _to: to }
+    return { ...event, _turnIndex: event.turn_index ?? turn, _from: from, _to: to }
   })
   return { events, turnGroups: [...new Set(events.map(event => event._turnIndex))].filter(index => index > 0) }
 }

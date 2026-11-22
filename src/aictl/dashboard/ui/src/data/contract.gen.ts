@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: be820db150909c13dea51680142263251ceddf16ad4357846f4fe1d93a26574c
+// Schema digest: 1c4d1f36a87760ee83a05592a13302784f7afb3241187218cba3290e01441234
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1338,6 +1338,128 @@ export type DetailNodes = {
     retention_days: number | null;
     content_retention_days: number | null;
   }>;
+} | {
+  scope: string;
+  local_node: LocalNode;
+  fleet_available: boolean;
+  generated_at: number;
+  read_only: boolean;
+  since: number;
+  until: number;
+  step: number;
+  truncated: boolean;
+  view: "flows";
+  tables: Array<{
+    table: string;
+    t: number;
+    rows_per_s: number | null;
+    bytes_per_s: number | null;
+    requests_per_s: number | null;
+    failures: number | null;
+    rows_dropped: number | null;
+    queue_depth: number | null;
+    nodes: number | null;
+  }>;
+  nodes: Array<{
+    node_id: string;
+    table: string;
+    mode: string | null;
+    rows: number | null;
+    bytes: number | null;
+    requests: number | null;
+    failures: number | null;
+    rows_dropped: number | null;
+    peak_rows_per_s: number | null;
+    queue_depth: number | null;
+    last_at: number | null;
+  }>;
+} | {
+  scope: string;
+  local_node: LocalNode;
+  fleet_available: boolean;
+  generated_at: number;
+  read_only: boolean;
+  since: number;
+  until: number;
+  step: number;
+  view: "backend";
+  database: string;
+  checked_at: number;
+  measurement_scope: string;
+  series: Array<{
+    t: number;
+    work: "aictl_queries" | "other_queries" | "ingestion" | "maintenance";
+    commands: number | null;
+    failed: number | null;
+    cpu_s: number | null;
+    memory_peak: number | null;
+  }>;
+  views: Array<{
+    view: string;
+    commands: number | null;
+    failed: number | null;
+    cpu_s: number | null;
+    mean_ms: number | null;
+    max_ms: number | null;
+    memory_peak: number | null;
+  }>;
+} | {
+  scope: string;
+  local_node: LocalNode;
+  fleet_available: boolean;
+  generated_at: number;
+  read_only: boolean;
+  since: number;
+  until: number;
+  step: number;
+  truncated: boolean;
+  view: "series";
+  rows: Array<{
+    node_id: string;
+    t: number;
+    samples: number;
+    restarts: number;
+    host_cpu: number | null;
+    host_cpu_max: number | null;
+    host_mem_mb: number | null;
+    host_mem_total_mb: number | null;
+    tools_cpu: number | null;
+    tools_mem_mb: number | null;
+    daemon_cpu: number | null;
+    daemon_cpu_max: number | null;
+    daemon_rss_mb: number | null;
+    daemon_threads: number | null;
+    sessions: number | null;
+    processes: number | null;
+    in_rate: number | null;
+    out_rate: number | null;
+    reads_per_s: number | null;
+    writes_per_s: number | null;
+    commands_per_s: number | null;
+    read_ms: number | null;
+    read_ms_max: number | null;
+    write_ms: number | null;
+    write_ms_max: number | null;
+    reads_in_flight: number | null;
+    writes_in_flight: number | null;
+    query_cpu: number | null;
+    bytes_per_s: number | null;
+    streaming_rows_per_s: number | null;
+    queued_rows_per_s: number | null;
+    inline_rows_per_s: number | null;
+    otel_metrics_per_s: number | null;
+    otel_events_per_s: number | null;
+    queue_depth: number | null;
+    queue_bytes: number | null;
+    read_failures: number | null;
+    write_failures: number | null;
+    command_failures: number | null;
+    ingest_failures: number | null;
+    rows_dropped: number | null;
+    otel_errors: number | null;
+    otel_dropped: number | null;
+    sink_dropped: number | null;
+  }>;
 };
 
 export type DetailOtelStatus = (OtelReceiverStatus) & ({
@@ -1775,6 +1897,7 @@ export type FlowEvent = {
   source: string;
   rt_tokens: number | null;
   cum_tokens: number | null;
+  turn_index?: number | null;
   agent_id?: string | null;
   parent_agent_id?: string | null;
   agent_name?: string | null;
@@ -1856,6 +1979,9 @@ export type FlowSummary = {
   hooks?: number;
   shown_events?: number;
   omitted_events?: number;
+  offset?: number;
+  matched_events?: number;
+  turn_marks?: Array<TurnMark>;
 };
 
 export type HealthLocal = {
@@ -3205,6 +3331,19 @@ export type TranscriptTurn = {
     model?: string | null;
     tokens?: UsageTokens;
   }>;
+};
+
+export type TurnMark = {
+  turn: number;
+  offset: number;
+  ts: number;
+  end_ts: number;
+  events: number;
+  tokens: number;
+  tools: number;
+  errors: number;
+  subagents: number;
+  prompt: string;
 };
 
 export type UsageTokens = {

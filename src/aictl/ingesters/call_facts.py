@@ -294,7 +294,10 @@ class FactBuffer:
         if self._in_window(row.ts):
             if self.tool_calls is not None:
                 tool = self.surface(row.session_id) if self.surface is not None and row.tool == "copilot-cli" else row.tool
-                self.written += self.tool_calls.record([replace(row, source="transcript", tool=tool)])
+                try:
+                    self.written += self.tool_calls.record([replace(row, source="transcript", tool=tool)])
+                except StoreError as exc:
+                    self.write_error = exc
                 return
             self.tools[row.dedup_key] = row
             self._maybe_flush()

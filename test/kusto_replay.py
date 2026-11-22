@@ -22,7 +22,7 @@ from aictl.stores.kusto.recorded import RecordedKustoClient, UnrecordedQueryErro
 from aictl.stores.kusto.tables import TABLES
 
 DATABASE = "aictl_perf_test"
-CLUSTER = "https://zaictl.swedencentral.dev.kusto.windows.net"
+CLUSTER = os.environ.get("AICTL_KUSTO_CLUSTER", "https://example.swedencentral.dev.kusto.windows.net")
 RECORDINGS = Path(__file__).parent / "recordings" / "kusto"
 EPOCH = "2026-01-01"
 LOCAL_NODE = "test-node"

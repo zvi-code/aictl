@@ -93,8 +93,8 @@ export default function Hidden(props: { shell: DrawerProps }) {
     </Section>
     <Show when={data()}>{audit => <>
       <Section title="Sources and estimates"><Rows label="Sources and estimates" rows={audit().sources.filter(row => included(row.tool))}
-        identity={['tool', 'path']} columns={['tool', 'scope', 'loading', 'bytes', ['est_tokens', 'Estimated tokens'], 'loaded_sessions', 'git_state', 'path']}
-        action={{ label: row => `Open ${row.path}`, run: row => open(row.path) }} /></Section>
+        identity={['tool', 'path']} columns={['tool', 'scope', 'loading', 'bytes', ['est_tokens', 'Estimated tokens'], 'loaded_sessions', 'git_state', ['path', 'Path', 'path']]}
+        actionColumn="path" action={{ label: row => `Open ${row.path}`, run: row => open(row.path) }} /></Section>
       <Section title="Effective models"><Rows label="Effective models" rows={Object.entries(audit().effective_models).filter(([id]) => included(id)).map(([id, value]) => ({
         id, ...(value && typeof value === 'object' && !Array.isArray(value) ? value : {}),
       }))} identity={['id']} columns={['id', 'value', 'source', ['why_in_effect', 'Why in effect'], 'limited']}
@@ -105,8 +105,8 @@ export default function Hidden(props: { shell: DrawerProps }) {
         <Show when={audit().drift.baseline_created}><p>Baseline established; no earlier scan to compare.</p></Show>
         <Rows label="Scan changes" rows={['new', 'changed', 'removed', 'agent_writes'].flatMap(kind =>
           (records(audit().drift[kind]) ?? []).map(row => ({ ...row, kind, path: text(row.path) })))}
-          identity={['kind', 'path']} columns={['kind', 'path']}
-          action={{ label: row => `Inspect ${row.path}`, run: row => { if (row.kind !== 'removed') open(row.path) } }} />
+          identity={['kind', 'path']} columns={['kind', ['path', 'Path', 'path']]} actionColumn="path"
+          action={{ label: row => row.kind === 'removed' ? '' : `Inspect ${row.path}`, run: row => open(row.path) }} />
       </Section>
     </>}</Show>
   </Show>

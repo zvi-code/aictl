@@ -2604,7 +2604,7 @@ def test_sources_name_the_folders_found_for_each_tool(monkeypatch):
 
     monkeypatch.setattr(tool_homes, "homes", lambda tool=None: [tool_homes.ToolHome("copilot", Path("/x/home"), "process environment")])
     rows = board_projection._sources([("copilot-cli", "events", 1.0)], ["copilot-cli"], None)
-    assert rows[0]["locations"] == [{"path": "/x/home", "found_by": "process environment"}]
+    assert rows[0]["locations"] == [{"path": str(Path("/x/home")), "found_by": "process environment"}]
 
 
 # ─── Agent detail: git, run history and resources ────────────────
@@ -3421,6 +3421,15 @@ class TestAgentFlow:
         assert [e["type"] for e in cut["turns"]] == ["api_call", "tool_use", "session_end"]
         assert cut["summary"]["omitted_events"] == 9 and cut["summary"]["event_count"] == 12
         assert cut["summary"]["cumulative_tokens"] == 195 and cut["turns"][0]["cum_tokens"] == 195
+        _, window = flow_projection.agent_flow(db, "flow-s", now=NOW, offset=8, limit=2)
+        assert [(e["type"], e["turn_index"]) for e in window["turns"]] == [("user_message", 2), ("api_call", 2)]
+        assert {k: window["summary"][k] for k in ("offset", "shown_events", "omitted_events", "matched_events")} == {
+            "offset": 8, "shown_events": 2, "omitted_events": 8, "matched_events": 12}
+        assert flow_projection.agent_flow(db, "flow-s", now=NOW, offset=99)[1]["turns"] == []
+        marks = [(m["turn"], m["offset"], m["events"], m["tokens"], m["tools"], m["errors"], m["subagents"], m["prompt"])
+                 for m in cut["summary"]["turn_marks"]]
+        assert marks == [(0, 0, 1, 0, 0, 0, 0, ""), (1, 1, 7, 135, 1, 0, 1, "Fix the parser"),
+                         (2, 8, 4, 60, 1, 2, 0, "Now the tests")]
 
     def test_an_unknown_agent_is_404(self, db):
         assert flow_projection.agent_flow(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404
@@ -3521,6 +3530,9 @@ class TestAgentTranscript:
         assert _http(f"{server}/api/board/agent/transcript?id=flow-s&turn=soon")[0] == 400
         status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&limit=3")
         assert status == 200 and len(json.loads(body)["turns"]) == 3 and json.loads(body)["summary"]["omitted_events"] == 9
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&offset=8&limit=2")
+        assert status == 200 and json.loads(body)["summary"]["offset"] == 8 and len(json.loads(body)["turns"]) == 2
+        assert _http(f"{server}/api/board/agent/flow?id=flow-s&offset=-1")[0] == 400
         assert _http(f"{server}/api/board/agent/flow")[0] == 400
         assert _http(f"{server}/api/board/agent/flow?id=flow-s&since=soon")[0] == 400
         assert _http(f"{server}/api/board/agent/transcript?id=nobody")[0] == 404

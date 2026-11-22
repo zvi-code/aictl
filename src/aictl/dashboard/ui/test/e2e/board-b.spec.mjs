@@ -352,7 +352,7 @@ test('BRD-39: sort recorded collection states and check contrast in both themes'
   await press(sortButton(table, 'Data'));
   await expect(table.getByRole('columnheader', { name: 'Data' })).toHaveAttribute('aria-sort', 'ascending');
   await checkAxe(page, '#p-coverage', 'Coverage panel in light theme');
-  await page.getByLabel('Theme').selectOption('dark');
+  await page.getByRole('button', { name: 'Dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await openPanel(page, 'coverage');
   await expect(table).toBeVisible();

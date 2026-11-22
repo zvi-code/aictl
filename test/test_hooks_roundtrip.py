@@ -97,6 +97,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SHELL", "/bin/zsh")
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("COPILOT_HOME", raising=False)
+    monkeypatch.setattr(ig, "IS_WINDOWS", False)
+    monkeypatch.setattr(hook_removal, "_IS_WINDOWS", False)
+    monkeypatch.setattr("aictl.platforms.IS_WINDOWS", False)
     monkeypatch.setattr(ig, "claude_global_dir", lambda: home / ".claude")
     monkeypatch.setattr(ig, "gemini_global_dir", lambda: home / ".gemini")
     monkeypatch.setattr(ig, "copilot_global_dir", lambda: home / ".copilot")
@@ -243,8 +246,9 @@ def test_file_mode_is_kept(env, tool):
     path = path_of(env)
     _seed(path, _dump({"model": "x"}))
     path.chmod(0o600)
+    expected_mode = path.stat().st_mode & 0o777
     install()
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.stat().st_mode & 0o777 == expected_mode
 
 
 def test_corrupt_file_is_never_rewritten_and_others_still_run(env):
@@ -279,7 +283,7 @@ def test_jsonc_settings_are_not_treated_as_corrupt_by_force(env):
 
 
 def _tree(home: Path) -> dict[str, bytes]:
-    return {str(p.relative_to(home)): p.read_bytes() for p in sorted(home.rglob("*")) if p.is_file()}
+    return {p.relative_to(home).as_posix(): p.read_bytes() for p in sorted(home.rglob("*")) if p.is_file()}
 
 
 def _seed_whole_machine(home: Path) -> None:
@@ -303,7 +307,7 @@ def test_full_enable_disable_restores_machine_byte_for_byte(env):
     during = _tree(env)
     assert ".config/aictl/env.sh" in during and ".config/aictl/remove-hooks.py" in during
     assert "hook_handler.py" in during[".claude/settings.json"].decode()
-    vs_key = str(hook_removal.vscode_settings_paths(env)[0].relative_to(env))
+    vs_key = hook_removal.vscode_settings_paths(env)[0].relative_to(env).as_posix()
     assert b"// my editor" in during[vs_key]
 
     assert runner.invoke(ig.enable, ["--scope", "user"], catch_exceptions=False).exit_code == 0
@@ -322,7 +326,7 @@ def test_full_enable_disable_restores_machine_byte_for_byte(env):
 
 def _entries(home: Path) -> set[str]:
     """Every file and folder under *home*, relative."""
-    return {str(p.relative_to(home)) for p in home.rglob("*")}
+    return {p.relative_to(home).as_posix() for p in home.rglob("*")}
 
 
 def _seed_copilot_and_vscode(home: Path) -> None:
@@ -524,8 +528,13 @@ def test_standalone_remover_works_with_no_aictl_on_the_path(env, tmp_path):
     lone = tmp_path / "lone"
     lone.mkdir()
     script = lone / "remove-hooks.py"
-    script.write_text(Path(hook_removal.__file__).read_text(encoding="utf-8"))
-    child_env = {"HOME": str(env), "PATH": os.environ.get("PATH", "")}
+    script.write_text(Path(hook_removal.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+    child_env = {
+        "HOME": str(env),
+        "USERPROFILE": str(env),
+        "APPDATA": str(env / "AppData" / "Roaming"),
+        "PATH": os.environ.get("PATH", ""),
+    }
 
     dry = subprocess.run(
         [sys.executable, "-I", "-S", str(script), "--dry-run", "--no-cwd"],

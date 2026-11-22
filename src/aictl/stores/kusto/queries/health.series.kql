@@ -1,0 +1,64 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20, step:real = 60.0, row_limit:long);
+system_snapshots
+| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+| summarize arg_max(_v, *) by node_id, ['project'], ts
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| summarize arg_max(_v, *) by node_id, ts
+| extend c = parse_json(node_health_counters)
+| extend s = c.store, r = c.runtime, pid = tolong(c.pid)
+| extend reads = todouble(s.reads.total), writes = todouble(s.writes.total), commands = todouble(s.commands.total),
+         read_failed = todouble(s.reads.failed), write_failed = todouble(s.writes.failed), command_failed = todouble(s.commands.failed),
+         query_cpu_s = todouble(s.query_cpu.total_cpu_s), written_bytes = todouble(s.writes.bytes),
+         streaming = todouble(s.ingestion_traffic.streaming.rows), queued = todouble(s.ingestion_traffic.queued.rows),
+         inline_rows = todouble(s.ingestion_traffic.inline.rows),
+         otel_metrics = todouble(r.otel_receiver.metrics_received), otel_events = todouble(r.otel_receiver.events_received),
+         otel_errors = todouble(r.otel_receiver.errors), otel_dropped = todouble(r.otel_receiver.dropped),
+         sink_dropped = todouble(r.sink.dropped)
+| mv-apply tbl = s.writer.tables on (
+    extend v = tbl[tostring(bag_keys(tbl)[0])]
+    | summarize queue_depth = sum(tolong(v.queue_depth)), queue_bytes = sum(tolong(v.queue_bytes)),
+                rows_dropped = todouble(sum(tolong(v.rows_dropped))), ingest_failures = todouble(sum(tolong(v.ingest_failures)))
+  )
+| order by node_id asc, ts asc
+| extend same = isnotnull(pid) and prev(node_id) == node_id and prev(pid) == pid, dt = ts - prev(ts)
+| extend restarted = isnotnull(pid) and prev(node_id) == node_id and isnotnull(prev(pid)) and prev(pid) != pid
+| extend d_reads = iff(same, reads - prev(reads), real(null)), d_writes = iff(same, writes - prev(writes), real(null)),
+         d_commands = iff(same, commands - prev(commands), real(null)),
+         d_read_failed = iff(same, read_failed - prev(read_failed), real(null)),
+         d_write_failed = iff(same, write_failed - prev(write_failed), real(null)),
+         d_command_failed = iff(same, command_failed - prev(command_failed), real(null)),
+         d_query_cpu = iff(same, query_cpu_s - prev(query_cpu_s), real(null)),
+         d_bytes = iff(same, written_bytes - prev(written_bytes), real(null)),
+         d_streaming = iff(same, streaming - prev(streaming), real(null)), d_queued = iff(same, queued - prev(queued), real(null)),
+         d_inline = iff(same, inline_rows - prev(inline_rows), real(null)),
+         d_otel_metrics = iff(same, otel_metrics - prev(otel_metrics), real(null)),
+         d_otel_events = iff(same, otel_events - prev(otel_events), real(null)),
+         d_otel_errors = iff(same, otel_errors - prev(otel_errors), real(null)),
+         d_otel_dropped = iff(same, otel_dropped - prev(otel_dropped), real(null)),
+         d_sink_dropped = iff(same, sink_dropped - prev(sink_dropped), real(null)),
+         d_rows_dropped = iff(same, rows_dropped - prev(rows_dropped), real(null)),
+         d_ingest_failures = iff(same, ingest_failures - prev(ingest_failures), real(null))
+| extend rate = iff(same and dt > 0, 1.0 / dt, real(null))
+| summarize samples = count(), restarts = countif(restarted),
+            host_cpu = avg(host_cpu_percent), host_cpu_max = max(host_cpu_percent),
+            host_mem_mb = avg(host_memory_used_mb), host_mem_total_mb = max(host_memory_total_mb),
+            tools_cpu = avg(cpu_percent), tools_mem_mb = avg(memory_used_mb),
+            daemon_cpu = avg(todouble(r.daemon.cpu_percent)), daemon_cpu_max = max(todouble(r.daemon.cpu_percent)),
+            daemon_rss_mb = avg(todouble(r.daemon.rss_bytes) / 1048576.0), daemon_threads = max(tolong(r.daemon.threads)),
+            sessions = max(live_sessions), processes = max(active_processes),
+            in_rate = avg(live_in_rate), out_rate = avg(live_out_rate),
+            reads_per_s = avg(d_reads * rate), writes_per_s = avg(d_writes * rate), commands_per_s = avg(d_commands * rate),
+            read_ms = avg(todouble(s.reads.recent_avg_ms)), read_ms_max = max(todouble(s.reads.recent_avg_ms)),
+            write_ms = avg(todouble(s.writes.recent_avg_ms)), write_ms_max = max(todouble(s.writes.recent_avg_ms)),
+            reads_in_flight = max(tolong(s.reads.in_flight)), writes_in_flight = max(tolong(s.writes.in_flight)),
+            query_cpu = avg(d_query_cpu * rate), bytes_per_s = avg(d_bytes * rate),
+            streaming_rows_per_s = avg(d_streaming * rate), queued_rows_per_s = avg(d_queued * rate),
+            inline_rows_per_s = avg(d_inline * rate),
+            otel_metrics_per_s = avg(d_otel_metrics * rate), otel_events_per_s = avg(d_otel_events * rate),
+            queue_depth = max(queue_depth), queue_bytes = max(queue_bytes),
+            read_failures = sum(d_read_failed), write_failures = sum(d_write_failed), command_failures = sum(d_command_failed),
+            ingest_failures = sum(d_ingest_failures), rows_dropped = sum(d_rows_dropped),
+            otel_errors = sum(d_otel_errors), otel_dropped = sum(d_otel_dropped), sink_dropped = sum(d_sink_dropped)
+            by node_id, t = since + bin(ts - since, step)
+| order by t asc, node_id asc
+| take row_limit

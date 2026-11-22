@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from ...kusto import KustoSettings, engine_url
-from .client import KustoClientFactory, ROWID, VERSION, Result, kql_literal, quote
+from .client import ROWID, VERSION, KustoClientFactory, Result, kql_literal, quote
 from .tables import TABLES, Table
 
 DELETED = "_deleted"
@@ -861,6 +861,7 @@ class SharedKustoReader:
             more = False
         if not more:
             self._preview = None
+        if not scan.pending:
             self._preview_next = time.monotonic() + max(self.config.preview_interval_s, self._idle_delay)
         return True
 
@@ -896,6 +897,7 @@ class SharedKustoReader:
                     parts.clear()
             self._publish("resync", tables=(scan.table,), reason="reconcile")
             self._reconcile = None
+        if not scan.pending:
             self._reconcile_next = time.monotonic() + self.config.reconcile_interval_s / len(plan)
         return True
 

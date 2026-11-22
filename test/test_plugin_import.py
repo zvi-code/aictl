@@ -943,7 +943,8 @@ class TestPluginValidation:
                 "[instructions]\n"
                 'base = "Test project"\n\n'
                 "[commands._always.greet]\n"
-                f"content = '''\n{unicode_text}\n'''\n"
+                f"content = '''\n{unicode_text}\n'''\n",
+                encoding="utf-8",
             )
             runner = CliRunner()
             result = runner.invoke(

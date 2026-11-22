@@ -1,7 +1,7 @@
 import { createContext, createEffect, createMemo, createSignal, untrack, useContext } from 'solid-js'
 import type { DetailNodes, HealthLocal, TableInventory } from '../../data/contract.gen'
 import type { PanelContext, Read } from '../types'
-import { STALE_AFTER_S, finite, updateTrend, type HealthView, type Trend } from './healthModel'
+import { STALE_AFTER_S, finite, type HealthView } from './healthModel'
 import { confirmedHealth, healthNodePath, needsSupplement, scopedHealth } from './scopedHealth'
 
 const localHealth = { topic: 'runtime.health', entity: 'local' } as const
@@ -105,11 +105,6 @@ export function healthData(ctx: PanelContext) {
     const live = ctx.read({ topic: 'runtime.health', entity: 'table_inventory', path: 'inventory' })
     return (live.value as TableInventory | undefined) ?? read().value?.store?.table_inventory
   })
-  const [trend, setTrend] = createSignal<Trend>({ id: null, points: [] })
-  createEffect(read, result => {
-    if (!result.value) setTrend({ id: null, points: [] })
-    else if (!document.hidden && result.state === 'ready') setTrend(last => updateTrend(last, result.value))
-  })
   const readInventory = () => inventoryRead(inventory(), read())
-  return { now, read, inventory, readInventory, trend }
+  return { now, read, inventory, readInventory }
 }

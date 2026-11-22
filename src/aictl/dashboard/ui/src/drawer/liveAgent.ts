@@ -34,7 +34,7 @@ export function selectAgentWatch(client: LiveClient, agentId?: string, tab?: str
 
 export function watchedDetail<V extends View>(
   ctx: PanelContext, view: V, id: Accessor<string>, endpoint: Accessor<string | undefined>, live: Accessor<boolean>,
-): DetailResource<Views[V]> {
+): DetailResource<Views[V]> & { streaming: Accessor<boolean> } {
   const useStream = () => ctx.scope() === 'local' && live() &&
     (supportsLiveAgent(ctx.client) || (!ctx.client.store.meta.capabilities && !ctx.client.status.error))
   const received = createMemo(() => {
@@ -52,5 +52,5 @@ export function watchedDetail<V extends View>(
     if (data?.value != null) return { status: ctx.client.status.connected ? 'ready' : 'stale', data: data.value as Views[V], error: null }
     if (data != null) return { status: 'error', data: undefined, error: `HTTP ${data.status}` }
     return { status: 'loading', data: undefined, error: null }
-  }), { retry: () => { if (useRead()) read.retry(); else ctx.client.resync() } })
+  }), { retry: () => { if (useRead()) read.retry(); else ctx.client.resync() }, streaming: () => !useRead() })
 }

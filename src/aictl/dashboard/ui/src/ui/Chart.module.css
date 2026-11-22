@@ -8,13 +8,15 @@
   margin: 0;
 }
 .caption { color: var(--color-muted); font-size: var(--text-sm); }
-.caption strong { color: var(--color-text); }
+.srOnly { composes: visuallyHidden from "./control.module.css"; }
 .plot { min-inline-size: 0; min-block-size: 0; overflow: hidden; font-family: var(--font-ui); font-size: var(--text-sm); }
-.legend { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-5); margin: 0; padding: 0; list-style: none; font-size: var(--text-sm); }
 .legend li { display: inline-flex; gap: var(--space-2); align-items: center; }
 .legend span { inline-size: var(--space-4); block-size: var(--space-4); border-radius: var(--radius-pill); }
 .first { background: var(--color-chart-1); }
 .second { background: var(--color-chart-2); }
 .third { background: var(--color-chart-3); }
 .fourth { background: var(--color-chart-4); }
-.toggle { composes: button focus from "./control.module.css"; }
+.toggle { composes: button small focus from "./control.module.css"; padding-inline: var(--space-2); font-size: inherit; font-weight: inherit; }
+.toggle[aria-pressed="false"] { color: var(--color-muted); text-decoration: line-through; }
+.reading { font-weight: var(--weight-strong); font-variant-numeric: tabular-nums; }

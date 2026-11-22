@@ -3,12 +3,14 @@ import { RANGES, STATUSES, canClear } from '../data/filters'
 import { toolsToParams } from '../data/urlState'
 import type { PanelContext } from '../panels/types'
 import { Dialog } from '../ui/Dialog'
+import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import styles from './Shell.module.css'
 
 export function BoardControls(props: {
   ctx: PanelContext; find: (element: HTMLInputElement) => void; clear: () => void
   custom: boolean; setCustom: (open: boolean) => void; text: string; search: (text: string) => void
+  rail: boolean; toggleRail: () => void
 }) {
   const ctx = untrack(() => props.ctx)
   const [error, setError] = createSignal('')
@@ -27,55 +29,67 @@ export function BoardControls(props: {
     return new Date(time.getTime() - time.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
   }
   return <>
-    <div class={styles.controls} role="group" aria-label="Overview filters">
-      <label>Time range <select class={styles.input} value={ctx.filters().range.id} onChange={event => {
-        const range = event.currentTarget.value
-        if (range === 'custom') { setError(''); props.setCustom(true); event.currentTarget.value = ctx.filters().range.id }
-        else ctx.navigate({ range, since: null, until: null, sel: null })
-      }}>
-        <For each={RANGES}>{range => <option value={range.id}>{range.label}</option>}</For>
-        <option value="custom">Custom</option>
-      </select></label>
-      <Show when={ctx.filters().range.id === 'custom'}><button class={styles.button} type="button"
+    <div class={styles.filters} role="group" aria-label="Overview filters">
+      <button class={styles.iconButton} type="button" aria-label="Sections" title={props.rail ? 'Hide the section list' : 'Show the section list'}
+        aria-controls="overview-sections" aria-expanded={props.rail ? 'true' : 'false'} onClick={() => props.toggleRail()}>
+        <Icon glyph="menu" /></button>
+      <label class={styles.search}><Icon glyph="search" /><span class={styles.srOnly}>Find</span>
+        <input ref={props.find} type="search" value={props.text} placeholder="Find agents, prompts, files, tools"
+          onInput={event => props.search(event.currentTarget.value)} /><kbd aria-hidden="true">/</kbd></label>
+      <label class={styles.filter}><Icon glyph="clock" /><span class={styles.srOnly}>Time range</span>
+        <select value={ctx.filters().range.id} onChange={event => {
+          const range = event.currentTarget.value
+          if (range === 'custom') { setError(''); props.setCustom(true); event.currentTarget.value = ctx.filters().range.id }
+          else ctx.navigate({ range, since: null, until: null, sel: null })
+        }}>
+          <For each={RANGES}>{range => <option value={range.id}>{range.label}</option>}</For>
+          <option value="custom">Custom</option>
+        </select><Icon glyph="down" small /></label>
+      <Show when={ctx.filters().range.id === 'custom'}><button class={styles.small} type="button"
         onClick={() => { setError(''); props.setCustom(true) }}>Edit custom range</button></Show>
-      <label>Find <input ref={props.find} class={styles.input} type="search" value={props.text}
-        placeholder="Agents, prompts, files, tools" onInput={event => props.search(event.currentTarget.value)} /></label>
-      <Popover label={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`} title="Filter tools">
-        <div class={styles.controls}>
-          <button type="button" class={styles.button} onClick={() => ctx.navigate({ tools: null })}>All tools</button>
-          <button type="button" class={styles.button} onClick={() => ctx.navigate({ tools: '' })}>No tools</button>
-        </div>
-        <Show when={options()} fallback={<p>Tool choices are not available yet.</p>}>
-          <For each={tools()} keyed={tool => tool.id}>{tool => <label class={styles.choice}>
-            <input type="checkbox" checked={ctx.tools() == null || ctx.tools()!.includes(tool().id)}
-              onChange={event => chooseTool(tool().id, event.currentTarget.checked)} /> {tool().label || tool().id}
-          </label>}</For>
-        </Show>
-      </Popover>
+      <span class={styles.toolTrigger} data-active={ctx.tools() != null ? '' : undefined}>
+        <Popover label={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`} title="Filter tools" glyph="tools"
+          text={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`}>
+          <div class={styles.controls}>
+            <button type="button" class={styles.secondary} onClick={() => ctx.navigate({ tools: null })}>All tools</button>
+            <button type="button" class={styles.secondary} onClick={() => ctx.navigate({ tools: '' })}>No tools</button>
+          </div>
+          <Show when={options()} fallback={<p>Tool choices are not available yet.</p>}>
+            <For each={tools()} keyed={tool => tool.id}>{tool => <label class={styles.choice}>
+              <input type="checkbox" checked={ctx.tools() == null || ctx.tools()!.includes(tool().id)}
+                onChange={event => chooseTool(tool().id, event.currentTarget.checked)} /> {tool().label || tool().id}
+            </label>}</For>
+          </Show>
+        </Popover>
+      </span>
       <For each={['project', 'model'] as const}>{key => {
         const rows = () => options()?.[key === 'project' ? 'projects' : 'models'] ?? []
-        return <label>{key === 'project' ? 'Project' : 'Model'} <select class={`${styles.input} ${styles.filterSelect}`} value={ctx.filters()[key]}
-          onChange={event => ctx.navigate({ [key]: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
-          <option value="all">All</option>
-          <Show when={ctx.filters()[key] !== 'all' && !rows().some(row => row.id === ctx.filters()[key])}>
-            <option value={ctx.filters()[key]}>{ctx.filters()[key]}</option>
-          </Show>
-          <For each={rows()} keyed={row => row.id}>{row => <option value={row().id}>{row().id}</option>}</For>
-        </select></label>
+        return <label class={styles.filter} data-active={ctx.filters()[key] !== 'all' ? '' : undefined}>
+          <span>{key === 'project' ? 'Project' : 'Model'}</span>
+          <select value={ctx.filters()[key]}
+            onChange={event => ctx.navigate({ [key]: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
+            <option value="all">All</option>
+            <Show when={ctx.filters()[key] !== 'all' && !rows().some(row => row.id === ctx.filters()[key])}>
+              <option value={ctx.filters()[key]}>{ctx.filters()[key]}</option>
+            </Show>
+            <For each={rows()} keyed={row => row.id}>{row => <option value={row().id}>{row().id}</option>}</For>
+          </select><Icon glyph="down" small /></label>
       }}</For>
-      <label>Status <select class={styles.input} value={ctx.filters().status}
-        onChange={event => ctx.navigate({ status: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
-        <For each={STATUSES}>{([id, label]) => <option value={id}>{label}</option>}</For>
-      </select></label>
+      <label class={styles.filter} data-active={ctx.filters().status !== 'all' ? '' : undefined}><span>Status</span>
+        <select value={ctx.filters().status}
+          onChange={event => ctx.navigate({ status: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
+          <For each={STATUSES}>{([id, label]) => <option value={id}>{label}</option>}</For>
+        </select><Icon glyph="down" small /></label>
       <Show when={ctx.filters().sel}>
-        <span>Time selected: {date(ctx.filters().sel?.since)} to {date(ctx.filters().sel?.until)}</span>
-        <button class={styles.button} type="button" onClick={() => ctx.select(null)}>Clear time selection</button>
+        <span class={styles.chip}>Time selected: {date(ctx.filters().sel?.since)} to {date(ctx.filters().sel?.until)}
+          <button class={styles.chipClose} type="button" aria-label="Clear time selection" title="Clear time selection" onClick={() => ctx.select(null)}>
+            <Icon glyph="close" small /></button></span>
       </Show>
       <Show when={canClear(ctx.filters(), ctx.tools())}>
-        <button class={styles.button} type="button" onClick={() => props.clear()}>Clear filters</button>
+        <button class={styles.small} type="button" onClick={() => props.clear()}><Icon glyph="close" small />Clear filters</button>
       </Show>
       <Show when={scope()}>
-        <span>{scope()!.shown_agents} of {scope()!.all_agents} agents</span>
+        <span class={styles.count}>{scope()!.shown_agents} of {scope()!.all_agents} agents</span>
       </Show>
     </div>
     <Dialog title="Custom time range" open={props.custom} onClose={() => props.setCustom(false)}>
@@ -91,7 +105,7 @@ export function BoardControls(props: {
         <label>Start <input class={styles.input} type="datetime-local" name="since" value={date(ctx.filters().range.since)} required /></label>
         <label>End <input class={styles.input} type="datetime-local" name="until" value={date(ctx.filters().range.until)} required /></label>
         <Show when={error()}><span role="alert">{error()}</span></Show>
-        <button class={styles.button} type="submit">Apply range</button>
+        <button class={styles.primary} type="submit">Apply range</button>
       </form>
     </Dialog>
   </>

@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, Show, untrack, type Access
 import type { JSX } from '@solidjs/web'
 import { defaultRangeExtractor, elementScroll, observeElementOffset, observeElementRect, Virtualizer } from '@tanstack/virtual-core'
 import type { SortingState } from '@tanstack/table-core'
-import { createTableModel, formatValue, makeColumns, updateTableModel, type Field, type RowIdentity } from './tableModel'
+import { actionName, createTableModel, formatValue, makeColumns, updateTableModel, type Field, type RowIdentity } from './tableModel'
 import { PanelState } from './PanelState'
 import styles from './Table.module.css'
 
@@ -77,7 +77,9 @@ function Cells<T extends object>(props: TableProps<T> & { row: T }) {
         if (raw == null) return 'N/A'
         if (typeof raw === 'number') return field().compact?.(raw)
       }
-      const text = <Show when={short()} fallback={display()}>{compact => <>
+      const text = <Show when={short()} fallback={<Show when={field().clip && !props.pageSize} fallback={display()}>
+        <span class={styles.clipStart} title={display()}><span dir="ltr">{display()}</span></span>
+      </Show>}>{compact => <>
         <span title={display()} class={value() == null ? styles.missing : undefined} aria-hidden="true">{compact()}</span>
         <span class={styles.visuallyHidden}>{display()}</span>
       </>}</Show>
@@ -85,7 +87,7 @@ function Cells<T extends object>(props: TableProps<T> & { row: T }) {
         title={!props.pageSize && props.primaryCell ? display() : undefined}>
         <Show when={index() === 0 && props.primaryCell} fallback={
           <Show when={field().action?.label(props.row)} fallback={text}>{label =>
-            <button type="button" class={styles.action} aria-label={label()}
+            <button type="button" class={styles.action} aria-label={actionName(display(), label())}
               onClick={() => field().action?.run(props.row)}>{text}</button>}
           </Show>}>
           {render => render()(row, display, text)}

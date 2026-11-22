@@ -20,7 +20,7 @@ const dayAndClock = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'n
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'always' })
 const units = [['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]] as const
 
-export function Freshness(props: { updatedAt?: number | null }) {
+export function Freshness(props: { updatedAt?: number | null, compact?: boolean }) {
   const [now, setNow] = createSignal(Date.now() / 1000)
   const updated = () => {
     const ts = props.updatedAt
@@ -45,9 +45,11 @@ export function Freshness(props: { updatedAt?: number | null }) {
     return seconds === 0 ? 'just now' : relative.format(-Math.floor(seconds / scale), unit)
   }
   return <span class={styles.freshness}>Last updated<Show when={updated()} fallback=": unknown">{date =>
-    <> <time datetime={date().toISOString()} title={dayAndClock.format(date())}>
-      {(Math.abs(age(date())) >= 86400 ? dayAndClock : clock).format(date())}
-    </time>{` (${ageText(date())})`}</>}</Show></span>
+    <Show when={!props.compact} fallback={<> <time datetime={date().toISOString()} title={dayAndClock.format(date())}>{ageText(date())}</time></>}>
+      <> <time datetime={date().toISOString()} title={dayAndClock.format(date())}>
+        {(Math.abs(age(date())) >= 86400 ? dayAndClock : clock).format(date())}
+      </time>{` (${ageText(date())})`}</>
+    </Show>}</Show></span>
 }
 
 export function PanelState(props: {
@@ -62,7 +64,7 @@ export function PanelState(props: {
     <div class={styles.notice}>
       <Icon data={states[props.state].icon} />
       <span role={props.state === 'error' ? 'alert' : 'status'}>{props.message ?? states[props.state].label}</span>
-      <Show when={props.state === 'stale'}><Freshness updatedAt={props.updatedAt} /></Show>
+      <Show when={props.state === 'stale'}><Freshness compact updatedAt={props.updatedAt} /></Show>
     </div>
     <Show when={props.onRetry}>
       <button type="button" class={styles.retry} onClick={() => props.onRetry?.()}>Retry</button>

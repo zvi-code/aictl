@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import sys
 import threading
 import time
@@ -590,7 +589,7 @@ def _merge_telemetry_into_tools(tools: list[DashboardTool], telemetry_reports) -
 
 def _kill_stale_server(port: int) -> None:
     """Kill a previous aictl on *port*, or abort if the port is taken by something else."""
-    from .platforms import listening_pids
+    from .platforms import listening_pids, terminate_pid
 
     my_pid = os.getpid()
     for pid in listening_pids(port):
@@ -603,10 +602,10 @@ def _kill_stale_server(port: int) -> None:
             cmdline = " ".join(proc.cmdline())
         except (ImportError, psutil.Error, OSError):
             cmdline = ""
-        if "aictl" in cmdline:
+        if "aictl" in cmdline.lower():
             print(f"  killing stale aictl on port {port} (pid {pid})", file=sys.stderr)
             try:
-                os.kill(pid, signal.SIGTERM)
+                terminate_pid(pid)
                 psutil.Process(pid).wait(timeout=5)
             except (OSError, psutil.Error):
                 pass
@@ -800,24 +799,23 @@ class CollectionService:
             if not quiet:
                 print(msg, file=sys.stderr)
 
-        # Persistent live monitor (runs continuously, accumulates state)
-        if self.include_live_monitor:
-            _say("  starting persistent live monitor ...")
-            self._monitor = PersistentMonitor(self.root, sink=self.sink, live_sources=self.store.live_sources)
-            self._monitor.start()
-
-        # Initial collection so consumers see data immediately
+        # Initial collection so consumers see data immediately without competing with monitor threads
         _say("  collecting initial snapshot ...")
-        live_override = self._monitor.snapshot_dict() if self._monitor else None
         snap = collect(
             self.root,
             include_processes=True,
-            _live_monitor_override=live_override or {},
+            _live_monitor_override={},
             _sink=self.sink,
             _shared_config_cache=self.store.live_sources is not None,
         )
         self.store.update(snap)
         self.allowed.update(snap)
+
+        # Persistent live monitor (runs continuously, accumulates state)
+        if self.include_live_monitor:
+            _say("  starting persistent live monitor ...")
+            self._monitor = PersistentMonitor(self.root, sink=self.sink, live_sources=self.store.live_sources)
+            self._monitor.start()
 
         # Background refresh (uses the persistent monitor for live data)
         self._refresh = RefreshLoop(

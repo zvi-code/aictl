@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, type Accessor } from 'solid-js'
+import { createMemo, createSignal, For, Show, untrack, type Accessor } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import { at } from '../data'
 import type { FieldRef, PanelContext, Read, Row } from '../types'
@@ -65,9 +65,9 @@ export function HealthTable<T extends object>(props: {
   </Show>
 }
 
-export function Detail(props: { label: string; children: JSX.Element }) {
-  const [open, setOpen] = createSignal(false)
-  return <details onToggle={event => setOpen(event.currentTarget.open)}>
+export function Detail(props: { label: string; open?: boolean; children: JSX.Element }) {
+  const [open, setOpen] = createSignal(untrack(() => props.open === true))
+  return <details open={untrack(open)} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{props.label}</summary>
     <Show when={open()}><div class={styles.flow}>{props.children}</div></Show>
   </details>

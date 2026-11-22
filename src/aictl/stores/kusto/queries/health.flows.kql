@@ -1,0 +1,52 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20, step:real = 60.0, row_limit:long);
+// Per-table writer counters from saved node snapshots. A rate is counted only
+// between two snapshots of the same daemon process, as in health.series.
+let flows = materialize(
+    system_snapshots
+    | where (all_nodes or node_id == requested_node) and ts between (since .. until)
+    | summarize arg_max(_v, *) by node_id, ['project'], ts
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | summarize arg_max(_v, *) by node_id, ts
+    | extend c = parse_json(node_health_counters)
+    | extend pid = tolong(c.pid), writer_tables = c.store.writer.tables
+    | where isnotnull(writer_tables)
+    | project node_id, ts, pid, writer_tables
+    | mv-expand tbl = writer_tables
+    | extend table_name = tostring(bag_keys(tbl)[0])
+    | extend v = tbl[table_name]
+    | project node_id, ts, pid, table_name, mode = tostring(v.mode), sent = todouble(v.rows_sent),
+              sent_bytes = todouble(v.bytes_sent), sent_requests = todouble(v.ingest_requests),
+              failed = todouble(v.ingest_failures), dropped = todouble(v.rows_dropped), queued = tolong(v.queue_depth)
+    | order by node_id asc, table_name asc, ts asc
+    | extend same = isnotnull(pid) and prev(node_id) == node_id and prev(table_name) == table_name and prev(pid) == pid,
+             dt = ts - prev(ts)
+    | extend rate = iff(same and dt > 0, 1.0 / dt, real(null))
+    | extend d_rows = iff(same and sent >= prev(sent), sent - prev(sent), real(null)),
+             d_bytes = iff(same and sent_bytes >= prev(sent_bytes), sent_bytes - prev(sent_bytes), real(null)),
+             d_requests = iff(same and sent_requests >= prev(sent_requests), sent_requests - prev(sent_requests), real(null)),
+             d_failures = iff(same and failed >= prev(failed), failed - prev(failed), real(null)),
+             d_dropped = iff(same and dropped >= prev(dropped), dropped - prev(dropped), real(null))
+);
+let by_table = flows
+    | summarize rows_per_s = avg(d_rows * rate), bytes_per_s = avg(d_bytes * rate), requests_per_s = avg(d_requests * rate),
+                failures = sum(d_failures), rows_dropped = sum(d_dropped), queue_depth = max(queued)
+                by node_id, table_name, t = since + bin(ts - since, step)
+    | summarize rows_per_s = sum(rows_per_s), bytes_per_s = sum(bytes_per_s), requests_per_s = sum(requests_per_s),
+                failures = sum(failures), rows_dropped = sum(rows_dropped), queue_depth = sum(queue_depth),
+                nodes = dcountif(node_id, rows_per_s > 0)
+                by table_name, t
+    | where rows_per_s > 0 or failures > 0 or rows_dropped > 0 or queue_depth > 0
+    | extend row_type = 'table';
+let by_node = flows
+    | summarize mode = take_anyif(mode, isnotempty(mode)), rows = sum(d_rows), bytes = sum(d_bytes), requests = sum(d_requests),
+                failures = sum(d_failures), rows_dropped = sum(d_dropped), peak_rows_per_s = max(d_rows * rate),
+                arg_max(ts, queued)
+                by node_id, table_name
+    | project-rename last_at = ts, queue_depth = queued
+    | where rows > 0 or failures > 0 or rows_dropped > 0 or queue_depth > 0
+    | extend row_type = 'node';
+union by_node, by_table
+| project row_type, node_id, ['table'] = table_name, t, mode, rows_per_s, bytes_per_s, requests_per_s, failures, rows_dropped,
+          queue_depth, nodes, rows, bytes, requests, peak_rows_per_s, last_at
+| order by row_type asc, node_id asc, ['table'] asc, t asc
+| take row_limit

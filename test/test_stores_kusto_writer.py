@@ -4,10 +4,13 @@ import threading
 
 import pytest
 
-from aictl.stores.base import InvalidRowError
+from aictl.records import CallFacts, SessionStepRow, ToolInvocationRow
+from aictl.session_facts import SessionFacts
+from aictl.stores.base import InvalidRowError, StoreError
 from aictl.stores.kusto import client
 from aictl.stores.kusto.writer import KustoWriter
 from aictl.stores.testing import MemoryWriter
+from aictl.tool_calls import write_size_fills
 
 
 class Sink:
@@ -171,3 +174,43 @@ def test_memory_writer_keeps_independent_copies_of_calls():
         ("upsert", "b", [{"nested": ["old"]}]),
         ("delete", "b", [{"id": 2}]),
     ]
+
+
+def test_transcript_handoff_paces_writer_before_queue_drops_rows(monkeypatch):
+    monkeypatch.setattr(client, "RETRY_DELAYS_S", ())
+    sink = Sink()
+    writer = KustoWriter(sink, node_id="node", max_rows=4)
+    facts = SessionFacts(writer, keeps_text=lambda: True)
+    for batch in range(5):
+        steps = [
+            SessionStepRow(step_key=f"s-{batch}-{i}", session_id="sid", ts=100.0 + i, kind="message", text="hi")
+            for i in range(2)
+        ]
+        facts.write(CallFacts(steps=steps))
+    writer.flush()
+    assert stats(writer, "session_steps")["rows_dropped"] == 0
+    assert stats(writer, "session_steps")["rows_sent"] == 10
+
+    rows = [
+        ToolInvocationRow(
+            ts=float(i), session_id="sid", tool="copilot-cli", tool_name="view",
+            source="transcript", dedup_key=f"t-{i}", input_bytes=10, output_bytes=20,
+        )
+        for i in range(10)
+    ]
+    write_size_fills(writer, rows)
+    writer.flush()
+    assert stats(writer, "tool_invocation_sizes")["rows_dropped"] == 0
+    assert stats(writer, "tool_invocation_sizes")["rows_sent"] == 10
+
+    sink.error = RuntimeError("kusto unavailable")
+    with pytest.raises(StoreError, match="kusto unavailable"):
+        facts.write(
+            CallFacts(
+                steps=[
+                    SessionStepRow(step_key=f"err-{i}", session_id="sid", ts=200.0 + i, kind="message")
+                    for i in range(2)
+                ]
+            )
+        )
+

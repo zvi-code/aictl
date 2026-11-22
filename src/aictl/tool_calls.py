@@ -49,9 +49,15 @@ class ToolCalls:
 
     def record(self, rows: Iterable[ToolInvocationRow]) -> int:
         count = 0
+        transcript = False
         with self._lock:
             for row in rows:
+                transcript = transcript or row.source == "transcript"
                 count += self._record(row)
+        if transcript and count:
+            pace = getattr(self._writer, "pace", None)
+            if callable(pace):
+                pace()
         return count
 
     def _record(self, row: ToolInvocationRow) -> int:
@@ -182,6 +188,10 @@ def write_size_fills(writer: Writer, rows: Iterable[ToolInvocationRow]) -> int:
          "input_bytes": row.input_bytes, "output_bytes": row.output_bytes}
         for row in rows if row.input_bytes is not None or row.output_bytes is not None
     ]
-    if sizes:
-        writer.upsert("tool_invocation_sizes", sizes)
+    pace = getattr(writer, "pace", None)
+    chunk = max(1, min(2000, getattr(writer, "_max_rows", 4000) // 2))
+    for start in range(0, len(sizes), chunk):
+        writer.upsert("tool_invocation_sizes", sizes[start : start + chunk])
+        if callable(pace):
+            pace()
     return len(sizes)

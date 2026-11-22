@@ -128,7 +128,7 @@ def _as_number(value: Any) -> float | None:
 def _display_folder(folder: Path) -> str:
     home = str(Path.home())
     text = str(folder)
-    return "~" + text[len(home):] if text == home or text.startswith(home + os.sep) else text
+    return "~" + text[len(home):].replace("\\", "/") if text == home or text.startswith(home + os.sep) else text
 
 
 def _resolve_agent(history: HistoryScope, agent_id: str) -> tuple[str, str]:

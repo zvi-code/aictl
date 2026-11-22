@@ -625,7 +625,7 @@ test('BRD-03/20: retain values while paused; check contrast in both themes', asy
   await expect(row(agents, 'anon_33186031882f5bc3b1a54036')).toBeVisible();
   const daily = await showPanel(page, 'dailyModels');
   await expect(daily.locator('[data-status=stale]')).toBeVisible();
-  await page.getByLabel('Theme').selectOption('dark');
+  await page.getByRole('button', { name: 'Dark theme' }).click();
   await showPanel(page, 'dailyModels');
   await captureFrame(page);
   await checkAxe(page, '#p-dailyModels', 'daily use in dark theme');

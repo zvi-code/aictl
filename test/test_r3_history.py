@@ -131,11 +131,12 @@ def test_full_session_event_page_resolves_winners_before_selecting_text(kusto_st
     }
 
 
-@pytest.mark.parametrize(("view", "params"), [
-    ("files.inventory", {}),
-    ("tools.activity_rows", {"kind_filter": "loops", "since": 99, "until": 101}),
+@pytest.mark.parametrize(("view", "params", "count"), [
+    ("files.inventory", {}, 6),
+    ("tools.activity_rows", {"kind_filter": "loops", "since": 99, "until": 101}, 6),
+    ("sequence.flow", {"requested_session": "s", "since": 99, "until": 101}, None),
 ])
-def test_complete_history_continues_across_equal_keys_and_nulls(kusto_store, view, params):
+def test_complete_history_continues_across_equal_keys_and_nulls(kusto_store, view, params, count):
     seed = kusto_store.insert
     for project in ("p", "q"):
         for i, stamp in enumerate((100.125, 100.125, None)):
@@ -145,7 +146,11 @@ def test_complete_history_continues_across_equal_keys_and_nulls(kusto_store, vie
     seed("files", node_id="another-node", path="/other-node")
     history = HistoryScope(kusto_store.history_store.reader, kusto_store.facts.node)
     expected = history.read(view, **params, limit=10)
-    assert len(expected) == 6 and all("_page_cursor" not in row for row in expected)
+    assert all("_page_cursor" not in row for row in expected)
+    if count is None:  # the flow adds rows of the session to the six tool calls
+        assert sum(row["row_type"] == "use" for row in expected) == 6
+    else:
+        assert len(expected) == count
     assert history.read(view, **params, limit=2) == expected
     assert history.read(view, **params, limit=2, page=True) == expected[:2]
 

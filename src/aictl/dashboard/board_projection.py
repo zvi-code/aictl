@@ -15,6 +15,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Iterable
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
@@ -99,6 +100,10 @@ MEMO_MAX_KEYS = 8
 
 
 FACTS_TTL_S = 60.0
+
+
+# The row limit of one read of call rows. Each further page runs the whole query again.
+ACTIVITY_PAGE_ROWS = 100_000
 
 
 DISK_TTL_S = 60.0
@@ -507,11 +512,14 @@ class _Board:
         self.pid_cpu: dict[int, float] = {}
         self.pid_memory: dict[int, float] | None = None
         self.test_rows: list[tuple] = []
+        self.confirm_rows: list[tuple] = []
         self.loops: list[dict] = []
         self.status: dict[str, str] = {}
         self.sub_status: dict[str, str] = {}
         self.scope: set[str] = set()
+        self._prefetched: dict[str, list[dict]] = {}
         facts = facts or {}
+        self.facts = facts
         self.tools_with_calls = {tool for tool, kinds in facts.items() if "tool_calls" in kinds}
         self.tools_with_confirms = {tool for tool, kinds in facts.items() if "confirms" in kinds}
         self.tools_with_prompts = {tool for tool, kinds in facts.items() if "prompts" in kinds}
@@ -523,9 +531,20 @@ class _Board:
         return max(0, min(SPARK_POINTS - 1, int((ts - self.f.since) / self.f.spark_s)))
 
     def _history_window(self, view: str, *, grid: bool = False, **params) -> list[dict]:
+        keep = params.pop("_prefetch", False)
+        key = json.dumps([view, grid, params], sort_keys=True, default=str)
+        if not keep and (rows := self._prefetched.pop(key, None)) is not None:
+            return rows
         if grid:
             params["grid"] = self.f.grid
-        return self.history.read(view, sid=self.only_session or "", since=self.f.since, until=self.f.until, **params)
+        rows = self.history.read(view, sid=self.only_session or "", since=self.f.since, until=self.f.until, **params)
+        if keep:
+            self._prefetched[key] = rows
+        return rows
+
+    def _prefetch(self, reads: list[tuple[str, dict]]) -> None:
+        """Read these windows side by side. The loaders then take each result once."""
+        _gather(self.conn, [lambda v=view, p=params: self._history_window(v, _prefetch=True, **p) for view, params in reads])
 
     def _history_series(self, view: str, **params) -> list[dict]:
         if not self.scope:
@@ -535,20 +554,46 @@ class _Board:
 
     # ── Loading ────────────────────────────────────────────────
 
-    def load(self, counts_only: bool = False) -> _Board:
+    # The agent detail's board reads its own fallback rows and no confirmation rows.
+    _prefetch_fallback = True
+    _reads_confirms = True
+
+    def load(self, counts_only: bool = False, *, charts_only: bool = False) -> _Board:
         """Read the window, then apply the filters.
 
         *counts_only* leaves out the test runs, failures and loops: they change a row's
-        status, never its tokens, cost, tool calls or prompts.
+        status, never its tokens, cost, tool calls or prompts. *charts_only* leaves out
+        the confirmation rows, and the loops unless a status filter needs them: no chart
+        shows them.
+
+        The reads that need only the window run side by side first; the session rows,
+        which need the ids those reads find, run beside the loop search.
         """
-        self._load_identity()
-        self._price_cells()
-        self._match_live()
-        if not counts_only:
+        activity = not counts_only
+        loops = activity and (not charts_only or self.f.status != "all")
+        confirms = self._reads_confirms and not charts_only
+        reads: list[tuple[str, dict]] = [
+            ("requests.cells", {"grid": True}),
+            ("tools.agent_totals", {}),
+            ("prompts.series", {"grid": True}),
+        ]
+        if self._prefetch_fallback:
+            reads.append(("usage.sessions", {"without_requests": True}))
+        if activity:
+            reads += [("tools.activity_rows", {"kind_filter": kind, "limit": ACTIVITY_PAGE_ROWS})
+                      for kind in ("tests", "failures")]
+        if confirms:
+            reads.append(("tools.activity_rows", {"kind_filter": "confirms", "limit": ACTIVITY_PAGE_ROWS}))
+        self._prefetch(reads)
+        if activity:
             self._load_tests()
             self._load_failures()
-            self._load_loops()
-        self._load_confirms()
+        _gather(self.conn, [self._load_identity, *([self._load_loops] if loops else [])])
+        self._price_cells()
+        self._match_live()
+        if not charts_only:
+            self._load_confirms()
+        self._prefetched.clear()
         self._assign_status()
         self._apply_filters()
         self._rollup()
@@ -576,7 +621,7 @@ class _Board:
         self.cells = cells
 
     def _load_fallback_cells(self) -> None:
-        self._add_fallback_cells(_fallback_rows(self.history, self.f.since, self.f.until, self.only_session))
+        self._add_fallback_cells(self._history_window("usage.sessions", without_requests=True))
 
     def _add_fallback_cells(self, rows: Iterable[dict]) -> None:
         grid_s = (self.f.until - self.f.since) / self.f.grid
@@ -634,8 +679,12 @@ class _Board:
         if not ids:
             return
         keys = self.history.keys(ids)
-        self.meta = {row["session_id"]: row for row in self.history.read("board.sessions", session_keys=keys)}
-        for agent in self.history.read("board.agents", session_keys=keys):
+        sessions, agents = _gather(self.conn, [
+            lambda: self.history.read("board.sessions", session_keys=keys),
+            lambda: self.history.read("board.agents", session_keys=keys),
+        ])
+        self.meta = {row["session_id"]: row for row in sessions}
+        for agent in agents:
             # A long session stays in view, but a subagent that ran outside this time does not.
             last = agent["ended_at"] or (agent["started_at"] if agent["completed"] else None)
             ran_outside = self.only_session is None and (
@@ -876,7 +925,8 @@ class _Board:
     def _load_tests(self) -> None:
         """Calls that run a test command, with outcome. The prefilter only trims the scan."""
         fields = "session_id agent_id ts tool_name target is_error exit_code duration_ms".split()
-        rows = (tuple(row[k] for k in fields) for row in self._history_window("tools.activity_rows", kind_filter="tests"))
+        rows = (tuple(row[k] for k in fields) for row in self._history_window(
+            "tools.activity_rows", kind_filter="tests", limit=ACTIVITY_PAGE_ROWS))
         known: dict[tuple[str, str], bool] = {}
         kept = []
         for row in rows:
@@ -891,13 +941,15 @@ class _Board:
     def _load_confirms(self) -> None:
         fields = "session_id agent_id tool_name target ts confirm confirm_wait_ms".split()
         self.confirm_rows = [
-            tuple(row[k] for k in fields) for row in self._history_window("tools.activity_rows", kind_filter="confirms")
+            tuple(row[k] for k in fields) for row in self._history_window(
+                "tools.activity_rows", kind_filter="confirms", limit=ACTIVITY_PAGE_ROWS)
         ]
 
     def _load_failures(self) -> None:
         fields = "session_id agent_id tool_name target result_summary ts".split()
         self.failure_rows = [
-            tuple(row[k] for k in fields) for row in self._history_window("tools.activity_rows", kind_filter="failures")
+            tuple(row[k] for k in fields) for row in self._history_window(
+                "tools.activity_rows", kind_filter="failures", limit=ACTIVITY_PAGE_ROWS)
         ]
 
     def _load_loops(self) -> None:
@@ -914,7 +966,8 @@ class _Board:
             return
         streams: dict[tuple[str, str], list[_Call]] = defaultdict(list)
         fields = "session_id agent_id ts tool_name target is_error exit_code input_signature".split()
-        for row in self._history_window("tools.activity_rows", kind_filter="loops", session_keys=self.history.keys(candidates)):
+        for row in self._history_window("tools.activity_rows", kind_filter="loops", limit=ACTIVITY_PAGE_ROWS,
+                                        session_keys=self.history.keys(candidates)):
             sid, aid, ts, name, target, is_error, exit_code, call_input = (row[k] for k in fields)
             streams[(sid, _agent_key(sid, aid))].append(_Call(ts, name, target or "", is_error, exit_code, call_input or ""))
         for (sid, agent), calls in streams.items():
@@ -2395,7 +2448,7 @@ def _previous(board: _Board) -> dict:
     if board.history.qualified:
         hi = f.since - 1e-6
         prior = replace(f, since=f.since - (f.until - f.since), until=hi)
-        previous = _Board(board.conn, prior, board.now, None, facts=_activity_facts(board.history),
+        previous = _Board(board.conn, prior, board.now, None, facts=board.facts,
                           history=board.history).load(counts_only=True)
         calls = sum(agg.n for (sid, _), agg in previous.tool_agg.items() if sid in previous.scope)
         calls += sum(previous.fallback_tools.values())
@@ -2530,6 +2583,9 @@ _COVERAGE_TABLE: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 _facts_memo: dict[tuple, tuple[float, dict[str, set[str]]]] = {}
 
 
+_facts_inflight: dict[tuple, Future] = {}
+
+
 _sources_memo: dict[tuple, tuple[float, list[tuple]]] = {}
 
 
@@ -2564,18 +2620,52 @@ def _activity_facts(history: HistoryScope) -> dict[str, set[str]]:
 
 
 def _store_facts(memo_key: str, history: HistoryScope) -> dict[str, set[str]]:
-    """Per tool, which kinds of rows exist in the store. This changes rarely."""
+    """Per tool, which kinds of rows exist in the store. This changes rarely.
+
+    The read scans the whole store, so a stale answer is returned at once and read
+    again in the background. Only the first caller of a key waits; others share its read.
+    """
     key = (memo_key, history.reader, history.node, history.qualified)
     with _facts_lock:
         cached = _facts_memo.get(key)
-        if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
+        pending = _facts_inflight.get(key)
+        if cached is not None:
+            if pending is None and time.monotonic() - cached[0] >= FACTS_TTL_S:
+                _facts_inflight[key] = Future()
+                threading.Thread(target=_refresh_facts_quietly, args=(key, history), daemon=True,
+                                 name="board-facts").start()
             return cached[1]
-    result = dict(_activity_facts(history))
+        if pending is None:
+            _facts_inflight[key] = Future()
+    if pending is not None:
+        return pending.result()
+    return _refresh_facts(key, history)
+
+
+def _refresh_facts(key: tuple, history: HistoryScope) -> dict[str, set[str]]:
+    with _facts_lock:
+        future = _facts_inflight[key]
+    try:
+        result = dict(_activity_facts(history))
+    except BaseException as exc:
+        with _facts_lock:
+            _facts_inflight.pop(key, None)
+        future.set_exception(exc)
+        raise
     with _facts_lock:
         _facts_memo[key] = (time.monotonic(), result)
         if len(_facts_memo) > MEMO_MAX_KEYS:
             _facts_memo.pop(next(iter(_facts_memo)))
+        _facts_inflight.pop(key, None)
+    future.set_result(result)
     return result
+
+
+def _refresh_facts_quietly(key: tuple, history: HistoryScope) -> None:
+    try:
+        _refresh_facts(key, history)
+    except Exception:  # noqa: BLE001 - the stale facts stay in use
+        logger.debug("board facts refresh failed", exc_info=True)
 
 
 # Tools whose usage aictl reads from session files on disk. Only files changed in the last
@@ -2730,27 +2820,44 @@ def compute_board(
                            _live_projection=getattr(db, "_live_projection", False) is True)
     memo_key = str(getattr(db, "_path", "memory"))
     facts = _store_facts(memo_key, history)
-    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load()
+    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load(charts_only=charts_only)
     f = filters
 
-    agents = board.agents()
     # The sections read the loaded board and the store; none changes the board, so on a
-    # cluster they run side by side.
-    latency, skill_rows, tool_section, errors_section, changes_section, tests_section, loops, prev, resources = _gather(
-        conn,
-        [
-            lambda: _latency(board),
-            lambda: _skill_rows(board),
-            lambda: _tools_section(board),
-            lambda: _errors_section(board),
-            lambda: _changes_section(board),
-            lambda: _tests_section(board),
-            lambda: _loop_rows(board),
-            lambda: _previous(board),
-            lambda: _resource_series(board),
-        ],
-    )
-    turns = _turns(board, skill_rows)
+    # cluster they run side by side. The charts need neither the rows nor the comparison.
+    if charts_only:
+        agents, skill_rows, turns, changes_section, loops, prev = [], [], None, ({}, {}), [], {}
+        latency, tool_section, errors_section, tests_section, resources = _gather(
+            conn,
+            [
+                lambda: _latency(board),
+                lambda: _tools_section(board),
+                lambda: _errors_section(board),
+                lambda: _tests_section(board),
+                lambda: _resource_series(board),
+            ],
+        )
+    else:
+        def skills_and_turns() -> tuple[list[tuple], _Turns]:
+            rows = _skill_rows(board)
+            return rows, _turns(board, rows)
+
+        (agents, latency, (skill_rows, turns), tool_section, errors_section, changes_section, tests_section, loops,
+         prev, resources) = _gather(
+            conn,
+            [
+                board.agents,
+                lambda: _latency(board),
+                skills_and_turns,
+                lambda: _tools_section(board),
+                lambda: _errors_section(board),
+                lambda: _changes_section(board),
+                lambda: _tests_section(board),
+                lambda: _loop_rows(board),
+                lambda: _previous(board),
+                lambda: _resource_series(board),
+            ],
+        )
     tool_calls_bucket = tool_section["calls_bucket"]
     tool_fail_bucket = tool_section["fail_bucket"]
     tool_spark = {"spark_calls": tool_section["spark_calls"], "spark_failed": tool_section["spark_failed"]}

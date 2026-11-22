@@ -474,6 +474,190 @@
         "view",
         "rows"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "since": {"type": "number"},
+        "until": {"type": "number"},
+        "step": {"type": "number"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "flows"},
+        "tables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "table": {"type": "string"},
+              "t": {"type": "number"},
+              "rows_per_s": {"type": ["number", "null"]},
+              "bytes_per_s": {"type": ["number", "null"]},
+              "requests_per_s": {"type": ["number", "null"]},
+              "failures": {"type": ["number", "null"]},
+              "rows_dropped": {"type": ["number", "null"]},
+              "queue_depth": {"type": ["number", "null"]},
+              "nodes": {"type": ["number", "null"]}
+            },
+            "required": ["table", "t", "rows_per_s", "bytes_per_s", "requests_per_s", "failures", "rows_dropped", "queue_depth", "nodes"]
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "table": {"type": "string"},
+              "mode": {"type": ["string", "null"]},
+              "rows": {"type": ["number", "null"]},
+              "bytes": {"type": ["number", "null"]},
+              "requests": {"type": ["number", "null"]},
+              "failures": {"type": ["number", "null"]},
+              "rows_dropped": {"type": ["number", "null"]},
+              "peak_rows_per_s": {"type": ["number", "null"]},
+              "queue_depth": {"type": ["number", "null"]},
+              "last_at": {"type": ["number", "null"]}
+            },
+            "required": ["node_id", "table", "mode", "rows", "bytes", "requests", "failures", "rows_dropped", "peak_rows_per_s", "queue_depth", "last_at"]
+          }
+        }
+      },
+      "required": ["scope", "local_node", "fleet_available", "generated_at", "read_only", "since", "until", "step", "truncated", "view", "tables", "nodes"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "since": {"type": "number"},
+        "until": {"type": "number"},
+        "step": {"type": "number"},
+        "view": {"const": "backend"},
+        "database": {"type": "string"},
+        "checked_at": {"type": "number"},
+        "measurement_scope": {"type": "string"},
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "t": {"type": "number"},
+              "work": {"enum": ["aictl_queries", "other_queries", "ingestion", "maintenance"]},
+              "commands": {"type": ["number", "null"]},
+              "failed": {"type": ["number", "null"]},
+              "cpu_s": {"type": ["number", "null"]},
+              "memory_peak": {"type": ["number", "null"]}
+            },
+            "required": ["t", "work", "commands", "failed", "cpu_s", "memory_peak"]
+          }
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "view": {"type": "string"},
+              "commands": {"type": ["number", "null"]},
+              "failed": {"type": ["number", "null"]},
+              "cpu_s": {"type": ["number", "null"]},
+              "mean_ms": {"type": ["number", "null"]},
+              "max_ms": {"type": ["number", "null"]},
+              "memory_peak": {"type": ["number", "null"]}
+            },
+            "required": ["view", "commands", "failed", "cpu_s", "mean_ms", "max_ms", "memory_peak"]
+          }
+        }
+      },
+      "required": ["scope", "local_node", "fleet_available", "generated_at", "read_only", "since", "until", "step", "view", "database", "checked_at", "measurement_scope", "series", "views"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
+        "since": {"type": "number"},
+        "until": {"type": "number"},
+        "step": {"type": "number"},
+        "truncated": {"type": "boolean"},
+        "view": {"const": "series"},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node_id": {"type": "string"},
+              "t": {"type": "number"},
+              "samples": {"type": "integer"},
+              "restarts": {"type": "integer"},
+              "host_cpu": {"type": ["number", "null"]},
+              "host_cpu_max": {"type": ["number", "null"]},
+              "host_mem_mb": {"type": ["number", "null"]},
+              "host_mem_total_mb": {"type": ["number", "null"]},
+              "tools_cpu": {"type": ["number", "null"]},
+              "tools_mem_mb": {"type": ["number", "null"]},
+              "daemon_cpu": {"type": ["number", "null"]},
+              "daemon_cpu_max": {"type": ["number", "null"]},
+              "daemon_rss_mb": {"type": ["number", "null"]},
+              "daemon_threads": {"type": ["number", "null"]},
+              "sessions": {"type": ["number", "null"]},
+              "processes": {"type": ["number", "null"]},
+              "in_rate": {"type": ["number", "null"]},
+              "out_rate": {"type": ["number", "null"]},
+              "reads_per_s": {"type": ["number", "null"]},
+              "writes_per_s": {"type": ["number", "null"]},
+              "commands_per_s": {"type": ["number", "null"]},
+              "read_ms": {"type": ["number", "null"]},
+              "read_ms_max": {"type": ["number", "null"]},
+              "write_ms": {"type": ["number", "null"]},
+              "write_ms_max": {"type": ["number", "null"]},
+              "reads_in_flight": {"type": ["number", "null"]},
+              "writes_in_flight": {"type": ["number", "null"]},
+              "query_cpu": {"type": ["number", "null"]},
+              "bytes_per_s": {"type": ["number", "null"]},
+              "streaming_rows_per_s": {"type": ["number", "null"]},
+              "queued_rows_per_s": {"type": ["number", "null"]},
+              "inline_rows_per_s": {"type": ["number", "null"]},
+              "otel_metrics_per_s": {"type": ["number", "null"]},
+              "otel_events_per_s": {"type": ["number", "null"]},
+              "queue_depth": {"type": ["number", "null"]},
+              "queue_bytes": {"type": ["number", "null"]},
+              "read_failures": {"type": ["number", "null"]},
+              "write_failures": {"type": ["number", "null"]},
+              "command_failures": {"type": ["number", "null"]},
+              "ingest_failures": {"type": ["number", "null"]},
+              "rows_dropped": {"type": ["number", "null"]},
+              "otel_errors": {"type": ["number", "null"]},
+              "otel_dropped": {"type": ["number", "null"]},
+              "sink_dropped": {"type": ["number", "null"]}
+            },
+            "required": ["node_id", "t", "samples", "restarts", "host_cpu", "host_cpu_max", "host_mem_mb", "host_mem_total_mb", "tools_cpu", "tools_mem_mb", "daemon_cpu", "daemon_cpu_max", "daemon_rss_mb", "daemon_threads", "sessions", "processes", "in_rate", "out_rate", "reads_per_s", "writes_per_s", "commands_per_s", "read_ms", "read_ms_max", "write_ms", "write_ms_max", "reads_in_flight", "writes_in_flight", "query_cpu", "bytes_per_s", "streaming_rows_per_s", "queued_rows_per_s", "inline_rows_per_s", "otel_metrics_per_s", "otel_events_per_s", "queue_depth", "queue_bytes", "read_failures", "write_failures", "command_failures", "ingest_failures", "rows_dropped", "otel_errors", "otel_dropped", "sink_dropped"]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "local_node",
+        "fleet_available",
+        "generated_at",
+        "read_only",
+        "since",
+        "until",
+        "step",
+        "truncated",
+        "view",
+        "rows"
+      ]
     }
   ]
 }

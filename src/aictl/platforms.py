@@ -378,7 +378,7 @@ def copilot_session_dir() -> Path:
     home = _env_dir("COPILOT_HOME")
     if home:
         return home / "session-state"
-    return _app_dir(".copilot/session-state", dot=".copilot/session-state", win_env="USERPROFILE")
+    return Path.home() / ".copilot" / "session-state"
 
 
 def copilot_global_dir() -> Path:
@@ -388,7 +388,7 @@ def copilot_global_dir() -> Path:
     ``%USERPROFILE%/.copilot`` (NOT ``%APPDATA%/GitHub Copilot``).  ``COPILOT_HOME``
     overrides the location.
     """
-    return _env_dir("COPILOT_HOME") or _app_dir(".copilot", dot=".copilot", win_env="USERPROFILE")
+    return _env_dir("COPILOT_HOME") or (Path.home() / ".copilot")
 
 
 # ── VS Code ──────────────────────────────────────────────────────
@@ -601,11 +601,12 @@ except ModuleNotFoundError:
 
 def config_dir() -> Path:
     """Platform-appropriate config directory for aictl."""
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "aictl"
     if IS_WINDOWS:
         # ``or``: a present-but-empty APPDATA must not yield a CWD-relative path.
-        return Path(os.environ.get("APPDATA") or Path.home()) / "aictl"
-    xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(xdg) / "aictl"
+        appdata = Path(os.environ.get("APPDATA") or Path.home()) / "aictl"
+        return xdg if not appdata.exists() and xdg.exists() else appdata
+    return xdg
 
 
 def config_path() -> Path:
@@ -853,6 +854,10 @@ def load_config() -> AictlConfig:
 def _load_config_file() -> AictlConfig:
     cfg = AictlConfig()
     path = config_path()
+    if not path.is_file():
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "aictl" / "config.toml"
+        if xdg.is_file():
+            path = xdg
     if not path.is_file() or not _TOML_AVAILABLE:
         return cfg
     try:

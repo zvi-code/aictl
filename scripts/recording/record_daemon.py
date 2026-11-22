@@ -21,7 +21,7 @@ from record_http import Dashboard, Jsonl, utc_now
 from scrub import Scrubber, relative_path
 
 DATABASE = "aictl_perf_test"
-CLUSTER = "https://zaictl.swedencentral.dev.kusto.windows.net"
+CLUSTER = os.environ.get("AICTL_KUSTO_CLUSTER", "https://example.swedencentral.dev.kusto.windows.net")
 INLINE = re.compile(r"""^\.ingest inline into table (?:\[')?([a-zA-Z0-9_]+)(?:'\])?[^\n]*<\|\n""")
 SDK_DISCOVERY = {".show version", ".get ingestion resources", ".get kusto identity token"}
 

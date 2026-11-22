@@ -1,30 +1,39 @@
 .tabs { composes: tabs from "../ui/Tabs.module.css"; }
 .list {
-  composes: list from "../ui/Tabs.module.css";
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
+  padding-block-end: var(--space-3);
+  border-block-end: var(--border-size) solid var(--color-border-subtle);
 }
 .tab {
-  composes: tab from "../ui/Tabs.module.css";
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-block-size: var(--row-size);
-  padding-inline: var(--space-2);
-  white-space: nowrap;
+  composes: button small focus from "../ui/control.module.css";
+  gap: var(--space-2);
+  color: var(--color-muted);
 }
+.tab svg { color: var(--color-muted); }
+.tab:hover:not(:disabled) { color: var(--color-text); }
+.tab[aria-selected="true"], .tab[aria-selected="true"]:hover {
+  background: var(--color-selected);
+  color: var(--color-selected-text);
+}
+.tab[aria-selected="true"] svg { color: inherit; }
 .divider {
-  block-size: var(--space-4);
+  block-size: var(--space-5);
   inline-size: var(--border-size);
-  margin-inline: var(--space-1);
+  margin-inline: var(--space-2);
   background: var(--color-border);
 }
 .badge {
+  min-inline-size: var(--space-5);
+  padding-inline: var(--space-2);
   border-radius: var(--radius-pill);
-  background: var(--color-raised);
+  background: var(--color-hover);
   color: var(--color-muted);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
-  padding-inline: var(--space-1);
+  text-align: center;
 }
-.content { composes: content from "../ui/Tabs.module.css"; }
+.tab[aria-selected="true"] .badge { background: var(--color-surface); color: inherit; }
+.content { composes: content from "../ui/Tabs.module.css"; padding-inline: 0; }

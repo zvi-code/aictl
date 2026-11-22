@@ -1,1 +1,2 @@
 .icon { display: inline-block; flex: none; inline-size: var(--icon-size); block-size: var(--icon-size); }
+.small { composes: icon; inline-size: var(--icon-size-sm); block-size: var(--icon-size-sm); }

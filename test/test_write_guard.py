@@ -972,6 +972,8 @@ class TestFileIOEncoding:
         profile.write_text("# existing profile with caf\u00e9\n", encoding="utf-8")
 
         monkeypatch.setattr("aictl.commands.integrations._shell_profiles", lambda: [profile])
+        monkeypatch.setattr("aictl.commands.integrations.IS_WINDOWS", False)
+        monkeypatch.setattr("aictl.hook_removal._IS_WINDOWS", False)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AICTL_PORT", "8484")
 

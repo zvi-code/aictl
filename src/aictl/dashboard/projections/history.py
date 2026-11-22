@@ -91,8 +91,9 @@ def event_rows(result: ReadResult) -> list[dict]:
     ]
 
 
-def session_events(reader: Reader, sid: str, scope: dict, *, limit: int = 2000, raw_session: bool = False):
-    rows = event_rows(reader.read("events.page", {
+def session_events(reader: Reader, sid: str, scope: dict, *, limit: int = 2000, raw_session: bool = False,
+                   view: str = "events.page"):
+    rows = event_rows(reader.read(view, {
         **scope, "requested_session": sid, "limit": limit, "raw_session": raw_session,
     }))
     return (SimpleNamespace(**row) for row in rows)

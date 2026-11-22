@@ -59,7 +59,7 @@ def test_normal_project_shows_a_new_file_at_once(tmp_path):
     (tmp_path / "pkg" / ".custom").mkdir(parents=True)
     (tmp_path / "pkg" / ".custom" / "settings.json").write_text("{}")
     found = {f.path for t in tools.discover_all(tmp_path) for f in t.files}
-    assert str(tmp_path / "pkg" / ".custom" / "settings.json") in found
+    assert tools.norm_path(str(tmp_path / "pkg" / ".custom" / "settings.json")) in found
 
 
 def test_a_file_is_never_read_for_its_token_estimate(tmp_path, monkeypatch):

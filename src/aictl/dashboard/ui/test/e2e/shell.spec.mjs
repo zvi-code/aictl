@@ -1,4 +1,4 @@
-import { boardUrl, captureFrame, checkAxe, checkConsole, dist, expect, goToBoard, provideCatalog, recordedUrl, test } from './fixtures.mjs';
+import { boardUrl, captureFrame, checkAxe, checkConsole, dist, expect, goToBoard, provideCatalog, provideHealthSeries, recordedUrl, test } from './fixtures.mjs';
 import { startReplay } from '../replay/server.mjs';
 import board from '../../src/panels/layouts/board.json' with { type: 'json' };
 
@@ -100,13 +100,16 @@ for (const state of ['pending', 'failed']) {
 }
 
 test('SHL-01: Health navigation and snapshot', async ({ page, snapshotReplay, capture }) => {
+  await provideHealthSeries(page);
   await goToBoard(page, snapshotReplay);
   await page.getByRole('button', { name: 'Health', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'aictl Health', level: 1 })).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Find' })).toBeHidden();
   await expect(page.getByText('This node · Live — some sources are delayed or unavailable', { exact: true })).toBeVisible();
+  await expect(page.locator('#p-healthTrends [data-health-chart="host-cpu"] canvas').first()).toBeVisible();
   await captureFrame(page);
-  await expect(page).toHaveScreenshot('health.png');
+  // The history window follows the wall clock. HLT-01 captures it with a fixed clock.
+  await expect(page).toHaveScreenshot('health.png', { mask: [page.locator('#p-healthTrends')] });
   checkConsole(capture, ['/api/board/sessions?limit=50&offset=0&q=']);
 });
 
@@ -245,8 +248,8 @@ test('SHL-05: restore geometry and preferences, re-add panels and reset invalid 
   await layout.press('ArrowDown');
   await page.getByRole('menuitem', { name: 'Taller' }).press('Enter');
   await expect(panel).toHaveCSS('min-block-size', '384px');
-  await page.getByLabel('Theme').selectOption('dark');
-  await page.getByLabel('Density').selectOption('comfortable');
+  await page.getByRole('button', { name: 'Dark theme' }).click();
+  await page.getByRole('button', { name: 'Comfortable density' }).click();
   await page.reload();
   await expect(panel).toHaveCSS('min-block-size', '384px');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -332,7 +335,7 @@ test('SHL-07: Stop confirms before posting and reports partial results', async (
 test('Overview has accessible controls and contrast in both themes', async ({ page, snapshotReplay, capture }) => {
   await goToBoard(page, snapshotReplay);
   await checkAxe(page, '#app', 'light shell');
-  await page.getByLabel('Theme').selectOption('dark');
+  await page.getByRole('button', { name: 'Dark theme' }).click();
   await checkAxe(page, '#app', 'dark shell');
   checkConsole(capture);
 });

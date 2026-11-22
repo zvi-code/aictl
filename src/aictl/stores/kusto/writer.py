@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .ingest import RowIngester, json_line
-from ..base import InvalidRowError, Row
+from ..base import InvalidRowError, Row, StoreError
 from .client import next_version, retrying, schema_cache_behind
+from .ingest import RowIngester, json_line
 from .maintenance import TRIM_TIMESTAMPS
 from .schema import LEGACY_COLUMNS
 from .tables import TABLES, IngestionMode, Table
@@ -190,6 +190,23 @@ class KustoWriter:
         while len(queue.rows) > self._max_rows or queue.size > self._max_bytes:
             queue.size -= queue.rows.popleft().size
             queue.dropped += 1
+
+    def pace(self) -> None:
+        """Flush queued rows when a table reaches half its budget; fail if it stays crowded."""
+        if not self._capture or self._ingester is None:
+            return
+        with self._lock:
+            crowded = any(
+                len(q.rows) * 2 >= self._max_rows or q.size * 2 >= self._max_bytes
+                for q in self._queues.values()
+            )
+        if not crowded:
+            return
+        self.flush()
+        with self._lock:
+            for q in self._queues.values():
+                if (len(q.rows) * 2 >= self._max_rows or q.size * 2 >= self._max_bytes) and q.error:
+                    raise StoreError(q.error)
 
     def flush(self) -> None:
         """Submit rows queued at entry. Keep failed batches for the next flush."""

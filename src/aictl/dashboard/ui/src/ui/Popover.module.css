@@ -1,4 +1,6 @@
 .button { composes: button from "./control.module.css"; }
+.iconButton { composes: iconButton from "./control.module.css"; }
+.close { composes: secondary small from "./control.module.css"; }
 .surface {
   position-area: block-end span-inline-end;
   position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
@@ -13,3 +15,4 @@
   font: var(--text-md)/var(--leading-normal) var(--font-ui);
 }
 .content { margin-block: var(--space-4); }
+.srOnly { composes: visuallyHidden from "./control.module.css"; }

@@ -67,3 +67,49 @@
   font-variant-numeric: tabular-nums;
 }
 .warning { color: var(--color-warning); }
+.trendControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);
+}
+.bucket {
+  min-block-size: var(--control-size);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding-inline: var(--space-3);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.bucket:hover { border-color: var(--color-accent); }
+.bucket:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: var(--space-1); }
+.bucketLabel { color: var(--color-muted); font-size: var(--text-sm); }
+.trendStats .stats { grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-8) * 5)), 1fr)); }
+.trendGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-8) * 11)), 1fr));
+  gap: var(--space-4);
+}
+.trendCard {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  background: var(--color-raised);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  min-inline-size: 0;
+}
+.trendPlot { block-size: calc(var(--space-8) * 7); min-inline-size: 0; }
+.trendSection {
+  display: grid;
+  gap: var(--space-4);
+  min-inline-size: 0;
+  border-block-start: var(--border-size) solid var(--color-border);
+  padding-block-start: var(--space-4);
+}
+.flow .trendSection > h4 { font-size: var(--text-lg); }
+.trendCard h5 { margin: 0; font-size: var(--text-md); }

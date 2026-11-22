@@ -42,13 +42,13 @@ export function EvidenceBrowser(props: { tab: TabProps; contextGroup?: string; c
           <button type="submit" class={styles.button}>Search</button>
         </form>
         <Resource read={read}>{data => <>
-          <Stats items={[{ label: 'Shown', value: data().rows.length }, { label: 'Offset', value: data().offset }]} />
-          <Rows label="Source steps" rows={data().rows.map(row => ({ ...row, text_preview: retained(row) ? row.text_preview : null }))} identity={['step_key']}
+          <Rows label="Source steps" rows={data().rows.map(row => ({ ...row, text_preview: retained(row) ? (row.text_preview || '—') : '—' }))} identity={['step_key']}
             columns={props.contextGroup ? [['ts', 'Time', 'time'], 'source', 'model', 'phase', 'kind', 'context_tokens',
               'before_tokens', 'after_tokens', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'reasoning_tokens'] :
               [['ts', 'Time', 'time'], 'kind', 'source', 'phase', ['text_preview', 'Preview'], 'text_status']}
             empty="No matching source steps." action={{ label: row => `Inspect step ${row.step_key}`, run: row => setStep(row.step_key) }} />
           <div class={styles.bar}>
+            <span class={styles.muted}>{data().rows.length ? `Rows ${data().offset + 1}–${data().offset + data().rows.length}` : '0 rows'}</span>
             <button type="button" class={styles.button} disabled={!offset()} onClick={() => setOffset(old => Math.max(0, old - data().limit))}>Newer</button>
             <button type="button" class={styles.button} disabled={!data().has_more} onClick={() => setOffset(old => old + data().limit)}>Older</button>
           </div>

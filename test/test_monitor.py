@@ -258,6 +258,7 @@ def test_tool_home_excludes_the_projects_own_tool_folders(tmp_path):
 
 
 def test_correlator_builds_report(tmp_path):
+    (tmp_path / ".git").mkdir()
     config = MonitorConfig.for_root(tmp_path)
     correlator = SessionCorrelator(config, workspace_sizes={str(tmp_path): 5 * 1024 * 1024})
 

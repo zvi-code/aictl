@@ -1,0 +1,18 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_project:string = '',
+    requested_session:string = '', raw_session:bool = false, row_limit:long
+);
+// The language-model usage events of one session: events.page restricted to the kinds
+// that analysis/lm_usage.py reads. The kind is part of the version key, so filtering it
+// before arg_max keeps the same latest versions while the scan reads far fewer rows.
+events
+| where (all_nodes or node_id == requested_node) and (isempty(requested_project) or ['project'] == requested_project)
+| where kind endswith_cs 'lm.usage' or kind endswith_cs 'language_model.usage'
+| summarize arg_max(_v, *) by ['project'], node_id, ts, tool, kind, seq
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where isempty(requested_session) or session_id == requested_session
+    or (not(raw_session) and tostring(parse_json(detail).session_id) == requested_session)
+| extend event_order=iff(raw_session, -seq, seq)
+| order by ts desc, node_id asc, event_order asc, tool asc, kind asc, ['project'] asc
+| take row_limit
+| project ts, tool, kind, detail, session_id, pid, seq

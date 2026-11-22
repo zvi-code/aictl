@@ -27,7 +27,7 @@ from ..platforms import IS_WINDOWS
 from ..records import _session_uuid
 from ..stores.base import StoreError
 from .board_filters import SPARK_POINTS, Filters
-from .board_projection import _activity_facts, _Board, _fallback_rows
+from .board_projection import _Board, _fallback_rows, _store_facts
 from .projection_utils import MAX_DETAIL_ROWS, TITLE_CHARS, _basename, _label, _one_line, _short
 from .projections.history import HistoryScope
 
@@ -588,6 +588,10 @@ class _PageBoard(_Board):
         self._page = sorted(set(sids))
         self._keys = history.keys(self._page)
 
+    # It reads its own fallback rows, per session, and shows no confirmation rows.
+    _prefetch_fallback = False
+    _reads_confirms = False
+
     def _history_window(self, view: str, *, grid: bool = False, **params) -> list[dict]:
         return super()._history_window(view, grid=grid, session_keys=self._keys, **params)
 
@@ -626,7 +630,7 @@ class _PageBoard(_Board):
 
 
 def _numbers_in(sids: list[str], now: float, history: HistoryScope) -> dict[str, dict | None]:
-    facts = _activity_facts(history)
+    facts = _store_facts("memory", history)
     board = _PageBoard(None, now, sids, facts, history).load(counts_only=True)
     return {sid: board.numbers(sid) for sid in sids}
 

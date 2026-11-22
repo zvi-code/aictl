@@ -192,6 +192,101 @@ def test_runtime_reports_keep_monitored_counts_independent_of_agent_inventory(ku
     assert own["rows"] == [{k: v for k, v in a.items() if k != "agents"}]
 
 
+def test_health_series_buckets_process_counters_without_crossing_a_restart(kusto_store, node_reader):
+    from test_contract import validate_detail
+
+    def counters(pid, reads, dropped, cpu_s):
+        tables = {"events": {"queue_depth": 3, "rows_dropped": dropped}, "sessions": {"queue_depth": 2, "rows_dropped": 0}}
+        return json.dumps({"pid": pid, "store": {"reads": {"total": reads, "failed": 0, "recent_avg_ms": 100.0},
+                                                  "query_cpu": {"total_cpu_s": cpu_s}, "writer": {"tables": tables}},
+                           "runtime": {"daemon": {"cpu_percent": 5.0, "rss_bytes": 100 * 1024**2}}})
+
+    for ts, pid, reads, dropped, cpu_s in ((3600, 7, 100, 1, 10.0), (3630, 7, 160, 4, 13.0), (3660, 8, 5, 0, 0.5)):
+        kusto_store.insert("system_snapshots", node_id="host-a", ts=ts, host_cpu_percent=20.0,
+                           node_health_counters=counters(pid, reads, dropped, cpu_s))
+    kusto_store.insert("system_snapshots", node_id="host-b", ts=3650, host_cpu_percent=50.0)
+    kusto_store.insert("system_snapshots", node_id="host-b", ts=3500, host_cpu_percent=90.0)
+    out = node_view(project(), query("series", "fleet", since="3590", until="3700"), now=3700, reader=node_reader)
+    validate_detail("/api/board/nodes", out)
+    assert (out["since"], out["until"], out["step"]) == (3570, 3720, 30)
+    rows = {(r["node_id"], r["t"]): r for r in out["rows"]}
+    assert sorted(rows) == [("host-a", 3600), ("host-a", 3630), ("host-a", 3660), ("host-b", 3630)]
+    first, second, restarted = rows["host-a", 3600], rows["host-a", 3630], rows["host-a", 3660]
+    assert first["reads_per_s"] is None and first["queue_depth"] == 5 and first["daemon_rss_mb"] == 100
+    assert (second["reads_per_s"], second["rows_dropped"], second["restarts"]) == (2, 3, 0)
+    assert second["query_cpu"] == pytest.approx(0.1)
+    assert (restarted["reads_per_s"], restarted["rows_dropped"], restarted["restarts"]) == (None, 0, 1)
+    assert rows["host-b", 3630]["host_cpu"] == 50 and rows["host-b", 3630]["daemon_cpu"] is None
+    local = node_view(project(), query("series", since="3590", until="3700"), now=3700, reader=node_reader)
+    assert {r["node_id"] for r in local["rows"]} == {"host-a"}
+    with pytest.raises(NodeViewError, match="overview, series, flows and backend"):
+        node_view(project(), query("health", since="1"), reader=node_reader)
+
+
+def test_health_flows_rate_each_table_per_node_without_crossing_a_restart(kusto_store, node_reader):
+    from test_contract import validate_detail
+
+    def counters(pid, events, sessions):
+        return json.dumps({"pid": pid, "store": {"writer": {"tables": {
+            "events": {"mode": "streaming", "rows_sent": events, "bytes_sent": events * 100,
+                       "ingest_requests": events // 10, "ingest_failures": 0, "rows_dropped": 0, "queue_depth": 2},
+            "sessions": {"mode": "queued", "rows_sent": sessions, "bytes_sent": sessions * 50, "ingest_requests": 1,
+                         "ingest_failures": 1 if sessions else 0, "rows_dropped": 0, "queue_depth": 0},
+        }}}})
+
+    for node, ts, pid, events, sessions in (("host-a", 3600, 7, 100, 0), ("host-a", 3630, 7, 400, 30),
+                                            ("host-a", 3660, 8, 10, 0), ("host-b", 3600, 3, 0, 0),
+                                            ("host-b", 3630, 3, 60, 0)):
+        kusto_store.insert("system_snapshots", node_id=node, ts=ts, host_cpu_percent=10.0,
+                           node_health_counters=counters(pid, events, sessions))
+    out = node_view(project(), query("flows", "fleet", since="3590", until="3700"), now=3700, reader=node_reader)
+    validate_detail("/api/board/nodes", out)
+    assert "rows" not in out and (out["since"], out["until"], out["step"]) == (3570, 3720, 30)
+    tables = {(r["table"], r["t"]): r for r in out["tables"]}
+    assert (tables["events", 3630]["rows_per_s"], tables["events", 3630]["nodes"]) == (12, 2)
+    assert tables["events", 3630]["bytes_per_s"] == 1200 and tables["events", 3630]["queue_depth"] == 4
+    assert tables["sessions", 3630]["rows_per_s"] == 1 and tables["sessions", 3630]["failures"] == 1
+    assert not tables["events", 3660]["rows_per_s"], "a restarted daemon's counters start again"
+    nodes = {(r["node_id"], r["table"]): r for r in out["nodes"]}
+    assert sorted(nodes) == [("host-a", "events"), ("host-a", "sessions"), ("host-b", "events")]
+    a = nodes["host-a", "events"]
+    assert (a["mode"], a["rows"], a["requests"], a["peak_rows_per_s"], a["last_at"]) == ("streaming", 300, 30, 10, 3660)
+    assert nodes["host-a", "sessions"]["mode"] == "queued" and nodes["host-b", "events"]["rows"] == 60
+    local = node_view(project(), query("flows", since="3590", until="3700"), now=3700, reader=node_reader)
+    assert {r["node_id"] for r in local["nodes"]} == {"host-a"}
+
+
+def test_backend_usage_is_shared_by_viewers_and_reports_unavailable_history(node_reader, monkeypatch):
+    from test_contract import validate_detail
+
+    from aictl.dashboard import node_views
+
+    calls = []
+
+    class Metadata:
+        database = "aictl"
+
+        def backend_usage(self, since, until, step):
+            calls.append((since, until, step))
+            if len(calls) > 1:
+                raise PermissionError("no admin")
+            return ([{"t": since, "work": "aictl_queries", "commands": 4, "failed": 1, "cpu_s": 2.5, "memory_peak": 9},
+                     {"t": since, "work": "unknown", "commands": 1}],
+                    [{"view": "", "commands": 4, "failed": 1, "cpu_s": 2.5, "mean_ms": 10, "max_ms": 20}])
+
+    monkeypatch.setattr(node_views, "_backend_cache", {})
+    monkeypatch.setattr(node_reader, "health_metadata", lambda: Metadata(), raising=False)
+    params = query("backend", "fleet", since="3590", until="3700")
+    out = node_view(project(), params, now=3700, reader=node_reader)
+    validate_detail("/api/board/nodes", out)
+    assert [r["work"] for r in out["series"]] == ["aictl_queries"] and out["views"][0]["view"] == "unnamed"
+    assert node_view(project(), params, now=3700, reader=node_reader)["series"] == out["series"]
+    assert calls == [(3570, 3720, 30)]
+    with pytest.raises(NodeViewError, match="unavailable") as failed:
+        node_view(project(), query("backend", "fleet", since="3000", until="3700"), now=3700, reader=node_reader)
+    assert failed.value.status == 503
+
+
 def test_local_runtime_inventory_does_not_export_paths_and_deduplicates_sessions():
     from aictl.dashboard.node_views import agent_inventory
 

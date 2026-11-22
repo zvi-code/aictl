@@ -1,8 +1,6 @@
-import { createMemo, createSignal, Show, untrack } from 'solid-js'
+import { createMemo, Show, untrack } from 'solid-js'
 import type { PanelProps } from '../types'
-import { Chart } from '../../ui/Chart'
 import { PanelState } from '../../ui/PanelState'
-import { Segmented } from '../../ui/Segmented'
 import { date, Detail, fact, Facts, field, HealthBody, HealthTable, time } from './HealthParts'
 import { useHealth } from './healthData'
 import { finite } from './healthModel'
@@ -22,18 +20,12 @@ const networkFields = [
   field('inbound_bps', 'Inbound', 'rate_bps', 'events.tool.live.inbound_rate_bps'),
   field('outbound_bps', 'Outbound', 'rate_bps', 'events.tool.live.outbound_rate_bps'),
 ]
-const rateSeries = [{ label: 'Queued DM' }, { label: 'Streaming' }, { label: 'Inline' }]
-const latencySeries = [{ label: 'Read latency' }]
 const number = (value: unknown) => finite(value) ? value : null
 const fromMiB = (value: unknown) => finite(value) ? value * 1048576 : undefined
 
 export default function Resources(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
   const health = useHealth()
-  const [view, setView] = createSignal('chart')
-  const points = () => health.trend().points
-  const rates = createMemo(() => points().map(p => ({ x: p.t, values: [number(p.queued), number(p.streaming), number(p.inline)] })))
-  const latency = createMemo(() => points().map(p => ({ x: p.t, values: [number(p.read)] })))
   return <HealthBody ctx={ctx} select={value => value.node_report ?? value.resources}>{data => {
     const cluster = () => data().resources?.cluster
     const rows = createMemo<(Record<string, unknown> & { node_id: string })[] | undefined>(() => {
@@ -84,28 +76,6 @@ export default function Resources(props: PanelProps) {
           <Meter label="Shared cluster CPU" value={azureMetric('cpu_percent')} />
           <Meter label="Shared hot cache in use" value={azureMetric('cache_percent')} />
           <Meter label="Shared ingestion utilization" value={azureMetric('ingestion_percent')} />
-        </div>
-      </Show>
-      <h4>Recent trends</h4>
-      <Segmented label="Trend view" options={[{ id: 'chart', label: 'Charts' }, { id: 'table', label: 'Data table' }]}
-        value={view()} onChange={setView} />
-      <Show when={view() === 'chart'} fallback={
-        <HealthTable ctx={ctx} label="Recent trend samples" rows={points()} rowId={row => String(row.t)}
-          fields={[time('t', 'Time'), field('queued', 'Queued DM rows/s', 'per_s'), field('streaming', 'Streaming rows/s', 'per_s'),
-            field('inline', 'Inline rows/s', 'per_s'), field('read', 'Read latency', 'ms')]}
-          empty="No trend samples yet." />
-      }>
-        <div class={styles.chartGroup}>
-          <Show when={rates().filter(point => point.values.some(finite)).length >= 2}
-            fallback={<PanelState state="empty" inline message="Not enough ingestion samples for a trend." />}>
-            <div class={styles.chart} data-health-chart="ingestion-trend"><Chart label="Ingestion trend"
-              description="Submitted rows/s by mode · samples seen on this screen" series={rateSeries} points={rates()} xAxis="time" unit="/s" /></div>
-          </Show>
-          <Show when={latency().filter(point => point.values.some(finite)).length >= 2}
-            fallback={<PanelState state="empty" inline message="Not enough read samples for a trend." />}>
-            <div class={styles.chart} data-health-chart="read-latency"><Chart label="Read latency trend"
-              description="Completed reads · samples seen on this screen" series={latencySeries} points={latency()} xAxis="time" unit=" ms" /></div>
-          </Show>
         </div>
       </Show>
       <HealthTable ctx={ctx} label="Reported node runtime" fields={resourceFields} rows={rows()} rowId={row => row.node_id}

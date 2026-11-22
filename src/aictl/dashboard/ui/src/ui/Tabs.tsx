@@ -1,5 +1,6 @@
 import { createSignal, createUniqueId, For, Show } from 'solid-js'
 import type { JSX } from '@solidjs/web'
+import { Icon } from './Icon'
 import { moveFocus } from './keyboard'
 import type { Choice } from './Segmented'
 import styles from './Tabs.module.css'
@@ -30,7 +31,7 @@ export function Tabs(props: {
           aria-controls={`${base}-panel-${item().id}`} aria-selected={props.value === item().id ? 'true' : 'false'}
           disabled={item().disabled} tabindex={tabStop() === item().id ? 0 : -1}
           onFocus={() => setFocused(item().id)} onClick={() => props.onChange(item().id)}>
-          {item().label}
+          <Show when={item().glyph}>{glyph => <Icon glyph={glyph()} />}</Show>{item().label}
         </button>
       }</For>
     </div>

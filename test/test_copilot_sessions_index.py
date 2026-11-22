@@ -77,7 +77,12 @@ def stores(tmp_path, monkeypatch):
     _state_dir(state, DESK_ID, "github/autopilot")
     hosted = _state_dir(state, HOSTED_ID, "github/cli")
     (hosted / "vscode.metadata.json").write_text(json.dumps({"origin": "vscode"}))
-    (state / "pending-session:draft:66666666-6666-4666-8666-666666666666").mkdir()
+    draft = (
+        "pending-session-draft-66666666-6666-4666-8666-666666666666"
+        if os.name == "nt"
+        else "pending-session:draft:66666666-6666-4666-8666-666666666666"
+    )
+    (state / draft).mkdir()
     (state / ".session-operation-locks").mkdir()
     _state_dir(state, SHARED_A, "github/cli")
     _state_dir(state, SHARED_B, "github/cli")
@@ -164,7 +169,12 @@ def test_every_id_form_resolves(stores):
         ("4242", CLI_ID),
         (CHAT_ID, CHAT_ID),
         (str(stores["ws"] / "chatSessions" / f"{CHAT_ID}.jsonl"), CHAT_ID),
-        ("66666666-6666-4666-8666-666666666666", "pending-session:draft:66666666-6666-4666-8666-666666666666"),
+        (
+            "66666666-6666-4666-8666-666666666666",
+            "pending-session-draft-66666666-6666-4666-8666-666666666666"
+            if os.name == "nt"
+            else "pending-session:draft:66666666-6666-4666-8666-666666666666",
+        ),
     ]:
         result = ix.resolve(query)
         assert result["status"] == "ok", query

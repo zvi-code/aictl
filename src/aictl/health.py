@@ -322,6 +322,7 @@ def node_transport_counters(transport: dict, writer: dict | None = None) -> dict
             "status": writer["status"],
             "tables": {
                 name: {key: counters[key] for key in names if isinstance(counters.get(key), (int, float))}
+                | ({"mode": counters["mode"]} if isinstance(counters.get("mode"), str) else {})
                 for name, counters in writer.get("tables", {}).items()
             },
         }

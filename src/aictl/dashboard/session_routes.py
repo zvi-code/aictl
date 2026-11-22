@@ -101,9 +101,10 @@ class SessionRoutes:
     def _serve_board_agent_flow(self) -> None:
         """The session flow of a board agent, from the store with hook and OTel events merged in.
 
-        GET /api/board/agent/flow?id=<agent id>&since=<unix ts>&until=<unix ts>&limit=<events>
-        A subagent id gives the whole session of its main agent. ``limit`` is how many of the
-        newest events to return; the summary counts them all.
+        GET /api/board/agent/flow?id=<agent id>&since=<unix ts>&until=<unix ts>&limit=<events>&offset=<n>
+        A subagent id gives the whole session of its main agent. ``limit`` is how many events to
+        return: the newest, or those from position ``offset`` (0 is the oldest matching event).
+        The summary counts them all.
         """
         from .flow_projection import agent_flow
 
@@ -115,6 +116,9 @@ class SessionRoutes:
         try:
             since, until = self._qs_float_opt("since"), self._qs_float_opt("until")
             limit = int(self._qs_get("limit")) if self._qs_get("limit") else None
+            offset = int(self._qs_get("offset")) if self._qs_get("offset") else None
+            if offset is not None and offset < 0:
+                raise ValueError("offset must not be negative")
             if any(not math.isfinite(x) or x < 0 for x in (since, until) if x is not None):
                 raise ValueError("Time bounds must be finite Unix timestamps")
             if since is not None and until is not None and since >= until:
@@ -123,7 +127,7 @@ class SessionRoutes:
             if failed not in ("0", "1"):
                 raise ValueError("failed must be 0 or 1")
             status, payload = agent_flow(
-                self._db, agent_id, since, until, limit=limit, failed=failed == "1",
+                self._db, agent_id, since, until, limit=limit, offset=offset, failed=failed == "1",
                 history=history,
                 **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
             )
@@ -513,7 +517,7 @@ class SessionRoutes:
             try:
                 from ..analysis.lm_usage import lm_usage
 
-                lm = lm_usage(session_events(reader, session_id, local_scope()))
+                lm = lm_usage(session_events(reader, session_id, local_scope(), view="events.lm_usage"))
                 if lm.get("total_calls", 0) or lm.get("by_extension"):
                     out["vscode_lm_usage"] = lm
             except StoreError:

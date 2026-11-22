@@ -3,6 +3,8 @@ import type { BoardAgentRow, DetailAgent, TopicConfigurationLoaded, TopicRuntime
 import { fmtDur, isLive, projectName, stamp } from '../design/format'
 import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Drawer } from '../ui/Drawer'
+import { Icon, type Glyph } from '../ui/Icon'
+import { Tooltip } from '../ui/Tooltip'
 import { PanelState } from '../ui/PanelState'
 import { agentView, watchedDetail } from './liveAgent'
 import { SessionTabs } from './SessionTabs'
@@ -32,6 +34,13 @@ const items = [
   ['native', 'Native output', lazy(() => import('./tabs/NativeOutput'))],
   ['kql', 'KQL', lazy(() => import('./tabs/Kql'))],
 ] as const satisfies readonly (readonly [string, string, Component<TabProps>])[]
+
+const glyphs: Record<typeof items[number][0], Glyph> = {
+  flow: 'flow', context: 'context', overview: 'detail', instructions: 'book', transcript: 'prompts', timeline: 'clock',
+  turns: 'table', tools: 'tools', errors: 'warn', changes: 'changes', artifacts: 'file', commits: 'commit',
+  events: 'events', team: 'agents', procs: 'resources', integrations: 'sources', evidence: 'check', otel: 'effect',
+  native: 'terminal', kql: 'command',
+}
 
 const pending = () => <PanelState state="loading" />
 
@@ -87,7 +96,7 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
   const ended = () => runtime()?.running ? undefined : agent()?.ended_at
   const name = () => agent()?.parent_id ? `${agent()?.role || agent()?.title} (subagent)` : agent()?.title || runtime()?.title || props.entry.id
   const options = items.map(([id, label, Tab]) => ({
-    id, label, groupStart: id === 'changes' || id === 'events',
+    id, label, glyph: glyphs[id], groupStart: id === 'changes' || id === 'events',
     count: () => (id === 'tools' ? agent()?.tool_calls : undefined) ?? counts()[id],
     content: () => <Loading fallback={pending()}>
       <div class={styles.body}><Tab shell={props.shell} entry={props.entry} detail={detail} agent={agent} runtime={runtime} session={session} /></div>
@@ -95,13 +104,15 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
   }))
   return <Drawer id="drawer" open title={name()} onClose={props.shell.close} onEscape={props.shell.back} resizable
     actions={<>
-      <Show when={props.shell.stack.length > 1}><button type="button" class={styles.button} onClick={props.shell.back}>Back</button></Show>
-      <button type="button" class={styles.button} aria-label={`Copy session ID ${props.entry.id}`}
-        onClick={() => ctx.copy(session() ?? props.entry.id)}>Copy ID</button>
+      <Show when={props.shell.stack.length > 1}><button type="button" class={styles.button} onClick={props.shell.back}>
+        <Icon glyph="back" />Back</button></Show>
       <Show when={ctx.scope() === 'local' && !agent()?.parent_id && (isLive(status()) || runtime()?.running) && status() !== 'stopped'}>
-        <button type="button" class={styles.button}
-          onClick={() => ctx.stopAgent({ id: props.entry.id, title: name(), pids: runtime()?.pids ?? agent()?.pids })}>Stop</button>
+        <button type="button" class={styles.danger}
+          onClick={() => ctx.stopAgent({ id: props.entry.id, title: name(), pids: runtime()?.pids ?? agent()?.pids })}>
+          <Icon glyph="stop" />Stop</button>
       </Show>
+      <Tooltip class={styles.iconButton} label={`Copy session ID ${props.entry.id}`} text="Copy session ID"
+        onClick={() => ctx.copy(session() ?? props.entry.id)}><Icon glyph="copy" /></Tooltip>
     </>}
     metadata={<div class={styles.meta}>
       <span>{runtime()?.running && status() === 'unknown' ? 'Running · native activity unknown' : status() ?? NA}</span>

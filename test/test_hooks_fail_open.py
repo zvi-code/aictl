@@ -244,7 +244,8 @@ def test_payload_reaches_a_real_http_server():
     try:
         cmd = _command(event="SessionStart", port=server.server_address[1])
         payload = json.dumps({"session_id": "s1", "cwd": "/w", "note": "é✓"}).encode()
-        proc = subprocess.run(["/bin/sh", "-c", cmd], input=payload, capture_output=True, timeout=10, check=False)
+        runner = ["powershell", "-NoProfile", "-Command", cmd] if os.name == "nt" else ["/bin/sh", "-c", cmd]
+        proc = subprocess.run(runner, input=payload, capture_output=True, timeout=10, check=False)
     finally:
         server.shutdown()
     assert (proc.returncode, proc.stdout) == (0, b"")
@@ -368,9 +369,9 @@ class TestRegistrationIsExplicit:
         allowed = {"commands/integrations.py"}
         pattern = re.compile(r"\b(_install_hooks|_register_hook_file|_install_vscode_hooks|_build_hook_config)\b")
         offenders = [
-            str(p.relative_to(SRC))
+            p.relative_to(SRC).as_posix()
             for p in SRC.rglob("*.py")
-            if str(p.relative_to(SRC)) not in allowed and pattern.search(p.read_text(encoding="utf-8"))
+            if p.relative_to(SRC).as_posix() not in allowed and pattern.search(p.read_text(encoding="utf-8"))
         ]
         assert offenders == []
 

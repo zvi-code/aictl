@@ -156,7 +156,7 @@ test('DRW-FL-01/02 and DRW-EV-01: filter, page and inspect source evidence witho
   await page.goto(agentUrl(snapshotReplay, id, 'flow'));
   await expect(drawer(page).getByRole('heading', { name: 'Session flow' })).toBeVisible();
   await drawer(page).getByRole('button', { name: /Load older events/ }).click();
-  await expect.poll(() => flow.some(request => request.limit === '1500')).toBe(true);
+  await expect.poll(() => flow.some(request => request.offset === '500' && request.limit === '500')).toBe(true);
   await drawer(page).getByRole('radio', { name: 'Swim-lane' }).click();
   const lanes = drawer(page).getByRole('region', { name: 'Session streams', exact: true });
   await expect(lanes.getByText('Tools · Read', { exact: true })).toBeVisible();
@@ -427,6 +427,32 @@ test('DRW-AR-01, DRW-CM-01 and DRW-IN-01: guard artifact reads, identify observe
   await selectTab(page, 'Commits');
   await drawer(page).getByRole('button', { name: 'Inspect commit 1234567' }).click();
   await expect(drawer(page).getByRole('link', { name: '#42 Review replay · merged' })).toHaveAttribute('href', 'https://github.com/example/project/pull/42');
+});
+
+test('DRW-CH-01: open a changed file from its path, which keeps the file name visible', async ({ page, snapshotReplay }) => {
+  const { id, detail } = await recordedAgent(snapshotReplay);
+  const name = 'changed_file.py';
+  const path = `X:\\${'nested\\folder\\'.repeat(12)}${name}`;
+  await prepare(page);
+  await page.route('**/api/board/agent?*', route => route.fulfill({ json: {
+    ...detail, files: [{ path, lines_added: 3, lines_removed: 1, edits: 2 }], tests: [] } }));
+  await page.route('**/api/board/file?**', route => route.fulfill({ json: { path, edits: [] } }));
+  await page.goto(agentUrl(snapshotReplay, id, 'changes'));
+  const table = drawer(page).getByRole('table', { name: 'Changed files' });
+  // The path opens the file, so no Actions column repeats it.
+  await expect(table.getByRole('columnheader')).toHaveText([/^Path/, /^Lines added/, /^Lines removed/, /^Edits/]);
+  const open = table.getByRole('button', { name: `Open ${path}` });
+  expect(await open.evaluate((button, name) => {
+    const clip = button.querySelector('[title]');
+    const node = clip.firstElementChild.firstChild;
+    const range = document.createRange();
+    range.setStart(node, node.length - name.length);
+    range.setEnd(node, node.length);
+    const shown = range.getBoundingClientRect(), box = clip.getBoundingClientRect();
+    return { clipped: clip.scrollWidth > clip.clientWidth, nameShown: shown.left >= box.left && shown.right <= box.right + 1 };
+  }, name)).toEqual({ clipped: true, nameShown: true });
+  await open.click();
+  await expect(drawer(page).getByRole('heading', { name: path })).toBeVisible();
 });
 
 test('DRW-CT-01, DRW-OV-01 and DRW-OT-01: keep context estimates, spans and cost distinct', async ({ page, snapshotReplay }) => {

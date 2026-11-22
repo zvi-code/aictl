@@ -87,7 +87,7 @@ def test_session_file_inventory_uses_stored_paths_and_loaded_evidence_only():
 
 
 def test_kusto_historical_transcript_never_merges_analyzer_pending_output(monkeypatch):
-    monkeypatch.setattr(flow_projection, "_session_flow", lambda *_: ("session", [], "store"))
+    monkeypatch.setattr(flow_projection, "_session_flow", lambda *_, **__: ("session", [], "store"))
     store = SimpleNamespace(_reported_history=True, capture="full")
     status, payload = flow_projection.agent_transcript(
         store, "session", legacy_transcript=lambda _: pytest.fail("Pending analyzer payload was used")

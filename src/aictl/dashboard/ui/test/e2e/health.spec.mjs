@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { captureFrame, checkAxe, checkConsole, dist, expect, provideCatalog, test } from './fixtures.mjs';
+import { captureFrame, checkAxe, checkConsole, dist, expect, provideCatalog, provideHealthSeries, test } from './fixtures.mjs';
 import { startReplay } from '../replay/server.mjs';
 
 const now = 1795134732;
@@ -46,6 +46,7 @@ const healthTest = test.extend({
 async function open(page, replay, query = '') {
   await page.clock.setFixedTime(new Date(now * 1000));
   await provideCatalog(page);
+  const series = await provideHealthSeries(page);
   // The replay maps the history bootstrap only. Use its mapped, runtime-only fixture.
   await page.route('**/api/live/stream?**', route => {
     const url = new URL(route.request().url());
@@ -55,6 +56,7 @@ async function open(page, replay, query = '') {
   });
   await page.goto(`${replay.url}/?screen=health${query}`);
   await expect(page.getByRole('heading', { name: 'aictl Health', level: 1 })).toBeVisible();
+  return series;
 }
 
 async function panel(page, id) {
@@ -77,13 +79,15 @@ healthTest('HLT-01 and HLT-06: show live health, actionable issues and source di
   const diagnostics = await panel(page, 'healthDiagnostics');
   await expect(diagnostics.getByText('Needs action', { exact: true }).locator('..').locator('dd')).toHaveText(/^[1-9]\d*$/);
   const problems = diagnostics.getByText(/Problems that need action/);
-  await problems.press('Enter');
+  // Problems start open; the keyboard still folds and unfolds them.
   const issue = diagnostics.getByText('health-replay: Fixture event 0');
   await expect(issue).toBeVisible();
-  await problems.press('Space');
+  await problems.press('Enter');
   await expect(issue).toBeHidden();
+  await problems.press('Space');
+  await expect(issue).toBeVisible();
   await diagnostics.getByText('Collectors', { exact: true }).press('Enter');
-  await expect(diagnostics.locator('details[open] li').first()).toBeVisible();
+  await expect(diagnostics.getByText('Collectors', { exact: true }).locator('..').locator('li').first()).toBeVisible();
   await diagnostics.getByText('Collectors', { exact: true }).press('Space');
   await expect(diagnostics.getByText('Collectors', { exact: true }).locator('..')).not.toHaveAttribute('open', '');
   await expect(page.getByRole('heading', { name: 'Table inventory', exact: true })).toBeHidden();
@@ -140,9 +144,6 @@ healthTest('HLT-04 and HLT-05: inspect host rows and scroll the virtual inventor
   const runtime = resources.getByRole('table', { name: 'Reported node runtime' });
   await expect(runtime.getByRole('columnheader', { name: /Daemon CPU/ })).toBeVisible();
   await expect(resources.getByRole('table', { name: 'Network traffic by node' })).toBeVisible();
-  await expect(resources.getByText('Not enough ingestion samples for a trend.')).toBeVisible();
-  await resources.getByRole('radio', { name: 'Charts', exact: true }).press('ArrowRight');
-  await expect(resources.getByRole('table', { name: 'Recent trend samples' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Table inventory', exact: true })).toBeHidden();
   await showAll(page);
   const inventory = await panel(page, 'tableInventory');
@@ -243,14 +244,63 @@ healthTest('HLT-01/02/04/05: use only the selected scope and share capacity once
   await expect(cpu.getByRole('row', { name: /^gamma/ }).getByRole('cell', { name: missing }).first()).toBeVisible();
   await showAll(page);
   await expect((await panel(page, 'tableInventory')).getByText('No table rows reported.')).toBeVisible();
+  const trends = await panel(page, 'healthTrends');
+  const summary = trends.getByRole('table', { name: 'Nodes over the selected range' });
+  await expect(summary.locator('[data-row-id="gamma"]')).toBeVisible();
+  // Twelve nodes report: per-node lines show the busiest few, additive charts sum the rest as Other.
+  await expect(trends.locator('[data-health-chart="host-cpu"]')).toContainText('node-12');
+  await expect(trends.locator('[data-health-chart="query-cpu"]')).toContainText('Other 9');
+  await expect(trends.locator('[data-health-chart="flow-nodes"]')).toContainText('Other 9');
+  await expect(trends.locator('[data-health-chart="flow-rows"]')).toContainText('Other 5');
+  const senders = trends.getByRole('table', { name: 'Sending nodes' });
+  await expect(senders.locator('[data-row-id]')).toHaveCount(12);
+  await expect(senders.locator('[data-row-id]').first()).toHaveAttribute('data-row-id', 'node-12');
   const hosts = await panel(page, 'hostResources');
   await expect(hosts.locator('[data-health-chart="host-cpu"] canvas').first()).toBeVisible();
-  await page.clock.fastForward(31_000);
-  await expect(hosts.locator('[data-health-chart="read-latency"] canvas').first()).toBeVisible();
   await hosts.getByRole('button', { name: 'View beta' }).press('Enter');
   await expect(page).toHaveURL(/[?&]scope=node&node_id=beta/);
   await expect(hosts.getByRole('row').filter({ hasText: 'alpha' })).toHaveCount(0);
   await expect(hosts.getByRole('table', { name: 'Reported node runtime' }).locator('[data-row-id="beta"]')).toBeVisible();
+});
+
+healthTest('HLT-11: move through health history buckets, ranges and the data table', async ({ page, healthReplay }) => {
+  const requests = await open(page, healthReplay);
+  const trends = await panel(page, 'healthTrends');
+  await expect(trends.locator('h4')).toHaveText(['Ingestion flows', 'Kusto backend', 'Hosts and daemons']);
+  for (const id of ['flow-rows', 'flow-bytes', 'ingestion', 'flow-queue', 'backend-cpu', 'backend-commands', 'host-cpu'])
+    await expect(trends.locator(`[data-health-chart="${id}"] canvas`).first()).toBeVisible();
+  await expect(trends.locator('[data-health-chart="flow-nodes"]')).toHaveCount(0);
+  const flows = trends.locator('[data-health-section="flows"]');
+  await expect(flows.getByText('Tables', { exact: true }).locator('..').locator('dd').first()).toHaveText('8');
+  await expect(trends.getByRole('table', { name: 'Destination tables' }).locator('[data-row-id]').first()).toHaveAttribute('data-row-id', 'Events');
+  await expect(trends.getByRole('table', { name: 'aictl views by cluster CPU' }).locator('[data-row-id]').first())
+    .toHaveAttribute('data-row-id', 'aictl.live.keys');
+  const day = requests.at(-1);
+  expect(Number(day.get('until')) - Number(day.get('since'))).toBe(86_400);
+  const bucket = trends.getByRole('button', { name: /^Bucket / });
+  const newest = await bucket.textContent();
+  await bucket.press('ArrowLeft');
+  await expect(trends.getByRole('button', { name: 'Show newest' })).toBeVisible();
+  await expect(bucket).not.toHaveText(newest);
+  await bucket.press('End');
+  await expect(trends.getByRole('button', { name: 'Show newest' })).toBeHidden();
+  await expect(bucket).toHaveText(newest);
+  await trends.getByRole('radio', { name: '7 d' }).click();
+  await expect.poll(() => { const last = requests.at(-1); return Number(last.get('until')) - Number(last.get('since')); }).toBe(604_800);
+  await trends.getByRole('radio', { name: 'Data table' }).click();
+  for (const name of ['Ingestion flow buckets', 'Kusto backend buckets']) await expect(trends.getByRole('table', { name })).toBeVisible();
+  const table = trends.getByRole('table', { name: 'Health history buckets' });
+  await expect(table).toBeVisible();
+  await expect(table.getByRole('columnheader', { name: /Bucket start/ })).toBeVisible();
+});
+
+healthTest('HLT-11: explain once that health history needs a Kusto store', async ({ page, healthReplay }) => {
+  await page.route(/\/api\/board\/nodes\?view=(series|flows|backend)&/, route =>
+    route.fulfill({ status: 409, json: { error: 'Health history requires a Kusto store' } }));
+  await page.clock.setFixedTime(new Date(now * 1000));
+  await provideCatalog(page);
+  await page.goto(`${healthReplay.url}/?screen=health`);
+  await expect((await panel(page, 'healthTrends')).getByText('Health history needs a Kusto store.')).toBeVisible();
 });
 
 healthTest('HLT-01 and HLT-06: show a read error instead of historical data', async ({ page, healthReplay }) => {
@@ -267,7 +317,7 @@ healthTest('Health controls and contrast work in both themes', async ({ page, he
   await expect((await panel(page, 'healthHighlights')).getByText('Health updated')).toBeVisible();
   await showAll(page);
   await checkAxe(page, '[data-screen="health"]', 'Light Health');
-  await page.getByLabel('Theme').selectOption('dark');
+  await page.getByRole('button', { name: 'Dark theme' }).click();
   await checkAxe(page, '[data-screen="health"]', 'Dark Health');
   checkConsole(capture);
 });

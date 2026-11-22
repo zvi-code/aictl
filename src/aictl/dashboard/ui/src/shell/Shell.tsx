@@ -10,12 +10,15 @@ import { sections } from '../panels/layout'
 import type { Command, NodeScope, PanelContext } from '../panels/types'
 import { AppShell } from '../ui/AppShell'
 import { Dialog } from '../ui/Dialog'
+import { Icon, type Glyph } from '../ui/Icon'
 import { Freshness, PanelState } from '../ui/PanelState'
 import { Popover } from '../ui/Popover'
+import { Tooltip } from '../ui/Tooltip'
 import { BoardControls } from './BoardControls'
 import type { DrawerEntry } from './drawerTypes'
 import { NodePicker, scopeLabel } from './NodePicker'
 import { Palette, type PaletteCommand } from './Palette'
+import { sectionSummary } from './railSummary'
 import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored, typing } from './viewState'
 import '../design/tokens.css'
 import styles from './Shell.module.css'
@@ -25,6 +28,11 @@ const Health = lazy(() => import('./Health'))
 const Settings = lazy(() => import('./Settings'))
 const Drawer = lazy(() => import('../drawer/DrawerView'))
 const screenNames = { board: 'Overview', health: 'Health', settings: 'Settings' }
+const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', settings: 'settings' }
+const sectionGlyphs: Record<string, Glyph> = {
+  top: 'top', usage: 'usage', agents: 'agents', sessions: 'clock', prompts: 'prompts', context: 'context', tools: 'tools',
+  changes: 'changes', resources: 'resources', effect: 'effect', sources: 'sources',
+}
 const posted = (value: object): RequestInit => ({
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
 })
@@ -316,57 +324,68 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     if (sourceRows().some(row => 'error' in row && row.error || 'stale' in row && row.stale)) return 'Live — some sources are delayed or unavailable'
     return 'Live connected'
   }
+  const liveTone = () => {
+    const status = liveStatus()
+    return status === 'Live connected' ? 'live' : status === 'Live paused' || scope() !== 'local' || status.startsWith('Waiting') ? 'idle' : 'warning'
+  }
   const actions = <div class={`${styles.controls} ${styles.headerControls}`}>
+    <span class={styles.status}>
+      <span class={styles.live} data-tone={liveTone()} role="status" title={`${scopeLabel(scope(), nodeId())} · ${liveStatus()}`}>
+        {scopeLabel(scope(), nodeId())} · {liveStatus()}</span>
+      <Show when={scope() === 'local' && liveStatus() === 'Collector snapshot is stale'}>
+        <Freshness compact updatedAt={stream()?.snapshot_ts} />
+      </Show>
+    </span>
+    <Popover label="Source status" title="Data sources" glyph="sources">
+      <Show when={scope() === 'local'} fallback={<p>Uses reported data for {scopeLabel(scope(), nodeId())}.</p>}>
+        <dl class={styles.sources}>
+          <For each={['Runtime', 'Historical', 'Local configuration', 'Native output']}>{(label, i) => <div>
+            <dt>{label}</dt><dd>{String(at(client.store.meta.capabilities, `source_policy.${['agent_state', 'historical_sessions', 'configured_on_disk', 'native_output'][i()]}`) ?? 'Not available from this source')}</dd>
+          </div>}</For>
+        </dl>
+        <For each={sourceRows()}>{status => <p>{'topic' in status ? status.topic : 'component' in status ? status.component : status.producer}
+          {' — '}{'error' in status && status.error ? status.error : 'stale' in status && status.stale ? 'Stale' :
+            'ready' in status ? status.ready ? 'Ready' : 'Waiting' : 'Reported'}</p>}</For>
+      </Show>
+    </Popover>
     <NodePicker scope={scope()} nodeId={nodeId()} select={selectScope} />
-    <button class={styles.button} type="button" disabled={scope() !== 'local'} onClick={() => setPaused(old => !old)}>
-      {paused() ? 'Resume live' : 'Pause live'}</button>
-    <button class={styles.button} type="button" onClick={refresh}>Refresh</button>
-    <label>Theme <select class={styles.input} value={theme()} onChange={event => setTheme(event.currentTarget.value as Theme)}>
-      <option value="light">Light</option><option value="dark">Dark</option>
-    </select></label>
-    <label>Density <select class={styles.input} value={density()} onChange={event => setDensity(event.currentTarget.value as Density)}>
-      <option value="compact">Compact</option><option value="comfortable">Comfortable</option>
-    </select></label>
-    <button class={styles.button} type="button" onClick={() => setPalette(true)}>Commands</button>
-    <button class={styles.button} type="button" onClick={() => setShortcuts(true)}>Shortcuts</button>
+    <span class={styles.divider} aria-hidden="true" />
+    <Tooltip class={styles.iconButton} label={paused() ? 'Resume live' : 'Pause live'} disabled={scope() !== 'local'}
+      text={paused() ? 'Resume live updates' : 'Pause live updates and keep the current values'} onClick={() => setPaused(old => !old)}>
+      <Icon glyph={paused() ? 'play' : 'pause'} /></Tooltip>
+    <Tooltip class={styles.iconButton} label="Refresh" text="Reload the current data" onClick={refresh}><Icon glyph="refresh" /></Tooltip>
+    <Tooltip class={styles.iconButton} label="Dark theme" pressed={theme() === 'dark'}
+      text={theme() === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}
+      onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')}><Icon glyph={theme() === 'dark' ? 'sun' : 'moon'} /></Tooltip>
+    <Tooltip class={styles.iconButton} label="Comfortable density" pressed={density() === 'comfortable'}
+      text={density() === 'comfortable' ? 'Use compact rows' : 'Use comfortable rows'}
+      onClick={() => setDensity(old => old === 'comfortable' ? 'compact' : 'comfortable')}><Icon glyph="density" /></Tooltip>
+    <Tooltip class={styles.iconButton} label="Shortcuts" text="Keyboard shortcuts (?)" onClick={() => setShortcuts(true)}><Icon glyph="keys" /></Tooltip>
+    <button class={styles.commandButton} type="button" aria-keyshortcuts="Control+K Meta+K" onClick={() => setPalette(true)}>
+      <Icon glyph="search" /><span>Commands</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   </div>
   return <AppShell title="aictl" actions={actions}
-    navigation={<nav class={styles.controls} aria-label="Screens"><For each={Object.keys(screenNames) as Screen[]}>{id =>
-      <button class={styles.button} type="button" aria-current={screen() === id ? 'page' : undefined}
-        onClick={() => changeScreen(id)}>{screenNames[id]}</button>}</For></nav>}>
+    navigation={<nav class={styles.screens} aria-label="Screens"><For each={Object.keys(screenNames) as Screen[]}>{id =>
+      <button class={styles.screen} type="button" aria-current={screen() === id ? 'page' : undefined}
+        onClick={() => changeScreen(id)}><Icon glyph={screenGlyphs[id]} />{screenNames[id]}</button>}</For></nav>}>
     <div class={styles.work} data-rail={rail() && screen() === 'board' ? '' : undefined}>
-        <div class={styles.controls}>
-          <Show when={screen() === 'board'}>
-            <button class={styles.quiet} type="button" aria-controls="overview-sections" aria-expanded={rail() ? 'true' : 'false'}
-              onClick={() => setRail(old => !old)}>Sections</button>
-          </Show>
-          <span role="status">{scopeLabel(scope(), nodeId())} · {liveStatus()}</span>
-          <Show when={scope() === 'local' && liveStatus() === 'Collector snapshot is stale'}>
-            <Freshness updatedAt={stream()?.snapshot_ts} />
-          </Show>
-          <Popover label="Source status" title="Data sources">
-            <Show when={scope() === 'local'} fallback={<p>Uses reported data for {scopeLabel(scope(), nodeId())}.</p>}>
-              <dl class={styles.sources}>
-                <For each={['Runtime', 'Historical', 'Local configuration', 'Native output']}>{(label, i) => <div>
-                  <dt>{label}</dt><dd>{String(at(client.store.meta.capabilities, `source_policy.${['agent_state', 'historical_sessions', 'configured_on_disk', 'native_output'][i()]}`) ?? 'Not available from this source')}</dd>
-                </div>}</For>
-              </dl>
-              <For each={sourceRows()}>{status => <p>{'topic' in status ? status.topic : 'component' in status ? status.component : status.producer}
-                {' — '}{'error' in status && status.error ? status.error : 'stale' in status && status.stale ? 'Stale' :
-                  'ready' in status ? status.ready ? 'Ready' : 'Waiting' : 'Reported'}</p>}</For>
-            </Show>
-          </Popover>
-        </div>
         <Show when={screen() === 'board'}>
           <nav class={styles.sections} id="overview-sections" aria-label="Overview sections" hidden={!rail()}>
-            <For each={sectionList()} keyed={section => section.id}>{section =>
-              <a href={`#sec-${section().id}`} aria-current={(query().hash || '#sec-top') === `#sec-${section().id}` ? 'location' : undefined}
-                onClick={event => { event.preventDefault(); jump(section().id) }}>{section().title}</a>}</For>
+            <For each={sectionList()} keyed={section => section.id}>{section => {
+              const stat = createMemo(() => sectionSummary(section().id, field => ctx.board(field)))
+              return <a href={`#sec-${section().id}`} aria-current={(query().hash || '#sec-top') === `#sec-${section().id}` ? 'location' : undefined}
+                title={stat() ? `${section().title}: ${stat()}` : section().title}
+                aria-describedby={stat() ? `rail-stat-${section().id}` : undefined}
+                onClick={event => { event.preventDefault(); jump(section().id) }}><Icon glyph={sectionGlyphs[section().id] ?? 'detail'} />
+                <span class={styles.sectionText}><span>{section().title}</span>
+                  <Show when={stat()}><span class={styles.sectionStat} id={`rail-stat-${section().id}`} aria-hidden="true">{stat()}</span></Show></span></a>
+            }}</For>
           </nav>
         </Show>
         <div class={styles.canvas}>
         <Show when={screen() === 'board'}>
-          <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} custom={custom()} setCustom={setCustom} text={findText()} search={searchFor} />
+          <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} custom={custom()} setCustom={setCustom} text={findText()} search={searchFor}
+            rail={rail()} toggleRail={() => setRail(old => !old)} />
         </Show>
         <Loading fallback={<PanelState state="loading" />}>
           <Switch>
@@ -403,16 +422,16 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     </Dialog>
     <Dialog title={decision()?.title ?? 'Confirm action'} open={Boolean(decision())} onClose={cancel}
       blockClose={pending()} actions={<>
-        <button class={styles.button} type="button" disabled={pending()} onClick={cancel}>Cancel</button>
-        <button class={styles.button} type="button" disabled={pending()} onClick={() => void apply()}>
+        <button class={styles.secondary} type="button" disabled={pending()} onClick={cancel}>Cancel</button>
+        <button class={styles.primary} type="button" disabled={pending()} onClick={() => void apply()}>
           {pending() ? 'Applying…' : decision()?.label}</button>
       </>}>
       <p>{decision()?.lead}</p><pre class={styles.command}>{decision()?.command}</pre>
-      <button class={styles.button} type="button" onClick={() => copy(decision()?.command ?? '')}>Copy command</button>
+      <button class={styles.secondary} type="button" onClick={() => copy(decision()?.command ?? '')}>Copy command</button>
       <Show when={pending()}><p role="status">Action pending</p></Show>
     </Dialog>
     <Show when={notice()}>{value => <div class={styles.notice} role="status">{value().text}
-      <Show when={value().undo}><button class={styles.button} type="button" onClick={() => value().undo?.()}>Undo</button></Show>
+      <Show when={value().undo}><button class={styles.secondary} type="button" onClick={() => value().undo?.()}>Undo</button></Show>
     </div>}</Show>
   </AppShell>
 }

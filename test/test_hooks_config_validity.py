@@ -152,10 +152,10 @@ def test_emit_writer_refuses_invalid_content(tmp_path):
 
 def test_disable_cleans_the_corrupted_combination(machine):
     """Ownership rule, see strip_codex_otel_text: the marker makes the block and local exporters ours."""
-    _toml(machine).write_text(CORRUPTED)
+    _toml(machine).write_text(CORRUPTED, encoding="utf-8")
     result = CliRunner().invoke(disable, [], catch_exceptions=False)
     assert result.exit_code == 0, result.output
-    text = _toml(machine).read_text()
+    text = _toml(machine).read_text(encoding="utf-8")
     parsed = tomllib.loads(text)
     assert "otel" not in parsed
     assert parsed["model"] == "o4"
@@ -203,20 +203,20 @@ def test_block_from_older_enable_is_removed_byte_for_byte():
 
 
 def test_repair_makes_the_incident_state_valid_and_keeps_the_export(machine):
-    _toml(machine).write_text(CORRUPTED)
+    _toml(machine).write_text(CORRUPTED, encoding="utf-8")
     result = CliRunner().invoke(ig.hooks, ["repair"], catch_exceptions=False)
     assert result.exit_code == 0, result.output
-    parsed = tomllib.loads(_toml(machine).read_text())
+    parsed = tomllib.loads(_toml(machine).read_text(encoding="utf-8"))
     assert parsed["otel"]["exporter"]["otlp-http"]["endpoint"] == "http://localhost:8484/v1/logs"
     assert parsed["otel"]["environment"] == "dev"
     assert parsed["tui"] == {"x": 1}
 
 
 def test_repair_dry_run_changes_nothing(machine):
-    _toml(machine).write_text(CORRUPTED)
+    _toml(machine).write_text(CORRUPTED, encoding="utf-8")
     result = CliRunner().invoke(ig.hooks, ["repair", "--dry-run"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert _toml(machine).read_text() == CORRUPTED
+    assert _toml(machine).read_text(encoding="utf-8") == CORRUPTED
 
 
 def test_repair_will_not_touch_breakage_it_did_not_cause(machine):
@@ -231,7 +231,7 @@ def test_repair_will_not_touch_breakage_it_did_not_cause(machine):
 
 
 def test_doctor_fails_on_the_incident_state_with_the_exact_fix(machine):
-    _toml(machine).write_text(CORRUPTED)
+    _toml(machine).write_text(CORRUPTED, encoding="utf-8")
     result = CliRunner().invoke(ig.hooks, ["doctor"], catch_exceptions=False)
     assert result.exit_code == 1
     assert "[FAIL] invalid config" in result.output
@@ -239,7 +239,7 @@ def test_doctor_fails_on_the_incident_state_with_the_exact_fix(machine):
 
 
 def test_status_reports_invalid_config(machine):
-    _toml(machine).write_text(CORRUPTED)
+    _toml(machine).write_text(CORRUPTED, encoding="utf-8")
     result = CliRunner().invoke(ig.hooks, ["status", "--json"], catch_exceptions=False)
     assert result.exit_code == 1
     bad = json.loads(result.output)["invalid_configs"]

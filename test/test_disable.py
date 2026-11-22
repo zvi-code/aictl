@@ -129,5 +129,5 @@ class TestAudit:
         runner = CliRunner()
         result = runner.invoke(audit, ["path", str(f)], catch_exceptions=False)
         assert result.exit_code == 0
-        assert str(f) in result.output
+        assert json.loads(result.output.strip())["path"] == str(f)
         assert "other" not in result.output

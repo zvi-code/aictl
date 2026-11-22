@@ -71,6 +71,11 @@ def _reported_machine(history, tools, now):
     return {"generated_at": now, "hosts": hosts, "recorded_processes": procs, "recorded_total": total}
 
 
+# The store of a node history request. One object keeps the flows built for these requests,
+# keyed by reader and node, so the windows of a long flow do not read the session again.
+_REPORTED = SimpleNamespace(_reported_history=True, capture="full", _keeps_text=lambda: True)
+
+
 def route(db, scope, path, query, params, now, *, reader=None):
     from . import (
         artifact_details,
@@ -202,7 +207,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 session_key, _ = projection_utils._resolve_agent(history, aid)
                 if not history.split(session_key)[1]:
                     return result(404, {"error": "No such agent"})
-            reported = SimpleNamespace(_reported_history=True, capture="full", _keeps_text=lambda: True)
+            reported = _REPORTED
             if endpoint == "agent":
                 return result(*session_details.agent_detail(reported, aid, now=now, history=history))
             if endpoint == "agent/flow":
@@ -211,7 +216,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
                     raise ScopeError("failed must be 0 or 1")
                 status, body = flow_projection.agent_flow(
                     reported, aid, lo, hi, now=now, limit=integer("limit", flow_projection.FLOW_DEFAULT_EVENTS, flow_projection.MAX_FLOW_EVENTS),
-                    failed=failed == "1", history=history,
+                    offset=integer("offset", None, 10**9), failed=failed == "1", history=history,
                     **{k: one(k) for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
                 )
                 return result(status, {**body, "node_id": label(node)})

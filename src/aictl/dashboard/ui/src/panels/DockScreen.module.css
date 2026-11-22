@@ -2,13 +2,19 @@
 .toolbar > h1 + button { margin-inline-start: auto; }
 .panelActions { gap: var(--space-2); }
 .heading { color: var(--color-muted); }
-.heading > h2 { margin: 0; font-size: var(--text-lg); }
-.button, .select { composes: button focus from "../ui/control.module.css"; }
-.quiet, .disclosure, .summaryFold, .iconButton { composes: button focus from "../ui/control.module.css"; }
-.root :is(.quiet, .disclosure, .summaryFold, .iconButton) { background: transparent; border-color: transparent; }
-.root :is(.quiet, .disclosure, .summaryFold, .iconButton):hover:not(:disabled) { background: var(--color-raised); }
-.disclosure, .summaryFold { font-weight: var(--weight-strong); padding-inline: var(--space-2); }
-.iconButton { padding: var(--space-2); min-inline-size: var(--control-size); }
+.heading > h2 { margin: 0; margin-inline-start: calc(-1 * var(--space-2)); color: var(--color-text); font-size: var(--text-lg); }
+.heading > span { font-size: var(--text-sm); }
+.button { composes: secondary focus from "../ui/control.module.css"; }
+.select { composes: field small focus from "../ui/control.module.css"; }
+.quiet, .disclosure, .summaryFold { composes: button focus from "../ui/control.module.css"; }
+.iconButton { composes: iconButton focus from "../ui/control.module.css"; }
+.root :is(.quiet, .disclosure, .summaryFold, .iconButton),
+.root :is(.quiet, .disclosure, .summaryFold, .iconButton)[aria-expanded="true"] { background: transparent; border-color: transparent; }
+.root :is(.quiet, .disclosure, .summaryFold, .iconButton):hover:not(:disabled) { background: var(--color-hover); }
+.quiet { color: var(--color-muted); }
+.quiet:hover:not(:disabled) { color: var(--color-text); }
+.disclosure, .summaryFold { gap: var(--space-2); padding-inline: var(--space-2) var(--space-3); font: inherit; font-weight: var(--weight-strong); }
+.disclosure svg, .summaryFold svg { color: var(--color-muted); }
 .iconButton:disabled { opacity: .55; }
 .grip { display: inline-flex; cursor: grab; padding: var(--space-2); }
 .grip svg { pointer-events: none; }
@@ -22,24 +28,43 @@
 .cell { min-inline-size: 0; min-block-size: 0; }
 .group { display: grid; grid-template-rows: minmax(0, 1fr); }
 .group[data-stack] { grid-template-rows: auto minmax(0, 1fr); }
-.tabs { display: flex; flex-wrap: wrap; gap: var(--space-1); border-block-end: var(--border-size) solid var(--color-border); }
+.tabs {
+  display: flex;
+  gap: var(--space-5);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-inline: var(--space-5);
+  border-block-end: var(--border-size) solid var(--color-border-subtle);
+}
 .tab {
   composes: focus from "../ui/control.module.css";
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   flex: 0 0 auto;
   position: relative;
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-4) 0;
   border: 0;
   background: transparent;
   color: var(--color-muted);
   font: inherit;
-  font-size: calc(var(--text-sm) + var(--border-size));
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   cursor: pointer;
   white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
 }
+.tab::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 calc(-1 * var(--border-size));
+  block-size: var(--focus-size);
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+.tab:hover { color: var(--color-text); }
 .tab[draggable="true"] { cursor: grab; }
-.tab[data-selected] { background: var(--color-surface); color: var(--color-text); }
+.tab[data-selected] { color: var(--color-text); }
+.tab[data-selected]::after { background: var(--color-accent); }
 .tab:focus-visible { outline-offset: calc(-1 * var(--focus-size)); }
 .sash {
   composes: focus from "../ui/control.module.css";

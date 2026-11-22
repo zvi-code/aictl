@@ -756,3 +756,10 @@ class TestReinstallRemovesTheOldEnvironmentItself:
     def test_a_folder_that_is_not_the_pipx_environment_is_never_removed(self, runner, tmp_path, monkeypatch):
         batch, env = self._launch(runner, tmp_path, monkeypatch, Path("C:/Users/u/somewhere/else"))
         assert "rmdir" not in batch and "AICTL_VENV" not in env
+
+    def test_reinstall_stops_running_daemon_and_kills_process_tree(self, runner, tmp_path, monkeypatch):
+        batch, _ = self._launch(runner, tmp_path, monkeypatch, Path("C:/Users/u/pipx/venvs/aictl"))
+        assert "taskkill /PID %%P /T /F" in batch
+        assert "$_.CommandLine -like" in batch
+        assert "*aictl*serve*" in batch
+

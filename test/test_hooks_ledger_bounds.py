@@ -53,8 +53,8 @@ def test_a_ledger_already_far_over_the_cap_is_trimmed_on_next_write(ledger):
     assert _sizes(ledger) <= 2 * 2000 + 400
     # Whole lines only, and the newest entry is readable.
     entries = mutation_ledger.all_entries()
-    assert entries[-1]["path"] == "/new"
-    assert all(e["path"] in ("/old", "/new") for e in entries)
+    assert entries[-1]["path"] == str(Path("/new"))
+    assert all(e["path"] in ("/old", str(Path("/new"))) for e in entries)
 
 
 def test_readers_see_rotated_then_active_in_order(ledger):
@@ -63,7 +63,7 @@ def test_readers_see_rotated_then_active_in_order(ledger):
     ledger.with_name(ledger.name + ".1").write_text(json.dumps({"path": "/rotated"}) + "\n")
     entries = mutation_ledger.all_entries()
     assert entries[0]["path"] == "/rotated"
-    assert entries[-1]["path"] == "/p/39"
+    assert entries[-1]["path"] == str(Path("/p/39"))
 
 
 def test_record_never_raises_when_rotation_fails(ledger, monkeypatch):

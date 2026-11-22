@@ -13,7 +13,6 @@
 .stack > * { min-inline-size: 0; }
 .panel, .evidence {
   padding: var(--space-6);
-  border: var(--border-size) solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
   min-inline-size: 0;
@@ -30,7 +29,6 @@
   padding: var(--space-4) var(--space-5);
   border-radius: var(--radius-md);
   background: var(--color-surface);
-  border: var(--border-size) solid var(--color-border);
 }
 .metrics { grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--control-size) * 6)), 1fr)); }
 .controls {
@@ -44,7 +42,7 @@
 .search { flex: 1 1 var(--overlay-sm); }
 .search input { flex: 1; min-inline-size: 0; }
 .search kbd { color: var(--color-muted); font-size: var(--text-xs); }
-.control :is(select, textarea), .search input, .controls > button, .stack > button, .button, .link {
+.control :is(select, textarea), .search input, .button, .link {
   color: var(--color-text);
   border: var(--border-size) solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -54,6 +52,21 @@
   font: inherit;
   box-sizing: border-box;
 }
+.controls > button, .stack > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-block-size: var(--control-size);
+  padding: 0 var(--space-4);
+  border: var(--border-size) solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--color-hover);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: var(--weight-medium);
+}
+.controls > button:hover:not(:disabled), .stack > button:hover:not(:disabled) { background: var(--color-pressed); }
+.controls > button:active:not(:disabled), .stack > button:active:not(:disabled) { background: var(--color-pressed); }
 .control textarea { resize: vertical; font-family: var(--font-mono); }
 .control select { max-inline-size: var(--overlay-sm); }
 .workspace :is(summary, select, button:not(:disabled)), .button:not(:disabled) { cursor: pointer; }
@@ -63,7 +76,11 @@
   outline: var(--focus-size) solid var(--color-focus);
   outline-offset: var(--space-1);
 }
-.controls > button[aria-pressed="true"], .button:not(:disabled) {
+.controls > button[aria-pressed="true"], .controls > button[aria-pressed="true"]:hover {
+  background: var(--color-selected);
+  color: var(--color-selected-text);
+}
+.button:not(:disabled) {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: var(--color-on-accent);

@@ -194,25 +194,3 @@ export function healthSources(health: HealthView) {
     }
   })
 }
-
-export type TrendPoint = { t: number; streaming?: unknown; inline?: unknown; queued?: unknown; read?: unknown; pending?: unknown }
-export type Trend = { id: string | null; points: TrendPoint[] }
-
-// Keep at most 90 buckets from the health feed. Do not mix daemon runs or scopes.
-export function updateTrend(last: Trend, health?: HealthView | null): Trend {
-  const at = health?.generated_at
-  if (!health || !finite(at)) return last
-  const report = health.node_report
-  const id = JSON.stringify([health.store?.destination, health.pipeline?.self?.pid, health.pipeline?.self?.started_at,
-    report?.scope, report?.nodeId, report?.rows.map(row => [row.node_id, row.daemon_pid]), report?.contributors])
-  if (last.id !== id) last = { id, points: [] }
-  const t = Math.floor(at / 10) * 10
-  const previous = last.points.at(-1)
-  if (previous && previous.t >= t) return last
-  const modes = health.store?.ingestion_traffic
-  return { id, points: [...last.points.filter(point => point.t > t - 900), {
-    t, streaming: record(modes?.streaming)?.rows_per_s, inline: record(modes?.inline)?.rows_per_s,
-    queued: record(modes?.queued)?.rows_per_s, read: health.store?.reads?.recent_avg_ms,
-    pending: record(modes?.queued)?.pending_history_rows,
-  }] }
-}

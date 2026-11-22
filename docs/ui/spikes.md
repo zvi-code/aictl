@@ -7,7 +7,7 @@ Kusto connection.
 
 ## Reproduce
 
-Run in `C:\OSS\aictl\src\aictl\dashboard\ui`:
+Run in `src\aictl\dashboard\ui`:
 
 ```powershell
 $env:TEMP = (Resolve-Path node_modules\.cache).Path

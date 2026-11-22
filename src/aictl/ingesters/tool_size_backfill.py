@@ -60,7 +60,7 @@ def run(writer: Writer, state: StateFile, ingester_factory: Any = None) -> bool:
 
     ingester = ingester_factory(_SizesOnly(), _NativeSizes(writer))
     ingester.poll()
-    if len(ingester.facts):
+    if len(ingester.facts) or ingester.facts.write_error is not None:
         return False
     state.replace({STATE_KEY: time.time()})
     return True

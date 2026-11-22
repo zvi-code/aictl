@@ -24,7 +24,7 @@ export default function Diagnostics(props: PanelProps) {
           <PanelState state="empty" inline message="No current health issues reported." />
         </Show>
       }>
-        <Detail label={`Problems that need action (${status().issues.length})`}>{issueList(status().issues)}</Detail>
+        <Detail label={`Problems that need action (${status().issues.length})`} open>{issueList(status().issues)}</Detail>
       </Show>
       <Show when={status().pending.length}><Detail label={`Pending measurements (${status().pending.length})`}>
         {issueList(status().pending)}

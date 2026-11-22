@@ -2,6 +2,7 @@ import { createSignal, createUniqueId, For, Show } from 'solid-js'
 import type { Tab } from '../ui/Tabs'
 import { moveFocus } from '../ui/keyboard'
 import { fmtN } from '../design/format'
+import { Icon } from '../ui/Icon'
 import styles from './sessionTabs.module.css'
 
 export type SessionTab = Tab & { groupStart?: boolean; count?: () => number | undefined }
@@ -31,7 +32,7 @@ export function SessionTabs(props: {
             aria-selected={props.value === item.id ? 'true' : 'false'} disabled={item.disabled}
             tabindex={(focus() ?? props.value) === item.id ? 0 : -1}
             onFocus={() => setFocus(item.id)} onClick={() => props.onChange(item.id)}>
-            {item.label}
+            <Show when={item.glyph}>{glyph => <Icon glyph={glyph()} small />}</Show>{item.label}
             <Show when={count() != null}>
               <span class={styles.badge} title={count()?.toLocaleString()} id={`${id}-count`}>{fmtN(count())}</span>
             </Show>

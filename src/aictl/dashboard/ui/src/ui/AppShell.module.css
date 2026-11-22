@@ -2,12 +2,13 @@
   min-block-size: 100dvh;
   display: grid;
   grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--color-page);
   color: var(--color-text);
   font: var(--text-md)/var(--leading-normal) var(--font-ui);
 }
 .header, .footer {
-  padding: var(--space-5) var(--space-7);
+  padding: var(--space-4) var(--space-7);
   background: var(--color-surface);
 }
 .header {
@@ -21,7 +22,7 @@
   border-block-end: var(--border-size) solid var(--color-border);
 }
 .title { font-size: var(--text-lg); }
-.actions { margin-inline-start: auto; min-inline-size: 0; }
+.actions { flex: 1 1 0; display: flex; justify-content: flex-end; }
 .main { min-inline-size: 0; padding: var(--space-7); }
 .footer { border-block-start: var(--border-size) solid var(--color-border); color: var(--color-muted); }
 .skip {

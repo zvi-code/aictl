@@ -281,6 +281,8 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     # On Windows SO_REUSEADDR lets a second server share a port in use, with no bind error.
     allow_reuse_address = not IS_WINDOWS
+    # The default listen backlog of 5 makes Windows reset bursts of browser, hook and OTel connections.
+    request_queue_size = 128
 
     def __init__(self, addr, handler, store, allowed, root, *, start_ingesters_now: bool = True):
         super().__init__(addr, handler)

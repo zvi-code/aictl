@@ -191,7 +191,7 @@ class TestFindProjectDir:
         root.mkdir()
         import re as _re
 
-        segments = [s for s in _re.split(r"[/\\]+", str(root.resolve())) if s]
+        segments = [s for s in _re.split(r"[/\\:]+", str(root.resolve())) if s]
         doubled = projects_dir / ("-" + "--".join(segments))
         doubled.mkdir()
 

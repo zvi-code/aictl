@@ -277,7 +277,7 @@ def test_codex_project_file_read_only_when_trusted(env):
     cfg = _collect(proj)["codex-cli"]
     assert cfg.model == "gpt-5"
     assert "not trusted" in next(s for s in cfg.scopes if s["id"] == "project")["note"]
-    _write(home / "config.toml", f'model = "gpt-5"\n\n[projects."{proj}"]\ntrust_level = "trusted"\n')
+    _write(home / "config.toml", f"model = \"gpt-5\"\n\n[projects.'{proj}']\ntrust_level = \"trusted\"\n")
     cfg = _collect(proj)["codex-cli"]
     assert cfg.model == "project-model"
     assert [e["scope"] for e in _rows(cfg)["model"]["chain"]] == ["user", "project"]

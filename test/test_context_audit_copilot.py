@@ -529,5 +529,5 @@ def test_copilot_does_not_claim_the_claude_user_skill_folder(tmp_path, monkeypat
     sources = ca.run_audit(project, env={}, ps_output="")["sources"]
     for tool in ("copilot-cli",):
         rows = [s for s in sources if s["tool"] == tool]
-        assert not any(s["path"].endswith("checker/SKILL.md") for s in rows)
-        assert any(s["path"].endswith("agents/helper.md") for s in rows)
+        assert not any(s["path"].replace("\\", "/").endswith("checker/SKILL.md") for s in rows)
+        assert any(s["path"].replace("\\", "/").endswith("agents/helper.md") for s in rows)

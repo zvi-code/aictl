@@ -18,6 +18,11 @@ from urllib.request import Request, urlopen
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+_src_dir = str(REPO_ROOT / "src")
+if _src_dir not in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+    os.environ["PYTHONPATH"] = (
+        f"{_src_dir}{os.pathsep}{os.environ['PYTHONPATH']}" if os.environ.get("PYTHONPATH") else _src_dir
+    )
 
 
 @pytest.fixture(scope="module")
@@ -169,8 +174,25 @@ if not REAL_HOME_ALLOWED:
     os.environ["LOCALAPPDATA"] = os.path.join(_test_home, "AppData", "Local")
     os.environ.pop("HOMEDRIVE", None)
     os.environ.pop("HOMEPATH", None)
-    # These would point tool paths straight back at the real directories.
-    for _variable in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"):
+    # These would point tool paths or model/OTel settings straight back at the real environment.
+    for _variable in (
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "COPILOT_HOME",
+        "COPILOT_MODEL",
+        "ANTHROPIC_MODEL",
+        "AICTL_PORT",
+        "AW_DEFAULT_MODEL",
+        "CLAUDE_CODE_ENABLE_TELEMETRY",
+        "CODEX_OTEL_ENABLED",
+        "CODEX_OTEL_ENDPOINT",
+        "GEMINI_OTEL_ENABLED",
+        "GEMINI_TELEMETRY_ENABLED",
+        "GEMINI_TELEMETRY_OTLP_ENDPOINT",
+        "GEMINI_TELEMETRY_OTLP_PROTOCOL",
+        "GEMINI_TELEMETRY_TARGET",
+        "GEMINI_TELEMETRY_USE_COLLECTOR",
+    ):
         os.environ.pop(_variable, None)
     # The test home hides config.toml but not a Kusto target inherited from the shell.
     if os.environ.get("AICTL_PARITY_DB") != "aictl_perf_test":
@@ -265,6 +287,32 @@ def _aictl_assume_yes(monkeypatch):
     """Tests run in non-TTY context; explicitly approve writes so WriteGuard
     doesn't abort. Individual tests can override via monkeypatch.delenv."""
     monkeypatch.setenv("AICTL_ASSUME_YES", "1")
+    if not REAL_HOME_ALLOWED and sys.platform == "win32":
+        import contextlib
+
+        from aictl import context_audit
+        from aictl.ingesters import _common
+
+        for rel in (
+            os.path.join("AppData", "Roaming", "aictl", "config.toml"),
+            os.path.join(".config", "aictl", "config.toml"),
+        ):
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(_test_home, rel))
+        monkeypatch.setattr(context_audit, "winreg", None)
+        _common._git_root.cache_clear()
+        original_setenv = monkeypatch.setenv
+
+        def setenv(name: str, value: str, prepend: str | None = None) -> None:
+            original_setenv(name, value, prepend=prepend)
+            if name == "HOME":
+                original_setenv("USERPROFILE", value)
+                original_setenv("APPDATA", os.path.join(value, "AppData", "Roaming"))
+                original_setenv("LOCALAPPDATA", os.path.join(value, "AppData", "Local"))
+                original_setenv("XDG_CONFIG_HOME", os.path.join(value, ".config"))
+                _common._git_root.cache_clear()
+
+        monkeypatch.setenv = setenv
 
 
 @pytest.fixture(autouse=True)

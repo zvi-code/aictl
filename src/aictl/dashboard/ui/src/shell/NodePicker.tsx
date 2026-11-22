@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, Show } from 'solid-js'
 import type { DetailNodes } from '../data/contract.gen'
 import { json } from '../panels/data'
+import { Icon } from '../ui/Icon'
 import type { NodeScope } from '../panels/types'
 import styles from './Shell.module.css'
 
@@ -36,15 +37,16 @@ export function NodePicker(props: { scope: NodeScope; nodeId: string | null; sel
   return <>
     <button ref={trigger} class={styles.button} type="button" popovertarget="node-picker"
       onClick={() => { if (!popup.matches(':popover-open')) setTyped(props.nodeId ?? '') }}
-      aria-controls="node-picker" aria-expanded={open() ? 'true' : 'false'}>Node scope: {scopeLabel(props.scope, props.nodeId)}</button>
+      aria-controls="node-picker" aria-expanded={open() ? 'true' : 'false'}><Icon glyph="node" />
+      <span><span class={styles.srOnly}>Node scope: </span>{scopeLabel(props.scope, props.nodeId)}</span><Icon glyph="down" small /></button>
     <section ref={popup} id="node-picker" class={styles.popup} popover="auto" aria-label="Choose node scope"
       onToggle={event => setOpen(event.newState === 'open')}
       onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); popup.hidePopover(); trigger.focus() }
       }}>
       <div class={styles.controls}>
-        <button class={styles.button} type="button" onClick={() => choose('local')}>This node</button>
-        <button class={styles.button} type="button" onClick={() => choose('fleet')}>All nodes</button>
+        <button class={styles.secondary} type="button" onClick={() => choose('local')}>This node</button>
+        <button class={styles.secondary} type="button" onClick={() => choose('fleet')}>All nodes</button>
       </div>
       <Show when={nodes()?.local_node?.node_id}>{id => <p>This node: <code>{id()}</code></p>}</Show>
       <form class={styles.controls} onSubmit={event => {
@@ -52,7 +54,7 @@ export function NodePicker(props: { scope: NodeScope; nodeId: string | null; sel
         if (typed().trim()) choose('node', typed().trim().toLowerCase())
       }}>
         <label>Node ID <input class={styles.input} value={typed()} onInput={event => setTyped(event.currentTarget.value)} /></label>
-        <button class={styles.button} type="submit" disabled={!typed().trim()}>Open node</button>
+        <button class={styles.primary} type="submit" disabled={!typed().trim()}>Open node</button>
       </form>
       <Show when={error()}><p role="status">Could not list nodes. You can still enter a node ID.</p></Show>
       <Show when={!error() && !nodes()}><p role="status">Finding nodes…</p></Show>

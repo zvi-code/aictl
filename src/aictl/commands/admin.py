@@ -585,6 +585,15 @@ def reinstall(skip_ui, force_ui, index_url):
         _reinstall_detached_windows(install_cmd, root, install_env)
         return
 
+    try:
+        from ..platforms import load_config
+        from .daemon import _stop_daemon
+
+        cfg = load_config()
+        _stop_daemon(cfg.effective_pid_file(), cfg.serve_port)
+    except Exception as exc:  # noqa: BLE001 - best-effort daemon stop before replacing the environment
+        click.echo(f"  (could not stop running daemon before reinstall: {exc})", err=True)
+
     click.echo(f"→ Reinstalling via {installer_label} from {root}...")
     try:
         subprocess.run(install_cmd, check=True, env=install_env)
@@ -639,7 +648,7 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
     # Locate the pipx venv so we can evict any process (running `aictl serve`
     # daemon, a stray python.exe) that holds its directory locked — uv cannot
     # clear the venv while it is in use (Windows os error 32).
-    venv_dir = str(_pipx_venv_dir()).replace("%", "%%")
+    venv_dir = str(_pipx_venv_dir()).replace("'", "''").replace("%", "%%")
 
     # Text that varies is read from the environment with !NAME!, which cmd expands after
     # parsing, so a path holding "&" prints as text instead of running as a command.
@@ -691,9 +700,9 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
         # PowerShell .Where()/member-enumeration (no pipe) because a piped
         # command inside a cmd `for /f` requires fragile caret escaping.
         "for /f \"tokens=1\" %%P in ('powershell -NoProfile -Command "
-        f"\"(Get-CimInstance Win32_Process).Where({{ $_.ExecutablePath -like '{venv_dir}\\*' }}).ProcessId\"') do (\r\n"
+        f"\"(Get-CimInstance Win32_Process).Where({{ $_.ExecutablePath -like '{venv_dir}\\*' -or $_.CommandLine -like '*{venv_dir}\\*' -or $_.CommandLine -like '*aictl*serve*' }}).ProcessId\"') do (\r\n"
         "  echo Stopping process %%P, which runs from the aictl environment...\r\n"
-        "  taskkill /PID %%P /F >nul 2>&1\r\n"
+        "  taskkill /PID %%P /T /F >nul 2>&1\r\n"
         ")\r\n"
         # Not inside the environment: a process's working folder cannot be deleted.
         'cd /d "!AICTL_REINSTALL_FROM!"\r\n'

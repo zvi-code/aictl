@@ -401,7 +401,7 @@ def scan(root: Path) -> list[tuple[str, ParsedAictx]]:
 
     for aictx_file in _walk(root):
         rel = aictx_file.parent.relative_to(root)
-        rel_str = str(rel) if str(rel) != "." else "."
+        rel_str = rel.as_posix() if str(rel) != "." else "."
         parsed = parse_aictx(aictx_file)
         if parsed:
             results.append((rel_str, parsed))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -310,14 +311,16 @@ def _event_tokens(event: dict) -> int:
 
 def _aggregate_flow(events: list[dict]) -> tuple[int, int]:
     """Each prompt takes the model calls up to the next prompt. Each event gets the tokens so
-    far in the session and in its turn. Returns the session total and the largest turn."""
+    far in the session and in its turn, and the number of its turn (0 before the first prompt).
+    Returns the session total and the largest turn."""
     recount = any(e["type"] == "api_call" for e in events)
-    cumulative = turn_tokens = largest = 0
+    cumulative = turn_tokens = largest = turn = 0
     current: dict | None = None
     for event in events:
         kind = event["type"]
         if kind == "user_message":
             current, turn_tokens = event, 0
+            turn += 1
             if recount:
                 event.update(tokens=_zero_tokens(), api_calls=0, duration_ms=0, model="", end_ts=event["ts"])
         elif current is not None and kind not in _FLOW_MARKERS:
@@ -335,6 +338,7 @@ def _aggregate_flow(events: list[dict]) -> tuple[int, int]:
             largest = max(largest, turn_tokens)
         event["cum_tokens"] = cumulative
         event["rt_tokens"] = turn_tokens
+        event["turn_index"] = turn
     for event in events:
         if event["type"] == "user_message":
             end = event.get("end_ts") or event["ts"]
@@ -382,17 +386,25 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
 FLOW_MEMO_S = 120.0
 
 
+# Flows kept per store. A large session holds tens of thousands of events, so only a few stay.
+FLOW_MEMO_ENTRIES = 4
+
+
 _FLOW_STAMP_TABLES = ("requests", "tool_invocations", "session_prompts", "events", "session_steps")
 
 
 def _session_flow(db: Any, agent_id: str, since: float, until: float,
                   legacy_flow: Callable[[str, float, float], dict] | None,
-                  history: HistoryScope) -> tuple[str, list[dict], str] | None:
+                  history: HistoryScope, *, open_end: bool = False,
+                  reuse: bool = False) -> tuple[str, list[dict], str] | None:
     """(session id, merged events, source) of a board agent, or None for an unknown agent.
 
     Building the flow reads every record of the session, so the result is kept on the store
     for FLOW_MEMO_S as long as the session's records have not changed. The flow of one
     session is asked for several times in a row: the flow tab, the transcript, each turn.
+    ``open_end`` marks a range that ends now, whose end moves with each request. With
+    ``reuse``, a kept flow of the same range is returned without checking the records again,
+    so that the windows of one long flow read the same events.
     """
     sid, _agent = _resolve_agent(history, agent_id)
     node, raw = history.split(sid)
@@ -400,17 +412,31 @@ def _session_flow(db: Any, agent_id: str, since: float, until: float,
     use_memo = legacy_flow is None and ":" not in raw and hasattr(db, "__dict__")
     if not use_memo:
         return _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
-    revision = history.read("sequence.stamp", sid=sid, since=since, until=until, limit=1)[0]
     memo = db.__dict__.setdefault("_reader_flow_memo", {})
-    key = (history.reader, node, sid, since, until, capture_mode(db, default="full"), *revision.values())
-    hit = memo.get(key)
-    if hit and 0 <= time.monotonic() - hit[0] < FLOW_MEMO_S:
-        return hit[1]
-    found = _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
-    memo.clear()
-    memo[key] = (time.monotonic(), found)
-    return found
-
+    guard = db.__dict__.setdefault("_reader_flow_guard", threading.Lock())
+    with guard:
+        lock = db.__dict__.setdefault("_reader_flow_locks", {}).setdefault((history.reader, node, sid), threading.Lock())
+    scope = (history.reader, node, sid, since, None if open_end else until, capture_mode(db, default="full"))
+    # One build at a time for a session: the live loop and the HTTP route ask for the same flow,
+    # and a request that waited for a build takes its result.
+    with guard:
+        before = memo.get(scope)
+    with lock:
+        with guard:
+            hit = memo.get(scope)
+        fresh = hit is not None and 0 <= time.monotonic() - hit[0] < FLOW_MEMO_S
+        if fresh and (reuse or hit is not before):
+            return hit[2]
+        revision = tuple(history.read("sequence.stamp", sid=sid, since=since, until=until, limit=1)[0].values())
+        if fresh and hit[1] == revision:
+            return hit[2]
+        found = _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
+        with guard:
+            memo.pop(scope, None)
+            while len(memo) >= FLOW_MEMO_ENTRIES:
+                del memo[min(memo, key=lambda k: memo[k][0])]
+            memo[scope] = (time.monotonic(), revision, found)
+        return found
 
 def _session_flow_build(db: Any, conn: Any | None, sid: str, since: float, until: float,
                         legacy_flow: Callable[[str, float, float], dict] | None, *,
@@ -446,6 +472,29 @@ def _session_flow_build(db: Any, conn: Any | None, sid: str, since: float, until
     return sid, merged, source
 
 
+def _turn_marks(events: list[dict]) -> list[dict]:
+    """Where each turn starts among ``events`` and what it holds, for a scrubber over a long flow."""
+    marks: list[dict] = []
+    for index, event in enumerate(events):
+        turn = event.get("turn_index")
+        if turn is None:
+            continue
+        if not marks or marks[-1]["turn"] != turn:
+            marks.append({"turn": turn, "offset": index, "ts": event["ts"], "end_ts": event["ts"], "events": 0,
+                          "tokens": 0, "tools": 0, "errors": 0, "subagents": 0, "prompt": ""})
+        mark = marks[-1]
+        kind = event["type"]
+        mark["events"] += 1
+        mark["end_ts"] = max(mark["end_ts"], event.get("end_ts") or event["ts"])
+        mark["tokens"] = max(mark["tokens"], int(event.get("rt_tokens") or 0))
+        mark["tools"] += kind == "tool_use"
+        mark["subagents"] += kind == "subagent"
+        mark["errors"] += kind == "error" or bool(event.get("is_error")) or (kind == "tool_use" and event.get("success") is False)
+        if kind == "user_message" and not mark["prompt"]:
+            mark["prompt"] = _clip(event.get("preview") or event.get("message"), 120)
+    return marks
+
+
 def agent_flow(
     db: Any,
     agent_id: str,
@@ -457,14 +506,18 @@ def agent_flow(
     *,
     q: str = "", category: str = "", tool_name: str = "", flow_agent: str = "", failed: bool = False,
     skill_name: str = "", skill_phase: str = "",
+    offset: int | None = None,
     history: HistoryScope | None = None,
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
-    Each event carries ``cum_tokens`` (input and output so far in the session) and
-    ``rt_tokens`` (so far in its turn). The summary counts every event in the range; only the
-    newest ``limit`` events are returned, FLOW_DEFAULT_EVENTS by default and at most
-    MAX_FLOW_EVENTS. The caller asks for more with a larger limit.
+    Each event carries ``cum_tokens`` (input and output so far in the session), ``rt_tokens``
+    (so far in its turn) and ``turn_index``. The summary counts every event in the range and
+    marks where each turn starts among the matching events. One window of ``limit`` matching
+    events is returned, FLOW_DEFAULT_EVENTS by default and at most MAX_FLOW_EVENTS: the newest
+    events, or the events from position ``offset`` (0 is the oldest matching event). A window
+    with an offset reads the flow kept for the previous window, so all windows of one flow
+    count the same events.
     """
     now = time.time() if now is None else now
     history = history or HistoryScope.local(db)
@@ -476,11 +529,12 @@ def agent_flow(
 
         sid, _ = _resolve_agent(history, agent_id)
         events = skill_events(db, sid, lo, hi, live_end=until is None, history=history)
-        if not events and not _session_flow(db, sid, lo, hi, legacy_flow, history):
+        if not events and not _session_flow(db, sid, lo, hi, legacy_flow, history, open_end=until is None):
             return 404, {"error": "No such agent"}
         summary = {"skill_evidence": True, "event_count": len(events)}
     else:
-        found = _session_flow(db, agent_id, lo, hi, legacy_flow, history)
+        found = _session_flow(db, agent_id, lo, hi, legacy_flow, history, open_end=until is None,
+                              reuse=offset is not None)
         if found is None:
             return 404, {"error": "No such agent"}
         sid, records, source = found
@@ -491,9 +545,13 @@ def agent_flow(
     capture = capture_mode(db, default="full")
     matches, scope = select_events(events, q=q, category=category, tool_name=tool_name, flow_agent=flow_agent,
                                    failed=failed, allow_text=capture == "full", skill_name=skill_name, skill_phase=skill_phase)
-    shown = matches[-keep:]
+    start = max(0, len(matches) - keep) if offset is None else max(0, min(int(offset), len(matches)))
+    shown = matches[start:start + keep]
+    summary["offset"] = start
+    summary["matched_events"] = len(matches)
     summary["shown_events"] = len(shown)
-    summary["omitted_events"] = len(matches) - len(shown)
+    summary["omitted_events"] = start
+    summary["turn_marks"] = _turn_marks(matches)
     settings = reader_feature(HistoryScope.local(db).reader, "connection_info")
     return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "capture_mode": capture,
                  "node_id": settings.node_id if settings else None,
@@ -670,7 +728,7 @@ def agent_transcript(
     returns every turn whole.
     """
     now = time.time() if now is None else now
-    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow, history or HistoryScope.local(db))
+    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow, history or HistoryScope.local(db), open_end=True)
     if found is None:
         return 404, {"error": "No such agent"}
     sid, events, source = found

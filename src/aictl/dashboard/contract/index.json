@@ -129,6 +129,7 @@
     "terminal-resource-live-tool": "terminal-resource-live-tool.schema.json",
     "terminal-resource-process": "terminal-resource-process.schema.json",
     "transcript-turn": "transcript-turn.schema.json",
+    "turn-mark": "turn-mark.schema.json",
     "usage-tokens": "usage-tokens.schema.json"
   }
 }

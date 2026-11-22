@@ -23,8 +23,8 @@ const metrics = [
 
 function Spark(props: { values: readonly (number | null)[] }) {
   const path = createMemo(() => sparkPath(props.values, 60, 18))
-  return <svg class={styles.spark} viewBox="0 0 60 18" aria-hidden="true">
-    <path d={path() ?? undefined} stroke="currentColor" fill="none" />
+  return <svg class={styles.spark} viewBox="0 0 60 18" preserveAspectRatio="none" aria-hidden="true">
+    <path d={path() ?? undefined} stroke="currentColor" fill="none" vector-effect="non-scaling-stroke" />
   </svg>
 }
 

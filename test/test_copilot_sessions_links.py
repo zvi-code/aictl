@@ -230,7 +230,7 @@ def test_hashed_editing_folder_joins_its_cli_session(env):
     name = hashlib.sha1(f"copilotcli:/{CLI_ID}".encode()).hexdigest()
     folder = env["ws"] / "chatEditingSessions" / name
     folder.mkdir(parents=True)
-    (folder / "state.json").write_text("edits\n")
+    (folder / "state.json").write_text("edits\n", newline="\n")
     ix = SessionIndex()
     rec = ix.records[CLI_ID]
     assert str(folder) in rec["roots"]

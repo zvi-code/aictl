@@ -249,7 +249,7 @@ def _read_text(path: Path) -> str:
 def _path_key(path: str | Path) -> str:
     """Comparison key for a path: forward slashes, and no case on Windows-style paths."""
     text = str(path)
-    windows = IS_WINDOWS or "\\" in text or re.match(r"^[A-Za-z]:", text) is not None
+    windows = "\\" in text or re.match(r"^[A-Za-z]:", text) is not None
     text = text.replace("\\", "/")
     return text.lower() if windows else text
 
@@ -1001,7 +1001,9 @@ def _collect_vscode(inv: _Inventory, findings: list[Finding]) -> None:
     inv.add_glob(tool, "memory", str(global_memory / "**" / "*"), "memory", "on-demand")
     for storage in glob.glob(str(user / "workspaceStorage" / "*")):
         folder = str(_read_json(Path(storage) / "workspace.json").get("folder") or "")
-        if folder and _path_key(unquote(urlparse(folder).path)).rstrip("/").endswith(_path_key(project).rstrip("/")):
+        parsed = urlparse(folder) if folder else None
+        folder_path = unquote(f"{parsed.netloc}{parsed.path}") if parsed else ""
+        if folder_path and _path_key(folder_path).rstrip("/").endswith(_path_key(project).rstrip("/")):
             for chat_dir in ("GitHub.copilot-chat", "github.copilot-chat"):
                 inv.add_glob(tool, "memory", str(Path(storage) / chat_dir / "memory-tool" / "memories" / "**" / "*"), "memory", "on-demand")
     for path, level, cfg in _vscode_settings_files(project):
@@ -1266,15 +1268,14 @@ def _persistent_env(findings: list[Finding]) -> dict[str, dict[str, str]]:
             values = {m.group(1): m.group(2).strip() for regex in _PROFILE_ENV_RES for m in regex.finditer(text)}
             if values:
                 out[hit] = values
-    if not IS_WINDOWS:
-        for name in _SHELL_PROFILES:
-            path = Path(_expand_home(name))
-            if not path.is_file():
-                continue
-            text = _read_text(path)
-            values = {m.group(1): m.group(2).strip() for regex in _SHELL_ENV_RES for m in regex.finditer(text)}
-            if values:
-                out[str(path)] = values
+    for name in _SHELL_PROFILES:
+        path = Path(_expand_home(name))
+        if not path.is_file():
+            continue
+        text = _read_text(path)
+        values = {m.group(1): m.group(2).strip() for regex in _SHELL_ENV_RES for m in regex.finditer(text)}
+        if values:
+            out[str(path)] = values
     return out
 
 

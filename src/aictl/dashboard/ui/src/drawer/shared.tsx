@@ -81,10 +81,12 @@ export function Stats(props: { items: readonly Measure[] }) {
   }</For></div>
 }
 
-type Column = string | readonly [key: string, label: string, format?: 'number' | 'time' | 'bytes']
+type Column = string | readonly [key: string, label: string, format?: 'number' | 'time' | 'bytes' | 'path']
 export function Rows<T extends object>(props: {
   label: string; rows?: readonly T[] | null; columns: readonly Column[]; identity: readonly string[];
   action?: { label: (row: T) => string; run: (row: T) => void }; empty?: string
+  /** Run the action from this column's cell instead of a separate Actions column. */
+  actionColumn?: string
 }) {
   const fields = (): Field<T>[] => props.columns.map(column => {
     const [key, label, format] = typeof column === 'string' ? [column, labelOf(column), undefined] : column
@@ -93,16 +95,17 @@ export function Rows<T extends object>(props: {
         const value = (row as Row)[key]
         return number(value) ?? text(value) ?? (typeof value === 'boolean' ? value : undefined)
       },
-      ...(format ? { format: (value: unknown) => {
+      ...(format === 'path' ? { clip: 'start' as const } : format ? { format: (value: unknown) => {
         const n = number(value)
         return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'bytes' ? fmtBytes(n) : fmtN(n)
       } } : {}),
+      ...(key === props.actionColumn ? { action: props.action } : {}),
     }
   })
   return <Show when={props.rows != null} fallback={<PanelState state="unavailable" />}>
     <Show when={props.rows!.length} fallback={<PanelState state="empty" message={props.empty} />}>
       <ResizableTable label={props.label} fields={fields()} rows={props.rows!} rowId={row => rowId(...props.identity.map(key => (row as Row)[key]))}
-        action={props.action} />
+        action={props.actionColumn ? undefined : props.action} />
     </Show>
   </Show>
 }
@@ -111,8 +114,10 @@ export function Series(props: {
   label: string; values?: readonly (number | null | undefined)[]; x?: readonly number[]; time?: boolean; unit?: string
 }) {
   const values = () => props.values?.map(v => v ?? null)
+  // The axis appends the unit to each tick: "200K tokens", but "40%".
+  const unit = () => props.unit && props.unit !== '%' ? ` ${props.unit}` : props.unit
   return <Show when={values()?.some(v => v != null)} fallback={<PanelState state="unavailable" />}>
-    <Chart label={props.label} description={props.label} unit={props.unit}
+    <Chart label={props.label} description={props.label} unit={unit()}
       xAxis={props.time ? 'time' : 'number'} series={[{ label: props.label }]}
       points={values()!.map((value, index) => ({ x: props.x?.[index] ?? index + 1, values: [value] }))} />
   </Show>

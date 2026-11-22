@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/turn-mark.schema.json",
+  "title": "TurnMark",
+  "description": "Where one turn starts among the matching events of a flow, and what it holds.",
+  "type": "object",
+  "properties": {
+    "turn": {"type": "integer"},
+    "offset": {"type": "integer"},
+    "ts": {"type": "number"},
+    "end_ts": {"type": "number"},
+    "events": {"type": "integer"},
+    "tokens": {"type": "integer"},
+    "tools": {"type": "integer"},
+    "errors": {"type": "integer"},
+    "subagents": {"type": "integer"},
+    "prompt": {"type": "string"}
+  },
+  "required": ["turn", "offset", "ts", "end_ts", "events", "tokens", "tools", "errors", "subagents", "prompt"],
+  "additionalProperties": false
+}

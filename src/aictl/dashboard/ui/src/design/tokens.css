@@ -24,6 +24,7 @@
   --weight-medium: 500;
   --weight-strong: 650;
   --radius-sm: .25rem;
+  --radius-control: .375rem;
   --radius-md: .5rem;
   --radius-lg: .75rem;
   --radius-pill: 999px;
@@ -31,6 +32,8 @@
   --focus-size: 2px;
   --icon-size: 1rem;
   --control-size: 2rem;
+  --control-size-sm: 1.625rem;
+  --icon-size-sm: .875rem;
   --row-size: 2rem;
   --panel-sm: 10rem;
   --panel-md: 16rem;
@@ -49,6 +52,12 @@
   --color-text: #191918;
   --color-muted: #57564f;
   --color-border: #c9c8c0;
+  --color-border-subtle: #e1e0da;
+  --color-hover: #ebeae5;
+  --color-pressed: #e0dfd8;
+  --color-selected: #dce8f7;
+  --color-selected-text: #1b4d86;
+  --color-accent-hover: #1d4f88;
   --color-accent: #255e9e;
   --color-on-accent: #fff;
   --color-focus: #164dab;
@@ -73,6 +82,12 @@
   --color-text: #f0efec;
   --color-muted: #b5b3aa;
   --color-border: #55544f;
+  --color-border-subtle: #2e2e2c;
+  --color-hover: #262625;
+  --color-pressed: #31312f;
+  --color-selected: #1c2d42;
+  --color-selected-text: #b4d4f8;
+  --color-accent-hover: #a5cbf6;
   --color-accent: #86b8f1;
   --color-on-accent: #101010;
   --color-focus: #86b8f1;
