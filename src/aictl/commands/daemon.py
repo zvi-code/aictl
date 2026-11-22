@@ -34,6 +34,9 @@ from ..platforms import (
     terminate_pid,
 )
 
+# Seconds between machine snapshots on a reporting node, unless --interval or the config asks for more.
+REPORTING_INTERVAL_S = 30.0
+
 # ─── serve ───────────────────────────────────────────────────────────────────
 
 
@@ -50,7 +53,7 @@ from ..platforms import (
 @click.option(
     "--headless",
     is_flag=True,
-    help="Run collection only (no web UI) — low-resource always-on monitoring",
+    help="Reporting node: collect and write to the store only; no web UI, no live stream, no 1-second monitor",
 )
 @click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.option("--kusto-cluster", default=None, help="Serve from this Kusto cluster instead of SQLite (URL; http://localhost:8080 for the emulator)")
@@ -95,10 +98,12 @@ def serve(
 ):
     """Start a live web dashboard with REST + SSE API.
 
-    With ``--headless`` the web UI is skipped and only the collection engine
-    runs (persisting to SQLite), which is the low-resource, always-on
-    monitoring mode. View the collected data later with ``aictl dashboard``
-    or by starting ``aictl serve`` (web UI).
+    With ``--headless`` this machine is a reporting node: it reads session
+    files and a machine snapshot and writes them to the store, and starts
+    nothing that only a local dashboard reads. The snapshot is taken every
+    30 seconds while a tool works and every 3 minutes otherwise, and the
+    1-second monitor is off unless ``--monitor`` is given. View the data from
+    any machine that runs the dashboard against the same store.
     """
     if capture:
         os.environ["AICTL_CAPTURE"] = capture
@@ -125,9 +130,15 @@ def serve(
     # Apply config file defaults, CLI overrides take precedence
     port = port if port is not None else cfg.serve_port
     host = host if host is not None else cfg.serve_host
-    interval = interval if interval is not None else cfg.serve_interval
+    if interval is None:
+        # A reporting node has no viewer to keep current: session files are read on their
+        # own schedule, and the machine snapshot is taken less often.
+        interval = max(cfg.serve_interval, REPORTING_INTERVAL_S) if headless else cfg.serve_interval
     open_browser = open_browser if open_browser is not None else cfg.serve_open_browser
-    include_live_monitor = include_live_monitor if include_live_monitor is not None else cfg.serve_monitor
+    if include_live_monitor is None:
+        # The one-second process, network and file sampling is for a live view; a
+        # reporting node runs it only when --monitor asks for it.
+        include_live_monitor = False if headless else cfg.serve_monitor
 
     # Warn if AICTL_PORT is set but doesn't match the effective port
     env_port = _env_port()
@@ -246,7 +257,7 @@ def _start_daemon(
         # Parent — wait briefly to confirm child started
         click.echo(f"  aictl daemon starting (PID {pid})")
         if headless:
-            click.echo("  headless collection (no web UI) — view with: aictl dashboard")
+            click.echo("  reporting node (no web UI) — view from a machine that runs the dashboard")
         else:
             click.echo(f"  dashboard at http://{host}:{port}")
         click.echo(f"  log: {log_file}")
@@ -320,7 +331,7 @@ def _start_daemon_windows(
         raise click.ClickException(f"aictl daemon did not start; see {log_file}")
     click.echo(f"  aictl daemon starting (PID {pid_file.read_text(encoding='utf-8').strip()})")
     if headless:
-        click.echo("  headless collection (no web UI) — view with: aictl dashboard")
+        click.echo("  reporting node (no web UI) — view from a machine that runs the dashboard")
     else:
         click.echo(f"  dashboard at http://{host}:{port}")
     click.echo(f"  log: {log_file}")

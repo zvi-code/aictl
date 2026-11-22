@@ -665,10 +665,14 @@ class CollectionService:
         interval: float = 5.0,
         include_live_monitor: bool = True,
         db_path: Path | str | None = None,
+        reporting_only: bool = False,
     ) -> None:
         self.root = root
         self.interval = interval
         self.include_live_monitor = include_live_monitor
+        # A reporting node writes to the store and serves nothing: it does not
+        # start what only a dashboard on this machine reads.
+        self.reporting_only = reporting_only
         # Populated by start()
         self.history_store = stores.Store()
         self._history_stop = threading.Event()
@@ -763,12 +767,14 @@ class CollectionService:
         self.sink = self.store._sink = SampleSink(datapoint_logger=self._dp_logger,
                                                  history_store=self.history_store,
                                                  quality=self.store.collection_status)
-        from .dashboard.live.hub import LiveHub
-        from .monitoring.live_sources import LiveRuntimeSources
+        if not self.reporting_only:
+            # The live hub feeds the dashboard stream of this machine only.
+            from .dashboard.live.hub import LiveHub
+            from .monitoring.live_sources import LiveRuntimeSources
 
-        self.store.live_hub = LiveHub()
-        self.store.live_sources = LiveRuntimeSources(self.store.live_hub, self.root, capture_mode=mode)
-        self.store.live_sources.start()
+            self.store.live_hub = LiveHub()
+            self.store.live_sources = LiveRuntimeSources(self.store.live_hub, self.root, capture_mode=mode)
+            self.store.live_sources.start()
         self.store._persistence.capture_mode = mode
         if restart_dir is not None:
             from .stores.kusto.tables import TABLES
@@ -868,21 +874,21 @@ def start_collector(
     include_live_monitor: bool = True,
     db_path: Path | str | None = None,
 ) -> None:
-    """Run collection headless (no web server). Blocks until Ctrl-C.
+    """Run a reporting node: collect and write to the store, serve nothing. Blocks until Ctrl-C.
 
-    This is the low-resource, always-on collection mode: it persists metrics
-    and sessions to SQLite for any consumer (web ``serve`` or the ``dashboard``
-    TUI) to read, without paying for the HTTP layer.
+    No HTTP server, no live stream and no state kept for a dashboard on this
+    machine. A dashboard on any machine reads this node's data from the store.
     """
     service = CollectionService(
         root,
         interval=interval,
         include_live_monitor=include_live_monitor,
         db_path=db_path,
+        reporting_only=True,
     )
     service.start()
-    print("  aictl collector running (headless) — no web UI", file=sys.stderr)
-    print("  view with:  aictl dashboard   (or run 'aictl serve' for the web UI)", file=sys.stderr)
+    print("  aictl reporting node running — no web UI on this machine", file=sys.stderr)
+    print("  view from a machine that runs:  aictl daemon serve", file=sys.stderr)
     print("  press Ctrl-C to stop\n", file=sys.stderr)
     try:
         threading.Event().wait()

@@ -50,6 +50,7 @@ from ..ingesters.vscode_chat_logs import (
 from ..ingesters.vscode_chat_logs import (
     default_log_dir as vscode_chat_default_log_dir,
 )
+from ..monitoring.pace import PACE
 from ..state_file import StateFile, restart_directory
 
 log = logging.getLogger(__name__)
@@ -287,6 +288,8 @@ def _poll_loop(
                 rows_ingested_total=poll.get("rows_ingested_total", 0) + (inserted or 0),
             )
             if inserted:
+                # New session data means a tool is working: collectors keep their full pace.
+                PACE.note_activity()
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
         except Exception as exc:
             poll.update(last_error=str(exc), last_error_at=time.time())

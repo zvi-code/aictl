@@ -765,7 +765,7 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 | `--kusto-cluster URL`, `--kusto-database NAME` | Destination for stored history |
 | `--daemon` | Run in the background |
 | `--stop`, `--status` | Stop or report the server on this port, started with or without `--daemon` |
-| `--headless` | Collection only, no web UI |
+| `--headless` | Reporting node: reads session files and a machine snapshot and writes them to the store. No web UI, no live stream, no OpenTelemetry or hook receiver, and no 1-second monitor unless `--monitor` is given. The snapshot is taken every 30 s while a tool works and every 3 min otherwise (`--interval` changes the base). |
 
 ### Enable options
 
