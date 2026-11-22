@@ -1,6 +1,6 @@
 """Native Kusto schema, generated from the phase-0 store schema and OTel definitions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
@@ -17,8 +17,21 @@ class Table:
     tombstone: str | None = None
 
 
+# What a session did, without its text. These rows are kept for a year, so the history
+# read from old session files stays; text tables keep their shorter retention.
+SESSION_HISTORY_DAYS = 365
+SESSION_HISTORY_TABLES = frozenset(
+    {
+        "sessions", "session_usage", "requests", "agents", "tool_invocations", "tool_invocation_coverage",
+        "tool_invocation_sizes", "context_events", "session_steps", "turn_request_links", "skill_uses",
+        "file_write_events", "session_folders", "session_artifacts", "session_sources", "session_loaded_files",
+        "session_context_items", "session_processes", "session_commits", "session_attribution",
+        "otel_trace_sessions",
+    }
+)
+
 # The key includes project and node. Callers supply source_key where the old table had no natural key.
-TABLES = MappingProxyType(
+_DEFINED = (
     {
         "schema_version": Table(
             (
@@ -1636,5 +1649,14 @@ TABLES = MappingProxyType(
             "streaming",
             retention_days=14,
         ),
+    }
+)
+
+TABLES = MappingProxyType(
+    {
+        name: replace(table, retention_days=SESSION_HISTORY_DAYS)
+        if name.removesuffix("_observations") in SESSION_HISTORY_TABLES and table.retention_days == 30
+        else table
+        for name, table in _DEFINED.items()
     }
 )

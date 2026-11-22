@@ -16,7 +16,7 @@ from aictl.stores.kusto.client import KustoClientFactory, Result
 from aictl.stores.kusto.reader import KustoReader
 from aictl.stores.kusto.recorded import UnrecordedQueryError
 from aictl.stores.kusto.schema import SchemaStatus, ensure_schema
-from aictl.stores.kusto.tables import TABLES
+from aictl.stores.kusto.tables import SESSION_HISTORY_TABLES, TABLES
 
 RECORDINGS = Path(__file__).parent / "recordings"
 SETTINGS = KustoSettings("https://recording.invalid", "test_db", auth="none")
@@ -59,8 +59,19 @@ def test_native_tables_use_scoped_keys_and_text_tables_retain_less_history():
         if spec.tombstone:
             assert columns[spec.tombstone] == "bool"
         if moved := TABLES.get(f"{name}_text"):
-            assert moved.retention_days == 14 and spec.retention_days == 30
+            assert moved.retention_days == 14
+            assert spec.retention_days == (365 if name.removesuffix("_observations") in SESSION_HISTORY_TABLES else 30)
             assert moved.key[:len(spec.key)] == spec.key
+
+
+def test_session_history_is_kept_for_a_year_and_text_is_not():
+    assert SESSION_HISTORY_TABLES <= TABLES.keys()
+    for name in ("sessions", "session_usage", "requests", "session_sources", "sessions_observations"):
+        assert TABLES[name].retention_days == 365
+    for name, spec in TABLES.items():
+        if name.endswith("_text") or name in ("session_prompts", "vscode_chat_messages", "copilot_session_messages"):
+            assert spec.retention_days == 14
+    assert TABLES["system_snapshots"].retention_days == TABLES["metrics"].retention_days == 30
 
 
 def response(columns=(), rows=()):

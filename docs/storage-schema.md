@@ -417,7 +417,7 @@ wrapped_calls
 [storage]
 db_path = ""          # Empty = auto (~/.config/aictl/history.db)
 flush_interval = 10.0 # Seconds between batch writes
-retention_days = 30   # Delete data older than this
+retention_days = 30   # Delete data older than this; in Kusto, session tables without text are kept 365 days
 history_days = 0      # Read session files changed in the last N days; 0 = every file on disk
 capture = "full"      # full, metadata or off; see "Bounds and capture modes"
 max_total_mb = 1024   # Budget for the database, journal and logs
