@@ -3,9 +3,9 @@
 """Tests for ``SnapshotPersistence._persist_agent_teams`` — the Claude Code
 JSONL backfill path.
 
-Regression focus: ingested request/session rows must carry the SOURCE
+Regression focus: ingested session rows must carry the SOURCE
 timestamps embedded in the JSONL, not the ingest (snapshot) time.  Stamping
-ingest time dated every backfilled request to daemon start, which (a) broke
+ingest time dated every backfilled row to daemon start, which (a) broke
 time-range queries over ``requests.ts`` and (b) made hours-old sessions
 collide with the correlator's live PID rows in session dedup (same tool,
 started within seconds of daemon start).
@@ -78,33 +78,19 @@ def _turn(source_ts, in_tok=10, out_tok=5):
     }
 
 
-class TestRequestTimestamps:
-    def test_request_ts_is_source_ts_not_ingest_time(self, writer):
-        """Every backfilled request must be dated by its JSONL timestamp.
+class TestRequests:
+    def test_the_team_scan_stores_no_requests(self, writer):
+        """The transcript reader stores each model call once, by message id.
 
-        The old code stamped ``ts=snapshot_ts``, so MIN(ts) across a
-        session's requests equalled daemon start time even for sessions
-        that ran hours earlier.
+        The team scan used to store one request per transcript line under other
+        keys, so every reader counted a subagent's calls twice and each start
+        wrote them again.
         """
         turns = [_turn(SOURCE_T0 + 10), _turn(SOURCE_T0 + 120), _turn(SOURCE_T0 + 700)]
         p = SnapshotPersistence(None, writer)
         p._persist_agent_teams([_team([_agent(turns=turns)])], SNAPSHOT_TS)
 
-        rows = _session_rows(writer, "requests")
-        assert len(rows) == 3
-        got_ts = sorted(r["ts"] for r in rows)
-        assert got_ts == [SOURCE_T0 + 10, SOURCE_T0 + 120, SOURCE_T0 + 700]
-        assert all(r["ts"] < SNAPSHOT_TS for r in rows), "no request may be dated at ingest time"
-
-    def test_request_ts_falls_back_to_ingest_time_without_source_ts(self, writer):
-        """A turn whose JSONL line had no parseable timestamp keeps the
-        (only remaining) ingest time rather than ts=0."""
-        p = SnapshotPersistence(None, writer)
-        p._persist_agent_teams([_team([_agent(turns=[_turn(0.0)])])], SNAPSHOT_TS)
-
-        rows = _session_rows(writer, "requests")
-        assert len(rows) == 1
-        assert rows[0]["ts"] == SNAPSHOT_TS
+        assert {name for _, name, _ in writer.operations} == {"sessions", "agents"}
 
 
 class TestSessionStartedAt:
@@ -145,18 +131,13 @@ class TestSessionStartedAt:
 
 
 class TestProjectFolder:
-    """Each session file records the folder its agent ran in; the rows keep it."""
+    """Each session file records the folder its agent ran in; the session keeps it."""
 
-    def test_requests_and_the_session_take_the_agent_folder(self, writer):
+    def test_the_session_takes_the_main_agent_folder(self, writer):
         main = {**_agent(turns=[_turn(SOURCE_T0 + 10)]), "cwd": "/work/repo"}
         side = {**_agent(agent_id="agent-2", turns=[_turn(SOURCE_T0 + 20)]), "cwd": "/work/repo/sub", "is_sidechain": True}
         p = SnapshotPersistence(None, writer)
-        p._persist_agent_teams([_team([main, side])], SNAPSHOT_TS)
+        p._persist_agent_teams([_team([side, main])], SNAPSHOT_TS)
 
-        requests = _session_rows(writer, "requests")
-        assert len(requests) == 2
-        rows = {r["agent_id"]: r["project_path"] for r in requests}
-        assert rows == {"agent-1": "/work/repo", "agent-2": "/work/repo/sub"}
-        assert all(r["project"] == r["project_path"] for r in requests)
         [session] = _session_rows(writer, "sessions")
         assert session["project_path"] == session["project"] == "/work/repo"

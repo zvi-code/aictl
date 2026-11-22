@@ -110,10 +110,10 @@ def test_persisting_agent_teams_costs_the_same_for_one_team_and_for_twenty():
     now = datetime.now(timezone.utc)
     persistence._persist_agent_teams(teams(1, "a", now.isoformat()), now.timestamp())
     few = writer_calls(writer)
-    assert written_rows(writer) == {"agents": 4, "agents_text": 4, "requests": 4, "sessions": 1}
+    assert written_rows(writer) == {"agents": 4, "agents_text": 4, "sessions": 1}
     writer.operations.clear()
     persistence._persist_agent_teams(teams(20, "b", now.isoformat()), now.timestamp())
-    assert written_rows(writer) == {"agents": 80, "agents_text": 80, "requests": 80, "sessions": 20}
+    assert written_rows(writer) == {"agents": 80, "agents_text": 80, "sessions": 20}
     assert writer_calls(writer) == few
 
 

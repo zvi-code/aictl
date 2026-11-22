@@ -1270,18 +1270,22 @@ class SnapshotPersistence:
                 log.debug("file-sync: failed to record data-quality signal", exc_info=True)
 
     def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
-        """Write agent team data to the sessions, agents, and requests tables."""
+        """Write agent team data to the sessions and agents tables.
+
+        Requests are not written here: the transcript reader stores each model
+        call once, by message id. A second copy under other keys was counted
+        twice by every reader and written again at every start.
+        """
         if not agent_teams:
             return
         try:
             from .monitoring.tool_telemetry import _parse_iso_ts
-            from .records import AgentRow, RequestRow, SessionRow
+            from .records import AgentRow, SessionRow
 
             # Written once after the loop: a statement per session and per agent was
             # a request each on a Kusto store, several hundred on a first refresh.
             session_rows: list[SessionRow] = []
             agent_rows: list[AgentRow] = []
-            requests: list[RequestRow] = []
             for team in agent_teams:
                 session_id = team.get("session_id", "")
                 # A team writes dozens of rows with one commit each: 22 MB/s of
@@ -1349,30 +1353,8 @@ class SnapshotPersistence:
                             cache_creation_tokens=agent.get("cache_creation_tokens", 0),
                         )
                     )
-                    # Write per-turn requests from this agent's JSONL.
-                    # ts carries the turn's OWN timestamp — all query paths
-                    # read ts, so stamping ingest time (snapshot_ts) put
-                    # every backfilled request at daemon start time.
-                    for turn in agent.get("turns", []):
-                        requests.append(
-                            RequestRow(
-                                ts=turn.get("source_ts", 0.0) or snapshot_ts,
-                                source_ts=turn.get("source_ts", 0.0),
-                                session_id=session_id,
-                                agent_id=agent_id,
-                                tool="claude-code",
-                                model=turn.get("model", "") or agent.get("model", ""),
-                                input_tokens=turn.get("input_tokens", 0),
-                                output_tokens=turn.get("output_tokens", 0),
-                                cache_read_tokens=turn.get("cache_read_tokens", 0),
-                                cache_creation_tokens=turn.get("cache_creation_tokens", 0),
-                                source="claude-code-jsonl",
-                                project_path=agent.get("cwd", "") or team_folder,
-                            )
-                        )
             self._facts.sessions((row, 0.0, False) for row in session_rows)
             self._facts.agents(agent_rows)
-            self._facts.requests(requests)
         except Exception as exc:
             log.warning("Agent team persistence failed: %s", exc)
 
