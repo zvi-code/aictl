@@ -2606,10 +2606,29 @@ def _gather(conn: Any, calls: list) -> list:
         return [call() for call in calls]
     from concurrent.futures import ThreadPoolExecutor
 
+    from ..stores.kusto.client import query_memory_error
+
+    def attempt(call):
+        try:
+            return call(), None
+        except Exception as exc:  # noqa: BLE001 - sorted out below, so the other reads finish
+            return None, exc
+
     with ThreadPoolExecutor(
         max_workers=min(PARALLEL_READ_WORKERS, len(calls)), thread_name_prefix="board-read"
     ) as pool:
-        return list(pool.map(lambda call: call(), calls))
+        outcomes = list(pool.map(attempt, calls))
+    results = []
+    for call, (result, error) in zip(calls, outcomes, strict=True):
+        if error is None:
+            results.append(result)
+        elif query_memory_error(error):
+            # A small cluster can run out of memory only because the reads ran together:
+            # the read that failed runs once more, alone, before the page is refused.
+            results.append(call())
+        else:
+            raise error
+    return results
 
 
 def _activity_facts(history: HistoryScope) -> dict[str, set[str]]:
