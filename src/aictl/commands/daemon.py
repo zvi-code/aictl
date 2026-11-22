@@ -55,6 +55,11 @@ REPORTING_INTERVAL_S = 30.0
     is_flag=True,
     help="Reporting node: collect and write to the store only; no web UI, no live stream, no 1-second monitor",
 )
+@click.option(
+    "--receiver/--no-receiver",
+    default=True,
+    help="With --headless: take hook events and OpenTelemetry on the port and store them (default on)",
+)
 @click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
 @click.option("--kusto-cluster", default=None, help="Serve from this Kusto cluster instead of SQLite (URL; http://localhost:8080 for the emulator)")
 @click.option("--kusto-database", default=None, help="The Kusto database (default aictl)")
@@ -92,6 +97,7 @@ def serve(
     kusto_table_ingestion,
     daemon_mode,
     headless,
+    receiver,
     stop,
     show_status,
     capture,
@@ -102,7 +108,8 @@ def serve(
     files and a machine snapshot and writes them to the store, and starts
     nothing that only a local dashboard reads. The snapshot is taken every
     30 seconds while a tool works and every 3 minutes otherwise, and the
-    1-second monitor is off unless ``--monitor`` is given. View the data from
+    1-second monitor is off unless ``--monitor`` is given. The port takes
+    hook events and OpenTelemetry only (``--no-receiver`` closes it). View the data from
     any machine that runs the dashboard against the same store.
     """
     if capture:
@@ -171,6 +178,7 @@ def serve(
             cfg,
             db_path=db_path,
             headless=headless,
+            receiver=receiver,
         )
         return
 
@@ -187,6 +195,7 @@ def serve(
             interval=interval,
             include_live_monitor=include_live_monitor,
             db_path=db_path,
+            receive_at=(host, port) if receiver else None,
         )
     else:
         start_server(
@@ -219,7 +228,8 @@ def _env_port() -> int | None:
 
 
 def _start_daemon(
-    root_dir, host, port, interval, include_live_monitor, pid_file, cfg, *, db_path=None, headless=False
+    root_dir, host, port, interval, include_live_monitor, pid_file, cfg, *, db_path=None, headless=False,
+    receiver=True,
 ):
     """Fork to background and run the server (or headless collector)."""
 
@@ -247,7 +257,8 @@ def _start_daemon(
 
     if IS_WINDOWS:
         _start_daemon_windows(
-            root_dir, host, port, interval, include_live_monitor, pid_file, log_file, db_path=db_path, headless=headless
+            root_dir, host, port, interval, include_live_monitor, pid_file, log_file, db_path=db_path,
+            headless=headless, receiver=receiver,
         )
         return
 
@@ -292,6 +303,7 @@ def _start_daemon(
                 interval=interval,
                 include_live_monitor=include_live_monitor,
                 db_path=db_path,
+                receive_at=(host, port) if receiver else None,
             )
         else:
             from ..orchestrator import start_server
@@ -310,7 +322,8 @@ def _start_daemon(
 
 
 def _start_daemon_windows(
-    root_dir, host, port, interval, include_live_monitor, pid_file, log_file, *, db_path=None, headless=False
+    root_dir, host, port, interval, include_live_monitor, pid_file, log_file, *, db_path=None, headless=False,
+    receiver=True,
 ):
     """Windows has no fork: start ``aictl daemon serve`` again as a background process."""
     import time
@@ -322,6 +335,8 @@ def _start_daemon_windows(
         argv += ["--db", str(db_path)]
     if headless:
         argv.append("--headless")
+        if not receiver:
+            argv.append("--no-receiver")
     proc = spawn_detached_windows(argv, log_file, pid_file)
     for _ in range(100):
         if pid_file.is_file() or proc.poll() is not None:

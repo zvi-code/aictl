@@ -873,11 +873,14 @@ def start_collector(
     interval: float = 5.0,
     include_live_monitor: bool = True,
     db_path: Path | str | None = None,
+    receive_at: tuple[str, int] | None = None,
 ) -> None:
     """Run a reporting node: collect and write to the store, serve nothing. Blocks until Ctrl-C.
 
-    No HTTP server, no live stream and no state kept for a dashboard on this
+    No dashboard, no live stream and no state kept for a dashboard on this
     machine. A dashboard on any machine reads this node's data from the store.
+    With ``receive_at`` (host, port) the node also takes the hook events and
+    OpenTelemetry that the tools on it post, and stores them.
     """
     service = CollectionService(
         root,
@@ -886,7 +889,13 @@ def start_collector(
         db_path=db_path,
         reporting_only=True,
     )
-    service.start()
+    # The stores, then the port, then the first snapshot: posts are taken from the first second.
+    service.open_stores()
+    receiver = _start_receiver(service.store, receive_at)
+    service.run()
+    from .dashboard.ingester_runner import start_ingesters
+
+    service._ingesters = start_ingesters(service.store)
     print("  aictl reporting node running — no web UI on this machine", file=sys.stderr)
     print("  view from a machine that runs:  aictl daemon serve", file=sys.stderr)
     print("  press Ctrl-C to stop\n", file=sys.stderr)
@@ -895,7 +904,29 @@ def start_collector(
     except KeyboardInterrupt:
         print("\n  shutting down ...", file=sys.stderr)
     finally:
+        if receiver is not None:
+            receiver.shutdown()
+            receiver.server_close()
         service.stop()
+
+
+def _start_receiver(store, receive_at: tuple[str, int] | None):
+    """Open the receive-only port of a reporting node. A port in use is reported, not fatal."""
+    if receive_at is None:
+        return None
+    from .dashboard.receive_server import ReceiveServer
+
+    host, port = receive_at
+    try:
+        receiver = ReceiveServer((host, port), store)
+    except OSError as exc:
+        log.warning("Hooks and telemetry are not received: %s:%s cannot be opened (%s)", host, port, exc)
+        print(f"  warning: hooks and telemetry are NOT received: {host}:{port} cannot be opened ({exc})",
+              file=sys.stderr)
+        return None
+    threading.Thread(target=receiver.serve_forever, name="aictl-receive", daemon=True).start()
+    print(f"  receiving hooks and telemetry at http://{host}:{port}", file=sys.stderr)
+    return receiver
 
 
 # ─── Entry point ─────────────────────────────────────────────────

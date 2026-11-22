@@ -68,20 +68,20 @@ def test_headless_keeps_what_the_command_line_asks_for(monkeypatch):
 def test_start_collector_builds_a_reporting_only_service(monkeypatch, tmp_path):
     built = {}
 
+    class Stop(Exception):
+        pass
+
     class Service:
         def __init__(self, root, **options):
             built.update(options)
 
-        def start(self):
-            raise KeyboardInterrupt
-
-        def stop(self):
-            built["stopped"] = True
+        def open_stores(self):
+            raise Stop
 
     monkeypatch.setattr(orchestrator, "CollectionService", Service)
     try:
         orchestrator.start_collector(tmp_path)
-    except KeyboardInterrupt:
+    except Stop:
         pass
     assert built["reporting_only"] is True
 
@@ -105,3 +105,61 @@ def test_new_session_rows_keep_collectors_at_full_pace(monkeypatch):
     stop.clear()
     ingester_runner._poll_loop(Ingester(2), stop, 0.0, "test")
     assert pace.factor() == 1
+
+
+# ── The receive-only port ─────────────────────────────────────────
+
+
+def post(url, data):
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(url, data=json.dumps(data).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.status
+
+
+def status_of(url, method="GET"):
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method=method), timeout=5) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_a_reporting_node_takes_hooks_and_telemetry_and_serves_nothing_else(kusto_store):
+    store = orchestrator.SnapshotStore(history_store=kusto_store.history_store, keeps_text=lambda: True)
+    receiver = orchestrator._start_receiver(store, ("127.0.0.1", 0))
+    try:
+        base = f"http://127.0.0.1:{receiver.server_address[1]}"
+        assert post(base + "/api/hooks", {"event": "Stop", "session_id": "s-node", "_aictl_verify": True}) == 200
+        assert post(base + "/v1/metrics", {"resourceMetrics": []}) == 200
+        assert post(base + "/v1/logs", {"resourceLogs": []}) == 200
+        assert post(base + "/v1/traces", {"resourceSpans": []}) == 200
+        for path in ("/", "/api/board/sessions", "/api/live/stream", "/api/file?path=/etc/hosts", "/assets/x.js"):
+            assert status_of(base + path) == 404
+        assert status_of(base + "/api/settings/file", "PUT") == 404
+        assert not hasattr(receiver, "live_dashboard") and store.live_hub is None
+    finally:
+        receiver.shutdown()
+        receiver.server_close()
+
+
+def test_a_port_in_use_is_reported_and_the_node_keeps_reporting(kusto_store, capsys):
+    import socket
+
+    store = orchestrator.SnapshotStore(history_store=kusto_store.history_store, keeps_text=lambda: True)
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        assert orchestrator._start_receiver(store, ("127.0.0.1", taken.getsockname()[1])) is None
+    assert "NOT received" in capsys.readouterr().err
+
+
+def test_headless_opens_the_receiver_unless_told_not_to(monkeypatch):
+    assert serve(monkeypatch, "--port", "8599")["receive_at"] == ("127.0.0.1", 8599)
+    assert serve(monkeypatch, "--no-receiver")["receive_at"] is None
