@@ -110,16 +110,13 @@ export function RowTable(props: {
       compact: unit === 'count' || unit === 'tokens' || unit === 'usd' ? (value: number) => {
         if (Math.abs(value) >= 1000) return unit === 'usd' ? fmtUsd(value) : fmtN(value)
       } : undefined,
-      action: props.pageSize && index === 0 && (props.action || def.actions.length)
+      action: index === 0 && (props.action || def.actions.length)
         ? { label: (entry: KeyedRow) => action(entry)?.label, run: (entry: KeyedRow) => action(entry)?.run() } : undefined,
     }
   }))
   const action = (entry: KeyedRow) => props.action ? props.action(entry) : rowAction(def, ctx, entry.row)
   return <Show when={props.rows.some(row => row.folded !== undefined)}
-    fallback={<Table label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} rowId={row => row.id}
-      action={!props.pageSize && (props.action || def.actions.length) ? {
-        label: entry => action(entry)?.label ?? '', run: entry => action(entry)?.run(),
-      } : undefined} />}>
+    fallback={<Table label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} rowId={row => row.id} />}>
     <FoldTable label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} action={action} />
   </Show>
 }

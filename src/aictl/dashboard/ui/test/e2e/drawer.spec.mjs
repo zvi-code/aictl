@@ -463,7 +463,8 @@ test('DRW-CT-01, DRW-OV-01 and DRW-OT-01: keep context estimates, spans and cost
     ...detail, agent: { ...detail.agent, parent_id: null },
     context: { ...detail.context, last: 450, prompt_limit: 1000, series: [320, 450], breakdown: {
       total: 450, limit: 1000, parts: [{ key: 'user', label: 'User messages', tokens: 100, estimated: true, items: [
-        { name: 'Measured source', tokens: 100 },
+        { name: 'Measured source', detail: 'Short context summary',
+          text: `${'Line of context text\n'.repeat(20)}Full ending marker`, tokens: 100 },
       ] }], reported: { source: 'tool context report', total: 275, limit: 1000,
         parts: [{ key: 'tools', label: 'Tool definitions', tokens: 275 }] },
     } },
@@ -480,6 +481,11 @@ test('DRW-CT-01, DRW-OV-01 and DRW-OT-01: keep context estimates, spans and cost
   await expect(drawer(page).getByRole('meter', { name: 'Current context from OTel' })).toHaveAttribute('value', '320');
   await drawer(page).getByRole('button', { name: 'Inspect User messages' }).click();
   await expect(drawer(page).getByRole('table', { name: 'User messages' })).toContainText('Measured source');
+  await drawer(page).getByRole('button', { name: 'Inspect Measured source' }).click();
+  await expect(drawer(page).getByText('Line of context text').first()).toBeVisible();
+  await expect(drawer(page).getByText('Full ending marker')).toHaveCount(0);
+  await drawer(page).getByRole('button', { name: 'Show full view' }).click();
+  await expect(drawer(page).getByText('Full ending marker')).toBeVisible();
   await drawer(page).getByRole('radio', { name: 'Tool context report' }).click();
   await expect(drawer(page).getByRole('meter', { name: 'Tool definitions', exact: true })).toHaveAttribute('value', '275');
   await selectTab(page, 'Overview');

@@ -51,6 +51,7 @@ from .projection_utils import (
 )
 from .projections.history import (
     HistoryScope,
+    capture_mode,
     exact_values,
     node_scope,
     session_events,
@@ -244,7 +245,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "process": process,
         "skills": skills,
         "context": _agent_context(conn, sid, agent, root, facts=context_facts, raw_agent=history.split(agent)[1],
-                                  raw_sid=history.split(sid)[1]),
+                                  raw_sid=history.split(sid)[1],
+                                  keep_text=not history.qualified and capture_mode(db, default="full") == "full"),
         "turns": turns,
         "tool_totals": tool_totals,
         "tool_calls": tool_calls,
@@ -747,7 +749,7 @@ _CONTEXT_POINTS = 200
 
 
 def _agent_context(conn: Any, sid: str, agent: str, root: bool, *,
-                   facts=None, raw_agent=None, raw_sid=None) -> dict | None:
+                   facts=None, raw_agent=None, raw_sid=None, keep_text: bool = True) -> dict | None:
     """Context size per model call of one agent: input, cache read and cache write together.
 
     A subagent has its own context, so a main agent's figure leaves its subagents out. A drop
@@ -820,6 +822,7 @@ def _agent_context(conn: Any, sid: str, agent: str, root: bool, *,
         conn, raw_sid or sid, raw_agent or agent, root, facts=facts,
         tool=str(sizes[-1][6] or ""), at_ts=float(sizes[-1][5] or 0.0), total=values[-1],
         limit=limit, tool_tokens=sizes[-1][1], split=result["split"], model=str(sizes[-1][7] or ""),
+        keep_text=keep_text,
     )
     if breakdown is not None:
         result["breakdown"] = breakdown
@@ -871,8 +874,33 @@ def _part(key: str, label: str, tokens: int | None, estimated: bool, items: list
     return {"key": key, "label": label, "tokens": tokens, "estimated": estimated, "items": items[:MAX_LIST_ROWS], "count": len(items)}
 
 
-def _item(name: str, path: str, tokens: int) -> dict:
-    return {"name": _basename(path) if path else name, "path": path or None, "tokens": tokens, "estimated": True}
+def _read_item_file(path: str) -> str:
+    from pathlib import Path
+
+    from ..records import _is_sensitive_path
+
+    p = Path(path) if path else None
+    if p is None or not p.is_absolute() or p.suffix.lower() not in {".md", ".mdc"} or _is_sensitive_path(str(p)):
+        return ""
+    try:
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > 500_000:
+            return ""
+        with p.open(encoding="utf-8", errors="replace") as fh:
+            return fh.read(32_768)
+    except OSError:
+        return ""
+
+
+def _item(name: str, path: str, tokens: int, texts: dict[str, str] | None = None, *, keep_text: bool = True) -> dict:
+    label = _basename(path) if path else name
+    row: dict[str, Any] = {"name": label, "path": path or None, "tokens": tokens, "estimated": True}
+    raw = ((texts or {}).get(path or name) or (texts or {}).get(label) or _read_item_file(path)) if keep_text else ""
+    if raw:
+        masked = mask_secrets(raw[:32_768]).strip()
+        if masked:
+            row["detail"] = _one_line(masked, 120)
+            row["text"] = masked
+    return row
 
 
 def _tool_groups(rows: list[tuple]) -> list[dict]:
@@ -1004,6 +1032,7 @@ def _context_breakdown(
     split: dict | None,
     model: str = "",
     facts=None,
+    keep_text: bool = True,
 ) -> dict | None:
     """What fills an agent's context at its last model call, by part and item, as /context shows it.
 
@@ -1026,12 +1055,21 @@ def _context_breakdown(
     copilot = tool.startswith("copilot") or any(r[0] in ("instruction_file", "system_prompt_other") for r in rows)
     reported = None if copilot else _context_report(conn, sid, agent, root, facts=facts)
     if copilot:
+        from ..ingesters.context_items import copilot_system_prompt_texts
+
+        texts = copilot_system_prompt_texts(sid) if keep_text else {}
         if not root:
             split = None
-        items = [_item(name, path, tokens) for kind, name, path, tokens in rows if kind in _COPILOT_SECTION_KINDS and kind != "skills"]
+        items = [_item(name, path, tokens, texts, keep_text=keep_text) for kind, name, path, tokens in rows if kind in _COPILOT_SECTION_KINDS and kind != "skills"]
         skills = [r[3] for r in rows if r[0] == "skills"]
         if skills:
-            items.append({"name": f"Skills: {len(skills)} skills", "path": None, "tokens": sum(skills), "estimated": True})
+            skill_item: dict[str, Any] = {"name": f"Skills: {len(skills)} skills", "path": None, "tokens": sum(skills), "estimated": True}
+            if skill_text := texts.get("available_skills"):
+                masked = mask_secrets(skill_text[:32_768]).strip()
+                if masked:
+                    skill_item["detail"] = _one_line(masked, 120)
+                    skill_item["text"] = masked
+            items.append(skill_item)
         if not items and split is None:
             return None
         if split is not None:
@@ -1063,7 +1101,7 @@ def _context_breakdown(
         for kind, kind_rows in by_kind.items():
             key, label = _CLAUDE_PARTS[kind]
             scaled = [(k, n, p, round(t * scale)) for k, n, p, t in kind_rows]
-            items = _tool_groups(scaled) if kind == "tools_listed" else [_item(n, p, t) for _k, n, p, t in scaled]
+            items = _tool_groups(scaled) if kind == "tools_listed" else [_item(n, p, t, keep_text=keep_text) for _k, n, p, t in scaled]
             part = _part(key, label, sum(r[3] for r in scaled), True, items)
             if scale < 1.0:
                 part["scaled"] = round(scale, 4)

@@ -235,6 +235,108 @@ def _file_size(path: str) -> int:
         return 0
 
 
+def _strip_outer_tag(tag: str, block: str) -> str:
+    return re.sub(rf"^<{re.escape(tag)}(?:\s[^>]*)?>\s*|\s*</{re.escape(tag)}>\s*$", "", block, flags=re.S).strip()
+
+
+def copilot_system_prompt_texts(sid: str, git_root: str = "") -> dict[str, str]:
+    """Map section/file names from a local Copilot CLI session's latest system.message to their text."""
+    import json
+
+    from ..platforms import copilot_session_dir
+
+    base = copilot_session_dir()
+    raw_sid = sid.split(":", 1)[-1] if ":" in sid and not os.path.exists(base / sid) else sid
+    if not raw_sid or raw_sid in (".", "..") or any(sep in raw_sid for sep in ("/", "\\", "\x00")):
+        return {}
+    events_path = base / raw_sid / "events.jsonl"
+    if events_path.is_symlink() or not events_path.is_file():
+        return {}
+    content = ""
+    try:
+        size = events_path.stat().st_size
+        with open(events_path, "rb") as fh:
+            chunks = [fh.read(min(size, 524_288))]
+            if size > 524_288:
+                fh.seek(max(524_288, size - 524_288))
+                chunks.append(fh.read(524_288))
+        for chunk in chunks:
+            for line in chunk.splitlines():
+                if b'"system.message"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if obj.get("type") == "system.message":
+                    candidate = (obj.get("data") or {}).get("content")
+                    if isinstance(candidate, str) and candidate:
+                        content = candidate
+    except OSError:
+        return {}
+    if not content:
+        return {}
+
+    sections = _sections(content)
+    matched = [path for path, _detail in loaded_files.system_prompt_files(content, git_root, ())]
+    owners: dict[int, list[str]] = {}
+    for path in matched:
+        sample = loaded_files.sample_lines(path)
+        best, hits = -1, 0
+        for i, (tag, start, end) in enumerate(sections):
+            if tag not in ("custom_instruction", "agent_instructions"):
+                continue
+            n = sum(1 for line in sample if line in content[start:end])
+            if n > hits:
+                best, hits = i, n
+        if best >= 0:
+            owners.setdefault(best, []).append(path)
+
+    texts: dict[str, str] = {}
+    unnamed = 0
+    cursor = 0
+    untagged_parts: list[str] = []
+    for i, (tag, start, end) in enumerate(sections):
+        if start > cursor:
+            piece = content[cursor:start].strip()
+            if piece:
+                untagged_parts.append(piece)
+        cursor = end
+        raw_block = content[start:end]
+        inner = _strip_outer_tag(tag, raw_block)
+        if tag == "available_skills":
+            skill_lines: list[str] = []
+            for block in _SKILL_BLOCK.finditer(raw_block):
+                name_m = _SKILL_NAME.search(block.group(1))
+                desc_m = re.search(r"<description>\s*(.*?)\s*</description>", block.group(1), re.S)
+                sname = name_m.group(1).strip() if name_m else f"skill {len(skill_lines) + 1}"
+                sdesc = re.sub(r"\s+", " ", desc_m.group(1).strip()) if desc_m else ""
+                entry = f"- {sname}: {sdesc}" if sdesc else f"- {sname}"
+                skill_lines.append(entry)
+                texts[sname] = entry
+            if skill_lines:
+                texts["available_skills"] = "\n".join(skill_lines)
+        elif tag in ("custom_instruction", "agent_instructions"):
+            paths = owners.get(i) or []
+            if not paths:
+                unnamed += 1
+                label = "agent instructions" if tag == "agent_instructions" else f"custom instruction {unnamed}"
+                texts[label] = inner
+            else:
+                for path in paths:
+                    texts.setdefault(path, inner)
+                    texts.setdefault(os.path.basename(path), inner)
+        elif inner:
+            texts[tag] = f"{texts[tag]}\n\n{inner}" if tag in texts else inner
+    if cursor < len(content):
+        tail = content[cursor:].strip()
+        if tail:
+            untagged_parts.append(tail)
+    if untagged_parts:
+        texts[UNTAGGED] = "\n\n".join(untagged_parts)
+    return texts
+
+
 # ── Claude Code /context report ───────────────────────────────────────
 
 REPORT_HEADING = "## Context Usage"

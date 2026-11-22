@@ -530,7 +530,7 @@ test('BRD-11/12/13/14: filter a project, read prompt files and open prompt and s
   await expect(stat(projectPrompts, 'File references')).toHaveText('23');
   await expect(stat(projectPrompts, 'Uses')).toHaveText(unavailable);
   const references = projectPrompts.getByRole('table', { name: 'Project prompts' });
-  await expect(references.getByRole('cell', { name: 'anon_35113d4c9b4556165f79ee20', exact: true })).toBeVisible();
+  await expect(references.getByRole('button', { name: 'Open anon_35113d4c9b4556165f79ee20', exact: true })).toBeVisible();
   await expect(references.getByText(unavailable, { exact: true }).first()).toBeVisible();
   await references.getByRole('button', { name: 'Prompt file' }).press('Enter');
   await expect(references.getByRole('columnheader', { name: 'Prompt file' })).toHaveAttribute('aria-sort', 'ascending');

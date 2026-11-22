@@ -80,8 +80,12 @@ function Prompt(props: Props) {
         <button type="button" class={styles.button} aria-pressed={source() ? 'true' : 'false'} onClick={() => setSource(v => !v)}>Source</button>
         <Show when={source()} fallback={<Markdown text={value()} />}><CodeView text={value()} label="Prompt source" wrap /></Show>
       </>}</Show>
-      <Show when={data().prompt_file}>{file => <button type="button" class={styles.button}
-        onClick={() => props.shell.open({ type: 'file', path: file(), line: 1 })}>Open prompt file</button>}</Show>
+      <div class={styles.bar}>
+        <Show when={props.entry.session_id}>{id => <button type="button" class={styles.button}
+          onClick={() => props.shell.open({ type: 'agent', id: id(), tab: 'flow' })}>Open session</button>}</Show>
+        <Show when={data().prompt_file}>{file => <button type="button" class={styles.button}
+          onClick={() => props.shell.open({ type: 'file', path: file(), line: 1 })}>Open prompt file</button>}</Show>
+      </div>
     </Section>
   </>}</Resource>
 }

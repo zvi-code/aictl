@@ -41,7 +41,7 @@ def session_evidence(db: Any, params: dict[str, list[str]], *, history: HistoryS
     limit = _number(params, "limit", 100, 1, 100)
     offset = _number(params, "offset", 0, 0, 10000)
     filters = {k: v for k in _FILTERS if (v := _param(params, k))}
-    group = _param(params, "context_group")
+    group = {"model_input": "usage", "skills_mcp": "inputs"}.get(_param(params, "context_group"), _param(params, "context_group"))
     if group not in ("", "usage", "changes", "inputs"):
         raise EvidenceInputError("Unknown context group")
     q = _param(params, "q", 160)

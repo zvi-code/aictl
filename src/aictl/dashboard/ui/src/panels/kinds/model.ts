@@ -66,7 +66,12 @@ export function rowAction(def: PanelDef, ctx: PanelContext, row: Row) {
           const ts = at(row, action.timestamp ?? 'ts')
           if (typeof ts === 'number') ctx.openDetail({ type: 'prompt', session_id: id, ts })
         } else if (action.type === 'skill') ctx.openDetail({ type: 'skill', name: id })
-        else ctx.openDetail({ type: 'file', path: id, line: 1 })
+        else {
+          const project = typeof row.project === 'string' && row.project ? row.project.replace(/[\\/]+$/, '') : ''
+          const fullPath = project && !id.startsWith('/') && !id.startsWith('~') && !/^[A-Za-z]:[\\/]/.test(id)
+            ? `${project}/${id}` : id
+          ctx.openDetail({ type: 'file', path: fullPath, line: 1 })
+        }
       } }
     }
     return { label: action.label, run: () => ctx.navigate({ [action.filter]: ctx.filters()[action.filter] === id ? null : id }) }
