@@ -281,9 +281,12 @@ class FactBuffer:
         self.surface: Callable[[str], str] | None = None
         self.written = 0
         self.write_error: StoreError | None = None
+        # True while a reader goes again over lines whose rows an earlier run stored: the
+        # reader rebuilds its state from them and the rows are not stored a second time.
+        self.replaying = False
 
     def _in_window(self, ts: float) -> bool:
-        return not self.cutoff or not ts or ts >= self.cutoff
+        return not self.replaying and (not self.cutoff or not ts or ts >= self.cutoff)
 
     def add_request(self, row: fact_rows.RequestRow) -> None:
         if self._in_window(row.ts):
@@ -360,6 +363,8 @@ class FactBuffer:
     def add_loaded_file(self, row: fact_rows.LoadedFileRow) -> None:
         # A session loads its files once. Keep the earliest observation, even
         # when it falls before the backfill window.
+        if self.replaying:
+            return
         key = (row.session_id, row.path, row.how)
         prior = self.loaded_files.get(key)
         if prior is None or (row.ts and (not prior.ts or row.ts < prior.ts)):
@@ -368,6 +373,8 @@ class FactBuffer:
 
     def add_context_item(self, row: fact_rows.ContextItemRow) -> None:
         # Keep the latest observation, including the later line for equal times.
+        if self.replaying:
+            return
         key = (row.session_id, row.agent_id, row.kind, row.name)
         prior = self.context_items.get(key)
         if prior is None or row.ts >= prior.ts:

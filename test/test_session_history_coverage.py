@@ -3,6 +3,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,3 +122,62 @@ def test_the_message_reader_scans_the_same_folders(tmp_path, vscode_homes):
     assert workspaces[0] == stable
     assert insiders.parents[1] in workspaces
     assert no_folder in chats
+
+
+def test_a_poll_killed_midway_keeps_the_files_it_finished(tmp_path, monkeypatch):
+    from aictl.ingesters import transcript_usage
+
+    monkeypatch.setattr(transcript_usage, "PROGRESS_SAVE_S", 0.0)
+    for age, name in ((403, "one"), (402, "two"), (401, "three")):
+        old_session(tmp_path, name, age)
+    ingester = reader(tmp_path, [], backfill_days=0)
+    saved = []
+    save = ingester._save_progress
+
+    def killed_after_two(*args):
+        save(*args)
+        saved.append(1)
+        if len(saved) == 2:
+            raise KeyboardInterrupt
+
+    ingester._save_progress = killed_after_two
+    with pytest.raises(KeyboardInterrupt):
+        ingester.poll()
+
+    rows = []
+    restarted = reader(tmp_path, rows, backfill_days=0)
+    restarted.poll()
+    assert len(restarted._offsets) == 1  # only the file the first run had not finished is read
+    assert restarted.source_counts == {"complete": 3}
+
+
+# ── A row that can never be stored does not hold the others back ──
+
+
+def test_a_row_the_table_cannot_take_is_left_out_and_the_rest_are_stored(caplog):
+    from aictl.records import CallFacts, ContextItemRow
+    from aictl.stores.base import InvalidRowError
+
+    class StrictWriter(MemoryWriter):
+        def append(self, table, rows):
+            rows = list(rows)
+            if any(not row.get("name") for row in rows if table == "session_context_items"):
+                raise InvalidRowError("session_context_items: a deterministic key requires name")
+            super().append(table, rows)
+
+    writer = StrictWriter()
+    items = [ContextItemRow("s1", "skills", "first"), ContextItemRow("s1", "skills", ""), ContextItemRow("s1", "skills", "last")]
+    written = SessionFacts(writer).write(CallFacts(context_items=items))
+    assert [row["name"] for row in writer.written("session_context_items")] == ["first", "last"]
+    assert written == 2 and "left out" in caplog.text
+
+
+def test_the_total_of_a_context_report_has_no_name_and_is_stored():
+    """It was refused for its empty name, and that one row stopped the import of every later file."""
+    from aictl.stores.kusto.writer import KustoWriter
+
+    writer = KustoWriter(SimpleNamespace(ingest_lines=lambda *_: None), node_id="node-1")
+    row = dict(project="", session_id="s1", agent_id="", kind="reported", name="", ts=1.0, path="", chars=0,
+               tokens=131000, estimated=0, removed=0, tool="claude-code")
+    writer.append("session_context_items", [row])
+    assert writer._queues["session_context_items"].rows

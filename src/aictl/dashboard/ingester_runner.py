@@ -165,6 +165,8 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── Transcript usage: exact tokens for Claude Code, Codex, Copilot CLI ──
     checkpoint = StateFile(restart_dir / "transcript_usage.json")
+    # No saved read position: this node has stored nothing from session files yet.
+    new_node = not checkpoint.read()
     from ..platforms import load_config
 
     t_ing = TranscriptUsageIngester(None, defer_old=True, tool_calls=store.tool_calls,
@@ -212,20 +214,36 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── One-time backfill of tool call sizes (v33) ──────────────
     if t_enabled:
-        b_thread = threading.Thread(target=_backfill_transcripts, args=(store,), daemon=True, name="transcript-backfill")
+        b_thread = threading.Thread(target=_backfill_transcripts, args=(store, new_node), daemon=True,
+                                    name="transcript-backfill")
         b_thread.start()
     return handles
 
 
-def _backfill_transcripts(store) -> None:
-    """Run the one-time transcript backfills."""
-    time.sleep(BACKFILL_DELAY_S)
+def _backfill_transcripts(store, new_node: bool = False) -> None:
+    """Run the one-time transcript backfills.
+
+    They add rows that older versions did not write, to a store that those versions
+    filled. A new node has no such rows: its reader writes them all, so each backfill
+    is recorded as done and no session file is read a second time.
+    """
     if store.restart_dir is None:
         return
-    for module, target in ((tool_size_backfill, store.history_store.writer), (loaded_files_backfill, store.session_facts),
-                           (context_items_backfill, store.session_facts)):
+    backfills = ((tool_size_backfill, store.history_store.writer), (loaded_files_backfill, store.session_facts),
+                 (context_items_backfill, store.session_facts))
+
+    def state(module) -> StateFile:
+        return StateFile(store.restart_dir / f"{module.__name__.rsplit('.', 1)[-1]}.json")
+
+    if new_node:
+        for module, _ in backfills:
+            if not state(module).read().get(module.STATE_KEY):
+                state(module).replace({module.STATE_KEY: time.time()})
+        return
+    time.sleep(BACKFILL_DELAY_S)
+    for module, target in backfills:
         try:
-            module.run(target, StateFile(store.restart_dir / f"{module.__name__.rsplit('.', 1)[-1]}.json"))
+            module.run(target, state(module))
         except Exception:
             log.exception("%s failed; it runs again on the next start", module.__name__)
 

@@ -45,7 +45,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
@@ -84,6 +84,9 @@ DEFERRED_BYTES_PER_POLL = 128 * 1024 * 1024
 # Copilot CLI session keeps its events file open while it lives. A file this recent
 # that looks unchanged is measured through its own handle.
 HELD_FILE_RECHECK_S = 2 * 86400
+# A poll that reads a backlog can take minutes. What it has finished is saved this often,
+# so a restart reads only the rest and does not store the same rows again.
+PROGRESS_SAVE_S = 15.0
 BACKFILL_DAYS = 30
 # The age limit that means none: every session file still on disk is read.
 ALL_DAYS = 36500
@@ -698,8 +701,17 @@ class CopilotStoreReader:
         self.app_types: dict[str, str] = {}
         self.app_totals: dict[str, tuple] = {}
         self._last_id = 0
+        # The last row whose request an earlier run stored: its id, and its session and time
+        # to tell that the store still holds that row. Every row is read again after a
+        # restart, to rebuild the session totals, but a row up to this one is not stored twice.
+        self.stored: tuple[int, str] = (0, "")
+        self._last_mark = ""
         self._data_sig: tuple[float, int] | None = None
         self.unavailable = ""
+
+    def position(self) -> tuple[int, str]:
+        """(id, session and time) of the last row read, to save once the rows are stored."""
+        return self._last_id, self._last_mark
 
     def surface(self, session_id: str) -> str:
         kind = self.app_types.get(session_id)
@@ -719,6 +731,10 @@ class CopilotStoreReader:
         if conn is None:
             return touched
         try:
+            # A store that does not hold the saved row is another store: nothing of it is stored yet.
+            saved = conn.execute("SELECT session_id, created_at FROM assistant_usage_events WHERE id = ?",
+                                 (self.stored[0],)).fetchone()
+            stored_through = self.stored[0] if saved and f"{saved[0]}|{saved[1]}" == self.stored[1] else 0
             present = {r[1] for r in conn.execute("PRAGMA table_info(assistant_usage_events)")}
             extra = ", ".join(c if c in present else f"NULL AS {c}" for c in self._CALL_COLUMNS)
             rows = conn.execute(
@@ -728,12 +744,13 @@ class CopilotStoreReader:
                 (self._last_id,),
             )
             for row_id, sid, model, inp, out, read, write, nano, created, *call in rows:
-                self._last_id = row_id
+                self._last_id, self._last_mark = row_id, f"{sid}|{created}"
                 s = self.sessions.setdefault(sid, SessionUsage(session_id=sid, tool="copilot-cli"))
                 ts = coerce_ts(created)
                 s.touch(ts)
                 read_i, write_i = _i(read), _i(write)
-                self._add_call_fact(conn, sid, model, (_i(inp), _i(out), read_i, write_i), ts, call)
+                self._add_call_fact(conn, sid, model, (_i(inp), _i(out), read_i, write_i), ts, call,
+                                    store=row_id > stored_through)
                 s.add(
                     _copilot_model(model),
                     ts,
@@ -754,7 +771,8 @@ class CopilotStoreReader:
             conn.close()
         return touched
 
-    def _add_call_fact(self, conn: sqlite3.Connection, sid: str, model: Any, tokens: tuple, ts: float, call: list) -> None:
+    def _add_call_fact(self, conn: sqlite3.Connection, sid: str, model: Any, tokens: tuple, ts: float, call: list,
+                       *, store: bool = True) -> None:
         from ..records import AgentRow, RequestRow
 
         """One row per call. The key matches the events file's, so a call in both stays one row."""
@@ -765,6 +783,11 @@ class CopilotStoreReader:
         occurrence = self._occurrence.get((sid, tokens), 0)
         self._occurrence[(sid, tokens)] = occurrence + 1
         agent_id, duration, ttft, output_ttft, finish = call
+        if not store:
+            # Stored by an earlier run. The occurrence count above keeps later keys the same.
+            if agent_id:
+                self._agents_seen.add(agent_id)
+            return
         raw, out, read, write = tokens
         billable = max(0, raw - read - write)
         name = copilot_model(model)
@@ -995,6 +1018,14 @@ def _workspace_folder(workspace_storage_dir: Path) -> str:
 # ── Whole-tree scan, and the periodic ingester ─────────────────────────
 
 
+def _tail_digest(fh: IO[bytes], size: int) -> str:
+    """A digest of the 256 bytes that end at *size*; empty when the file is shorter than *size*."""
+    start = max(0, size - 256)
+    fh.seek(start)
+    data = fh.read(size - start)
+    return hashlib.sha256(data).hexdigest()[:16] if len(data) == size - start and data else ""
+
+
 def _open_size(path: Path) -> int | None:
     try:
         with open(path, "rb") as fh:
@@ -1100,6 +1131,7 @@ class TranscriptUsageIngester:
         self._written: dict[str, tuple] = {}
         self._pending_sessions: dict[str, SessionUsage] = {}
         self._first_poll = True
+        self._progress_saved = 0.0
         identity = [
             socket.gethostname(),
             platforms.path_key(str(Path.home())),
@@ -1116,6 +1148,9 @@ class TranscriptUsageIngester:
         digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()[:24]
         self._checkpoint_key = f"transcript_usage:files1:{digest}"
         self._resume_before = 0.0
+        self._saved_store: tuple[int, str] = (0, "")
+        # Per file read to its end: a digest of its last bytes, to know the file again after a restart.
+        self._tails: dict[Path, str] = {}
         self._checkpoints = self._load_checkpoints()
         self._read_complete: dict[Path, tuple[int, int]] = {}
         self._deferred: set[Path] = set()
@@ -1154,13 +1189,17 @@ class TranscriptUsageIngester:
             saved = entry.get("files", {})
             checkpoints = {Path(path): (int(mtime), int(size)) for path, (mtime, size) in saved.items()}
             self._resume_before = float(entry["ts"]) - RESTART_GRACE_S if entry else 0.0
+            self._tails = {Path(path): str(tail) for path, tail in entry.get("tails", {}).items()}
+            row_id, mark = entry.get("copilot_store", (0, ""))
+            self._store.stored = self._saved_store = (int(row_id), str(mark))
             return checkpoints
         except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
             log.warning("transcript-usage: checkpoints unavailable; source files will be read again: %s", exc)
             return {}
 
     def _save_checkpoints(self, ts: float) -> None:
-        if self._checkpoint is None or not self._read_complete:
+        position = self._store.position()
+        if self._checkpoint is None or not (self._read_complete or position != self._saved_store):
             return
         cutoff_ns = int((ts - self.backfill_days * 86400) * 1e9)
         self._checkpoints = {p: sig for p, sig in self._checkpoints.items() if sig[0] >= cutoff_ns}
@@ -1168,8 +1207,11 @@ class TranscriptUsageIngester:
         try:
             self._checkpoint.replace({self._checkpoint_key: {
                 "ts": ts, "files": {str(p): sig for p, sig in self._checkpoints.items()},
+                "copilot_store": list(position),
+                "tails": {str(p): tail for p, tail in self._tails.items() if p in self._checkpoints},
             }})
             self._read_complete.clear()
+            self._saved_store = position
         except OSError as exc:
             log.warning("transcript-usage: checkpoints not saved; the next poll will retry: %s", exc)
 
@@ -1241,12 +1283,16 @@ class TranscriptUsageIngester:
             half-written last line stays unread until it ends with a newline."""
             nonlocal errors
             offset = self._offsets.get(path, 0)
+            # A file read again from its start after a restart: the lines up to the saved
+            # size rebuild the totals, and their rows, stored by the earlier run, are not sent again.
+            stored_through = self._stored_through(path) if path not in self._offsets else 0
             try:
                 with open(path, "rb") as fh:
                     fh.seek(offset)
                     for record in records(fh, allowed_types=allowed_types):
                         offset = record.offset
                         self._offsets[path] = offset
+                        self.facts.replaying = offset <= stored_through
                         if record.data is not None:
                             yield record.data
                         # Finish the source record before pausing: one record can emit
@@ -1256,9 +1302,12 @@ class TranscriptUsageIngester:
                     st = os.fstat(fh.fileno())
                     if offset == st.st_size:
                         self._read_complete[path] = (st.st_mtime_ns, offset)
+                        self._tails[path] = _tail_digest(fh, offset)
             except OSError as exc:
                 errors += 1
                 log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
+            finally:
+                self.facts.replaying = False
 
         for path in self._changed(claude_files, cutoff, "claude-code"):
             sid = _claude_session_id(path)
@@ -1269,6 +1318,7 @@ class TranscriptUsageIngester:
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
             self._check_fact_write()
+            self._save_progress(touched, now, published)
 
         for path in self._changed(codex_files, cutoff, "codex-cli"):
             acc = self._codex.setdefault(path, CodexAccumulator(self._codex_sessions, path.stem))
@@ -1277,6 +1327,7 @@ class TranscriptUsageIngester:
             sid = acc.sid or acc.fallback_id
             if sid in self._codex_sessions:
                 touched[sid] = self._codex_sessions[sid]
+            self._save_progress(touched, now, published)
 
         copilot_ids: set[str] = set()
         # Copilot files are independent sessions, not Claude's cross-file replays.
@@ -1303,6 +1354,7 @@ class TranscriptUsageIngester:
             self.facts.flush(retry=False)
             self._check_fact_write()
             self._persist((touched[sid],), now, published)
+            self._save_progress(touched, now, published)
 
         copilot_ids |= self._store.read() | app_ids
         for sid in copilot_ids:
@@ -1326,6 +1378,7 @@ class TranscriptUsageIngester:
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[3])
                 touched[sid] = usage
             self._check_fact_write()
+            self._save_progress(touched, now, published)
 
         def chat_lines(path: Path) -> Iterator[dict]:
             """A chat file's snapshot one request at a time, then its patch lines."""
@@ -1363,6 +1416,7 @@ class TranscriptUsageIngester:
                 usage.touch(path.stat().st_mtime)
                 touched[sid] = usage
             self._check_fact_write()
+            self._save_progress(touched, now, published)
 
         self._claude_facts.close_idle_agents(now - IDLE_END_S)
         self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
@@ -1404,6 +1458,40 @@ class TranscriptUsageIngester:
             },
         )
         return written
+
+    def _stored_through(self, path: Path) -> int:
+        """The size up to which an earlier run stored this file's rows, or 0 when that is not sure.
+
+        The saved size counts only if the file still ends, at that size, with the bytes it
+        ended with then: a file that was written again is stored from its first line.
+        """
+        saved, tail = self._checkpoints.get(path), self._tails.get(path)
+        if saved is None or not tail:
+            return 0
+        try:
+            with open(path, "rb") as fh:
+                return saved[1] if _tail_digest(fh, saved[1]) == tail else 0
+        except OSError:
+            return 0
+
+    def _save_progress(self, touched: dict[str, SessionUsage], now: float, published: set[str]) -> None:
+        """Store what this poll has finished and save its read positions, at most every PROGRESS_SAVE_S.
+
+        A position is saved only after the rows and the sessions of its file are handed to
+        the store, as at the end of a poll.
+        """
+        if (self._checkpoint is None or not self._read_complete
+                or time.monotonic() - self._progress_saved < PROGRESS_SAVE_S):
+            return
+        self._claude_facts.close_idle_agents(now - IDLE_END_S)
+        self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
+        self._claude_facts.flush_open_agents()
+        self.facts.flush(retry=False)
+        if len(self.facts) or self.facts.write_error is not None:
+            return
+        self._persist(touched.values(), now, published)
+        self._save_checkpoints(now)
+        self._progress_saved = time.monotonic()
 
     def _check_fact_write(self) -> None:
         if self.facts.write_error is not None:

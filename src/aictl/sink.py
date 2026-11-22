@@ -285,16 +285,6 @@ class SampleSink:
     def _cache_key(metric: str, tags: dict) -> str:
         return metric + "".join(f"|{k}={tags[k]}" for k in sorted(tags))
 
-    @staticmethod
-    def _is_event_like(value: float) -> bool:
-        """True if the value carries no distinguishing numeric info.
-
-        Datapoints with value 0 or 1 (boolean markers) or NaN are
-        event-like — their uniqueness is in the timestamp, not the
-        value.  These must never be deduplicated.
-        """
-        return value in (0.0, 1.0) or value != value  # NaN check
-
     def emit_if_changed(
         self,
         metric: str,
@@ -306,9 +296,10 @@ class SampleSink:
     ) -> None:
         """Emit only if the value changed or >5 min since last emission.
 
-        Event-like datapoints (value is 0 or 1, i.e. boolean markers
-        where uniqueness is in the timestamp) are never suppressed, unless
-        ``gauge`` says that 0 and 1 are ordinary levels of this metric.
+        This holds for every value. 0 and 1 were once always sent, as if they were
+        events: counts and states that rest at 0 or 1 then filled the store with
+        repeats (21,000 of 21,400 ``process.thread.count`` rows in one measured run).
+        An event goes through :meth:`emit`. ``gauge`` is accepted and has no effect.
 
         Uses a composite key of metric + ALL tag values to detect
         duplicates. Unchanged values are still updated in the in-memory
@@ -338,10 +329,6 @@ class SampleSink:
         """
         if ts is None:
             ts = time.time()
-        # Event-like datapoints: never suppress
-        if not gauge and self._is_event_like(value):
-            return True
-
         t = tags or {}
         cache_key = self._cache_key(metric, t)
         with self._lock:

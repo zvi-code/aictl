@@ -16,7 +16,7 @@ from aictl.dashboard.analytics import compute_usage_summary
 from aictl.ingesters._common import decode_file_uri, open_readonly, project_key
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.records import SessionRow
-from core_store_fakes import UsageFacts, message_facts, quality
+from core_store_fakes import UsageFacts, message_facts, quality, written
 
 NOW = time.time()
 CLI_SID = "aaaaaaaa-0000-4000-8000-000000000001"
@@ -138,6 +138,55 @@ class TestSurfaces:
         ing.poll()
         assert ing.poll() == 0
         assert row(db, CLI_SID)["output_tokens"] == 11
+
+
+class TestRestart:
+    """After a restart every store row is read again for the totals, and no request is stored twice."""
+
+    def reader(self, tmp_path, db):
+        from aictl.state_file import StateFile
+
+        return TranscriptUsageIngester(
+            db, claude_projects=tmp_path / "none-claude", codex_sessions=tmp_path / "none-codex",
+            copilot_state=tmp_path / "copilot" / "session-state", vscode_workspaces=tmp_path / "workspaceStorage",
+            checkpoint=StateFile(tmp_path / "positions.json"),
+        )
+
+    def requests(self, db):
+        return [r for r in written(db.writer, "requests")]
+
+    def test_a_restart_stores_only_the_rows_added_since(self, tmp_path):
+        build_store(tmp_path / "copilot")
+        first = UsageFacts()
+        self.reader(tmp_path, first).poll()
+        assert len(self.requests(first)) == 4
+
+        con = sqlite3.connect(tmp_path / "copilot" / "session-store.db")
+        con.execute(
+            "INSERT INTO assistant_usage_events(session_id, model, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_write_tokens, total_nano_aiu, request_multiplier, created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)", (CLI_SID, "gpt-6.1-sol", 1000, 10, 700, 200, 2_000_000_000, 1.0, iso(10)))
+        con.commit()
+        con.close()
+
+        second = UsageFacts()
+        self.reader(tmp_path, second).poll()
+        stored = self.requests(second)
+        assert len(stored) == 1
+        # The new call repeats the token counts of the first: its key continues the count of the earlier rows.
+        assert stored[0]["dedup_key"] not in {r["dedup_key"] for r in self.requests(first)}
+        assert row(second, CLI_SID)["output_tokens"] == 21  # the session total still has every row
+
+    def test_a_store_without_the_saved_row_is_stored_from_its_first_row(self, tmp_path):
+        build_store(tmp_path / "copilot")
+        self.reader(tmp_path, UsageFacts()).poll()
+        con = sqlite3.connect(tmp_path / "copilot" / "session-store.db")
+        con.execute("UPDATE assistant_usage_events SET created_at = ?", (iso(500),))  # other rows under the same ids
+        con.commit()
+        con.close()
+        again = UsageFacts()
+        self.reader(tmp_path, again).poll()
+        assert len(self.requests(again)) == 4
 
 
 class TestBilling:
@@ -512,3 +561,33 @@ def test_a_found_home_is_remembered_after_its_tool_exits(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_homes, "scan_processes", lambda: [])
     found = [h for h in tool_homes._all_homes() if h.path == moved]
     assert found and found[0].found_by == "process environment"
+
+
+def usage_event(call, output_tokens):
+    return {"type": "session.usage_record", "timestamp": iso(100), "data": {"usage": {
+        "apiCallId": call, "requestId": call, "model": "gpt-6.1-sol", "inputTokens": 20, "outputTokens": output_tokens}}}
+
+
+def test_a_file_that_grew_while_the_daemon_was_down_is_stored_only_from_where_it_was(tmp_path):
+    """The whole file is read again for the totals; the rows of the part stored before are not sent again."""
+    restart = TestRestart()
+    events = tmp_path / "copilot" / "session-state" / "grown" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    start = {"type": "session.start", "timestamp": iso(200), "data": {"context": {"cwd": str(tmp_path)}}}
+    events.write_text("".join(json.dumps(e) + "\n" for e in (start, usage_event("call-1", 3), usage_event("call-2", 4))))
+    first = UsageFacts()
+    restart.reader(tmp_path, first).poll()
+    assert len(restart.requests(first)) == 2
+
+    with events.open("a") as fh:
+        fh.write(json.dumps(usage_event("call-3", 5)) + "\n")
+    second = UsageFacts()
+    restart.reader(tmp_path, second).poll()
+    assert len(restart.requests(second)) == 1
+    assert row(second, "grown")["output_tokens"] == 12
+
+    events.write_text("".join(json.dumps(e) + "\n" for e in (start, usage_event("other-1", 7), usage_event("other-2", 8),
+                                                              usage_event("other-3", 9), usage_event("other-4", 1))))
+    third = UsageFacts()
+    restart.reader(tmp_path, third).poll()
+    assert len(restart.requests(third)) == 4  # written again with other content: stored from its first line

@@ -157,10 +157,12 @@ class KustoWriter:
             if column == "node_id":
                 continue
             value = row.get(column)
-            # Node-wide rows need no project. Some facts need no agent or source.
+            # Node-wide rows need no project. Some facts need no agent or source, and the
+            # total of a context report is the item of its kind that has no name.
             if value is None or (
                 value == "" and column != "project"
-                and (name, column) not in {("session_context_items", "agent_id"), ("data_quality_status", "source")}
+                and (name, column) not in {("session_context_items", "agent_id"), ("session_context_items", "name"),
+                                           ("data_quality_status", "source")}
             ):
                 raise InvalidRowError(f"{name}: a deterministic key requires {column}")
         for column, value in row.items():

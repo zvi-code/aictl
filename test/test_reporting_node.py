@@ -163,3 +163,52 @@ def test_a_port_in_use_is_reported_and_the_node_keeps_reporting(kusto_store, cap
 def test_headless_opens_the_receiver_unless_told_not_to(monkeypatch):
     assert serve(monkeypatch, "--port", "8599")["receive_at"] == ("127.0.0.1", 8599)
     assert serve(monkeypatch, "--no-receiver")["receive_at"] is None
+
+
+# ── A new node does not run the upgrade backfills ────────────────
+
+
+def backfill_store(tmp_path):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(restart_dir=tmp_path, history_store=SimpleNamespace(writer=object()), session_facts=object())
+
+
+def test_a_new_node_records_the_upgrade_backfills_as_done_and_reads_nothing(monkeypatch, tmp_path):
+    from aictl.ingesters import context_items_backfill, loaded_files_backfill, tool_size_backfill
+    from aictl.state_file import StateFile
+
+    ran = []
+    for module in (tool_size_backfill, loaded_files_backfill, context_items_backfill):
+        monkeypatch.setattr(module, "run", lambda *args, _name=module.__name__, **kwargs: ran.append(_name))
+    monkeypatch.setattr(ingester_runner, "BACKFILL_DELAY_S", 0.0)
+    ingester_runner._backfill_transcripts(backfill_store(tmp_path), True)
+    assert ran == []
+    for module, name in ((tool_size_backfill, "tool_size_backfill"), (loaded_files_backfill, "loaded_files_backfill"),
+                         (context_items_backfill, "context_items_backfill")):
+        assert StateFile(tmp_path / f"{name}.json").read().get(module.STATE_KEY)
+
+
+def test_a_node_with_earlier_data_still_runs_them(monkeypatch, tmp_path):
+    from aictl.ingesters import context_items_backfill, loaded_files_backfill, tool_size_backfill
+
+    ran = []
+    for module in (tool_size_backfill, loaded_files_backfill, context_items_backfill):
+        monkeypatch.setattr(module, "run", lambda *args, _name=module.__name__, **kwargs: ran.append(_name))
+    monkeypatch.setattr(ingester_runner, "BACKFILL_DELAY_S", 0.0)
+    ingester_runner._backfill_transcripts(backfill_store(tmp_path), False)
+    assert len(ran) == 3
+
+
+# ── A level that rests at 0 or 1 is stored when it changes, not on every sample ──
+
+
+def test_an_unchanged_zero_or_one_is_not_stored_again():
+    from aictl.sink import SampleSink
+
+    sink = SampleSink()
+    tags = {"process.pid": "42"}
+    admitted = [sink.admit_if_changed("process.thread.count", value, tags, ts)
+                for ts, value in ((100, 1.0), (101, 1.0), (102, 1.0), (103, 0.0), (104, 0.0), (105, 1.0))]
+    assert admitted == [True, False, False, True, False, True]
+    assert sink.admit_if_changed("process.thread.count", 1.0, tags, 105 + SampleSink.DEDUP_STALE_SECONDS)

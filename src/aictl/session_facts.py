@@ -15,6 +15,7 @@ from .ingesters._common import project_key
 from .records import STEP_TEXT_LIMIT, SessionRow, _dedup_key, strip_event_text
 from .state_file import StateFile
 from .stores import writer_or_discard
+from .stores.base import InvalidRowError
 from .tool_calls import call_key
 
 _LIMIT = 20_000
@@ -357,7 +358,19 @@ class SessionFacts:
                     if row.ts < time.time() - self.content_days * 86400:
                         continue
                 values.append(dict(data, project=project))
-            self.writer.append(table, values)
+            try:
+                self.writer.append(table, values)
+            except InvalidRowError:
+                # A row the table can never take failed the whole handoff: the reader sent the
+                # same batch again at every poll and no later session file was ever read. The
+                # rows go again one at a time and that row is left out with a warning. A row
+                # the failed batch had already handed over is handed over twice, once.
+                for value in values:
+                    try:
+                        self.writer.append(table, [value])
+                    except InvalidRowError as exc:
+                        count -= 1
+                        log.warning("A %s row is left out, it can never be stored: %s", table, exc)
         if only is None and facts.steps:
             metadata, text = [], []
             floor = self.text_floor()
