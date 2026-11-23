@@ -310,6 +310,68 @@ def test_context_weight_buckets_requests_by_the_tokens_the_model_read(kusto_stor
     assert [(row["session_id"], row["cost_usd"]) for row in body["sessions"]] == [("s1", 26.0), ("s2", 10.0)]
 
 
+def _main(store, key, ts, *, session, cost=1.0, agent="", tool="claude-code", project="/p/alpha", **values):
+    store.insert("requests", dedup_key=key, ts=ts, session_id=session, agent_id=agent, tool=tool, project_path=project,
+                 cost_usd=cost, **values)
+
+
+def _edit(store, key, ts, name="Edit", *, session, agent="", tool="claude-code", **values):
+    store.insert("tool_invocations", dedup_key=key, ts=ts, session_id=session, agent_id=agent, tool=tool, tool_name=name,
+                 **values)
+
+
+def test_orientation_counts_main_agent_requests_up_to_the_first_edit(kusto_store):
+    s = kusto_store
+    # s1: three main requests up to the edit (the third at the same time as the edit call), one after it.
+    for key, ts, cost in (("a1", 10.0, 1.0), ("a2", 20.0, 2.0), ("a3", 30.0, 4.0), ("a4", 40.0, 8.0)):
+        _main(s, key, ts, session="s1", cost=cost)
+    _main(s, "a5", 15.0, session="s1", agent="sub", cost=100.0)           # a subagent request: not the main agent's
+    _edit(s, "ae", 30.0, session="s1")
+    # s2: the first edit is a subagent's; a server tool and a permission row are not edit calls.
+    for key, ts in (("b1", 10.0), ("b2", 20.0), ("b3", 30.0)):
+        _main(s, key, ts, session="s2", agent="s2")                       # agent id equal to the session id: main
+    _edit(s, "bm", 12.0, "mcp__srv__edit_file", session="s2")
+    _edit(s, "bp", 11.0, "permission:Edit", session="s2")
+    _edit(s, "be", 25.0, "Write", session="s2", agent="sub")
+    # s3: the winning version of the edit call decides when it was.
+    _main(s, "c1", 10.0, session="s3")
+    _edit(s, "ce", 5.0, "apply_patch", session="s3")
+    _edit(s, "ce", 11.0, "apply_patch", session="s3", _v=NEWER)
+    # s4: its only edit was deleted, so it never edits.
+    _main(s, "d1", 10.0, session="s4", cost=3.0)
+    _main(s, "d2", 20.0, session="s4", cost=5.0)
+    _edit(s, "de", 15.0, session="s4")
+    s.insert("tool_invocations", dedup_key="de", ts=15.0, session_id="s4", tool="claude-code", tool_name="Edit",
+             _deleted=True, _v=NEWER)
+    # s5: another project with one session; s6 starts after the period.
+    _main(s, "e1", 10.0, session="s5", tool="copilot-cli", project="/p/beta", cost=0.5)
+    _edit(s, "ee", 12.0, "replace_string_in_file", session="s5", tool="copilot-cli")
+    _main(s, "f1", 200_000.0, session="s6")
+    _edit(s, "fe", 200_001.0, session="s6")
+    body = _card(s, "orientation")
+    assert body["projects"] == [{"project_path": "/p/alpha", "sessions": 3, "tools": ["claude-code"], "p50_requests": 2.0,
+                                 "p50_cost_usd": 2.0}]
+    tools = {tool["tool"]: tool for tool in body["tools"]}
+    claude = tools["claude-code"]
+    assert (claude["sessions"], claude["edited"], claude["never"], claude["never_requests"]) == (4, 3, 1, 2)
+    assert claude["never_cost_usd"] == pytest.approx(8.0)
+    assert (tools["copilot-cli"]["edited"], tools["copilot-cli"]["never_cost_usd"]) == (1, 0.0)
+    assert [(row["session_id"], row["requests"], row["before_cost"]) for row in body["sessions"]] == [
+        ("s1", 3, 7.0), ("s2", 2, 2.0), ("s3", 1, 1.0), ("s5", 1, 0.5)]
+    assert body["summary"] == {"sessions": 5, "edited": 4, "projects": 1, "never": 1, "never_cost_usd": 8.0, "no_project": 0}
+
+
+def test_orientation_names_edit_calls_by_the_board_rule():
+    from aictl.dashboard.board_projection import _EDIT_TOOL_RE, is_edit_tool
+    from aictl.dashboard.projection_utils import _MCP_TOOL_RE
+
+    edit, server = _kql_regexes("insights.orientation")
+    assert (edit, server) == (_EDIT_TOOL_RE.pattern, _MCP_TOOL_RE.pattern)
+    for name in ("Edit", "Write", "apply_patch", "replace_string_in_file", "create_file", "insert_edit_into_file",
+                 "mcp__srv__edit_file", "github/create_file", "Read", "Bash"):
+        assert is_edit_tool(name) == (bool(re.search(edit, name)) and not re.search(server, name)), name
+
+
 def _kql_regexes(view: str) -> list[str]:
     text = (QUERIES / f"{view}.kql").read_text()
     return re.findall(r"matches regex @'([^']*)'", text)

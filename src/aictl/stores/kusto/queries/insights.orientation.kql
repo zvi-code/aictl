@@ -1,0 +1,59 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// What a session spends before it changes anything: the requests of its main agent (agent id empty or equal
+// to the session id) up to its first edit call, by any agent of the session. A request at the same time as
+// the edit call counts as before it: a request comes before the call it made. An edit call is named by the
+// board's rule (board_projection._EDIT_TOOL_RE and not a server tool, projection_utils._MCP_TOOL_RE).
+// A session counts in the period its first main-agent request falls in; its later requests count with it.
+// A project is the session's project_path; projects with fewer than 3 sessions that edit are left out.
+let reqs = requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, project_path, cost_usd
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and (isempty(agent_id) or agent_id == session_id)
+    | project node_id, session_id, ts, tool, project_path, cost_usd;
+let edits = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool_name
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and not(tool_name startswith_cs 'permission:')
+    | where tool_name matches regex @'(?i)edit|write|patch|replace|create_?file|insert'
+        and not(tool_name matches regex @'^mcp(__|_|\.|:)|^[\w.-]+/[\w.-]+$')
+    | summarize first_edit=min(ts) by node_id, session_id;
+let per_session = materialize(reqs
+    | lookup kind=leftouter edits on node_id, session_id
+    | extend before=isnotnull(first_edit) and ts <= first_edit
+    | summarize started=min(ts), tool=take_any(tool), project_path=take_anyif(project_path, isnotempty(project_path)),
+                edited=max(toint(isnotnull(first_edit))), requests=count(), priced=countif(isnotnull(cost_usd)),
+                sum_cost=sum(cost_usd), before_requests=countif(before), before_priced=countif(before and isnotnull(cost_usd)),
+                before_cost=sumif(cost_usd, before)
+          by node_id, session_id
+    | where started >= since and started < until
+    | extend cost_known=before_priced == before_requests);
+union
+    (per_session
+        | where edited == 1 and isnotempty(project_path)
+        | summarize sessions=count(), tools=make_set(tool), p50_requests=percentile(before_requests, 50),
+                    p50_cost=percentile(iff(cost_known, before_cost, real(null)), 50), priced=countif(cost_known)
+              by project_path
+        | where sessions >= 3
+        | top 10 by sessions desc
+        | extend row_type='project'),
+    (per_session
+        | summarize sessions=count(), edited=countif(edited == 1), no_project=countif(edited == 1 and isempty(project_path)),
+                    p50_requests=percentile(iff(edited == 1, before_requests, long(null)), 50),
+                    before_cost=sumif(before_cost, edited == 1), never=countif(edited == 0),
+                    never_requests=sumif(requests, edited == 0), never_priced=sumif(priced, edited == 0),
+                    never_cost=sumif(sum_cost, edited == 0), priced=sum(priced) by tool
+        | extend row_type='tool'),
+    (per_session
+        | where edited == 1 and before_requests > 0
+        | top 10 by before_cost desc
+        | project node_id, session_id, tool, requests=before_requests, before_priced, before_cost
+        | extend row_type='session'),
+    (per_session
+        | summarize first_ts=min(started), last_ts=max(started)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, sessions desc, tool asc
+| take row_limit

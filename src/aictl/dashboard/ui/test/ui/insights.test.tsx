@@ -8,10 +8,11 @@ import Rereads from '../../src/panels/insights/Rereads'
 import Subagents from '../../src/panels/insights/Subagents'
 import TimeSplit from '../../src/panels/insights/TimeSplit'
 import ContextWeight from '../../src/panels/insights/ContextWeight'
+import Orientation from '../../src/panels/insights/Orientation'
 import { fmtHours } from '../../src/design/format'
 import {
   carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
-  contextFinding, timeFinding, type CarryBody, type ContextBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
+  contextFinding, orientationFinding, timeFinding, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
 } from '../../src/panels/insights/insightsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -105,7 +106,20 @@ const contextBody = {
     small_requests: 150, small_cost_usd: 14.6, not_reported: ['codex-cli'] },
   sessions: [{ session_id: 's-ctx', node_id: 'n', tool: 'claude-code', requests: 300, cost_usd: 40 }],
 } as unknown as ContextBody
-const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody }
+const orientation = {
+  ...base, card: 'orientation',
+  projects: [
+    { project_path: '/work/alpha', sessions: 89, tools: ['copilot-cli'], p50_requests: 4, p50_cost_usd: 0.21 },
+    { project_path: '/work/beta/', sessions: 22, tools: ['claude-code', 'copilot-vscode'], p50_requests: 35, p50_cost_usd: null },
+  ],
+  tools: [
+    { tool: 'claude-code', sessions: 378, edited: 106, no_project: 0, p50_requests: 16, never: 272, never_requests: 2207, never_cost_usd: 159.47 },
+    { tool: 'codex-cli', sessions: 1, edited: 0, no_project: 0, p50_requests: null, never: 1, never_requests: 83, never_cost_usd: null },
+  ],
+  summary: { sessions: 379, edited: 106, projects: 2, never: 273, never_cost_usd: 159.47, no_project: 0 },
+  sessions: [{ session_id: 's-orient', node_id: 'n', tool: 'claude-code', requests: 399, before_cost: 86.64 }],
+} as unknown as OrientationBody
+const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody, orientation }
 
 type State = DetailState<unknown> | undefined
 function context(states: (card: string) => State, opened: string[] = []) {
@@ -154,7 +168,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     const { host, dispose } = mount(() => <>
       <PauseTax {...props(ctx)} /><ContextCarry {...props(ctx)} /><Subagents {...props(ctx)} />
       <AfterFailure {...props(ctx)} /><Rereads {...props(ctx)} /><TimeSplit {...props(ctx)} />
-      <ContextWeight {...props(ctx)} />
+      <ContextWeight {...props(ctx)} /><Orientation {...props(ctx)} />
     </>)
     for (const id of Object.keys(bodies)) {
       const box = card(host, id)
@@ -340,5 +354,47 @@ describe('INS-06 · Context weight', () => {
     expect(card(host, 'context').textContent).toContain('Could not load Context weight: Kusto view insights.context_weight failed')
     expect(card(host, 'time').querySelector('[data-finding]')).not.toBeNull()
     dispose()
+  })
+})
+
+describe('INS-07 · Orientation cost by repository', () => {
+  it('names the project with the most sessions that edit, the range of medians and the sessions that never edit', () => {
+    expect(orientationFinding(orientation)).toBe('alpha has the most sessions that edit (89); the median one made 4 requests ' +
+      'costing $0.21 before its first edit. Across 2 projects the median runs from 4 to 35 requests. 273 sessions never edited; ' +
+      'they cost $159.')
+    const none = { ...orientation, projects: [] } as OrientationBody
+    expect(orientationFinding(none)).toBe('No project has 3 or more sessions that edit in this period. 273 sessions never edited; they cost $159.')
+  })
+
+  it('draws one bar per project with its median cost, and an unpriced cost as not reported', () => {
+    const { ctx } = context(ready)
+    const { host, dispose } = mount(() => <Orientation {...props(ctx)} />)
+    const box = card(host, 'orientation')
+    expect(box.querySelectorAll('[data-project]')).toHaveLength(2)
+    expect(box.querySelector('[aria-label="alpha: median 4 requests, $0.21 before the first edit"]')).not.toBeNull()
+    expect(box.querySelector('[aria-label="beta: median 35 requests, not reported before the first edit"]')).not.toBeNull()
+    expect(box.querySelector('[title="/work/alpha"]')).not.toBeNull()
+    const never = box.querySelector('[data-never]')!.textContent!
+    expect(never).toContain('claude-code: 272 of 378 sessions, $159')
+    expect(never).toContain('codex-cli: 1 of 1 sessions, not reported')
+    dispose()
+  })
+
+  it('opens a session from its list and keeps its own error state', () => {
+    const opened: string[] = []
+    const { ctx } = context(ready, opened)
+    const { host, dispose } = mount(() => <Orientation {...props(ctx)} />)
+    const sessions = host.querySelector<HTMLDetailsElement>('[data-sessions]')!
+    sessions.open = true
+    flush()
+    host.querySelector<HTMLButtonElement>('button[aria-label="Open session s-orient"]')!.click()
+    flush()
+    expect(opened).toEqual(['s-orient:flow'])
+    dispose()
+    const failing = context(id => id === 'orientation' ? { data: undefined, status: 'error', error: new Error('Kusto view insights.orientation failed') } : ready(id))
+    const second = mount(() => <><Orientation {...props(failing.ctx)} /><ContextWeight {...props(failing.ctx)} /></>)
+    expect(card(second.host, 'orientation').textContent).toContain('Could not load Orientation cost by repository: Kusto view insights.orientation failed')
+    expect(card(second.host, 'context').querySelector('[data-finding]')).not.toBeNull()
+    second.dispose()
   })
 })

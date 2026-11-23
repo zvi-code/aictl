@@ -25,6 +25,7 @@ CARDS = {
     "rereads": "insights.rereads",
     "time": "insights.time_split",
     "context": "insights.context_weight",
+    "orientation": "insights.orientation",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -335,9 +336,47 @@ def context_weight(rows: list[dict]) -> dict:
     }
 
 
+def orientation(rows: list[dict]) -> dict:
+    """Per project: sessions that edit, median main-agent requests and cost before the first edit; per tool: the rest."""
+    projects = [{
+        "project_path": row.get("project_path"), "sessions": _int(row.get("sessions")),
+        "tools": sorted(str(tool) for tool in (row.get("tools") or []) if tool),
+        "p50_requests": _cost(row.get("p50_requests")),
+        "p50_cost_usd": _cost(row.get("p50_cost")) if _int(row.get("priced")) else None,
+    } for row in _of(rows, "project")]
+    projects.sort(key=lambda row: (-row["sessions"], str(row["project_path"])))
+    tools = []
+    for row in _of(rows, "tool"):
+        edited, never, never_requests = _int(row.get("edited")), _int(row.get("never")), _int(row.get("never_requests"))
+        tools.append({
+            "tool": row.get("tool"), "sessions": _int(row.get("sessions")), "edited": edited,
+            "no_project": _int(row.get("no_project")),
+            "p50_requests": _cost(row.get("p50_requests")) if edited else None,
+            "never": never, "never_requests": never_requests,
+            "never_cost_usd": _n(row.get("never_cost")) if _int(row.get("never_priced")) or not never_requests else None,
+        })
+    tools.sort(key=lambda tool: -tool["sessions"])
+    never_costs = [tool["never_cost_usd"] for tool in tools if tool["never"] and tool["never_cost_usd"] is not None]
+    sessions = []
+    for row in _sessions(rows, ("requests", "before_priced", "before_cost")):
+        priced = _int(row.pop("before_priced"))
+        sessions.append({**row, "before_cost": _n(row["before_cost"]) if priced else None})
+    sessions.sort(key=lambda row: (-_n(row["before_cost"]), -_n(row["requests"])))
+    return {
+        "projects": projects, "tools": tools,
+        "summary": {
+            "sessions": sum(tool["sessions"] for tool in tools), "edited": sum(tool["edited"] for tool in tools),
+            "projects": len(projects), "never": sum(tool["never"] for tool in tools),
+            "never_cost_usd": sum(never_costs) if never_costs else None,
+            "no_project": sum(tool["no_project"] for tool in tools),
+        },
+        "sessions": sessions,
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
-    "time": time_split, "context": context_weight,
+    "time": time_split, "context": context_weight, "orientation": orientation,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -348,6 +387,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "rereads": lambda history, params: history.read("insights.rereads", limit=ROW_LIMIT, **params),
     "time": lambda history, params: history.read("insights.time_split", limit=ROW_LIMIT, **params),
     "context": lambda history, params: history.read("insights.context_weight", limit=ROW_LIMIT, **params),
+    "orientation": lambda history, params: history.read("insights.orientation", limit=ROW_LIMIT, **params),
 }
 
 

@@ -2,12 +2,12 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd } from '../../design/format'
+import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd, projectName } from '../../design/format'
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 
 export type { QueryBlock }
-export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context'
+export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -80,7 +80,16 @@ export type ContextBody = Base<'context'> & {
     small_requests: Num; small_cost_usd: Num; not_reported: string[]
   }
 }
-export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody
+export type OrientationProject = { project_path: string; sessions: number; tools: string[]; p50_requests: Num; p50_cost_usd: Num }
+export type OrientationTool = {
+  tool: string; sessions: number; edited: number; no_project: number; p50_requests: Num; never: number; never_requests: number
+  never_cost_usd: Num
+}
+export type OrientationBody = Base<'orientation'> & {
+  projects: OrientationProject[]; tools: OrientationTool[]
+  summary: { sessions: number; edited: number; projects: number; never: number; never_cost_usd: Num; no_project: number }
+}
+export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
@@ -212,6 +221,19 @@ export function contextFinding(body: ContextBody, label: Label) {
     `and carried ${share(s.heavy_cost_share)} of the cost (${money(s.heavy_cost_usd)} of ${money(s.cost_usd)} at list price).`
   return `${heavy} Small steps, requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time, were ` +
     `${count(s.small_requests)} requests costing ${money(s.small_cost_usd)}.`
+}
+
+export function orientationFinding(body: OrientationBody) {
+  const s = body.summary
+  const never = s.never ? ` ${fmtNum(s.never)} sessions never edited; they cost ${money(s.never_cost_usd)}.` : ''
+  if (!s.sessions) return 'No session started in this period.'
+  const top = body.projects[0]
+  if (!top) return `No project has 3 or more sessions that edit in this period.${never}`
+  const medians = body.projects.map(row => row.p50_requests).filter((value): value is number => value != null)
+  const range = body.projects.length > 1 && medians.length
+    ? ` Across ${fmtNum(body.projects.length)} projects the median runs from ${fmtNum(Math.min(...medians))} to ${fmtNum(Math.max(...medians))} requests.` : ''
+  return `${projectName(top.project_path)} has the most sessions that edit (${fmtNum(top.sessions)}); the median one made ` +
+    `${count(top.p50_requests)} requests costing ${money(top.p50_cost_usd)} before its first edit.${range}${never}`
 }
 
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */
