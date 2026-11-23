@@ -864,6 +864,7 @@ def batch_resolve_paths(
 
 from .fsutil import safe_glob, safe_rglob, safe_stat, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
+from .secret_mask import mask_mcp_config
 from .tool_scope import is_selected
 from .utils import estimate_tokens, estimate_tokens_from_size, norm_path
 
@@ -1040,13 +1041,46 @@ def _dedup_files(files: list[ResourceFile]) -> list[ResourceFile]:
 _MCP_FILENAMES = {".mcp.json", "mcp.json", ".copilot-mcp.json", "mcp_config.json", "mcp-config.json"}
 
 
+class McpConfig(dict):
+    """An MCP server definition as shown: secret values masked.
+
+    ``raw`` keeps the definition as written, for the health probe and process
+    matching in this process only. Every copy, pickle and serialization of the
+    object (``json``, ``dataclasses.asdict``, ``copy``) is the masked dict alone.
+    """
+
+    __slots__ = ("raw",)
+
+    def __init__(self, raw) -> None:
+        raw = raw if isinstance(raw, dict) else dict(raw)  # dataclasses.asdict rebuilds from items
+        super().__init__(mask_mcp_config(raw))
+        self.raw = raw
+
+    def __reduce__(self):
+        return (dict, (dict(self),))
+
+    def __copy__(self) -> dict:
+        return dict(self)
+
+    def __deepcopy__(self, memo) -> dict:
+        import copy
+
+        return copy.deepcopy(dict(self), memo)
+
+
+def _raw_config(config: dict) -> dict:
+    """The definition as written when this process read it, else the masked one."""
+    return config.raw if isinstance(config, McpConfig) else config
+
+
 def _load_mcp(path: Path, res: ToolResources) -> None:
     """Parse an MCP JSON config and append servers to res."""
     try:
         data = json.loads(path.read_text("utf-8"))
         for name, config in data.get("mcpServers", {}).items():
-            res.mcp_servers.append({"name": name, "config": config})
-    except (json.JSONDecodeError, KeyError, OSError):
+            masked = McpConfig(config) if isinstance(config, dict) else config
+            res.mcp_servers.append({"name": name, "config": masked})
+    except (json.JSONDecodeError, KeyError, OSError, AttributeError):
         pass
 
 
@@ -1524,7 +1558,7 @@ def _find_mcp_processes(
     search_terms: list[tuple[str, str]] = []
     for srv in mcp_servers:
         name = srv.get("name", "")
-        config = srv.get("config", {})
+        config = _raw_config(srv.get("config", {}))
         cmd = config.get("command", "")
         args = config.get("args", [])
         terms = [name, cmd] + [a for a in args if not a.startswith("-")]
@@ -1816,6 +1850,7 @@ def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
             seen.add(name)
 
             config = srv_dict.get("config", {})
+            raw = _raw_config(config)
             transport, endpoint = _classify_mcp_transport(config)
 
             info = McpServerInfo(
@@ -1826,7 +1861,7 @@ def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
                 endpoint=endpoint,
             )
 
-            matched = _match_mcp_to_process(name, config, all_procs)
+            matched = _match_mcp_to_process(name, raw, all_procs)
             if matched:
                 info.status = "running"
                 info.pid = matched.pid
@@ -1834,7 +1869,7 @@ def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
                 info.mem_mb = matched.mem_mb
             else:
                 if transport == "http":
-                    info.status = _probe_http_mcp(endpoint)
+                    info.status = _probe_http_mcp(_classify_mcp_transport(raw)[1])
                 else:
                     info.status = "stopped"
 

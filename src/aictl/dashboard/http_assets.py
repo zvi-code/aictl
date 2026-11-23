@@ -8,6 +8,7 @@ import logging
 import re
 from pathlib import Path
 
+from ..secret_mask import mask_text
 from ..tools import (
     HOST_LABELS as _REG_HOST_LABELS,
 )
@@ -38,7 +39,12 @@ _MAX_FILE_SIZE = 200_000
 
 
 def _read_file_safe(path_str: str) -> str | None:
-    """Read file content with safety limits."""
+    """File content for display, with safety limits and secret-shaped values masked."""
+    text = _read_file_raw(path_str)
+    return None if text is None else mask_text(text)
+
+
+def _read_file_raw(path_str: str) -> str | None:
     try:
         p = Path(path_str)
         if not p.is_file():

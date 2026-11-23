@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..data.token_usage import TokenUsage
+from ..secret_mask import mask_text
 from .models import STATUS_COLOURS as _STATUS_COLOURS
 from .models import DashboardSnapshot
 
@@ -339,7 +340,12 @@ def _number_lines(lines: list[str], start: int = 1) -> str:
 
 
 def _read_file_tail(path_str: str, max_size: int = 50_000) -> str | None:
-    """Try to read a file's content for preview. Returns None if unreadable."""
+    """A file's content for preview, secret-shaped values masked. None if unreadable."""
+    text = _read_file_tail_raw(path_str, max_size)
+    return None if text is None else mask_text(text)
+
+
+def _read_file_tail_raw(path_str: str, max_size: int) -> str | None:
     try:
         p = Path(path_str)
         if not p.is_file():

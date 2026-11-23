@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ...secret_mask import mask_text
 from ...stores.base import StoreConfigurationError
 from ...tools import TOOL_LABELS, ProcessInfo
 from ..models import DashboardSnapshot
@@ -83,7 +84,8 @@ def preview_file(path: str) -> dict:
         if truncated:
             file.readline(50_000)
         text = file.read(200_000).decode("utf-8", errors="replace")
-    return {"text": text.replace("\r\n", "\n").replace("\r", "\n"), "truncated": truncated}
+    text = mask_text(text.replace("\r\n", "\n").replace("\r", "\n"))
+    return {"text": text, "truncated": truncated}
 
 
 def terminal_sessions(state: LiveState, details: list[SessionDetail]) -> list[Row]:

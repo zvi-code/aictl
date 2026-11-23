@@ -37,6 +37,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .platforms import IS_WINDOWS, claude_global_dir, config_dir, copilot_global_dir, vscode_user_dir
+from .secret_mask import SECRET_VALUE_RE, URL_CRED_RE, redact
 from .tools import PRUNE_DIRS, _expand_home, _params_to_glob, get_registry
 from .utils import estimate_tokens_from_size
 
@@ -143,26 +144,13 @@ class Finding:
 
 # ─── Text helpers ─────────────────────────────────────────────────
 
-_SECRET_VALUE_RE = re.compile(
-    r"(?i)\b(sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{8,}|xox[a-z]-[a-z0-9-]{8,}|AKIA[0-9A-Z]{8,})"
-    r"|((?:api[_-]?key|token|secret|password|passwd|bearer)[\"']?\s*[=:]\s*[\"']?)([^\s\"',;&]{4,})"
-)
-_URL_CRED_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
-
-
-def _redact_match(m: re.Match) -> str:
-    return f"{m.group(2)}<redacted>" if m.group(2) else "<redacted>"
+_SECRET_VALUE_RE = SECRET_VALUE_RE
+_URL_CRED_RE = URL_CRED_RE
 
 
 def _redact(text: str) -> str:
     """Remove secret-shaped values and URL credentials from text."""
-    if not text:
-        return ""
-    if _SECRET_VALUE_RE.search(text) is not None:
-        text = _SECRET_VALUE_RE.sub(_redact_match, text)
-    if "://" in text and "@" in text:
-        text = _URL_CRED_RE.sub(r"\1<redacted>@", text)
-    return text
+    return redact(text)
 
 
 def escape_invisible(text: str) -> str:

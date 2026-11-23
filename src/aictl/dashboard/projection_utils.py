@@ -10,8 +10,8 @@ from collections.abc import Iterable
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from ..context_audit import _redact
 from ..records import _session_uuid as _raw_session_uuid
+from ..secret_mask import mask_text
 from ..tool_targets import split_mcp
 from ..tools import TOOL_LABELS
 from .history_scope import ScopeError, identity, identity_parts
@@ -32,26 +32,9 @@ TITLE_CHARS = 80
 STORED_TITLE_CHARS = 120
 
 
-_EXTRA_SECRET_RE = re.compile(
-    r"(?i)\b(bearer\s+)[a-z0-9._~+/-]{8,}=*"
-    r"|\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{4,}"
-    r"|\bAIza[0-9A-Za-z_-]{20,}"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
-)
-
-
-def _extra_secret_repl(m: re.Match) -> str:
-    return f"{m.group(1) or ''}<redacted>"
-
-
 def mask_secrets(text: str | None) -> str:
     """Text with values that look like secrets replaced."""
-    if not text:
-        return ""
-    text = _redact(text)
-    if _EXTRA_SECRET_RE.search(text) is not None:
-        return _EXTRA_SECRET_RE.sub(_extra_secret_repl, text)
-    return text
+    return mask_text(text)
 
 
 def _one_line(text: str | None, limit: int) -> str:

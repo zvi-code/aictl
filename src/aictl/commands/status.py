@@ -103,10 +103,19 @@ def status(root_dir, tool_filter, show_procs, bt_pid, show_budget, as_json, as_h
 
 def _emit_html(results: list[ToolResources], root: Path, out_file: str | None) -> None:
 
+    from ..dashboard.models import DashboardTool
+    from ..orchestrator import _compute_token_breakdown
+
+    tools = [
+        DashboardTool(r.tool, r.label, files=list(r.files), processes=list(r.processes),
+                      mcp_servers=list(r.mcp_servers), memory=r.memory,
+                      token_breakdown=_compute_token_breakdown(r.files))
+        for r in results
+    ]
     snap = DashboardSnapshot(
         timestamp=time.time(),
         root=str(root),
-        tools=results,
+        tools=tools,
         agent_memory=collect_agent_memory(root),
         mcp_detail=collect_mcp_status(results),
     )
