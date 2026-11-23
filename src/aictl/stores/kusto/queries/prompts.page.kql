@@ -1,7 +1,8 @@
 declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', since:real = real(null), until:real = real(null),
-    session_keys:dynamic, preview:bool = false, row_limit:long
+    session_keys:dynamic, preview:bool = false, after_row:string = '', row_limit:long
 );
+let cursor_row = parse_json(after_row);
 session_prompts
 | where all_nodes or node_id == requested_node
 | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
@@ -9,6 +10,15 @@ session_prompts
 | where not(coalesce(column_ifexists('_deleted', false), false))
 | where isempty(agent_id) and (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
 | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
-| order by ts desc, node_id asc, id asc, fact_key asc
+| where isempty(after_row) or case(
+    isnull(ts) != isnull(cursor_row[0]), isnull(ts),
+    ts != toreal(cursor_row[0]), ts < toreal(cursor_row[0]),
+    node_id != tostring(cursor_row[1]), strcmp(node_id,tostring(cursor_row[1])) > 0,
+    isnull(id) != isnull(cursor_row[2]), isnotnull(id),
+    id != tolong(cursor_row[2]), id > tolong(cursor_row[2]),
+    fact_key != tostring(cursor_row[3]), strcmp(fact_key,tostring(cursor_row[3])) > 0,
+    strcmp(['project'],tostring(cursor_row[4])) > 0)
+| order by ts desc nulls last, node_id asc, id asc nulls first, fact_key asc, ['project'] asc
 | take row_limit
-| project node_id, id, ts, session_id, agent_id, project_path, text=iff(preview, text, ''), prompt_file
+| project node_id, id, ts, session_id, agent_id, project_path, text=iff(preview, text, ''), prompt_file,
+    _page_cursor=tostring(pack_array(ts,node_id,id,fact_key,['project']))

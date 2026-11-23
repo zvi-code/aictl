@@ -143,7 +143,7 @@ def _supplement_replay(client, settings):
     from aictl.stores.kusto.client import kql_literal, quote
     from aictl.stores.kusto.maintenance import TRIM_TIMESTAMPS
     from aictl.stores.kusto.reader import _VIEWS, _query
-    from aictl.stores.kusto.recorded import RecordedKustoClient
+    from aictl.stores.kusto.recorded import RecordedKustoClient, _Table
     from aictl.stores.kusto.schema import LEGACY_COLUMNS
     from aictl.stores.kusto.tables import TABLES
 
@@ -254,7 +254,8 @@ def _supplement_replay(client, settings):
     def query(database, text, properties=None):
         if text in mode_queries and properties is not None:
             if properties.get_parameter("query_mode", "detail") not in {"detail", '"detail"'}:
-                return SimpleNamespace(primary_results=[])
+                # Kusto answers an empty result with an empty table, which a paged view requires.
+                return SimpleNamespace(primary_results=[_Table((), [])])
         return execute_query(database, text, properties)
 
     client.execute_query = query

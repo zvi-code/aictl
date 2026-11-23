@@ -105,7 +105,7 @@ _VIEWS = {
         "errors first_ts last_ts last_error duration_count max_duration ttft_count max_ttft cost_usd",
     ),
     "requests.long": (
-        f"{_WINDOW} requested_session session_keys requested_models min_tokens",
+        f"{_WINDOW} requested_session session_keys requested_models min_tokens after_row",
         f"{_BOARD_ID} model g input_tokens output_tokens cache_read_tokens cache_creation_tokens ts",
     ),
     "tools.agent_totals": (
@@ -149,12 +149,12 @@ _VIEWS = {
         "row_type model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd tool_calls prompts",
     ),
     "prompts.page": (
-        f"{_TIME} session_keys preview", f"{_BOARD_ID} id ts project_path text prompt_file",
+        f"{_TIME} session_keys preview after_row", f"{_BOARD_ID} id ts project_path text prompt_file",
     ),
     "requests.intervals": (
         "all_nodes requested_node requested_model intervals", "node_id session_id start_ts end_ts tokens",
     ),
-    "skills.window": (f"{_TIME} session_keys", f"{_BOARD_ID} name ts"),
+    "skills.window": (f"{_TIME} session_keys after_row", f"{_BOARD_ID} name ts"),
     "prompts.titles": ("all_nodes requested_node session_keys", f"{_BOARD_ID} text"),
     "board.search_hits": (f"{_TIME} session_keys search_text extended", "node_id session_id"),
     "prompts.detail": (
@@ -168,7 +168,7 @@ _VIEWS = {
     ),
     "tools.detail": (
         f"{_TIME} requested_session requested_agent requested_tool_name query_mode restrict_sessions session_keys real_calls inclusive_end "
-        "requested_skill restrict_tools requested_tools",
+        "requested_skill restrict_tools requested_tools after_row",
         f"{_BOARD_ID} row_type total ts tool tool_name target project_path duration_ms is_error confirm input_bytes output_bytes result_summary exit_code",
     ),
     "requests.errors": (
@@ -179,11 +179,11 @@ _VIEWS = {
         "all_nodes requested_node requested_session requested_agent",
         "tool_name calls failures timed durations input_bytes input_count output_bytes output_count max_output_bytes total_duration last_ts",
     ),
-    "sessions.commits": (f"{_SCOPE} requested_session", "sha author_name author_email ts subject"),
+    "sessions.commits": (f"{_SCOPE} requested_session after_row", "sha author_name author_email ts subject"),
     "sessions.commit_counts": ("all_nodes requested_node session_keys", "node_id session_id count"),
     "skills.agents": ("all_nodes requested_node requested_session requested_agent", "name uses agents started_by first_ts last_ts"),
     "skills.detail": (
-        f"{_TIME} requested_skill requested_tools restrict_tools query_mode session_keys",
+        f"{_TIME} requested_skill requested_tools restrict_tools query_mode session_keys after_row",
         f"{_BOARD_ID} row_type ts tool project_path trigger uses agents total first_ts last_ts projects",
     ),
     "board.activity_facts": ("all_nodes requested_node", "tool fact"),
@@ -199,13 +199,13 @@ _VIEWS = {
     "sequence.event_log": (f"{_TIME} requested_session requested_tool requested_pid requested_kinds",
                            "ts tool kind detail session_id pid"),
     "sequence.pid_sessions": (f"{_TIME} requested_pid", "node_id session_id"),
-    "sequence.skills": (f"{_TIME} requested_session", "row_type values"),
+    "sequence.skills": (f"{_TIME} requested_session after_row", "row_type values"),
     "sequence.evidence": (
         f"{_TIME} requested_session keep_text text_floor evidence_filters search_terms context_group "
         "page_offset include_detail include_spans", "data",
     ),
-    "sequence.otel": (f"{_TIME} requested_session", "row_type values"),
-    "sequence.context": (f"{_TIME} requested_session", "row_type values"),
+    "sequence.otel": (f"{_TIME} requested_session after_row", "row_type values"),
+    "sequence.context": (f"{_TIME} requested_session after_row", "row_type values"),
     "files.changes": (
         f"{_TIME} requested_session session_keys restrict_sessions requested_paths",
         "node_id path project_path session_id edits agents added removed last_ts tool",
@@ -216,7 +216,7 @@ _VIEWS = {
     ),
     "files.session_inventory": ("all_nodes requested_node requested_tool requested_path", "path"),
     "files.artifacts": (
-        f"{_TIME} session_keys counts_only", "row_type node_id session_id values",
+        f"{_TIME} session_keys counts_only after_row", "row_type node_id session_id values",
     ),
     "files.recorded": (f"{_TIME} requested_paths", "found"),
     "files.detail": (
@@ -322,7 +322,10 @@ _FAILURE_COOLDOWN_S = 5.0
 _CACHE_SIZE = 64
 # These views had lower measured peaks with reduced fanout; other reads keep the service default.
 _LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
-_PAGED_VIEWS = {"files.inventory", "sequence.flow", "tools.activity_rows"}
+_PAGED_VIEWS = {
+    "files.artifacts", "files.inventory", "prompts.page", "requests.long", "sequence.context", "sequence.flow", "sequence.otel",
+    "sequence.skills", "sessions.commits", "skills.detail", "skills.window", "tools.activity_rows", "tools.detail",
+}
 
 
 @dataclass

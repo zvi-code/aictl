@@ -1,8 +1,9 @@
 declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', since:real = real(null), until:real = real(null),
     requested_skill:string, requested_tools:dynamic = dynamic([]), restrict_tools:bool = false,
-    query_mode:string = 'detail', session_keys:dynamic = dynamic([]), row_limit:long
+    query_mode:string = 'detail', session_keys:dynamic = dynamic([]), after_row:string = '', row_limit:long
 );
+let cursor_row = parse_json(after_row);
 let all_uses = materialize(
     skill_uses
     | where all_nodes or node_id == requested_node
@@ -10,7 +11,7 @@ let all_uses = materialize(
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(column_ifexists('_deleted', false), false))
     | where name == requested_skill or name endswith strcat(':', requested_skill)
-    | project node_id, session_id, agent_id, ts, tool, project_path, trigger, fact_key
+    | project ['project'], node_id, session_id, agent_id, ts, tool, project_path, trigger, fact_key
 );
 let selected = materialize(
     all_uses | where query_mode == 'detail'
@@ -26,6 +27,14 @@ union
     (selected | extend row_type='item'),
     (all_uses | where query_mode == 'starts' and strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
         | extend row_type='item')
-| order by row_type asc, ts desc, node_id asc, fact_key asc
+| where isempty(after_row) or case(
+    row_type != tostring(cursor_row[0]), strcmp(row_type,tostring(cursor_row[0])) > 0,
+    isnull(ts) != isnull(cursor_row[1]), isnull(ts),
+    ts != toreal(cursor_row[1]), ts < toreal(cursor_row[1]),
+    node_id != tostring(cursor_row[2]), strcmp(node_id,tostring(cursor_row[2])) > 0,
+    fact_key != tostring(cursor_row[3]), strcmp(fact_key,tostring(cursor_row[3])) > 0,
+    strcmp(['project'],tostring(cursor_row[4])) > 0)
+| order by row_type asc, ts desc nulls last, node_id asc, fact_key asc, ['project'] asc
 | take row_limit
-| project-away fact_key
+| extend _page_cursor=tostring(pack_array(row_type,ts,node_id,fact_key,['project']))
+| project-away fact_key, ['project']

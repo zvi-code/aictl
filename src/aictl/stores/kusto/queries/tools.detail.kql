@@ -3,8 +3,9 @@ declare query_parameters(
     requested_session:string = '', requested_agent:string = '', requested_tool_name:string = '',
     query_mode:string = 'calls', restrict_sessions:bool = false, session_keys:dynamic = dynamic([]),
     real_calls:bool = true, inclusive_end:bool = true, requested_skill:string = '',
-    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), after_row:string = '', row_limit:long
 );
+let cursor_row = parse_json(after_row);
 let calls = materialize(
     tool_invocations
     | where all_nodes or node_id == requested_node
@@ -38,10 +39,20 @@ union
         | extend target=coalesce(retained_target, column_ifexists('target', ''))
         | where query_mode != 'tests' or target contains 'test' or target contains 'jest' or target contains 'tox'
         | where query_mode != 'skill_reads' or replace_string(target, @'\', '/') endswith strcat('/', requested_skill, '/SKILL.md')
-        | project row_type='item', node_id, session_id, agent_id, ts, tool, tool_name, project_path, duration_ms, is_error, confirm, exit_code,
+        | project row_type='item', ['project'], node_id, session_id, agent_id, ts, tool, tool_name, project_path, duration_ms, is_error, confirm, exit_code,
                   input_bytes=column_ifexists('input_bytes', long(null)), output_bytes=column_ifexists('output_bytes', long(null)),
                   target,
                   result_summary=coalesce(retained_summary, column_ifexists('result_summary', '')), id, fact_key)
-| order by row_type asc, ts desc, node_id asc, id asc, fact_key asc
+| where isempty(after_row) or case(
+    row_type != tostring(cursor_row[0]), strcmp(row_type,tostring(cursor_row[0])) > 0,
+    isnull(ts) != isnull(cursor_row[1]), isnull(ts),
+    ts != toreal(cursor_row[1]), ts < toreal(cursor_row[1]),
+    node_id != tostring(cursor_row[2]), strcmp(node_id,tostring(cursor_row[2])) > 0,
+    isnull(id) != isnull(cursor_row[3]), isnotnull(id),
+    id != tolong(cursor_row[3]), id > tolong(cursor_row[3]),
+    fact_key != tostring(cursor_row[4]), strcmp(fact_key,tostring(cursor_row[4])) > 0,
+    strcmp(['project'],tostring(cursor_row[5])) > 0)
+| order by row_type asc, ts desc nulls last, node_id asc, id asc nulls first, fact_key asc, ['project'] asc
 | take row_limit
-| project-away id, fact_key
+| extend _page_cursor=tostring(pack_array(row_type,ts,node_id,id,fact_key,['project']))
+| project-away id, fact_key, ['project']
