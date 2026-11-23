@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowValue, settingsParams,
+  isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowValue, setIn, settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
 import { derivePermissions, listDiff, parseLines, permissionEdit } from '../src/settings/permissions'
@@ -27,6 +27,14 @@ const cfg: SettingsToolConfig = {
 }
 
 describe('settings contract projections', () => {
+  it('says where a value comes from: file and line, variable, derived origin or default', () => {
+    expect(setIn({ source: '/home/u/.config/Code/User/settings.json', line: 731, scope: 'user' })).toBe('settings.json, line 731')
+    expect(setIn({ source: 'env:COPILOT_MODEL', scope: 'env' })).toBe('Environment variable COPILOT_MODEL')
+    expect(setIn({ source: 'detected', scope: 'detected' })).toBe('Reported by the installed tool')
+    expect(setIn({ source: 'unknown', scope: 'unknown' })).toBe('Origin not known')
+    expect(setIn({ source: '', scope: 'default' })).toBe('Default')
+  })
+
   it('uses reported tool labels and preserves names while tool details load', () => {
     const detail: DetailSettingsTools = {
       generated_at: 1, tools: [{ tool: 'copilot-desktop', label: 'Work Copilot' }],

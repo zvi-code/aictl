@@ -482,7 +482,13 @@ SCOPES = (
     "cli",
     "policy",
     "managed",
+    "detected",
+    "app-state",
+    "unknown",
 )
+# Origins that are no settings file: a fact the installed tool reports (its version) and
+# state the tool writes for itself. Their rows name no file and are not settings a user set.
+DERIVED_SCOPES = frozenset({"detected"})
 # Scopes the user cannot edit; a winning value from "managed" or "policy" locks its row.
 FIXED_SCOPES = frozenset({"managed", "system", "policy"})
 SCOPE_LABELS = {
@@ -496,6 +502,9 @@ SCOPE_LABELS = {
     "env": "Environment",
     "cli": "Command line",
     "policy": "Policy",
+    "detected": "Reported by the installed tool",
+    "app-state": "App state (written by the tool)",
+    "unknown": "Origin not known",
 }
 
 # Row keys that the parsers make up; they name no single key in the file.
@@ -708,6 +717,7 @@ def _finish_rows(
                 row["locked"] = _locks(cfg, str(winner["scope"]), row["key"], catalog)
                 continue
             lookup = row.pop("_lookup", row["key"])
+            fallback = bool(row.pop("_fallback", False))
             key = row["key"]
             source = row["source"]
             if section == "telemetry" and key.startswith("otel.") and telemetry_env and not source:
@@ -740,9 +750,13 @@ def _finish_rows(
             else:
                 file_key = "" if key in _NO_FILE_KEY or key.startswith("otel.") else _FILE_KEYS.get(key, key)
                 line = line_of(source, file_key)
+                if fallback and not line and _names_missing_key(texts, source, file_key or key):
+                    # A row may name a file only when its key is in that file.
+                    source, scope = "", "unknown"
                 chain = [{"scope": scope, "value": _safe_value(row["value"]), "source": source, "line": line}]
                 wins = 0
             row["scope"] = scope
+            row["source"] = source
             row["line"] = line
             row["chain"] = chain
             row["wins"] = wins
@@ -764,6 +778,14 @@ def _finish_rows(
                 # An unset knob has nothing behind it; the one default entry is implied by the row itself.
                 row["chain"] = []
                 row["wins"] = 0
+
+
+def _names_missing_key(texts: dict[str, str | None], source: str, key: str) -> bool:
+    """True when *source* is a JSON or TOML file whose text was read and *key* is not in it."""
+    if not source or not key or not source.lower().endswith(_LINE_SUFFIXES):
+        return False
+    text = texts.get(_norm_path(source))
+    return text is not None and find_key_line(text, key) == 0
 
 
 def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = None) -> list[dict]:
@@ -835,10 +857,7 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
         ):
             if attr in otel:
                 add("telemetry", _row("otel." + attr, otel[attr], otel_source(attr), label=label))
-    elif telemetry_flat:
-        key = telemetry_flat[0]
-        add("telemetry", _row(key, False, source_of(key), label="Telemetry", note="Telemetry: off."))
-    if otel or telemetry_flat:
+    if otel:
         seen.update(normalize_key(k) for k in telemetry_flat)
 
     # MCP, extensions, startup
@@ -868,6 +887,8 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
             src = cfg.setting_sources[qualified] if qualified in cfg.setting_sources else source_of(key)
             row = _row(key, value, src, label=label)
             row["_lookup"] = qualified
+            if qualified not in cfg.setting_sources and key not in cfg.setting_sources:
+                row["_fallback"] = True
             add(section, row)
 
     # Flat settings, then flat features when there are no groups.
@@ -882,11 +903,13 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
         entries = cfg.setting_values.get(key) or []
         entry = catalog.get(_row_file_key(cfg, key, key, entries, len(entries) - 1)) or {}
         section = cfg.key_sections.get(key) or _catalog_section(entry) or _key_section(key)
-        if section == "telemetry" and (otel or key not in cfg.generic_keys):
+        if section == "telemetry" and otel:
             continue  # shown by the telemetry rows above
         note = cfg.key_notes.get(key) or ("Workspace override" if key.startswith("ws:") else "")
         label = cfg.key_labels.get(key) or _table_label(key) or str(entry.get("label") or "")
         row = _row(key, value, source_of(key), label=label, note=note)
+        if key not in cfg.setting_sources:
+            row["_fallback"] = True  # attributed to the first file; _finish_rows checks the key is in it
         if key in cfg.generic_keys and key not in cfg.key_labels:
             row["_documented"] = False  # catalog entries mark it documented in _finish_rows
         add(section, row)
@@ -1845,6 +1868,36 @@ def copilot_cli_otel_endpoint(port: int | None, env: dict[str, str] | None = Non
         "status": "elsewhere",
         "text": f"Copilot CLI sends its OTel to {value}, not to aictl at {want}: {COPILOT_CLI_OTEL_VAR} points elsewhere.",
     }
+
+
+def _detect_otel_from_copilot_cli() -> OTelConfig:
+    """Copilot CLI's OpenTelemetry export, from the variables it documents (``copilot help environment``).
+
+    ``OTEL_EXPORTER_OTLP_ENDPOINT`` turns export on by itself; ``COPILOT_OTEL_ENABLED=true``
+    turns it on explicitly. Values come from this process and from ``~/.config/aictl/env.sh``;
+    each row names the variable it came from.
+    """
+    file_env = _read_aictl_env_file()
+    env = {**file_env, **_env()}
+    endpoint = str(env.get(COPILOT_CLI_OTEL_VAR) or "").strip()
+    explicit = str(env.get("COPILOT_OTEL_ENABLED") or "").strip().lower()
+    if not endpoint and explicit not in ("1", "true"):
+        return OTelConfig()
+    names = {"enabled": "COPILOT_OTEL_ENABLED" if explicit in ("1", "true") else COPILOT_CLI_OTEL_VAR}
+    otel = OTelConfig(enabled=True, endpoint=endpoint)
+    if endpoint:
+        names["endpoint"] = COPILOT_CLI_OTEL_VAR
+    exporter = str(env.get("COPILOT_OTEL_EXPORTER_TYPE") or "").strip()
+    if exporter:
+        otel.exporter = exporter
+        names["exporter"] = "COPILOT_OTEL_EXPORTER_TYPE"
+    path = str(env.get("COPILOT_OTEL_FILE_EXPORTER_PATH") or "").strip()
+    if path:
+        otel.file_path = path
+        names["file_path"] = "COPILOT_OTEL_FILE_EXPORTER_PATH"
+    otel.source = "env-var" if names["enabled"] in _env() else "aictl-env-file"
+    otel.env_names = names
+    return otel
 
 
 def _detect_otel_from_claude() -> OTelConfig:
@@ -3603,9 +3656,10 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
     if settings.get("effortLevel"):
         cfg.settings["effort"] = settings["effortLevel"]
         cfg.setting_sources["effort"] = str(settings_path)
-    disabled = settings.get("disabledMcpServers", [])
-    cfg.settings["disabled_mcp_servers"] = list(disabled) if isinstance(disabled, (list, dict)) else []
-    cfg.setting_sources["disabled_mcp_servers"] = str(settings_path) if settings_path.is_file() else ""
+    disabled = settings.get("disabledMcpServers")
+    if isinstance(disabled, (list, dict)):  # absent stays absent
+        cfg.settings["disabled_mcp_servers"] = list(disabled)
+        cfg.setting_sources["disabled_mcp_servers"] = str(settings_path)
     for old, new in (("effort", "effortLevel"), ("disabled_mcp_servers", "disabledMcpServers")):
         if new in cfg.settings:
             cfg.covered_keys.append(old)
@@ -3653,14 +3707,24 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
                 cfg.mcp_servers.append(name)
 
     instr = home / "copilot-instructions.md"
-    cfg.settings["global_instructions"] = "configured" if instr.is_file() else "not configured"
     if instr.is_file():
+        # The row is the file itself: its value is the path, so it names no key in another file.
+        cfg.settings["global_instructions"] = str(instr)
         cfg.config_files.append(str(instr))
         cfg.setting_sources["global_instructions"] = str(instr)
 
+    # The installed version is reported by the package, never read from a settings file.
     version = _copilot_desktop_version() if tool == "copilot-desktop" else _copilot_cli_version()
-    cfg.settings["version"] = version or "not detected"
-    cfg.settings["telemetry"] = "not configured"  # no documented Copilot CLI/desktop OTel setting is read
+    cfg.settings["version"] = version or "Not detected"
+    cfg.setting_sources["version"] = "detected"
+    cfg.key_labels["version"] = "Installed version"
+    cfg.key_notes["version"] = (
+        "Read from the installed app's metadata, not from a settings file."
+        if tool == "copilot-desktop"
+        else "Read from the installed npm package, not from a settings file."
+    )
+    if tool == "copilot-cli":
+        cfg.otel = _detect_otel_from_copilot_cli()
 
     # Scope layers, lowest precedence first.
     managed_shown = managed_path or (COPILOT_MANAGED_FILES[0] if COPILOT_MANAGED_FILES else "")

@@ -1,4 +1,4 @@
-"""Copilot CLI / desktop config reporting reads only real files and says 'not configured' otherwise."""
+"""Copilot CLI / desktop config reporting reads only real files; absent facts stay absent."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ def test_copilot_home_config_reads_real_files(monkeypatch, tmp_path):
     assert cfg.model == "gpt-5.1"
     assert cfg.mcp_servers == ["fs", "web"]
     assert cfg.extensions == ["a@m"]
-    assert cfg.settings["global_instructions"] == "not configured"
-    assert cfg.settings["telemetry"] == "not configured"
+    assert "global_instructions" not in cfg.settings  # no instructions file
+    assert "telemetry" not in cfg.settings  # no file says anything about telemetry
 
 
 def test_copilot_home_config_absent_returns_none(monkeypatch, tmp_path):
@@ -37,7 +37,8 @@ def test_desktop_detected_by_its_database(monkeypatch, tmp_path):
     monkeypatch.setenv("COPILOT_HOME", str(home))
     monkeypatch.setattr(tc, "_copilot_desktop_version", lambda: "")
     cfg = tc._parse_copilot_home_config(tmp_path, tool="copilot-desktop")
-    assert cfg is not None and cfg.settings["version"] == "not detected"
+    assert cfg is not None and cfg.settings["version"] == "Not detected"
+    assert cfg.setting_sources["version"] == "detected"
 
 
 def test_parsers_registered_with_yaml_entries():

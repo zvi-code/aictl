@@ -14,6 +14,7 @@ const sectionTitles = new Map<string, string>(SECTIONS)
 const scopeLabels: Record<string, string> = {
   default: 'Default', system: 'System', managed: 'Managed', policy: 'Policy', user: 'User', profile: 'Profile',
   project: 'Project', 'project-local': 'Project local', workspace: 'Workspace', env: 'Environment', cli: 'CLI',
+  detected: 'Reported by the installed tool', 'app-state': 'App state (written by the tool)', unknown: 'Origin not known',
 }
 type RawRow = NonNullable<SettingsToolConfig['sections']>[number]['rows'][number]
 type RawEnvironment = NonNullable<SettingsToolConfig['env_vars']>[number]
@@ -40,6 +41,15 @@ export const envName = (source?: string | null) => source?.startsWith(ENV_PREFIX
 export const isFileSource = (source?: string | null): source is string => !!source && !envName(source) && !(source in scopeLabels)
 export const scopeLabel = (id?: string, scopes: readonly Scope[] = []) =>
   id ? scopes.find(s => s.id === id)?.label || scopeLabels[id] || title(id) : MISSING
+/** Where a row's value comes from, as a reader would say it: "settings.json, line 12", "Environment variable X", "Default". */
+export function setIn(row: { source?: string | null; line?: number | null; scope?: string | null }, scopes: readonly Scope[] = []) {
+  const source = row.source ?? ''
+  const env = envName(source)
+  if (env) return `Environment variable ${env}`
+  if (isFileSource(source)) return `${basename(source)}${row.line ? `, line ${row.line}` : ''}`
+  if (source) return scopeLabel(source, scopes)
+  return row.scope === 'default' ? 'Default' : row.scope ? scopeLabel(row.scope, scopes) : undefined
+}
 export const isLockedEntry = (entry?: ChainEntry, scopes: readonly Scope[] = []) =>
   !!entry && (entry.locked === true || scopes.some(s => s.id === entry.scope && s.changeable === false))
 

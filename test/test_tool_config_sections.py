@@ -381,11 +381,11 @@ def test_capture_content_off_is_not_danger():
     assert [r["label"] for r in rows] == ["Export enabled", "Exporter", "Detected from"]
 
 
-def test_telemetry_off_row_when_otel_empty():
-    cfg = ToolConfig(tool="copilot-cli", settings={"telemetry": "not configured", "version": "1.0"})
+def test_telemetry_key_keeps_its_own_value_when_otel_empty():
+    cfg = ToolConfig(tool="copilot-cli", settings={"telemetry": "verbose", "version": "1.0"})
     telemetry = _section(normalize_sections(cfg), "telemetry")["rows"]
     assert len(telemetry) == 1
-    assert telemetry[0]["kind"] == "flag" and telemetry[0]["value"] is False
+    assert telemetry[0]["value"] == "verbose"  # never an invented "off"
 
 
 # ─── Model, MCP, extensions, startup ─────────────────────────────

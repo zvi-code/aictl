@@ -6,7 +6,7 @@ import { Table } from '../ui/Table'
 import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
-  DASH, MISSING, agentInherits, basename, envName, matches, pinWins, rowValue, samePath, scopeLabel, title, topicMatrix,
+  DASH, MISSING, agentInherits, basename, matches, pinWins, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
   type Comparison, type Entry, type Environment, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
@@ -19,8 +19,7 @@ const settingsFields: Field<Setting>[] = [
   { id: 'state', label: 'State', read: row => [row.locked && 'Locked', row.risky && 'Risky', row.unset && 'Unset',
     row.undocumented && 'Undocumented'].filter(Boolean).join(' · ') || DASH },
   { id: 'scope', label: 'Scope', read: row => scopeLabel(row.scope) },
-  { id: 'source', label: 'Set in', read: row => row.source
-    ? `${envName(row.source) || basename(row.source)}${row.line ? `:${row.line}` : ''}` : row.scope === 'default' ? 'Default' : undefined },
+  { id: 'source', label: 'Set in', read: row => setIn(row) },
 ]
 const agentFields: Field<Setting>[] = [
   { id: 'name', label: 'Agent definition', read: row => row.agent?.name || row.label },
