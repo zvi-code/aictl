@@ -80,6 +80,12 @@ _VIEWS = {
     "sessions.first_activity": (f"{_SCOPE} requested_session", "first_ts"),
     "sessions.first_activities": ("all_nodes requested_node session_keys", "node_id session_id first_ts"),
     "agents.resolve": (f"{_SCOPE} requested_agent requested_session", "node_id session_id agent_id priority"),
+    "agents.stored": (
+        "all_nodes requested_node session_keys",
+        "agent_id session_id tool model is_sidechain started_at ended_at completed input_tokens output_tokens "
+        "cache_read_tokens cache_creation_tokens cost_usd description spawn_depth parent_agent_id parent_tool_use_id "
+        "resolved_model status project cwd git_branch worktree_path observed_at",
+    ),
     "events.page": (_EVENT, "ts tool kind detail session_id pid seq"),
     "events.count": (_EVENT, "count"),
     "events.lm_usage": (f"{_SCOPE} requested_session raw_session", "ts tool kind detail session_id pid seq"),

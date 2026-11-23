@@ -525,6 +525,15 @@ def claude_line_session(obj: dict, file_sid: str) -> str:
     return sid if isinstance(sid, str) and sid else file_sid
 
 
+def _meta_signature(transcript: Path) -> tuple[int, int] | None:
+    """(mtime, size) of the ``meta.json`` beside a subagent's transcript, or None when there is none."""
+    try:
+        st = transcript.with_name(transcript.stem + ".meta.json").stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
 def iter_claude_files(projects_dir: Path) -> Iterable[Path]:
     return projects_dir.glob("**/*.jsonl")
 
@@ -1250,6 +1259,8 @@ class TranscriptUsageIngester:
         self._codex: dict[Path, CodexAccumulator] = {}
         self._copilot: dict[Path, CopilotAccumulator] = {}
         self._offsets: dict[Path, int] = {}
+        # Subagent transcripts read while their meta file gave no spawning call: (session, agent, meta signature).
+        self._meta_pending: dict[Path, tuple[str, str, tuple[int, int] | None]] = {}
         self._written: dict[str, tuple] = {}
         self._pending_sessions: dict[str, SessionUsage] = {}
         # Names kept outside the transcripts (Copilot and Codex metadata files), and the
@@ -1443,9 +1454,14 @@ class TranscriptUsageIngester:
             finally:
                 self.facts.replaying = False
 
+        self._read_late_agent_meta()
         for path in _parents_first(self._changed(claude_files, cutoff, "claude-code")):
             sid = _claude_session_id(path)
             agent_id, meta = self._claude_agent(path)
+            if agent_id and not meta.get("toolUseId"):
+                self._meta_pending[path] = (sid, agent_id, _meta_signature(path))
+            elif agent_id:
+                self._meta_pending.pop(path, None)
             main = not agent_id
             role = str(meta.get("agentType") or "")[:120]
             whole = not self._offsets.get(path)
@@ -1819,6 +1835,41 @@ class TranscriptUsageIngester:
         if "subagents" not in path.parts:
             return "", {}
         return path.stem.removeprefix("agent-"), read_claude_agent_meta(path)
+
+    def _read_late_agent_meta(self) -> None:
+        """The meta files of subagents read without a spawning call: one that appears or changes
+        afterwards gives the agent its fields, though its transcript has no new line."""
+        for path, (sid, agent_id, sig) in list(self._meta_pending.items()):
+            if not self._claude_facts.agent_is_open(sid, agent_id):
+                # Let go with the agent; a meta file written later reaches its stored row at the next start.
+                del self._meta_pending[path]
+                continue
+            now_sig = _meta_signature(path)
+            if now_sig == sig:
+                continue
+            meta = read_claude_agent_meta(path)
+            self._claude_facts.agent_meta(sid, agent_id, meta)
+            if meta.get("toolUseId"):
+                del self._meta_pending[path]
+            else:
+                self._meta_pending[path] = (sid, agent_id, now_sig)
+
+    def scan_agent_meta(self, since: float = 0.0) -> dict[tuple[str, str], dict]:
+        """(session, agent id) -> the ``meta.json`` of every Claude Code subagent, whatever the age of
+        its transcript; only meta files changed at or after *since*. Reads no transcript."""
+        found: dict[tuple[str, str], dict] = {}
+        for root in self._roots("claude", self.claude_projects):
+            for meta_path in root.glob("**/subagents/agent-*.meta.json"):
+                if since:
+                    try:
+                        if meta_path.stat().st_mtime < since:
+                            continue
+                    except OSError:
+                        continue
+                transcript = meta_path.with_name(meta_path.name.removesuffix(".meta.json") + ".jsonl")
+                if meta := read_claude_agent_meta(transcript):
+                    found[(_claude_session_id(transcript), transcript.stem.removeprefix("agent-"))] = meta
+        return found
 
     def _debug_facts_for(self, path: Path, sid: str) -> VSCodeDebugFacts:
         facts = self._vscode_debug_facts.get(path)

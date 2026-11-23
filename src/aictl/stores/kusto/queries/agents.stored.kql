@@ -1,0 +1,18 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long
+);
+// The newest stored row of each agent of some sessions, with every column the writer takes:
+// a caller that adds a field to a row writes the row whole (agent_meta_backfill).
+// An agent id is unique only within its session: every key and dedup includes session_id.
+agents
+| where all_nodes or node_id == requested_node
+| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+| summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| order by session_id asc, agent_id asc, ['project'] asc
+| take row_limit
+| project agent_id, session_id, tool, model, is_sidechain, started_at, ended_at, completed, input_tokens, output_tokens,
+    cache_read_tokens, cache_creation_tokens, cost_usd, description, spawn_depth, parent_agent_id, parent_tool_use_id,
+    resolved_model, status, ['project'], cwd=tostring(column_ifexists('cwd', '')),
+    git_branch=tostring(column_ifexists('git_branch', '')), worktree_path=tostring(column_ifexists('worktree_path', '')),
+    observed_at=todouble(column_ifexists('observed_at', real(null)))

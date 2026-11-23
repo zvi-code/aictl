@@ -477,6 +477,25 @@ class SessionFacts:
             if gone:
                 self.writer.delete("agents", gone)
 
+    def complete_agents(self, items: Iterable[tuple[dict, dict]]) -> int:
+        """Give stored agent rows fields they lack. Each item is (the stored row, its ``project``
+        included; the fields its evidence gives). A field the row has is kept; a row is written
+        whole, under its stored project, only when it gains a field. A version this node wrote
+        since its start is the row that gains them. Returns the rows written."""
+        with self._lock:
+            staged = []
+            for stored, fields in items:
+                key = (stored["session_id"], stored["agent_id"])
+                data = dict(self._agents.get(key) or {k: v for k, v in stored.items() if k != "project"})
+                gained = {k: v for k, v in fields.items() if v not in (None, "") and data.get(k) in (None, "")}
+                if gained:
+                    staged.append((key, {**data, **gained}, stored["project"]))
+            if staged:
+                self.writer.upsert("agents", [dict(data, project=project) for _, data, project in staged])
+                for key, data, _ in staged:
+                    self._remember(self._agents, key, data)
+            return len(staged)
+
     def attribution(self, session_ids: list[str], tool: str) -> None:
         if session_ids:
             self.writer.upsert("session_attribution", [dict(project="", session_id=sid, tool=tool)

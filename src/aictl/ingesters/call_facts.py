@@ -775,17 +775,16 @@ class ClaudeFacts:
 
     def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict, meta: dict | None = None) -> None:
         """A line of a subagent. Its parent, depth, spawning tool call and worktree come from the
-        ``meta.json`` the tool wrote beside the file; its folder and branch from its own lines."""
+        ``meta.json`` the tool wrote beside the file; its folder and branch from its own lines.
+        The meta file is read again with each new batch of lines, so one written after the
+        agent's first lines still gives its fields."""
         row = self._open_agents.get((sid, agent_id))
         if row is None:
-            meta = meta or {}
             row = fact_rows.AgentRow(
-                agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts,
-                description=agent_label(meta.get("description")), spawn_depth=to_count(meta.get("spawnDepth")),
-                parent_agent_id=str(meta.get("parentAgentId") or "")[:120],
-                parent_tool_use_id=str(meta.get("toolUseId") or "")[:120],
-                worktree_path=str(meta.get("worktreePath") or "")[:1000])
+                agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts)
             self._open_agents[(sid, agent_id)] = row
+        if meta:
+            fill_agent_meta(row, meta)
         # Finished only after a final reply; any later line means it works again.
         finishes = claude_line_finishes(obj)
         if finishes is not None and ts >= row.observed_at:
@@ -799,6 +798,16 @@ class ClaudeFacts:
         msg = obj.get("message")
         if isinstance(msg, dict) and msg.get("model") and is_billable_model(str(msg["model"])):
             row.model = str(msg["model"])
+
+    def agent_is_open(self, sid: str, agent_id: str) -> bool:
+        return (sid, agent_id) in self._open_agents
+
+    def agent_meta(self, sid: str, agent_id: str, meta: dict) -> None:
+        """A subagent's ``meta.json``, read after its lines: the agent's row, written at the next
+        flush, gets the fields it lacks. An agent no longer in memory gets them at the next start
+        (``agent_meta_backfill``)."""
+        if (row := self._open_agents.get((sid, agent_id))) is not None:
+            fill_agent_meta(row, meta)
 
     def close_idle_agents(self, before: float) -> None:
         """Let go of subagents whose file has gone quiet. Quiet is not finished: a row says
@@ -1326,6 +1335,26 @@ def read_claude_agent_meta(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def agent_meta_fields(meta: dict) -> dict[str, Any]:
+    """The agent row fields a Claude Code ``agent-<id>.meta.json`` gives; empty when it does not give them."""
+    return {
+        "description": agent_label(meta.get("description")),
+        "spawn_depth": to_count(meta.get("spawnDepth")),
+        "parent_agent_id": str(meta.get("parentAgentId") or "")[:120],
+        "parent_tool_use_id": str(meta.get("toolUseId") or "")[:120],
+        "worktree_path": str(meta.get("worktreePath") or "")[:1000],
+    }
+
+
+def fill_agent_meta(row: fact_rows.AgentRow, meta: dict) -> None:
+    """Give *row* the meta file's fields it does not have. A field it has stays as it is."""
+    for name, value in agent_meta_fields(meta).items():
+        if value not in (None, "") and getattr(row, name) in (None, ""):
+            setattr(row, name, value)
+    if not row.task and meta.get("agentType"):
+        row.task = str(meta["agentType"])[:120]
 
 
 def read_claude_agent_role(path: Path) -> str:

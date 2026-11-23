@@ -17,7 +17,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ingesters import context_items_backfill, loaded_files_backfill, session_titles, tool_size_backfill
+from ..ingesters import (
+    agent_meta_backfill,
+    context_items_backfill,
+    loaded_files_backfill,
+    session_titles,
+    tool_size_backfill,
+)
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -227,12 +233,14 @@ def _backfill_transcripts(store, new_node: bool = False) -> None:
     filled. A new node has no such rows: its reader writes them all, so each backfill
     is recorded as done and no session file is read a second time. The session names pass
     reads only the name lines and metadata files, and renames after it come with the
-    normal polling.
+    normal polling. The subagent meta pass reads only the small meta files, and the stored rows of their
+    sessions; after its first pass, each start reads only the meta files changed since the last one.
     """
     if store.restart_dir is None:
         return
     backfills = ((tool_size_backfill, store.history_store.writer), (loaded_files_backfill, store.session_facts),
-                 (context_items_backfill, store.session_facts), (session_titles, store.session_facts))
+                 (context_items_backfill, store.session_facts), (session_titles, store.session_facts),
+                 (agent_meta_backfill, store))
 
     def state(module) -> StateFile:
         return StateFile(store.restart_dir / f"{module.__name__.rsplit('.', 1)[-1]}.json")
