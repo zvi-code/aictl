@@ -12,6 +12,7 @@ const cards = [
   lazy(() => import('../panels/insights/Subagents')),
   lazy(() => import('../panels/insights/AfterFailure')),
   lazy(() => import('../panels/insights/Rereads')),
+  lazy(() => import('../panels/insights/TimeSplit')),
 ]
 
 /** What months of agent history show: one finding per card, each computed in the store for the chosen period. */

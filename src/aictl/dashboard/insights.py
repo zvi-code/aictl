@@ -23,6 +23,7 @@ CARDS = {
     "subagents": "insights.subagents",
     "failures": "insights.after_failure",
     "rereads": "insights.rereads",
+    "time": "insights.time_split",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -228,8 +229,63 @@ def rereads(rows: list[dict]) -> dict:
     }
 
 
+def _timed(value: Any, timed: int) -> float | None:
+    return _n(value) if timed else None
+
+
+def time_split(rows: list[dict]) -> dict:
+    """Per tool: summed request time (of which thinking) and summed tool-call time; per program: calls and time.
+
+    A row with no duration, or one over 24 hours (a recording error), is not summed and is counted apart.
+    """
+    model = {row.get("tool"): row for row in _of(rows, "model")}
+    calls = {row.get("tool"): row for row in _of(rows, "calls")}
+    tools = []
+    for tool in sorted(set(model) | set(calls)):
+        m, c = model.get(tool, {}), calls.get(tool, {})
+        requests, timed, reported = _int(m.get("requests")), _int(m.get("timed")), _int(m.get("thinking_reported"))
+        made, called = _int(c.get("calls")), _int(c.get("timed"))
+        tools.append({
+            "tool": tool, "requests": requests, "untimed_requests": requests - timed - _int(m.get("overlong")),
+            "overlong_requests": _int(m.get("overlong")),
+            "model_ms": _timed(m.get("duration_ms"), timed), "thinking_ms": _timed(m.get("thinking_ms"), reported),
+            "calls": made, "untimed_calls": made - called - _int(c.get("overlong")), "overlong_calls": _int(c.get("overlong")),
+            "overlong_ms": _n(m.get("overlong_ms")) + _n(c.get("overlong_ms")),
+            "tool_ms": _timed(c.get("duration_ms"), called),
+        })
+    tools.sort(key=lambda tool: -(_n(tool["model_ms"]) + _n(tool["tool_ms"])))
+    programs = [{
+        "group": row.get("group"), "program": row.get("program") or None, "calls": _int(row.get("calls")),
+        "untimed": _int(row.get("calls")) - _int(row.get("timed")) - _int(row.get("overlong")),
+        "overlong": _int(row.get("overlong")),
+        "duration_ms": _timed(row.get("duration_ms"), _int(row.get("timed"))),
+        "p50_ms": _cost(row.get("p50_ms")), "p95_ms": _cost(row.get("p95_ms")),
+        "failure_share": _ratio(_n(row.get("failures")), _n(row.get("calls"))),
+    } for row in _of(rows, "program")]
+    programs.sort(key=lambda row: (-_n(row["duration_ms"]), row["group"] or "", row["program"] or ""))
+    named = [row for row in programs if row["group"] == "program"]
+    model_ms = [tool["model_ms"] for tool in tools if tool["model_ms"] is not None]
+    thinking = [tool["thinking_ms"] for tool in tools if tool["thinking_ms"] is not None]
+    tool_ms = [tool["tool_ms"] for tool in tools if tool["tool_ms"] is not None]
+    return {
+        "tools": tools, "programs": programs,
+        "summary": {
+            "model_ms": sum(model_ms) if model_ms else None, "thinking_ms": sum(thinking) if thinking else None,
+            "tool_ms": sum(tool_ms) if tool_ms else None,
+            "thinking_reported": [tool["tool"] for tool in tools if tool["thinking_ms"] is not None],
+            "untimed_requests": sum(tool["untimed_requests"] for tool in tools),
+            "untimed_calls": sum(tool["untimed_calls"] for tool in tools),
+            "overlong": sum(tool["overlong_requests"] + tool["overlong_calls"] for tool in tools),
+            "overlong_ms": sum(tool["overlong_ms"] for tool in tools),
+            "top_program": named[0] if named else None,
+        },
+        "sessions": sorted(_sessions(rows, ("tool_ms", "calls", "model_ms", "requests")), key=lambda row: -_n(row["tool_ms"])),
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
+    "time": time_split,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -238,6 +294,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "subagents": lambda history, params: history.read("insights.subagents", limit=ROW_LIMIT, **params),
     "failures": lambda history, params: history.read("insights.after_failure", limit=ROW_LIMIT, **params),
     "rereads": lambda history, params: history.read("insights.rereads", limit=ROW_LIMIT, **params),
+    "time": lambda history, params: history.read("insights.time_split", limit=ROW_LIMIT, **params),
 }
 
 

@@ -50,6 +50,16 @@ export const fmtDur = (s: NumberValue) => {
   if (days >= 7) return Math.round(s / 86400) + ' d';
   return hours % 24 ? days + ' d ' + (hours % 24) + ' h' : days + ' d';
 };
+/**
+ * A sum of durations in milliseconds, in hours. Summed call time is not wall-clock time, so it is never
+ * shown as days: whole hours with thousands grouped from 100 h, one decimal below, minutes under an hour.
+ */
+export const fmtHours = (ms: NumberValue) => {
+  if (isNil(ms)) return NA;
+  const hours = Math.max(0, ms) / 3.6e6;
+  if (hours < 0.995) return fmtMs(ms);
+  return (hours >= 99.5 ? Math.round(hours).toLocaleString('en-US') : String(Number(hours.toFixed(1)))) + ' h';
+};
 /** A share from the API is a ratio from 0 to 1. */
 export const fmtShare = (v: NumberValue) => (isNil(v) ? NA : Math.round(v * 100) + '%');
 /** A percentage: one decimal, none when it is a whole number from 10 up. */

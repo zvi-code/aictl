@@ -2,12 +2,12 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-import { fmtBytes, fmtNum, fmtShare, fmtUsd } from '../../design/format'
+import { fmtBytes, fmtHours, fmtMs, fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 
 export type { QueryBlock }
-export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads'
+export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -51,7 +51,23 @@ export type RereadBody = Base<'rereads'> & {
   tools: RereadTool[]
   summary: { reads: number; repeat_reads: number; repeat_share: Num; files_5plus: number; repeat_bytes: Num; unmatched: number }
 }
-export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody
+export type TimeTool = {
+  tool: string; requests: number; untimed_requests: number; overlong_requests: number; model_ms: Num; thinking_ms: Num
+  calls: number; untimed_calls: number; overlong_calls: number; overlong_ms: number; tool_ms: Num
+}
+export type ProgramGroup = 'program' | 'shell' | 'waiting' | 'unrecorded'
+export type TimeProgram = {
+  group: ProgramGroup; program: string | null; calls: number; untimed: number; overlong: number
+  duration_ms: Num; p50_ms: Num; p95_ms: Num; failure_share: Num
+}
+export type TimeBody = Base<'time'> & {
+  tools: TimeTool[]; programs: TimeProgram[]
+  summary: {
+    model_ms: Num; thinking_ms: Num; tool_ms: Num; thinking_reported: string[]; untimed_requests: number
+    untimed_calls: number; overlong: number; overlong_ms: number; top_program: TimeProgram | null
+  }
+}
+export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
@@ -140,6 +156,29 @@ export function rereadFinding(body: RereadBody) {
   if (!s.reads) return 'No file read with a recorded path in this period.'
   return `${share(s.repeat_share)} of file reads (${fmtNum(s.repeat_reads)} of ${fmtNum(s.reads)}) read a file the same agent had already read; ` +
     `${fmtNum(s.files_5plus)} files were read 5 times or more, and the repeated reads returned ${bytes(s.repeat_bytes)}.`
+}
+
+export const hours = (value: Num) => value == null ? NOT_REPORTED : fmtHours(value)
+export const millis = (value: Num) => value == null ? NOT_REPORTED : fmtMs(value)
+
+/** What a program row of the time card names: a program, or a group whose program is not one. */
+export const PROGRAM_GROUPS: Record<Exclude<ProgramGroup, 'program'>, string> = {
+  shell: 'Shell construct, program not identified',
+  waiting: 'Waiting or polling (sleep, until, while, wait)',
+  unrecorded: 'Command not recorded',
+}
+export const programName = (row: TimeProgram) => row.group === 'program' ? row.program ?? NOT_REPORTED : PROGRAM_GROUPS[row.group]
+
+export function timeFinding(body: TimeBody, label: Label) {
+  const s = body.summary
+  if (s.model_ms == null && s.tool_ms == null) return 'No request or tool call with a recorded duration in this period.'
+  const top = [...body.tools].sort((a, b) => ((b.model_ms ?? 0) + (b.tool_ms ?? 0)) - ((a.model_ms ?? 0) + (a.tool_ms ?? 0)))[0]
+  const thinking = top.thinking_ms == null ? 'thinking not reported' : `${hours(top.thinking_ms)} of it thinking`
+  const program = s.top_program
+  return `Agents spent ${hours(s.model_ms)} in model requests and ${hours(s.tool_ms)} in their own tool calls (summed durations); ` +
+    `${label(top.tool)}: ${hours(top.model_ms)} model (${thinking}) against ${hours(top.tool_ms)} tools.` +
+    (program ? ` The program with the most time is ${programName(program)}: ${hours(program.duration_ms)} over ${fmtNum(program.calls)} calls, ` +
+      `95th percentile ${millis(program.p95_ms)}.` : '')
 }
 
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */

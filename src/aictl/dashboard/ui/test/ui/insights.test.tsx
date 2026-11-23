@@ -6,9 +6,12 @@ import ContextCarry from '../../src/panels/insights/ContextCarry'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import Rereads from '../../src/panels/insights/Rereads'
 import Subagents from '../../src/panels/insights/Subagents'
+import TimeSplit from '../../src/panels/insights/TimeSplit'
+import { fmtHours } from '../../src/design/format'
 import {
   carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
-  type CarryBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
+  timeFinding, type CarryBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
+  type TimeBody,
 } from '../../src/panels/insights/insightsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { drawerPatch, nextAddress } from '../../src/shell/viewState'
@@ -63,7 +66,28 @@ const rereads = {
   summary: { reads: 100, repeat_reads: 42, repeat_share: 0.42, files_5plus: 3, repeat_bytes: null, unmatched: 0 },
   sessions: [],
 } as unknown as RereadBody
-const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads }
+const H = 3_600_000
+const time = {
+  ...base, card: 'time',
+  tools: [
+    { tool: 'claude-code', requests: 100, untimed_requests: 0, overlong_requests: 0, model_ms: 732 * H, thinking_ms: 175 * H,
+      calls: 200, untimed_calls: 4, overlong_calls: 3, overlong_ms: 815 * H, tool_ms: 377 * H },
+    { tool: 'copilot-cli', requests: 50, untimed_requests: 0, overlong_requests: 0, model_ms: 450 * H, thinking_ms: null,
+      calls: 60, untimed_calls: 0, overlong_calls: 0, overlong_ms: 0, tool_ms: 152 * H },
+    { tool: 'codex-cli', requests: 3, untimed_requests: 3, overlong_requests: 0, model_ms: null, thinking_ms: null,
+      calls: 0, untimed_calls: 0, overlong_calls: 0, overlong_ms: 0, tool_ms: null },
+  ],
+  programs: [
+    { group: 'shell', program: null, calls: 24000, untimed: 0, overlong: 1, duration_ms: 89 * H, p50_ms: 997, p95_ms: 46_400, failure_share: 0.065 },
+    { group: 'program', program: 'cargo', calls: 5812, untimed: 0, overlong: 0, duration_ms: 63.4 * H, p50_ms: 8372, p95_ms: 175_864, failure_share: 0.009 },
+    { group: 'waiting', program: null, calls: 3367, untimed: 0, overlong: 0, duration_ms: 56 * H, p50_ms: 3440, p95_ms: 385_259, failure_share: 0.13 },
+  ],
+  summary: { model_ms: 1182 * H, thinking_ms: 175 * H, tool_ms: 529 * H, thinking_reported: ['claude-code'], untimed_requests: 3,
+    untimed_calls: 4, overlong: 3, overlong_ms: 815 * H,
+    top_program: { group: 'program', program: 'cargo', calls: 5812, untimed: 0, overlong: 0, duration_ms: 63.4 * H, p50_ms: 8372, p95_ms: 175_864, failure_share: 0.009 } },
+  sessions: [{ session_id: 's-time', node_id: 'n', tool: 'claude-code', tool_ms: 78 * H, calls: 36000, model_ms: 96 * H, requests: 34000 }],
+} as unknown as TimeBody
+const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time }
 
 type State = DetailState<unknown> | undefined
 function context(states: (card: string) => State, opened: string[] = []) {
@@ -111,7 +135,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     const { ctx, requested } = context(ready)
     const { host, dispose } = mount(() => <>
       <PauseTax {...props(ctx)} /><ContextCarry {...props(ctx)} /><Subagents {...props(ctx)} />
-      <AfterFailure {...props(ctx)} /><Rereads {...props(ctx)} />
+      <AfterFailure {...props(ctx)} /><Rereads {...props(ctx)} /><TimeSplit {...props(ctx)} />
     </>)
     for (const id of Object.keys(bodies)) {
       const box = card(host, id)
@@ -205,5 +229,58 @@ describe('INS-04 · The period and the flow geometry', () => {
     for (const band of bands) expect(band.left[1] - band.left[0]).toBeCloseTo(band.right[1] - band.right[0])
     expect(bands[1].labelY - bands[0].labelY).toBeGreaterThanOrEqual(13)
     expect(flowBands({ identical_failed: 0, identical_succeeded: 0, changed_failed: 0, changed_succeeded: 0, other_tool: 0 }, 0, 100)).toEqual([])
+  })
+})
+
+describe('INS-05 · Where the time goes', () => {
+  it('states model against tool time, the thinking inside it and the program with the most time', () => {
+    expect(timeFinding(time, tool => tool)).toBe('Agents spent 1,182 h in model requests and 529 h in their own tool calls (summed durations); ' +
+      'claude-code: 732 h model (175 h of it thinking) against 377 h tools. The program with the most time is cargo: ' +
+      '63.4 h over 5,812 calls, 95th percentile 2 min 56 s.')
+    const unreported = { ...time, tools: [time.tools[1]] } as TimeBody
+    expect(timeFinding(unreported, tool => tool)).toContain('copilot-cli: 450 h model (thinking not reported) against 152 h tools')
+    const empty = { ...time, tools: [], programs: [], summary: { ...time.summary, model_ms: null, tool_ms: null, top_program: null } } as TimeBody
+    expect(timeFinding(empty, tool => tool)).toBe('No request or tool call with a recorded duration in this period.')
+  })
+
+  it('draws one split bar per tool, the program rows with their p95, and says what was not counted', () => {
+    const { ctx } = context(ready)
+    const { host, dispose } = mount(() => <TimeSplit {...props(ctx)} />)
+    const box = card(host, 'time')
+    expect(box.querySelectorAll('[role="img"]')).toHaveLength(3)
+    expect(box.querySelector('[aria-label="claude-code: model 732 h, thinking 175 h, tool calls 377 h"]')).not.toBeNull()
+    // A tool that reports no thinking and a tool with no durations are named, not drawn as zero.
+    expect(box.querySelector('[aria-label="copilot-cli: model 450 h, thinking not reported, tool calls 152 h"]')).not.toBeNull()
+    expect(box.querySelector('[aria-label="codex-cli: model not reported, thinking not reported, tool calls not reported"]')).not.toBeNull()
+    const rows = [...box.querySelectorAll('[data-group]')].map(row => row.getAttribute('data-group'))
+    expect(rows).toEqual(['shell', 'program', 'waiting'])
+    expect(box.textContent).toContain('Shell construct, program not identified')
+    expect(box.textContent).toContain('Waiting or polling (sleep, until, while, wait)')
+    expect(box.textContent).toContain('63.4 h · median 8.4 s · p95 2 min 56 s')
+    const counted = box.querySelector('[data-counted]')!.textContent!
+    expect(counted).toContain('Without a recorded duration: 3 requests and 4 calls.')
+    expect(counted).toContain('3 requests or calls recorded as over 24 hours (815 h in all)')
+    expect(counted).toContain('Thinking not reported by: copilot-cli, codex-cli.')
+    dispose()
+  })
+
+  it('keeps its own loading and error state', () => {
+    const { ctx } = context(id => id === 'time' ? { data: undefined, status: 'error', error: new Error('Kusto view insights.time_split failed') } : ready(id))
+    const { host, dispose } = mount(() => <><TimeSplit {...props(ctx)} /><Rereads {...props(ctx)} /></>)
+    expect(card(host, 'time').textContent).toContain('Could not load Where the time goes: Kusto view insights.time_split failed')
+    expect(card(host, 'rereads').querySelector('[data-finding]')).not.toBeNull()
+    dispose()
+    const loading = context(id => id === 'time' ? { data: undefined, status: 'loading', error: null } : ready(id))
+    const second = mount(() => <TimeSplit {...props(loading.ctx)} />)
+    expect(card(second.host, 'time').textContent).toContain('Waiting for the Where the time goes query')
+    second.dispose()
+  })
+
+  it('shows summed time in hours, never in days', () => {
+    expect(fmtHours(732 * H)).toBe('732 h')
+    expect(fmtHours(1200 * H)).toBe('1,200 h')
+    expect(fmtHours(63.44 * H)).toBe('63.4 h')
+    expect(fmtHours(30 * 60_000)).toBe('30 min')
+    expect(fmtHours(null)).toBe('n/a')
   })
 })

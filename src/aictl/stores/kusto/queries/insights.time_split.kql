@@ -1,0 +1,74 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Where the time of an agent goes: summed durations of model requests (of which thinking, where the source
+// reports it) against summed durations of tool calls. Durations add up per call, so parallel calls overlap
+// and the sums are not wall-clock time. A row with no duration, or with one over 24 hours (no request or
+// tool call runs that long; such a value is a recording error), is counted apart. A call that starts a
+// subagent is left out: the subagent's own requests and calls hold that time.
+// Programs: command_name is the first word of the command line, so a shell keyword, a builtin or a variable
+// can stand where the program should be. Those rows are one group whose program is not identified; waiting
+// commands are a group of their own; a command call with no command_name recorded is a third group.
+// Command and edit tools are named by the board's rules (board_projection._COMMAND_TOOL_RE, is_server_tool).
+let Day = 86400000.0;
+let WaitingWords = dynamic(['sleep', 'until', 'while', 'wait']);
+let ShellWords = dynamic(['for', 'foreach', 'if', 'then', 'else', 'elif', 'fi', 'case', 'esac', 'select', 'function',
+    'do', 'done', 'export', 'set', 'unset', 'source', '.', 'eval', 'cd', 'pushd', 'popd', 'chdir', 'printf', 'echo',
+    'local', 'declare', 'typeset', 'readonly', 'read', 'trap', 'exec', 'true', 'false', 'test', 'alias', 'shift',
+    'return', 'exit', 'sudo', 'env', 'time', 'nohup', 'nice', 'command', 'builtin', 'end', 'set-location', 'sl']);
+let reqs = materialize(requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, duration_ms, thinking_ms
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | extend overlong=coalesce(duration_ms > Day, false)
+    | project node_id, session_id, ts, tool, overlong, raw_ms=duration_ms, duration_ms=iff(overlong, real(null), duration_ms),
+              thinking_ms);
+let calls = materialize(tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, tool_name, target_kind, command_name,
+              is_error, duration_ms
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | where target_kind != 'agent'
+    | extend command=target_kind == 'command' or (isempty(target_kind)
+        and tool_name matches regex @'(?i)bash|shell|terminal|powershell|exec_?command|run_?command|execute_?command'
+        and not(tool_name matches regex @'^mcp(__|_|\.|:)|^[\w.-]+/[\w.-]+$'))
+    | extend overlong=coalesce(duration_ms > Day, false)
+    | project node_id, session_id, ts, tool, command, command_name, failed=coalesce(is_error, 0) == 1, overlong,
+              raw_ms=duration_ms, duration_ms=iff(overlong, real(null), duration_ms));
+let programs = materialize(calls
+    | where command
+    | extend group=case(
+        isempty(command_name), 'unrecorded',
+        command_name in~ (WaitingWords), 'waiting',
+        command_name in~ (ShellWords)
+            or command_name matches regex @'^[^A-Za-z0-9_]|^[A-Z_][A-Z0-9_]*$|\.(txt|json|log|md|csv)$', 'shell',
+        'program')
+    | summarize calls=count(), timed=countif(isnotnull(duration_ms)), duration_ms=sum(duration_ms),
+                overlong=countif(overlong), overlong_ms=sum(iff(overlong, raw_ms, 0.0)), p50_ms=percentile(duration_ms, 50),
+                p95_ms=percentile(duration_ms, 95), failures=countif(failed)
+          by group, program=iff(group == 'program', command_name, ''));
+union
+    (reqs
+        | summarize requests=count(), timed=countif(isnotnull(duration_ms)), duration_ms=sum(duration_ms),
+                    overlong=countif(overlong), overlong_ms=sum(iff(overlong, raw_ms, 0.0)),
+                    thinking_reported=countif(isnotnull(thinking_ms)), thinking_ms=sum(thinking_ms) by tool
+        | extend row_type='model'),
+    (calls
+        | summarize calls=count(), timed=countif(isnotnull(duration_ms)), duration_ms=sum(duration_ms),
+                    overlong=countif(overlong), overlong_ms=sum(iff(overlong, raw_ms, 0.0)) by tool
+        | extend row_type='calls'),
+    (programs | where group == 'program' | top 10 by duration_ms desc | extend row_type='program'),
+    (programs | where group != 'program' | extend row_type='program'),
+    (calls
+        | summarize tool_ms=sum(duration_ms), calls=count(), tool=take_any(tool) by node_id, session_id
+        | top 10 by tool_ms desc
+        | lookup kind=leftouter (reqs | summarize model_ms=sum(duration_ms), requests=count() by node_id, session_id)
+            on node_id, session_id
+        | extend row_type='session'),
+    (union (reqs | project ts), (calls | project ts)
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, tool asc, duration_ms desc
+| take row_limit

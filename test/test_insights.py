@@ -8,6 +8,8 @@ report stay None. The views run through the replay harness (recorded against the
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ from aictl.dashboard.projections.history import HistoryScope
 from aictl.stores.base import ReadResult, StoreError
 from aictl.stores.kusto.reader import _CACHE_TTL_S, _VIEWS
 
+QUERIES = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "kusto" / "queries"
 PERIOD = Filters(since=0.0, until=100_000.0)
 NEWER = "2026-02-01"
 
@@ -200,6 +203,91 @@ def test_repeated_reads_compare_files_within_one_session_and_agent(kusto_store):
     assert copilot["repeat_bytes"] is None
     assert body["summary"]["repeat_reads"] == 6 and body["summary"]["repeat_bytes"] == pytest.approx(200.0)
     assert [row["session_id"] for row in body["sessions"]] == ["c1", "s1"]
+
+
+DAY_MS = 86_400_000.0
+
+
+def _timed_call(store, key, ts, name="Bash", *, kind="command", program="", duration=None, **values):
+    store.insert("tool_invocations", dedup_key=key, ts=ts, session_id=values.pop("session", "s1"), agent_id="",
+                 tool=values.pop("tool", "claude-code"), tool_name=name, target_kind=kind, command_name=program,
+                 duration_ms=duration, is_error=values.pop("failed", 0), **values)
+
+
+def test_time_split_sums_request_and_call_durations_and_groups_programs(kusto_store):
+    s = kusto_store
+    _request(s, "r1", 10.0, duration_ms=1000.0, thinking_ms=400.0)
+    _request(s, "r2", 11.0, duration_ms=9999.0)
+    _request(s, "r2", 11.0, duration_ms=2000.0, _v=NEWER)          # the winning version
+    _request(s, "r3", 12.0, duration_ms=50_000.0)
+    s.insert("requests", dedup_key="r3", ts=12.0, session_id="s1", tool="claude-code", _deleted=True, _v=NEWER)
+    _request(s, "r4", 13.0, duration_ms=None)                      # no duration: counted apart
+    _request(s, "r5", 14.0, duration_ms=2 * DAY_MS)                # over 24 hours: a recording error
+    _request(s, "v1", 15.0, session="s2", tool="copilot-cli", duration_ms=500.0)  # thinking not reported
+    calls = [
+        ("c1", "cargo", 99_999.0, 0), ("c2", "cargo", 30_000.0, 1), ("c3", "for", 1000.0, 0), ("c4", "export", 2000.0, 0),
+        ("c5", "NODE", 3000.0, 0), ("c6", "sleep", 5000.0, 0), ("c7", "until", 7000.0, 0), ("c16", "cargo", 2 * DAY_MS, 0),
+    ]
+    for i, (key, program, duration, failed) in enumerate(calls):
+        _timed_call(s, key, 20.0 + i, program=program, duration=duration, failed=failed)
+    _timed_call(s, "c1", 20.0, program="cargo", duration=10_000.0, _v=NEWER)  # the winning version
+    _timed_call(s, "c8", 30.0, kind="", duration=4000.0)                     # a command with no program recorded
+    _timed_call(s, "c9", 31.0, "Agent", kind="agent", duration=1e6)           # starts a subagent: left out
+    _timed_call(s, "c10", 32.0, "Read", kind="file", duration=5.0)
+    _timed_call(s, "c11", 33.0, "permission:Bash", kind="", duration=100.0)  # a permission row: left out
+    _timed_call(s, "c12", 34.0, program="cargo", duration=1e6)
+    s.insert("tool_invocations", dedup_key="c12", ts=34.0, session_id="s1", tool="claude-code", tool_name="Bash",
+             _deleted=True, _v=NEWER)
+    _timed_call(s, "c14", 35.0, "mcp__srv__bash", kind="", duration=50.0)    # a server tool, not a command
+    _timed_call(s, "c15", 200_000.0, program="cargo", duration=1e6)          # outside the period
+    body = _card(s, "time")
+    tools = {tool["tool"]: tool for tool in body["tools"]}
+    claude = tools["claude-code"]
+    assert (claude["requests"], claude["untimed_requests"], claude["overlong_requests"]) == (4, 1, 1)
+    assert (claude["model_ms"], claude["thinking_ms"]) == (3000.0, 400.0)
+    assert (claude["calls"], claude["untimed_calls"], claude["overlong_calls"]) == (11, 0, 1)
+    assert claude["tool_ms"] == pytest.approx(62_055.0)
+    assert claude["overlong_ms"] == pytest.approx(4 * DAY_MS)
+    assert tools["copilot-cli"]["thinking_ms"] is None and tools["copilot-cli"]["tool_ms"] is None
+    groups = {(row["group"], row["program"]): row for row in body["programs"]}
+    assert set(groups) == {("program", "cargo"), ("shell", None), ("waiting", None), ("unrecorded", None)}
+    cargo = groups[("program", "cargo")]
+    assert (cargo["calls"], cargo["overlong"], cargo["duration_ms"]) == (3, 1, 40_000.0)
+    assert cargo["failure_share"] == pytest.approx(1 / 3)
+    assert (groups[("shell", None)]["calls"], groups[("shell", None)]["duration_ms"]) == (3, 6000.0)
+    assert (groups[("waiting", None)]["calls"], groups[("waiting", None)]["duration_ms"]) == (2, 12_000.0)
+    assert groups[("unrecorded", None)]["p95_ms"] == pytest.approx(4000.0)
+    summary = body["summary"]
+    assert summary["thinking_reported"] == ["claude-code"] and summary["top_program"]["program"] == "cargo"
+    assert (summary["untimed_requests"], summary["overlong"]) == (1, 2)
+    assert body["sessions"][0]["session_id"] == "s1" and body["sessions"][0]["tool_ms"] == pytest.approx(62_055.0)
+
+
+def _kql_regexes(view: str) -> list[str]:
+    text = (QUERIES / f"{view}.kql").read_text()
+    return re.findall(r"matches regex @'([^']*)'", text)
+
+
+def _kql_list(view: str, name: str) -> set[str]:
+    text = (QUERIES / f"{view}.kql").read_text()
+    body = re.search(rf"let {name} = dynamic\(\[(.*?)\]\);", text, re.S)
+    assert body, name
+    return set(re.findall(r"'([^']*)'", body.group(1)))
+
+
+def test_time_split_names_command_tools_and_shell_words_by_the_python_rules():
+    from aictl.dashboard import shell_program
+    from aictl.dashboard.board_projection import _COMMAND_TOOL_RE
+    from aictl.dashboard.projection_utils import _MCP_TOOL_RE
+
+    found = _kql_regexes("insights.time_split")
+    assert _COMMAND_TOOL_RE.pattern in found and _MCP_TOOL_RE.pattern in found
+    # Every word the UI's program rule reads as setup, a prefix, a block end or not a program is a shell word
+    # or a waiting word here, so the card never lists such a word as a program.
+    words = _kql_list("insights.time_split", "ShellWords") | _kql_list("insights.time_split", "WaitingWords")
+    rule = (shell_program._PREFIXES | shell_program._ENDS | shell_program._FOLDER
+            | {"for", "foreach", "case", "select", "function"}) - {"!", "{", "}"}
+    assert rule <= words, sorted(rule - words)
 
 
 class _Reader:

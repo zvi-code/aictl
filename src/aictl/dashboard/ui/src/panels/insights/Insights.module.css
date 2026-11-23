@@ -72,3 +72,7 @@
 .o2 { fill: var(--color-chart-2); background: var(--color-chart-2); }
 .o3 { fill: var(--color-chart-3); background: var(--color-chart-3); }
 .o4 { fill: var(--color-chart-1); background: var(--color-chart-1); }
+
+/* Where the time goes: thinking inside the model part of a bar. */
+.think { background: var(--color-chart-4); }
+.subhead { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-medium); }

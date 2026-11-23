@@ -278,6 +278,7 @@ BOUNDED = {
     "insights.pause_tax": "one row per tool and pause bucket, per tool, 10 sessions and one meta row",
     "insights.rereads": "two rows per tool, 10 sessions and one meta row",
     "insights.subagents": "two rows per tool, 10 sessions and one meta row",
+    "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions and one meta row",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",
     "prompts.titles": "one row per agent of the board's sessions",
