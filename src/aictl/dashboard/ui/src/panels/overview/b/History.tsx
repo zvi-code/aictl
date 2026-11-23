@@ -30,7 +30,9 @@ export function LinkTable(props: {
     const { label, format } = displayField(props.ctx, column)
     const action = column.path === props.columns[0]?.path ? props.action : undefined
     return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format,
-      hint: props.hints?.[column.path], action }
+      hint: props.hints?.[column.path] ?? (column.hint
+        ? ({ row }: Entry) => { const value = at(row, column.hint!); return typeof value === 'string' && value ? value : undefined }
+        : undefined), action }
   }), props.rows))
   return <Table label={props.label} fields={fields()} rows={props.rows} rowId={entry => entry.id}
     legacyKeys={{ hidden: `aictl-panel-columns-${props.label}` }} />
