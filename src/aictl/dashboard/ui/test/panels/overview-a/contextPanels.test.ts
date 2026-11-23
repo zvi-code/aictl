@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { excludedSummary, loadLabel, loadSplit, openFile, truncationNote } from '../../../src/panels/overview/contextData'
 import { budgetNote, budgetSays } from '../../../src/panels/overview/contextOptions'
 import { overviewA } from '../../../src/panels/overview/a'
+import { overviewB } from '../../../src/panels/overview/b'
+import { lifetimeRow } from '../../../src/panels/overview/b/Context'
+import { stamp } from '../../../src/design/format'
 import { rowAction } from '../../../src/panels/kinds/model'
 import type { PanelContext } from '../../../src/panels/types'
 
@@ -65,6 +68,23 @@ describe('Workflows and prompt files tell rows apart and open in every scope', (
     const path = 'C:\\Users\\me\\src\\web\\.github\\prompts\\create-chart.prompt.md'
     rowAction(def, ctx, { name: 'create-chart', project: 'web', path })!.run()
     expect(openDetail).toHaveBeenCalledWith({ type: 'file', path, line: 1 })
+  })
+})
+
+describe('Lifetime totals read as dates and short labels', () => {
+  it('shows the as-of date in the board format and leaves an unreported cost basis empty', () => {
+    // Found on Windows: "+00:00" ISO strings in the notes and the As of column, and "Cost basis: unknown" on every row.
+    const row = lifetimeRow({ tool: 'copilot-cli', as_of: '2026-11-23T21:11:52+00:00', cost_quality: 'unknown', token_quality: null })
+    expect(row.as_of).toBe(stamp(Date.parse('2026-11-23T21:11:52+00:00') / 1000, true))
+    expect(row.as_of).not.toContain('+00:00')
+    expect([row.cost_quality, row.token_quality]).toEqual([undefined, undefined])
+    expect(lifetimeRow({ as_of: 'not a date', cost_quality: 'reported' })).toMatchObject({ as_of: undefined, cost_quality: 'reported' })
+  })
+
+  it('labels every column in a few words', () => {
+    // Found on Windows: "Input tokens consumed by thi…", "Total number of sessions rec…" cut off as headers.
+    const def = overviewB.find(panel => panel.id === 'lifetime')!
+    expect(def.columns.every(column => column.label && column.label.length <= 16)).toBe(true)
   })
 })
 

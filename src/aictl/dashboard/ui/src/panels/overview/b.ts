@@ -38,9 +38,11 @@ export const overviewB: readonly PanelDef[] = [
   // Lifetime totals need expandable per-tool model and error tables.
   { ...base, id: 'lifetime', title: 'Lifetime totals', kind: 'custom',
     sources: [{ field: 'tool_labels' }], empty: 'No tool reports lifetime totals.',
-    columns: [field('label', 'Tool'), field('source', 'Source'), metric('as_of', 'board.context.lifetime_as_of', 'As of'),
-      ...(['input', 'output', 'cache_read', 'cache_write', 'sessions', 'messages', 'cost_usd', 'premium_requests'] as const)
-        .map(key => metric(key, `procs.tool.telemetry.${key === 'input' || key === 'output' ? `${key}_tokens` : key}`)),
+    // Short labels: the catalog's descriptions were cut off as headers ("Input tokens consumed by thi…").
+    columns: [field('label', 'Tool'), field('source', 'Source'), field('as_of', 'As of'),
+      ...([['input', 'Input'], ['output', 'Output'], ['cache_read', 'Cache read'], ['cache_write', 'Cache write'], ['sessions', 'Sessions'],
+        ['messages', 'Messages'], ['cost_usd', 'Cost'], ['premium_requests', 'Premium requests']] as const)
+        .map(([key, label]) => metric(key, `procs.tool.telemetry.${key === 'input' || key === 'output' ? `${key}_tokens` : key}`, label)),
       duration('quota.api_duration_ms', 'API time', 'procs.tool.telemetry.api_duration_ms'),
       field('cost_quality', 'Cost basis'), field('token_quality', 'Token quality')],
     load: () => import('./b/Context').then(m => ({ default: m.Lifetime })) },

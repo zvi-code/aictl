@@ -1,6 +1,6 @@
-import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
+import { createMemo, createSignal, Show, untrack } from 'solid-js'
 import type { ContextLocal, DetailContext } from '../../../data/contract.gen'
-import { fmtNum } from '../../../design/format'
+import { fmtNum, stamp as fmtStamp } from '../../../design/format'
 import { isToolSelected } from '../../../data/toolScope'
 import { PanelState } from '../../../ui/PanelState'
 import type { PanelProps, Row } from '../../types'
@@ -79,24 +79,38 @@ export function Inventory(props: PanelProps) {
 }
 
 type Total = ContextLocal['telemetry'][number]
-const modelFields = [field('model', 'Model'), ...['input', 'output', 'cache_read', 'cache_write'].map(name =>
-  metric(name, `procs.tool.telemetry.${['input', 'output'].includes(name) ? `${name}_tokens` : name}`)),
+const short = { input: 'Input', output: 'Output', cache_read: 'Cache read', cache_write: 'Cache write' } as const
+const modelFields = [field('model', 'Model'), ...(['input', 'output', 'cache_read', 'cache_write'] as const).map(name =>
+  metric(name, `procs.tool.telemetry.${name === 'input' || name === 'output' ? `${name}_tokens` : name}`, short[name])),
 field('requests', 'Requests'), metric('cost_usd', 'procs.tool.telemetry.cost_usd', 'Cost')]
 const errorFields = [field('ts', 'Time'), field('type', 'Type'), field('message', 'Message'), field('model', 'Model')]
+
+/** A date the tool or the server wrote as text ("2026-11-23T21:11:52+00:00"), in the board's date format; text that is no date is not known. */
+export const dated = (value: unknown) => {
+  const ms = typeof value === 'string' && value ? Date.parse(value) : NaN
+  return Number.isFinite(ms) ? fmtStamp(ms / 1000, true) : undefined
+}
+
+/** A lifetime row as the table shows it: dates as dates, and a cost basis nobody reported is left empty, not "unknown". */
+type Shown = { as_of?: string; cost_quality?: string; token_quality?: string }
+export function lifetimeRow<T extends { as_of?: string | null; cost_quality?: string | null; token_quality?: string | null }>(total: T):
+  Omit<T, keyof Shown> & Shown {
+  const known = (value: string | null | undefined) => value && value !== 'unknown' ? value : undefined
+  return { ...total, as_of: dated(total.as_of), cost_quality: known(total.cost_quality), token_quality: known(total.token_quality) }
+}
 
 export function Lifetime(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const { bundles, result } = useContext(ctx, 'telemetry')
   const [selected, setSelected] = createSignal<string>()
   const data = createMemo(() => rowsFrom((bundles() ?? []).flatMap(({ node, node_id }) => (node.telemetry ?? [])
-    .filter(total => isToolSelected(total.tool, ctx.tools())).map(total => ({ ...total, node_id, label: toolName(ctx, total.tool) }))),
+    .filter(total => isToolSelected(total.tool, ctx.tools())).map(total => ({ ...lifetimeRow(total), node_id, label: toolName(ctx, total.tool) }))),
   total => identity(total.node_id, total.tool)))
-  const active = createMemo(() => data().find(entry => entry.id === selected())?.row as Total | undefined)
+  const active = createMemo(() => data().find(entry => entry.id === selected())?.row as (Total & { label: string }) | undefined)
   return <View result={() => result().state === 'ready' && !data().length ? { state: 'empty' } : result()} retry={ctx.refresh} empty={def.empty}>
-    <p class={styles.note}>Tool-reported totals since installation. The Overview time range does not apply.</p>
-    <For each={data().filter(({ row }) => row.as_of)}>{entry =>
-      <p class={styles.note}>{entry.row.label} reports cached totals as of {entry.row.as_of}. Later usage is not included.</p>}
-    </For>
+    <p class={styles.note}>{data().some(({ row }) => row.as_of != null)
+      ? 'Tool-reported totals since installation, as of the time in each row; later usage is not included. The board time range does not apply.'
+      : 'Tool-reported totals since installation. The board time range does not apply.'}</p>
     <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={data()} action={{
       label: ({ row }) => `Breakdown for ${row.label}`,
       run: ({ id }) => setSelected(value => value === id ? undefined : id),
@@ -110,7 +124,7 @@ export function Lifetime(props: PanelProps) {
       <details><summary>Errors for {total().label}</summary>
         <Show when={Array.isArray(total().errors)} fallback={<PanelState state="unavailable" />}>
           <DataTable ctx={ctx} label="Lifetime errors" columns={errorFields}
-            rows={rowsFrom(total().errors, row => identity(row.ts, row.type, row.model, row.message))} />
+            rows={rowsFrom(total().errors.map(row => ({ ...row, ts: dated(row.ts) }) as Row), row => identity(row.ts, row.type, row.model, row.message))} />
         </Show>
       </details>
     </>}</Show>
