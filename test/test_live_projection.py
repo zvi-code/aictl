@@ -748,3 +748,18 @@ def test_health_failures_are_explicit_and_keep_prior_success_for_paused_clients(
         subscription.close()
         dashboard.close()
         hub.close()
+
+
+def test_a_board_that_is_slow_to_compute_rests_in_proportion_before_its_next_refresh():
+    """A 60 s board refreshed every 60 s keeps the cluster busy all the time, and no load can then finish."""
+    dashboard = LiveDashboard(LiveHub(), SimpleNamespace(), SimpleNamespace(), health_provider=lambda: ({}, {}))
+    day = projection._Scope(query="day", filters=None, rolling=True, span=86400.0)
+    month = projection._Scope(query="month", filters=None, rolling=True, span=30 * 86400.0)
+    # A board that computes fast keeps the interval its span gives it.
+    day.cost_s = month.cost_s = 0.5
+    assert dashboard._refresh_interval(day) == 10.0
+    assert dashboard._refresh_interval(month) == LiveDashboard.MAX_REFRESH_INTERVAL_S
+    # A slow one waits its own compute time and the rest that follows it.
+    day.cost_s, month.cost_s = 12.0, 90.0
+    assert dashboard._refresh_interval(day) == 12.0 * (1 + LiveDashboard.REFRESH_REST_FACTOR)
+    assert dashboard._refresh_interval(month) == 90.0 * (1 + LiveDashboard.REFRESH_REST_FACTOR)

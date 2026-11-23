@@ -163,6 +163,8 @@ class _Scope:
     status: dict = dataclass_field(default_factory=dict)
     running: bool = False
     started_at: float | None = None
+    # How long the last refresh of this scope's board took.
+    cost_s: float = 0.0
 
 
 class LiveDashboard:
@@ -178,6 +180,9 @@ class LiveDashboard:
     # A wider range changes less, relative to its size, per new row: it is refreshed less often.
     REFRESH_SPAN_DIVISOR = 8640.0
     MAX_REFRESH_INTERVAL_S = 60.0
+    # A board that is slow to compute rests this many times its own compute time before the next
+    # refresh, so refreshing it takes at most a fifth of the cluster's time whatever the cluster's size.
+    REFRESH_REST_FACTOR = 4.0
 
     def __init__(
         self,
@@ -521,7 +526,8 @@ class LiveDashboard:
         return filters
 
     def _refresh_interval(self, entry: _Scope) -> float:
-        return min(self.MAX_REFRESH_INTERVAL_S, entry.span / self.REFRESH_SPAN_DIVISOR)
+        by_span = min(self.MAX_REFRESH_INTERVAL_S, entry.span / self.REFRESH_SPAN_DIVISOR)
+        return max(by_span, entry.cost_s * (1.0 + self.REFRESH_REST_FACTOR))
 
     def _history_loop(self) -> None:
         from concurrent.futures import ThreadPoolExecutor
@@ -598,11 +604,13 @@ class LiveDashboard:
 
     def _refresh_scope(self, compute: Any, entry: _Scope, filters: Any, grid: tuple, now: float,
                        frontier: dict, generation: int, reset_generation: int) -> None:
+        started = time.monotonic()
         try:
             self._compute_scope(compute, entry, filters, grid, now, frontier, generation, reset_generation)
         finally:
             with self._lock:
                 entry.running = False
+                entry.cost_s = time.monotonic() - started
             self._wake.set()
 
     def _compute_scope(self, compute: Any, entry: _Scope, filters: Any, grid: tuple, now: float,
