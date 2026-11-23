@@ -32,14 +32,14 @@ from typing import Any
 
 from ..base import StoreConfigurationError
 
-LAYOUT_VERSION = 3
+LAYOUT_VERSION = 4
 COMPATIBLE_SINCE = 3
 # The first layout released as generally available. From then on a breaking change needs a migration.
 GA_LAYOUT_VERSION: int | None = None
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "44c62b9a7ee2482582d41150ecd9705749748736184fef1f3d3e233b0d417fba"
+FINGERPRINT = "d5fb3fda028661a6e22bb47d20b9f28cd2a40f75885907fb255fccafc6731ab1"
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,16 @@ CHANGES: tuple[Change, ...] = (
         "each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*.",
         breaks=True,
         migration="node_tables",
+    ),
+    Change(
+        4,
+        "context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, "
+        "stored once per node under list_id (a hash of the list). session_context_items holds one pointer row "
+        "per announcement of such a list instead of one row per item: name \"list:\" + list_id, with the "
+        "announcement's ts and the sums of its items. Rows written before stay one row per item and are read "
+        "as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item "
+        "named list:<id> that has the list's total.",
+        breaks=False,
     ),
 )
 

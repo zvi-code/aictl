@@ -1,5 +1,22 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
     since:real=0.0, until:real=1.0e20, row_limit:long);
+let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
+        name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
+    let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
+        | extend list_key=substring(name,5);
+    union
+        (items | where not(name matches regex @'^list:[0-9a-f]{32}$')),
+        (pointers
+            | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
+                | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
+                | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
+                    item_tokens=tokens,item_estimated=estimated,item_removed=removed)
+                on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
+            | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
+                removed=item_removed
+            | project-away list_node,list_key,list_ref,item_*)
+};
 union
     (requests | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
@@ -15,6 +32,7 @@ union
         | project row_type=kind,ts,key,values=iff(kind=='split',pack_array(ts,current_tokens,system_tokens,conversation_tokens,tool_tokens),
             pack_array(agent_id,ts,tool,trigger,before_tokens,after_tokens,duration_ms))),
     (session_context_items | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | invoke context_items_expanded()
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
         | project row_type='item',ts,key=strcat(agent_id,':',kind,':',name),values=pack_array(agent_id,kind,name,path,tokens,removed,ts,chars)),

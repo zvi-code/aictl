@@ -48,7 +48,7 @@ SESSION_HISTORY_TABLES = frozenset(
         "sessions", "session_usage", "requests", "agents", "tool_invocations", "tool_invocation_coverage",
         "tool_invocation_sizes", "context_events", "session_steps", "turn_request_links", "skill_uses",
         "file_write_events", "session_folders", "session_artifacts", "session_sources", "session_loaded_files",
-        "session_context_items", "session_processes", "session_commits", "session_attribution",
+        "session_context_items", "context_lists", "session_processes", "session_commits", "session_attribution",
         "otel_trace_sessions", "session_turns", "session_files", "session_outcomes",
     }
 )
@@ -910,6 +910,25 @@ _DEFINED = (
                 ("_v", "datetime"),
             ),
             ("project", "node_id", "session_id", "agent_id", "kind", "name"),
+            "streaming",
+        ),
+        # The items of each distinct list a session_context_items pointer row names (context_lists.py).
+        "context_lists": Table(
+            (
+                ("list_id", "string"),
+                ("kind", "string"),
+                ("name", "string"),
+                ("path", "string"),
+                ("chars", "long"),
+                ("tokens", "long"),
+                ("estimated", "long"),
+                ("removed", "long"),
+                ("tool", "string"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "list_id", "name"),
             "streaming",
         ),
         "maintenance_state": Table(

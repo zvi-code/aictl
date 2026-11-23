@@ -166,7 +166,9 @@ def test_a_row_the_table_cannot_take_is_left_out_and_the_rest_are_stored(caplog)
             super().append(table, rows)
 
     writer = StrictWriter()
-    items = [ContextItemRow("s1", "skills", "first"), ContextItemRow("s1", "skills", ""), ContextItemRow("s1", "skills", "last")]
+    # memory_file: a kind stored one row per item (a list kind would be one pointer row, context_lists.py).
+    items = [ContextItemRow("s1", "memory_file", "first"), ContextItemRow("s1", "memory_file", ""),
+             ContextItemRow("s1", "memory_file", "last")]
     written = SessionFacts(writer).write(CallFacts(context_items=items))
     assert [row["name"] for row in writer.written("session_context_items")] == ["first", "last"]
     assert written == 2 and "left out" in caplog.text

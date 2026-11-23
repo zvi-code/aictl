@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, replace
 from typing import Any
 
+from . import context_lists
 from .ingesters.session_titles import clean_title, outranks
 from .records import STEP_TEXT_LIMIT, TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, newer_observation, strip_event_text
 from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
@@ -70,12 +71,15 @@ class SessionFacts:
         self._otel_calls: OrderedDict = OrderedDict()
         self._transcript_calls: OrderedDict = OrderedDict()
         self._call_counts: OrderedDict = OrderedDict()
+        # list_id -> when this node last wrote that list to context_lists (see context_lists.py).
+        self._lists: OrderedDict = OrderedDict()
         self.event_listener = None
         if state is not None:
             try:
                 saved = state.read()
                 self._sessions.update(saved.get("sessions", {}))
                 self._hook_times.update(saved.get("hook_times", {}))
+                self._lists.update(saved.get("context_lists", {}))
                 for counts, waiting in saved.get("otel_calls", []):
                     self._otel_calls[tuple(counts)] = waiting
             except (OSError, ValueError, TypeError):
@@ -85,7 +89,7 @@ class SessionFacts:
         with self._lock:
             if self.state is not None and self._dirty:
                 self.state.replace({"sessions": self._sessions, "hook_times": self._hook_times,
-                                    "otel_calls": list(self._otel_calls.items())})
+                                    "otel_calls": list(self._otel_calls.items()), "context_lists": self._lists})
                 self._dirty = False
 
     @staticmethod
@@ -566,6 +570,26 @@ class SessionFacts:
         if values:
             self.writer.upsert("file_write_events", values)
 
+    def _list_refresh_s(self) -> float:
+        """How long a written list counts as stored. Retention drops a list's rows by their age, so
+        a list still pointed to is written again within this period: a pointer outlives its list's
+        rows by at most this long at the end of its own retention."""
+        return min(24 * 3600.0, self.retention.get("history", 365 * 24) * 3600 / 8)
+
+    def _context_items(self, values: list[dict]) -> list[dict]:
+        """The rows for session_context_items, after the lists not yet stored went to context_lists."""
+        rows, lists = context_lists.group(values)
+        now = time.time()
+        with self._lock:
+            new = {lid: items for lid, items in lists.items()
+                   if now - self._lists.get(lid, float("-inf")) >= self._list_refresh_s()}
+            if new:
+                self.writer.append("context_lists", [item for items in new.values() for item in items])
+                for lid in new:
+                    self._remember(self._lists, lid, now)
+                self._dirty = True
+        return rows
+
     def write(self, facts, *, only: str | None = None) -> int:
         if only is None:
             self.requests(facts.requests, transcript=True)
@@ -595,6 +619,8 @@ class SessionFacts:
                     if row.ts < time.time() - self.retention["prompt"] * 3600:
                         continue
                 values.append(dict(data, project=project))
+            if attr == "context_items":
+                values = self._context_items(values)
             try:
                 self.writer.append(table, values)
             except InvalidRowError:

@@ -20,6 +20,7 @@ from test_board_facts import (
     write_lines,
 )
 
+from aictl.context_lists import POINTER_PREFIX, is_pointer
 from aictl.dashboard import session_details
 from aictl.ingesters import context_items, context_items_backfill
 from aictl.ingesters.context_items import Item, claude_attachment, copilot_system_prompt
@@ -43,10 +44,23 @@ def _ingest(db, root):
     ingester.facts.flush()
 
 
+def expanded(writer):
+    """The session_context_items rows as the views read them: each pointer row as the items of its list."""
+    lists = {}
+    for r in writer.written("context_lists"):
+        lists.setdefault(r["list_id"], {})[r["name"]] = r
+    for row in writer.written("session_context_items"):
+        if not is_pointer(row["name"]):
+            yield row
+            continue
+        for item in lists[row["name"].removeprefix(POINTER_PREFIX)].values():
+            yield dict(row, **{k: item[k] for k in ("name", "path", "chars", "tokens", "estimated", "removed")})
+
+
 def _context_facts(db, sid, until=float("inf")):
     def rows(table):
-        return sorted((r for r in db.writer.written(table) if r["session_id"] == sid and r["ts"] <= until),
-                      key=lambda r: r["ts"])
+        written = expanded(db.writer) if table == "session_context_items" else db.writer.written(table)
+        return sorted((r for r in written if r["session_id"] == sid and r["ts"] <= until), key=lambda r: r["ts"])
 
     def values(row, keys):
         return tuple(row.get(k) for k in keys.split())
@@ -143,7 +157,7 @@ SKILLS = {
 
 def items_of(db, sid: str) -> dict:
     return {(r["kind"], r["name"]): (r["chars"], r["tokens"], r["removed"])
-            for r in sorted(db.writer.written("session_context_items"), key=lambda r: r["ts"])
+            for r in sorted(expanded(db.writer), key=lambda r: r["ts"])
             if r["session_id"] == sid}
 
 
@@ -236,7 +250,7 @@ class TestClaudeIngest:
         assert rows[("tools_listed", "Read")] == (0, 0, 1)
         assert ("reset", "*") in rows
         # Nothing of the content is kept.
-        assert all("uuu" not in r["name"] and "ppp" not in r["path"] for r in db.writer.written("session_context_items"))
+        assert all("uuu" not in r["name"] and "ppp" not in r["path"] for r in expanded(db.writer))
 
         b = _agent_context(db, SESSION, SESSION, True)["breakdown"]
         assert b["total"] == 3150 and b["limit"] is None

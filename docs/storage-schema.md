@@ -1,7 +1,7 @@
 # aictl storage schema (Kusto)
 
 This page is the contract for anyone who writes KQL against an aictl database. It describes
-data layout 3. The definitions live in the code:
+data layout 4. The definitions live in the code:
 [`stores/kusto/tables.py`](../src/aictl/stores/kusto/tables.py) (`TABLES`),
 [`stores/kusto/schema.py`](../src/aictl/stores/kusto/schema.py) (`logical_columns`),
 [`stores/kusto/otel.py`](../src/aictl/stores/kusto/otel.py) (the OTel tables),
@@ -16,7 +16,7 @@ whose meaning the writing code does not settle says "meaning not established".
 
 ## Layout version
 
-The current layout is `LAYOUT_VERSION = 3`; it reads nodes from
+The current layout is `LAYOUT_VERSION = 4`; it reads nodes from
 `COMPATIBLE_SINCE = 3`. A change to tables, columns, keys or the meaning of
 stored values bumps the layout and adds a line here:
 
@@ -25,6 +25,7 @@ stored values bumps the layout and adds a line here:
 | 1 | yes | `requests_single_copy` | requests: a model call is stored once. Before, the agent-team scan stored a second copy of each subagent call (source claude-code-jsonl) and a call reported by both telemetry and the transcript was stored under two keys; every reader summed both copies. |
 | 2 | yes | `agents_by_session` | agents: keyed by (session_id, agent_id), with a tombstone, the folder, branch and worktree the agent ran in, and observed_at (the time completed and ended_at were observed; the latest observation wins). agents_text: keyed by session_id too. sessions: resumed_from, the session a resumed or forked session's file replays. Before, an agent id copied into a resumed session settled under whichever session was written last. |
 | 3 | yes | `node_tables` | Each node writes its own tables (requests__&lt;node key&gt;, ...); a stored function named like each table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*. |
+| 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 
 ### The `schema_version` registry
 
@@ -207,7 +208,7 @@ changes one. The defaults:
 
 | class | default | tables |
 |---|---|---|
-| `history` | 365d | `agents`, `agents_observations`, `context_events`, `context_events_observations`, `file_write_events`, `file_write_events_observations`, `otel_trace_sessions`, `requests`, `requests_observations`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_context_items_observations`, `session_files`, `session_folders`, `session_loaded_files`, `session_loaded_files_observations`, `session_outcomes`, `session_processes`, `session_processes_observations`, `session_sources`, `session_steps`, `session_turns`, `session_usage`, `session_usage_observations`, `sessions`, `sessions_observations`, `skill_uses`, `skill_uses_observations`, `tool_invocation_coverage`, `tool_invocation_sizes`, `tool_invocations`, `tool_invocations_observations`, `turn_request_links` |
+| `history` | 365d | `agents`, `agents_observations`, `context_events`, `context_events_observations`, `context_lists`, `file_write_events`, `file_write_events_observations`, `otel_trace_sessions`, `requests`, `requests_observations`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_context_items_observations`, `session_files`, `session_folders`, `session_loaded_files`, `session_loaded_files_observations`, `session_outcomes`, `session_processes`, `session_processes_observations`, `session_sources`, `session_steps`, `session_turns`, `session_usage`, `session_usage_observations`, `sessions`, `sessions_observations`, `skill_uses`, `skill_uses_observations`, `tool_invocation_coverage`, `tool_invocation_sizes`, `tool_invocations`, `tool_invocations_observations`, `turn_request_links` |
 | `prompt` | 365d | `session_prompts`, `session_prompts_observations` |
 | `thinking` | 365d | `session_thinking` |
 | `message` | 365d | `copilot_session_messages`, `cursor_session_messages`, `session_step_text`, `vscode_chat_messages` |
@@ -272,6 +273,10 @@ These rules are what the writers enforce (`session_facts.py`, `tool_calls.py`,
   `events_text.source_key`, `hook_calls_text.call_id`, `memory_snapshots_text` by
   `session_id`, `phase` and `path`. `text_payloads` joins by `source_table`, `source_key`
   and `field`.
+- A `session_context_items` row whose `name` is `list:` followed by 32 hex digits is a
+  pointer: it stands for the items of the `context_lists` rows of the same `node_id` whose
+  `list_id` is the rest of the name. Each of those items takes the pointer's `session_id`,
+  `agent_id`, `kind`, `project`, `tool`, `ts` and `_v`. Other rows are items themselves.
 - Messages (`copilot_session_messages`, `vscode_chat_messages`, `cursor_session_messages`)
   are stored under the session id their source carries; a message with no session id has an
   empty one. No id is invented.
@@ -339,6 +344,28 @@ requests
 | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
 | where not(coalesce(_deleted, false)) and session_id == sid
 | summarize calls = count(), output_tokens = sum(output_tokens) by agent_id
+```
+
+The tools listed in one agent's context (agent "" is the main agent), pointer rows expanded
+into the items of their lists. An item counts unless it was removed; a later reset of the
+agent's context (a row of kind `reset`) ends it too:
+
+```kql
+let sid = "<session id>";
+let agent = "";
+let lists = context_lists | summarize arg_max(_v, *) by ['project'], node_id, list_id, name;
+session_context_items
+| where session_id == sid and agent_id == agent and kind == "tools_listed"
+| summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, kind, name
+| extend list_id = iff(name matches regex "^list:[0-9a-f]{32}$", substring(name, 5), "")
+| join kind=leftouter (lists | project node_id, list_id, item = name, item_path = path, item_tokens = tokens,
+    item_removed = removed) on node_id, list_id
+| extend name = iff(isempty(list_id), name, item), path = iff(isempty(list_id), path, item_path),
+    tokens = iff(isempty(list_id), tokens, item_tokens), removed = iff(isempty(list_id), removed, item_removed)
+| summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, kind, name
+| where removed == 0 and isnotempty(name)
+| project name, path, tokens, listed = unixtime_seconds_todatetime(ts)
+| order by name asc
 ```
 
 OTel log events per tool and event name, with tokens:
@@ -783,19 +810,29 @@ Files a session loaded, as its own record shows.
 
 Items a tool put in a session's context, as last recorded.
 
+For the list kinds (`tools_listed`, `skills`, `custom_agents`, `mcp_instructions`) each
+announcement of a list (the items of one kind one agent was told at one time) is one
+pointer row since layout 4: `name` is `list:` + the `list_id` of its items in
+`context_lists`, `path` is "", `ts` is the time of the announcement, `chars` and `tokens`
+are the sums over its items not removed, `estimated` is 1 when any item is estimated and
+`removed` is 0. A reader expands each current pointer row into its list's items, which take
+the pointer's session, agent, kind, project, tool, `ts` and `_v`, and then takes the newest
+version of each item by the key (`EXPANSION_KQL` in `aictl/context_lists.py`). Rows written
+before layout 4, and rows of the other kinds, are one row per item.
+
 - Key: `project`, `node_id`, `session_id`, `agent_id`, `kind`, `name`
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
-- Written by: `session_facts.py` (`write`), from `ingesters/context_items.py`
+- Written by: `session_facts.py` (`write`, grouped by `aictl/context_lists.py`), from `ingesters/context_items.py`
 
 | column | type | meaning |
 |---|---|---|
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `kind` | string | `memory_file`, `skills`, `mcp_instructions`, `custom_agents`, `tools_listed`, `instruction_file`, `system_prompt_other` or `reset` |
-| `name` | string | Name of the item; "" for the total of its kind |
+| `name` | string | Name of the item; "" for the total of its kind; `list:<list_id>` for a pointer row |
 | `ts` | real | When recorded, epoch seconds, UTC |
 | `path` | string | File path of the item, when it has one |
 | `chars` | long | Characters of the item |
@@ -808,6 +845,37 @@ Items a tool put in a session's context, as last recorded.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
+
+### context_lists
+
+The items of each distinct list that a `session_context_items` pointer row names. A list is
+stored once per node, not once per agent: `list_id` is the first 32 hex digits of the
+SHA-256 of the list's kind and its sorted (name, path, chars, tokens, estimated, removed)
+items, so two agents told the same list point to the same rows. The rows of a list never
+change; a node writes a list again (identical rows, a new `_v`) at most once a day while it
+is still pointed to, so retention does not drop a list that recent pointers name.
+
+- Key: `project`, `node_id`, `list_id`, `name`
+- Version column: `_v`
+- Tombstone column: none
+- Ingestion: `streaming`
+- Retention class: `history` (default 365d)
+- Written by: `session_facts.py` (`write`, grouped by `aictl/context_lists.py`), from `ingesters/context_items.py`
+
+| column | type | meaning |
+|---|---|---|
+| `list_id` | string | Part of the key. The hash of the list's content |
+| `kind` | string | `tools_listed`, `skills`, `custom_agents` or `mcp_instructions` |
+| `name` | string | Part of the key. Name of the item |
+| `path` | string | File path of the item, when it has one |
+| `chars` | long | Characters of the item |
+| `tokens` | long | Tokens of the item |
+| `estimated` | long | 1 when `tokens` is estimated |
+| `removed` | long | 1 when the announcement removed the item from the context |
+| `tool` | string | Tool id of the agent that first wrote the list; a reader takes the pointer's |
+| `project` | string | Part of the key. Always "": a list belongs to no project |
+| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
+| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
 ### session_folders
 

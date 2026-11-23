@@ -74,6 +74,7 @@ AUTO_INLINE_TABLES = frozenset(
         "session_sources",
         "session_loaded_files",
         "session_context_items",
+        "context_lists",
         "maintenance_state",
         "data_quality_status",
         "path_defs",

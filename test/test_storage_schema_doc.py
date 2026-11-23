@@ -27,7 +27,8 @@ _META = re.compile(r"- ([A-Za-z ]+): (.+)")
 _KQL_WORDS = frozenset({
     "let", "summarize", "arg_max", "by", "where", "not", "coalesce", "and", "or", "isnull", "isnotempty",
     "project", "unixtime_seconds_todatetime", "order", "desc", "asc", "count", "sum", "countif", "dcount",
-    "take", "true", "false", "tostring",
+    "take", "true", "false", "tostring", "extend", "iff", "isempty", "matches", "regex", "substring", "join",
+    "leftouter", "on",
 })
 
 
@@ -120,8 +121,12 @@ def test_example_queries_dedup_by_the_key_and_name_only_real_columns():
         source = lines[0].strip()
         name = "schema_version" if source == "aictl_nodes()" else source
         assert name in LOGICAL, f"query reads {source!r}, not a logical table"
-        for keys in re.findall(r"\| summarize arg_max\(_v, \*\) by ([^|\n]+)", query):
-            assert [k.strip().strip("[]'") for k in keys.split(",")] == list(TABLES[name].key)
+        for line in query.splitlines():
+            # A let may read another table (let lists = context_lists | ...): its dedup uses that table's key.
+            other = re.match(r"let \w+ = (\w+) \|", line)
+            table = other[1] if other else name
+            for keys in re.findall(r"\| summarize arg_max\(_v, \*\) by ([^|\n;]+)", line):
+                assert [k.strip().strip("[]'") for k in keys.split(",")] == list(TABLES[table].key)
         body = "\n".join(lines[1:])
         names = set(re.findall(r"\['(\w+)'\]", body))
         body = re.sub(r"\['\w+'\]|\"[^\"]*\"|'[^']*'", " ", body)
