@@ -1304,6 +1304,13 @@ class _Board:
         rows = self.history.read("prompts.titles", session_keys=self.history.keys(sid for sid, _ in keys))
         return self._format_titles(keys, {(r["session_id"], _agent_key(r["session_id"], r["agent_id"])): r["text"] for r in rows})
 
+    def agent_kind(self, sid: str, agent: str) -> str:
+        """The kind of a subagent for the role table: an agent type, never its prompt."""
+        if not getattr(self, "spawn_of", None):
+            subs = {key: row for key, row in self.sub_rows.items() if row.get("row_kind") != "spawn"}
+            self.spawn_of = subagents.match_spawns(subs, getattr(self, "spawns", ()))
+        return subagents.subagent_kind(self.sub_rows.get((sid, agent)) or {}, self.spawn_of.get((sid, agent)))
+
     def _format_titles(self, keys: Iterable[tuple[str, str]], firsts: dict[tuple[str, str], str]) -> dict[tuple[str, str], str]:
         """Each row's name. A session keeps its stored title; a subagent is named by its task, never its prompt."""
         sub_rows = getattr(self, "sub_rows", {})
@@ -3142,8 +3149,7 @@ def compute_board(
             own_calls = agg.n if agg else 0
             own_fails = agg.errs if agg else 0
             usage = board.by_key.get((sid, agent))
-            sub = board.sub_rows.get((sid, agent)) or {}
-            kind = "Main agents" if agent == sid else (sub.get("task") or "Subagent")
+            kind = "Main agents" if agent == sid else board.agent_kind(sid, agent)
             role = role_rows[kind]
             role["runs"] += 1
             fallback_calls = board.fallback_tools.get(sid, 0) if agent == sid else 0

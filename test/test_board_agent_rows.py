@@ -240,3 +240,27 @@ def test_a_node_qualified_subagent_address_is_qualified_once():
     key = _agent_key(sid, aid)
     assert identity_parts(key) == ("mac", f"{SID}/a1") and _short(key) == "a1"
     assert _agent_key(sid, sid) == sid and _agent_key(SID, "") == SID
+
+
+# ── Kind of agent ─────────────────────────────────────────────────────────
+
+
+def test_the_kind_of_a_subagent_is_an_agent_type_never_its_prompt():
+    prompt = BRIEF + "Item 4: loading panels"
+    # Claude Code stores either the agent type or the prompt as the task.
+    assert subagents.subagent_kind({"task": "general-purpose"}, None) == "general-purpose"
+    assert subagents.subagent_kind({"task": prompt[:200]}, None) == "Subagent"
+    assert subagents.subagent_kind({"task": "Read-only audit.\nDo not edit."}, None) == "Subagent"
+    # The spawning call's agent type wins over any stored task.
+    spawn = _spawn("toolu_1", NOW, "Item 4", prompt, agent_type="Explore")
+    assert subagents.subagent_kind({"task": prompt[:200]}, spawn) == "Explore"
+
+
+def test_the_role_table_groups_subagents_by_kind_not_by_prompt():
+    first, second = BRIEF + "Item 1: names", BRIEF + "Item 2: status"
+    subs = [_sub("a1", NOW - 600, task=first[:200], parent_tool_use_id="toolu_1"),
+            _sub("a2", NOW - 500, task=second[:200]),
+            _sub("a3", NOW - 400, task="Explore")]
+    board = _board(subs, spawns=[_spawn("toolu_1", NOW - 601, "Item 1: names", first)])
+    kinds = {agent: board.agent_kind(SID, f"{SID}/{agent}") for agent in ("a1", "a2", "a3")}
+    assert kinds == {"a1": "general-purpose", "a2": "Subagent", "a3": "Explore"}

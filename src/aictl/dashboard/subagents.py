@@ -75,6 +75,17 @@ def _role(task: str | None, first_prompt: str | None, task_is_prompt: bool) -> s
     return text
 
 
+def subagent_kind(sub: Mapping, spawn: Mapping | None) -> str:
+    """The kind of agent a subagent is: its spawning call's agent type, else a stored task that reads
+    as a role, else "Subagent". Claude Code may store the prompt as the task; a prompt is never a kind."""
+    if spawn and (kind := _one_line(spawn.get("agent_type"), ROLE_CHARS)):
+        return kind
+    task = sub.get("task") or ""
+    if "\n" not in task.strip() and (kind := _role(task, None, False)):
+        return kind
+    return "Subagent"
+
+
 def subagent_name(sub: Mapping, spawn: Mapping | None, short: str, first_prompt: str | None = None,
                   *, task_is_prompt: bool = False) -> tuple[str, str]:
     """(name, where it came from) for one subagent."""

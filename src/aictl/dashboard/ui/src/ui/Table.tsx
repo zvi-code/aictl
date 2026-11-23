@@ -125,16 +125,18 @@ function Cells<T extends object>(props: SortedTableProps<T> & { row: T }) {
         if (!props.pageSize) return
         if (typeof raw === 'number') return field().compact?.(raw)
       }
-      const text = <Show when={short()} fallback={<Show when={field().clip && !props.pageSize} fallback={display()}>
+      // A paged table keeps each text cell to one line too, so a long text never makes a tall row.
+      const text = <Show when={short()} fallback={<Show when={field().clip && !props.pageSize}
+        fallback={props.pageSize ? <span class={styles.line} data-line>{display()}</span> : display()}>
         <span class={styles.clipStart} title={display()}><span dir="ltr">{display()}</span></span>
       </Show>}>{compact => <>
         <span title={display()} class={missing() ? styles.missing : undefined} data-missing={missing() ? '' : undefined}
           aria-hidden="true">{compact()}</span>
         <span class={styles.visuallyHidden}>{display()}</span>
       </>}</Show>
-      // A narrowed column cuts its text; the full value shows on hover.
+      // A cut text shows in full on hover.
       return <td class={styles.cell} data-col={field().id} data-numeric={props.pageSize && (typeof value() === 'number' || field().numeric) ? '' : undefined}
-        title={field().hint?.(props.row) ?? (!props.pageSize ? display() : undefined)}>
+        title={field().hint?.(props.row) ?? display()}>
         <Show when={index() === 0 && props.primaryCell && props.fields[0]?.id === field().id} fallback={
           <Show when={field().action?.label(props.row)} fallback={text}>{label =>
             <button type="button" class={styles.action} aria-label={actionName(display(), label())}

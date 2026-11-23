@@ -86,6 +86,15 @@
   inline-size: 42%;
   min-inline-size: calc(var(--space-8) * 3);
 }
+/* One line per text cell: the column keeps its width from the text, the row keeps one line, the cell title has the rest. */
+.line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+.paged .action:has(.line) { display: inline-block; max-inline-size: 100%; vertical-align: top; }
 .paged [data-numeric] { text-align: end; }
 .paged td[data-numeric] { white-space: nowrap; }
 .paged .sort, .paged .action {
