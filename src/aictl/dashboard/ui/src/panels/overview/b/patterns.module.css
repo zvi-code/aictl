@@ -1,0 +1,43 @@
+.query > summary, .definitions > summary { cursor: pointer; }
+.query, .definitions {
+  padding: var(--space-2);
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  min-inline-size: 0;
+}
+.query[open] > summary, .definitions[open] > summary { margin-bottom: var(--space-2); }
+.queryActions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block-start: var(--space-2); }
+.queryActions button, .queryActions a, .chip {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  border: var(--border-size) solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  text-decoration: none;
+}
+.chip[aria-pressed="true"] { background: var(--color-selected); color: var(--color-selected-text); }
+.chip:focus-visible, .queryActions button:focus-visible, .queryActions a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.definitions dl { display: grid; grid-template-columns: minmax(10ch, max-content) 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
+.definitions dt { font-weight: 600; }
+.definitions dd { margin: 0; color: var(--color-muted); }
+.summary { margin: 0; font-size: var(--text-sm); }
+.verdict { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.signals { margin: 0; padding-inline-start: var(--space-4); display: grid; gap: var(--space-1); }
+.strip { display: grid; gap: var(--space-1); min-inline-size: 0; }
+.lane { display: grid; grid-template-columns: 12ch 1fr; align-items: center; gap: var(--space-2); font-size: var(--text-xs); }
+.lane svg { inline-size: 100%; block-size: var(--space-7); display: block; }
+.tokens { fill: var(--color-chart-1); }
+.calls { fill: var(--color-chart-3); }
+.errors { fill: var(--color-danger); }
+.changes { fill: var(--color-success); }
+.repeatMark { fill: var(--color-chart-2); }
+.retryMark { fill: var(--color-danger); }
+.compactMark { fill: var(--color-chart-4); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--text-xs); color: var(--color-muted); margin: 0; }
+.swatch { display: inline-block; inline-size: 0.75em; block-size: 0.75em; margin-inline-end: var(--space-1); vertical-align: middle; }
+.swatch.repeatMark { background: var(--color-chart-2); }
+.swatch.retryMark { background: var(--color-danger); }
+.swatch.compactMark { background: var(--color-chart-4); }

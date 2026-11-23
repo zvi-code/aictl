@@ -75,6 +75,10 @@ def _dashboard_requests(root):
         "/api/board/terminal/sessions": "/api/board/terminal/sessions",
         "/api/datapoints": "/api/datapoints",
         "/api/query-timings": "/api/query-timings",
+        "/api/board/mcp": "/api/board/mcp?since=1795130000&until=1795135200",
+        "/api/board/mcp/server": "/api/board/mcp/server?id=mcp:github&since=1795130000&until=1795135200",
+        "/api/board/convergence": "/api/board/convergence?since=1795130000&until=1795135200",
+        "/api/board/session/convergence": "/api/board/session/convergence?session_id=no-sqlite-probe",
         **{route: recorded[route] for route in (
             "/api/api-calls", "/api/board/agent", "/api/board/agent/flow", "/api/board/agent/transcript",
             "/api/board/context", "/api/board/error", "/api/board/excerpt", "/api/board/file",

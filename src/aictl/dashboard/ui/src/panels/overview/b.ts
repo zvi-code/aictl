@@ -52,6 +52,23 @@ export const overviewB: readonly PanelDef[] = [
       duration('p50_ms', 'p50'), duration('p95_ms', 'p95'), duration('max_ms', 'Max'),
       { ...field('avg_output_bytes', 'Avg. result'), datapoint: 'files.item.size' }, field('trend', 'Calls by bucket')],
     empty: 'No tool calls in this time.', load: () => import('./b/History').then(m => ({ default: m.ToolCalls })) },
+  // MCP servers fold their tools, open a server drawer and read their own route when visible.
+  { ...base, id: 'mcpServers', title: 'MCP servers and tools', kind: 'custom', sources: [{ route: '/api/board/mcp' }],
+    columns: [field('name', 'Server or tool'), count('calls', 'Calls'), field('sessions', 'Sessions'),
+      metric('failures', 'board.kpi.failures', 'Failures'), metric('fail_rate', 'board.kpi.fail_rate', 'Failure rate'),
+      duration('total_ms', 'Total time'), duration('p50_ms', 'p50'), duration('p95_ms', 'p95'),
+      { ...field('output_bytes', 'Result bytes'), datapoint: 'files.item.size' }, field('est_tokens', 'Tokens (estimate)'),
+      field('time_share', 'Share of tool time')],
+    empty: 'No tool calls in this time.', load: () => import('./b/Patterns').then(m => ({ default: m.McpServers })) },
+  // Convergence ranks sessions by heuristic signals, filters by signal and reads its own route when visible.
+  { ...base, id: 'convergence', title: 'Convergence', kind: 'custom', sources: [{ route: '/api/board/convergence' }],
+    columns: [field('title', 'Session'), field('score', 'Score'), field('evidence', 'Evidence'), field('requests', 'Requests'),
+      field('top_repeat', 'Repeats of one call'), field('retries', 'Retries after errors'),
+      field('top_file_edits', 'Most edits to one file'), field('longest_dry', 'Longest run without a change'),
+      field('tail_dry', 'Requests since the last change'), field('compactions', 'Compactions'),
+      token('tokens_per_change', 'Tokens per accepted change'), token('tokens', 'Tokens'), stamp('last_ts', 'Last request')],
+    empty: 'No session in this time shows a sign of not converging.',
+    load: () => import('./b/Patterns').then(m => ({ default: m.Convergence })) },
   // Confirmations combine outcome totals with separate pending and per-tool rows.
   { ...base, id: 'confirms', title: 'Tool confirmations', kind: 'custom', sources: [{ field: 'confirms' }],
     columns: [field('name', 'Tool'), count('auto', 'Auto approved'), count('approved', 'You approved'), count('denied', 'You denied'),

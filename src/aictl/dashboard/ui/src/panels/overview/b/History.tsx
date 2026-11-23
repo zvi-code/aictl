@@ -12,7 +12,8 @@ export function ToolCalls(props: PanelProps) {
   const result = () => ctx.read(def.sources[0])
   const total = () => number(ctx.read(def.sources[1]).value)
   const rows = createMemo(() => entries(result(), ['name']).map(entry => ({
-    ...entry, row: { ...entry.row, trend: Array.isArray(entry.row.trend)
+    ...entry, row: { ...entry.row, mcp_server: entry.row.mcp_server === '' ? 'Unknown server' : entry.row.mcp_server,
+      trend: Array.isArray(entry.row.trend)
       ? entry.row.trend.map(value => number(value) ?? 'Not available').join(', ') : undefined },
   })))
   const unnamed = () => {

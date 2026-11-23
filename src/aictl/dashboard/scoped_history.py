@@ -158,6 +158,15 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 for call in records["calls"]:
                     call["session_id"] = identity(node, raw)
             return result(200, {"node_id": label(node), **records})
+        if endpoint in {"mcp", "mcp/server", "convergence"}:
+            from .board_routes import _pattern_view
+
+            return result(*_pattern_view(path, params, query, now, history))
+        if endpoint == "session/convergence":
+            from .convergence import session_convergence
+
+            node, raw = parse_identity(one("session_id"), scope)
+            return result(*session_convergence(identity(node, raw), now, history=HistoryScope(reader, node, qualified=True)))
         if endpoint in {"tool", "error"}:
             name = one("name" if endpoint == "tool" else "key")
             if not name:

@@ -1,0 +1,49 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    restrict_sessions:bool = false, session_keys:dynamic = dynamic([]),
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long
+);
+// One 'tool' row per tool name called in the window, and one 'totals' row for all of them.
+// The dashboard groups the names by MCP server, so every figure here can be added up:
+// durations come as a histogram (bucket b counts calls of about 10^(b/20) ms, within 6 %),
+// and sessions of server tools as a set of session hashes.
+let wanted = (t:real, n:string, s:string, client:string) {
+    t between (since .. until) and isnotempty(s)
+    and (not(restrict_sessions) or strcat(strlen(n), ':', n, s) in (session_keys))
+    and (not(restrict_tools) or client in (requested_tools))
+};
+let versions = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key);
+// A call's newest version is in the window only if one of its versions is.
+let keys = versions | where wanted(ts, node_id, session_id, tool) | distinct ['project'], node_id, fact_key;
+let calls = materialize(versions
+    | join kind=inner keys on ['project'], node_id, fact_key
+    | project-away ['project1'], node_id1, fact_key1
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where wanted(ts, node_id, session_id, tool) and isnotempty(tool_name) and not(tool_name startswith_cs 'permission:')
+    | project tool_name, ts, duration_ms, is_error, output_bytes,
+              server_tool=tool_name matches regex @"^mcp(__|_|\.|:)|^[\w.-]+/[\w.-]+$",
+              skey=hash(strcat(node_id, '|', session_id)));
+let hist = calls
+    | where duration_ms > 0
+    | summarize n=count() by tool_name, b=toint(round(log10(duration_ms) * 20))
+    | summarize hist=make_bag(bag_pack(tostring(b), n)) by tool_name;
+union
+    (calls
+    | summarize calls=count(), failures=countif(is_error != 0), sessions=count_distinct(skey),
+                session_set=make_set_if(skey, server_tool, 5000), timed=countif(duration_ms > 0),
+                total_ms=sumif(duration_ms, duration_ms > 0), output_bytes=sum(output_bytes),
+                output_count=countif(isnotnull(output_bytes)), first_ts=min(ts), last_ts=max(ts) by tool_name
+    | join kind=leftouter hist on tool_name
+    | project-away tool_name1
+    | order by calls desc, tool_name asc
+    | take row_limit
+    | extend row_type='tool'),
+    (calls
+    | summarize calls=count(), failures=countif(is_error != 0), sessions=count_distinct(skey),
+                builtin_sessions=count_distinctif(skey, not(server_tool)), timed=countif(duration_ms > 0),
+                total_ms=sumif(duration_ms, duration_ms > 0), output_bytes=sum(output_bytes),
+                output_count=countif(isnotnull(output_bytes)), tool_names=count_distinct(tool_name)
+    | extend row_type='totals')

@@ -92,6 +92,15 @@ def handle_get(
                                                history=history)
             else:
                 status, payload = 400, {"error": "Missing name"}
+        elif path in {"/api/board/mcp", "/api/board/mcp/server", "/api/board/convergence"}:
+            status, payload = _pattern_view(path, qs, query, time.time() if now is None else now, history)
+        elif path == "/api/board/session/convergence":
+            if not one("session_id"):
+                status, payload = 400, {"error": "Missing session_id"}
+            else:
+                from .convergence import session_convergence
+
+                status, payload = session_convergence(one("session_id"), now, history=history)
         elif path == "/api/board/excerpt":
             at = _as_number(one("line"))
             status, payload = file_excerpt(one("path"), max(1, int(at or 1)), is_allowed) if one("path") else (400, {"error": "Missing path"})
@@ -113,6 +122,22 @@ def handle_get(
     except StoreError as exc:
         status, payload = 503, {"error": str(exc)}
     return status, json.dumps(payload).encode("utf-8")
+
+
+def _pattern_view(path: str, qs: dict[str, list[str]], query: str, now: float, history: HistoryScope) -> tuple[int, dict]:
+    """The MCP and convergence panels and the MCP server drawer, for the board's filters."""
+    from .convergence import convergence_board
+    from .mcp_view import mcp_board, mcp_server_detail
+
+    filters = parse_filters(query, now)
+    if path == "/api/board/convergence":
+        return convergence_board(filters, now, history=history)
+    if path == "/api/board/mcp":
+        return mcp_board(filters, now, history=history)
+    group = (qs.get("id") or [""])[0]
+    if not group:
+        return 400, {"error": "Missing id"}
+    return mcp_server_detail(group, filters, now, history=history)
 
 
 class BoardRoutes:

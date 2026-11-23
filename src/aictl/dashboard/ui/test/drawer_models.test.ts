@@ -129,3 +129,12 @@ it('DRW-TO-01 · groups MCP calls without adding percentiles or treating missing
     { ...first, mcp_server: null }])
   expect(result).toEqual([{ server: 'docs', calls: 5, failed: 1, output: 0, partial: true }])
 })
+
+it('DRW-TO-02 · adds run time and keeps server tools of an unknown server in their own row', () => {
+  const row = { name: 'mcp_a_b', mcp_server: '', calls: 2, failed: 0, total_ms: 40, max_ms: 30, p50_ms: 10, p95_ms: 30,
+    input_bytes: 5, output_bytes: 7, avg_input_bytes: null, avg_output_bytes: null, max_output_bytes: null, confirms: 0, blocked: 0 }
+  expect(mcpTotals([row, { ...row, name: 'mcp_a_c', total_ms: 2 }, { ...row, name: 'mcp__s__t', mcp_server: 's' }])).toEqual([
+    { server: 'Unknown server', calls: 4, failed: 0, total_ms: 42, input: 10, output: 14, partial: false },
+    { server: 's', calls: 2, failed: 0, total_ms: 40, input: 5, output: 7, partial: false },
+  ])
+})

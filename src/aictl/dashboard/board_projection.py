@@ -49,6 +49,7 @@ from .projection_utils import (
     _usd,
     is_server_tool,
     mask_secrets,
+    known_mcp_servers,
     mcp_server_of,
 )
 from .projections.history import (
@@ -1838,6 +1839,7 @@ def _tools_section(board: _Board) -> dict:
     overall.sort()
 
     out = []
+    servers = known_mcp_servers(stats)
     for name, row in sorted(stats.items(), key=lambda kv: (-kv[1]["calls"], kv[0]))[:MAX_LIST_ROWS]:
         ordered = sorted(values.get(name, []))
         out.append(
@@ -1850,7 +1852,7 @@ def _tools_section(board: _Board) -> dict:
                 "p50_ms": _ms(_percentile(ordered, 0.50)),
                 "p95_ms": _ms(_percentile(ordered, 0.95)),
                 "max_ms": _ms(row["max"]) if ordered else None,
-                "mcp_server": mcp_server_of(name),
+                "mcp_server": mcp_server_of(name, servers),
                 "avg_input_bytes": round(row["in"][0] / row["in"][1]) if row["in"][1] else None,
                 "avg_output_bytes": round(row["out"][0] / row["out"][1]) if row["out"][1] else None,
                 "output_bytes": row["out"][0] if row["out"][1] else None,

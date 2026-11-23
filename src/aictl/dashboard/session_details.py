@@ -47,6 +47,7 @@ from .projection_utils import (
     _short,
     _usd,
     mask_secrets,
+    known_mcp_servers,
     mcp_server_of,
 )
 from .projections.history import (
@@ -1134,6 +1135,8 @@ def _tool_totals(rows: Iterable[dict]) -> list[dict]:
 
     A call with no recorded time or size does not count toward that figure.
     """
+    rows = list(rows)
+    servers = known_mcp_servers(t["tool_name"] for t in rows)
     out = []
     for t in rows:
         name = t["tool_name"]
@@ -1141,7 +1144,7 @@ def _tool_totals(rows: Iterable[dict]) -> list[dict]:
         ni, no = t["input_count"], t["output_count"]
         out.append({
             "name": name,
-            "mcp_server": mcp_server_of(name),
+            "mcp_server": mcp_server_of(name, servers),
             "calls": t["calls"],
             "failed": t["failures"],
             "total_ms": _ms(sum(ms)) if ms else None,

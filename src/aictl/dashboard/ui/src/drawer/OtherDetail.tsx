@@ -12,6 +12,7 @@ import styles from './drawer.module.css'
 
 const FileEditor = lazy(() => import('./FileEditor'))
 const Hidden = lazy(() => import('./Hidden'))
+const McpDetail = lazy(() => import('./McpDetail'))
 type Props = { shell: DrawerProps; entry: Detail }
 
 function rangeQuery(ctx: PanelContext) {
@@ -137,6 +138,8 @@ function Skill(props: Props) {
 
 export default function OtherDetail(props: Props) {
   const title = () => props.entry.type === 'hidden' ? 'Hidden context' : props.entry.type === 'prompt' ? 'Prompt' :
+    props.entry.type === 'mcp' ? (props.entry.name === 'builtin' ? 'Built-in tools' : props.entry.name === 'unknown'
+      ? 'Unknown MCP server' : `MCP server ${props.entry.name?.replace(/^mcp:/, '')}`) :
     props.entry.path ?? props.entry.name ?? props.entry.key ?? 'Detail'
   return <Drawer open id="drawer" title={title()} onClose={props.shell.close} onEscape={props.shell.back} resizable
     actions={<Show when={props.shell.stack.length > 1}><button type="button" class={styles.button} onClick={props.shell.back}>Back</button></Show>}>
@@ -147,6 +150,7 @@ export default function OtherDetail(props: Props) {
         <Match when={props.entry.type === 'error'}><Failure {...props} /></Match>
         <Match when={props.entry.type === 'tool'}><Tool {...props} /></Match>
         <Match when={props.entry.type === 'skill'}><Skill {...props} /></Match>
+        <Match when={props.entry.type === 'mcp'}><Loading fallback={<PanelState state="loading" />}><McpDetail {...props} /></Loading></Match>
         <Match when={props.entry.type === 'hidden'}><Loading fallback={<PanelState state="loading" />}><Hidden shell={props.shell} /></Loading></Match>
       </Switch>
     </div>

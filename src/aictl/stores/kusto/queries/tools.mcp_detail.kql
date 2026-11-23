@@ -1,0 +1,52 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
+    restrict_sessions:bool = false, session_keys:dynamic = dynamic([]),
+    restrict_tools:bool = false, requested_tools:dynamic = dynamic([]),
+    requested_tool_names:dynamic, row_limit:long
+);
+// The calls of one group of tool names (one MCP server) in the window:
+// 'bucket' rows per time step, the 200 'session' rows with the most calls,
+// and the 500 newest 'failure' rows with their retained result text.
+let wanted = (t:real, n:string, s:string, client:string) {
+    t between (since .. until) and isnotempty(s)
+    and (not(restrict_sessions) or strcat(strlen(n), ':', n, s) in (session_keys))
+    and (not(restrict_tools) or client in (requested_tools))
+};
+let versions = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | where tool_name in (requested_tool_names)
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key);
+let keys = versions | where wanted(ts, node_id, session_id, tool) | distinct ['project'], node_id, fact_key;
+let calls = materialize(versions
+    | join kind=inner keys on ['project'], node_id, fact_key
+    | project-away ['project1'], node_id1, fact_key1
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where wanted(ts, node_id, session_id, tool) and tool_name in (requested_tool_names)
+    | project ['project'], node_id, fact_key, session_id, agent_id, tool_name, ts, duration_ms, is_error, output_bytes,
+              inline_summary=column_ifexists('result_summary', ''));
+let failed = materialize(calls | where is_error != 0 | top 500 by ts desc);
+let retained = union isfuzzy=true
+    (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, result_summary:string, _deleted:bool)[]),
+    (tool_invocations_text | project ['project'], node_id, dedup_key, _v, result_summary,
+                                    _deleted=column_ifexists('_deleted', false))
+    | where (all_nodes or node_id == requested_node) and dedup_key in (failed | project fact_key)
+    | summarize arg_max(_v, result_summary, _deleted) by ['project'], node_id, dedup_key
+    | where not(coalesce(_deleted, false))
+    | project ['project'], node_id, fact_key=dedup_key, kept_summary=result_summary;
+union
+    (calls
+    | extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
+    | summarize calls=count(), failures=countif(is_error != 0), total_ms=sumif(duration_ms, duration_ms > 0) by g
+    | extend row_type='bucket'),
+    (calls
+    | summarize calls=count(), failures=countif(is_error != 0), total_ms=sumif(duration_ms, duration_ms > 0),
+                output_bytes=sum(output_bytes), first_ts=min(ts), last_ts=max(ts),
+                tool_list=make_set(tool_name, 20) by node_id, session_id
+    | top 200 by calls desc
+    | extend row_type='session'),
+    (failed
+    | join kind=leftouter retained on ['project'], node_id, fact_key
+    | project row_type='failure', node_id, session_id, agent_id, tool_name, ts,
+              result_summary=coalesce(kept_summary, inline_summary))
+| take row_limit

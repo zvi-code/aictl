@@ -23,6 +23,7 @@ const items = [
   ['turns', 'Turns', lazy(() => import('./tabs/Turns'))],
   ['tools', 'Tool calls', lazy(() => import('./tabs/Tools'))],
   ['errors', 'Failures and loops', lazy(() => import('./tabs/Errors'))],
+  ['convergence', 'Convergence', lazy(() => import('./tabs/Convergence'))],
   ['changes', 'Changes', lazy(() => import('./tabs/Changes'))],
   ['artifacts', 'Artifacts', lazy(() => import('./tabs/Artifacts'))],
   ['commits', 'Commits', lazy(() => import('./tabs/Commits'))],
@@ -38,7 +39,7 @@ const items = [
 
 const glyphs: Record<typeof items[number][0], Glyph> = {
   flow: 'flow', context: 'context', overview: 'detail', instructions: 'book', transcript: 'prompts', timeline: 'clock',
-  turns: 'table', tools: 'tools', errors: 'warn', changes: 'changes', artifacts: 'file', commits: 'commit',
+  turns: 'table', tools: 'tools', errors: 'warn', convergence: 'refresh', changes: 'changes', artifacts: 'file', commits: 'commit',
   events: 'events', team: 'agents', procs: 'resources', integrations: 'sources', evidence: 'check', otel: 'effect',
   native: 'terminal', kql: 'command',
 }

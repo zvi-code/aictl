@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -184,19 +185,35 @@ def _session_row(history: HistoryScope, sid: str) -> dict:
     return row or {}
 
 
-def mcp_server_of(tool_name: str) -> str | None:
-    """The MCP server of a server tool; '' when the name does not say which; None for other tools.
+def mcp_server_of(tool_name: str, known: Iterable[str] = ()) -> str | None:
+    """The MCP server of a server tool; '' when it cannot be determined; None for other tools.
 
-    ``mcp__<server>__<tool>`` and ``<server>/<tool>`` name it. In ``mcp_a_b`` the server
-    and the tool cannot be told apart, since both may hold underscores.
+    This is the one place that derives a server from a tool name. ``mcp__<server>__<tool>``,
+    ``mcp:<server>:<tool>`` and ``<server>/<tool>`` name it. In ``mcp_a_b`` or ``mcp.a.b`` the
+    server and the tool cannot be told apart from the name alone, since both may hold the
+    separator: the server is then the longest of the *known* server names (seen in one of the
+    other forms, or configured) that the rest of the name starts with, followed by the separator.
+    A hyphen or dot in a known name also matches an underscore.
     """
     if not is_server_tool(tool_name):
         return None
     if tool_name.startswith("mcp__"):
         return tool_name[5:].split("__", 1)[0]
+    if tool_name.startswith("mcp:"):
+        return tool_name[4:].split(":", 1)[0]
     if "/" in tool_name:
         return tool_name.split("/", 1)[0]
+    sep, rest = tool_name[3], tool_name[4:]
+    for name in sorted({k for k in known if k}, key=lambda k: (-len(k), k)):
+        spellings = {name, re.sub(r"[-.]", "_", name)} if sep == "_" else {name}
+        if any(rest.startswith(spelled + sep) for spelled in spellings):
+            return name
     return ""
+
+
+def known_mcp_servers(tool_names: Iterable[str]) -> set[str]:
+    """The server names that tool names state without doubt, to resolve ``mcp_a_b`` names with."""
+    return {server for name in tool_names if (server := mcp_server_of(name))}
 
 
 def _as_int(value: Any) -> int | None:

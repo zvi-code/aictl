@@ -8,7 +8,7 @@ import type { JSX } from '@solidjs/web'
 export type NodeScope = ReturnType<typeof boardNodeScope>
 export type BoardSource = { field: keyof BoardFields; path?: string; wholeRange?: boolean }
 export type Source = BoardSource | { topic: keyof LiveTopicData; entity?: string; path?: string } |
-  { route: '/api/board/context' | '/api/board/sessions' | '/api/board/nodes'; path?: string }
+  { route: '/api/board/context' | '/api/board/sessions' | '/api/board/nodes' | '/api/board/mcp' | '/api/board/convergence'; path?: string }
 /** `hint` names a row field whose text is the cell's tooltip, such as why a status holds. */
 export type FieldRef = { path: string; label?: string; datapoint?: string; format?: 'timestamp'; scale?: number; hint?: string }
 export type Row = Readonly<Record<string, unknown>>
@@ -24,7 +24,7 @@ export type DetailState<T> = {
 }
 export type DetailResource<T> = Accessor<DetailState<T> | undefined> & { retry: () => void }
 export type Command = { title: string; lead: string; command: string; action: string; args?: Row; done: string; applyLabel?: string }
-export type Detail = { type: 'file' | 'tool' | 'skill' | 'prompt' | 'error' | 'hidden'; path?: string; name?: string; key?: string; session_id?: string; ts?: number; record?: string; line?: number }
+export type Detail = { type: 'file' | 'tool' | 'skill' | 'mcp' | 'prompt' | 'error' | 'hidden'; path?: string; name?: string; key?: string; session_id?: string; ts?: number; record?: string; line?: number }
 export type PanelAction =
   | { kind: 'agent'; field: string; tab?: string; tabs?: { field: string; values: Record<string, string> }; label?: string; excludeStopped?: boolean; when?: (row: Row) => boolean }
   | { kind: 'filter'; field: string; filter: 'model' | 'project' | 'status'; label: string }

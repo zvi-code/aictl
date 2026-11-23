@@ -8,7 +8,7 @@
     { "id": "sessions", "title": "Sessions", "bands": [[{"id":"sessionsT","height":496}]] },
     { "id": "prompts", "title": "Prompts and skills", "bands": [[{"id":"promptsL","span":6,"height":552},{"id":"pprompts","span":3},{"id":"skills","span":3}], [{"id":"workflows","height":448}]] },
     { "id": "context", "title": "Context", "bands": [[{"id":"budget"}], [{"id":"tokenSplit","span":6},{"id":"ctxMap","span":6}], [{"id":"memory","span":6},{"id":"dailyModels","span":6}], [{"id":"inventory","height":416}], [{"id":"lifetime"}]] },
-    { "id": "tools", "title": "Tools, failures and speed", "bands": [[{"id":"toolCalls","span":7},{"id":"confirms","span":5}], [{"id":"errors","span":5},{"id":"latency","span":7}], [{"id":"loops","height":552}]] },
+    { "id": "tools", "title": "Tools, failures and speed", "bands": [[{"id":"toolCalls","span":7},{"id":"confirms","span":5}], [{"id":"errors","span":5},{"id":"latency","span":7}], [{"id":"mcpServers","height":552}], [{"id":"convergence","height":616}], [{"id":"loops","height":552}]] },
     { "id": "changes", "title": "Changes and testing", "bands": [[{"id":"changesT","span":6,"height":504},{"id":"tests","span":6}], [{"id":"memfiles","height":432}]] },
     { "id": "resources", "title": "Machine", "bands": [[{"id":"cpu","span":6},{"id":"ram","span":6}], [{"id":"alerts","height":416}], [{"id":"procs","height":568}], [{"id":"traffic"}], [{"id":"daemon"}]] },
     { "id": "effect", "title": "Settings in effect", "bands": [[{"id":"findings","height":432}], [{"id":"settings","height":432}]] },

@@ -219,6 +219,28 @@ _VIEWS = {
     ),
     "context.growth": (f"{_TIME} growth_points calendar_bins", "node_id ts mem_tokens memory_entries"),
     "context.telemetry": (f"{_TIME}", "node_id ts tool source confidence"),
+    "tools.mcp": (
+        f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
+        "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
+        "first_ts last_ts hist tool_names",
+    ),
+    "tools.mcp_detail": (
+        f"{_WINDOW} restrict_sessions session_keys restrict_tools requested_tools requested_tool_names",
+        "row_type g node_id session_id agent_id tool_name ts calls failures total_ms output_bytes first_ts last_ts tool_list "
+        "result_summary",
+    ),
+    "sessions.convergence": (
+        f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
+        "node_id session_id tool project_path model requests tokens output_tokens cost_usd first_ts last_ts calls errors "
+        "repeats retries failed_retries edits accepted commits last_change top_rep top_rep_calls top_rep_first top_rep_last "
+        "top_rep_label top_file top_file_edits longest_dry dry_start dry_end tokens_late out_early out_late files_new "
+        "files_new_late compactions tail_dry rank_hint",
+    ),
+    "sessions.convergence_turns": (
+        f"{_TIME} requested_session",
+        "row_type rn ts agent_id model tokens output_tokens cost_usd calls errors repeats retries edits accepted commits "
+        "new_files sig n reps failed first_rn last_rn tool_name label rns file before_tokens after_tokens",
+    ),
     "sessions.search": (
         f"{_TIME} restrict_tools requested_tools search_text moving_sessions page_offset page_size",
         "row_type total node_id session_id data",
@@ -264,6 +286,7 @@ _PARAMETER_TYPES = {
     "requested_tools": list,
     "session_keys": list,
     "requested_paths": list,
+    "requested_tool_names": list,
     "moving_sessions": list,
     "search_terms": list,
     "calendar_days": list,

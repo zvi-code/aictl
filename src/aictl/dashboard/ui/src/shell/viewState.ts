@@ -11,7 +11,7 @@ export function readDrawer(search: string): DrawerEntry | undefined {
   const type = q.get('detail'), record = q.get('record')
   if (!record) return
   if (type === 'file') return { type, path: record, record: q.get('detail_session') ?? undefined }
-  if (type === 'tool' || type === 'skill') return { type, name: record }
+  if (type === 'tool' || type === 'skill' || type === 'mcp') return { type, name: record }
   if (type === 'error') return { type, key: record }
   if (type === 'prompt') return { type, session_id: record, ts: Number(q.get('detail_ts')) }
 }

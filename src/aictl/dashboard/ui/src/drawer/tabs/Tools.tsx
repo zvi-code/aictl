@@ -18,8 +18,8 @@ export default function Tools(props: TabProps) {
           action={{ label: row => `Open ${labelOf(row.name)}`, run: row => props.shell.open({ type: 'tool', name: row.name }) }} />
       </Section>
       <Section title="MCP server totals"><Rows label="MCP server totals" rows={servers()} identity={['server']}
-        columns={['server', 'calls', 'failed', ['input', 'Recorded input (bytes)', 'number'],
-          ['output', 'Recorded output (bytes)', 'number'], ['partial', 'Some sizes unavailable']]} /></Section>
+        columns={['server', 'calls', 'failed', ['total_ms', 'Recorded run time (ms)', 'number'], ['input', 'Recorded input (bytes)', 'number'],
+          ['output', 'Recorded output (bytes)', 'number'], ['partial', 'Some times or sizes unavailable']]} /></Section>
       <Section title="Individual calls"><Rows label="Individual calls" rows={calls()} identity={['ts', 'name', 'target']}
         columns={[[ 'ts', 'Time', 'time' ], 'name', 'target', ['duration_ms', 'Duration (ms)', 'number'],
           'input_bytes', 'output_bytes', 'failed', 'confirm']} /></Section>
