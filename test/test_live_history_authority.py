@@ -71,18 +71,30 @@ def test_unresolved_daily_usage_does_not_hide_queryable_context_inventory(kusto_
         context_projection._context_db_memo.clear()
 
 
-def test_session_file_inventory_uses_stored_paths_and_loaded_evidence_only():
+def test_session_file_inventory_lists_only_files_the_tool_sends_to_the_model():
     def inventory(params):
         assert params["requested_path"] == "C:/p_one" and params["requested_tool"] == "copilot-cli"
-        return [{"path": "C:/p_one/a.md"}, {"path": "C:/global/current.md"}]
+        return [
+            {"path": "C:/p_one/AGENTS.md", "tool": "copilot-cli", "category": "instructions", "scope": "project"},
+            {"path": "C:/Users/me/.copilot/copilot-instructions.md", "tool": "copilot-cli", "category": "instructions",
+             "scope": "global"},
+            # Files the tool keeps for itself: never instructions, whatever their folder.
+            {"path": "C:/Users/me/.copilot/session-store.db", "tool": "copilot-cli", "category": "database",
+             "scope": "global"},
+            {"path": "C:/Users/me/.copilot/data.db-wal", "tool": "", "category": "", "scope": "global"},
+            {"path": "C:/p_one/notes.md", "tool": "copilot-cli", "category": "instructions", "scope": "project"},
+            {"path": "C:/p_one/rules.md", "tool": "copilot-cli", "category": "other", "scope": "project",
+             "meta": '{"sent_to_llm": "yes"}'},
+        ]
 
     history = board_projection.HistoryScope.local(Store(reader=FixtureReader({"files.session_inventory": inventory})))
     result = session_context_files("C:/p_one", [{"path": "C:/loaded/instructions.md", "how": "recorded"}],
                                    "copilot-cli", history=history)
     assert {row["path"] for row in result["files"]} == {
-        "C:/p_one/a.md", "C:/global/current.md", "C:/loaded/instructions.md",
+        "C:/p_one/AGENTS.md", "C:/Users/me/.copilot/copilot-instructions.md", "C:/p_one/rules.md",
+        "C:/loaded/instructions.md",
     }
-    assert result["source"] == "kusto.queryable" and result["total"] == 3
+    assert result["source"] == "kusto.queryable" and result["total"] == 4
     assert next(row for row in result["files"] if row["path"].startswith("C:/loaded"))["loaded"]
 
 

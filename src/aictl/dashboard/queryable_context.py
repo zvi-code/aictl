@@ -115,10 +115,33 @@ def context_snapshot(db: Any, current: Any, *, history=None) -> Any:
                               telemetry_rows(history.read("context.telemetry")), current)
 
 
+# The path tables' ``sent_to_llm`` values of a file a tool puts into the model's context.
+_SENT_TO_MODEL = frozenset({"yes", "conditional", "on-demand", "partial"})
+
+
+def sent_to_model(path: str, tool: str, category: str, scope: str, raw_meta: Any = "") -> bool:
+    """Whether the path tables say *tool* loads this inventory file into the model's context: its
+    own ``sent_to_llm`` (meta), else that of every path-table row its path matches. A database, a
+    cache, a log or a setting is not, and neither is a file no row describes."""
+    try:
+        meta = json.loads(raw_meta) if isinstance(raw_meta, str) and raw_meta else (raw_meta or {})
+    except ValueError:
+        meta = {}
+    if isinstance(meta, dict) and meta.get("sent_to_llm"):
+        return meta["sent_to_llm"] in _SENT_TO_MODEL
+    normalized = path.replace("\\", "/").lower()
+    values = {spec.sent_to_llm for pattern, spec in _policy_index(True)[tool, category]
+              if (not scope or spec.scope == scope) and pattern.match(normalized)}
+    return bool(values) and values <= _SENT_TO_MODEL
+
+
 def session_context_files(folder: str, loaded: list[dict], tool: str = "", *, history) -> dict:
-    """The historical inventory and loaded-file evidence, without a tree walk."""
+    """The historical inventory and loaded-file evidence, without a tree walk. The inventory gives
+    only the files its tool loads into the model's context (``sent_to_model``)."""
     paths = {r["path"] for r in history.read("files.session_inventory", requested_path=folder,
-                                            requested_tool=tool)}
+                                            requested_tool=tool)
+             if sent_to_model(r["path"], r.get("tool") or "", r.get("category") or "", r.get("scope") or "",
+                              r.get("meta") or "")}
     loaded_paths = {row["path"] for row in loaded}
     paths.update(loaded_paths)
     from .projection_utils import MAX_LIST_ROWS, _basename

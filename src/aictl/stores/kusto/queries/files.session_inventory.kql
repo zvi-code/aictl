@@ -11,4 +11,4 @@ files
        or replace_string(path, '\\', '/') startswith strcat(path_prefix, '/')))
 | sort by path asc
 | take row_limit
-| project path
+| project path, tool, category, scope, meta

@@ -248,7 +248,7 @@ _VIEWS = {
         f"{_TIME} requested_tool requested_path requested_paths inventory_mode project_path_key fold_project after_row",
         "node_id path tool category scope size_bytes tokens lines mtime meta last_changed",
     ),
-    "files.session_inventory": ("all_nodes requested_node requested_tool requested_path", "path"),
+    "files.session_inventory": ("all_nodes requested_node requested_tool requested_path", "path tool category scope meta"),
     "files.artifacts": (
         f"{_TIME} session_keys counts_only after_row", "row_type node_id session_id values",
     ),
