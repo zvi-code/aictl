@@ -1,4 +1,4 @@
-import { createMemo, createSignal, lazy, untrack } from 'solid-js'
+import { createMemo, createSignal, lazy, Show, untrack } from 'solid-js'
 import type { ContextLocal } from '../../data/contract.gen'
 import { keyedRows } from '../kinds/model'
 import type { VisualRowOptions } from '../kinds/Rows'
@@ -31,9 +31,31 @@ export function workflowOptions({ ctx, def }: PanelProps) {
 }
 
 type ToolBudget = ContextLocal['budget']['tools'][number]
+/** A tool with no token in any file it loads into the model says nothing in the budget. */
+export const budgetSays = (tool: Pick<ToolBudget, 'always' | 'on_demand' | 'conditional'>) =>
+  tool.always > 0 || tool.on_demand > 0 || tool.conditional > 0
+
+/** One line: the tools left out of the budget, and the shown tools whose share cannot be given. */
+export function budgetNote(tools: readonly Pick<ToolBudget, 'label' | 'tool' | 'always' | 'on_demand' | 'conditional' | 'window' | 'model'>[],
+  hostWide = false) {
+  const names = (list: typeof tools) => [...new Set(list.map(tool => tool.label || tool.tool))].join(', ')
+  const left = tools.filter(tool => !budgetSays(tool))
+  const unlimited = tools.filter(tool => budgetSays(tool) && tool.window == null)
+  return [
+    left.length ? `Not shown: ${names(left)} (no ${hostWide ? 'host-wide ' : ''}file they load into the model was reported).` : '',
+    unlimited.length ? `No share for ${names(unlimited)}: no context limit is known for ${
+      [...new Set(unlimited.map(tool => tool.model ?? 'an unreported model'))].join(', ')}.` : '',
+  ].filter(Boolean).join(' ') || undefined
+}
+
 export function budgetOptions({ ctx }: PanelProps) {
   const context = useContext(ctx)
-  const result = createMemo(() => context.rows<ToolBudget>('budget.tools'))
+  const all = createMemo(() => context.rows<ToolBudget>('budget.tools'))
+  const result = createMemo(() => {
+    const state = all()
+    return state.value ? { ...state, value: state.value.filter(budgetSays) } : state
+  })
+  const note = createMemo(() => budgetNote(all().value ?? [], ctx.scope() !== 'local'))
   const rows = createMemo(() => keyedRows(result(), ['tool']).flatMap(entry => {
     const tool = entry.row as ToolBudget & { node_id?: string }
     const children: KeyedRow[] = (Array.isArray(tool.projects) ? tool.projects : []).map(project => ({
@@ -49,11 +71,14 @@ export function budgetOptions({ ctx }: PanelProps) {
           `${item.model} (${item.window != null ? `${fmtN(item.window)} limit` : 'limit not known'})`).join(', ')}` : undefined,
       ].filter(Boolean).join(' · ') || undefined } }, ...children]
   }))
-  return { rows, result, retry: context.retry, description: <p class={css.note}>
-    {ctx.scope() === 'local'
-      ? 'File token estimates. Always loaded includes global files and the largest project. It excludes the system prompt and conversation.'
-      : 'Reported host-wide files with a known loading policy only. These estimates are not project or session budgets.'}
-  </p> }
+  return { rows, result, retry: context.retry, description: <>
+    <p class={css.note}>
+      {ctx.scope() === 'local'
+        ? 'File token estimates. Always loaded includes global files and the largest project. It excludes the system prompt and conversation.'
+        : 'Reported host-wide files with a known loading policy only. These estimates are not project or session budgets.'}
+    </p>
+    <Show when={note()}>{text => <p class={css.note}>{text()}</p>}</Show>
+  </> }
 }
 
 const dailyChoices = [['tokens', 'Tokens'], ['cost_usd', 'Cost'], ['requests', 'Calls']] as const

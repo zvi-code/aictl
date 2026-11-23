@@ -166,9 +166,8 @@ export const overviewA: readonly PanelDef[] = [
       field('policy', 'Model and limit from'), field('always', 'Always loaded', 'budget.context_window.always_loaded'),
       share('always_share', 'Always loaded share'), field('on_demand', 'On demand', 'budget.context_window.on_demand'),
       field('conditional', 'Conditional', 'budget.context_window.conditional'), field('cacheable', 'Cacheable', 'budget.context_window.cacheable'),
-      tokens('max_potential', 'Max potential'), field('never_sent_files', 'Never sent files', 'board.context.never_sent_files'),
-      share('potential_share', 'Potential share')],
-    actions: [], empty: 'No context loading policy was reported.', load: () => loadRows(import('./contextOptions').then(m => m.budgetOptions)),
+      tokens('max_potential', 'Max potential'), share('potential_share', 'Potential share')],
+    actions: [], empty: 'No tool reported a file it loads into the model.', load: () => loadRows(import('./contextOptions').then(m => m.budgetOptions)),
   },
   {
     // Category bars select a related file table and an independent file preview.
