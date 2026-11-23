@@ -8,6 +8,7 @@ import { Segmented } from '../../ui/Segmented'
 import { createBoxes, HiddenBoxes } from '../../ui/Box'
 import { Checkpoints } from '../MemoryViews'
 import { clip, number, openAgent, records, Resource, Rows, Section, Series, Stats, text, type TabProps } from '../shared'
+import { agentName, partLabel, TOOL_DEFINITIONS_TILE } from '../contextModel'
 import { EvidenceBrowser } from './Evidence'
 import styles from '../drawer.module.css'
 
@@ -85,7 +86,8 @@ export default function Context(props: TabProps) {
           <Stats items={[
             { label: 'Current', value: context()?.last, unit: 'tokens' }, { label: 'First', value: context()?.first, unit: 'tokens' },
             { label: 'Peak', value: context()?.peak, unit: 'tokens' }, { label: 'Model calls', value: context()?.calls },
-            { label: 'Tool definitions', value: context()?.tool_tokens, unit: 'tokens' },
+            { label: TOOL_DEFINITIONS_TILE, value: context()?.tool_tokens, unit: 'tokens' },
+            ...context()?.prompt_limit ? [{ label: 'Context window', value: context()?.prompt_limit, unit: 'tokens' }] : [],
             { label: 'Last request', value: context()?.request_bytes_last == null ? undefined : fmtBytes(context()?.request_bytes_last) },
           ]} />
           <Meter label="Context window used" value={context()?.prompt_limit ? context()?.last : undefined} max={context()?.prompt_limit ?? undefined}
@@ -105,7 +107,7 @@ export default function Context(props: TabProps) {
           </Show>
           <Show when={parts()?.length} fallback={<PanelState state={parts() ? 'empty' : 'unavailable'} />}>
             <div class={styles.stats}><For each={parts()}>{row => <div class={styles.stack}>
-              <Meter label={`${text(row.label) ?? 'Context'}${row.estimated ? ' (estimated)' : ''}`} value={number(row.tokens)}
+              <Meter label={partLabel(row, context()?.split)} value={number(row.tokens)}
                 max={denominator()} display={number(row.tokens)?.toLocaleString()} />
               <Show when={records(row.items)?.length}><button type="button" class={styles.button} aria-pressed={category() === row.key ? 'true' : 'false'}
                 onClick={() => selectCategory(category() === row.key ? undefined : text(row.key))}>Inspect {text(row.label)}</button></Show>
@@ -169,8 +171,8 @@ export default function Context(props: TabProps) {
               </div>
             </Section>
           }}</Show>
-          <Rows label="Context by agent" rows={context()?.by_agent} identity={['agent_id']} columns={['agent_id', 'calls', 'first', 'peak', 'last']}
-            action={{ label: row => `Open ${row.agent_id || 'main agent'}`, run: row => {
+          <Rows label="Context by agent" rows={context()?.by_agent?.map(row => ({ ...row, agent_id: agentName(row.agent_id, data().subagents?.find(item => item.id === row.address)?.title) }))} identity={['address']} columns={['agent_id', 'calls', 'first', 'peak', 'last']}
+            action={{ label: row => `Open ${row.agent_id}`, run: row => {
               // The address carries the session: an agent id alone can name agents of several sessions.
               const id = text(row.address) ?? text(row.agent_id)
               if (id) openAgent(props, id, 'context')
