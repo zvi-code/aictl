@@ -46,6 +46,8 @@ const confirmTotals = [
   metric('approved', 'board.confirm.row', 'You approved'),
   metric('denied', 'board.confirm.row', 'You denied'),
   metric('blocked', 'board.confirm.row', 'Blocked by a rule'),
+  // Calls whose stored row carries no permission decision: with it the parts add up to the tool calls.
+  metric('not_reported', 'board.confirm.row', 'Confirmation not reported'),
   field('p95_wait_s', 'p95 wait (s)'),
 ]
 
@@ -56,7 +58,7 @@ export function Confirmations(props: PanelProps) {
   const pending = createMemo(() => rowsFrom((data()?.pending ?? []).filter(item => !ctx.stopped(item.agent_id)),
     row => identity(row.agent_id, row.name, row.since_ts, row.target)))
   const tools = createMemo(() => rowsFrom(data()?.by_tool ?? [], row => identity(row.name)))
-  const outcomes = confirmTotals.slice(1, 5)
+  const outcomes = confirmTotals.slice(1, 6)
   const total = () => {
     const values = outcomes.map(({ path }) => number(at(data(), path)))
     return values.every(value => value != null) ? values.reduce<number>((sum, value) => sum + value!, 0) : undefined

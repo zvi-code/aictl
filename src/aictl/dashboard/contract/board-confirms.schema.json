@@ -6,6 +6,7 @@
   "properties": {
     "asked": {"type": ["integer", "null"]},
     "blocked": {"type": ["integer", "null"]},
+    "not_reported": {"type": ["integer", "null"]},
     "auto": {"type": ["integer", "null"]},
     "approved": {"type": ["integer", "null"]},
     "denied": {"type": ["integer", "null"]},
@@ -33,6 +34,8 @@
           "approved": {"type": "integer"},
           "denied": {"type": "integer"},
           "blocked": {"type": "integer"},
+          "not_reported": {"type": ["integer", "null"]},
+          "pending": {"type": "integer"},
           "median_wait_s": {"type": ["number", "null"]}
         },
         "required": ["name", "auto", "approved", "denied", "blocked", "median_wait_s"]

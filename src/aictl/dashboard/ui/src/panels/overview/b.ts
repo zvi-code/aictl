@@ -72,7 +72,7 @@ export const overviewB: readonly PanelDef[] = [
   // Confirmations combine outcome totals with separate pending and per-tool rows.
   { ...base, id: 'confirms', title: 'Tool confirmations', kind: 'custom', sources: [{ field: 'confirms' }],
     columns: [field('name', 'Tool'), count('auto', 'Auto approved'), count('approved', 'You approved'), count('denied', 'You denied'),
-      count('blocked', 'Blocked by a rule'), field('median_wait_s', 'Median wait (s)')],
+      count('blocked', 'Blocked by a rule'), count('not_reported', 'Confirmation not reported'), field('median_wait_s', 'Median wait (s)')],
     empty: 'No confirmations in this time.', load: () => import('./b/History').then(m => ({ default: m.Confirmations })) },
   // Failure history needs a chart and a separate table of grouped error keys.
   { ...base, id: 'errors', title: 'Failures and errors', kind: 'chart', sources: [failures, { field: 'errors' }, buckets],

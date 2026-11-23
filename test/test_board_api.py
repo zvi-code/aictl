@@ -891,6 +891,19 @@ class TestSections:
         assert by_tool["Bash"]["median_wait_s"] == 2.0
         assert by_tool["Edit"]["median_wait_s"] is None
 
+    def test_confirmations_and_the_calls_without_one_add_up_to_the_tool_calls(self, db):
+        """Found on real data: 5,996 auto + 12 blocked against 6,597 calls, with the gap unexplained."""
+        payload = _board(db)
+        c = payload["confirms"]
+        calls = {t["name"]: t["calls"] for t in payload["tools"]}
+        by_tool = {r["name"]: r for r in c["by_tool"]}
+        for name, n in calls.items():
+            row = by_tool[name]
+            parts = ("auto", "approved", "denied", "blocked", "pending", "not_reported")
+            assert sum(row[k] for k in parts) == n, name
+        assert c["not_reported"] == sum(row["not_reported"] for row in by_tool.values())
+        assert c["not_reported"] > 0
+
     def test_pending_on_agent_and_attention(self, db):
         payload = _board(db)
         waiter = _agent(payload, "waiter")

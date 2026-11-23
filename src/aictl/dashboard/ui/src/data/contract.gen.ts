@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 815afb96bf76a02ada95d10808d0cf9e3c4a6aff0e5d1194810833f49584946d
+// Schema digest: e3be523d72999b8ba59b87ac7373423d737435f7b6781a7a1fb31c8321f347fa
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -141,6 +141,7 @@ export type BoardChanges = {
 export type BoardConfirms = {
   asked: number | null;
   blocked: number | null;
+  not_reported?: number | null;
   auto: number | null;
   approved: number | null;
   denied: number | null;
@@ -157,6 +158,8 @@ export type BoardConfirms = {
     approved: number;
     denied: number;
     blocked: number;
+    not_reported?: number | null;
+    pending?: number;
     median_wait_s: number | null;
   }>;
 };

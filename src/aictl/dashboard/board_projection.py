@@ -1925,6 +1925,7 @@ def _tools_section(board: _Board) -> dict:
         )
     return {
         "rows": out,
+        "calls_by_name": {name: row["calls"] for name, row in stats.items()},
         "durations": overall,
         "timed": timed_total,
         "longest": longest or None,
@@ -1935,15 +1936,24 @@ def _tools_section(board: _Board) -> dict:
     }
 
 
-def _confirms_section(board: _Board) -> dict:
+def _confirms_section(board: _Board, calls_by_name: dict[str, int] | None = None) -> dict:
+    """How each tool call was let through, and how many calls carry no such record.
+
+    ``not_reported`` is the tool calls of the Tool calls table minus the calls with a confirmation
+    value, so the parts add up to the calls; a call is missing here when its stored row has an
+    empty ``confirm`` (the source that wrote it reported no permission decision).
+    """
     counts = {"auto": 0, "approved": 0, "denied": 0, "blocked": 0, "pending": 0}
-    by_tool: dict[str, dict[str, int]] = defaultdict(lambda: {"auto": 0, "approved": 0, "denied": 0, "blocked": 0})
+    by_tool: dict[str, dict[str, int]] = defaultdict(lambda: {"auto": 0, "approved": 0, "denied": 0, "blocked": 0, "pending": 0})
     waits: dict[str, list[float]] = defaultdict(list)
     all_waits: list[float] = []
+    # Calls with any confirmation value, pending included, per tool.
+    recorded: dict[str, int] = defaultdict(int)
     for sid, _aid, name, _target, _ts, confirm, wait in board.confirm_rows:
         if sid not in board.scope:
             continue
         counts[confirm] = counts.get(confirm, 0) + 1
+        recorded[name] += 1
         if confirm in by_tool[name]:
             by_tool[name][confirm] += 1
         if wait and wait > 0 and confirm in ("approved", "denied"):
@@ -1958,7 +1968,15 @@ def _confirms_section(board: _Board) -> dict:
         for row in rows
     ]
     p95 = _percentile(all_waits, 0.95)
+    not_reported = None
+    if calls_by_name is not None:
+        not_reported = sum(max(0, n - recorded.get(name, 0)) for name, n in calls_by_name.items())
+        for name, n in calls_by_name.items():
+            if n > recorded.get(name, 0):
+                # A tool whose calls carry no confirmation still gets its row.
+                by_tool.setdefault(name, {"auto": 0, "approved": 0, "denied": 0, "blocked": 0, "pending": 0})
     return {
+        "not_reported": not_reported,
         # Nobody was asked about a call that a rule let through or stopped.
         "asked": counts["approved"] + counts["denied"] + counts["pending"] if reported else None,
         "blocked": counts["blocked"] if reported else None,
@@ -1971,6 +1989,7 @@ def _confirms_section(board: _Board) -> dict:
             {
                 "name": name,
                 **row,
+                "not_reported": None if calls_by_name is None else max(0, calls_by_name.get(name, 0) - recorded.get(name, 0)),
                 "median_wait_s": (
                     None if not waits.get(name) else round(_percentile(waits[name], 0.5) / 1000, 2)
                 ),
@@ -3352,7 +3371,7 @@ def compute_board(
         "tests_piped": tests_piped,
         "prompts_total": sum(n for sid, _, _, _, n, _, _ in board.prompt_rows if not board.narrowed or sid in board.scope),
         "tools": tool_section["rows"],
-        "confirms": _confirms_section(board),
+        "confirms": _confirms_section(board, tool_section["calls_by_name"]),
         "errors": errors,
         "latency": latency_rows,
         "loops": loops,
