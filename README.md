@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](HOWTO.md#install-on-windows)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Local-first](https://img.shields.io/badge/data-100%25%20local-orange)](#how-it-works)
+[![Storage: Kusto](https://img.shields.io/badge/history-Kusto-orange)](#history-storage-kusto)
 
 Claude Code, Copilot, Cursor, Codex, Gemini — each with its own instruction
 files, MCP servers, hooks, memory, background processes, and token bills.
@@ -57,8 +57,11 @@ everything the tools do:
   data-quality events, snapshot staleness, dropped samples — a dead
   collector cannot masquerade as "live"
 
-Everything runs locally. No cloud dependency, no accounts, no data leaves
-your machine; the dashboard binds to loopback with CORS/CSRF protections.
+The daemon, the hook and OpenTelemetry receivers and the dashboard run on your
+machine, and the dashboard binds to loopback with CORS/CSRF protections. History
+is stored in the Kusto database you configure: a local emulator or a cluster you
+own (see [History storage](#history-storage-kusto)). Without one, aictl shows
+live data only.
 
 ## Quick Start
 
@@ -126,7 +129,7 @@ Install, update, removal, Windows and troubleshooting steps are in [HOWTO.md](HO
 
 ### History storage: Kusto
 
-aictl stores history in a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) database or a Fabric Eventhouse. Without a configured database, the daemon serves live runtime data without history. Both Azure Kusto SDKs are required and installed with aictl. Set `kusto_cluster` and `kusto_database` under `[storage]` in the config file or pass them on the command line:
+aictl stores history in a [Kusto (Azure Data Explorer)](https://learn.microsoft.com/azure/data-explorer/) database or a Fabric Eventhouse. Without a configured database, the daemon serves live runtime data without history. Both Azure Kusto SDKs are required and installed with aictl. Set `kusto_cluster` and `kusto_database` under `[storage]` in the config file, pass `--kusto-cluster` and `--kusto-database` on the command line, or set the environment variables `AICTL_KUSTO_CLUSTER` and `AICTL_KUSTO_DATABASE`. The database defaults to `aictl`:
 
 ```bash
 aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --kusto-database aictl
@@ -135,6 +138,48 @@ aictl daemon serve --kusto-cluster https://mycluster.westus.kusto.windows.net --
 Both engine and `ingest-` URLs are accepted. Remote `auto` selects streaming or queued ingestion by table. Inline ingestion is only for the local emulator. Queued handoff confirms submission, not visibility.
 
 Remote sign-in uses the Azure CLI by default. aictl creates the tables and sets retention policies on the configured database. Existing SQLite history is not migrated. See [cluster setup](docs/kusto-cluster.md) and run `aictl db schema` for current table definitions.
+
+Since layout 3, each node (each machine that writes) has its own tables, named `<table>__<node key>`. A stored function with the name of each logical table reads the tables of all nodes. `aictl db layout` shows the layout this aictl needs, the layout stored for this node, and every node in the database.
+
+### Upgrading and migrating the stored data
+
+The stored data has a layout version. When a new aictl needs a different layout, it stops at start, says so, and names the command to run. It does not change or delete stored data without a yes (`--yes`, an answer at the prompt of an interactive `aictl daemon serve`, or `auto_migrate = true` under `[storage]`, which allows a migration at start but never a reset).
+
+The migration is non-destructive. The old shared tables are renamed to `legacy__*` and kept until you drop them. The copy of each node's rows is checked (row count and a checksum of the key and version columns) before anything is switched.
+
+Run the commands with the new aictl, on one machine. Name the database with `--kusto-cluster` and `--kusto-database`, or set `AICTL_KUSTO_CLUSTER` and `AICTL_KUSTO_DATABASE` (or the `[storage]` keys) once. Every command below takes the two flags.
+
+1. Stop every aictl daemon that writes to the database, on every machine.
+2. Look at what is stored:
+
+   ```bash
+   aictl db layout --nodes
+   ```
+
+3. See what the migration would do. This changes nothing:
+
+   ```bash
+   aictl db migrate --dry-run
+   ```
+
+4. Run it:
+
+   ```bash
+   aictl db migrate --yes
+   ```
+
+   If it is interrupted, run the same command again. It continues where it stopped: a step counts as done only when it is recorded as done, and an unfinished copy is made again. If another machine started the migration and stopped, add `--take-over` after you have stopped that machine.
+5. Check the result: `aictl db layout --nodes` shows the verdict `current`, every node, its tables, and the `legacy__*` tables that were kept.
+6. Upgrade aictl on every node and start the daemons. An older aictl (layout 2 or lower) refuses to start on the migrated database.
+7. When you are sure, drop the kept tables. This cannot be undone:
+
+   ```bash
+   aictl db migrate --drop-legacy
+   ```
+
+The alternative is `aictl db reset`, then reading the data again. It deletes this node's stored data (`--node ID` another node's, `--all-nodes` everything). The session folders on the machine are read again, so that history comes back. What arrived only live is lost: OpenTelemetry logs, metrics and traces, hook events and process samples, and any session whose files are gone. `aictl db migrate` keeps all of it, so use it when it applies.
+
+The steps, the verification and the `legacy__*` details are in [docs/kusto-cluster.md](docs/kusto-cluster.md#data-layout-version-compatibility-and-migrations).
 
 ### Insight report from a Kusto store: `aictl db report` (work in progress)
 
@@ -606,7 +651,17 @@ hurting the machine is not.
 | `metadata` | Sessions, tokens, cost, timings, tool names and sizes, with no prompt or response text |
 | `off` | No history capture; live runtime data remains available |
 
-Kusto policies control retention. If ingestion fails, rows wait in bounded memory queues.
+Kusto retention policies, set per class of data, control how long data is kept. `[storage.retention]` in the config file sets the period of a class (`"24h"` or `"365d"`; a bare number is days). Two classes are short by default:
+
+| Class | Default | What it holds |
+|---|---|---|
+| `tool_content` | 24 hours | Tool call arguments, edit text and result excerpts; hook payloads |
+| `large_payload` | 24 hours | The full text of values larger than `[storage] large_payload_bytes` (default 32768; a preview is kept elsewhere) |
+| all others (`history`, `prompt`, `thinking`, `message`, `text`, `file_text`, `otel`, `metrics`) | 365 days | Sessions, requests and tool calls without text; prompts; thinking; messages; other text; file contents; raw OpenTelemetry data; metric samples and snapshots |
+
+`aictl db retention` shows each class and each table with its size. `aictl db retention set CLASS PERIOD` saves a period and applies it to this node's tables (`--all-nodes`: every node's, now). Lowering a period deletes older data and asks first (`--yes` skips the question).
+
+If ingestion fails, rows wait in bounded memory queues.
 Health shows the queue depth and dropped-row count per table.
 
 ### Hidden context: `aictl ctx audit`
@@ -691,10 +746,17 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl memory show --root .` | Show Claude Code auto-memory content |
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 | `aictl db stats` | Show current logical counts, time range, and separate physical extent metadata |
-| `aictl db schema` | Print the Kusto table keys, columns, retention, and ingestion modes |
+| `aictl db schema` | Print the Kusto table keys, columns, retention, and ingestion modes (`--markdown`, `--json`) |
+| `aictl db layout [--nodes]` | The stored layout of this node, the layout this aictl needs, the verdict, every node and the changelog; `--nodes` adds each node's tables |
+| `aictl db migrate --dry-run` | Show each migration step, its commands and the rows it changes; change nothing |
+| `aictl db migrate --yes` | Upgrade the stored data to this aictl's layout and keep the history. Stop every writer first. See [Upgrading](#upgrading-and-migrating-the-stored-data) |
+| `aictl db migrate --take-over` | Continue a migration that another node started and stopped |
+| `aictl db migrate --drop-legacy` | Drop the `legacy__*` tables a finished migration kept |
+| `aictl db retention` | Show how long each class of data is kept, as configured and on the cluster, with table sizes |
+| `aictl db retention set CLASS PERIOD` | Keep a class for a period, such as `24h` or `365d` |
 | `aictl db trim-text` | Soft-delete records from text tables for this node |
 | `aictl db reimport-sessions --resumed` | Read again, at the next start, only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |
-| `aictl db reset` | Clear the aictl tables in the configured Kusto database |
+| `aictl db reset` | Delete this node's stored data and start it again (`--node ID`, `--all-nodes`). Prefer `aictl db migrate` when it applies |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
 | `aictl reinstall --build-ui` | Also build the dashboard when its source has no local changes |
@@ -778,11 +840,17 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 ### Database options (`aictl db`)
 
-`aictl db reset` clears aictl tables on the configured Kusto database. Use `-y` / `--yes` to skip the confirmation prompt.
+`aictl db layout`, `migrate`, `reset` and `report` take `--kusto-cluster URL` and `--kusto-database NAME`. The default is the configured store.
+
+`aictl db layout` takes `--nodes`. `aictl db migrate` takes `--dry-run`, `-y` / `--yes`, `--take-over`, `--slice-days N` (copy in slices of N days of ingestion time, 1 to 31, default 1) and `--drop-legacy`. See [Upgrading](#upgrading-and-migrating-the-stored-data).
+
+`aictl db reset` deletes the aictl tables of one node (default: this node) and creates them again. `--node ID` picks another node and `--all-nodes` resets every node and the registry. Use `-y` / `--yes` to skip the confirmation prompt. Stop the writers of what is reset first.
+
+`aictl db reimport-sessions [SESSION_IDS]... [--resumed] [--dry-run]` clears this node's saved read positions of those sessions' files, so the next start reads them again. It deletes nothing that is stored. Stop the daemon first.
 
 `aictl db report` takes `--out PATH`, `--days N`, `--sections A,B`, `--kusto-cluster URL`, `--kusto-database NAME` and the filters `--from`, `--to`, `--project`, `--tool`, `--model`, `--mcp`, `--skill`, `--agent`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
 
-Kusto retention policies replace the former compaction command. Use `aictl db trim-text --dry-run` to check the
+Kusto retention policies replace the former compaction command (see [storage](#storage-bounded-and-optional)). Use `aictl db trim-text --dry-run` to check the
 delete predicates. Use `--older-than-days N` to trim text older than that cutoff.
 
 ### Dashboard options (`aictl daemon dashboard`)
@@ -891,7 +959,7 @@ make test-docker
 
 Success means all commands exit 0 and these behaviors are specifically covered:
 
-- `HistoryDB.stats()` reports the current `SCHEMA_VERSION`, plus `file_write_events` and `data_quality_status` row counts.
+- `aictl db layout` reports the layout of this aictl and the verdict on the stored data.
 - `PostToolUse` write-like hooks (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) produce `file_write_events` rows with session, tool, operation, path, and source event id.
 - Collector and ingester health is stored in `data_quality_status`; missing, unreadable, schema-drift, degraded, and ok states are persisted instead of only logged.
 - `aictl ctx deploy --profile <name>` fails for unknown profiles unless `--allow-empty-profile` is supplied.
