@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections import defaultdict
 from typing import Any
@@ -39,10 +40,12 @@ DEFINITIONS = {
 }
 
 
-def _group_of(name: str, known: set[str]) -> tuple[str, str]:
+def _group_of(name: str, known: set[str], named: str = "") -> tuple[str, str]:
+    """The group of a tool: the server its name says, else the server its stored calls name (mcp_server)."""
     server = mcp_server_of(name, known)
     if server is None:
         return BUILTIN, ""
+    server = server or named
     return ("mcp", server) if server else (UNKNOWN, "")
 
 
@@ -50,8 +53,14 @@ def _group_id(kind: str, server: str) -> str:
     return f"mcp:{server}" if kind == "mcp" else kind
 
 
+_SERVER_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
 def _group_label(kind: str, server: str) -> str:
-    return server if kind == "mcp" else "Built-in tools" if kind == BUILTIN else "Unknown MCP server"
+    """A server's name; a server known only by an id (a desktop app's connector UUID) says it is an id."""
+    if kind == "mcp":
+        return f"server id {server[:8]}" if _SERVER_ID.match(server) else server
+    return "Built-in tools" if kind == BUILTIN else "MCP server not named by its calls"
 
 
 def _merge(into: dict[int, int], hist: Any) -> None:
@@ -99,7 +108,7 @@ def group_rows(rows: list[dict]) -> dict:
     known = known_mcp_servers(r["tool_name"] for r in tools)
     groups: dict[str, dict] = {}
     for row in tools:
-        kind, server = _group_of(row["tool_name"], known)
+        kind, server = _group_of(row["tool_name"], known, str(row.get("named_server") or ""))
         gid = _group_id(kind, server)
         group = groups.setdefault(gid, {
             "id": gid, "kind": kind, "server": server, "label": _group_label(kind, server),

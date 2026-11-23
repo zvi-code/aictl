@@ -23,7 +23,7 @@ let calls = materialize(versions
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(column_ifexists('_deleted', false), false))
     | where wanted(ts, node_id, session_id, tool) and isnotempty(tool_name) and not(tool_name startswith_cs 'permission:')
-    | project tool_name, ts, duration_ms, is_error, output_bytes,
+    | project tool_name, ts, duration_ms, is_error, output_bytes, mcp_server=tostring(column_ifexists('mcp_server', '')),
               server_tool=tool_name matches regex @"^mcp(__|_|\.|:)|^[\w.-]+/[\w.-]+$",
               skey=hash(strcat(node_id, '|', session_id)));
 let hist = calls
@@ -35,7 +35,8 @@ union
     | summarize calls=count(), failures=countif(is_error != 0), sessions=count_distinct(skey),
                 session_set=make_set_if(skey, server_tool, 5000), timed=countif(duration_ms > 0),
                 total_ms=sumif(duration_ms, duration_ms > 0), output_bytes=sum(output_bytes),
-                output_count=countif(isnotnull(output_bytes)), first_ts=min(ts), last_ts=max(ts) by tool_name
+                output_count=countif(isnotnull(output_bytes)), first_ts=min(ts), last_ts=max(ts),
+                named_server=take_anyif(mcp_server, isnotempty(mcp_server)) by tool_name
     | join kind=leftouter hist on tool_name
     | project-away tool_name1
     | order by calls desc, tool_name asc

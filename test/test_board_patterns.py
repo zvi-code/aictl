@@ -53,6 +53,19 @@ def _tool(name, calls, *, failures=0, sessions=1, session_set=(), hist=None, tot
             "hist": hist or {}}
 
 
+def test_a_server_is_named_by_its_stored_calls_and_an_id_says_it_is_an_id():
+    """Found on real data: a server shown as a raw UUID, and 10 calls under 'Unknown MCP server'."""
+    named = _tool("mcp_tool", 10)
+    named["named_server"] = "github"
+    rows = [named, _tool("mcp__a5db7cb3-04f6-424a-b5d5-dee7565c69c4__microsoft_docs_search", 5),
+            {"row_type": "totals", "calls": 15, "failures": 0, "sessions": 1, "builtin_sessions": 0, "total_ms": 0.0,
+             "tool_names": 2}]
+    groups = {g["id"]: g for g in mcp_view.group_rows(rows)["groups"]}
+    assert groups["mcp:github"]["label"] == "github" and "unknown" not in groups
+    connector = groups["mcp:a5db7cb3-04f6-424a-b5d5-dee7565c69c4"]
+    assert (connector["label"], connector["server"]) == ("server id a5db7cb3", "a5db7cb3-04f6-424a-b5d5-dee7565c69c4")
+
+
 def test_tools_group_by_server_with_an_unknown_group_and_merged_figures():
     rows = [
         _tool("mcp__github__get_issue", 6, failures=1, sessions=2, session_set=(1, 2), hist={"40": 3, "60": 3},
@@ -73,7 +86,7 @@ def test_tools_group_by_server_with_an_unknown_group_and_merged_figures():
     assert (github["p50_ms"], github["p95_ms"]) == (100.0, 1000.0)
     assert (github["output_bytes"], github["est_tokens"]) == (4000, 1000)
     assert [t["name"] for t in github["tools"]] == ["mcp__github__get_issue", "mcp_github_search"]
-    assert groups["unknown"]["label"] == "Unknown MCP server" and groups["unknown"]["fail_rate"] == 1.0
+    assert groups["unknown"]["label"] == "MCP server not named by its calls" and groups["unknown"]["fail_rate"] == 1.0
     assert groups["builtin"]["sessions"] == 4 and groups["builtin"]["output_bytes"] is None
     assert body["totals"]["tool_names"] == body["totals"]["tool_names_shown"] == 4
     assert "bytes divided by 4" in body["definitions"]["est_tokens"]

@@ -268,7 +268,7 @@ _VIEWS = {
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
-        "first_ts last_ts hist tool_names",
+        "first_ts last_ts hist tool_names named_server",
     ),
     "tools.mcp_detail": (
         f"{_WINDOW} restrict_sessions session_keys restrict_tools requested_tools requested_tool_names",
