@@ -388,7 +388,7 @@ export function derivePermissions(entry: Entry | undefined) {
 
 /** The matrix of every entry that has one, in entry order. */
 // ─── Editing Claude Code permissions ─────────────────────────────
-const EDITABLE_SCOPES = ['project', 'project-local'];
+export const EDITABLE_SCOPES = ['user', 'project', 'project-local'];
 const CLAUDE_PERMISSION_KEYS = new Set(['permissions', 'permissions.allow', 'permissions.deny', 'permissions.ask', 'project_permissions']);
 export const NOT_SUPPORTED = 'No form for this value. Open the file and use Edit file';
 
@@ -412,12 +412,16 @@ export function permissionEdit(row: Setting, scopes: readonly Scope[] = []) {
     return { ok: false as const, hint: 'Locked by ' + scopeLabel(win?.scope ?? row.scope, scopes) };
   }
   if (!isPermissionRow(row)) return { ok: false as const, hint: NOT_SUPPORTED };
-  const scope = winningScope(row);
+  // Merged lists belong to no single scope: edit the row's own scope, and let the user choose another.
+  const scope = row.merge === 'union' ? row.scope : winningScope(row);
+  const choices = EDITABLE_SCOPES.filter(id => id === scope || !scopes.length || scopes.some(s => s.id === id && s.changeable !== false))
+    .map(id => ({ id, label: scopeLabel(id, scopes) }))
   if (!scope || !EDITABLE_SCOPES.includes(scope)) {
-    return { ok: false as const, hint: `The value comes from ${scopeLabel(scope, scopes)}. Project and Project local permissions have a form here; for another file, open it and use Edit file.` };
+    return { ok: false as const, hint: `The value comes from ${scopeLabel(scope, scopes)}. User, Project and Project local permissions have a form here; for another file, open it and use Edit file.` };
   }
   const s = (scopes || []).find(x => x.id === scope);
-  return { ok: true as const, scope, label: scopeLabel(scope, scopes), path: win?.source || s?.path || row.source || '' };
+  const path = row.merge === 'union' ? s?.path || '' : win?.source || s?.path || row.source || ''
+  return { ok: true as const, scope, label: scopeLabel(scope, scopes), path, choices };
 }
 
 // ─── The editor's list arithmetic ────────────────────────────────

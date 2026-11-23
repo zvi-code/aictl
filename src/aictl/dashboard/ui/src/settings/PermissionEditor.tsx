@@ -17,9 +17,12 @@ const blank: Draft = { allow: '', ask: '', deny: '' }
 
 export function PermissionEditor(props: {
   ctx: PanelContext; tool: string; scope: string; label: string; onClose: () => void
+  choices?: { id: string; label: string }[]
 }) {
+  const [scope, setScope] = createSignal(untrack(() => props.scope))
+  const label = () => props.choices?.find(choice => choice.id === scope())?.label ?? props.label
   const path = () => `/api/tool-config/${encodeURIComponent(props.tool)}`
-  const detailPath = () => `${path()}?${new URLSearchParams({ scope: props.scope })}`
+  const detailPath = () => `${path()}?${new URLSearchParams({ scope: scope() })}`
   const config = untrack(() => props.ctx.detail<DetailToolConfig>(detailPath))
   const [base, setBase] = createSignal<DetailToolConfig>()
   const [draft, setDraft] = createSignal<Draft>(blank)
@@ -35,7 +38,7 @@ export function PermissionEditor(props: {
       deny: (value.permissions?.deny ?? []).join('\n') })
   }
   createEffect(() => config()?.data, value => {
-    if (value && value.scope === props.scope && value.tool === props.tool && (!base() || reloadPending())) {
+    if (value && value.scope === scope() && value.tool === props.tool && (!base() || reloadPending() || base()?.scope !== scope())) {
       apply(value)
       setConflict(false)
       setReloadPending(false)
@@ -61,7 +64,7 @@ export function PermissionEditor(props: {
   }
   const save = async () => {
     if (!editable() || saving() || conflict() || !changed()) return
-    const body: SettingsPermissionWrite = { scope: props.scope, expected_mtime: base()?.mtime ?? null, permissions: permissions() }
+    const body: SettingsPermissionWrite = { scope: scope(), expected_mtime: base()?.mtime ?? null, permissions: permissions() }
     const controller = new AbortController()
     running = controller
     setSaving(true)
@@ -91,11 +94,22 @@ export function PermissionEditor(props: {
       onClick={() => void save()}>{saving() ? 'Saving…' : 'Save permissions'}</button>
   }>
     <div class={styles.stack}>
-      <Show when={base()} fallback={
+      <Show when={(props.choices?.length ?? 0) > 1}>
+        <label class={styles.control}>Scope to edit
+          <select value={scope()} disabled={saving()} onChange={event => {
+            setScope(event.currentTarget.value)
+            setSaved(undefined)
+            setError('')
+          }}>
+            <For each={props.choices}>{choice => <option value={choice.id}>{choice.label}</option>}</For>
+          </select>
+        </label>
+      </Show>
+      <Show when={base()?.scope === scope() && base()} fallback={
         <PanelState inline state={config()?.status === 'error' ? 'error' : config()?.status === 'ready' ? 'unavailable' : 'loading'}
           message={config()?.status === 'error' ? String(config()?.error) : undefined}
           onRetry={config()?.status === 'error' ? config.retry : undefined} />}>{value => <>
-        <p><strong>{props.label}</strong> · <code>{value().path}</code></p>
+        <p><strong>{label()}</strong> · <code>{value().path}</code></p>
         <Show when={!editable()}><PanelState inline state="unavailable" message="This scope did not report editable permissions." /></Show>
         <div class={styles.metrics}>
           <For each={buckets}>{bucket =>

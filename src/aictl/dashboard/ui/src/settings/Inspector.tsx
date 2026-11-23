@@ -104,14 +104,24 @@ function SettingDetail(props: { w: Workspace; row: Setting }) {
           fields={[
             { id: 'scope', label: 'Scope', read: row => scopeLabel(row.layer.scope, scopes()), sortable: false },
             { id: 'value', label: 'Value', read: row => row.layer.set === false ? 'Unset' : plainValue(row.layer.value), sortable: false },
-            { id: 'winner', label: 'Precedence', read: row => row.index === props.row.wins ? 'Wins'
+            { id: 'winner', label: 'Precedence', read: row => props.row.merge === 'union'
+              ? (row.layer.set === false ? 'Not set' : 'Merged')
+              : row.index === props.row.wins ? 'Wins'
               : row.layer.set === false ? 'Not set' : props.row.wins >= 0 ? 'Overridden' : MISSING, sortable: false },
             { id: 'lock', label: 'Policy', read: row => isLockedEntry(row.layer, scopes()) ? 'Locked' : '—', sortable: false },
           ]} action={{ label: row => row.layer.source && (envName(row.layer.source) || isFileSource(row.layer.source))
             ? `Open ${envName(row.layer.source) || basename(row.layer.source)}${row.layer.line ? `:${row.layer.line}` : ''}` : '',
             run: row => { if (row.layer.source) w.openSource(row.layer.source, row.layer.line, props.row.tool) } }} />
-        <Show when={props.row.chain[props.row.wins]}>{winner =>
+        <Show when={props.row.merge === 'union'} fallback={<Show when={props.row.chain[props.row.wins]}>{winner =>
           <p>Winner: {scopeLabel(winner().scope, scopes())}{isLockedEntry(winner(), scopes()) ? ' · policy locked' : ''}.</p>}
+        </Show>}>
+          <p>Claude Code merges the allow, ask and deny lists of every scope; no scope overrides another.</p>
+          <Table label="Merged permission rules" rows={props.row.rules ?? []}
+            rowId={rule => `${rule.bucket}\u0001${rule.rule}\u0001${rule.source}`}
+            fields={[{ id: 'rule', label: 'Rule', read: rule => rule.rule }, { id: 'list', label: 'List', read: rule => title(rule.bucket) },
+              { id: 'scope', label: 'Scope', read: rule => scopeLabel(rule.scope, scopes()) },
+              { id: 'source', label: 'Set in', read: rule => basename(rule.source) }]}
+            action={{ label: rule => `Open ${basename(rule.source)}`, run: rule => w.openSource(rule.source, undefined, props.row.tool) }} />
         </Show>
       </Show>
     </section>
@@ -125,7 +135,8 @@ function SettingDetail(props: { w: Workspace; row: Setting }) {
       <button type="button" disabled={!edit().ok} onClick={() => setEditing(true)}>Edit permissions</button>
       <Show when={!edit().ok}><p>{(edit() as { hint?: string }).hint}</p></Show>
       <Show when={editing() && edit().ok && edit()}>{value => <PermissionEditor ctx={w.ctx} tool={props.row.tool}
-        scope={value().ok ? value().scope! : ''} label={value().ok ? value().label! : ''} onClose={() => setEditing(false)} />}</Show>
+        scope={value().ok ? value().scope! : ''} label={value().ok ? value().label! : ''}
+        choices={value().ok ? value().choices : undefined} onClose={() => setEditing(false)} />}</Show>
     </section>
     <FileHistory w={w} path={source()} mtime={w.files().find(file => samePath(file.path, source()))?.mtime} />
     <RelatedFindings w={w} path={source()} />

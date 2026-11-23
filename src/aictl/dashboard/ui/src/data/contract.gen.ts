@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 2f22c59d53ba0c8b786a5ccc9281548326d7202b49f38dc83e709f46d6d8c0da
+// Schema digest: 060e65a4a39925b4a3ed6a042a8e216af4db18683bc59c29fc5f394c43e4f899
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2854,6 +2854,13 @@ export type SettingsToolConfig = {
       danger?: boolean;
       documented?: boolean;
       default?: Record<string, unknown> | Array<unknown> | string | number | boolean | null;
+      merge?: "union";
+      rules?: Array<{
+        bucket: "allow" | "ask" | "deny";
+        rule: string;
+        scope: string;
+        source: string;
+      }>;
       state?: "default" | "not-set" | "set-default" | "set-changed" | "set-no-default" | "detected" | "app-state";
       chain?: Array<{
         scope?: string;

@@ -57,6 +57,20 @@
                 "danger": {"type": "boolean"},
                 "documented": {"type": "boolean"},
                 "default": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+                "merge": {"enum": ["union"]},
+                "rules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "bucket": {"enum": ["allow", "ask", "deny"]},
+                      "rule": {"type": "string"},
+                      "scope": {"type": "string"},
+                      "source": {"type": "string"}
+                    },
+                    "required": ["bucket", "rule", "scope", "source"]
+                  }
+                },
                 "state": {"enum": ["default", "not-set", "set-default", "set-changed", "set-no-default", "detected", "app-state"]},
                 "chain": {
                   "type": "array",

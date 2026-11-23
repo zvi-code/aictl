@@ -178,7 +178,7 @@ def test_project_local_scope_reads_and_writes_the_local_file(tmp_path):
 
 def test_unknown_scope_is_rejected(tmp_path):
     with pytest.raises(ToolConfigEditError) as exc:
-        load_editable_tool_config(tmp_path, "claude-code", "user")
+        load_editable_tool_config(tmp_path, "claude-code", "managed")  # the user scope is editable; managed never
     assert exc.value.status == 400
 
     with pytest.raises(ToolConfigEditError) as exc:

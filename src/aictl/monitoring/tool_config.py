@@ -209,6 +209,9 @@ class ToolConfig:
     key_notes: dict[str, str] = field(default_factory=dict)
     # Flat settings keys added by the read-every-key pass. Not part of to_dict().
     generic_keys: set[str] = field(default_factory=set)
+    # Row key -> extra fields for that row, e.g. {"merge": "union", "rules": [...]} for a value the
+    # tool merges across scopes instead of letting one scope win. Not part of to_dict().
+    row_extras: dict[str, dict] = field(default_factory=dict)
     # Keys a winning managed value locks (a key or a dotted prefix); None means
     # every managed value locks. Not part of to_dict().
     managed_floors: tuple[str, ...] | None = None
@@ -236,7 +239,7 @@ class ToolConfig:
         del d["covered_keys"]
         del d["setting_values"]
         del d["project_root"]
-        for internal in ("file_keys", "key_sections", "key_labels", "key_notes", "generic_keys", "managed_floors", "agent_rows", "env_blocks"):
+        for internal in ("file_keys", "key_sections", "key_labels", "key_notes", "generic_keys", "managed_floors", "agent_rows", "env_blocks", "row_extras"):
             del d[internal]
         if not self.feature_groups:
             del d["feature_groups"]
@@ -981,6 +984,10 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
     # Copilot Chat in VS Code also shows VS Code's own chat.* keys: those are documented in VS Code's catalog.
     lookup = {**settings_catalog(_CATALOG_ALSO[cfg.tool]), **catalog} if cfg.tool in _CATALOG_ALSO else catalog
     _finish_rows(cfg, rows, {} if texts is None else texts, lookup)
+    for section_rows in rows.values():
+        for row in section_rows:
+            if row["key"] in cfg.row_extras:
+                row.update(copy.deepcopy(cfg.row_extras[row["key"]]))
     return [{"id": sid, "title": title, "rows": rows[sid]} for sid, title in SECTION_ORDER if rows[sid]]
 
 
@@ -2230,6 +2237,17 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
         if isinstance(block, dict):
             cfg.env_blocks[str(path)] = {str(k): str(v) for k, v in block.items() if _ENV_NAME_RE.match(str(k))}
     _record(cfg, "permissions", "permissions", layers, value_fn=_permission_lists)
+    # Claude Code merges allow, ask and deny across scopes (no scope overrides another): the row
+    # shows the merged lists and every rule with the scope and file it comes from.
+    rules = [
+        {"bucket": bucket, "rule": str(item), "scope": scope_id, "source": str(path)}
+        for scope_id, data, path in layers
+        if isinstance(data, dict) and isinstance(data.get("permissions"), dict)
+        for bucket in ("allow", "ask", "deny")
+        for item in data["permissions"].get(bucket) or []
+    ]
+    if rules:
+        cfg.row_extras["permissions"] = {"merge": "union", "rules": rules}
     # Every other key of every settings file.
     _add_layers(cfg, layers, skip=("permissions.allow", "permissions.deny", "permissions.ask", "hooks", "env"))
 

@@ -33,8 +33,13 @@ def _settings_path(root: Path, tool: str, scope: str | None = None) -> Path:
     if tool != "claude-code":
         raise ToolConfigEditError(404, f"Tool config editing is not supported for {tool}")
     scope = scope or "project"
+    if scope == "user":  # ~/.claude/settings.json, through the platform helper (CLAUDE_CONFIG_DIR moves it)
+        from ..platforms import claude_global_dir
+
+        return claude_global_dir() / "settings.json"
     if scope not in _CLAUDE_SCOPE_FILES:
-        raise ToolConfigEditError(400, f"Scope {scope!r} cannot be edited; use one of: {', '.join(_CLAUDE_SCOPE_FILES)}")
+        choices = ", ".join(["user", *_CLAUDE_SCOPE_FILES])
+        raise ToolConfigEditError(400, f"Scope {scope!r} cannot be edited; use one of: {choices}")
     folder, name = _CLAUDE_SCOPE_FILES[scope]
     return root / folder / name
 

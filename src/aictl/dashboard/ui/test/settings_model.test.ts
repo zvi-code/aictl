@@ -158,7 +158,13 @@ describe('settings contract projections', () => {
     const row = entry.rows.find(row => row.key === 'permissions')!
     expect(permissionEdit(row, entry.scopes)).toMatchObject({ ok: true, path: settings })
     expect(permissionEdit({ ...row, locked: true }, entry.scopes)).toMatchObject({ ok: false })
-    expect(permissionEdit({ ...row, wins: 0 }, entry.scopes)).toMatchObject({ ok: false })
+    // The user scope has a form too; a scope that is not a settings file does not.
+    expect(permissionEdit({ ...row, wins: 0 }, entry.scopes)).toMatchObject({ ok: true, scope: 'user' })
+    expect(permissionEdit({ ...row, chain: [{ scope: 'managed', value: {} }], wins: 0 }, entry.scopes)).toMatchObject({ ok: false })
+    // Merged lists edit the row's own scope, never the last layer, and offer the writable scopes.
+    const merged = permissionEdit({ ...row, merge: 'union', scope: 'user', wins: 1 }, entry.scopes)
+    expect(merged).toMatchObject({ ok: true, scope: 'user' })
+    expect(merged.ok && merged.choices.map(choice => choice.id)).toEqual(['user', 'project-local'])
     expect(listDiff(['Bash', 'Read'], parseLines(' Bash \n\n Glob '))).toEqual({ added: ['Glob'], removed: ['Read'] })
   })
 

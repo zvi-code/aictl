@@ -335,6 +335,33 @@ def test_folders_and_absent_files_have_unknown_size_not_zero(tmp_path):
     assert files["settings.json"]["bytes"] == 2 and files["settings.json"]["settings"] == 0
 
 
+def test_claude_permissions_are_merged_with_each_rules_source(homes):
+    user = homes["claude"] / "settings.json"
+    user.write_text(json.dumps({"permissions": {"allow": ["Read"], "deny": ["WebFetch"]}}, indent=2))
+    root = homes["project"]
+    (root / ".claude").mkdir(parents=True)
+    local = root / ".claude" / "settings.local.json"
+    local.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"], "ask": ["Write"]}}, indent=2))
+    rows = {r["key"]: r for r in _rows(_sections(tc._parse_claude_code_config(root), root))}
+    perms = rows["permissions"]
+    assert perms["merge"] == "union"
+    assert perms["value"] == {"allow": ["Read", "Bash(ls)"], "deny": ["WebFetch"], "ask": ["Write"]}
+    by_rule = {(r["bucket"], r["rule"]): (r["scope"], r["source"]) for r in perms["rules"]}
+    assert by_rule[("allow", "Read")] == ("user", str(user))
+    assert by_rule[("allow", "Bash(ls)")] == ("project-local", str(local))
+    assert by_rule[("deny", "WebFetch")] == ("user", str(user))
+    assert perms["scope"] == "user"  # the row's own scope, which the editor opens by default
+
+
+def test_permission_editor_reaches_the_user_scope(homes):
+    from aictl.dashboard.tool_config_editor import load_editable_tool_config
+
+    (homes["claude"] / "settings.json").write_text(json.dumps({"permissions": {"allow": ["Read"]}}))
+    loaded = load_editable_tool_config(homes["project"], "claude-code", "user")
+    assert loaded["path"] == str(homes["claude"] / "settings.json")
+    assert loaded["permissions"]["allow"] == ["Read"]
+
+
 def test_file_counts_have_one_definition(tmp_path):
     """A file shared by two tools counts each setting once, and its top-level keys are counted from the file."""
     from aictl.dashboard.settings_routes import settings_files
