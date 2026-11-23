@@ -9,6 +9,19 @@ from aictl.dashboard.live.hub import LiveHub
 from aictl.dashboard.live.projection import LiveDashboard, board_entities
 
 
+def test_a_subagent_keeps_its_transcript_status_on_the_live_board():
+    """The runtime report has no subagent entities: blanking a subagent's status left it unknown or ended."""
+    payload = {"agents": [
+        {"id": "s", "parent_id": None, "status": "running", "ended_at": None},
+        {"id": "a1", "parent_id": "s", "status": "running", "ended_at": 99.0},
+        {"id": "a2", "parent_id": "s", "status": "idle", "ended_at": None},
+    ]}
+    values = {data["value"]["id"]: data["value"] for topic, _, data, _ in board_entities("scope", payload)
+              if topic == "history.board" and data.get("key")}
+    assert values["s"]["status"] == "unknown"
+    assert (values["a1"]["status"], values["a2"]["status"]) == ("running", "idle")
+
+
 def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority():
     payload = {
         "agents": [

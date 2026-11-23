@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 53c8584edfeb35f44a40423f57b7390082d31b58ae0a77038d884fa0c7380c94
+// Schema digest: 9007d713b053a4d3bff2a86d2c051903cab2578e1b6df1322569d91ced262f61
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -43,6 +43,26 @@ export type BoardAgentRow = {
   cpu_percent: number | null;
   mem_mb: number | null;
   pids: Array<number>;
+  kind?: "main" | "subagent";
+  name_source?: string | null;
+  prompt_line?: string | null;
+  agent_type?: string | null;
+  model_alias?: string | null;
+  resolved_model?: string | null;
+  description?: string | null;
+  spawned_at?: number | null;
+  spawned_by?: string | null;
+  last_activity_at?: number | null;
+  now?: string | null;
+  subagent_count?: number;
+  subagents_running?: number;
+  subagents_live?: number;
+  main_input?: number | null;
+  main_output?: number | null;
+  main_cost_usd?: number | null;
+  main_tool_calls?: number | null;
+  main_failures?: number | null;
+  includes_subagents?: boolean;
 };
 
 export type BoardAgents = Array<BoardAgentRow>;

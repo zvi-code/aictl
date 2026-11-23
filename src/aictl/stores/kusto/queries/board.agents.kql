@@ -1,20 +1,59 @@
 declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long
 );
+// Two kinds of rows, told apart by row_kind:
+// 'agent': one subagent, with its newest tool call (to say what it does now and whether a result is still out);
+// 'spawn': one Agent/Task call that started a subagent, with the caller's description, agent type and model.
 let tasks = union isfuzzy=true
     (datatable(['project']:string, node_id:string, agent_id:string, _v:datetime, task:string, _deleted:bool)[]),
     (agents_text | project ['project'], node_id, agent_id, _v, task, _deleted=column_ifexists('_deleted', false))
     | summarize arg_max(_v, *) by ['project'], node_id, agent_id
     | where not(coalesce(_deleted, false))
     | project ['project'], node_id, agent_id, retained_task=task;
-agents
-| where all_nodes or node_id == requested_node
-| summarize arg_max(_v, *) by ['project'], node_id, agent_id
-| where not(coalesce(column_ifexists('_deleted', false), false))
-| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
-| extend legacy_task=column_ifexists('task', '')
-| join kind=leftouter tasks on ['project'], node_id, agent_id
-| summarize arg_max(_v, *) by node_id, agent_id
-| order by node_id asc, session_id asc, agent_id asc
+let calls = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | where not(tool_name startswith_cs 'permission:')
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false));
+let texts = tool_invocations_text
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, input, target) by ['project'], node_id, dedup_key;
+let last_calls = calls
+    | where isnotempty(agent_id)
+    | summarize arg_max(ts, tool_name, fact_key, output_bytes, duration_ms, is_error, ['project']) by node_id, session_id, agent_id
+    | join kind=leftouter texts on ['project'], node_id, $left.fact_key == $right.dedup_key
+    | project node_id, session_id, agent_id, last_call_ts=ts, last_call_name=tool_name, last_call_target=substring(target, 0, 300),
+        last_call_open=isnull(output_bytes) and coalesce(duration_ms, 0.0) <= 0 and is_error == 0;
+let spawns = calls
+    | where tool_name in ('Agent', 'Task')
+    | join kind=inner texts on ['project'], node_id, $left.fact_key == $right.dedup_key
+    | extend args=parse_json(input)
+    | where isnotempty(tostring(args.description))
+    | project node_id, session_id, agent_id=strcat('spawn:', source_event_id), row_kind='spawn', started_at=ts,
+        description=tostring(args.description), agent_type=tostring(args.subagent_type),
+        spawn_model=tostring(args.model), spawn_prompt=substring(tostring(args.prompt), 0, 500),
+        spawned_by=agent_id, spawn_tool_use_id=source_event_id;
+let subagents = agents
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | extend legacy_task=column_ifexists('task', '')
+    | join kind=leftouter tasks on ['project'], node_id, agent_id
+    | summarize arg_max(_v, *) by node_id, agent_id
+    | join kind=leftouter last_calls on node_id, session_id, agent_id
+    | project node_id, agent_id, session_id, row_kind='agent', task=coalesce(retained_task, legacy_task), model,
+        started_at, ended_at, completed,
+        description=tostring(column_ifexists('description', '')), spawn_depth=toint(column_ifexists('spawn_depth', int(null))),
+        parent_agent_id=tostring(column_ifexists('parent_agent_id', '')),
+        parent_tool_use_id=tostring(column_ifexists('parent_tool_use_id', '')),
+        resolved_model=tostring(column_ifexists('resolved_model', '')), agent_status=tostring(column_ifexists('status', '')),
+        last_call_ts, last_call_name, last_call_target, last_call_open;
+union subagents, spawns
+| order by node_id asc, session_id asc, row_kind asc, agent_id asc
 | take row_limit
-| project node_id, agent_id, session_id, task=coalesce(retained_task, legacy_task), model, started_at, ended_at, completed
+| project node_id, agent_id, session_id, row_kind, task, model, started_at, ended_at, completed, description, spawn_depth,
+    parent_agent_id, parent_tool_use_id, resolved_model, agent_status, last_call_ts, last_call_name, last_call_target,
+    last_call_open, agent_type, spawn_model, spawn_prompt, spawned_by, spawn_tool_use_id

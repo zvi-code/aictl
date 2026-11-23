@@ -251,105 +251,67 @@ test('BRD-03: partial history keeps a reported zero model without inventing time
   } finally { await replay.close(); }
 });
 
-test('BRD-03: the 768px agent list fits whole metric headings and two-line tool names', async ({ page, snapshotReplay }) => {
+test('BRD-03: the 768px agent list drops whole columns and never cuts a number', async ({ page, snapshotReplay }) => {
   await page.setViewportSize({ width: 768, height: 900 });
   await provideCatalog(page);
   await page.goto(snapshotReplay.url + boardUrl + '#sec-agents');
   await agentsFrame(page);
   const panel = page.locator('#p-agentsT');
-  await panel.evaluate(node => {
-    const header = document.querySelector('header').getBoundingClientRect();
-    window.scrollBy(0, node.getBoundingClientRect().top - header.bottom);
-  });
-  const table = panel.getByRole('table', { name: 'Agents and subagents' });
-  await expect(table.getByRole('columnheader')).toHaveText(['Agent', 'Status', 'Tool', 'Messages', 'Tool calls', 'Failures']);
-  await expect(table.locator('tbody tr').first().getByRole('cell').nth(2)).toHaveText('anon_2c2f5bb3489bbb651fa965a6');
-  await expect(page).toHaveScreenshot('agents-list-768-light.png');
-  const next = panel.getByRole('button', { name: 'Next page' });
-  for (;;) {
-    const layout = await table.evaluate(el => {
-      const rects = cell => {
-        const range = document.createRange();
-        range.selectNodeContents(cell);
-        return [...range.getClientRects()].filter(rect => rect.width > 0);
-      };
-      const lines = cell => new Set(rects(cell).map(rect => rect.top)).size;
-      const headings = [...el.tHead.rows[0].cells];
-      const tools = [...el.tBodies[0].rows].map(row => row.cells[2]);
-      return {
-        metricLines: [3, 5].map(i => lines(headings[i].querySelector('button').firstChild)),
-        wrappedTools: tools.filter(cell => lines(cell) > 2 || rects(cell).some(rect => {
-          const box = cell.getBoundingClientRect();
-          return rect.left < box.left - 1 || rect.right > box.right + 1 || rect.bottom > box.bottom + 1;
-        })).map(cell => cell.textContent),
-        tableOverflow: el.parentElement.scrollWidth - el.parentElement.clientWidth,
-        pageOverflow: document.documentElement.scrollWidth - innerWidth,
-      };
-    });
-    expect(layout).toEqual({ metricLines: [1, 1], wrappedTools: [], tableOverflow: 0, pageOverflow: 0 });
-    if (await next.getAttribute('aria-disabled') === 'true') break;
-    await next.press('Enter');
-  }
+  const table = panel.getByRole('treegrid', { name: 'Agents and subagents' });
+  await expect(table.locator('th:visible')).toHaveText(['Agent', 'Status', 'Tokens in / out']);
+  const layout = await table.evaluate(el => ({
+    cutNumbers: [...el.querySelectorAll('tbody td[data-numeric]')]
+      .filter(cell => cell.offsetParent && cell.scrollWidth > cell.clientWidth + 1).map(cell => cell.textContent),
+    tableOverflow: el.parentElement.scrollWidth - el.parentElement.clientWidth,
+    pageOverflow: document.documentElement.scrollWidth - innerWidth,
+  }));
+  expect(layout).toEqual({ cutNumbers: [], tableOverflow: 0, pageOverflow: 0 });
 });
 
-test('BRD-03: readable agent names, keyboard paging, sorting, grouping and folding', async ({ page, snapshotReplay }, testInfo) => {
+test('BRD-03: agents tree: column definitions, kinds, keyboard folding, stable rows, grouping', async ({ page, snapshotReplay }, testInfo) => {
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'agentsT');
-  const table = panel.getByRole('table', { name: 'Agents and subagents' });
-  const first = row(table, 'anon_33186031882f5bc3b1a54036');
-  const name = first.getByRole('button', { name: 'Open anon_2c2f5bb3489bbb651fa965a6', exact: true });
-  await expect(name).toHaveText('anon_2c2f5bb3489bbb651fa965a6');
-  expect(await name.evaluate(button => {
-    const range = document.createRange();
-    range.selectNodeContents(button);
-    const bounds = range.getBoundingClientRect();
-    const cell = button.closest('td').getBoundingClientRect();
-    return bounds.left >= cell.left && bounds.right <= cell.right && bounds.bottom <= cell.bottom;
-  })).toBe(true);
-  await expect(first.getByText('0', { exact: true }).first()).toBeVisible();
-  await expect(table.getByRole('columnheader')).toHaveText(['Agent', 'Status', 'Tool', 'Messages', 'Tool calls', 'Failures']);
-  await expect(panel.getByRole('region', { name: 'Agents and subagents scroll area' })).toHaveCount(0);
-  await expect(table.locator('tbody tr')).toHaveCount(10);
-  await panel.evaluate(tablePanel => tablePanel.scrollIntoView());
-  expect(await table.locator('tbody tr').evaluateAll(rows => rows.filter(row => {
-    const bounds = row.getBoundingClientRect();
-    return bounds.top >= 0 && bounds.bottom <= innerHeight;
-  }).length)).toBeGreaterThanOrEqual(5);
+  const table = panel.getByRole('treegrid', { name: 'Agents and subagents' });
+  await expect(table.getByRole('columnheader')).toHaveText(['Agent', 'Status', 'Now', 'Started', 'Duration', 'Last activity',
+    'Requests', 'Tool calls', 'Tokens in / out', 'Cost']);
+  for (const header of await table.getByRole('columnheader').all()) await expect(header).toHaveAttribute('title', /^\S+( \S+){5,}/);
+  await panel.getByText('What the columns mean').click();
+  await expect(panel.locator('dt')).toHaveCount(10);
+  await expect(panel.getByText(/A session's numbers include its subagents/)).toBeVisible();
+  // A missing number says why on hover and to a screen reader.
+  await expect(table.getByText(/^N\/A: /).first()).toHaveAttribute('title', /^\S+( \S+){2,}/);
+  // Ended sessions start folded; a session with subagents unfolds with the keyboard and its children say what they are.
+  const id = await table.locator('tbody tr[aria-expanded="false"]').first().getAttribute('data-row-id');
+  const parent = row(table, id);
+  await parent.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(parent).toHaveAttribute('aria-expanded', 'true');
+  const child = table.locator(`tbody tr[data-row-id=${JSON.stringify(id)}] + tr`);
+  await expect(child).toHaveAttribute('aria-level', '2');
+  await expect(child).toHaveAttribute('data-kind', 'subagent');
+  await expect(child.getByText('Subagent', { exact: true })).toBeVisible();
+  await expect(parent.locator('[data-col="name"]')).toContainText(/\d+ subagents?/);
+  await page.keyboard.press('ArrowDown');
+  await expect(child).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(parent).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(parent).toHaveAttribute('aria-expanded', 'false');
+  // The fold choice is kept by row id: unfold again, and the other rows keep their order.
+  const order = await table.locator('tbody tr').evaluateAll(rows => rows.map(tr => tr.dataset.rowId));
+  await parent.getByRole('button', { name: /^Expand / }).click();
+  const unfolded = await table.locator('tbody tr').evaluateAll(rows => rows.map(tr => tr.dataset.rowId));
+  expect(unfolded.filter(rowId => order.includes(rowId))).toEqual(order);
+  await checkAxe(page, '#p-agentsT', 'Agents tree in light theme');
   await page.screenshot({ path: testInfo.outputPath('agents-light.png') });
-  const pager = panel.getByRole('group', { name: 'Agents and subagents pages' });
-  await expect(pager.getByRole('status')).toContainText('1–10 of ');
-  const next = pager.getByRole('button', { name: 'Next page' });
-  await next.press('Enter');
-  await expect(next).toBeFocused();
-  await expect(pager.getByRole('status')).toContainText('11–20 of ');
-  await expect(first).toHaveCount(0);
-  await pager.getByRole('button', { name: 'Previous page' }).press('Space');
-  await expect(first).toBeVisible();
-  const columns = panel.getByRole('button', { name: 'Columns', exact: true });
-  await columns.press('Enter');
-  await expect(columns).toHaveAttribute('aria-expanded', 'true');
-  const cpu = panel.getByRole('checkbox', { name: 'CPU', exact: true });
-  await cpu.press('Space');
-  await expect(cpu).toBeChecked();
-  await expect(table.getByRole('columnheader', { name: 'CPU', exact: true })).toBeVisible();
-  await expect(first.getByText('N/A', { exact: true }).last()).toBeVisible();
-  await cpu.press('Escape');
-  await expect(columns).toBeFocused();
-  await checkAxe(page, '#p-agentsT', 'Agent table in light theme');
   await page.locator('html').evaluate(node => node.setAttribute('data-theme', 'dark'));
-  await columns.press('Enter');
-  await checkAxe(page, '#p-agentsT', 'Agent table and open column chooser in dark theme');
-  await page.screenshot({ path: testInfo.outputPath('agents-columns-dark.png') });
-  await page.keyboard.press('Escape');
+  await checkAxe(page, '#p-agentsT', 'Agents tree in dark theme');
+  await page.screenshot({ path: testInfo.outputPath('agents-dark.png') });
   const mode = panel.getByRole('radiogroup', { name: 'Group agents by' });
   await mode.getByRole('radio', { name: 'No groups' }).press('ArrowRight');
   await expect(mode.getByRole('radio', { name: 'Project' })).toHaveAttribute('aria-checked', 'true');
-  const fold = table.getByRole('button', { name: /^Fold / }).first();
-  await fold.press('Enter');
-  await expect(table.getByRole('button', { name: /^Unfold / }).first()).toHaveAttribute('aria-expanded', 'false');
-  await table.getByRole('button', { name: 'Status', exact: true }).press('Enter');
-  await expect(table.getByRole('columnheader', { name: 'Status', exact: true })).toHaveAttribute('aria-sort', 'ascending');
-  await expect(table.getByRole('button', { name: 'Status', exact: true })).toBeFocused();
+  await expect(table.locator('tbody tr[data-kind="group"]').first()).toHaveAttribute('aria-expanded', 'true');
+  await expect(table.locator('tbody tr[data-kind="group"] + tr').first()).toHaveAttribute('aria-level', '2');
 });
 
 test('BRD-04/05: model participants, filter toggles and role totals', async ({ page, snapshotReplay }) => {

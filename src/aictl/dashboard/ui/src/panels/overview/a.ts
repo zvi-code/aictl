@@ -16,7 +16,8 @@ export const overviewA: readonly PanelDef[] = [
     load: () => import('./AgentActivity'),
   },
   {
-    id: 'agentsT', title: 'Agents and subagents', kind: 'table', defaultSize: 'large', requiredCapabilities: [],
+    // A tree of sessions and the subagents they started; the generic table cannot show kind, chips and evidence.
+    id: 'agentsT', title: 'Agents and subagents', kind: 'custom', defaultSize: 'large', requiredCapabilities: [],
     sources: [{ field: 'agents' }, { topic: 'runtime.agent' }, { field: 'scope' }, { field: 'tool_labels' }, { route: '/api/board/nodes' }],
     columns: [
       field('title', 'Agent'), { ...agentMetric('status', 'Status', 'status'), hint: 'status_evidence' },
@@ -32,8 +33,8 @@ export const overviewA: readonly PanelDef[] = [
       field('pid_text', 'PIDs'), agentMetric('duration', 'Duration', 'duration'),
       agentMetric('activity_total', 'Activity', 'activity'),
     ],
-    rowIdentity: ['id', 'parent_id'], actions: [{ ...flow, when: row => row.queryable === true }],
-    empty: 'No individual agent records match these filters.', load: () => loadRows(import('./agentRows').then(m => m.agentRows)),
+    actions: [{ ...flow, when: row => row.queryable === true }],
+    empty: 'No individual agent records match these filters.', load: () => import('./AgentsTree'),
   },
   {
     id: 'byModel', title: 'Usage by model', kind: 'table', defaultSize: 'medium', requiredCapabilities: [],

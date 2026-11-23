@@ -67,13 +67,15 @@ export function agentRows({ ctx, def }: PanelProps) {
         const label = groupBy === 'model' ? a.primary_model ?? (Array.isArray(a.models) ? a.models[0] : undefined)
           : groupBy === 'tool' && typeof a.tool === 'string' ? labels?.[a.tool] ?? a.tool : a[groupBy]
         parent = JSON.stringify(['group', groupBy, label ?? null])
-        if (!groups.has(parent)) groups.set(parent, { id: parent, folded: false, row: { title: label || missing } })
+        if (!groups.has(parent)) groups.set(parent, { id: parent, folded: false, row: { title: label || missing, kind: 'group' } })
       }
       const processOnly = a.runtime_present === true && (a.status == null || a.status === 'unknown' || a.native_activity === 'unknown')
       const ended = typeof a.ended_at === 'number' ? a.ended_at : a.running === true ? ctx.startedAt : undefined
       return { ...entry, parent, folded: typeof a.id === 'string' && parents.has(a.id) ? false : undefined, row: {
         ...a,
-        title: a.parent_id ? a.role || a.title : a.title || a.id,
+        // A subagent's name comes from its task (see subagents.py); its prompt is only secondary text.
+        title: a.title || a.id,
+        state: ctx.stopped(String(a.id)) ? 'stopped' : processOnly ? 'unknown' : a.status,
         status: ctx.stopped(String(a.id)) ? 'Stopped' : processOnly || a.status === 'unknown' ? 'Activity unknown'
           : statusText(a.status, a.end_reason),
         tool: typeof a.tool === 'string' ? labels?.[a.tool] ?? a.tool : a.tool,

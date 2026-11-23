@@ -108,7 +108,12 @@ _VIEWS = {
     ),
     "prompts.series": (f"{_WINDOW} requested_session session_keys", f"{_BOARD_ID} g prompts tool project_path"),
     "board.sessions": ("all_nodes requested_node session_keys", "node_id session_id tool project_path model pid started_at ended_at last_activity_at end_reason title title_source"),
-    "board.agents": ("all_nodes requested_node session_keys", f"{_BOARD_ID} task model started_at ended_at completed"),
+    "board.agents": (
+        "all_nodes requested_node session_keys",
+        f"{_BOARD_ID} row_kind task model started_at ended_at completed description spawn_depth parent_agent_id "
+        "parent_tool_use_id resolved_model agent_status last_call_ts last_call_name last_call_target last_call_open "
+        "agent_type spawn_model spawn_prompt spawned_by spawn_tool_use_id",
+    ),
     "requests.ended": ("all_nodes requested_node session_keys", "node_id session_id"),
     "tools.activity": (f"{_WINDOW} session_keys", f"{_BOARD_ID} g calls"),
     "tools.series": (

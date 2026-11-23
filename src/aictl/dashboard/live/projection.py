@@ -97,7 +97,9 @@ def board_entities(scope: str, payload: dict) -> list[tuple[str, str, dict, str]
             if field == "agents":
                 historical = row.pop("status", None)
                 row["historical_status"] = historical
-                row["status"] = historical if historical in {"ended", "failed"} and row.get("ended_at") else "unknown"
+                # The runtime report covers sessions only; a subagent's status comes from its own transcript.
+                row["status"] = historical if row.get("parent_id") or (
+                    historical in {"ended", "failed"} and row.get("ended_at")) else "unknown"
                 for name in ("cpu_percent", "mem_mb", "pids"):
                     row.pop(name, None)
             if field == "skills":

@@ -51,3 +51,12 @@ it('matches Windows runtime project spellings without folding POSIX case or tool
   expect(select('C:/Projects/Example', ['copilot-cli'])).toEqual([]);
   expect(select('all', [])).toEqual([]);
 });
+
+it('keeps a subagent status read from its transcript; only sessions wait for the runtime report', () => {
+  const overlay = overlayAt([]);
+  const agents = overlay([
+    { id: 's', status: 'running' },
+    { id: 'a1', parent_id: 's', status: 'running', status_evidence: 'last line 12 s ago' },
+  ], {});
+  expect(agents.map(agent => [agent.id, agent.status])).toEqual([['s', 'unknown'], ['a1', 'running']]);
+});

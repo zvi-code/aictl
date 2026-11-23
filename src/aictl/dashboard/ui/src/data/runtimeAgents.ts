@@ -32,9 +32,10 @@ function matchesAgent(agent: Agent, filters: Partial<Filters>, tools: string[] |
 /** Only advertised runtime fields can replace fields on a historical row. */
 export function overlayAgents(historical: readonly Agent[], entities: readonly Entity[], fields: readonly string[],
   filters: Partial<Filters> = {}, tools: string[] | null = null) {
+  // The runtime report covers sessions, not subagents: a subagent keeps the status read from its own transcript.
   const rows = new Map<string, Agent>(historical.map(agent => [agent.id, {
     ...agent, queryable: true,
-    status: nativeStatus(agent.status) ? 'unknown' : agent.status,
+    status: nativeStatus(agent.status) && !agent.parent_id ? 'unknown' : agent.status,
     cpu_percent: null, mem_mb: null, pids: null,
   }]));
   for (const entity of entities) {
