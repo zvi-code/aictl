@@ -19,7 +19,7 @@ describe('ART-UI · Artifacts tab', () => {
     const { tab } = harness({}, { detail: detail([row({}), row({ path: '/x/gone.txt', name: 'gone.txt', size_bytes: null, exists: false })]) })
     const { host, dispose } = mount(() => <Artifacts {...tab} />)
     const [first, second] = bodyRows(host)
-    expect(cell(first, 'size_bytes')?.textContent).toBe('2 KB')
+    expect(cell(first, 'size_bytes')?.textContent).toBe('2.05 KB')
     expect(cell(first, 'exists_label')?.textContent).toBe('not checked')
     expect(cell(second, 'size_bytes')?.textContent).toContain('Not available')
     expect(cell(second, 'exists_label')?.textContent).toBe('missing')

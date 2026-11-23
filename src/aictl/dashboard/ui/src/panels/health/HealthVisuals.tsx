@@ -43,7 +43,7 @@ export function HealthComparison(props: { id: string; label: string; unit: strin
       }>
         <div class={styles.chart} data-health-chart={props.id}>
           <BarPlot label={props.label} description={`Up to ${MAX_BARS} reporting items · ${props.unit}${props.window ? ` · ${props.window}` : ''}`}
-            points={points()} xAxis="number" />
+            points={points()} xAxis="number" categories={rows().map(row => row.label)} />
         </div>
         <ol class={styles.chartKey}><For each={rows()} keyed={row => row.id}>{row =>
           <li><span>{row().label}</span> <strong>{format.format(row().value!)} {props.unit}</strong></li>
