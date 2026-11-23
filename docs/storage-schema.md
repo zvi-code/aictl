@@ -26,7 +26,7 @@ stored values bumps the layout and adds a line here:
 | 2 | yes | `agents_by_session` | agents: keyed by (session_id, agent_id), with a tombstone, the folder, branch and worktree the agent ran in, and observed_at (the time completed and ended_at were observed; the latest observation wins). agents_text: keyed by session_id too. sessions: resumed_from, the session a resumed or forked session's file replays. Before, an agent id copied into a resumed session settled under whichever session was written last. |
 | 3 | yes | `node_tables` | Each node writes its own tables (requests__&lt;node key&gt;, ...); a stored function named like each table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*. |
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
-| 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. |
+| 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. |
 
 ### The `schema_version` registry
 
@@ -1268,7 +1268,7 @@ Compactions and context splits as a tool's session file records them.
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `tool` | string | Tool id |
-| `kind` | string | `compaction` or `split` (a split of the context by kind) |
+| `kind` | string | `compaction`, `split` (a split of the context by kind), `rewind_point` (a file checkpoint to rewind to: Claude Code `file-history-snapshot`, Copilot `rewind-file-snapshots/index.json` snapshot; trigger `rewind` for a Copilot `session.snapshot_rewind`), `checkpoint` (a Copilot checkpoint from its session store, or a `session_artifacts` call), `truncation` (Copilot `session.truncation`), `memory_recall` (memory loaded into the context: a Claude Code `instructions` or `nested_memory` attachment file, trigger its `type`; a Copilot `session_store_sql` or `session_history` call), `instruction_update` (Copilot `instruction.update`, trigger its `name`), `tool_baseline` (Copilot `session.tool_baseline`: which memory and context tools the session had), `context_reset` (Copilot `new_context`) or `context_query` (Copilot `get_context_remaining`) |
 | `trigger` | string | What started a compaction, as the tool wrote it |
 | `before_tokens` | long | Context tokens before a compaction; null when not reported |
 | `after_tokens` | long | Context tokens after a compaction; null when not reported |
@@ -1282,6 +1282,21 @@ Compactions and context splits as a tool's session file records them.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `summary_kind` | string | The `session_digests.kind` of the summary this event left (same session and agent); "" when none |
 | `summary_seq` | long | The `session_digests.seq` of that summary; null when none |
+| `checkpoint_no` | long | The tool's number of the checkpoint (Copilot `checkpointNumber`); null when none |
+| `message_id` | string | A `rewind_point`'s message: Claude Code's `messageId` (a user line's `uuid`), Copilot's `eventId` (its `user.message` event); `file_history.source_event_id` of its files |
+| `files_count` | long | Files a rewind point covers; null when not reported |
+| `lines_added` | long | Lines added since a Copilot rewind point; null when not reported (Claude Code does not) |
+| `lines_removed` | long | Lines removed since a Copilot rewind point; null when not reported |
+| `dropped_messages` | long | Messages a compaction or truncation removed (Copilot `messagesRemoved`, `messagesRemovedDuringTruncation`); null when not reported |
+| `dropped_tokens` | long | Tokens a compaction or truncation removed (Copilot `tokensRemoved`, `tokensRemovedDuringTruncation`); null when not reported |
+| `cumulative_dropped_tokens` | long | Claude Code `cumulativeDroppedTokens`: the tokens all compactions of the session dropped so far; null when not reported |
+| `preserved_messages` | long | Messages a Claude Code compaction kept (`preservedMessages.uuids`); null when not reported |
+| `path` | string | The file the event names: Copilot `checkpointPath`, the file a `session_artifacts` call wrote, a recalled memory file |
+| `tool_call_id` | string | The tool call of an event that is a call (`memory_recall` by `session_store_sql`, `session_artifacts`, `new_context`); joins `tool_invocations.source_event_id` |
+| `prompt_id` | string | The turn: Claude Code `promptId`, Copilot `interactionId`; "" when the source does not say |
+| `turn_index` | long | The turn's number in the session; null when not known |
+| `content_hash` | string | The `file_blobs.hash` of the text the event put into the context (a loaded memory file, an instruction update); "" when none. A loaded file matches a stored version of the file only when the tool loaded it whole |
+| `detail` | string | JSON of the event's other figures, never text: a truncation's limits, a tool baseline's `tool_count`, `memory_tools` and `context_tools`, an instruction update's `authority`, `lifetime`, `boundary`, `fallback`; "" when none |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
 
@@ -1872,20 +1887,20 @@ Content of tracked context files, memory versions and large session summaries, b
 
 ### file_history
 
-A row each time a tracked file has a new version: the file was first seen, its content changed, or, when no content was read (metadata capture, a large or sensitive file), its size or modification time changed.
+A row each time a tracked file has a new version: the file was first seen, its content changed, or, when no content was read (metadata capture, a large or sensitive file), its size or modification time changed. Also a row for each file a tool's checkpoint recorded.
 
 - Key: `project`, `node_id`, `path`, `ts`
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `queued`
 - Retention class: `metrics` (default 365d)
-- Written by: `file_inventory.py` (`sync`)
+- Written by: `file_inventory.py` (`sync`); `session_facts.py` (`write`), from `ingesters/call_facts.py`, for the files of each rewind point (`origin` `claude_file_history` or `copilot_rewind`)
 
 | column | type | meaning |
 |---|---|---|
 | `path` | string | Absolute file path |
-| `ts` | real | When the change was seen, epoch seconds, UTC |
-| `blob_hash` | string | Hash of the content; joins `file_blobs.hash`. "" when no content was read |
+| `ts` | real | When the change was seen, epoch seconds, UTC; for a checkpoint's file, the checkpoint's time |
+| `blob_hash` | string | Hash of the content; joins `file_blobs.hash`. "" when no content was read. A checkpoint's file keeps its content in `file_blobs` only for memory and instruction files (`mechanism` set); for others a Copilot hash is the file's hash with no stored content |
 | `content_hash` | string | First 16 hex digits of the SHA-256 of the text. "" when no content was read |
 | `size_bytes` | long | Size |
 | `tokens` | long | Estimated tokens |
@@ -1893,6 +1908,15 @@ A row each time a tracked file has a new version: the file was first seen, its c
 | `project` | string | Part of the key. The project path of the file's row in `files` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
+| `session_id` | string | The session whose checkpoint recorded the file; "" for a scan row |
+| `agent_id` | string | The subagent; "" for the main agent or a scan row |
+| `source_event_id` | string | The rewind point's `context_events.message_id`; "" for a scan row |
+| `origin` | string | Who wrote the row: `claude_file_history` (a Claude Code file-history backup), `copilot_rewind` (a Copilot rewind snapshot's preimage); "" for the file inventory's scan |
+| `mechanism` | string | `file_write_events.mechanism` of the path; "" for other files and scan rows |
+| `version` | long | Claude Code's backup version of the file; null when not reported |
+| `state` | string | The tool's word for the version: `backup` (Claude Code kept a copy), `content` (Copilot), `absent` (the file did not exist before the message); "" for a scan row |
+| `lines_added` | long | Lines added to the file since the rewind point (Copilot); null when not reported |
+| `lines_removed` | long | Lines removed since the rewind point (Copilot); null when not reported |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
 

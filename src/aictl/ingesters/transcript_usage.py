@@ -54,6 +54,7 @@ from ..state_file import StateFile
 from . import session_files, zstd_stream
 from ._common import SQLITE_UNAVAILABLE, coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
 from .call_facts import (
+    CLAUDE_CHECKPOINT_LINES,
     CLAUDE_SESSION_LINES,
     ClaudeFacts,
     CopilotFacts,
@@ -114,7 +115,7 @@ PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
 
 # Record types consumed by ClaudeAccumulator + ClaudeFacts; all other Claude JSONL lines are skipped before json.loads.
 _CLAUDE_RECORD_TYPES = frozenset({b"assistant", b"user", b"api-request", b"system", b"attachment"}) | CLAUDE_TITLE_TYPES | {
-    kind.encode() for kind in CLAUDE_SESSION_LINES}
+    kind.encode() for kind in CLAUDE_SESSION_LINES | CLAUDE_CHECKPOINT_LINES}
 
 
 @functools.lru_cache(maxsize=4096)
@@ -1250,6 +1251,7 @@ class TranscriptUsageIngester:
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
         self.facts.surface = self._store.surface
         self._claude_facts = ClaudeFacts(self.facts)
+        self._rewind_seen: dict[Path, int] = {}
         self._vscode_debug_facts: dict[Path, VSCodeDebugFacts] = {}
         self._vscode_chat_facts: dict[Path, VSCodeChatFacts] = {}
         self._desktop_marked: set[str] = set()
@@ -1424,7 +1426,8 @@ class TranscriptUsageIngester:
         self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
         # Publish only path identities before any replay or storage work. Native
         # output follows active append-only tails, never this history backlog.
-        claude_files = [p for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)]
+        claude_roots = {p: root for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)}
+        claude_files = list(claude_roots)
         codex_files, codex_unclaimed = self._codex_rollouts()
         copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
         self._note_transcript_paths(claude_files, "claude-code")
@@ -1481,6 +1484,8 @@ class TranscriptUsageIngester:
             whole = not self._offsets.get(path)
             if whole:
                 self._claude_facts.begin_file(sid, agent_id)
+            # Claude Code keeps its file checkpoint backups beside projects/, in file-history/<session>/.
+            self._claude_facts.history_dir = claude_roots[path].parent / "file-history"
             own = copied = False
             for obj in read(path, _CLAUDE_RECORD_TYPES):
                 owner = claude_line_session(obj, sid)
@@ -1537,6 +1542,7 @@ class TranscriptUsageIngester:
                 cop.feed(obj)
             if cop.facts is not None:
                 cop.facts.finish_poll(now, PENDING_CONFIRM_MAX_AGE_S)
+                self._read_rewind_index(path.parent / "rewind-file-snapshots" / "index.json", cop.facts)
             # Shutdown metrics are added by finish(), which must therefore run
             # once per accumulator: a shutdown-only file starts over each time.
             if not cop.has_records and cop.shutdowns:
@@ -1871,6 +1877,20 @@ class TranscriptUsageIngester:
     def _check_fact_write(self) -> None:
         if self.facts.write_error is not None:
             raise self.facts.write_error
+
+    def _read_rewind_index(self, index: Path, facts: CopilotFacts) -> None:
+        """A Copilot session's rewind snapshots, read again only when the index file changed.
+
+        The snapshots are written with the session's events, so the index is looked at when its
+        events file changed. After a restart each index is read once more; its rows keep their keys."""
+        try:
+            signature = index.stat().st_mtime_ns
+        except OSError:
+            return
+        if self._rewind_seen.get(index) == signature:
+            return
+        facts.read_rewind_index(index)
+        self._rewind_seen[index] = signature
 
     def _roots(self, tool: str, default: Path) -> list[Path]:
         """The default session folder, then those of other homes found for the tool."""

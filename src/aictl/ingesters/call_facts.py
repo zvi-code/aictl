@@ -32,7 +32,11 @@ from ..context_audit import _redact
 from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
 from ..memory_changes import (
     ABSENT,
+    BLOB_MAX_BYTES,
+    COPILOT_CONTEXT_EVENT_TOOLS,
+    COPILOT_CONTEXT_TOOLS,
     COPILOT_MEMORY_TOOLS,
+    COPILOT_RECALL_AND_MEMORY_TOOLS,
     OUTSIDE_SESSION,
     TOOL_INPUT,
     TOOL_RESULT,
@@ -45,6 +49,7 @@ from ..memory_changes import (
     memory_mechanism,
     read_if_fresh,
     set_images,
+    text_hash,
     vscode_memory_path,
 )
 from ..records import THINKING_TEXT_MAX
@@ -306,6 +311,7 @@ class FactBuffer:
         self.digests: dict[tuple, fact_rows.SessionDigestRow] = {}
         self.thinking: dict[tuple, fact_rows.SessionThinkingRow] = {}
         self.blobs: dict[str, tuple[str, str, float]] = {}
+        self.file_versions: dict[tuple, fact_rows.FileVersionRow] = {}
         self.outcomes: dict[str, dict] = {}
         # Rows that sum up many lines (a turn, a file's use) change in place. They are marked
         # here when a line not stored before changes them, and copied when the buffer is written.
@@ -380,6 +386,25 @@ class FactBuffer:
             for blob in set_images(row, before, after):
                 self.blobs[blob[0]] = blob
             self.add_file_write(row)
+
+    def add_blob(self, digest: str, text: str, ts: float) -> None:
+        if self._in_window(ts):
+            self.blobs[digest] = (digest, text, ts)
+            self._maybe_flush()
+
+    def add_file_version(self, row: fact_rows.FileVersionRow, content: bytes | None = None) -> None:
+        """A file version a checkpoint recorded; *content* is kept in file_blobs (memory and instruction files only)."""
+        if not self._in_window(row.ts):
+            return
+        if content is not None and row.mechanism and not fact_rows._is_sensitive_path(row.path):
+            image = image_of(content, row.origin)
+            if image.hash and image.text is not None:
+                row.blob_hash, row.size_bytes = image.hash, image.size
+                row.content_hash = text_hash(image.text)[:16]
+                row.lines = image.text.count("\n") + int(bool(image.text) and not image.text.endswith("\n"))
+                self.blobs[image.hash] = (image.hash, image.text, row.ts)
+        self.file_versions[(row.path, row.ts, row.session_id, row.source_event_id)] = row
+        self._maybe_flush()
 
     def add_context_event(self, row: fact_rows.ContextEventRow) -> None:
         if self._in_window(row.ts):
@@ -490,7 +515,7 @@ class FactBuffer:
 
     def __len__(self) -> int:
         return (
-            len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests)
+            len(self.file_versions) + len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests)
             + len(self.outcomes)
             + len(self._marked)
             + len(self.steps)
@@ -549,6 +574,7 @@ class FactBuffer:
             outcomes=list(self.outcomes.values()),
             thinking=list(self.thinking.values()),
             blobs=list(self.blobs.values()),
+            file_versions=list(self.file_versions.values()),
         )
         try:
             self.written += writer(facts)
@@ -570,6 +596,7 @@ class FactBuffer:
         self.turns, self.session_files, self.digests, self.outcomes = {}, {}, {}, {}
         self.thinking = {}
         self.blobs = {}
+        self.file_versions = {}
 
 
 def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> fact_rows.ContextItemRow:
@@ -599,6 +626,8 @@ _CLAUDE_WRITE_TOOLS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "N
 _CLAUDE_READ_TOOLS = frozenset({"Read", "NotebookRead"})
 # Lines that describe the session as a whole, not one call.
 CLAUDE_SESSION_LINES = frozenset({"pr-link", "permission-mode", "mode", "cost-state"})
+# Claude Code's file checkpoints: the files backed up at a message, to rewind them to (``/rewind``).
+CLAUDE_CHECKPOINT_LINES = frozenset({"file-history-snapshot", "file-history-delta"})
 AGENT_LABEL_MAX = 200
 
 
@@ -683,6 +712,10 @@ class ClaudeFacts:
         self._todo_seq: dict[str, int] = {}
         self._task_seq: dict[str, int] = {}
         self._last_compaction: dict[str, fact_rows.ContextEventRow] = {}
+        # The files of each rewind point so far, by session/message id; and where the backups are.
+        self._rewind_files: dict[str, set[str]] = {}
+        self._rewind_rows: dict[str, fact_rows.ContextEventRow] = {}
+        self.history_dir: Path | None = None
         # Thinking per call, kept small (a month holds hundreds of thousands of calls): visible chars,
         # bit masks of the visible and the redacted block indexes, longest duration.
         self._thinking: dict[int, tuple[int, int, int, float]] = {}
@@ -767,6 +800,10 @@ class ClaudeFacts:
             if obj.get("id"):
                 self._api_starts[str(obj["id"])] = ts
             return
+        if kind in CLAUDE_CHECKPOINT_LINES:
+            if not agent_id:
+                self._rewind_point(sid, obj)
+            return
         if kind == "system":
             self._system_line(sid, obj, ts, agent_id)
             return
@@ -794,6 +831,59 @@ class ClaudeFacts:
         self._tool_uses(sid, obj, msg, ts, agent_id, cwd)
         self._request(sid, obj, msg, ts, agent_id, cwd)
 
+    def _rewind_point(self, sid: str, obj: dict) -> None:
+        """A ``file-history-snapshot`` (the files tracked at a message, each with its backup) or a
+        ``file-history-delta`` (one more file backed up for a message's snapshot).
+
+        A backup is the file as it was before the message's edits; ``backupFileName`` null means the
+        file did not exist. A key is the absolute path or one relative to ``realParentDir``'s end."""
+        if obj.get("type") == "file-history-delta":
+            message_id = str(obj.get("snapshotMessageId") or obj.get("messageId") or "")
+            files = {str(obj.get("trackingPath") or ""): obj.get("backup")}
+            ts = coerce_ts(obj.get("timestamp"))
+            update = True
+        else:
+            snapshot = obj.get("snapshot") if isinstance(obj.get("snapshot"), dict) else {}
+            message_id = str(snapshot.get("messageId") or obj.get("messageId") or "")
+            files = snapshot.get("trackedFileBackups") if isinstance(snapshot.get("trackedFileBackups"), dict) else {}
+            ts = coerce_ts(snapshot.get("timestamp"))
+            update = bool(obj.get("isSnapshotUpdate"))
+        if not message_id:
+            return
+        key = f"{sid}/{message_id}"
+        tracked = self._rewind_files.setdefault(key, set())
+        if not update:
+            tracked.clear()
+        for name, info in files.items():
+            if not name or not isinstance(info, dict):
+                continue
+            parent = str(info.get("realParentDir") or "")
+            path = name if os.path.isabs(name) else os.path.join(parent, os.path.basename(name)) if parent else name
+            tracked.add(path)
+            backup = info.get("backupFileName")
+            mechanism = memory_mechanism(path)
+            content = None
+            if backup and mechanism and self.history_dir is not None:
+                try:
+                    with open(self.history_dir / sid / str(backup), "rb") as fh:
+                        content = fh.read(BLOB_MAX_BYTES + 1)
+                except OSError:
+                    content = None  # Claude Code deletes old backups: the event stays, the content is gone
+            version = info.get("version")
+            self.buffer.add_file_version(fact_rows.FileVersionRow(
+                path=path, ts=ts, session_id=sid, origin="claude_file_history", source_event_id=message_id,
+                mechanism=mechanism, version=version if type(version) is int else None,
+                state="backup" if backup else "absent"), content)
+        # One row per rewind point: a later line of the same message updates it (the buffer keeps the
+        # first object of a key, so the same object is changed and handed over again).
+        point = self._rewind_rows.get(key)
+        if point is None:
+            point = self._rewind_rows[key] = fact_rows.ContextEventRow(
+                dedup_key=fact_rows._dedup_key("claude-rewind", sid, message_id), ts=ts, session_id=sid,
+                kind="rewind_point", tool="claude-code", trigger="snapshot", message_id=message_id)
+        point.files_count = len(tracked)
+        self.buffer.add_context_event(point)
+
     def _attachment(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
         """The instruction files, subfolder CLAUDE.md files and skills the session loaded."""
         for path, how, detail in loaded_files.claude_attachment(obj.get("attachment")):
@@ -809,6 +899,32 @@ class ClaudeFacts:
         attachment = obj.get("attachment") if isinstance(obj.get("attachment"), dict) else {}
         if attachment.get("type") == "edited_text_file":
             self._outside_edit(sid, obj, attachment, ts, agent_id)
+        elif attachment.get("type") in ("instructions", "nested_memory"):
+            self._memory_loaded(sid, obj, attachment, ts, agent_id)
+
+    def _memory_loaded(self, sid: str, obj: dict, attachment: dict, ts: float, agent_id: str) -> None:
+        """Memory and instruction files the tool put into the context, with the text it loaded.
+
+        Each file is a ``memory_recall`` event whose ``content_hash`` is the file_blobs hash of that
+        text: it matches a stored version of the file only when the tool loaded the file whole."""
+        files = attachment.get("files") if isinstance(attachment.get("files"), list) else [attachment]
+        cwd = str(obj.get("cwd") or "")
+        turn = self._turn(sid, agent_id)
+        for item in files:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            path = absolute_path(item["path"], cwd)
+            content = item.get("content")
+            image = image_of(content, TOOL_INPUT) if isinstance(content, str) else Image("")
+            if image.hash and image.text is not None and not fact_rows._is_sensitive_path(path):
+                self.buffer.add_blob(image.hash, image.text, ts)
+            self.buffer.add_context_event(fact_rows.ContextEventRow(
+                dedup_key=fact_rows._dedup_key("claude-recall", sid, str(obj.get("uuid") or ts), path),
+                ts=ts, session_id=sid, agent_id=agent_id, tool="claude-code", kind="memory_recall",
+                trigger=str(item.get("type") or attachment.get("type") or "")[:40], path=path,
+                content_hash=image.hash, prompt_id=turn.prompt_id if turn else "",
+                turn_index=turn.turn_index if turn else None,
+                detail={"bytes": image.size} if image.size is not None else {}))
 
     def _outside_edit(self, sid: str, obj: dict, attachment: dict, ts: float, agent_id: str) -> None:
         """Claude Code's word that a file it had read changed outside the session (by a person, another
@@ -1055,9 +1171,16 @@ class ClaudeFacts:
         # Claude Code sends its context attachments again after a compaction: the earlier ones stop counting.
         reset = context_items.Item(context_items.RESET, context_items.ALL)
         self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, reset, "claude-code", str(obj.get("cwd") or "")))
-        # A resumed session replays the line with the same id, so the key leaves the session out.
+        preserved = meta.get("preservedMessages") if isinstance(meta.get("preservedMessages"), dict) else {}
+        kept = preserved.get("uuids")
+        everything = preserved.get("allUuids")
+        # A copy of another session's line is skipped by the reader; a fork that rewrote the line's
+        # session id owns it too, so the key names the session (D11).
         row = fact_rows.ContextEventRow(
-            dedup_key=fact_rows._dedup_key("claude-compact", str(obj.get("uuid") or f"{sid}{ts}")),
+            dedup_key=fact_rows._dedup_key("claude-compact", sid, str(obj.get("uuid") or ts)),
+            cumulative_dropped_tokens=to_count(meta.get("cumulativeDroppedTokens")),
+            preserved_messages=len(kept) if isinstance(kept, list) else None,
+            detail={"all_uuids": len(everything)} if isinstance(everything, list) else {},
             ts=ts,
             session_id=sid,
             agent_id=agent_id,
@@ -1611,6 +1734,121 @@ class CopilotFacts:
             self._permission_requested(data, ts, agent_id)
         elif kind == "permission.completed":
             self._permission_completed(data, ts)
+        elif kind == "session.truncation":
+            self._truncation(data, ts, agent_id, event_id)
+        elif kind == "session.snapshot_rewind":
+            self._rewound(data, ts, agent_id, event_id)
+        elif kind == "instruction.update":
+            self._instruction_update(data, ts, agent_id, event_id)
+        elif kind == "session.tool_baseline":
+            self._tool_baseline(data, ts, agent_id, event_id)
+
+    def _event(self, kind: str, key: str, ts: float, agent_id: str, **fields: Any) -> None:
+        fields.setdefault("turn_index", self._turn_index())
+        self.buffer.add_context_event(fact_rows.ContextEventRow(
+            dedup_key=fact_rows._dedup_key(f"copilot-{kind}", self.sid, key), ts=ts, session_id=self.sid,
+            agent_id=agent_id, tool="copilot-cli", kind=kind, **fields))
+
+    def _truncation(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        """Copilot dropped old messages to fit its limit, without a summary. Message tokens only."""
+        self._event("truncation", event_id or str(ts), ts, agent_id,
+                    trigger=str(data.get("performedBy") or "")[:80],
+                    before_tokens=to_count(data.get("preTruncationTokensInMessages")),
+                    after_tokens=to_count(data.get("postTruncationTokensInMessages")),
+                    dropped_tokens=to_count(data.get("tokensRemovedDuringTruncation")),
+                    dropped_messages=to_count(data.get("messagesRemovedDuringTruncation")),
+                    detail={k: data[k] for k in ("tokenLimit", "preTruncationMessagesLength",
+                                                  "postTruncationMessagesLength", "toolDefinitionsTokenCount")
+                            if type(data.get(k)) is int})
+
+    def _rewound(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        """The session was rewound to a snapshot. No event of this kind was on the machine this was
+        written on: its fields are kept as ids only (strings and numbers), without any text."""
+        ids = {k: v for k, v in data.items() if isinstance(v, (int, float)) and not isinstance(v, bool)
+               or isinstance(v, str) and len(v) <= 120 and k.lower().endswith("id")}
+        self._event("rewind_point", event_id or str(ts), ts, agent_id, trigger="rewind",
+                    message_id=str(data.get("eventId") or data.get("snapshotId") or ""), detail=ids)
+
+    def _instruction_update(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        """An instruction the runtime puts into the context changed (``name``, for example a mode's
+        state). Its text is kept in file_blobs under ``content_hash``."""
+        content = data.get("content") if isinstance(data.get("content"), str) else None
+        image = image_of(content, TOOL_INPUT) if content is not None else Image("")
+        if image.hash and image.text is not None:
+            self.buffer.add_blob(image.hash, image.text, ts)
+        self._event("instruction_update", event_id or str(ts), ts, agent_id, trigger=str(data.get("name") or "")[:80],
+                    content_hash=image.hash,
+                    detail={**{k: data[k] for k in ("authority", "lifetime", "boundary", "fallback")
+                               if isinstance(data.get(k), str)},
+                            **({"post_initial": data["postInitial"]} if isinstance(data.get("postInitial"), bool) else {}),
+                            **({"bytes": image.size} if image.size is not None else {})})
+
+    def _tool_baseline(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        """The tools the session had loaded: whether its memory and context-management tools were there."""
+        tools = data.get("tools") if isinstance(data.get("tools"), list) else []
+        names = {str(t.get("name")) for t in tools if isinstance(t, dict) and t.get("name")}
+        self._event("tool_baseline", event_id or str(ts), ts, agent_id, trigger=str(data.get("surface") or "")[:80],
+                    detail={"tool_count": len(tools), "memory_tools": sorted(names & COPILOT_RECALL_AND_MEMORY_TOOLS),
+                            "context_tools": sorted(names & COPILOT_CONTEXT_TOOLS)})
+
+    def _context_tool(self, row: fact_rows.ToolInvocationRow, data: dict) -> None:
+        """A call of a tool that reads memory or manages the context: an event of its own.
+
+        ``session_store_sql`` searches past sessions; its query stays in the call's 24-hour tool
+        content, linked by ``tool_call_id``. The tools behind the ``contextManagementTools`` setting
+        were not called on the machine this was written on: their argument shapes are unverified."""
+        args = self._memory_args.pop(row.source_event_id, None) or {}
+        if row.is_error:
+            return
+        name = row.tool_name
+        kind = {"session_store_sql": "memory_recall", "session_history": "memory_recall",
+                "session_artifacts": "checkpoint", "new_context": "context_reset",
+                "get_context_remaining": "context_query"}[name]
+        path = next((str(args[k]) for k in ("path", "file_path", "filePath", "name") if isinstance(args.get(k), str)), "")
+        self._event(kind, row.source_event_id, row.ts, row.agent_id, trigger=name, tool_call_id=row.source_event_id,
+                    prompt_id=str(data.get("interactionId") or ""), path=path,
+                    detail={"bytes": len(args["content"].encode())} if isinstance(args.get("content"), str) else {})
+
+    def read_rewind_index(self, path: Path) -> None:
+        """``rewind-file-snapshots/index.json``: one rewind point per snapshot (a user message), with
+        its files. Hashes are SHA-256 of the raw bytes, so their first 32 digits are file_blobs hashes;
+        a backup's content is kept for memory and instruction files only."""
+        try:
+            index = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        backups = path.parent / "backups"
+        for snap in index.get("snapshots") or [] if isinstance(index, dict) else []:
+            if not isinstance(snap, dict):
+                continue
+            ts = coerce_ts(snap.get("timestamp"))
+            message_id = str(snap.get("eventId") or snap.get("snapshotId") or "")
+            files = snap.get("files") if isinstance(snap.get("files"), dict) else {}
+            for info in files.values():
+                if not isinstance(info, dict) or not info.get("path"):
+                    continue
+                file_path = str(info["path"])
+                pre = info.get("preimage") if isinstance(info.get("preimage"), dict) else {}
+                mechanism = memory_mechanism(file_path)
+                content = None
+                if mechanism and pre.get("backupFile"):
+                    try:
+                        with open(backups / os.path.basename(str(pre["backupFile"])), "rb") as fh:
+                            content = fh.read(BLOB_MAX_BYTES + 1)
+                    except OSError:
+                        content = None
+                digest = str(pre.get("contentHash") or "")
+                self.buffer.add_file_version(fact_rows.FileVersionRow(
+                    path=file_path, ts=ts, session_id=self.sid, origin="copilot_rewind", source_event_id=message_id,
+                    mechanism=mechanism, state=str(pre.get("kind") or "")[:40],
+                    blob_hash=digest[:32] if content is None and len(digest) == 64 else "",
+                    size_bytes=pre["size"] if type(pre.get("size")) is int else None,
+                    lines_added=to_count(info.get("linesAdded")), lines_removed=to_count(info.get("linesRemoved"))),
+                    content)
+            self._event("rewind_point", str(snap.get("snapshotId") or message_id), ts, "", trigger="snapshot", turn_index=None,
+                        message_id=message_id, files_count=to_count(snap.get("fileCount")),
+                        lines_added=to_count(snap.get("linesAdded")), lines_removed=to_count(snap.get("linesRemoved")),
+                        detail={"snapshot_id": str(snap.get("snapshotId") or "")})
 
     def finish_poll(self, now: float, pending_window_s: float) -> None:
         """Write what only the end of a read can settle: compactions and prompts still open."""
@@ -1736,6 +1974,11 @@ class CopilotFacts:
             fact_rows.ContextEventRow(
                 summary_kind="compact_summary" if summary else "",
                 summary_seq=seq if summary else None,
+                checkpoint_no=number if type(number) is int else None,
+                path=str(data.get("checkpointPath") or "")[:1000],
+                dropped_messages=to_count(data.get("messagesRemoved")),
+                dropped_tokens=to_count(data.get("tokensRemoved")),
+                turn_index=self._turn_index(),
                 dedup_key=key,
                 ts=ts,
                 session_id=self.sid,
@@ -1946,7 +2189,7 @@ class CopilotFacts:
         )
         self._running[call_id] = row
         self.buffer.add_tool(row)
-        if name in COPILOT_MEMORY_TOOLS:
+        if name in COPILOT_MEMORY_TOOLS or name in COPILOT_CONTEXT_EVENT_TOOLS:
             self._memory_args[call_id] = args
         if name == "update_todo" and isinstance(args.get("todos"), str):
             # Copilot sends its whole list as Markdown each time: each list is a version.
@@ -1999,6 +2242,8 @@ class CopilotFacts:
         self._file_edits(row, data, patch_counts, ts)
         if row.tool_name in COPILOT_MEMORY_TOOLS:
             self._memory_tool(row, data)
+        elif row.tool_name in COPILOT_CONTEXT_EVENT_TOOLS:
+            self._context_tool(row, data)
 
     def _file_edits(self, row: fact_rows.ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]],
                     done: float = 0.0) -> None:

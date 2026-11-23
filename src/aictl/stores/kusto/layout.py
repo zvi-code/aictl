@@ -39,7 +39,7 @@ GA_LAYOUT_VERSION: int | None = None
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "3e20df6ad605837643492539630c778eba387d2bf060836e2c4cc65703dae730"
+FINGERPRINT = "789ca4607d167aa530c15febeedb10aa218895fe00966679d7a079ed1af60f57"
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,14 @@ CHANGES: tuple[Change, ...] = (
         "file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, "
         "before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the "
         "VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook "
-        "row and its transcript row share one key. Rows written before have these columns empty.",
+        "row and its transcript row share one key. Rows written before have these columns empty. "
+        "context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, "
+        "tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, "
+        "dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code "
+        "compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; "
+        "a transcript imported again stores its compactions once more under the new key). file_history: rows "
+        "for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), "
+        "origin, mechanism, version, state and line counts.",
         breaks=False,
     ),
 )

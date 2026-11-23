@@ -31,6 +31,14 @@ MECHANISMS = (
 COPILOT_MEMORY_SCHEME = "copilot-memory://"
 VSCODE_MEMORY_SCHEME = "vscode-memory://"
 COPILOT_MEMORY_TOOLS = frozenset({"store_memory", "vote_memory"})
+# Copilot CLI tools that recall memory or past sessions (``session_store_sql`` seen on this machine).
+COPILOT_RECALL_TOOLS = frozenset({"session_store_sql"})
+COPILOT_RECALL_AND_MEMORY_TOOLS = COPILOT_MEMORY_TOOLS | COPILOT_RECALL_TOOLS
+# The tools the Copilot CLI setting ``contextManagementTools`` (off by default) adds. Documented, not
+# yet called on the machine this was written on.
+COPILOT_CONTEXT_TOOLS = frozenset({"new_context", "session_artifacts", "get_context_remaining", "session_history"})
+# The calls that are context events of their own (context_events), not only tool calls.
+COPILOT_CONTEXT_EVENT_TOOLS = COPILOT_RECALL_TOOLS | COPILOT_CONTEXT_TOOLS
 
 AGENT, SUBAGENT, OUTSIDE_SESSION = "agent", "subagent", "outside_session"
 

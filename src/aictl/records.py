@@ -585,6 +585,47 @@ class ContextEventRow:
     # The digest (session_digests kind and seq, same session and agent) that holds this event's summary.
     summary_kind: str = ""
     summary_seq: int | None = None
+    # Checkpoints and rewind points (kinds rewind_point, checkpoint, truncation, ...); None when not reported.
+    checkpoint_no: int | None = None
+    message_id: str = ""
+    files_count: int | None = None
+    lines_added: int | None = None
+    lines_removed: int | None = None
+    dropped_messages: int | None = None
+    dropped_tokens: int | None = None
+    cumulative_dropped_tokens: int | None = None
+    preserved_messages: int | None = None
+    path: str = ""
+    tool_call_id: str = ""
+    prompt_id: str = ""
+    turn_index: int | None = None
+    content_hash: str = ""
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class FileVersionRow:
+    """One version of a file as a tool's checkpoint recorded it (a ``file_history`` row).
+
+    ``blob_hash`` is set when the content is known: for a memory or instruction file whose backup is
+    still on disk, or when the tool gives the content's hash; ``state`` is ``absent`` when the tool
+    says the file did not exist."""
+
+    path: str
+    ts: float
+    session_id: str
+    origin: str  # claude_file_history | copilot_rewind
+    source_event_id: str = ""  # the rewind point's message id
+    agent_id: str = ""
+    mechanism: str = ""
+    version: int | None = None
+    state: str = ""  # backup | content | absent | ...: the tool's own word
+    blob_hash: str = ""
+    content_hash: str = ""
+    size_bytes: int | None = None
+    lines: int | None = None
+    lines_added: int | None = None
+    lines_removed: int | None = None
 
 
 @dataclass(slots=True)
@@ -760,10 +801,11 @@ class CallFacts:
     thinking: list[SessionThinkingRow] = field(default_factory=list)
     # Contents to keep once per hash in file_blobs: (hash, text, ts).
     blobs: list[tuple[str, str, float]] = field(default_factory=list)
+    file_versions: list[FileVersionRow] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
+            len(self.file_versions) + len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
             + len(self.steps) + len(self.cost_links) + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)

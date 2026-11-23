@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ..context_audit import _redact
-from ..records import TEXT_VALUE_MAX, SessionDigestRow, SessionFileRow
+from ..records import TEXT_VALUE_MAX, ContextEventRow, SessionDigestRow, SessionFileRow, _dedup_key
 from ._common import coerce_ts, open_readonly
 
 log = logging.getLogger(__name__)
@@ -399,16 +399,24 @@ class MetadataReaders:
         ):
             sections = [(_CHECKPOINT_SECTIONS[name], body) for name, body in zip(names, bodies) if body]
             text = "\n\n".join(f"## {head}\n{body}" for head, body in sections)
+            seq, ts = int(number or _id), coerce_ts(created)
+            # The checkpoint itself is an event of the session's context; its text is its digest.
+            event = ContextEventRow(
+                dedup_key=_dedup_key("copilot-checkpoint", str(sid), str(seq)), ts=ts, session_id=str(sid),
+                kind="checkpoint", tool="copilot-cli", trigger="store", checkpoint_no=seq,
+                summary_kind="checkpoint" if text else "", summary_seq=seq if text else None)
+            self.buffer.add_context_event(event)
             self.buffer.add_digest(
                 SessionDigestRow(
                     session_id=str(sid),
                     kind="checkpoint",
-                    seq=int(number or _id),
-                    ts=coerce_ts(created),
+                    seq=seq,
+                    ts=ts,
                     title=str(title or "")[:200],
                     text=digest_text(text),
                     tool="copilot-cli",
                     project_path=cwd.get(str(sid), ""),
+                    event_key=event.dedup_key,
                 )
             )
             touched.add(str(sid))

@@ -478,3 +478,201 @@ def hook_edit_at(path: str, content: str, ago: float):
                        operation="write", source_event_id="w0", dedup_key="w0-key")
     set_images(row, None, image_of(content, "tool_input"))
     return row
+
+
+# ─── Checkpoints ──────────────────────────────────────────────────
+
+
+def snapshot_line(message_id: str, ago: float, files: dict, *, update: bool = False) -> dict:
+    return {"type": "file-history-snapshot", "messageId": message_id, "isSnapshotUpdate": update,
+            "snapshot": {"messageId": message_id, "timestamp": iso(ago), "trackedFileBackups": files}}
+
+
+def backup(name: str | None, version: int, ago: float, parent: str) -> dict:
+    return {"backupFileName": name, "version": version, "backupTime": iso(ago), "realParentDir": parent}
+
+
+class TestClaudeRewindPoints:
+    def test_a_snapshot_is_a_rewind_point_with_its_files(self, tmp_path):
+        from pathlib import Path
+
+        mem_dir = str(Path(memory_file()).parent)
+        history = tmp_path / "claude" / "file-history" / SESSION
+        history.mkdir(parents=True)
+        (history / "aaaa000011112222@v2").write_text("memory before\n")
+        (history / "bbbb000011112222@v2").write_text("source before\n")
+        write_lines(claude_path(tmp_path), [
+            snapshot_line("u-1", 400, {}),
+            c_user("first", 399, promptId="p1", uuid="u-1"),
+            snapshot_line("u-2", 300, {
+                memory_file(): backup("aaaa000011112222@v2", 2, 301, mem_dir),
+                "src/a.py": backup("bbbb000011112222@v2", 2, 301, "/work/proj/src"),
+                "notes/new.md": backup(None, 1, 301, "/work/proj/notes"),
+            }),
+            {"type": "file-history-delta", "messageId": "u-2", "snapshotMessageId": "u-2",
+             "trackingPath": "/work/proj/CLAUDE.md", "timestamp": iso(290),
+             "backup": backup(None, 1, 290, "/work/proj")},
+        ])
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        points = {r["message_id"]: r for r in table(facts, "context_events", kind="rewind_point")}
+        assert set(points) == {"u-1", "u-2"}
+        assert (points["u-1"]["files_count"], points["u-2"]["files_count"]) == (0, 4)
+        assert points["u-2"]["session_id"] == SESSION and points["u-2"]["lines_added"] is None
+        files = {r["path"]: r for r in table(facts, "file_history", source_event_id="u-2")}
+        assert set(files) == {memory_file(), "/work/proj/src/a.py", "/work/proj/notes/new.md", "/work/proj/CLAUDE.md"}
+        mem, src, new = files[memory_file()], files["/work/proj/src/a.py"], files["/work/proj/notes/new.md"]
+        assert (mem["origin"], mem["state"], mem["version"], mem["mechanism"]) == (
+            "claude_file_history", "backup", 2, "claude_auto_memory")
+        # Content is kept for memory and instruction files only; every file keeps its event.
+        assert blob(facts, mem["blob_hash"]) == "memory before\n"
+        assert src["blob_hash"] == "" and src["state"] == "backup"
+        assert (new["state"], new["blob_hash"]) == ("absent", "")
+        assert files["/work/proj/CLAUDE.md"]["mechanism"] == "claude_md"
+
+    def test_a_forked_compaction_belongs_to_each_session_that_owns_the_line(self, tmp_path):
+        main = claude_path(tmp_path)
+        write_lines(main, compaction_lines(SESSION, "Summary"))
+        # A fork that rewrote the session id of the line it copied (seen on this machine twice).
+        write_lines(main.with_name(f"{OTHER}.jsonl"), compaction_lines(OTHER, "Summary"))
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        owners = sorted(r["session_id"] for r in table(facts, "context_events", kind="compaction"))
+        assert owners == sorted([SESSION, OTHER])
+
+    def test_a_compaction_keeps_what_was_dropped_and_preserved(self, tmp_path):
+        lines = compaction_lines(SESSION, "Summary")
+        lines[1]["compactMetadata"].update(
+            cumulativeDroppedTokens=12000,
+            preservedMessages={"uuids": ["a", "b"], "allUuids": ["a", "b", "c"], "anchorUuid": "a"})
+        write_lines(claude_path(tmp_path), lines)
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        row = one(table(facts, "context_events", kind="compaction"))
+        assert (row["cumulative_dropped_tokens"], row["preserved_messages"], row["dropped_messages"]) == (12000, 2, None)
+
+
+class TestCopilotCheckpoints:
+    def test_compaction_truncation_checkpoint_and_rewind_points(self, tmp_path):
+        session = copilot_events(tmp_path).parent
+        write_lines(copilot_events(tmp_path), [
+            ev("session.start", 900, {"context": {"cwd": "/work/cli"}}),
+            ev("user.message", 850, {"content": "go", "interactionId": "i1"}),
+            ev("session.compaction_complete", 800, {
+                "success": True, "summaryContent": "Summary", "checkpointNumber": 2,
+                "checkpointPath": str(session / "checkpoints" / "002-parser.md"), "messagesRemoved": 14,
+                "tokensRemoved": 5000, "preCompactionTokens": 9000, "postCompactionTokens": 4000}),
+            ev("session.truncation", 790, {
+                "tokenLimit": 1000, "preTruncationTokensInMessages": 1200, "preTruncationMessagesLength": 20,
+                "postTruncationTokensInMessages": 900, "postTruncationMessagesLength": 15,
+                "tokensRemovedDuringTruncation": 300, "messagesRemovedDuringTruncation": 5,
+                "toolDefinitionsTokenCount": 50, "performedBy": "BasicTruncator"}),
+            ev("session.shutdown", 700, {}),
+            ev("session.resume", 650, {"context": {"cwd": "/work/cli"}}),
+            ev("session.compaction_complete", 600, {"success": True, "summaryContent": "Later", "checkpointNumber": 3}),
+        ])
+        rewind = session / "rewind-file-snapshots"
+        (rewind / "backups").mkdir(parents=True)
+        (rewind / "backups" / hash_full("instructions before\n")).write_text("instructions before\n")
+        (rewind / "index.json").write_text(__import__("json").dumps({"schema": 1, "snapshots": [{
+            "snapshotId": "snap-1", "eventId": "user.message-850", "userMessage": "go", "timestamp": iso(845),
+            "backupFiles": [hash_full("instructions before\n")], "fileCount": 2, "linesAdded": 7, "linesRemoved": 2,
+            "files": {
+                "k1": {"path": "/work/cli/.github/copilot-instructions.md",
+                       "preimage": {"kind": "content", "contentHash": hash_full("instructions before\n"),
+                                    "backupFile": hash_full("instructions before\n"), "size": 20},
+                       "postimage": {"kind": "content", "contentHash": hash_full("after\n")},
+                       "linesAdded": 3, "linesRemoved": 1},
+                "k2": {"path": "/work/cli/src/b.py", "preimage": {"kind": "absent"},
+                       "postimage": {"kind": "content", "contentHash": hash_full("x")},
+                       "linesAdded": 4, "linesRemoved": 1}}}]}))
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        rows = table(facts, "context_events", session_id=COPILOT_SID)
+        compactions = {r["checkpoint_no"]: r for r in rows if r["kind"] == "compaction"}
+        assert set(compactions) == {2, 3}  # the resumed session's checkpoints stay its own, in order
+        first = compactions[2]
+        assert (first["dropped_messages"], first["dropped_tokens"], first["path"]) == (
+            14, 5000, str(session / "checkpoints" / "002-parser.md"))
+        truncation = one([r for r in rows if r["kind"] == "truncation"])
+        assert (truncation["before_tokens"], truncation["after_tokens"], truncation["dropped_tokens"],
+                truncation["dropped_messages"], truncation["trigger"]) == (1200, 900, 300, 5, "BasicTruncator")
+        point = one([r for r in rows if r["kind"] == "rewind_point"])
+        assert (point["message_id"], point["files_count"], point["lines_added"], point["lines_removed"]) == (
+            "user.message-850", 2, 7, 2)
+        files = {r["path"]: r for r in table(facts, "file_history", source_event_id="user.message-850")}
+        inst, src = files["/work/cli/.github/copilot-instructions.md"], files["/work/cli/src/b.py"]
+        assert (inst["origin"], inst["state"], inst["lines_added"], inst["mechanism"]) == (
+            "copilot_rewind", "content", 3, "copilot_instructions")
+        assert blob(facts, inst["blob_hash"]) == "instructions before\n"
+        assert (src["state"], src["blob_hash"], src["lines_added"]) == ("absent", "", 4)
+
+    def test_a_store_checkpoint_is_a_checkpoint_event_linked_to_its_digest(self, tmp_path):
+        copilot_session(tmp_path)
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        point = one(table(facts, "context_events", session_id=COPILOT_SID, kind="checkpoint"))
+        assert (point["checkpoint_no"], point["summary_kind"], point["summary_seq"]) == (1, "checkpoint", 1)
+        digest = one(table(facts, "session_digests", session_id=COPILOT_SID, kind="checkpoint"))
+        assert digest["event_key"] == point["dedup_key"]
+
+
+def hash_full(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+class TestRecallAndSettings:
+    def test_claude_memory_loaded_into_context_is_a_recall_linked_by_hash(self, tmp_path):
+        write_lines(claude_path(tmp_path), [
+            c_user("hi", 500, promptId="p1"),
+            {"type": "attachment", "uuid": "att-9", "timestamp": iso(499), "sessionId": SESSION, "cwd": "/work/proj",
+             "attachment": {"type": "instructions", "files": [
+                 {"path": memory_file("MEMORY.md"), "type": "AutoMem", "content": "- [Style](feedback_style.md)\n"},
+                 {"path": "/work/proj/CLAUDE.md", "type": "Project", "content": "Use tabs.\n"}]}},
+        ])
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        recalls = {r["path"]: r for r in table(facts, "context_events", kind="memory_recall")}
+        mem = recalls[memory_file("MEMORY.md")]
+        assert (mem["trigger"], mem["prompt_id"], mem["content_hash"]) == (
+            "AutoMem", "p1", hash_of("- [Style](feedback_style.md)\n"))
+        assert blob(facts, mem["content_hash"]) == "- [Style](feedback_style.md)\n"
+        assert recalls["/work/proj/CLAUDE.md"]["trigger"] == "Project"
+
+    def test_copilot_recall_tools_baseline_and_instruction_updates(self, tmp_path):
+        write_lines(copilot_events(tmp_path), [
+            ev("session.start", 900, {"context": {"cwd": "/work/cli"}}),
+            ev("session.tool_baseline", 890, {"model": "m", "surface": "cli", "tools": [
+                {"name": "store_memory", "deferred": False}, {"name": "vote_memory", "deferred": True},
+                {"name": "session_store_sql", "deferred": False}, {"name": "bash", "deferred": False}]}),
+            ev("instruction.update", 880, {"content": "Mode: plan", "authority": "runtime", "lifetime": "persistent",
+                                           "boundary": "nextModelRequest", "fallback": "rebuildSystemPrompt",
+                                           "name": "mode-state", "postInitial": False}),
+            ev("user.message", 850, {"content": "what did we decide", "interactionId": "i1"}),
+            ev("tool.execution_start", 800, {"toolCallId": "q1", "toolName": "session_store_sql", "arguments": {
+                "query": "select 1", "description": "d"}}),
+            ev("tool.execution_complete", 799, {"toolCallId": "q1", "success": True, "interactionId": "i1"}),
+            ev("tool.execution_start", 790, {"toolCallId": "a1", "toolName": "session_artifacts", "arguments": {
+                "path": "checkpoint.md", "content": "Saved state"}}),
+            ev("tool.execution_complete", 789, {"toolCallId": "a1", "success": True}),
+            ev("tool.execution_start", 780, {"toolCallId": "n1", "toolName": "new_context", "arguments": {}}),
+            ev("tool.execution_complete", 779, {"toolCallId": "n1", "success": True}),
+        ])
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        rows = {r["kind"]: r for r in table(facts, "context_events", session_id=COPILOT_SID)}
+        import json
+
+        baseline = json.loads(rows["tool_baseline"]["detail"])
+        assert baseline == {"tool_count": 4, "memory_tools": ["session_store_sql", "store_memory", "vote_memory"],
+                            "context_tools": []}
+        update = rows["instruction_update"]
+        assert (update["trigger"], update["content_hash"]) == ("mode-state", hash_of("Mode: plan"))
+        assert json.loads(update["detail"])["authority"] == "runtime"
+        recall = rows["memory_recall"]
+        assert (recall["trigger"], recall["tool_call_id"], recall["prompt_id"]) == ("session_store_sql", "q1", "i1")
+        assert (rows["checkpoint"]["trigger"], rows["checkpoint"]["tool_call_id"], rows["checkpoint"]["path"]) == (
+            "session_artifacts", "a1", "checkpoint.md")
+        assert rows["context_reset"]["tool_call_id"] == "n1"
