@@ -207,7 +207,9 @@
           "failed": {"type": "boolean"},
           "confirm": {"type": ["string", "null"]},
           "input_bytes": {"type": ["integer", "null"]},
-          "output_bytes": {"type": ["integer", "null"]}
+          "output_bytes": {"type": ["integer", "null"]},
+          "agent_id": {"type": "string", "description": "The address of the agent that made the call: the session id for the main agent, <session>/<agent> for a subagent."},
+          "agent": {"type": ["string", "null"], "description": "That agent's name on the board; null when the board has no name for it."}
         },
         "required": [
           "ts",

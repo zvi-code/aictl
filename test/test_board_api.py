@@ -1709,6 +1709,18 @@ class TestDetails:
         assert d["loop"] is None
         assert {e["key"] for e in d["errors"]} == {"tool:Bash:", "tool:mcp__db__query:Timeout after #s"}
 
+    def test_tool_calls_carry_the_agent_that_made_them(self, db):
+        """A main agent's call list holds its subagents' calls: each row names its agent, so the list is not ambiguous."""
+        _status, d = agent_detail(db, "done", None, NOW)
+        by_agent = {}
+        for call in d["tool_calls"]:
+            by_agent.setdefault((call["agent_id"], call["agent"]), []).append(call["name"])
+        sub = d["subagents"][0]
+        assert {key: len(names) for key, names in by_agent.items()} == {("done", "Main agent"): 3, (sub["id"], sub["title"]): 2}
+        assert all(call["agent"] for call in d["tool_calls"])
+        _status, own = agent_detail(db, "sub-1", None, NOW)
+        assert {call["agent_id"] for call in own["tool_calls"]} == {"done/sub-1"}
+
     def test_subagent(self, db):
         status, d = agent_detail(db, "sub-1", None, NOW)
         assert status == 200

@@ -117,6 +117,8 @@ export function stamp(ts: NumberValue, withDay = false, now = Date.now()) {
   if (!withDay && dayKey(d) === dayKey(new Date(now))) return hm;
   return MONTHS[d.getMonth()] + ' ' + d.getDate() + ' ' + hm;
 }
+/** "Nov 23 14:51:07": a time to the second, for rows that are seconds apart. */
+export const stampSec = (ts: NumberValue) => isNil(ts) ? NA : stamp(ts, true) + ':' + pad(new Date(ts * 1000).getSeconds());
 export const dayLabel = (ts: number) => {
   const d = new Date(ts * 1000);
   return MONTHS[d.getMonth()] + ' ' + d.getDate();

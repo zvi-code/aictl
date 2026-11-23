@@ -187,6 +187,12 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         process["cpu_percent"] = process["mem_mb"] = None
 
     fields = ("ts", "tool_name", "target", "duration_ms", "is_error", "confirm", "input_bytes", "output_bytes")
+
+    def call_agent(raw_agent: str | None) -> tuple[str, str | None]:
+        """The address of the agent that made a call, and its name (the title of its row on the board)."""
+        key = _agent_key(sid, raw_agent)
+        return key, "Main agent" if key == sid else titles.get((sid, key))
+
     tool_calls = [
         {
             "ts": ts,
@@ -197,9 +203,11 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             "confirm": confirm or None,
             "input_bytes": in_bytes,
             "output_bytes": out_bytes,
+            "agent_id": call_agent(r.get("agent_id"))[0],
+            "agent": call_agent(r.get("agent_id"))[1],
         }
-        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes
-        in (tuple(r[k] for k in fields) for r in page if r["row_type"] == "item")
+        for r in page if r["row_type"] == "item"
+        for ts, name, target, duration, failed, confirm, in_bytes, out_bytes in (tuple(r[k] for k in fields),)
     ]
     files = [
         {"path": path, "lines_added": _maybe_int(added), "lines_removed": _maybe_int(removed), "edits": edits}

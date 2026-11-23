@@ -1,7 +1,7 @@
 import { For, Show, type Accessor } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import type { BoardAgentRow, DetailAgent, TopicRuntimeAgent } from '../data/contract.gen'
-import { fmtBytes, fmtMs, fmtN, fmtUsd, stamp } from '../design/format'
+import { fmtBytes, fmtMs, fmtN, fmtUsd, stamp, stampSec } from '../design/format'
 import type { DetailResource, PanelContext, Row } from '../panels/types'
 import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Chart } from '../ui/Chart'
@@ -87,7 +87,7 @@ const legacyWidths = (label: string, fields: readonly Field<never>[], action: bo
   widthIds: [...fields.map(field => field.id), ...(action ? [actionColumnId] : [])],
 })
 
-type ColumnFormat = 'number' | 'time' | 'bytes' | 'path' | 'usd' | 'ms'
+type ColumnFormat = 'number' | 'time' | 'timeSec' | 'bytes' | 'path' | 'usd' | 'ms'
 type Column = string | readonly [key: string, label: string, format?: ColumnFormat]
 
 /** A column named for its unit shows that unit: a cost is money and a time in milliseconds is a duration, never a rounded count. */
@@ -97,6 +97,8 @@ export function Rows<T extends object>(props: {
   action?: { label: (row: T) => string; run: (row: T) => void }; empty?: string
   /** Run the action from this column's cell instead of a separate Actions column. */
   actionColumn?: string
+  /** Text shown on hover for a column's cell, by column key. */
+  hints?: Readonly<Record<string, (row: T) => string | undefined>>
 }) {
   const fields = (): Field<T>[] => props.columns.map(column => {
     const [key, label, explicit] = typeof column === 'string'
@@ -109,10 +111,11 @@ export function Rows<T extends object>(props: {
       },
       ...(format === 'path' ? { clip: 'start' as const } : format ? { format: (value: unknown) => {
         const n = number(value)
-        return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'bytes' ? fmtBytes(n)
+        return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'timeSec' ? stampSec(n) : format === 'bytes' ? fmtBytes(n)
           : format === 'usd' ? fmtUsd(n) : format === 'ms' ? fmtMs(n) : fmtN(n)
       } } : {}),
       ...(key === props.actionColumn ? { action: props.action } : {}),
+      ...(props.hints?.[key] ? { hint: props.hints[key] } : {}),
     }
   })
   return <Show when={props.rows != null} fallback={<PanelState state="unavailable" />}>

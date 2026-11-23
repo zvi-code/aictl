@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: d36d9558f40b37cafcc711abf265292e0265b14d618556170b0b8fc93c6af66e
+// Schema digest: 4ba76307788b45e493d20ab2fccaa3f108d5a7be9ef19bfe881e7c7128d72eb2
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -821,6 +821,8 @@ export type DetailAgent = {
     confirm: string | null;
     input_bytes: number | null;
     output_bytes: number | null;
+    agent_id?: string;
+    agent?: string | null;
   }>;
   files: Array<{
     path: string;
