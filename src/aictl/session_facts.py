@@ -83,6 +83,8 @@ class SessionFacts:
         self._file_writes: OrderedDict = OrderedDict()
         # path -> (dedup_key, ts, after_hash, after_bytes) of the last stored change of a memory file.
         self._versions: OrderedDict = OrderedDict()
+        # The file_blobs hashes this process has stored.
+        self._blobs: OrderedDict = OrderedDict()
         self.event_listener = None
         if state is not None:
             try:
@@ -289,11 +291,16 @@ class SessionFacts:
 
     def blobs(self, contents: Iterable[tuple[str, str, float]]) -> None:
         """Store file or summary contents once per hash in file_blobs (the file_text class): (hash, text, ts)."""
-        rows = {digest: dict(project="", hash=digest, content=text, size_bytes=len(text.encode("utf-8", "replace")),
-                             created_at=ts)
-                for digest, text, ts in contents if digest and self.allows_text(ts, "file_text")}
-        if rows:
-            self.writer.upsert("file_blobs", list(rows.values()))
+        with self._lock:
+            # A memory file loaded in every turn is the same content each time: it is stored once.
+            rows = {digest: dict(project="", hash=digest, content=text, size_bytes=len(text.encode("utf-8", "replace")),
+                                 created_at=ts)
+                    for digest, text, ts in contents
+                    if digest and digest not in self._blobs and self.allows_text(ts, "file_text")}
+            if rows:
+                self.writer.upsert("file_blobs", list(rows.values()))
+                for digest in rows:
+                    self._remember(self._blobs, digest, True)
 
     def _digest_text(self, row, project: str) -> dict:
         """A digest's stored text. A large one keeps a preview here and its whole text in file_blobs.

@@ -641,6 +641,18 @@ class TestRecallAndSettings:
         assert blob(facts, mem["content_hash"]) == "- [Style](feedback_style.md)\n"
         assert recalls["/work/proj/CLAUDE.md"]["trigger"] == "Project"
 
+    def test_the_same_loaded_content_is_stored_once(self, tmp_path):
+        attachment = {"type": "instructions", "files": [{"path": "/work/proj/CLAUDE.md", "type": "Project",
+                                                          "content": "Use tabs.\n"}]}
+        write_lines(claude_path(tmp_path), [
+            {"type": "attachment", "uuid": f"att-{i}", "timestamp": iso(400 - i), "sessionId": SESSION,
+             "cwd": "/work/proj", "attachment": attachment} for i in range(3)])
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        facts.blobs([(hash_of("Use tabs.\n"), "Use tabs.\n", iso_ts(10))])
+        assert len(facts.writer.written("file_blobs")) == 1
+        assert len(table(facts, "context_events", kind="memory_recall")) == 3
+
     def test_copilot_recall_tools_baseline_and_instruction_updates(self, tmp_path):
         write_lines(copilot_events(tmp_path), [
             ev("session.start", 900, {"context": {"cwd": "/work/cli"}}),
