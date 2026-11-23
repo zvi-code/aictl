@@ -25,7 +25,7 @@ export function isoOf(seconds: string | number | null | undefined): string {
  * and `change` carry those; a raw number typed here is accepted and shown as a date-time on leaving the field.
  */
 export function TimeField(props: { label: string; seconds: string; open?: string; change: (seconds: string) => void }) {
-  const [text, setText] = createSignal(isoOf(props.seconds))
+  const [text, setText] = createSignal(untrack(() => isoOf(props.seconds)))
   const [invalid, setInvalid] = createSignal(false)
   // A bound set elsewhere (the applied Flow filters) replaces what the field shows.
   createEffect(() => props.seconds, seconds => {

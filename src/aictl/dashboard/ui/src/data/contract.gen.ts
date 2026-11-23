@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: d2c23b3583a9932f7d32668cc1a2a2f3763f71063f916103b21522809a730c4c
+// Schema digest: c6a5a292daffd495865ca7f40fe44e84e249a727f46cf97211fa8fa294556265
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -976,6 +976,7 @@ export type DetailApiCalls = {
     avg_latency_ms: number | null;
     p95_latency_ms: number | null;
     by_model: Record<string, number>;
+    source?: string | null;
   };
 };
 

@@ -22,6 +22,7 @@ from .projections.history import (
     event_params,
     event_rows,
     local_scope,
+    scoped_records,
     session_events,
     session_processes,
     session_row,
@@ -210,10 +211,11 @@ class SessionRoutes:
         last_ts, total_duration_ms, err_count}], total_calls,
         configured_servers: [name, ...]}``.
 
+        ``servers`` are the servers the session used, from its events and its stored tool calls.
         Configured-but-unused servers appear in ``configured_servers``
-        only (not in ``servers``); the UI renders them dimmed.
+        only (not in ``servers``).
         """
-        from ..analysis.mcp_usage import configured_servers, mcp_calls
+        from ..analysis.mcp_usage import configured_servers
 
         session_id = self._qs_get("session_id")
         if not session_id:
@@ -221,7 +223,9 @@ class SessionRoutes:
             return
         reader = configured_reader(self.server.store)
         try:
-            servers = mcp_calls(session_events(reader, session_id, local_scope()))
+            # The servers the session used: the OTel events that name one, and the stored tool calls of a
+            # server's tools (a tool without OTel events still called its servers).
+            servers = scoped_records(HistoryScope.local(self.server.store), session_id, "mcp")["servers"]
             sess = session_row(reader, session_id, local_scope()) or {}
         except StoreError as exc:
             self.send_error(503, str(exc))
@@ -380,15 +384,28 @@ class SessionRoutes:
 
         # Build summary
         ok_calls = [c for c in calls if c["status"] == "ok"]
+        if session_id and filter_session_id and not calls:
+            # The tool sent no OTel events for this session; the requests its files recorded are the same calls.
+            try:
+                stored = scoped_records(HistoryScope.local(self.server.store), session_id, "calls")
+            except StoreError as exc:
+                self._json_response({"error": str(exc)}, status=503)
+                return
+            if stored["calls"] or stored["summary"]["total_calls"]:
+                self._json_response({**stored, "calls": stored["calls"][:limit],
+                                     "summary": {**stored["summary"], "source": "stored requests"}})
+                return
         durations = [c["duration_ms"] for c in ok_calls if c.get("duration_ms")]
         models = Counter(c.get("model", "unknown") for c in ok_calls)
 
+        # No recorded duration is no latency, not 0 ms.
         summary = {
             "total_calls": len(ok_calls),
             "total_errors": len(calls) - len(ok_calls),
-            "avg_latency_ms": round(sum(durations) / len(durations), 1) if durations else 0,
-            "p95_latency_ms": round(sorted(durations)[int(len(durations) * 0.95)] if durations else 0, 1),
+            "avg_latency_ms": round(sum(durations) / len(durations), 1) if durations else None,
+            "p95_latency_ms": round(sorted(durations)[int(len(durations) * 0.95)], 1) if durations else None,
             "by_model": models,
+            "source": "OTel events" if calls else None,
         }
 
         self._json_response({"calls": calls[:limit], "summary": summary})

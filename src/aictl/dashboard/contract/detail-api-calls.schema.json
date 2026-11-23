@@ -30,7 +30,8 @@
         "total_errors": {"type": "integer"},
         "avg_latency_ms": {"anyOf": [{"type": "number"}, {"type": "null"}]},
         "p95_latency_ms": {"anyOf": [{"type": "number"}, {"type": "null"}]},
-        "by_model": {"type": "object", "additionalProperties": {"type": "integer"}}
+        "by_model": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "source": {"anyOf": [{"type": "string"}, {"type": "null"}]}
       },
       "required": ["total_calls", "total_errors", "avg_latency_ms", "p95_latency_ms", "by_model"]
     }
