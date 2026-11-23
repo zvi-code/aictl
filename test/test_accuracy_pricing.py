@@ -31,6 +31,10 @@ PUBLISHED = {
     "claude-haiku-4-5": (1.0, 5.0, 0.10, 1.25, 2.0),
     "gpt-6-astra": (10.0, 50.0, 1.0, 12.5, 25.0),
     "gpt-6.1-sol": (2.0, 10.0, 0.10, 2.5, 5.0),
+    "gpt-6.2-astra": (8.0, 40.0, 0.40, 10.0, 20.0),
+    "gpt-6.2-sol": (2.0, 10.0, 0.10, 2.5, 5.0),
+    "grok-4.7": (2.0, 6.0, 0.50, None, None),
+    "mai-code-2": (0.50, 2.50, 0.025, None, None),
     "gpt-5.3-codex": (1.75, 14.0, 0.175, None, None),
 }
 
@@ -51,6 +55,10 @@ SEEN_IN_TRANSCRIPTS = {
     "gpt-6-astra": "gpt-6-astra",
     "gpt-6-luna": "gpt-6-luna",
     "gemini-4-argon": "gemini-4-argon",
+    "gpt-6.2-astra": "gpt-6.2-astra",
+    "gpt-6.2-sol": "gpt-6.2-sol",
+    "mai-code-2": "mai-code-2",
+    "grok-4.7": "grok-4.7",
 }
 
 
@@ -75,7 +83,7 @@ def test_a_newer_version_never_inherits_an_older_rate():
     assert resolve_pricing("claude-opus-5-5")[1].input_per_m == 4.0
     assert resolve_pricing("claude-haiku-5-5")[1].input_per_m == 0.10
     assert resolve_pricing("claude-opus-5-7") == (None, None)
-    assert resolve_pricing("gpt-6.2-sol") == (None, None)
+    assert resolve_pricing("gpt-6.3-sol") == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -116,11 +124,24 @@ def test_dated_rate_change_follows_the_request_time():
     dec = datetime(2026, 12, 1, tzinfo=timezone.utc).timestamp()
     assert request_cost_usd("gemini-4-argon", input_tokens=1_000_000, ts=nov) == pytest.approx(2.0)
     assert request_cost_usd("gemini-4-argon", input_tokens=1_000_000, ts=dec) == pytest.approx(4.0)
+    may = datetime(2027, 5, 17, tzinfo=timezone.utc).timestamp()
+    assert request_cost_usd("mai-code-2", input_tokens=1_000_000, ts=may - 1) == pytest.approx(0.50)
+    assert request_cost_usd("mai-code-2", input_tokens=1_000_000, ts=may) == pytest.approx(1.0)
+
+
+def test_long_prompt_rates_of_the_newer_models():
+    # grok-4.7 from 200K prompt tokens and gpt-6.2 over 272K bill the whole request at the long rate.
+    assert request_cost_usd("grok-4.7", input_tokens=199_999) == pytest.approx(199_999 * 2.0 / 1e6)
+    assert request_cost_usd("grok-4.7", input_tokens=200_001) == pytest.approx(200_001 * 4.0 / 1e6)
+    assert request_cost_usd("gpt-6.2-astra", input_tokens=300_000, output_tokens=1000) == pytest.approx(
+        (300_000 * 16.0 + 1000 * 60.0) / 1e6)
 
 
 def test_context_windows():
     assert context_window_for("claude-haiku-5-5") == 1_000_000
     assert context_window_for("claude-opus-5-5[1m]") == 1_000_000
     assert context_window_for("claude-haiku-4-5") == 200_000
-    assert context_window_for("gpt-6.1-sol") is None  # no page states it; never guess
+    assert context_window_for("gpt-6.2-sol") == 922_000  # the model page's maximum input
+    assert context_window_for("grok-4.7") == 500_000
+    assert context_window_for("mai-code-2") is None  # no page states it; never guess
     assert context_window_for("made-up") is None

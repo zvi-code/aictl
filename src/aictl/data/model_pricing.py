@@ -33,6 +33,10 @@ PRICING_SOURCES = (
     "https://platform.claude.com/docs/en/about-claude/pricing",
     "https://developers.openai.com/api/docs/pricing",
     "https://aistudio.google.com/docs/pricing",
+    # Read 2026-11-23: gpt-6.2-astra and gpt-6.2-sol (OpenAI page above), grok-4.7 (xAI),
+    # mai-code-2 (sold through GitHub Copilot; Microsoft publishes no API price of its own).
+    "https://docs.x.ai/docs/pricing",
+    "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing",
 )
 
 # Multipliers published on the Anthropic page.
@@ -154,6 +158,8 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "claude-haiku-4-5": _anthropic(1.0, 5.0, 0.10, 1.25, 2.0),
     "claude-haiku-3-5": _anthropic(0.80, 4.0, 0.08, 1.0, 1.6),
     # OpenAI, standard tier ------------------------------------- input cached out
+    "gpt-6.2-astra": _gpt((8.0, 0.40, 40.0, 10.0, 20.0), (16.0, 0.80, 60.0, 20.0, 40.0)),
+    "gpt-6.2-sol": _gpt((2.0, 0.10, 10.0, 2.5, 5.0), (4.0, 0.20, 15.0, 5.0, 10.0)),
     "gpt-6-astra": _gpt((10.0, 1.0, 50.0, 12.5, 25.0), (20.0, 2.0, 75.0, 25.0, 50.0)),
     "gpt-6.1-sol": _gpt((2.0, 0.10, 10.0, 2.5, 5.0), (4.0, 0.20, 15.0, 5.0, 10.0)),
     "gpt-6.1-terra": _gpt((1.0, 0.05, 5.0, 1.25, 2.5), (2.0, 0.10, 7.5, 2.5, 5.0)),
@@ -198,6 +204,12 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "gemini-3.5-flash-lite": _openai(0.30, 0.03, 2.50),
     "gemini-3.1-flash-lite": _openai(0.25, 0.025, 1.50),
     "gemini-3-flash-preview": _openai(0.50, 0.05, 3.0),
+    # xAI: the long rates apply to the whole request from 200K prompt tokens ---- input cached out
+    "grok-4.7": ModelPricing(2.0, 6.0, 0.50, long_threshold=200_000, long_rates=_openai(4.0, 1.0, 12.0)),
+    # Microsoft, GitHub Copilot's table: a promotional rate until 2027-05-17 --- input cached out
+    "mai-code-2": replace(
+        _openai(0.50, 0.025, 2.50), until=_epoch(2027, 5, 17), after=_openai(1.0, 0.05, 5.0)
+    ),
 }
 
 # Context window in input tokens per table key, from the same provider pages,
@@ -214,6 +226,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-3-5": 200_000,
     "claude-opus-4": 200_000,
     "claude-opus-4-1": 200_000,
+    # OpenAI's model pages: a 1,050,000 context window of which at most 922,000 is input.
+    "gpt-6.2-astra": 922_000,
+    "gpt-6.2-sol": 922_000,
+    "gpt-6.1-sol": 922_000,
+    "gpt-6-astra": 922_000,
+    "grok-4.7": 500_000,
 }
 
 # Non-model values tools write into a model field.
