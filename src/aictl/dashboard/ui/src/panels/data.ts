@@ -175,11 +175,15 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   }
 }
 
-/** A panel's state from its own route. *reading* names in plain words what a slow load reads, such as "sessions"; the view name belongs only where the query is shown. */
-export function detailRead<T>(resource: DetailState<T> | undefined, value: unknown, paused = false, reading?: string): Read {
+/** A panel's state from its own route. *waiting* says what a slow load waits for: `{ reading }` names in plain
+ * words what it reads, such as "sessions" (a board panel keeps the view name only where it shows the query);
+ * a string is what the load waits for, such as an Insights card's query. */
+export function detailRead<T>(resource: DetailState<T> | undefined, value: unknown, paused = false,
+  waiting?: string | { reading: string }): Read {
   const message = resource?.error instanceof Error ? resource.error.message :
     resource?.error ? String(resource.error) : undefined
-  if (!resource || resource.status === 'loading') return { state: 'loading', message: reading && `Reading ${reading}…` }
+  if (!resource || resource.status === 'loading') return { state: 'loading', message: waiting &&
+    (typeof waiting === 'string' ? `Waiting for ${waiting}…` : `Reading ${waiting.reading}…`) }
   if (resource.status === 'error') return { state: 'error', message }
   if (value == null) return { state: 'unavailable' }
   if (paused || resource.status === 'refreshing' || resource.status === 'stale') return { state: 'stale', value, message }

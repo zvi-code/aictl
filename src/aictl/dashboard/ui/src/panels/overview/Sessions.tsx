@@ -112,7 +112,7 @@ export default function Sessions(props: PanelProps) {
   const result = (): Read => {
     if (noTools()) return { state: 'empty', message: 'No tools are selected in the Tool filter of this finder.' }
     if (first()?.data && !initial()) return { state: 'error', message: 'The server did not confirm the requested node scope.' }
-    const read = detailRead(first(), initial()?.rows, ctx.paused(), 'sessions')
+    const read = detailRead(first(), initial()?.rows, ctx.paused(), { reading: 'sessions' })
     return read.state === 'error' ? { ...read, message: `Could not load sessions: ${read.message ?? 'The request failed.'}` } : read
   }
   const loadMore = () => {
