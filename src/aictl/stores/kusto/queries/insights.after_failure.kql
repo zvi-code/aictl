@@ -1,6 +1,21 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
 // What the next tool call of the same session and agent is after a failed call, and runs of consecutive
 // failed calls. Calls compare by tool name and a hash of their target, so no target text leaves the cluster.
+let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
+    // A run: consecutive calls of one session and agent, in time order, that all failed. Each call gets its run's id.
+    calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, fact_key asc
+    | extend restart=row_number() == 1 or prev(node_id) != node_id or prev(session_id) != session_id
+        or prev(agent_id) != agent_id or not(failed) or not(prev(failed))
+    | extend run=row_cumsum(tolong(restart))
+};
+let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:string, session_id:string)) {
+    // A failure streak: a run of 3 or more failed calls.
+    ordered
+    | where failed
+    | summarize calls=count(), tool=take_any(tool), node_id=take_any(node_id), session_id=take_any(session_id) by run
+    | where calls >= 3
+};
 let calls = tool_invocations
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
@@ -10,16 +25,10 @@ let calls = tool_invocations
     | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
     | project node_id, session_id, agent_id, ts, fact_key, tool, tool_name, failed=coalesce(is_error, 0) == 1, target_hash;
 let ordered = materialize(calls
-    | sort by node_id asc, session_id asc, agent_id asc, ts asc, fact_key asc
+    | invoke failure_runs()
     | extend has_next=next(node_id) == node_id and next(session_id) == session_id and next(agent_id) == agent_id,
-             next_name=next(tool_name), next_hash=next(target_hash), next_failed=next(failed),
-             restart=row_number() == 1 or prev(node_id) != node_id or prev(session_id) != session_id
-                 or prev(agent_id) != agent_id or not(failed) or not(prev(failed))
-    | extend run=row_cumsum(toint(restart)));
-let runs = materialize(ordered
-    | where failed
-    | summarize calls=count(), tool=take_any(tool), node_id=take_any(node_id), session_id=take_any(session_id) by run
-    | where calls >= 3);
+             next_name=next(tool_name), next_hash=next(target_hash), next_failed=next(failed));
+let runs = materialize(ordered | invoke failure_streaks());
 union
     (ordered
         | where failed and has_next

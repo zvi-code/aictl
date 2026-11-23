@@ -10,10 +10,12 @@ import TimeSplit from '../../src/panels/insights/TimeSplit'
 import ContextWeight from '../../src/panels/insights/ContextWeight'
 import Orientation from '../../src/panels/insights/Orientation'
 import FixedContext from '../../src/panels/insights/FixedContext'
+import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { fmtHours } from '../../src/design/format'
 import {
   carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
-  contextFinding, fixedFinding, fixedHero, orientationFinding, timeFinding, type FixedBody, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
+  contextFinding, fixedFinding, fixedHero, orientationFinding, problemFinding, problemHero, timeFinding, type FixedBody,
+  type ProblemBody, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
 } from '../../src/panels/insights/insightsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -147,7 +149,32 @@ const fixed = {
     listing_tokens: 1_354_622, unused_tokens: 980_051, listing_not_reported: ['copilot-cli'] },
   sessions: [{ session_id: 's-fixed', node_id: 'n', tool: 'copilot-desktop', tokens: 53_971, skills: 0 }],
 } as unknown as FixedBody
-const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody, orientation, fixed }
+const signalCells = (found: Record<string, [number, number, number]>) =>
+  ['compaction', 'failure_streak', 'failed_delegation', 'api_error', 'open_todos', 'hook_failure'].map(signal => {
+    const cell = found[signal]
+    return cell ? { signal, reported: true, sessions: cell[0], share: cell[1], cost_usd: cell[2] }
+      : { signal, reported: false, sessions: null, share: null, cost_usd: null }
+  })
+const problems = {
+  ...base, card: 'problems',
+  tools: [
+    { tool: 'copilot-cli', sessions: 2159, reports: true, flagged: 802, multi: 683, flagged_cost_usd: 6014.21, cost_usd: 16_304.07,
+      signals: signalCells({ compaction: [48, 0.022, 344.6], failure_streak: [742, 0.344, 1591.4], failed_delegation: [428, 0.198, 1399.9],
+        open_todos: [15, 0.007, 4198.4], hook_failure: [675, 0.313, 463.6] }) },
+    { tool: 'claude-code', sessions: 378, reports: true, flagged: 66, multi: 26, flagged_cost_usd: 29_947.3, cost_usd: 31_759.24,
+      signals: signalCells({ compaction: [20, 0.053, 19_457.6], failure_streak: [39, 0.103, 23_122], failed_delegation: [9, 0.024, 7974.9],
+        api_error: [32, 0.085, 21_599.6], hook_failure: [0, 0, 0] }) },
+    { tool: 'codex-cli', sessions: 1, reports: false, flagged: null, multi: null, flagged_cost_usd: null, cost_usd: 0, signals: signalCells({}) },
+  ],
+  signals: [],
+  pairs: [{ signals: ['failure_streak', 'hook_failure'], sessions: 670, cost_usd: 437.7 },
+    { signals: ['failed_delegation', 'failure_streak'], sessions: 430, cost_usd: null }],
+  projects: [{ project: 'alpha', sessions: 673, all_sessions: 836, tools: ['copilot-cli'], cost_usd: 632.02 }],
+  summary: { sessions: 2537, flagged: 868, flagged_share: 868 / 2537, multi: 709, flagged_cost_usd: 35_961.51, not_reporting: ['codex-cli'] },
+  sessions: [{ session_id: 's-prob', node_id: 'n', tool: 'claude-code', signals: 3, names: ['compaction', 'failure_streak', 'api_error'],
+    project_name: 'alpha', cost_usd: 1200 }],
+} as unknown as ProblemBody
+const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody, orientation, fixed, problems }
 
 type State = DetailState<unknown> | undefined
 function context(states: (card: string) => State, opened: string[] = []) {
@@ -197,6 +224,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
       <PauseTax {...props(ctx)} /><ContextCarry {...props(ctx)} /><Subagents {...props(ctx)} />
       <AfterFailure {...props(ctx)} /><Rereads {...props(ctx)} /><TimeSplit {...props(ctx)} />
       <ContextWeight {...props(ctx)} /><Orientation {...props(ctx)} /><FixedContext {...props(ctx)} />
+      <ProblemSessions {...props(ctx)} />
     </>)
     for (const id of Object.keys(bodies)) {
       const box = card(host, id)
@@ -481,5 +509,60 @@ describe('INS-08 · Fixed context overhead', () => {
     expect(card(host, 'orientation').querySelector('[data-finding]')).toBeNull()
     expect(card(host, 'context').querySelector('[data-finding]')).not.toBeNull()
     dispose()
+  })
+})
+
+describe('INS-09 · Problem sessions', () => {
+  it('states the flagged share, the most frequent pair and the most frequent signal from the response', () => {
+    expect(problemFinding(problems, tool => tool)).toBe('868 of 2,537 sessions (34%) showed at least one problem signal, costing ' +
+      '$36 k at list price; 709 showed two or more, most often failure streak with hook failure (670 sessions). The most ' +
+      'frequent is failure streak in copilot-cli: 742 sessions, 34% of its sessions.')
+    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of the sessions of tools that report a problem signal showed at least one' })
+    const none = { ...problems, tools: [problems.tools[2]], pairs: [], projects: [],
+      summary: { sessions: 0, flagged: 0, flagged_share: null, multi: 0, flagged_cost_usd: null, not_reporting: ['codex-cli'] } } as ProblemBody
+    expect(problemFinding(none, tool => tool)).toBe('No session in this period is of a tool that reports a problem signal.')
+    expect(problemHero(none)).toBeUndefined()
+  })
+
+  it('draws signals by tools with counts and shares, and a signal a tool cannot show as not reported', () => {
+    const { ctx } = context(ready)
+    const { host, dispose } = mount(() => <ProblemSessions {...props(ctx)} />)
+    const box = card(host, 'problems')
+    const header = [...box.querySelectorAll('table[aria-label="Sessions flagged per signal and tool"] thead th')].map(th => th.textContent)
+    expect(header).toEqual(['Signal', 'copilot-cli2,159 sessions', 'claude-code378 sessions'])
+    const api = box.querySelectorAll('[data-signal="api_error"] td')
+    expect(api[0].getAttribute('data-cell')).toBe('not-reported')
+    expect(api[0].textContent).toBe('not reported')
+    expect(api[1].textContent).toBe('329%')
+    const hooks = box.querySelectorAll('[data-signal="hook_failure"] td')
+    expect(hooks[1].textContent).toBe('00%')
+    expect(hooks[0].getAttribute('style')).toContain('color-mix(in srgb, var(--color-danger) 16%, var(--color-surface))')
+    expect(box.textContent).toContain('No signal is recorded by codex-cli; left out.')
+    const pairs = box.querySelectorAll('[data-pairs] li')
+    expect(pairs[0].textContent).toBe('Failure streak + hook failure670 sessions · $438')
+    expect(pairs[1].textContent).toContain('430 sessions · not reported')
+    expect(box.querySelector('[data-projects]')!.textContent).toContain('alpha copilot-cli673 of 836 sessions · $632')
+    dispose()
+  })
+
+  it('opens a flagged session in the drawer and keeps its own error state', () => {
+    const opened: string[] = []
+    const { ctx } = context(ready, opened)
+    const { host, dispose } = mount(() => <ProblemSessions {...props(ctx)} />)
+    const sessions = host.querySelector<HTMLDetailsElement>('[data-sessions]')!
+    sessions.open = true
+    flush()
+    expect(sessions.textContent).toContain('Repeated compaction, Failure streak, Ended on an API error')
+    host.querySelector<HTMLButtonElement>('button[aria-label="Open session s-prob"]')!.click()
+    flush()
+    expect(opened).toEqual(['s-prob:errors'])
+    dispose()
+    const failing = context(id => id === 'problems' ? { data: undefined, status: 'error', error: new Error('Kusto view insights.problem_sessions failed') }
+      : id === 'fixed' ? { data: undefined, status: 'loading', error: null } : ready(id))
+    const second = mount(() => <><ProblemSessions {...props(failing.ctx)} /><FixedContext {...props(failing.ctx)} /><Orientation {...props(failing.ctx)} /></>)
+    expect(card(second.host, 'problems').textContent).toContain('Could not load Problem sessions: Kusto view insights.problem_sessions failed')
+    expect(card(second.host, 'fixed').querySelector('[data-finding]')).toBeNull()
+    expect(card(second.host, 'orientation').querySelector('[data-finding]')).not.toBeNull()
+    second.dispose()
   })
 })

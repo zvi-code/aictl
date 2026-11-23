@@ -7,7 +7,7 @@ import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 
 export type { QueryBlock }
-export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed'
+export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -108,7 +108,20 @@ export type FixedBody = Base<'fixed'> & {
     listing_tokens: Num; unused_tokens: Num; listing_not_reported: string[]
   }
 }
+export type Signal = 'compaction' | 'failure_streak' | 'failed_delegation' | 'api_error' | 'open_todos' | 'hook_failure'
+export type SignalCell = { signal: Signal; reported: boolean; sessions: Num; share: Num; cost_usd: Num }
+export type ProblemTool = {
+  tool: string; sessions: number; reports: boolean; flagged: Num; multi: Num; flagged_cost_usd: Num; cost_usd: Num; signals: SignalCell[]
+}
+export type ProblemPair = { signals: [Signal, Signal]; sessions: number; cost_usd: Num }
+export type ProblemProject = { project: string; sessions: number; all_sessions: number; tools: string[]; cost_usd: Num }
+export type ProblemBody = Base<'problems'> & {
+  tools: ProblemTool[]; signals: { signal: Signal; tools: string[]; sessions: Num; share: Num }[]
+  pairs: ProblemPair[]; projects: ProblemProject[]
+  summary: { sessions: number; flagged: number; flagged_share: Num; multi: number; flagged_cost_usd: Num; not_reporting: string[] }
+}
 export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody | FixedBody
+  | ProblemBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
@@ -287,6 +300,27 @@ export function fixedFinding(body: FixedBody, label: Label) {
   return `${heavy}${skills}${files}`.trim()
 }
 
+export const SIGNAL_LABELS: Record<Signal, string> = {
+  compaction: 'Repeated compaction', failure_streak: 'Failure streak', failed_delegation: 'Failed delegation',
+  api_error: 'Ended on an API error', open_todos: 'Open todos', hook_failure: 'Hook failure',
+}
+export const SIGNALS = Object.keys(SIGNAL_LABELS) as Signal[]
+
+export function problemFinding(body: ProblemBody, label: Label) {
+  const s = body.summary
+  if (!s.sessions) return 'No session in this period is of a tool that reports a problem signal.'
+  const pair = body.pairs[0]
+  const top = body.tools.flatMap(tool => tool.signals.filter(cell => cell.reported && cell.sessions).map(cell => ({ tool, cell })))
+    .sort((a, b) => (b.cell.sessions ?? 0) - (a.cell.sessions ?? 0))[0]
+  const flagged = `${fmtNum(s.flagged)} of ${plural(s.sessions, 'session')} (${share(s.flagged_share)}) showed at least one problem signal, ` +
+    `costing ${money(s.flagged_cost_usd)} at list price; ${fmtNum(s.multi)} showed two or more` +
+    (pair ? `, most often ${SIGNAL_LABELS[pair.signals[0]].toLowerCase()} with ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()} ` +
+      `(${plural(pair.sessions, 'session')})` : '') + '.'
+  const most = top ? ` The most frequent is ${SIGNAL_LABELS[top.cell.signal].toLowerCase()} in ${label(top.tool.tool)}: ` +
+    `${plural(top.cell.sessions ?? 0, 'session')}, ${share(top.cell.share)} of its sessions.` : ''
+  return flagged + most
+}
+
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */
 export const scaled = (value: Num, largest: number) => value == null || largest <= 0 ? 0 : Math.max(0, value / largest)
 
@@ -343,6 +377,8 @@ export const fixedHero = (body: FixedBody) => body.summary.never_used_share != n
   ? hero(body.summary.never_used_share, fmtShare, `of the ${fmtNum(body.summary.listed)} skills listed in sessions' fixed context were never used in the period`)
   : body.summary.heaviest ? hero(body.summary.heaviest.p50_tokens, value => `${fmtN(value)} tokens`,
     `median fixed context of a ${toolLabel(body.summary.heaviest.tool)} session before any work (estimated)`) : undefined
+export const problemHero = (body: ProblemBody) => hero(body.summary.flagged_share, fmtShare,
+  'of the sessions of tools that report a problem signal showed at least one')
 export function orientationHero(body: OrientationBody) {
   const most = body.projects.map(project => project.p50_requests).filter((value): value is number => value != null)
   return most.length ? hero(Math.max(...most), fmtNum,

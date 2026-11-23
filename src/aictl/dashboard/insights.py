@@ -27,6 +27,7 @@ CARDS = {
     "context": "insights.context_weight",
     "orientation": "insights.orientation",
     "fixed": "insights.fixed_context",
+    "problems": "insights.problem_sessions",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -38,6 +39,26 @@ HEAVY_CONTEXT = ("200_500k", "over_500k")
 # The kinds of a session's fixed context (ingesters/context_items.py), in the order the card stacks them.
 FIXED_KINDS = ("instruction_file", "memory_file", "system_prompt_other", "skills", "mcp_instructions", "custom_agents",
                "tools_listed")
+# The problem signals of insights.problem_sessions, in the order the card lists them.
+SIGNALS = ("compaction", "failure_streak", "failed_delegation", "api_error", "open_todos", "hook_failure")
+# The runs of failed calls, as insights.after_failure and insights.problem_sessions both define them (each view
+# carries this text as it is; test_insights checks it).
+FAILURE_RUNS_KQL = """let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
+    // A run: consecutive calls of one session and agent, in time order, that all failed. Each call gets its run's id.
+    calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, fact_key asc
+    | extend restart=row_number() == 1 or prev(node_id) != node_id or prev(session_id) != session_id
+        or prev(agent_id) != agent_id or not(failed) or not(prev(failed))
+    | extend run=row_cumsum(tolong(restart))
+};
+let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:string, session_id:string)) {
+    // A failure streak: a run of 3 or more failed calls.
+    ordered
+    | where failed
+    | summarize calls=count(), tool=take_any(tool), node_id=take_any(node_id), session_id=take_any(session_id) by run
+    | where calls >= 3
+};
+"""
 
 
 def _n(value: Any) -> float:
@@ -445,9 +466,79 @@ def fixed_context(rows: list[dict]) -> dict:
     }
 
 
+def _priced(row: dict) -> float | None:
+    """The list-price cost of a row's sessions: 0 for no session, None when sessions exist but none is priced."""
+    if not _int(row.get("sessions")):
+        return 0.0
+    return _cost(row.get("cost_usd")) if _int(row.get("priced")) else None
+
+
+def problem_sessions(rows: list[dict]) -> dict:
+    """Per signal and tool: sessions flagged, their share of the tool's sessions and their cost; pairs; projects.
+
+    A signal a tool's source cannot show is not reported (None) for that tool, and the tool is left out of its share.
+    """
+    cells = {(row.get("tool"), row.get("signal")): row for row in _of(rows, "signal")}
+    tools = []
+    for row in _of(rows, "tool"):
+        tool, sessions = row.get("tool"), _int(row.get("sessions"))
+        signals = []
+        for signal in SIGNALS:
+            cell = cells.get((tool, signal))
+            signals.append({
+                "signal": signal, "reported": cell is not None,
+                "sessions": _int(cell.get("sessions")) if cell else None,
+                "share": _ratio(_int(cell.get("sessions")), sessions) if cell else None,
+                "cost_usd": _priced(cell) if cell else None,
+            })
+        reports = any(cell["reported"] for cell in signals)
+        tools.append({
+            "tool": tool, "sessions": sessions, "reports": reports,
+            "flagged": _int(row.get("flagged")) if reports else None, "multi": _int(row.get("multi")) if reports else None,
+            "flagged_cost_usd": _priced({"sessions": row.get("flagged"), "priced": row.get("priced"),
+                                         "cost_usd": row.get("cost_usd")}) if reports else None,
+            "cost_usd": _cost(row.get("all_cost_usd")) if _int(row.get("all_priced")) else None, "signals": signals,
+        })
+    tools.sort(key=lambda tool: (-tool["sessions"], str(tool["tool"])))
+    counted = [tool for tool in tools if tool["reports"]]
+    totals = []
+    for i, signal in enumerate(SIGNALS):
+        found = [tool for tool in counted if tool["signals"][i]["reported"]]
+        flagged = sum(_int(tool["signals"][i]["sessions"]) for tool in found)
+        of = sum(tool["sessions"] for tool in found)
+        totals.append({"signal": signal, "tools": [tool["tool"] for tool in found], "sessions": flagged if found else None,
+                       "share": _ratio(flagged, of) if found else None})
+    pairs = sorted(({"signals": [row.get("signal"), row.get("other")], "sessions": _int(row.get("sessions")),
+                     "cost_usd": _priced(row)} for row in _of(rows, "pair")),
+                   key=lambda row: (-row["sessions"], row["signals"]))
+    projects = sorted(({"project": row.get("project_name"), "sessions": _int(row.get("sessions")),
+                        "all_sessions": _int(row.get("all_sessions")),
+                        "tools": sorted(str(tool) for tool in (row.get("tools") or []) if tool), "cost_usd": _priced(row)}
+                       for row in _of(rows, "project")), key=lambda row: (-row["sessions"], str(row["project"])))
+    sessions = []
+    for row in _sessions(rows, ("signals", "names", "project_name", "priced", "cost_usd")):
+        priced = _int(row.pop("priced"))
+        sessions.append({**row, "signals": _int(row["signals"]), "names": [name for name in SIGNALS if name in (row["names"] or [])],
+                         "cost_usd": _cost(row["cost_usd"]) if priced else None})
+    sessions.sort(key=lambda row: (-row["signals"], -_n(row["cost_usd"])))
+    flagged = sum(_int(tool["flagged"]) for tool in counted)
+    of = sum(tool["sessions"] for tool in counted)
+    costs = [tool["flagged_cost_usd"] for tool in counted if tool["flagged_cost_usd"] is not None]
+    return {
+        "tools": tools, "signals": totals, "pairs": pairs, "projects": projects,
+        "summary": {
+            "sessions": of, "flagged": flagged, "flagged_share": _ratio(flagged, of),
+            "multi": sum(_int(tool["multi"]) for tool in counted), "flagged_cost_usd": sum(costs) if costs else None,
+            "not_reporting": [tool["tool"] for tool in tools if not tool["reports"]],
+        },
+        "sessions": sessions,
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
     "time": time_split, "context": context_weight, "orientation": orientation, "fixed": fixed_context,
+    "problems": problem_sessions,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -460,6 +551,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "context": lambda history, params: history.read("insights.context_weight", limit=ROW_LIMIT, **params),
     "orientation": lambda history, params: history.read("insights.orientation", limit=ROW_LIMIT, **params),
     "fixed": lambda history, params: history.read("insights.fixed_context", limit=ROW_LIMIT, **params),
+    "problems": lambda history, params: history.read("insights.problem_sessions", limit=ROW_LIMIT, **params),
 }
 
 

@@ -487,6 +487,89 @@ def test_fixed_context_counts_each_item_once_as_of_its_last_reset(kusto_store):
     assert TABLES["session_context_items"].tombstone is None and TABLES["skill_uses"].tombstone is None
 
 
+def _compaction(store, key, ts, session, *, tool="claude-code", **values):
+    store.insert("context_events", dedup_key=key, ts=ts, session_id=session, agent_id="", tool=tool, kind="compaction", **values)
+
+
+def test_problem_sessions_flag_each_signal_per_session_and_tool(kusto_store):
+    s = kusto_store
+    for session, tool, cost, project in (("a1", "claude-code", 2.0, "/p/alpha"), ("a2", "claude-code", 1.0, "/p/alpha"),
+                                         ("c1", "copilot-cli", 0.5, "/p/beta"), ("c2", "copilot-cli", None, "/p/beta"),
+                                         ("c3", "copilot-cli", 1.0, "/p/beta"), ("v1", "copilot-vscode", 3.0, ""),
+                                         ("x1", "codex-cli", 0.0, "")):
+        _request(s, f"r-{session}", 10.0, session=session, tool=tool, cost=cost, project_path=project)
+    # a1: 3 compactions, 3 failed calls of one agent in a row, a turn that ended on an API error.
+    for i in range(3):
+        _compaction(s, f"k1-{i}", 20.0 + i, "a1")
+        _call(s, f"f1-{i}", 30.0 + i, "Bash", session="a1", failed=1)
+    s.insert("session_turns", session_id="a1", prompt_id="p1", ts=40.0, tool="claude-code", ended_with_api_error=1)
+    # a2: the third compaction's winning version is after the period; the third failure in a row was deleted;
+    # a failure of another agent does not continue the run; its turn ended normally.
+    _compaction(s, "k2-0", 20.0, "a2")
+    _compaction(s, "k2-1", 21.0, "a2")
+    _compaction(s, "k2-2", 22.0, "a2")
+    _compaction(s, "k2-2", 200_000.0, "a2", _v=NEWER)
+    _call(s, "f2-0", 30.0, "Bash", session="a2", failed=1)
+    _call(s, "f2-1", 31.0, "Bash", session="a2", failed=1)
+    _call(s, "f2-s", 31.5, "Bash", session="a2", agent="sub", failed=1)
+    _call(s, "f2-2", 32.0, "Bash", session="a2", failed=1)
+    s.insert("tool_invocations", dedup_key="f2-2", ts=32.0, session_id="a2", agent_id="", tool="claude-code", tool_name="Bash",
+             _deleted=True, _v=NEWER)
+    s.insert("session_turns", session_id="a2", prompt_id="p1", ts=40.0, tool="claude-code", ended_with_api_error=0)
+    # c1: a failed subagent start, open todos and a failed hook. c2: a failed collect of a subagent; todos all done.
+    # c3: the session marking its own task complete and a todo item are not delegation.
+    _call(s, "d1", 30.0, "task", session="c1", tool="copilot-cli", failed=1, target_kind="agent")
+    _call(s, "d2", 30.0, "read_agent", session="c2", tool="copilot-cli", failed=1)
+    _call(s, "d3", 30.0, "task_complete", session="c3", tool="copilot-cli", failed=1)
+    _call(s, "d4", 31.0, "TaskCreate", session="c3", tool="copilot-cli", failed=1)
+    s.insert("session_outcomes", session_id="c1", ts=50.0, tool="copilot-cli", todos_total=3, todos_completed=1, hook_runs=4,
+             hook_failures=2)
+    s.insert("session_outcomes", session_id="c2", ts=50.0, tool="copilot-cli", todos_total=2, todos_completed=2, hook_runs=1,
+             hook_failures=0)
+    # v1: Copilot VS Code records tool calls only; x1: Codex CLI records no signal source at all.
+    _call(s, "v-0", 30.0, "Read", session="v1", tool="copilot-vscode", failed=0)
+    body = _card(s, "problems")
+    tools = {tool["tool"]: tool for tool in body["tools"]}
+    claude = {cell["signal"]: cell for cell in tools["claude-code"]["signals"]}
+    assert (tools["claude-code"]["sessions"], tools["claude-code"]["flagged"], tools["claude-code"]["multi"]) == (2, 1, 1)
+    assert claude["compaction"] == {"signal": "compaction", "reported": True, "sessions": 1, "share": 0.5, "cost_usd": 2.0}
+    assert claude["failure_streak"]["sessions"] == 1 and claude["api_error"]["sessions"] == 1
+    assert claude["failed_delegation"] == {"signal": "failed_delegation", "reported": True, "sessions": 0, "share": 0.0,
+                                           "cost_usd": 0.0}
+    assert claude["open_todos"] == {"signal": "open_todos", "reported": False, "sessions": None, "share": None, "cost_usd": None}
+    copilot = {cell["signal"]: cell for cell in tools["copilot-cli"]["signals"]}
+    assert (copilot["failed_delegation"]["sessions"], copilot["failed_delegation"]["share"]) == (2, pytest.approx(2 / 3))
+    assert copilot["failed_delegation"]["cost_usd"] == 0.5     # c2 is not priced
+    assert (copilot["open_todos"]["sessions"], copilot["hook_failure"]["sessions"]) == (1, 1)
+    assert copilot["compaction"]["reported"] is False and copilot["api_error"]["reported"] is False
+    vscode = {cell["signal"]: cell["reported"] for cell in tools["copilot-vscode"]["signals"]}
+    assert vscode == {"compaction": False, "failure_streak": True, "failed_delegation": True, "api_error": False,
+                      "open_todos": False, "hook_failure": False}
+    assert tools["codex-cli"]["reports"] is False and tools["codex-cli"]["flagged"] is None
+    assert [(row["signals"], row["sessions"]) for row in body["pairs"]] == [
+        (["api_error", "compaction"], 1), (["api_error", "failure_streak"], 1), (["compaction", "failure_streak"], 1),
+        (["failed_delegation", "hook_failure"], 1), (["failed_delegation", "open_todos"], 1), (["hook_failure", "open_todos"], 1)]
+    assert [(row["project"], row["sessions"], row["all_sessions"]) for row in body["projects"]] == [("beta", 2, 3), ("alpha", 1, 2)]
+    assert body["summary"] == {"sessions": 6, "flagged": 3, "flagged_share": 0.5, "multi": 2, "flagged_cost_usd": 2.5,
+                               "not_reporting": ["codex-cli"]}
+    signals = {row["signal"]: row for row in body["signals"]}
+    assert signals["api_error"] == {"signal": "api_error", "tools": ["claude-code"], "sessions": 1, "share": 0.5}
+    assert [(row["session_id"], row["signals"], row["names"], row["cost_usd"]) for row in body["sessions"]] == [
+        ("a1", 3, ["compaction", "failure_streak", "api_error"], 2.0),
+        ("c1", 3, ["failed_delegation", "open_todos", "hook_failure"], 0.5), ("c2", 1, ["failed_delegation"], None)]
+
+
+def test_problem_sessions_and_after_failure_share_one_failure_run_rule():
+    from aictl.tool_targets import _AGENT_TOOLS
+
+    for view in ("insights.after_failure", "insights.problem_sessions"):
+        text = (QUERIES / f"{view}.kql").read_text()
+        assert insights.FAILURE_RUNS_KQL in text, view
+        assert "invoke failure_runs()" in text and "invoke failure_streaks()" in text, view
+    # A call that starts a subagent is named as tool_targets names one.
+    assert _kql_list("insights.problem_sessions", "AgentTools") == set(_AGENT_TOOLS)
+
+
 class _Reader:
     def __init__(self, failing=()):
         self.failing = set(failing)

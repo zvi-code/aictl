@@ -1,0 +1,142 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Sessions that show a problem pattern in the period, one flag per signal:
+//   compaction: 3 or more compaction rows in context_events (any agent of the session);
+//   failure_streak: a run of 3 or more consecutive failed tool calls of one agent (as insights.after_failure);
+//   failed_delegation: a failed call that starts a subagent or task (target_kind 'agent', or a name of
+//     tool_targets._AGENT_TOOLS) or collects one (read_agent, TaskOutput, SubagentHandback);
+//   api_error: a turn that ended on an API error (session_turns);
+//   open_todos: a todo list with items left open (session_outcomes: todos_total > 0, todos_completed < todos_total);
+//   hook_failure: a hook that failed (session_outcomes: hook_failures > 0).
+// A tool reports a signal when its stored rows (all history) can show it: compaction rows, tool calls with a
+// failure flag, turns, a todo count, a hook count. A tool that cannot is left out of that signal's share.
+// The sessions of a tool: sessions with a request or a tool call in the period; cost is the list price of their
+// requests in the period. A project is the last folder of the session's project path.
+let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
+    // A run: consecutive calls of one session and agent, in time order, that all failed. Each call gets its run's id.
+    calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, fact_key asc
+    | extend restart=row_number() == 1 or prev(node_id) != node_id or prev(session_id) != session_id
+        or prev(agent_id) != agent_id or not(failed) or not(prev(failed))
+    | extend run=row_cumsum(tolong(restart))
+};
+let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:string, session_id:string)) {
+    // A failure streak: a run of 3 or more failed calls.
+    ordered
+    | where failed
+    | summarize calls=count(), tool=take_any(tool), node_id=take_any(node_id), session_id=take_any(session_id) by run
+    | where calls >= 3
+};
+let AgentTools = dynamic(['Agent', 'Task', 'task', 'runSubagent', 'run_subagent']);
+let CollectTools = dynamic(['read_agent', 'TaskOutput', 'SubagentHandback']);
+let all_calls = materialize(tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, target_kind, is_error,
+              project_path
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and not(tool_name startswith_cs 'permission:'));
+let calls = materialize(all_calls
+    | where ts >= since and ts < until
+    | project node_id, session_id, agent_id, ts, fact_key, tool, tool_name, target_kind, failed=coalesce(is_error, 0) == 1,
+              project_path);
+let reqs = requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, cost_usd, project_path
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | project node_id, session_id, ts, tool, cost_usd, project_path;
+let compactions = materialize(context_events
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, ['kind']
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ['kind'] == 'compaction');
+let turns = materialize(session_turns
+    | where all_nodes or node_id == requested_node
+    | extend deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, session_id, prompt_id, _v, deleted, ts, tool, ended_with_api_error
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, prompt_id
+    | where not(coalesce(deleted, false)));
+let outcomes = materialize(session_outcomes
+    | where all_nodes or node_id == requested_node
+    | extend deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, session_id, _v, deleted, ts, tool, todos_total, todos_completed, hook_failures
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(deleted, false)));
+let coverage = union
+    (compactions | distinct tool | extend signal='compaction'),
+    (all_calls | where isnotnull(is_error) | distinct tool | extend signal='failure_streak'),
+    (all_calls | where isnotnull(is_error) | distinct tool | extend signal='failed_delegation'),
+    (turns | distinct tool | extend signal='api_error'),
+    (outcomes | where isnotnull(todos_total) | distinct tool | extend signal='open_todos'),
+    (outcomes | where isnotnull(hook_failures) | distinct tool | extend signal='hook_failure');
+let active = materialize(reqs
+    | extend priced=tolong(isnotnull(cost_usd))
+    | union (calls | project node_id, session_id, ts, tool, project_path, priced=0, cost_usd=real(null))
+    | summarize tool=take_any(tool), project_path=take_anyif(project_path, isnotempty(project_path)), priced=sum(priced),
+                sum_cost=sum(cost_usd), first_ts=min(ts), last_ts=max(ts) by node_id, session_id
+    | extend project_name=extract(@'([^/\\]+)[/\\]*$', 1, project_path)
+    | project-away project_path);
+let signal_rows = materialize(compactions
+    | where ts >= since and ts < until
+    | summarize n=count() by node_id, session_id
+    | where n >= 3
+    | project node_id, session_id, signal='compaction'
+    | union
+        (calls | invoke failure_runs() | invoke failure_streaks() | distinct node_id, session_id
+            | extend signal='failure_streak'),
+        (calls | where failed and (target_kind == 'agent' or tool_name in (AgentTools) or tool_name in (CollectTools))
+            | distinct node_id, session_id | extend signal='failed_delegation'),
+        (turns | where ts >= since and ts < until and ended_with_api_error == 1 | distinct node_id, session_id
+            | extend signal='api_error'),
+        (outcomes | where ts >= since and ts < until and todos_total > 0 and todos_completed < todos_total
+            | distinct node_id, session_id | extend signal='open_todos'),
+        (outcomes | where ts >= since and ts < until and hook_failures > 0 | distinct node_id, session_id
+            | extend signal='hook_failure')
+    | join kind=inner (active | project node_id, session_id, tool, priced, sum_cost) on node_id, session_id
+    | project node_id, session_id, tool, signal, priced, sum_cost);
+let per_session = materialize(active
+    | lookup kind=leftouter (signal_rows | summarize signals=count(), names=make_set(signal) by node_id, session_id)
+        on node_id, session_id
+    | extend signals=coalesce(signals, 0));
+union
+    (coverage
+        | join kind=leftouter (signal_rows | summarize sessions=count(), priced=sum(priced), sum_cost=sum(sum_cost) by tool, signal)
+            on tool, signal
+        | project tool, signal, sessions=coalesce(sessions, 0), priced=coalesce(priced, 0), sum_cost
+        | extend row_type='signal'),
+    (per_session
+        | summarize sessions=count(), flagged=countif(signals > 0), multi=countif(signals >= 2), priced=sumif(priced, signals > 0),
+                    sum_cost=sumif(sum_cost, signals > 0), all_priced=sum(priced), all_cost=sum(sum_cost) by tool
+        | extend row_type='tool'),
+    (per_session
+        | where signals >= 2
+        | mv-expand signal=names to typeof(string)
+        | join kind=inner (signal_rows | project node_id, session_id, other=signal) on node_id, session_id
+        | where strcmp(signal, other) < 0
+        | summarize sessions=count(), priced=sum(priced), sum_cost=sum(sum_cost) by signal, other
+        | order by sessions desc, signal asc, other asc
+        | take 10
+        | extend row_type='pair'),
+    (per_session
+        | where isnotempty(project_name)
+        | summarize all_sessions=count(), sessions=countif(signals > 0), tools=make_set(tool), priced=sumif(priced, signals > 0),
+                    sum_cost=sumif(sum_cost, signals > 0) by project_name
+        | where sessions > 0
+        | order by sessions desc, project_name asc
+        | take 10
+        | extend row_type='project'),
+    (per_session
+        | where signals > 0
+        | order by signals desc, sum_cost desc, node_id asc, session_id asc
+        | take 10
+        | project node_id, session_id, tool, signals, names, project_name, priced, sum_cost
+        | extend row_type='session'),
+    (per_session
+        | summarize first_ts=min(first_ts), last_ts=max(last_ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| extend cost_usd=iff(priced == 0, real(null), sum_cost), all_cost_usd=iff(all_priced == 0, real(null), all_cost)
+| project-away sum_cost, all_cost
+| order by row_type asc, tool asc, signal asc, sessions desc
+| take row_limit
