@@ -178,12 +178,12 @@ function FleetProcesses(props: PanelProps) {
   }
   const reporting = () => view()?.rows.length
   return <div class={styles.stack}>
-    <StatStrip label="Running sessions summary" items={[
-      { label: 'Running sessions', value: view() ? rows().length : undefined },
+    <Show when={view()}><StatStrip label="Running sessions summary" items={[
+      { label: 'Running sessions', value: rows().length },
       ...(reporting() ? [{ label: 'Nodes reporting now', value: `${reporting()! - model().silent.length} of ${reporting()}` }] : []),
       ...(held('cpu_percent', cpuField) ? [{ label: 'CPU held by these sessions', value: held('cpu_percent', cpuField) }] : []),
       ...(held('mem_mb', ramField) ? [{ label: 'Memory held by these sessions', value: held('mem_mb', ramField) }] : []),
-    ]} />
+    ]} /></Show>
     <Show when={cpu()?.length || memory()?.length}>
       <Comparisons>
         <Show when={cpu()?.length}><Bars label="Top sessions by CPU" items={cpu()} format={displayField(ctx, cpuField).format} /></Show>

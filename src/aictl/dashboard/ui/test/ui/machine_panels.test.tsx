@@ -83,6 +83,16 @@ describe('BOARD-MACHINE-01 · Processes in fleet scope lists the sessions each n
   })
 })
 
+describe('BOARD-MACHINE-01b · Processes draws no empty tile when the node reports are not there', () => {
+  it('shows the panel state, not a tile saying it has nothing', () => {
+    const { ctx } = boardContext('fleet', {})
+    const { host, dispose } = mount(() => <Processes ctx={ctx} def={def('procs')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    expect(host.querySelector('[aria-label="Running sessions summary"]')).toBeNull()
+    expect(host.textContent).not.toContain('Not available from this source')
+    dispose()
+  })
+})
+
 describe('BOARD-MACHINE-02 · Network, tokens and files writes each unit once and only columns with values', () => {
   it('prints a rate with one unit', () => {
     const { ctx } = boardContext('fleet', {})
