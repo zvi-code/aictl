@@ -113,15 +113,18 @@ export function StaticDock(props: {
   const sizes = () => splitSizes(branch()?.data ?? [], props.axis, horizontal() ? props.width : props.height)
   return <>
     <Show when={branch()}>{node => <div class={styles.split} data-axis={props.axis} style={props.flow ? {
-      '--dock-columns': horizontal() ? node().data.map(child => child.visible === false ? '0fr' :
+      // A hidden cell leaves the grid, so it takes no track: the cells after it would land in its track.
+      '--dock-columns': horizontal() ? node().data.filter(child => child.visible !== false).map(child =>
         `minmax(0, ${Math.max(1, child.size ?? 0)}fr)`).join(' ') : undefined,
     } : {
       [horizontal() ? 'grid-template-columns' : 'grid-template-rows']: sizes().map(size => `${size}px`).join(' '),
     }}>
       <For each={node().data.map((_, i) => i)}>{i => <div class={styles.cell} hidden={node().data[i].visible === false}
         style={props.flow ? undefined : { [horizontal() ? 'grid-column' : 'grid-row']: i + 1 }}>
-        <StaticDock node={node().data[i]} axis={crossAxis(props.axis)} actions={props.actions} flow={props.flow} editing={props.editing}
-          width={horizontal() ? sizes()[i] : props.width} height={horizontal() ? props.height : sizes()[i]} path={[...props.path, i]} />
+        <Show when={node().data[i].visible !== false}>
+          <StaticDock node={node().data[i]} axis={crossAxis(props.axis)} actions={props.actions} flow={props.flow} editing={props.editing}
+            width={horizontal() ? sizes()[i] : props.width} height={horizontal() ? props.height : sizes()[i]} path={[...props.path, i]} />
+        </Show>
         <Show when={props.flow && props.editing && horizontal() && node().data[i].visible !== false &&
           node().data[i + 1]?.visible !== false && node().data[i + 1]}>
           <Sash axis={props.axis} label={`Resize columns ${i + 1} and ${i + 2}`}

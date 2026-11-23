@@ -4,6 +4,7 @@ import { RANGES } from '../data/filters'
 import DockScreen from '../panels/DockScreen'
 import { overviewA } from '../panels/overview/a'
 import { overviewB } from '../panels/overview/b'
+import { shownInScope } from '../panels/scopeRules'
 import { unlinkedText } from '../panels/overview/agentTree'
 import { monitoredReport } from '../panels/overview/monitoredReport'
 import { runtimeSummary } from '../data/runtimeAgents'
@@ -73,7 +74,8 @@ export default function Overview(props: { ctx: PanelContext; order: (order: stri
   const showDock = () => browse() || entered()
   return <div data-screen="board" class={styles.overview}>
     <Show when={showDock()} fallback={<HistoryStart ctx={props.ctx} browse={() => setBrowse(true)} />}>
-      <DockScreen screen="board" definitions={definitions} heading={<h1>Overview</h1>} ctx={props.ctx} order={props.order} />
+      <DockScreen screen="board" definitions={definitions} heading={<h1>Overview</h1>} ctx={props.ctx} order={props.order}
+        shown={def => shownInScope(def, props.ctx.scope())} />
     </Show>
   </div>
 }

@@ -100,6 +100,21 @@ export function selectTab(tree: SerializedDockview, group: string, panel: string
   return { ...tree, activeGroup: group, grid: { ...tree.grid, root: select(tree.grid.root) } }
 }
 
+/** The tree to draw: panels not shown leave their group, and a group or split left empty is
+ * marked invisible. Positions stay, so paths into the saved tree still match. */
+export function showOnly(node: DockNode, shown: (id: string) => boolean): DockNode {
+  if (isBranch(node)) {
+    const data = node.data.map(child => showOnly(child, shown))
+    return data.some(child => child.visible !== false) ? { ...node, data } : { ...node, data, visible: false }
+  }
+  if (!isLeaf(node)) return node
+  const views = node.data.views.filter(shown)
+  if (views.length === node.data.views.length) return node
+  if (!views.length) return { ...node, visible: false }
+  const activeView = views.includes(node.data.activeView ?? '') ? node.data.activeView : views[0]
+  return { ...node, data: { ...node.data, views, activeView } }
+}
+
 export function panelOrder(tree: SerializedDockview): string[] {
   const panels = (node: DockNode): string[] => isBranch(node) ? node.data.flatMap(panels) : isLeaf(node) ? node.data.views : []
   return panels(tree.grid.root)

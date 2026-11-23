@@ -6,7 +6,7 @@ import { Icon } from '../ui/Icon'
 import { Menu } from '../ui/Menu'
 import { Panel } from '../ui/Panel'
 import { eligible } from './registry'
-import { defaultSection, fitGrid, layoutKey, panelOrder, panelSizes, pruneDock, reorderPanel, resizeSplit, restoreLayout, sections, selectTab,
+import { defaultSection, fitGrid, layoutKey, panelOrder, panelSizes, pruneDock, reorderPanel, resizeSplit, restoreLayout, sections, selectTab, showOnly,
   type LayoutScreen, type Placement, type SectionState } from './layout'
 import { StaticDock, type Drop } from './StaticDock'
 import type { PanelContext, PanelDef, PanelProps } from './types'
@@ -33,6 +33,9 @@ type Position = Parameters<DockviewApi['addPanel']>[0]['position']
 
 export default function DockScreen(props: {
   screen: LayoutScreen; definitions: readonly PanelDef[]; ctx: PanelContext; order: (order: string[]) => void; heading?: JSX.Element
+  /** Whether a panel has anything to show now, such as in the selected node scope. A panel that has not
+   * stays in the saved layout but is not drawn, and a section left with none is not drawn or listed. */
+  shown?: (def: PanelDef) => boolean
 }) {
   const owner = getOwner()
   const defaults = untrack(() => sections[props.screen])
@@ -72,7 +75,11 @@ export default function DockScreen(props: {
     } catch { /* Ignore an unreadable or invalid saved layout. */ }
     setLayout(restored ?? defaultLayout())
   })
-  const order = createMemo(() => layout().map(section => section.id), { equals: (a, b) => a.join() === b.join() })
+  const drawn = createMemo(() => new Set([...defs().values()].filter(def => !props.shown || props.shown(def)).map(def => def.id)))
+  const shownCount = (section: SectionState) => Object.keys(section.tree.panels).filter(id => drawn().has(id)).length
+  // The editor keeps an empty section so a panel can be moved into it.
+  const order = createMemo(() => layout().filter(section => editing() || shownCount(section)).map(section => section.id),
+    { equals: (a, b) => a.join() === b.join() })
   createEffect(order, ids => props.order(ids))
   const present = createMemo(() => new Set(layout().flatMap(section => Object.keys(section.tree.panels))))
   const missing = () => [...defs().values()].filter(def => !present().has(def.id))
@@ -373,7 +380,8 @@ export default function DockScreen(props: {
     <For each={order()}>{id => {
       const state = () => layout().find(section => section.id === id)!
       const tree = () => state().tree
-      const count = () => Object.keys(tree().panels).length
+      const root = createMemo(() => showOnly(tree().grid.root, panel => drawn().has(panel)))
+      const count = () => shownCount(state())
       return <section id={`sec-${id}`} class={styles.section} aria-labelledby={`title-${id}`} tabindex={-1}>
         <div class={styles.heading}>
           <h2 id={`title-${id}`}>
@@ -392,7 +400,7 @@ export default function DockScreen(props: {
         </div>
         <div id={`dock-${id}`} hidden={!state().open} class={styles.dock} data-height={state().height}
           style={{ height: flow ? undefined : `${state().height}px` }}>
-          <StaticDock node={tree().grid.root} axis={tree().grid.orientation} width={width()} height={state().height} path={[]} flow={flow}
+          <StaticDock node={root()} axis={tree().grid.orientation} width={width()} height={state().height} path={[]} flow={flow}
             editing={editing()} actions={{
               title,
               mount: (panel, host, stacked) => connect(panel, id, host, stacked),
