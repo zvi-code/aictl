@@ -17,6 +17,7 @@ const scopeLabels: Record<string, string> = {
   default: 'Default', system: 'System', managed: 'Managed', policy: 'Policy', user: 'User', profile: 'Profile',
   project: 'Project', 'project-local': 'Project local', workspace: 'Workspace', env: 'Environment', cli: 'CLI',
   detected: 'Reported by the installed tool', 'app-state': 'App state (written by the tool)', unknown: 'Origin not known',
+  'workspace-file': 'Workspace file (.code-workspace)',
 }
 type RawRow = NonNullable<SettingsToolConfig['sections']>[number]['rows'][number]
 type RawEnvironment = NonNullable<SettingsToolConfig['env_vars']>[number]

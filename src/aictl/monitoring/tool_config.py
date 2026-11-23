@@ -498,6 +498,7 @@ SCOPES = (
     "detected",
     "app-state",
     "unknown",
+    "workspace-file",
 )
 # Origins that are no settings file: a fact the installed tool reports (its version) and
 # state the tool writes for itself. Their rows name no file and are not settings a user set.
@@ -518,6 +519,7 @@ SCOPE_LABELS = {
     "detected": "Reported by the installed tool",
     "app-state": "App state (written by the tool)",
     "unknown": "Origin not known",
+    "workspace-file": "Workspace file (.code-workspace)",
 }
 
 # Row keys that the parsers make up; they name no single key in the file.
@@ -878,7 +880,7 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
             _row(
                 key,
                 entry.get("value"),
-                str(entry.get("source", "")),
+                cfg.setting_sources.get(key) or str(entry.get("source", "")),
                 label=str(entry.get("label", "")),
                 note=str(entry.get("description", "")),
             ),
@@ -2398,16 +2400,21 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
     if not user_dir.exists():
         return None  # VS Code not installed
 
-    user_path = user_dir / "settings.json"
+    # The user layer is the active profile's settings when the folder has one (it replaces the default).
+    user_scope, user_path, _note = vscode_user_layer(root)
     ws_path = root / ".vscode" / "settings.json"
     user_settings = _read_json(user_path) or {}
     ws_settings = _read_json(ws_path) or {}
-    layers = [("user", user_settings, user_path), ("workspace", ws_settings, ws_path)]
-    for path in (user_dir / "settings.json", root / ".vscode" / "settings.json"):
-        if path.is_file():
+    file_layers = _vscode_workspace_layers(root)
+    layers = [(user_scope, user_settings, user_path), *file_layers, ("workspace", ws_settings, ws_path)]
+    for path in (user_path, *(p for _s, _d, p in file_layers), ws_path):
+        if Path(path).is_file():
             cfg.config_files.append(str(path))
-    # Workspace overrides user
-    vscode_settings: dict = {**user_settings, **ws_settings}
+    # Precedence: user (or profile) < .code-workspace settings < the folder's .vscode/settings.json
+    vscode_settings: dict = {**user_settings}
+    for _s, data, _p in file_layers:
+        vscode_settings.update(data or {})
+    vscode_settings.update(ws_settings)
 
     # Defaults come from the settings catalog (one source of truth); a key the catalog
     # gives no default for has no value until a file sets it.
@@ -2495,7 +2502,7 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
 
     # ── OTel ────────────────────────────────────────────────────
     cfg.otel = _detect_otel_from_vscode_settings(vscode_settings)
-    cfg.scopes = _vscode_scopes(user_path, ws_path, cfg.tool)
+    cfg.scopes = _vscode_scopes(user_path, ws_path, cfg.tool, root)
 
     return cfg  # always show if VS Code is installed
 
@@ -2504,9 +2511,76 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
 VSCODE_AI_PREFIXES: tuple[str, ...] = ("chat.", "inlineChat.", "mcp.", "claudeCode.")
 
 
-def _vscode_scopes(user_path: Path, ws_path: Path, tool: str = "vscode") -> list[dict]:
-    return [
-        _file_scope("user", user_path),
+def vscode_active_profile(root: Path) -> dict | None:
+    """The VS Code profile associated with *root*, or None for the default profile.
+
+    VS Code docs (settings.md, profiles.md): a profile is associated with a folder, and while it is
+    active the user settings are that profile's own ``User/profiles/<id>/settings.json`` (no
+    inheritance from another profile). Which profile a folder uses is read from
+    ``profileAssociations`` in ``User/globalStorage/storage.json``, a file VS Code writes and does
+    not document, so ``basis`` says so.
+    """
+    user = vscode_user_dir()
+    storage = _read_json(user / "globalStorage" / "storage.json") or {}
+    workspaces = (storage.get("profileAssociations") or {}).get("workspaces") if isinstance(storage, dict) else None
+    if not isinstance(workspaces, dict):
+        return None
+    uri = Path(root).resolve().as_uri() if Path(root).exists() else Path(root).as_uri()
+    profile_id = next((str(v) for k, v in workspaces.items() if str(k).rstrip("/") == uri.rstrip("/")), "")
+    if not profile_id or profile_id == "__default__profile__":
+        return None
+    names = {str(p.get("location")): str(p.get("name") or "") for p in storage.get("userDataProfiles") or [] if isinstance(p, dict)}
+    return {
+        "id": profile_id,
+        "name": names.get(profile_id, "") or profile_id,
+        "path": user / "profiles" / profile_id / "settings.json",
+        "basis": "Folder association read from VS Code's storage.json (not documented).",
+    }
+
+
+def vscode_user_layer(root: Path) -> tuple[str, Path, str]:
+    """(scope, settings file, note) of the user layer VS Code uses for *root*: the active profile's or the default."""
+    profile = vscode_active_profile(root)
+    if profile is None:
+        return "user", vscode_user_dir() / "settings.json", ""
+    note = (f"Profile {profile['name']} is active for this folder: its settings replace the default user "
+            f"settings (application-scoped settings still come from the default profile). {profile['basis']}")
+    return "profile", profile["path"], note
+
+
+def vscode_workspace_files(root: Path) -> list[Path]:
+    """``.code-workspace`` files in *root*; their ``settings`` apply when VS Code opens that workspace file."""
+    try:
+        return sorted(p for p in Path(root).glob("*.code-workspace") if p.is_file())
+    except OSError:
+        return []
+
+
+def _vscode_workspace_layers(root: Path) -> list[Layer]:
+    out: list[Layer] = []
+    for path in vscode_workspace_files(root):
+        data = _read_json(path)
+        settings = data.get("settings") if isinstance(data, dict) else None
+        if isinstance(settings, dict):
+            out.append(("workspace-file", settings, path))
+    return out
+
+
+def _vscode_scopes(user_path: Path, ws_path: Path, tool: str = "vscode", root: Path | None = None) -> list[dict]:
+    scopes = []
+    if root is not None and (profile := vscode_active_profile(root)) is not None:
+        scopes.append(_file_scope("user", vscode_user_dir() / "settings.json",
+                                  "Default profile: not used for this folder while a profile is active, except "
+                                  "application-scoped settings."))
+        scopes.append(_scope("profile", profile["path"], profile["path"].is_file(),
+                             f"Active profile {profile['name']}; replaces the default user settings. {profile['basis']}",
+                             label=f"Profile {profile['name']}"))
+    else:
+        scopes.append(_file_scope("user", user_path))
+    for path in vscode_workspace_files(root) if root is not None else []:
+        scopes.append(_scope("workspace-file", path, True,
+                             "Used when VS Code opens this workspace file; the folder's .vscode/settings.json wins over it."))
+    return scopes + [
         _file_scope("workspace", ws_path),
         _env_scope(tool, "Read for telemetry export only."),
         _vscode_policy_scope(),
@@ -2790,8 +2864,9 @@ _COPILOT_GROUPS: list[tuple[str, list[tuple[str, str]], str]] = [
 def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
-    # ── Global VS Code settings ─────────────────────────────────
-    vscode_settings = _read_json(vscode_user_dir() / "settings.json") or {}
+    # ── Global VS Code settings: the active profile's when the folder has one ──
+    user_scope, user_settings_path, _note = vscode_user_layer(root)
+    vscode_settings = _read_json(user_settings_path) or {}
 
     if copilot_enable := vscode_settings.get("github.copilot.enable", {}):
         cfg.features["enable"] = copilot_enable
@@ -2822,7 +2897,6 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
 
     # ── Configurable model overrides + locations ────────────────
     cfg.configurable_models = _collect_copilot_configurable_models(vscode_settings, ws_settings)
-    user_settings_path = vscode_user_dir() / "settings.json"
     ws_settings_path = root / ".vscode" / "settings.json"
     if user_settings_path.is_file():
         cfg.config_files.append(str(user_settings_path))
@@ -2833,16 +2907,14 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
     cfg.extensions = _find_extensions(Path.home() / ".vscode" / "extensions", "copilot")
 
     # ── MCP: VS Code's own files and the mcp settings key (never the Copilot CLI's files) ──
-    from .settings_inventory import vscode_mcp
+    from .settings_inventory import vscode_hooks, vscode_mcp
 
-    user_mcp = vscode_user_dir() / "mcp.json"
+    user_mcp = user_settings_path.parent / "mcp.json"  # a profile has its own mcp.json next to its settings
     ws_mcp = root / ".vscode" / "mcp.json"
-    from .settings_inventory import vscode_hooks
-
     cfg.hook_inventory = vscode_hooks(root, copilot_global_dir(), {**vscode_settings, **(ws_settings or {})})
     cfg.mcp_inventory = vscode_mcp([
-        ("user", user_mcp, _read_json(user_mcp)),
-        ("user", user_settings_path, vscode_settings),
+        (user_scope, user_mcp, _read_json(user_mcp)),
+        (user_scope, user_settings_path, vscode_settings),
         ("workspace", ws_mcp, _read_json(ws_mcp)),
         ("workspace", ws_settings_path, ws_settings),
     ])
@@ -2855,7 +2927,8 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
             cfg.feature_groups[group_name] = cfg.feature_groups.get(group_name, {}) | chunk
 
     # ── Value of each setting per file, for the override chain ──
-    layers = [("user", vscode_settings, user_settings_path), ("workspace", ws_settings, ws_settings_path)]
+    layers = [(user_scope, vscode_settings, user_settings_path), *_vscode_workspace_layers(root),
+              ("workspace", ws_settings, ws_settings_path)]
     for k in list(vscode_settings) + list(ws_settings or {}):
         if k.startswith("github.copilot.") and k != "github.copilot.enable":
             short = k.removeprefix("github.copilot.")
@@ -2865,6 +2938,8 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
                     cfg.setting_values["ws:" + short] = list(cfg.setting_values[short])
     for key, *_rest in _COPILOT_CONFIGURABLE_MODELS:
         _record(cfg, key, key, layers)
+        if entries := cfg.setting_values.get(key):
+            cfg.setting_sources[key] = entries[-1][2]  # the file, never a scope word like "user"
     file_key_of = {("f", dst): src for src, dst in _COPILOT_FEATURES}
     file_key_of.update({("s", dst): src for src, dst in _COPILOT_SETTINGS})
     for (_store, dst), src in file_key_of.items():
@@ -2895,7 +2970,7 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
             if k.startswith("ws:"):
                 cfg.setting_sources[k] = str(ws_settings_path)
 
-    cfg.scopes = _vscode_scopes(user_settings_path, ws_settings_path, cfg.tool)
+    cfg.scopes = _vscode_scopes(user_settings_path, ws_settings_path, cfg.tool, root)
 
     # ── Agents: agent files, plus folders named by chat.agentFilesLocations ──
     folders: list[tuple[Path, str, tuple[str, ...]]] = [
