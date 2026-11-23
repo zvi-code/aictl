@@ -20,6 +20,8 @@ export function harness(routes: Routes, options: Options = {}) {
   const retried: string[] = []
   const ctx = {
     scope: () => options.scope ?? 'local', nodeId: () => null,
+    filters: () => ({ range: { id: '24h' }, project: 'all', model: 'all', status: 'all', q: '', sel: undefined }),
+    board: () => undefined, tools: () => undefined, startedAt: 1_800_000_000,
     copy: () => {},
     client: { store: { topic: (name: string) => options.topics?.[name] ? new Map(options.topics[name].map((data, index) => [String(index), { data }])) : undefined } },
     detail: <T,>(target: Accessor<string | undefined>) => {

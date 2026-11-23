@@ -279,7 +279,7 @@ export function MemoryVersions(props: { shell: DrawerProps; boxes: Boxes; path: 
     { id: 'size', label: 'Size', read: row => size(row.size_bytes), hint: row => row.content_hash || undefined },
     { id: 'lines', label: 'Lines', read: row => lines(row.lines_added, row.lines_removed) },
   ]
-  return <Resource read={read}>{data =>
+  return <Resource read={read} what="the file versions">{data =>
     <Show when={data().mechanism}>
       <BoxSection boxes={props.boxes} id="versions" label="Versions" heading={`Versions · ${fmtN(data().versions.length)} · ${known(data().mechanism, MECHANISMS)}`}>
         <Show when={data().versions.length} fallback={<PanelState state="empty" message="No versions recorded" />}>

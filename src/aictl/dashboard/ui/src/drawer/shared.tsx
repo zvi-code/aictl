@@ -55,13 +55,14 @@ export function openAgent(props: TabProps, id: string, tab = 'flow', extra?: Par
   if (id) props.shell.open({ ...extra, type: 'agent', id, tab } as AgentEntry)
 }
 
+/** `what` names the read in its error: "Could not load the file versions: …". */
 export function Resource<T>(props: {
-  read: DetailResource<T>; children: (data: Accessor<T>) => JSX.Element; unavailable?: string
+  read: DetailResource<T>; children: (data: Accessor<T>) => JSX.Element; unavailable?: string; what?: string
 }) {
   const state = () => props.read()
   return <Show when={state()?.data != null} fallback={
     state()?.status === 'error'
-      ? <PanelState state="error" message={`Could not load this: ${String(state()?.error ?? '').replace(/^Error: /, '')}`} onRetry={props.read.retry} />
+      ? <PanelState state="error" message={`Could not load ${props.what ?? 'this'}: ${String(state()?.error ?? '').replace(/^Error: /, '')}`} onRetry={props.read.retry} />
       : state() ? <PanelState state="loading" /> : <PanelState state="unavailable" message={props.unavailable} />
   }>
     <Show when={state()?.status === 'stale' || state()?.status === 'refreshing'}>

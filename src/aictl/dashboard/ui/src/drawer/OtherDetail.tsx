@@ -24,11 +24,13 @@ function rangeQuery(ctx: PanelContext) {
     ? { ...picked, buckets: 48 } : range ? { ...range, buckets: range.bucket_starts.length } : windowOf(ctx.filters().range, ctx.startedAt))))
 }
 
-function File(props: Props) {
+export function File(props: Props) {
   const ctx = untrack(() => props.shell.ctx)
   const local = () => ctx.scope() === 'local'
   const [editing, edit] = createSignal(false)
-  const read = ctx.detail<DetailFile>(createMemo(() => path(ctx, '/api/board/file', { ...rangeQuery(ctx), path: props.entry.path, record: props.entry.record })))
+  // Opened from a session, the file shows every recorded edit: the board's range would hide the session's own.
+  const read = ctx.detail<DetailFile>(createMemo(() => path(ctx, '/api/board/file',
+    { ...(props.entry.record ? {} : rangeQuery(ctx)), path: props.entry.path, record: props.entry.record })))
   const excerpt = ctx.detail<DetailExcerpt>(createMemo(() => local() && props.entry.line ? path(ctx, '/api/board/excerpt', { path: props.entry.path, line: props.entry.line }) : undefined))
   const boxes = createBoxes('aictl-pref-file-boxes')
   return <>
@@ -48,20 +50,20 @@ function File(props: Props) {
       </Show>
     </Show>
     <Show when={local() && props.entry.line}><Section title={`Line ${props.entry.line}`}>
-      <Resource read={excerpt}>{value =>
+      <Resource read={excerpt} what="the file excerpt">{value =>
         <CodeView label="File excerpt" text={value().lines.map(line => line.text).join('\n')}
           firstLine={value().lines[0]?.n} highlight={[value().line]} wrap />
       }</Resource>
     </Section></Show>
-    <Resource read={read}>{data => <>
+    <Resource read={read} what="the recorded edits of this file">{data => <>
       <Show when={data().diff || !props.entry.line}>
         <Section title="Diff"><Show when={data().diff} fallback={<PanelState state="unavailable" message="No diff is stored for this file." />}>{diff =>
           <CodeView label="Recorded diff" text={diff().map(row => `${row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '} ${row.text}`).join('\n')} wrap />
         }</Show></Section>
       </Show>
-      <Section title="Edits in this time">
+      <Section title={props.entry.record ? 'Recorded edits' : 'Edits in this time'}>
         <Stats items={[{ label: 'Edits', value: data().edits?.length }]} />
-        <Rows label="Edits in this time" rows={data().edits} identity={['agent_id', 'ts']}
+        <Rows label={props.entry.record ? 'Recorded edits' : 'Edits in this time'} rows={data().edits} identity={['agent_id', 'ts']}
           columns={[[ 'ts', 'Time', 'time' ], 'title', 'lines_added', 'lines_removed']}
           action={{ label: row => `Open ${row.title}`, run: row => props.shell.open({ type: 'agent', id: row.agent_id, tab: 'changes' }) }} />
       </Section>
