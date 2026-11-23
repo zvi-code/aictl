@@ -88,7 +88,7 @@ const legacyWidths = (label: string, fields: readonly Field<never>[], action: bo
   widthIds: [...fields.map(field => field.id), ...(action ? [actionColumnId] : [])],
 })
 
-type ColumnFormat = 'number' | 'time' | 'timeSec' | 'bytes' | 'path' | 'usd' | 'ms'
+type ColumnFormat = 'number' | 'time' | 'timeSec' | 'bytes' | 'path' | 'usd' | 'ms' | 'id'
 type Column = string | readonly [key: string, label: string, format?: ColumnFormat]
 
 /** A column named for its unit shows that unit: a cost is money and a time in milliseconds is a duration, never a rounded count. */
@@ -115,7 +115,7 @@ export function Rows<T extends object>(props: {
       ...(format === 'path' ? { clip: 'start' as const } : format ? { format: (value: unknown) => {
         const n = number(value)
         return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'timeSec' ? stampSec(n) : format === 'bytes' ? fmtBytes(n)
-          : format === 'usd' ? fmtUsd(n) : format === 'ms' ? fmtMs(n) : fmtN(n)
+          : format === 'id' ? String(n) : format === 'usd' ? fmtUsd(n) : format === 'ms' ? fmtMs(n) : fmtN(n)
       } } : {}),
       ...(key === props.actionColumn ? { action: props.action } : {}),
       ...(props.columnActions?.[key] ? { action: props.columnActions[key] } : {}),
