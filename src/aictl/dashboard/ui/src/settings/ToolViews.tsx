@@ -7,7 +7,7 @@ import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
   DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
-  type Comparison, type Entry, type Environment, type Setting,
+  mcpState, type Comparison, type Entry, type Environment, type McpServer, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
 import type { Workspace } from './workspaceState'
@@ -72,10 +72,12 @@ function ToolSections(props: { w: Workspace; entry: Entry }) {
     (!w.fileSource() || samePath(row.source, w.fileSource()) || row.chain.some(layer => samePath(layer.source, w.fileSource()))))
   const showUnset = createMemo(() => w.state().unset)
   const items = createMemo(() => [
-    ...props.entry.sections.filter(sec => showUnset() || sec.rows.some(row => !row.unset))
+    ...props.entry.sections.filter(sec => showUnset() || sec.rows.some(row => !row.unset) ||
+      (sec.id === 'mcp' && props.entry.mcp.length))
       .map(sec => ({ id: sec.id, label: sec.title, content: () => <>
         <Show when={sec.id === 'autonomy'}><PermissionView entries={[props.entry]} w={w} /></Show>
         <Show when={sec.id === 'hooks'}><HookView w={w} id={props.entry.id} /></Show>
+        <Show when={sec.id === 'mcp' && props.entry.mcp.length}><McpView w={w} entry={props.entry} /></Show>
         <Rows w={w} label={`${props.entry.label} ${sec.title}`} rows={rows().filter(row => row.sec === sec.id)}
           agents={sec.id === 'agents'} />
       </> })),
@@ -219,6 +221,29 @@ function PermissionView(props: { entries: Entry[]; w: Workspace }) {
       </For>
     </section>
   </Show>
+}
+
+const mcpFields: Field<McpServer>[] = [
+  { id: 'name', label: 'Server', read: row => row.name },
+  { id: 'state', label: 'State', read: mcpState },
+  { id: 'transport', label: 'Transport', read: row => row.transport },
+  { id: 'target', label: 'Command or URL', read: row => row.command || row.url || undefined },
+  { id: 'scope', label: 'Scope', read: row => scopeLabel(row.scope) },
+  { id: 'source', label: 'Declared in', read: row => setIn({ source: row.source }) },
+  { id: 'plugin', label: 'Plugin', read: row => row.plugin || DASH },
+]
+function McpView(props: { w: Workspace; entry: Entry }) {
+  const rows = () => props.entry.mcp.filter(row => matches(props.w.query(), row.name, row.command, row.url, row.plugin, row.source))
+  const on = () => props.entry.mcp.filter(row => row.state === 'enabled' || row.state === 'approved').length
+  return <section class={styles.stack} aria-label="Declared MCP servers">
+    <div class={styles.stats}>
+      <Stat label="Declared MCP servers" value={props.entry.mcp.length} />
+      <Stat label="Enabled or approved" value={on()} />
+    </div>
+    <Table label={`${props.entry.label} MCP servers`} fields={mcpFields} rows={rows()}
+      rowId={row => `${row.scope}\u0001${row.source}\u0001${row.name}`}
+      action={{ label: row => `Open ${basename(row.source)}`, run: row => props.w.openSource(row.source) }} />
+  </section>
 }
 
 function HookView(props: { w: Workspace; id: string }) {

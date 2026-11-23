@@ -45,6 +45,11 @@ SECRETS = {
     "claude_json_env": "FAKECLAUDEJSON0018value",
     "docker_env": "FAKEDOCKERENV0019value",
     "codex_env": "FAKECODEXENV0020value",
+    # MCP declarations the Settings inventory reads: plugins, VS Code files, hooks.
+    "claude_plugin_env": "FAKECLAUDEPLUGIN0030value",
+    "copilot_plugin_header": "FAKECOPILOTPLUGIN0031value",
+    "vscode_mcp_arg": "FAKEVSCODEMCP0032value",
+    "hook_command": "FAKEHOOKCMD0033value",
     # Process command lines: rule 2 (a secret name in front of the value).
     "proc_api_key": "FAKEPROCKEY0021value",
     "proc_password": "FAKEPROCPASS0022value",
@@ -175,8 +180,47 @@ def leak_tree(tmp_path, monkeypatch) -> LeakTree:
         _write(home / ".codex" / "config.toml",
                f'model = "fake"\n\n[mcp_servers.codex-srv]\ncommand = "npx"\n\n'
                f'[mcp_servers.codex-srv.env]\nSERVICE_VALUE = "{S["codex_env"]}"\n'),
+        *_inventory_files(home, project),
     ]
     return LeakTree(home, project, files, probed)
+
+
+def _inventory_files(home: Path, project: Path) -> list[Path]:
+    """Plugin and VS Code MCP files and hook commands, which only the Settings inventory reads."""
+    from aictl.platforms import vscode_user_dir
+
+    plugin = home / ".claude" / "plugins" / "cache" / "leaky"
+    copilot_plugin = home / ".copilot" / "installed-plugins" / "market" / "leaky"
+    return [
+        _write(plugin / ".mcp.json", json.dumps({"mcpServers": {"claude-plugin-srv": {
+            "command": "npx", "args": ["p"], "env": {"PLUGIN_VALUE": S["claude_plugin_env"]}}}}, indent=2)),
+        _write(home / ".claude" / "plugins" / "installed_plugins.json", json.dumps({"version": 2, "plugins": {
+            "leaky@market": [{"scope": "user", "installPath": str(plugin)}]}})),
+        _write(copilot_plugin / ".mcp.json", json.dumps({"mcpServers": {"copilot-plugin-srv": {
+            "url": "https://plugin.example.test/mcp", "headers": {"Authorization": f"Bearer {S['copilot_plugin_header']}"}}}})),
+        _write(vscode_user_dir() / "mcp.json", json.dumps({"servers": {"vscode-srv": {
+            "command": "node", "args": ["srv.js", "--token", S["vscode_mcp_arg"]]}}}, indent=2)),
+        _write(project / ".claude" / "settings.json", json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": f"curl -H 'Authorization: Bearer {S['hook_command']}' https://hook.example.test"}]}]}},
+            indent=2)),
+        _write(project / ".github" / "hooks" / "audit.json", json.dumps({"version": 1, "hooks": {"preToolUse": [
+            {"type": "command", "bash": f"notify --api-key {S['hook_command']}"}]}})),
+    ]
+
+
+def _settings_tools(tree: LeakTree) -> str:
+    from aictl.monitoring.tool_config import collect_tool_configs
+
+    configs = [c.to_dict() for c in collect_tool_configs(tree.project)]
+    servers = {s["name"] for c in configs for s in c.get("mcp_inventory") or []}
+    assert {"claude-plugin-srv", "copilot-plugin-srv", "vscode-srv", "user-srv", "stdio-srv"} <= servers, servers
+    return json.dumps(configs)
+
+
+def _settings_table(tree: LeakTree) -> str:
+    from aictl.effective_config import SETTING_TOOLS, settings_table
+
+    return json.dumps({t: settings_table(t, tree.project, {"COPILOT_HOME": str(tree.home / ".copilot")}) for t in SETTING_TOOLS})
 
 
 def _assert_no_secret(name: str, text: str) -> None:
@@ -345,6 +389,8 @@ OUTPUTS: dict[str, Callable[[LeakTree], str]] = {
     "live process records (pickle, repr, asdict)": _live_records,
     "live sources payload": _live_sources,
     "observe process nodes": _observe_nodes,
+    "GET /api/settings/tools (tool configs, MCP inventory)": _settings_tools,
+    "effective settings table": _settings_table,
 }
 
 

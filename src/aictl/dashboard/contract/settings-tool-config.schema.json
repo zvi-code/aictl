@@ -174,7 +174,28 @@
         "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "label": {"type": "string"}}
       }
     },
-    "local_data": {"type": "object", "additionalProperties": {"type": "boolean"}}
+    "local_data": {"type": "object", "additionalProperties": {"type": "boolean"}},
+    "mcp_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "transport": {"type": "string"},
+          "command": {"type": "string"},
+          "url": {"type": "string"},
+          "env_names": {"type": "array", "items": {"type": "string"}},
+          "header_names": {"type": "array", "items": {"type": "string"}},
+          "scope": {"type": "string"},
+          "source": {"type": "string"},
+          "plugin": {"type": "string"},
+          "state": {"enum": ["enabled", "disabled", "plugin-disabled", "approved", "rejected", "needs-approval", "declared"]},
+          "state_source": {"type": "string"},
+          "note": {"type": "string"}
+        },
+        "required": ["name", "transport", "scope", "source", "state"]
+      }
+    }
   },
   "required": ["tool"]
 }

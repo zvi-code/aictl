@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  agentTools, isNonDefault, isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  agentTools, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
   settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
@@ -45,6 +45,17 @@ describe('settings contract projections', () => {
     expect(rowState(row('zzInvented'))).toBe('Set (no documented default) · Present, not in catalog')
     expect(rowState(row('version'))).toBe('Reported by the tool')
     expect(entry.rows.filter(isNonDefault).map(item => item.key)).toEqual(['theme', 'zzInvented'])
+  })
+
+  it('lists declared MCP servers with their state even when no MCP row is set', () => {
+    const config: SettingsToolConfig = { tool: 'claude-code', sections: [], mcp_inventory: [
+      { name: 'proj', transport: 'stdio', command: 'npx proj', scope: 'project', source: '/work/.mcp.json', state: 'needs-approval' },
+      { name: 'plug', transport: 'http', url: 'https://x.test/mcp', scope: 'plugin', source: '/p/.mcp.json', plugin: 'p@m', state: 'plugin-disabled' },
+    ] }
+    const [entry] = toolEntries([config])
+    expect(entry.sections.map(sec => sec.id)).toEqual(['mcp'])
+    expect(entry.mcp.map(mcpState)).toEqual(['Waiting for approval', 'Plugin turned off'])
+    expect(entry.files).toEqual(['/work/.mcp.json', '/p/.mcp.json'])
   })
 
   it('never renders an unknown or absent list as 0', () => {

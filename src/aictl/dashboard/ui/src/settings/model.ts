@@ -18,6 +18,7 @@ const scopeLabels: Record<string, string> = {
 }
 type RawRow = NonNullable<SettingsToolConfig['sections']>[number]['rows'][number]
 type RawEnvironment = NonNullable<SettingsToolConfig['env_vars']>[number]
+export type McpServer = NonNullable<SettingsToolConfig['mcp_inventory']>[number]
 export type ChainEntry = NonNullable<RawRow['chain']>[number]
 export type Setting = RawRow & {
   uid: string; tool: string; sec: string; label: string; chain: ChainEntry[]; wins: number
@@ -114,10 +115,23 @@ export function toolEntries(configs: readonly SettingsToolConfig[] | undefined, 
       }
     }
     const envVars = [...env.values()].sort((a, b) => Number(b.set === true) - Number(a.set === true))
+    const mcp = full?.mcp_inventory ?? config.mcp_inventory ?? []
+    // A tool whose servers are only in its inventory still gets its MCP section.
+    if (mcp.length && !grouped.some(sec => sec.id === 'mcp')) {
+      grouped.push({ id: 'mcp', title: sectionTitles.get('mcp')!, rows: [] })
+      grouped.sort((a, b) => rank(a.id) - rank(b.id))
+    }
+    for (const server of mcp) if (server.source && !files.some(path => samePath(path, server.source))) files.push(server.source)
     return { id: config.tool, label: labelOf(config.tool, detail), files, scopes, sections: grouped,
-      rows, envVars, hints: config.hints }
+      rows, envVars, hints: config.hints, mcp }
   })
 }
+
+const MCP_STATES: Record<string, string> = {
+  enabled: 'Enabled', disabled: 'Disabled', 'plugin-disabled': 'Plugin turned off', approved: 'Approved',
+  rejected: 'Rejected', 'needs-approval': 'Waiting for approval', declared: 'Declared (start state not in a file)',
+}
+export const mcpState = (server: McpServer) => MCP_STATES[server.state] ?? title(server.state)
 
 export function settingsSummary(entries: readonly Entry[]) {
   const rows = entries.flatMap(entry => entry.rows)

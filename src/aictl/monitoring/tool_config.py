@@ -32,6 +32,7 @@ from ..fsutil import safe_iterdir
 from ..platforms import (
     IS_MACOS,
     IS_WINDOWS,
+    claude_account_config,
     claude_desktop_config,
     claude_global_dir,
     codex_global_dir,
@@ -218,6 +219,9 @@ class ToolConfig:
     # Variables a settings file sets for the tool's sessions (Claude Code's
     # ``env`` key), as {path: {name: value}}. Read by env_var_rows(); not part of to_dict().
     env_blocks: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Every declared MCP server with its scope, file, plugin and state, masked
+    # (settings_inventory.mcp_entry). Always in to_dict(); empty when the parser has none.
+    mcp_inventory: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -900,8 +904,8 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
     if otel:
         seen.update(normalize_key(k) for k in telemetry_flat)
 
-    # MCP, extensions, startup
-    if cfg.mcp_servers:
+    # MCP, extensions, startup. A tool with an MCP inventory shows it as a table, server by server.
+    if cfg.mcp_servers and not cfg.mcp_inventory:
         mcp_files = [f for f in cfg.config_files if "mcp" in Path(f).name.lower()]
         add("mcp", _row("mcp_servers", list(cfg.mcp_servers), mcp_files[0] if mcp_files else "", label="MCP servers"))
     if cfg.extensions and "extensions" not in cfg.covered_keys:
@@ -1782,6 +1786,15 @@ def _read_macos_login_items() -> set[str]:
         return set()
 
 
+def _adopt_mcp_inventory(cfg: ToolConfig) -> None:
+    """Server names and source files of the MCP inventory, for the flat fields and the files view."""
+    for server in cfg.mcp_inventory:
+        if server["name"] not in cfg.mcp_servers:
+            cfg.mcp_servers.append(server["name"])
+        if server["source"] and server["source"] not in cfg.config_files:
+            cfg.config_files.append(server["source"])
+
+
 def _mcp_server_names(data: dict | None) -> list[str]:
     """Extract MCP server names from a config dict with an 'mcpServers' key."""
     return list((data or {}).get("mcpServers", {}).keys())
@@ -2080,7 +2093,7 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
 
     # Global settings
     user_path = claude_global_dir() / "settings.json"
-    account_path = Path.home() / ".claude.json"
+    account_path = claude_account_config()
     proj_path = root / ".claude" / "settings.json"
     local_path = root / ".claude" / "settings.local.json"
     settings = _read_json(user_path)
@@ -2196,8 +2209,17 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
     # Every other key of every settings file.
     _add_layers(cfg, layers, skip=("permissions.allow", "permissions.deny", "permissions.ask", "hooks", "env"))
 
-    # MCP servers from .mcp.json
-    cfg.mcp_servers = _mcp_server_names(_read_json(root / ".mcp.json"))
+    # MCP servers: managed, user and local scope (~/.claude.json), project .mcp.json with its approval
+    # state, and plugin MCP files.
+    from .settings_inventory import claude_code_mcp
+
+    managed_mcp = [p.parent / "managed-mcp.json" for p in CLAUDE_MANAGED_FILES]
+    inventory_layers = [(s, d, str(p)) for s, d, p in layers]
+    cfg.mcp_inventory = claude_code_mcp(
+        root, claude_global_dir(), account if isinstance(account, dict) else None, account_path,
+        inventory_layers, [p for p in managed_mcp if _fixed_file(p)],
+    )
+    _adopt_mcp_inventory(cfg)
 
     # VS Code extension check
     cfg.extensions = _find_extensions(Path.home() / ".vscode" / "extensions", "claude")
@@ -2765,21 +2787,18 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
     # ── Extensions ──────────────────────────────────────────────
     cfg.extensions = _find_extensions(Path.home() / ".vscode" / "extensions", "copilot")
 
-    # ── MCP config (check all locations) ────────────────────────
-    seen_servers: set[str] = set()
-    for mcp_path in (
-        vscode_user_dir() / "mcp.json",
-        root / ".copilot" / "mcp-config.json",
-        root / ".copilot-mcp.json",
-        root / ".vscode" / "mcp.json",
-    ):
-        mcp = _read_json(mcp_path)
-        if not mcp:
-            continue
-        for name in mcp.get("mcpServers", mcp.get("servers", {})):
-            if name not in seen_servers:
-                cfg.mcp_servers.append(name)
-                seen_servers.add(name)
+    # ── MCP: VS Code's own files and the mcp settings key (never the Copilot CLI's files) ──
+    from .settings_inventory import vscode_mcp
+
+    user_mcp = vscode_user_dir() / "mcp.json"
+    ws_mcp = root / ".vscode" / "mcp.json"
+    cfg.mcp_inventory = vscode_mcp([
+        ("user", user_mcp, _read_json(user_mcp)),
+        ("user", user_settings_path, vscode_settings),
+        ("workspace", ws_mcp, _read_json(ws_mcp)),
+        ("workspace", ws_settings_path, ws_settings),
+    ])
+    _adopt_mcp_inventory(cfg)
 
     # ── Feature groups for structured display ───────────────────
     stores = {"f": cfg.features.get, "s": cfg.settings.get}
@@ -3742,12 +3761,18 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
         cfg.key_labels["allowedModels"] = "Allowed models"
         cfg.key_sections["allowedModels"] = "model"
 
-    for mcp_path in (home / "mcp-config.json", root / ".copilot" / "mcp-config.json", root / ".copilot-mcp.json"):
-        if mcp_path.is_file():
-            cfg.config_files.append(str(mcp_path))
-        for name in _mcp_server_names(_read_json(mcp_path)):
-            if name not in cfg.mcp_servers:
-                cfg.mcp_servers.append(name)
+    # MCP servers: ~/.copilot/mcp-config.json, plugin MCP files, <root>/.mcp.json and .github/mcp.json,
+    # with enabledPlugins and disabledMcpServers as state (managed enabledPlugins wins).
+    from .settings_inventory import copilot_cli_mcp
+
+    state_layers = [
+        ("user", settings, str(settings_path)),
+        ("project", raw["project"], str(proj_path)),
+        ("project-local", raw["project-local"], str(local_path)),
+        ("managed", managed, str(managed_path or "")),
+    ]
+    cfg.mcp_inventory = copilot_cli_mcp(home, root, state_layers)
+    _adopt_mcp_inventory(cfg)
 
     instr = home / "copilot-instructions.md"
     if instr.is_file():

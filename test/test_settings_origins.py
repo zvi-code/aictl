@@ -225,7 +225,8 @@ def test_rows_carry_the_documented_default_and_their_state(homes, monkeypatch, t
 
 def test_claude_absent_keys_stay_absent_and_account_keys_are_app_state(homes):
     (homes["claude"] / "settings.json").write_text(json.dumps({"model": "invented-model"}, indent=2))
-    (homes["home"] / ".claude.json").write_text(json.dumps({"installMethod": "native", "numStartups": 3}, indent=2))
+    # CLAUDE_CONFIG_DIR moves .claude.json with the rest of the config.
+    (homes["claude"] / ".claude.json").write_text(json.dumps({"installMethod": "native", "numStartups": 3}, indent=2))
     root = homes["project"]
     root.mkdir()
     cfg = tc._parse_claude_code_config(root)
@@ -238,7 +239,7 @@ def test_claude_absent_keys_stay_absent_and_account_keys_are_app_state(homes):
     assert "auto_update" not in rows
     install = rows["installMethod"]
     assert install["value"] == "native" and install["scope"] == "app-state" and install["state"] == "app-state"
-    assert install["source"] == str(homes["home"] / ".claude.json") and install["line"] == 2
+    assert install["source"] == str(homes["claude"] / ".claude.json") and install["line"] == 2
     assert_rows_name_files_holding_their_keys(sections)
 
 

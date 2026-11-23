@@ -336,8 +336,12 @@ def claude_global_dir() -> Path:
 
 
 def claude_account_config() -> Path:
-    """~/.claude.json on every platform (sibling of the ``.claude`` dir)."""
-    return Path.home() / ".claude.json"
+    """~/.claude.json on every platform (sibling of the ``.claude`` dir).
+
+    ``CLAUDE_CONFIG_DIR`` moves it with the rest of the config: ``$CLAUDE_CONFIG_DIR/.claude.json``.
+    """
+    moved = _env_dir("CLAUDE_CONFIG_DIR")
+    return moved / ".claude.json" if moved else Path.home() / ".claude.json"
 
 
 def claude_desktop_dir() -> Path:
