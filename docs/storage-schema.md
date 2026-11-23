@@ -439,6 +439,198 @@ row from `otel` carries none. Names with source `prompt` hold prompt text, so th
 Sessions stored before these columns existed get their names once, from a pass that reads only the name lines and
 the metadata files (state file `session_titles.json`); a new node does not run it.
 
+## Investigating a session a year later
+
+These columns and tables let a session be investigated after its text is gone: what each
+tool call acted on, how the turns went, what the subagents were asked to do, what the
+session achieved, which files it touched, and how much the model thought. All of it is
+read from the tools' own files by `aictl.ingesters.transcript_usage` (with
+`call_facts` and `session_outcomes`). Year-long tables hold names, paths, ids, counts,
+enums and PR or commit references only, never prose. The text stays in the 14-day text
+tables, written only while text is kept (`capture = "full"`).
+
+### `tool_invocations` (year-long) — new columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `mcp_server`, `mcp_tool` | string | The MCP server and its tool; "" when the call is not an MCP call or its name does not say (`mcp_a_b`). Split by `aictl.tool_targets.split_mcp`, the same function the board uses |
+| `target_kind` | string | `file`, `command`, `url`, `skill`, `agent`, `query` or `other` |
+| `target` | string | What the call acted on: the file path as given; the command line; the URL (credentials removed, and its query when it looks like it carries a secret); the search pattern or query; the skill name; the subagent type; the MCP tool. Command lines, URLs and search text are redacted (`aictl.tool_targets.redact_secrets`) and cut to 500 characters, and are written only with `capture = "full"`; otherwise `target` holds the program name, the URL host, or "" for a search |
+| `target_chars`, `target_truncated` | long, bool | Length of the command line, URL or search text before it was cut, and whether it was |
+| `command_name` | string | The program a command ran (first word, after `VAR=x`, `sudo`, `env`, `time` and `cd dir &&`) |
+| `url_host`, `search_path` | string | The host of a URL; the folder a search looked in |
+| `read_offset`, `read_limit` | long | The range of a ranged read (Claude `offset`/`limit`, Copilot `view_range`, VS Code `startLine`/`endLine`) |
+| `arg_names` | string | An MCP call's argument names (not values), comma-separated |
+| `agent_label` | string | The caller's short description of a subagent call |
+| `error_summary` | string | A failed call's error message, redacted, at most 300 characters; only with `capture = "full"` |
+| `interrupted` | bool | Claude Code `toolUseResult.interrupted` |
+| `turn_index` | long | The user turn of the session (1 = the first); null when unknown |
+| `prompt_id` | string | Claude Code `promptId` of the turn; joins `session_turns` and `requests.prompt_id` |
+| `request_key` | string | `dedup_key` of the `requests` row of the model call that asked for the call (Claude Code) |
+
+What stays a year and what is kept 24 hours, per tool call:
+
+| Kept a year in `tool_invocations` (class `history`) | Kept 24 hours in `tool_invocations_text` (class `tool_content`) |
+|---|---|
+| tool, name, MCP server and tool, `target_kind`, file path, `command_name`, URL host, search folder, MCP argument names, subagent type and label, skill, read range; sizes (`input_bytes`, `output_bytes`); `is_error`, `exit_code`, `interrupted`, `confirm`, `confirm_wait_ms`, `duration_ms`; turn, prompt and request keys. With `capture = "full"` also: the command line, URL, search text (`target`) and `error_summary` | the argument values (bounded as before), edit old and new text, and the result excerpt |
+
+Edit line counts and paths stay a year in `file_write_events`. Estimated result tokens are
+not stored: they are `output_bytes / 4` in a query. After 24 hours a view that shows a
+call's arguments, its result or an edit's text has none to show (see the report of this
+change for the board places that need a "no longer retained" wording).
+
+### `requests` (year-long) — new columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `turn_index` | long | As above. Copilot rows read only from `session-store.db` leave it null: the store numbers turns its own way |
+| `effort` | string | Reasoning effort asked for (Claude Code `effort`, Copilot `reasoningEffort` / `reasoning_effort`) |
+| `thinking_ms` | real | Claude Code `thinkingDurationMs`, the longest a line of the call reported |
+| `attribution_mcp_server`, `attribution_skill` | string | What Claude Code says caused the call (`attributionMcpServer`, `attributionSkill`), as written |
+| `requested_model` | string | Claude Code `requestedModel`, only when it differs from the model that answered |
+| `thinking_chars`, `thinking_blocks` | long | Length and number of the visible thinking blocks of the call |
+| `thinking_redacted` | long | Redacted or encrypted thinking blocks: counted, never stored |
+| `thinking_tokens` | long | Reasoning tokens where the tool reports them (Copilot `reasoningTokens` / `reasoning_tokens`) |
+
+`requests.prompt_id` is now also filled from Claude Code transcripts.
+
+### `agents` (year-long) — new columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `description` | string | The short task label the calling agent gave (at most 200 characters, one line). A label, stored like a name in every capture mode; the prompt stays in `agents_text` |
+| `spawn_depth` | long | Claude Code `meta.json` `spawnDepth` |
+| `parent_agent_id` | string | The agent that started it; "" for the main agent |
+| `parent_tool_use_id` | string | The tool call that started it |
+| `resolved_model`, `status` | string | The model it ran on; `async_launched`, `running`, `completed`, `failed` |
+
+### `session_turns` (year-long) — one row per Claude Code turn
+
+Key `session_id`, `prompt_id`. A turn is one `promptId`: a person's prompt or a message
+the tool treats as a new turn (`origin` says which). A subagent's lines carry its caller's
+prompt id, so its calls count in its caller's turn. Copilot CLI turns are in
+`session_steps` / `turn_request_links`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `turn_index` | long | `turnPosition.turnIndex`, or the order of the turn in the session |
+| `ts`, `ended_at` | real | First and last line of the turn |
+| `origin`, `permission_mode` | string | `turnOrigin` / `origin.kind`; `permissionMode` |
+| `request_count`, `tool_call_count` | long | Model calls and tool calls |
+| `error_count`, `api_error_count`, `ended_with_api_error` | long | Failed tool calls and API errors; 1 when the last call of the turn failed |
+| `input_tokens` … `cache_creation_tokens` | long | Disjoint token classes, summed |
+| `files_changed`, `compactions` | long | Distinct files edited or written; compactions |
+| `thinking_chars`, `thinking_blocks`, `thinking_redacted`, `thinking_ms` | long, real | Thinking of the turn's calls, summed |
+
+### `session_files` (year-long) — how each file was touched
+
+Key `session_id`, `agent_id`, `path`, `how`, `tool_name`. `how` is `read`, `edited` or
+`created`; `count`, `first_ts` and `ts` (last). Counted per agent's record, so a record
+read again from its start rebuilds its own counts; sum over `agent_id` for a session.
+Sources: Claude Code `Read`, `Edit`, `MultiEdit`, `NotebookEdit` and `Write` (`created`
+when its result says `create`); Copilot `view` calls (reads) and `session-store.db`
+`session_files` (writes; `created` for `create`); VS Code debug-log `read_file`,
+edit and `create_file` calls, or `editedFileEvents` for a session with no debug log.
+Paths are kept as the tool wrote them, Windows paths included.
+
+### `session_outcomes` (year-long) — one row per session
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `permission_modes`, `modes`, `last_mode` | dynamic, dynamic, string | Claude Code `permissionMode` and `mode` lines; Copilot `session.mode_changed`; VS Code `modeInfo` |
+| `pr_refs`, `commit_refs` | dynamic | Claude Code `pr-link` URLs; Copilot `session_refs` (PR numbers, commit SHAs) |
+| `lines_added`, `lines_removed`, `files_changed` | long | Claude Code `cost-state` totals and edited files; Copilot `session.shutdown` `codeChanges` |
+| `reported_cost_usd`, `reported_api_ms`, `reported_tool_ms` | real | The tool's own figures (Claude Code `cost-state`, Copilot `totalApiDurationMs`), separate from aictl's priced `cost_usd` |
+| `premium_requests` | real | Copilot `totalPremiumRequests` |
+| `hook_runs`, `hook_failures` | long | Claude Code `stop_hook_summary`; Copilot `hook.end` |
+| `compactions` | long | Compactions |
+| `todos_total`, `todos_completed` | long | The last todo list: Claude Code `TodoWrite`, Copilot `session.db` `todos`, VS Code `manage_todo_list` |
+| `workflow_runs`, `workflows_failed` | long | Claude Code `<session>/workflows/wf_*.json` |
+| `task_complete` | long | 1 when Copilot reported `session.task_complete` or VS Code ran `task_complete` |
+
+A row is put together from parts, one per source: a transcript record, or a metadata file.
+A source read again replaces its part. The parts and a digest of the last row written are
+saved in the reader's checkpoint (`transcript_usage.json`), so a restart that finds nothing
+new writes nothing.
+
+### `session_digests` (14 days, text) — the tools' own summaries
+
+Key `session_id`, `kind`, `seq`; `ts`, `title`, `text` (redacted, at most 32768 characters).
+`kind`: `checkpoint` (Copilot `session-store.db` `checkpoints`: overview, work done, next
+steps), `task_summary` (Copilot `session.task_complete`), `compact_summary` (Claude Code
+`isCompactSummary`, Copilot `compaction_complete.summaryContent`), `todo_list` (the last
+list), `workflow_summary` (Claude Code workflows). Written only while text is kept.
+
+### `session_thinking` (14 days, text) — visible thinking, one row per block
+
+Key `session_id`, `thinking_key`. Columns `agent_id`, `request_key` (the `requests`
+`dedup_key`), `message_id`, `turn_index`, `block_index`, `ts`, `model`, `chars` (whole
+length), `text` (redacted, at most 32768 characters). Sources: Claude Code `thinking`
+content blocks; Copilot `assistant.message` `reasoningText`, joined to its call by
+`apiCallId`; VS Code chat `thinking` response parts (`request_key` only for a session
+with no debug log). Redacted blocks, encrypted reasoning (`redacted_thinking`,
+`reasoningOpaque`, `encrypted_content`) and signatures are never stored. Written only
+while text is kept; the counts on `requests` are always written.
+
+### Metadata files and restarts
+
+Workflow files and Copilot `session.db` files are read again only when their size or mtime
+changed; the store is read only for row ids above the last one read. Signatures and ids are
+saved in the checkpoint. Rows summed from transcript lines (`session_turns`,
+`session_files`, digests, thinking) are written only for lines not stored before a
+restart, as for the other fact tables.
+
+## Retention per class of table
+
+Every Kusto table belongs to exactly one retention class (`TABLE_RETENTION_CLASS` in
+`aictl/stores/kusto/tables.py`). Each class is set on its own in `[storage.retention]`, in
+hours or days (`tool_content = "24h"`, `prompt = "365d"`; a bare number is days, and
+`<class>_days = <days>` is read too). The daemon applies the configured period with
+`.alter-merge table … policy retention softdelete = <period>` when it starts. Text that its
+class would no longer keep is not imported from old session files, while the metadata of the
+same rows is written for the whole history. With `capture` other than `full`, no text is
+written, whatever the retention.
+
+| Kind of data | Tables | Default | Setting |
+|---|---|---|---|
+| What sessions did, no text: tool calls, requests, turns, outcomes, files, agents | `sessions`, `requests`, `tool_invocations`, `session_turns`, `session_outcomes`, `session_files`, `agents`, `file_write_events`, … | 365d | `history` |
+| User prompts | `session_prompts` | 365d | `prompt` |
+| Thinking text | `session_thinking` | 365d | `thinking` |
+| Assistant and chat messages, step text | `*_session_messages`, `vscode_chat_messages`, `session_step_text` | 365d | `message` |
+| Other text: subagent prompts, event text, digests | `agents_text`, `events_text`, `session_digests` | 365d | `text` |
+| File contents | `files_text`, `file_history_text`, `file_blobs`, `memory_snapshots_text` | 365d | `file_text` |
+| Raw OpenTelemetry | `OTELLogs`, `OTELMetrics`, `OTELTraces`, `OTELPayloads` | 365d | `otel` |
+| Metrics, snapshots, events, files, configuration | `metrics`, `system_snapshots`, `process_snapshots`, `events`, `files`, … | 365d | `metrics` |
+| Tool call content: arguments, edit text, result excerpts, hook payloads | `tool_invocations_text`, `hook_calls_text` | 24h | `tool_content` |
+| The full text of large values | `text_payloads` | 24h | `large_payload` |
+
+**Large values.** A text value over `[storage] large_payload_bytes` (default 32768) in
+`session_step_text`, `session_digests`, `agents_text` or `events_text` keeps a preview of
+4000 characters in its own table, followed by its size and a note that the full text is kept
+in `text_payloads` for the `large_payload` period; the full text goes to `text_payloads` in
+chunks (`source_table`, `source_key`, `field`, `chunk_no`, `chunk_count`, `total_bytes`).
+The note is part of the stored preview, so a reader shows the preview and the note once the
+full text is gone. Prompts (at most 8000 characters) and thinking (at most 250000) are never
+moved: they keep their whole text under their own class. `OTELPayloads` keeps its own spill
+rows under `otel`: its readers join it by table, and it mixes tool arguments, prompts and
+other values, so a split by `PayloadKind` needs the readers changed with it.
+
+**Removal is approximate.** Kusto removes data by extent, after an extent's newest row has
+passed the period, so rows can live somewhat longer than a short period, more so when an
+extent holds rows ingested over a long span. No merge or caching policy is changed for the
+24-hour tables.
+
+`aictl db retention` lists each class with its period, size and share, the
+`large_payload_bytes` threshold, then each table with its class, the configured period, the
+period on the cluster, its rows, extent size and share, largest first.
+`aictl db retention set <class> <period>` (for example `tool_content 12h`) writes the setting
+and applies it. Lowering a period makes Kusto delete data older than the new limit, which
+cannot be undone: the command first prints, per table, the rows and the oldest ingestion time
+that would be removed (`<table> | where ingestion_time() < ago(<period>) | summarize rows =
+count(), oldest = min(ingestion_time())`), and goes on only after a confirmation (`--yes` in
+scripts; a run with no terminal and no `--yes` refuses). `[storage] history_days` is a
+different setting: how far back session files are read.
+
 ## Configuration
 
 ```toml

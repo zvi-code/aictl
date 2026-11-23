@@ -13,7 +13,7 @@ from typing import Any
 
 from .ingesters._common import project_key
 from .ingesters.session_titles import clean_title, outranks
-from .records import STEP_TEXT_LIMIT, SessionRow, _dedup_key, strip_event_text
+from .records import STEP_TEXT_LIMIT, TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, strip_event_text
 from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
@@ -21,6 +21,7 @@ from .stores.base import InvalidRowError
 from .tool_calls import call_key
 
 _LIMIT = 20_000
+PAYLOAD_CHUNK_CHARS = 200_000  # a chunk stays under what one Kusto string value holds
 log = logging.getLogger(__name__)
 _COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
              "cost_usd", "request_count", "tool_call_count", "files_modified")
@@ -29,7 +30,8 @@ _TELEMETRY_ONLY = ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason"
 _FAMILIES = {
     "prompts": "session_prompts", "skills": "skill_uses", "context_events": "context_events",
     "loaded_files": "session_loaded_files", "context_items": "session_context_items",
-    "cost_links": "turn_request_links",
+    "cost_links": "turn_request_links", "turns": "session_turns", "session_files": "session_files",
+    "outcomes": "session_outcomes", "digests": "session_digests", "thinking": "session_thinking",
 }
 
 
@@ -39,11 +41,18 @@ def _json(value: Any) -> str:
 
 class SessionFacts:
     def __init__(self, writer, *, keeps_text=lambda: False, state: StateFile | None = None,
-                 content_days: int = 14, trim_before=lambda: 0.0) -> None:
+                 content_days: int = 14, trim_before=lambda: 0.0, retention: dict[str, int] | None = None,
+                 large_payload_bytes: int = 32768) -> None:
         self.writer = writer_or_discard(writer)
         self.keeps_text = keeps_text
         self.state = state
         self.content_days = content_days
+        # Hours each retention class is kept (stores.kusto.tables.TABLE_RETENTION_CLASS): text older than its
+        # class keeps is not imported. Without a configuration, text classes keep content_days.
+        self.retention = {**dict.fromkeys(("text", "message", "file_text"), content_days * 24),
+                          "prompt": 365 * 24, "thinking": 365 * 24, "tool_content": 24, "large_payload": 24,
+                          **(retention or {})}
+        self.large_payload_bytes = large_payload_bytes
         self.trim_before = trim_before
         self._lock = threading.RLock()
         self._dirty = False
@@ -242,11 +251,34 @@ class SessionFacts:
                 default=(0, ""),
             )[1]
 
-    def text_floor(self) -> float:
-        return max(self.trim_before(), time.time() - self.content_days * 86400)
+    def text_floor(self, cls: str = "text") -> float:
+        """The oldest time whose text of retention class *cls* (text, prompt, thinking) is still kept."""
+        return max(self.trim_before(), time.time() - self.retention.get(cls, self.content_days * 24) * 3600)
 
-    def allows_text(self, ts: float) -> bool:
-        return self.keeps_text() and ts >= self.text_floor()
+    def allows_text(self, ts: float, cls: str = "text") -> bool:
+        return self.keeps_text() and ts >= self.text_floor(cls)
+
+    def spill(self, table: str, key: str, field: str, text: str, *, ts: float, session_id: str = "",
+              project: str = "") -> str:
+        """The value to store in *table*: *text* itself, or for a large one a preview with its size.
+
+        The full text of a value over ``large_payload_bytes`` goes to ``text_payloads`` in chunks,
+        kept as long as the ``large_payload`` class (24 hours by default). The preview says so,
+        so a reader shows it as it is once the full text is gone. Prompts and thinking never come here.
+        """
+        size = len(text.encode("utf-8", "replace"))
+        if size <= self.large_payload_bytes:
+            return text
+        period = self.retention["large_payload"]
+        kept = f"{period // 24} days" if period % 24 == 0 and period > 48 else f"{period} hours"
+        if self.allows_text(ts, "large_payload"):
+            chunks = [text[i:i + PAYLOAD_CHUNK_CHARS] for i in range(0, len(text), PAYLOAD_CHUNK_CHARS)]
+            self.writer.append("text_payloads", [
+                dict(project=project, source_table=table, source_key=key, field=field, chunk_no=n,
+                     chunk_count=len(chunks), total_bytes=size, session_id=session_id, ts=ts, text=chunk)
+                for n, chunk in enumerate(chunks)])
+        return (f"{text[:TEXT_PREVIEW_CHARS]}\n[preview of {size} bytes; the full text is kept {kept} in "
+                f"text_payloads ({table}, {field}, {key}) and is no longer retained after that]")
 
     def hook_time(self, call_id: str, ts: float) -> float:
         """A hook without a source timestamp keeps its first receipt time on retry."""
@@ -370,11 +402,14 @@ class SessionFacts:
                         name: data[name] for name in ("dedup_key", "project_path", *_TELEMETRY_ONLY)})
                     self._dirty = True
                 if prior and transcript:
-                    for name in ("tool_tokens", "max_prompt_tokens", "request_bytes", "available_tools"):
+                    for name in ("tool_tokens", "max_prompt_tokens", "request_bytes", "available_tools",
+                                 "turn_index", "thinking_ms", "thinking_chars", "thinking_blocks",
+                                 "thinking_redacted", "thinking_tokens"):
                         if data[name] is None:
                             data[name] = prior[name]
                     for name in ("project_path", "agent_id", "finish_reason", "duration_ms", "ttft_ms",
-                                 "request_id", "response_id"):
+                                 "request_id", "response_id", "effort", "prompt_id", "attribution_mcp_server",
+                                 "attribution_skill", "requested_model"):
                         data[name] = data[name] or prior[name]
                     if data["model"] in ("", "unknown"):
                         data["model"] = prior["model"]
@@ -415,6 +450,8 @@ class SessionFacts:
                     staged.move_to_end(agent_id)
                 ts = row.started_at or row.ended_at or time.time()
                 if task and self.allows_text(ts):
+                    task = self.spill("agents_text", agent_id, "task", task, ts=ts, session_id=row.session_id,
+                                      project=project)
                     text.append(dict(agent_id=agent_id, task=task, project=project, ts=ts))
             if staged:
                 self.writer.upsert("agents", [dict(data, project=project) for data, project in staged.values()])
@@ -456,7 +493,8 @@ class SessionFacts:
                                session_id=row.session_id, pid=row.pid, project_path=project, project=project,
                                source_key=key, seq=int(call_key(key), 16) & (2**63 - 1)))
             if keep and row.ts >= floor and detail != metadata:
-                text.append(dict(project=project, source_key=key, detail=_json(detail), ts=row.ts))
+                text.append(dict(project=project, source_key=key, ts=row.ts, detail=self.spill(
+                    "events_text", key, "detail", _json(detail), ts=row.ts, session_id=row.session_id, project=project)))
         if output:
             self.writer.append("events", output)
             if text:
@@ -471,7 +509,7 @@ class SessionFacts:
         data = asdict(row)
         command, output, payload = (data.pop(k) for k in ("command", "output", "payload"))
         project = row.project_path
-        keep = self.allows_text(row.ts or row.received_at)
+        keep = self.allows_text(row.ts or row.received_at, "tool_content")
         self.writer.upsert("hook_calls", [dict(data, project=project,
                                               payload="{}" if keep else _json(strip_event_text(payload)))])
         if keep:
@@ -504,14 +542,21 @@ class SessionFacts:
                 continue
             values = []
             for row in rows:
-                data = asdict(row)
+                data = dict(row) if isinstance(row, dict) else asdict(row)
                 project = data.get("project_path", "")
-                if attr in ("loaded_files", "context_items"):
+                if attr in ("loaded_files", "context_items", "digests", "thinking"):
                     data.pop("project_path", None)
-                if attr == "prompts":
+                if attr == "digests":
                     if not self.allows_text(row.ts):
+                        continue
+                    data["text"] = self.spill("session_digests", f"{row.kind}:{row.seq}", "text", row.text, ts=row.ts,
+                                              session_id=row.session_id, project=project)
+                if attr == "thinking" and not self.allows_text(row.ts, "thinking"):
+                    continue
+                if attr == "prompts":
+                    if not self.allows_text(row.ts, "prompt"):
                         data["text"] = ""
-                    if row.ts < time.time() - self.content_days * 86400:
+                    if row.ts < time.time() - self.retention["prompt"] * 3600:
                         continue
                 values.append(dict(data, project=project))
             try:
@@ -529,14 +574,18 @@ class SessionFacts:
                         log.warning("A %s row is left out, it can never be stored: %s", table, exc)
         if only is None and facts.steps:
             metadata, text = [], []
-            floor = self.text_floor()
+            floor = self.text_floor("message")
             for step in facts.steps:
                 data = asdict(step)
                 content = data.pop("text")
                 data["project"] = step.project_path
                 if content and step.ts >= floor and self.keeps_text():
+                    stored = self.spill("session_step_text", step.step_key, "text", content, ts=step.ts,
+                                        session_id=step.session_id, project=step.project_path)
+                    if stored is not content:  # only a preview stays in session_step_text
+                        data["text_status"] = "truncated"
                     text.append(dict(project=step.project_path, step_key=step.step_key,
-                                     session_id=step.session_id, ts=step.ts, text=content[:STEP_TEXT_LIMIT]))
+                                     session_id=step.session_id, ts=step.ts, text=stored))
                 elif content:
                     data["text_status"] = "expired" if self.keeps_text() else "withheld"
                 metadata.append(data)

@@ -159,6 +159,8 @@ class KustoSettings:
     ingestion: str = "auto"
     node_id: str = ""
     node_id_source: str = field(default="", compare=False, repr=False)
+    # Days per retention class ([storage.retention]); empty = the defaults of stores.kusto.tables.
+    retention: Mapping[str, int] = field(default_factory=dict, hash=False, compare=False)
 
     def __post_init__(self) -> None:
         source = self.node_id_source or ("explicit" if self.node_id else NODE_ENV if NODE_ENV in os.environ else "hostname")
@@ -267,14 +269,16 @@ def kusto_settings() -> KustoSettings | None:
     """Return the destination from the environment or config file, or None if unset."""
     from ..platforms import load_config
 
+    from dataclasses import replace
+
     cfg = load_config()
     settings = KustoSettings.from_env(ingestion=cfg.kusto_ingestion, table_ingestion=cfg.kusto_table_ingestion)
-    if settings is not None:
-        return settings
-    return KustoSettings.from_values(
-        cfg.kusto_cluster,
-        cfg.kusto_database,
-        cfg.kusto_auth,
-        ingestion=cfg.kusto_ingestion,
-        table_ingestion=cfg.kusto_table_ingestion,
-    )
+    if settings is None:
+        settings = KustoSettings.from_values(
+            cfg.kusto_cluster,
+            cfg.kusto_database,
+            cfg.kusto_auth,
+            ingestion=cfg.kusto_ingestion,
+            table_ingestion=cfg.kusto_table_ingestion,
+        )
+    return None if settings is None else replace(settings, retention=MappingProxyType(cfg.retention_by_class()))

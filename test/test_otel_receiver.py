@@ -514,6 +514,7 @@ def test_tool_invocations_persisted_via_logs_endpoint(otel_server):
             "session.id": "otel-persist-sess",
             "event.sequence": "42",
         },
+        ts_nano=str(time.time_ns()),  # tool call content older than its 24-hour retention is not written
     )
     status, resp = _post_json(f"{base}/v1/logs", body)
     assert status == 200

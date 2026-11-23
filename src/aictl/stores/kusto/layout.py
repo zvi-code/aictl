@@ -29,7 +29,7 @@ COMPATIBLE_SINCE = 1
 # The first layout released as generally available. From then on a breaking change needs a migration.
 GA_LAYOUT_VERSION: int | None = None
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "5d807c33a0b96842e5794af375c1286768036bcec1d0d9016e5788333301c802"
+FINGERPRINT = "920473823ee47cb1d92317d8e030f1ce16e9729493ca7d21151bb83f49824fe6"
 
 
 @dataclass(frozen=True)

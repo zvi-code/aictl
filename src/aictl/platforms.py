@@ -651,6 +651,7 @@ history_days = 0  # Read session files changed in the last N days; 0 = every ses
 capture = "full"  # full: text kept but bounded | metadata: no text | off: memory only, no files
 max_total_mb = 1024  # Budget for DB + WAL + logs; oldest data is evicted first
 content_retention_days = 14  # capture = "full": blank conversation text older than this
+large_payload_bytes = 32768  # a text value larger than this keeps a preview; its full text goes to text_payloads
 # A Kusto (Azure Data Explorer) cluster instead of SQLite: every table lives in one
 # database there and the daemon serves from it alone. Empty = SQLite.
 kusto_cluster = ""  # e.g. https://mycluster.westus.kusto.windows.net, or http://localhost:8080 for the emulator
@@ -664,6 +665,21 @@ auto_migrate = false
 [storage.kusto_table_ingestion]
 # Optional per-table overrides of kusto_ingestion (queued | streaming | inline).
 # path_defs = "inline"
+
+[storage.retention]
+# How long the Kusto store keeps each class of data, in hours or days ("24h", "365d"; a bare
+# number is days). See each class and table with its size: `aictl db retention`. Change one:
+# `aictl db retention set <class> <period>`. Lowering a period deletes older data.
+# history = "365d"        # what sessions did, without text: tool calls, requests, turns, outcomes
+# prompt = "365d"         # user prompts
+# thinking = "365d"       # thinking (reasoning) text
+# message = "365d"        # assistant and chat messages, session step text
+# text = "365d"           # other text: subagent prompts, event text, session digests
+# file_text = "365d"      # file contents and snapshots
+# otel = "365d"           # raw OpenTelemetry logs, metrics, spans and their payloads
+# metrics = "365d"        # metric samples, snapshots, events, files, configuration
+# tool_content = "24h"    # tool call arguments, edit text and result excerpts; hook payloads
+# large_payload = "24h"   # the full text of large values (over large_payload_bytes)
 
 [logging]
 enabled = false         # Set true to log every datapoint to file
@@ -719,18 +735,26 @@ class AictlConfig:
     capture: str = "full"
     max_total_mb: int = 1024
     content_retention_days: int = 14
+    large_payload_bytes: int = 32768
     kusto_cluster: str = ""
     kusto_database: str = "aictl"
     kusto_auth: str = "auto"
     kusto_ingestion: str = "auto"
     kusto_table_ingestion: dict[str, str] = field(default_factory=dict)
     auto_migrate: bool = False
+    retention: dict[str, int] = field(default_factory=dict)  # [storage.retention] as {class: hours}
 
     # logging
     logging_enabled: bool = False
     logging_dir: str = "logs"
     logging_max_file_bytes: int = 1_048_576  # 1MB
     logging_backup_count: int = 10
+
+    def retention_by_class(self) -> dict[str, int]:
+        """Hours each retention class is kept: the defaults, then [storage.retention]."""
+        from .stores.kusto.tables import RETENTION_DEFAULTS
+
+        return {**RETENTION_DEFAULTS, **self.retention}
 
     def effective_db_path(self) -> Path:
         if self.db_path:
@@ -778,6 +802,7 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("capture", "capture", str),
         ("max_total_mb", "max_total_mb", int),
         ("content_retention_days", "content_retention_days", int),
+        ("large_payload_bytes", "large_payload_bytes", int),
         ("kusto_cluster", "kusto_cluster", str),
         ("kusto_database", "kusto_database", str),
         ("kusto_auth", "kusto_auth", str),
@@ -897,7 +922,46 @@ def _load_config_file() -> AictlConfig:
     from .kusto import validate_table_ingestion
 
     cfg.kusto_table_ingestion = validate_table_ingestion(data.get("storage", {}).get("kusto_table_ingestion", {}))
+    from .stores.kusto.tables import validate_retention
+
+    retention = data.get("storage", {}).get("retention", {})
+    if not isinstance(retention, dict):
+        raise ValueError('[storage.retention] must be a table of <class> = "<hours>h" or "<days>d" settings')
+    cfg.retention = validate_retention(retention)
+    if not 1024 <= cfg.large_payload_bytes <= 1_000_000:
+        raise ValueError("[storage] large_payload_bytes must be from 1024 to 1000000")
     return cfg
+
+
+def set_retention_setting(cls: str, period: str | int, path: Path | None = None) -> Path:
+    """Write ``<cls> = "<period>"`` into [storage.retention] of the config file, keeping the rest of it.
+
+    A ``<cls>_days`` line of the same class is replaced.
+    """
+    import re
+
+    from .stores.kusto.tables import format_period, validate_retention
+
+    key = cls
+    value = f'"{format_period(validate_retention({cls: period})[cls])}"'
+    days = value
+    path = path or config_path()
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip() == "[storage.retention]"), None)
+    if start is None:
+        lines += ["", "[storage.retention]", f"{key} = {days}"]
+    else:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        setting = re.compile(rf"^\s*#?\s*{key}(?:_days)?\s*=")
+        found = next((i for i in range(start + 1, end) if setting.match(lines[i])), None)
+        if found is None:
+            lines.insert(end, f"{key} = {days}")
+        else:
+            lines[found] = f"{key} = {days}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).strip("\n") + "\n", encoding="utf-8")
+    return path
 
 
 def write_default_config() -> Path:
@@ -911,6 +975,8 @@ def write_default_config() -> Path:
 
 def show_config() -> str:
     """Return current effective config as formatted string."""
+    from .stores.kusto.tables import format_period
+
     cfg = load_config()
     path = config_path()
     lines = [
@@ -945,5 +1011,9 @@ def show_config() -> str:
         f"  kusto_ingestion = {cfg.kusto_ingestion}",
         f"  kusto_table_ingestion = {cfg.kusto_table_ingestion}",
         f"  auto_migrate    = {str(cfg.auto_migrate).lower()}",
+        "",
+        "[storage.retention]",
+        *(f"  {cls} = {format_period(hours)}" for cls, hours in cfg.retention_by_class().items()),
+        f"  (large_payload_bytes = {cfg.large_payload_bytes})",
     ]
     return "\n".join(lines)

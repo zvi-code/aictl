@@ -319,10 +319,10 @@ def ensure_schema(
             log.warning("%s", warning)
 
     for name, table in tables.items():
-        if details.get(name, ({}, {}))[0].get("SoftDeletePeriod") == f"{table.retention_days}.00:00:00":
+        if details.get(name, ({}, {}))[0].get("SoftDeletePeriod") == table.retention_timespan:
             continue
         command(
-            f".alter-merge table {quote(name)} policy retention softdelete = {table.retention_days}d",
+            f".alter-merge table {quote(name)} policy retention softdelete = {table.retention_literal}",
             "Table Admin or Database Admin",
             f"Set retention for {name}",
         )

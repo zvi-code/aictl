@@ -770,6 +770,8 @@ class CollectionService:
         self.store = SnapshotStore(sink=self.sink, history_store=self.history_store,
                                    inventory=inventory, keeps_text=lambda: mode() == "full",
                                    restart_dir=restart_dir, content_days=store_cfg.content_retention_days,
+                                   retention=store_cfg.retention_by_class() if hasattr(store_cfg, "retention_by_class") else None,
+                                   large_payload_bytes=getattr(store_cfg, "large_payload_bytes", 32768),
                                    trim_before=watermark or (lambda: 0.0))
         self.sink = self.store._sink = SampleSink(datapoint_logger=self._dp_logger,
                                                  history_store=self.history_store,
@@ -1457,11 +1459,13 @@ class SnapshotStore:
         self, db=None, sink: _SampleSink | None = None, *,
         history_store: stores.Store | None = None, inventory: FileInventory | None = None,
         keeps_text=lambda: False, restart_dir: Path | None = None, content_days: int = 14,
-        trim_before=lambda: 0.0,
+        trim_before=lambda: 0.0, retention: dict[str, int] | None = None, large_payload_bytes: int = 32768,
     ) -> None:
         self._state = SnapshotState()
         self.history_store = history_store or stores.Store()
-        self.tool_calls = ToolCalls(self.history_store.writer, keeps_text=keeps_text)
+        # Tool content older than its retention class keeps is not imported (24 hours by default).
+        self.tool_calls = ToolCalls(self.history_store.writer, keeps_text=keeps_text,
+                                    text_floor=lambda: self.session_facts.text_floor("tool_content"))
         self.restart_dir = restart_dir
         def state(name: str):
             return StateFile(restart_dir / f"{name}.json") if restart_dir is not None else None
@@ -1469,7 +1473,8 @@ class SnapshotStore:
         writer = stores.writer_or_discard(self.history_store.writer)
         session_state = state("session_lifecycle")
         self.session_facts = SessionFacts(self.history_store.writer, keeps_text=keeps_text, state=session_state,
-                                          content_days=content_days, trim_before=trim_before)
+                                          content_days=content_days, trim_before=trim_before,
+                                          retention=retention, large_payload_bytes=large_payload_bytes)
         self.collection_status = CollectionStatus(writer, state("collection_status"))
         self.session_evidence = SessionEvidence(self.session_facts, state("session_artifacts"), self.collection_status)
         catalog = DatapointCatalog(writer, state("datapoint_catalog"))

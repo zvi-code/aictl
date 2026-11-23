@@ -1,5 +1,7 @@
 """Native Kusto schema, generated from the phase-0 store schema and OTel definitions."""
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
@@ -15,6 +17,22 @@ class Table:
     retention_days: int = 30
     version: str = "_v"
     tombstone: str | None = None
+    retention_hours: int | None = None  # when set, the exact period; retention_days is it rounded up
+
+    @property
+    def retention_period_hours(self) -> int:
+        return self.retention_hours if self.retention_hours is not None else self.retention_days * 24
+
+    @property
+    def retention_literal(self) -> str:
+        """The period as a Kusto timespan literal: ``24h`` or ``365d``."""
+        return format_period(self.retention_period_hours)
+
+    @property
+    def retention_timespan(self) -> str:
+        """The period as Kusto shows it in a policy: ``365.00:00:00``, ``12:00:00``, ``1.12:00:00``."""
+        days, hours = divmod(self.retention_period_hours, 24)
+        return f"{days}.{hours:02d}:00:00" if days else f"{hours:02d}:00:00"
 
 
 # What a session did, without its text. These rows are kept for a year, so the history
@@ -26,7 +44,7 @@ SESSION_HISTORY_TABLES = frozenset(
         "tool_invocation_sizes", "context_events", "session_steps", "turn_request_links", "skill_uses",
         "file_write_events", "session_folders", "session_artifacts", "session_sources", "session_loaded_files",
         "session_context_items", "session_processes", "session_commits", "session_attribution",
-        "otel_trace_sessions",
+        "otel_trace_sessions", "session_turns", "session_files", "session_outcomes",
     }
 )
 
@@ -235,6 +253,12 @@ _DEFINED = (
                 ("cache_read_tokens", "long"),
                 ("cache_creation_tokens", "long"),
                 ("cost_usd", "real"),
+                ("description", "string"),
+                ("spawn_depth", "long"),
+                ("parent_agent_id", "string"),
+                ("parent_tool_use_id", "string"),
+                ("resolved_model", "string"),
+                ("status", "string"),
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),
@@ -285,6 +309,16 @@ _DEFINED = (
                 ("available_tools", "long"),
                 ("request_id", "string"),
                 ("response_id", "string"),
+                ("turn_index", "long"),
+                ("effort", "string"),
+                ("thinking_ms", "real"),
+                ("attribution_mcp_server", "string"),
+                ("attribution_skill", "string"),
+                ("requested_model", "string"),
+                ("thinking_chars", "long"),
+                ("thinking_blocks", "long"),
+                ("thinking_redacted", "long"),
+                ("thinking_tokens", "long"),
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),
@@ -339,6 +373,24 @@ _DEFINED = (
                 ("exit_code", "long"),
                 ("input_bytes", "long"),
                 ("output_bytes", "long"),
+                ("mcp_server", "string"),
+                ("mcp_tool", "string"),
+                ("target_kind", "string"),
+                ("target", "string"),
+                ("target_chars", "long"),
+                ("target_truncated", "bool"),
+                ("command_name", "string"),
+                ("url_host", "string"),
+                ("search_path", "string"),
+                ("arg_names", "string"),
+                ("read_offset", "long"),
+                ("read_limit", "long"),
+                ("agent_label", "string"),
+                ("error_summary", "string"),
+                ("interrupted", "bool"),
+                ("turn_index", "long"),
+                ("prompt_id", "string"),
+                ("request_key", "string"),
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),
@@ -457,6 +509,156 @@ _DEFINED = (
                 ("_v", "datetime"),
             ),
             ("project", "node_id", "step_key"),
+            "streaming",
+            retention_days=14,
+        ),
+        # One row per user turn of a Claude Code session (one promptId), its subagents included.
+        "session_turns": Table(
+            (
+                ("session_id", "string"),
+                ("prompt_id", "string"),
+                ("turn_index", "long"),
+                ("ts", "real"),
+                ("ended_at", "real"),
+                ("tool", "string"),
+                ("project_path", "string"),
+                ("origin", "string"),
+                ("permission_mode", "string"),
+                ("request_count", "long"),
+                ("tool_call_count", "long"),
+                ("error_count", "long"),
+                ("api_error_count", "long"),
+                ("input_tokens", "long"),
+                ("output_tokens", "long"),
+                ("cache_read_tokens", "long"),
+                ("cache_creation_tokens", "long"),
+                ("files_changed", "long"),
+                ("compactions", "long"),
+                ("ended_with_api_error", "long"),
+                ("thinking_chars", "long"),
+                ("thinking_blocks", "long"),
+                ("thinking_redacted", "long"),
+                ("thinking_ms", "real"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "session_id", "prompt_id"),
+            "streaming",
+        ),
+        # How each file was touched in a session: read, edited or created, by which tool, how often.
+        "session_files": Table(
+            (
+                ("session_id", "string"),
+                ("agent_id", "string"),
+                ("path", "string"),
+                ("how", "string"),
+                ("tool_name", "string"),
+                ("count", "long"),
+                ("first_ts", "real"),
+                ("ts", "real"),
+                ("tool", "string"),
+                ("project_path", "string"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "session_id", "agent_id", "path", "how", "tool_name"),
+            "streaming",
+        ),
+        # What a session achieved, as the tool reports it. Typed values only, no text.
+        "session_outcomes": Table(
+            (
+                ("session_id", "string"),
+                ("tool", "string"),
+                ("project_path", "string"),
+                ("ts", "real"),
+                ("permission_modes", "dynamic"),
+                ("modes", "dynamic"),
+                ("last_mode", "string"),
+                ("pr_refs", "dynamic"),
+                ("commit_refs", "dynamic"),
+                ("lines_added", "long"),
+                ("lines_removed", "long"),
+                ("files_changed", "long"),
+                ("reported_cost_usd", "real"),
+                ("reported_api_ms", "real"),
+                ("reported_tool_ms", "real"),
+                ("premium_requests", "real"),
+                ("hook_runs", "long"),
+                ("hook_failures", "long"),
+                ("compactions", "long"),
+                ("todos_total", "long"),
+                ("todos_completed", "long"),
+                ("workflow_runs", "long"),
+                ("workflows_failed", "long"),
+                ("task_complete", "long"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "session_id"),
+            "streaming",
+        ),
+        # The tool's own summaries of a session. Text: kept 14 days, written only while text is kept.
+        "session_digests": Table(
+            (
+                ("session_id", "string"),
+                ("kind", "string"),
+                ("seq", "long"),
+                ("ts", "real"),
+                ("title", "string"),
+                ("text", "string"),
+                ("tool", "string"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "session_id", "kind", "seq"),
+            "streaming",
+            retention_days=14,
+        ),
+        # The visible thinking text of model calls, one row per block. Text: kept 14 days, only with text kept.
+        "session_thinking": Table(
+            (
+                ("session_id", "string"),
+                ("thinking_key", "string"),
+                ("ts", "real"),
+                ("agent_id", "string"),
+                ("request_key", "string"),
+                ("message_id", "string"),
+                ("turn_index", "long"),
+                ("block_index", "long"),
+                ("model", "string"),
+                ("chars", "long"),
+                ("text", "string"),
+                ("tool", "string"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "session_id", "thinking_key"),
+            "streaming",
+            retention_days=14,
+        ),
+        # The full text of large native text values. The row in the value's own table keeps a
+        # preview, the full size and this reference; the full text is kept here, for a short time.
+        "text_payloads": Table(
+            (
+                ("source_table", "string"),
+                ("source_key", "string"),
+                ("field", "string"),
+                ("chunk_no", "long"),
+                ("chunk_count", "long"),
+                ("total_bytes", "long"),
+                ("session_id", "string"),
+                ("ts", "real"),
+                ("text", "string"),
+                ("project", "string"),
+                ("node_id", "string"),
+                ("_v", "datetime"),
+            ),
+            ("project", "node_id", "source_table", "source_key", "field", "chunk_no"),
             "streaming",
             retention_days=14,
         ),
@@ -1749,11 +1951,102 @@ _DEFINED = (
     }
 )
 
-TABLES = MappingProxyType(
-    {
-        name: replace(table, retention_days=SESSION_HISTORY_DAYS)
-        if name.removesuffix("_observations") in SESSION_HISTORY_TABLES and table.retention_days == 30
-        else table
+# ── Retention ────────────────────────────────────────────────────────────
+# Every table belongs to exactly one retention class; the user sets a period per class in
+# [storage.retention] as hours or days (``tool_content = "24h"``, ``prompt = "365d"``).
+# This is the one place that maps tables to classes. The classes are split by kind and
+# volume, so the largest kinds of data can be shortened on their own.
+HOUR = 1
+DAY = 24
+RETENTION_DEFAULTS = MappingProxyType({
+    "history": 365 * DAY,  # what sessions did, without text: tool calls, requests, turns, outcomes
+    "prompt": 365 * DAY,  # user prompts
+    "thinking": 365 * DAY,  # thinking (reasoning) text
+    "message": 365 * DAY,  # assistant and chat messages, session step text (bounded previews)
+    "text": 365 * DAY,  # other text: subagent prompts, event text, session digests (bounded)
+    "file_text": 365 * DAY,  # file contents and snapshots
+    "otel": 365 * DAY,  # raw OpenTelemetry logs, metrics, spans and their spilled payloads
+    "metrics": 365 * DAY,  # metric samples, snapshots, events, files, configuration
+    "tool_content": 24 * HOUR,  # tool call arguments, edit text and result excerpts; hook payloads
+    "large_payload": 24 * HOUR,  # the full text of large values whose preview is kept elsewhere
+})
+RETENTION_CLASSES = tuple(RETENTION_DEFAULTS)
+RETENTION_MIN_HOURS = 1
+RETENTION_MAX_HOURS = 3650 * DAY
+_CLASS_TABLES = {
+    "prompt": {"session_prompts", "session_prompts_observations"},
+    "thinking": {"session_thinking"},
+    "tool_content": {"tool_invocations_text", "tool_invocations_observations_text", "hook_calls_text"},
+    "message": {"copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_step_text"},
+    "file_text": {"files_text", "file_history_text", "file_blobs", "memory_snapshots_text"},
+    "otel": {"OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"},
+    "large_payload": {"text_payloads"},
+}
+
+
+def _retention_class(name: str, table: Table) -> str:
+    for cls, names in _CLASS_TABLES.items():
+        if name in names:
+            return cls
+    if table.retention_days == 14:  # every other table that holds text
+        return "text"
+    if name.removesuffix("_observations") in SESSION_HISTORY_TABLES:
+        return "history"
+    return "metrics"
+
+
+TABLE_RETENTION_CLASS = MappingProxyType({name: _retention_class(name, table) for name, table in _DEFINED.items()})
+
+_PERIOD = re.compile(r"^\s*(\d+)\s*([hd])\s*$", re.IGNORECASE)
+
+
+def parse_period(value: object) -> int:
+    """Hours from ``"24h"``, ``"7d"``, or a whole number of days. Raises ValueError otherwise."""
+    if type(value) is int:
+        hours = value * DAY
+    elif isinstance(value, str) and (match := _PERIOD.match(value)):
+        hours = int(match.group(1)) * (HOUR if match.group(2).lower() == "h" else DAY)
+    else:
+        raise ValueError(f"{value!r} is not a period: use hours or days, such as \"24h\" or \"365d\"")
+    if not RETENTION_MIN_HOURS <= hours <= RETENTION_MAX_HOURS:
+        raise ValueError(f"{value!r} is out of range: from 1h to {RETENTION_MAX_HOURS // DAY}d")
+    return hours
+
+
+def format_period(hours: int) -> str:
+    """A period as it is written: ``24h`` up to a day and for parts of days, else ``365d``."""
+    return f"{hours // DAY}d" if hours % DAY == 0 and hours > DAY else f"{hours}h"
+
+
+def validate_retention(values: Mapping[str, object]) -> dict[str, int]:
+    """``[storage.retention]`` as {class: hours}.
+
+    A key is a class name with a period (``tool_content = "24h"``); ``<class>_days = <days>``
+    is read too.
+    """
+    hours: dict[str, int] = {}
+    for key, value in values.items():
+        cls = key.removesuffix("_days") if key.endswith("_days") and key.removesuffix("_days") in RETENTION_DEFAULTS else key
+        if cls not in RETENTION_DEFAULTS:
+            raise ValueError(f"[storage.retention] has an unknown setting {key!r}; known settings: "
+                             f"{', '.join(RETENTION_DEFAULTS)}")
+        if cls != key and type(value) is not int:
+            raise ValueError(f"[storage.retention] {key} must be a whole number of days")
+        try:
+            hours[cls] = parse_period(value)
+        except ValueError as exc:
+            raise ValueError(f"[storage.retention] {key}: {exc}") from None
+    return hours
+
+
+def tables_with_retention(hours: Mapping[str, int] | None = None) -> Mapping[str, Table]:
+    """The tables with the retention of their class: the defaults, then *hours* ({class: hours})."""
+    effective = {**RETENTION_DEFAULTS, **(hours or {})}
+    return MappingProxyType({
+        name: replace(table, retention_days=-(-effective[TABLE_RETENTION_CLASS[name]] // DAY),
+                      retention_hours=effective[TABLE_RETENTION_CLASS[name]])
         for name, table in _DEFINED.items()
-    }
-)
+    })
+
+
+TABLES = tables_with_retention()

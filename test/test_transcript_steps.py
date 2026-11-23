@@ -133,10 +133,11 @@ def test_privacy_at_buffer_boundary_and_skill_phases(capture):
     rows = list(buf.steps.values())
     assert "DO-NOT-INDEX" not in repr(rows) and "abcdefghijklmnop" not in repr(rows) and "secretvalue" not in repr(rows)
     assert [r.phase for r in rows if r.kind == "skill"] == ["resolved", "loaded", "invoked"]
-    assert [r.text_status for r in rows if r.role == "assistant"] == ["omitted", "truncated" if capture == "full" else "withheld"]
+    # A long text is kept whole here; the store keeps a preview and moves the rest to text_payloads.
+    assert [r.text_status for r in rows if r.role == "assistant"] == ["omitted", "captured" if capture == "full" else "withheld"]
     if capture == "full":
         assert rows[0].text == "public\nBearer <redacted>"
-        assert max(len(r.text) for r in rows) == STEP_TEXT_LIMIT
+        assert max(len(r.text) for r in rows) == STEP_TEXT_LIMIT + 10
     else:
         assert not any(r.text for r in rows)
         assert all(r.text_status == "withheld" for r in rows if r.kind in ("command", "agent_prompt", "tool_result"))

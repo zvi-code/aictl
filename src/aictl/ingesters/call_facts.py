@@ -30,10 +30,14 @@ from typing import TYPE_CHECKING, Any
 
 from ..context_audit import _redact
 from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
+from ..records import THINKING_TEXT_MAX
 from ..stores.base import StoreError
+from ..tool_targets import AGENT, FILE, describe_call, redact_secrets, split_mcp
 from ..utils import estimate_tokens_from_size
 from . import context_items, loaded_files
 from ._common import coerce_ts, decode_file_uri
+from .session_outcomes import TRANSCRIPT as TRANSCRIPT_PART
+from .session_outcomes import _add_unique, digest_text, file_key
 from .transcript_steps import CopilotSteps, redact_step_text
 
 if TYPE_CHECKING:
@@ -49,6 +53,7 @@ PROMPT_MAX_CHARS = 8000
 INPUT_VALUE_MAX_CHARS = 500
 EDIT_VALUE_MAX_CHARS = 4000
 RESULT_MAX_CHARS = 500
+ERROR_SUMMARY_MAX = 300
 BUFFER_FLUSH_ROWS = 2000
 
 # Longest believable gap between a request's start and its last line; beyond this
@@ -278,6 +283,17 @@ class FactBuffer:
         self.cost_links: dict[str, fact_rows.TurnRequestLink] = {}
         self.loaded_files: dict[tuple[str, str, str], fact_rows.LoadedFileRow] = {}
         self.context_items: dict[tuple[str, str, str, str], fact_rows.ContextItemRow] = {}
+        self.turns: dict[tuple, fact_rows.SessionTurnRow] = {}
+        self.session_files: dict[tuple, fact_rows.SessionFileRow] = {}
+        self.digests: dict[tuple, fact_rows.SessionDigestRow] = {}
+        self.thinking: dict[tuple, fact_rows.SessionThinkingRow] = {}
+        self.outcomes: dict[str, dict] = {}
+        # Rows that sum up many lines (a turn, a file's use) change in place. They are marked
+        # here when a line not stored before changes them, and copied when the buffer is written.
+        self._marked: dict[tuple, Any] = {}
+        self._file_uses: dict[tuple, fact_rows.SessionFileRow] = {}
+        # What a session achieved (``session_outcomes.OutcomeBook``); set by the ingester.
+        self.book: Any = None
         self.surface: Callable[[str], str] | None = None
         self.written = 0
         self.write_error: StoreError | None = None
@@ -321,6 +337,9 @@ class FactBuffer:
             if prior is not None:
                 row.task = row.task or prior.task
                 row.model = row.model or prior.model
+                for name in ("description", "parent_agent_id", "parent_tool_use_id", "resolved_model", "status"):
+                    setattr(row, name, getattr(row, name) or getattr(prior, name))
+                row.spawn_depth = row.spawn_depth if row.spawn_depth is not None else prior.spawn_depth
                 row.started_at = row.started_at or prior.started_at
                 row.ended_at = row.ended_at if row.ended_at is not None else prior.ended_at
                 row.completed = max(row.completed, prior.completed)
@@ -347,7 +366,7 @@ class FactBuffer:
                 row.text, row.text_status = "", "withheld"
             else:
                 text = redact_step_text(row.text)
-                limit = fact_rows.STEP_TEXT_LIMIT
+                limit = fact_rows.TEXT_VALUE_MAX  # a longer text keeps a preview; see SessionFacts
                 row.text = text[:limit]
                 row.text_status = "truncated" if len(text) > limit or row.text_status == "truncated" else "captured"
         elif not row.text_status:
@@ -381,9 +400,69 @@ class FactBuffer:
             self.context_items[key] = row
             self._maybe_flush()
 
+    def mark(self, kind: str, key: tuple, row: Any) -> None:
+        """A summed-up row of *kind* ("turns" or "session_files") changed: write it at the next flush."""
+        if not self.replaying:
+            self._marked[(kind, *key)] = row
+            self._maybe_flush()
+
+    def touch_file(self, sid: str, agent_id: str, path: str, how: str, tool_name: str, ts: float,
+                   tool: str, project: str) -> None:
+        """One more use of *path* in a session. Counted per agent's record, so a record read again from its start
+        rebuilds its own counts."""
+        if not sid or not path:
+            return
+        key = (sid, agent_id, path, how, tool_name)
+        row = self._file_uses.get(key)
+        if row is None:
+            row = self._file_uses[key] = fact_rows.SessionFileRow(
+                session_id=sid, path=path, how=how, tool_name=tool_name, agent_id=agent_id, ts=ts, first_ts=ts,
+                tool=tool, project_path=project)
+        row.count += 1
+        if ts:
+            row.first_ts = min(t for t in (row.first_ts, ts) if t)
+            row.ts = max(row.ts, ts)
+        self.mark("session_files", key, row)
+
+    def forget_files(self, sid: str, agent_id: str) -> None:
+        """A record is read again from its start: its counts start over."""
+        for key in [k for k in self._file_uses if k[0] == sid and k[1] == agent_id]:
+            del self._file_uses[key]
+
+    def add_file_row(self, row: fact_rows.SessionFileRow) -> None:
+        """A use already summed up by the source (Copilot's ``session_files``)."""
+        if self._in_window(row.ts):
+            self.session_files[(row.session_id, row.agent_id, row.path, row.how, row.tool_name)] = row
+            self._maybe_flush()
+
+    def add_digest(self, row: fact_rows.SessionDigestRow) -> None:
+        # A digest is text: only while the store keeps text.
+        if row.text and self._in_window(row.ts) and _keep_text(self.store):
+            self.digests[(row.session_id, row.kind, row.seq)] = row
+            self._maybe_flush()
+
+    def add_thinking(self, row: fact_rows.SessionThinkingRow) -> None:
+        # Thinking text is text: only while the store keeps text. Its counts are on the request.
+        if row.text and self._in_window(row.ts) and _keep_text(self.store):
+            self.thinking[(row.session_id, row.thinking_key)] = row
+            self._maybe_flush()
+
+    def add_outcome(self, row: dict) -> None:
+        self.outcomes[row["session_id"]] = row
+        self._maybe_flush()
+
+    def _take_marked(self) -> None:
+        for (kind, *key), row in self._marked.items():
+            # Not _in_window: a flush can start while a line read again is being handled.
+            if not self.cutoff or not row.ts or row.ts >= self.cutoff:
+                getattr(self, kind)[tuple(key)] = replace(row)
+        self._marked = {}
+
     def __len__(self) -> int:
         return (
-            len(self.steps)
+            len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
+            + len(self._marked)
+            + len(self.steps)
             + len(self.cost_links)
             + len(self.context_items)
             + len(self.loaded_files)
@@ -405,6 +484,7 @@ class FactBuffer:
             self.tool_calls.publish_coverage()
         if not len(self) or (self.write_error is not None and not retry):
             return
+        self._take_marked()
         writer = getattr(self.store, "write_call_facts", None)
         if writer is None:  # a store without fact tables
             self._clear()
@@ -412,10 +492,14 @@ class FactBuffer:
         rows = [*self.requests.values(), *self.tools.values(), *self.prompts.values(), *self.skills.values()]
         rows += [*self.agents.values(), *self.file_writes.values(), *self.context_events.values(), *self.loaded_files.values()]
         rows += [*self.context_items.values(), *self.steps.values(), *self.cost_links.values()]
+        rows += [*self.turns.values(), *self.session_files.values(), *self.digests.values(), *self.thinking.values()]
         if self.surface is not None:
             for row in rows:
                 if row.tool == "copilot-cli":
                     row.tool = self.surface(row.session_id)
+            for outcome in self.outcomes.values():
+                if outcome["tool"] == "copilot-cli":
+                    outcome["tool"] = self.surface(outcome["session_id"])
         facts = fact_rows.CallFacts(
             requests=list(self.requests.values()),
             tools=list(self.tools.values()),
@@ -428,6 +512,11 @@ class FactBuffer:
             context_items=list(self.context_items.values()),
             steps=list(self.steps.values()),
             cost_links=list(self.cost_links.values()),
+            turns=list(self.turns.values()),
+            session_files=list(self.session_files.values()),
+            digests=list(self.digests.values()),
+            outcomes=list(self.outcomes.values()),
+            thinking=list(self.thinking.values()),
         )
         try:
             self.written += writer(facts)
@@ -446,6 +535,8 @@ class FactBuffer:
         self.cost_links = {}
         self.loaded_files = {}
         self.context_items = {}
+        self.turns, self.session_files, self.digests, self.outcomes = {}, {}, {}, {}
+        self.thinking = {}
 
 
 def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> fact_rows.ContextItemRow:
@@ -472,6 +563,27 @@ _COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.DOTAL
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _EXIT_CODE = re.compile(r"^Exit code (-?\d+)")
 _CLAUDE_WRITE_TOOLS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit"}
+_CLAUDE_READ_TOOLS = frozenset({"Read", "NotebookRead"})
+# Lines that describe the session as a whole, not one call.
+CLAUDE_SESSION_LINES = frozenset({"pr-link", "permission-mode", "mode", "cost-state"})
+AGENT_LABEL_MAX = 200
+
+
+def agent_label(text: Any) -> str:
+    """The short task label a calling agent gave a subagent: one line, at most 200 characters."""
+    return " ".join(text.split())[:AGENT_LABEL_MAX] if isinstance(text, str) else ""
+
+
+def _human_turn(obj: dict, msg: dict) -> bool:
+    """A person's prompt, as ``ClaudeAccumulator`` counts turns."""
+    if obj.get("isSidechain") or obj.get("isMeta") or "toolUseResult" in obj:
+        return False
+    origin = obj.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") not in (None, "", "human"):
+        return False
+    content = msg.get("content")
+    return isinstance(content, str) or (isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "text" for b in content))
 
 
 def _has_image(content: Any) -> bool:
@@ -525,10 +637,91 @@ class ClaudeFacts:
         self._message_last_block: dict[int, float] = {}
         self._pending: dict[str, tuple[fact_rows.ToolInvocationRow, str, dict]] = {}
         self._open_agents: dict[str, fact_rows.AgentRow] = {}
+        # Turns: the prompt id each agent's record is in now, and the turns by (session, prompt id).
+        self._prompt_of: dict[str, str] = {}
+        self._turns: dict[tuple[str, str], fact_rows.SessionTurnRow] = {}
+        self._turn_files: dict[tuple[str, str], set[int]] = {}
+        self._last_turn: dict[str, int] = {}
+        self._compact_seq: dict[str, int] = {}
+        # Thinking per call, kept small (a month holds hundreds of thousands of calls): visible chars,
+        # bit masks of the visible and the redacted block indexes, longest duration.
+        self._thinking: dict[int, tuple[int, int, int, float]] = {}
 
-    def feed(self, sid: str, obj: dict, *, agent_id: str = "", role: str = "") -> None:
+    def begin_file(self, sid: str, agent_id: str) -> None:
+        """A record is read from its start: what is summed up from it alone starts over."""
+        self.buffer.forget_files(sid, agent_id)
+        if self.buffer.book is not None:
+            self.buffer.book.reset(sid, TRANSCRIPT_PART + agent_id)
+        self._compact_seq.pop(f"{sid}/{agent_id}", None)
+
+    def _outcome(self, sid: str, agent_id: str, ts: float, cwd: str = "") -> dict | None:
+        book = self.buffer.book
+        return None if book is None else book.part(sid, TRANSCRIPT_PART + agent_id, ts, tool="claude-code", project=cwd)
+
+    def _turn(self, sid: str, agent_id: str) -> fact_rows.SessionTurnRow | None:
+        pid = self._prompt_of.get(f"{sid}/{agent_id}")
+        return self._turns.get((sid, pid)) if pid else None
+
+    def _touch_turn(self, turn: fact_rows.SessionTurnRow, ts: float) -> None:
+        if ts:
+            turn.ts = min(t for t in (turn.ts, ts) if t)
+            turn.ended_at = max(turn.ended_at, ts)
+        self.buffer.mark("turns", (turn.session_id, turn.prompt_id), turn)
+
+    def _enter_turn(self, sid: str, agent_id: str, obj: dict, msg: dict, ts: float, cwd: str) -> None:
+        """A user line: the turn it belongs to, by its ``promptId``. A subagent's lines carry its caller's."""
+        pid = str(obj.get("promptId") or "")
+        if not pid and not agent_id and _human_turn(obj, msg):
+            pid = f"line:{obj.get('uuid') or ts}"  # a record from before prompt ids
+        if not pid:
+            return
+        pid = sys.intern(pid)  # held by every call of the turn
+        self._prompt_of[f"{sid}/{agent_id}"] = pid
+        turn = self._turns.get((sid, pid))
+        if turn is None:
+            turn = self._turns[(sid, pid)] = fact_rows.SessionTurnRow(session_id=sid, prompt_id=pid, ts=ts, project_path=cwd)
+        if not agent_id:
+            if turn.turn_index is None:
+                position = obj.get("turnPosition") if isinstance(obj.get("turnPosition"), dict) else {}
+                index = position.get("turnIndex")
+                turn.turn_index = index if type(index) is int else self._last_turn.get(sid, 0) + 1
+                self._last_turn[sid] = max(self._last_turn.get(sid, 0), turn.turn_index)
+            origin = obj.get("origin") if isinstance(obj.get("origin"), dict) else {}
+            turn.origin = turn.origin or str(obj.get("turnOrigin") or origin.get("kind") or "")[:40]
+            if obj.get("permissionMode"):
+                turn.permission_mode = turn.permission_mode or str(obj["permissionMode"])[:40]
+            turn.project_path = turn.project_path or cwd
+        self._touch_turn(turn, ts)
+
+    def _session_line(self, sid: str, obj: dict, ts: float) -> None:
+        """The lines that say what the session did: PR links, modes, the tool's own cost totals."""
+        part = self._outcome(sid, "", ts)
+        if part is None:
+            return
+        kind = obj.get("type")
+        if kind == "pr-link" and isinstance(obj.get("prUrl"), str):
+            _add_unique(part.setdefault("pr_refs", []), obj["prUrl"][:300])
+        elif kind == "permission-mode" and obj.get("permissionMode"):
+            _add_unique(part.setdefault("permission_modes", []), str(obj["permissionMode"])[:40])
+        elif kind == "mode" and obj.get("mode"):
+            _add_unique(part.setdefault("modes", []), str(obj["mode"])[:40])
+            part["last_mode"] = str(obj["mode"])[:40]
+        elif kind == "cost-state":
+            for name, key in (("reported_cost_usd", "totalCostUSD"), ("reported_api_ms", "totalAPIDuration"),
+                              ("reported_tool_ms", "totalToolDuration")):
+                if isinstance(obj.get(key), (int, float)) and not isinstance(obj.get(key), bool):
+                    part[name] = float(obj[key])
+            for name, key in (("lines_added", "totalLinesAdded"), ("lines_removed", "totalLinesRemoved")):
+                if type(obj.get(key)) is int:
+                    part[name] = obj[key]
+
+    def feed(self, sid: str, obj: dict, *, agent_id: str = "", role: str = "", meta: dict | None = None) -> None:
         kind = obj.get("type")
         ts = coerce_ts(obj.get("timestamp"))
+        if kind in CLAUDE_SESSION_LINES:
+            if not agent_id:
+                self._session_line(sid, obj, ts)
+            return
         if kind == "api-request":
             if obj.get("id"):
                 self._api_starts[str(obj["id"])] = ts
@@ -545,14 +738,19 @@ class ClaudeFacts:
         # Every line repeats the folder; one string serves them all.
         cwd = sys.intern(str(obj.get("cwd") or ""))
         if agent_id:
-            self._touch_agent(agent_id, sid, role, ts, obj)
+            self._touch_agent(agent_id, sid, role, ts, obj, meta)
         msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
         if kind == "user":
             self._last_user_ts[f"{sid}/{agent_id}"] = ts
+            self._enter_turn(sid, agent_id, obj, msg, ts, cwd)
+            if obj.get("permissionMode") and not agent_id and (part := self._outcome(sid, "", ts, cwd)) is not None:
+                _add_unique(part.setdefault("permission_modes", []), str(obj["permissionMode"])[:40])
             self._prompt(sid, obj, msg, ts, agent_id, cwd)
             self._tool_results(sid, obj, msg, ts)
             return
-        self._tool_uses(sid, msg, ts, agent_id, cwd)
+        if (turn := self._turn(sid, agent_id)) is not None:
+            self._touch_turn(turn, ts)
+        self._tool_uses(sid, obj, msg, ts, agent_id, cwd)
         self._request(sid, obj, msg, ts, agent_id, cwd)
 
     def _attachment(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
@@ -568,10 +766,14 @@ class ClaudeFacts:
         for item in context_items.claude_attachment(obj.get("attachment")):
             self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, item, "claude-code", str(obj.get("cwd") or "")))
 
-    def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict) -> None:
+    def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict, meta: dict | None = None) -> None:
         row = self._open_agents.get(agent_id)
         if row is None:
-            row = fact_rows.AgentRow(agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts)
+            meta = meta or {}
+            row = fact_rows.AgentRow(
+                agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts,
+                description=agent_label(meta.get("description")), spawn_depth=to_count(meta.get("spawnDepth")),
+                parent_tool_use_id=str(meta.get("toolUseId") or "")[:120])
             self._open_agents[agent_id] = row
         row.ended_at = ts or row.ended_at
         msg = obj.get("message")
@@ -597,17 +799,7 @@ class ClaudeFacts:
     def flush_open_agents(self) -> None:
         """Running subagents are written with no end, so they read as still going."""
         for row in self._open_agents.values():
-            self.buffer.add_agent(
-                fact_rows.AgentRow(
-                    agent_id=row.agent_id,
-                    session_id=row.session_id,
-                    tool=row.tool,
-                    task=row.task,
-                    model=row.model,
-                    is_sidechain=1,
-                    started_at=row.started_at,
-                )
-            )
+            self.buffer.add_agent(replace(row, ended_at=None, completed=0))
 
     def _request(self, sid: str, obj: dict, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
         if obj.get("isApiErrorMessage"):
@@ -630,24 +822,52 @@ class ClaudeFacts:
         call = (msg_id, req_id) if (msg_id or req_id) else ("uuid", str(obj.get("uuid") or ""))
         call_key = hash(call)
         prior = self._calls.get(call_key)
+        blocks = self._thinking_blocks(obj, msg, call_key)
+        thought = self._thought(call_key)
         if prior is None:
             ref = str(obj.get("requestRef") or "")
             start = self._api_starts.pop(ref, 0.0) or self._last_user_ts.get(f"{sid}/{agent_id}", 0.0)
-            first = (sid, agent_id, ts, start, cwd)
+            turn = self._turn(sid, agent_id)
+            first = (sid, agent_id, ts, start, cwd, turn.prompt_id if turn else "", turn.turn_index if turn else None)
+            if turn is not None:
+                turn.request_count += 1
         else:
             first = prior[0]
             # The same numbers again: a replay in another session, or no newer line.
-            if prior[1] == vals and (first[0] != sid or ts <= prior[2]):
+            if prior[1] == vals and (first[0] != sid or (ts <= prior[2] and thought == prior[3])):
                 return
             # A fork replays earlier messages, some with zero usage. It must not lower the real row.
             if first[0] != sid and sum(vals[:4]) <= sum(prior[1][:4]):
                 return
-        self._calls[call_key] = (first, vals, ts)
-        first_sid, first_agent, first_ts, start, first_cwd = first
+        self._calls[call_key] = (first, vals, ts, thought)
+        first_sid, first_agent, first_ts, start, first_cwd, prompt_id, turn_index = first
+        turn = self._turns.get((first_sid, prompt_id)) if prompt_id else None
+        if turn is not None:
+            old = prior[1] if prior is not None else (0, 0, 0, 0, 0)
+            turn.input_tokens += vals[0] - old[0]
+            turn.output_tokens += vals[1] - old[1]
+            turn.cache_read_tokens += vals[2] - old[2]
+            turn.cache_creation_tokens += vals[3] - old[3]
+            was = prior[3] if prior is not None else (0, 0, 0, 0.0)
+            turn.thinking_chars += thought[0] - was[0]
+            turn.thinking_blocks += thought[1] - was[1]
+            turn.thinking_redacted += thought[2] - was[2]
+            turn.thinking_ms += thought[3] - was[3]
+            turn.ended_with_api_error = 0
+            self._touch_turn(turn, ts)
+        request_key = fact_rows._dedup_key("claude-call", *call)
+        if first_sid == sid:
+            for index, text in blocks:
+                self.buffer.add_thinking(fact_rows.SessionThinkingRow(
+                    session_id=sid, thinking_key=fact_rows._dedup_key("claude-thinking", *call, str(index)), ts=ts,
+                    agent_id=first_agent, request_key=request_key, message_id=msg_id, turn_index=turn_index,
+                    block_index=index, model=normalize_model_id(model) or model, chars=len(text),
+                    text=digest_text(text, THINKING_TEXT_MAX), tool="claude-code", project_path=first_cwd))
+        requested = str(obj.get("requestedModel") or "")
         reply_ms = (ts - start) * 1000 if start and ts > start else 0.0
         self.buffer.add_request(
             fact_rows.RequestRow(
-                dedup_key=fact_rows._dedup_key("claude-call", *call),
+                dedup_key=request_key,
                 ts=first_ts or ts,
                 session_id=first_sid,
                 agent_id=first_agent,
@@ -661,10 +881,72 @@ class ClaudeFacts:
                 cost_usd=list_price(model, vals[0], vals[1], vals[2], vals[3], vals[4], ts),
                 duration_ms=reply_ms if reply_ms <= MAX_REPLY_MS else 0.0,
                 finish_reason=str(msg.get("stop_reason") or ""),
+                prompt_id=prompt_id,
+                turn_index=turn_index,
+                effort=str(obj.get("effort") or "")[:20],
+                thinking_ms=thought[3] or None,
+                attribution_mcp_server=str(obj.get("attributionMcpServer") or "")[:200],
+                attribution_skill=str(obj.get("attributionSkill") or "")[:200],
+                requested_model=requested if requested and requested != model else "",
+                thinking_chars=thought[0],
+                thinking_blocks=thought[1],
+                thinking_redacted=thought[2],
             )
         )
 
+    def _thinking_blocks(self, obj: dict, msg: dict, call_key: int) -> list[tuple[int, str]]:
+        """Note the thinking blocks of a line; return the visible ones as (block index, text).
+
+        Claude Code writes one line per content block, so a block's index is the line's
+        ``apiBlockIndex``, or its place in the line's content.
+        """
+        chars, shown, redacted, ms = self._thinking.get(call_key, (0, 0, 0, 0.0))
+        visible: list[tuple[int, str]] = []
+        content = msg.get("content") if isinstance(msg.get("content"), list) else []
+        changed = False
+        for position, block in enumerate(content):
+            kind = block.get("type") if isinstance(block, dict) else None
+            if kind not in ("thinking", "redacted_thinking"):
+                continue
+            index = obj["apiBlockIndex"] if type(obj.get("apiBlockIndex")) is int and len(content) == 1 else position
+            text = block.get("thinking") if kind == "thinking" else None
+            if index < 0 or index > 4096:
+                continue
+            bit = 1 << index
+            if isinstance(text, str) and text:
+                # A block is written whole on its line; a line seen again adds nothing.
+                if not shown & bit:
+                    chars, shown, changed = chars + len(text), shown | bit, True
+                visible.append((index, text))
+            elif kind == "redacted_thinking" or block.get("data") or block.get("signature"):
+                # Redacted, or thinking whose text the file leaves out: counted, never stored.
+                if not redacted & bit:
+                    redacted, changed = redacted | bit, True
+        duration = obj.get("thinkingDurationMs")
+        if type(duration) in (int, float) and duration > ms:
+            ms, changed = float(duration), True
+        if changed:
+            self._thinking[call_key] = (chars, shown, redacted, ms)
+        return visible
+
+    def _thought(self, call_key: int) -> tuple[int, int, int, float]:
+        """(visible chars, visible blocks, redacted blocks, duration ms) of a call so far."""
+        chars, shown, redacted, ms = self._thinking.get(call_key, (0, 0, 0, 0.0))
+        return chars, shown.bit_count(), redacted.bit_count(), ms
+
+    def _turn_error(self, sid: str, agent_id: str, ts: float) -> tuple[str, int | None]:
+        """An API error in the current turn. Returns the turn's (prompt id, index) for the error row."""
+        turn = self._turn(sid, agent_id)
+        if turn is None:
+            return "", None
+        turn.error_count += 1
+        turn.api_error_count += 1
+        turn.ended_with_api_error = 1
+        self._touch_turn(turn, ts)
+        return turn.prompt_id, turn.turn_index
+
     def _api_error(self, sid: str, obj: dict, ts: float, agent_id: str, cwd: str) -> None:
+        prompt_id, turn_index = self._turn_error(sid, agent_id, ts)
         self.buffer.add_request(
             fact_rows.RequestRow(
                 dedup_key=fact_rows._dedup_key("claude-api-error", str(obj.get("uuid") or ""), sid),
@@ -676,12 +958,19 @@ class ClaudeFacts:
                 is_error=1,
                 error_type=str(obj.get("error") or "api_error")[:80],
                 http_status=to_int(obj.get("apiErrorStatus")),
+                prompt_id=prompt_id,
+                turn_index=turn_index,
             )
         )
 
     def _compaction(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
         meta = obj.get("compactMetadata") if isinstance(obj.get("compactMetadata"), dict) else {}
         agent_id = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
+        if (turn := self._turn(sid, agent_id)) is not None:
+            turn.compactions += 1
+            self._touch_turn(turn, ts)
+        if (part := self._outcome(sid, agent_id, ts)) is not None:
+            part["compactions"] = part.get("compactions", 0) + 1
         # Claude Code sends its context attachments again after a compaction: the earlier ones stop counting.
         reset = context_items.Item(context_items.RESET, context_items.ALL)
         self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, reset, "claude-code", str(obj.get("cwd") or "")))
@@ -722,10 +1011,18 @@ class ClaudeFacts:
         if obj.get("subtype") == "local_command":
             self._context_report(sid, obj, ts, agent_id)
             return
+        if obj.get("subtype") == "stop_hook_summary":
+            if (part := self._outcome(sid, agent_id, ts)) is not None:
+                part["hook_runs"] = part.get("hook_runs", 0) + to_int(obj.get("hookCount"))
+                errors = obj.get("hookErrors")
+                part["hook_failures"] = part.get("hook_failures", 0) + (len(errors) if isinstance(errors, list) else 0)
+            return
         if obj.get("subtype") != "api_error":
             return
         error = obj.get("error") if isinstance(obj.get("error"), dict) else {}
         inner = error.get("error") if isinstance(error.get("error"), dict) else {}
+        error_agent = agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else "")
+        prompt_id, turn_index = self._turn_error(sid, error_agent, ts)
         self.buffer.add_request(
             fact_rows.RequestRow(
                 dedup_key=fact_rows._dedup_key("claude-api-error", str(obj.get("uuid") or ""), sid),
@@ -737,6 +1034,8 @@ class ClaudeFacts:
                 is_error=1,
                 error_type=str(inner.get("type") or error.get("type") or "api_error")[:80],
                 http_status=to_int(error.get("status")),
+                prompt_id=prompt_id,
+                turn_index=turn_index,
             )
         )
 
@@ -744,7 +1043,10 @@ class ClaudeFacts:
         if obj.get("isMeta"):
             self._note_skill_body(sid, msg, ts, agent_id, cwd)
             return
-        if "toolUseResult" in obj or obj.get("isCompactSummary"):
+        if obj.get("isCompactSummary"):
+            self._compact_summary(sid, msg, ts, agent_id, cwd)
+            return
+        if "toolUseResult" in obj:
             return
         if obj.get("isSidechain") and not agent_id:
             return
@@ -786,6 +1088,29 @@ class ClaudeFacts:
             )
         )
 
+    def _compact_summary(self, sid: str, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
+        """The summary a compaction left in place of the conversation: a digest of the session so far."""
+        if agent_id:
+            return
+        key = f"{sid}/{agent_id}"
+        seq = self._compact_seq[key] = self._compact_seq.get(key, 0) + 1
+        self.buffer.add_digest(fact_rows.SessionDigestRow(
+            session_id=sid, kind="compact_summary", seq=seq, ts=ts, text=digest_text(_text_of(msg.get("content"))),
+            tool="claude-code", project_path=cwd))
+
+    def _todos(self, sid: str, args: dict, ts: float, agent_id: str, cwd: str) -> None:
+        """``TodoWrite`` sends the whole list each time: the last one is the session's list."""
+        todos = args.get("todos")
+        if agent_id or not isinstance(todos, list):
+            return
+        items = [t for t in todos if isinstance(t, dict)]
+        if (part := self._outcome(sid, "", ts, cwd)) is not None:
+            part["todos_total"] = len(items)
+            part["todos_completed"] = sum(1 for t in items if t.get("status") == "completed")
+        listing = "\n".join(f"- [{t.get('status') or ''}] {t.get('content') or t.get('subject') or ''}" for t in items)
+        self.buffer.add_digest(fact_rows.SessionDigestRow(
+            session_id=sid, kind="todo_list", seq=0, ts=ts, text=digest_text(listing), tool="claude-code", project_path=cwd))
+
     def _note_skill_body(self, sid: str, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
         command = self._last_command.pop(sid, None)
         if command is not None and _text_of(msg.get("content")).lstrip().startswith("Base directory for this skill:"):
@@ -805,10 +1130,14 @@ class ClaudeFacts:
             )
         )
 
-    def _tool_uses(self, sid: str, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
+    def _tool_uses(self, sid: str, obj: dict, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
         content = msg.get("content")
         if not isinstance(content, list):
             return
+        turn = self._turn(sid, agent_id)
+        msg_id, req_id = str(msg.get("id") or ""), str(obj.get("requestId") or "")
+        request_key = fact_rows._dedup_key("claude-call", msg_id, req_id) if (msg_id or req_id) else ""
+        hint = str(obj.get("attributionMcpServer") or "")
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
@@ -818,6 +1147,11 @@ class ClaudeFacts:
             self._tools_seen.add(hash(tool_id))
             name = str(block.get("name") or "")
             args = block.get("input") if isinstance(block.get("input"), dict) else {}
+            found = target_fields(name, args, keep_text=self.keep_text, server_hint=hint)
+            server, server_tool = split_mcp(name, hint=hint)
+            if turn is not None:
+                turn.tool_call_count += 1
+                self._touch_turn(turn, ts)
             row = fact_rows.ToolInvocationRow(
                 dedup_key=fact_rows._dedup_key("claude-tool", tool_id),
                 ts=ts,
@@ -830,6 +1164,12 @@ class ClaudeFacts:
                 source_event_id=tool_id,
                 target=target_of(args, self.keep_text),
                 input_bytes=byte_size(block.get("input")),
+                mcp_server=server,
+                mcp_tool=server_tool,
+                **found,
+                turn_index=turn.turn_index if turn else None,
+                prompt_id=turn.prompt_id if turn else "",
+                request_key=request_key,
             )
             self._pending[tool_id] = (row, cwd, args)
             message_id = hash(str(msg.get("id") or ""))
@@ -838,6 +1178,8 @@ class ClaudeFacts:
             self.buffer.add_tool(row)
             if name == "Skill" and isinstance(args.get("skill"), str):
                 self._skill(tool_id, sid, args["skill"], "agent-invoked", ts, agent_id, cwd)
+            elif name == "TodoWrite":
+                self._todos(sid, args, ts, agent_id, cwd)
 
     def _tool_results(self, sid: str, obj: dict, msg: dict, ts: float) -> None:
         content = msg.get("content")
@@ -863,13 +1205,38 @@ class ClaudeFacts:
                 row.duration_ms = 0.0
             row.is_error = 1 if failed else 0
             row.confirm = confirm
+            result = obj.get("toolUseResult")
+            if isinstance(result, dict) and isinstance(result.get("interrupted"), bool):
+                row.interrupted = result["interrupted"]
             if failed:
                 row.result_summary = _redact(text[:RESULT_MAX_CHARS]) if self.keep_text else ""
+                row.error_summary = error_excerpt(text, self.keep_text)
                 code = _EXIT_CODE.match(text)
                 row.exit_code = int(code.group(1)) if code else None
+                if (turn := self._turns.get((row.session_id, row.prompt_id))) is not None:
+                    turn.error_count += 1
+                    self._touch_turn(turn, ts)
             self.buffer.add_tool(row)
-            if not failed and row.tool_name in _CLAUDE_WRITE_TOOLS:
+            if failed:
+                continue
+            if row.tool_name in _CLAUDE_WRITE_TOOLS:
                 self._file_edit(row, cwd, args, obj.get("toolUseResult"))
+            elif row.tool_name in _CLAUDE_READ_TOOLS and row.target_kind == FILE and row.target_id:
+                self.buffer.touch_file(row.session_id, row.agent_id, absolute_path(row.target_id, cwd), "read",
+                                       row.tool_name, row.ts, row.tool, cwd)
+            elif row.target_kind == AGENT:
+                self._agent_result(row, args, obj.get("toolUseResult"))
+
+    def _agent_result(self, row: fact_rows.ToolInvocationRow, args: dict, result: Any) -> None:
+        """The Agent tool's result names the subagent it started: its id, model and state."""
+        if not isinstance(result, dict) or not result.get("agentId"):
+            return
+        self.buffer.add_agent(fact_rows.AgentRow(
+            agent_id=str(result["agentId"]), session_id=row.session_id, tool="claude-code",
+            task=str(result.get("agentType") or args.get("subagent_type") or "")[:120], is_sidechain=1,
+            description=agent_label(args.get("description") or result.get("description")),
+            parent_agent_id=row.agent_id, parent_tool_use_id=row.source_event_id,
+            resolved_model=str(result.get("resolvedModel") or "")[:120], status=str(result.get("status") or "")[:40]))
 
     def _file_edit(self, row: fact_rows.ToolInvocationRow, cwd: str, args: dict, result: Any) -> None:
         path = str(args.get("file_path") or args.get("notebook_path") or "")
@@ -881,6 +1248,17 @@ class ClaudeFacts:
         detail: dict[str, Any] = {"tool_use_id": row.source_event_id}
         if counts is not None:
             detail["lines_added"], detail["lines_removed"] = counts
+        full = absolute_path(path, cwd)
+        created = row.tool_name == "Write" and isinstance(result, dict) and result.get("type") == "create"
+        self.buffer.touch_file(row.session_id, row.agent_id, full, "created" if created else "edited",
+                               row.tool_name, row.ts, row.tool, cwd)
+        if (turn := self._turns.get((row.session_id, row.prompt_id))) is not None:
+            files = self._turn_files.setdefault((row.session_id, row.prompt_id), set())
+            files.add(hash(full))
+            turn.files_changed = len(files)
+            self._touch_turn(turn, row.ts)
+        if (part := self._outcome(row.session_id, row.agent_id, row.ts)) is not None:
+            _add_unique(part.setdefault("file_keys", []), file_key(full))
         self.buffer.add_file_write(
             fact_rows.FileWriteRow(
                 dedup_key=fact_rows._dedup_key("claude-edit", row.source_event_id, path),
@@ -912,16 +1290,21 @@ def _claude_input_line_counts(tool_name: str, args: dict) -> tuple[int, int] | N
     return None
 
 
-def read_claude_agent_role(path: Path) -> str:
-    """The role a subagent was started with, from the small ``agent-<id>.meta.json`` beside its file."""
+def read_claude_agent_meta(path: Path) -> dict:
+    """The small ``agent-<id>.meta.json`` beside a subagent's file: agentType, description, toolUseId, spawnDepth."""
     try:
         meta = path.with_name(path.stem + ".meta.json")
         if meta.stat().st_size > 64_000:
-            return ""
+            return {}
         data = json.loads(meta.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ""
-    return str(data.get("agentType") or "")[:120] if isinstance(data, dict) else ""
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_claude_agent_role(path: Path) -> str:
+    """The role a subagent was started with, from the small ``agent-<id>.meta.json`` beside its file."""
+    return str(read_claude_agent_meta(path).get("agentType") or "")[:120]
 
 
 # ── Copilot CLI and desktop ────────────────────────────────────────────
@@ -980,10 +1363,30 @@ class CopilotFacts:
         self._patches: dict[str, dict[str, tuple[int, int]]] = {}
         self._confirms: dict[str, tuple[str, float]] = {}
         self._permissions: dict[str, tuple[float, str, str, str, str]] = {}
+        # The person's turns so far (1 = the first), the task calls that start subagents, and
+        # the file a call views, read when it completes.
+        self.turn = 0
+        self._tasks: dict[str, tuple[str, str]] = {}
+        self._views: dict[str, str] = {}
+        self._summaries = 0
+        self._compaction_count = 0
+        # The request row of each recent call, by apiCallId: its message comes after its usage record
+        # and adds the thinking counts. Values: (row, visible chars, visible blocks, redacted blocks).
+        self._calls_by_api: dict[str, list] = {}
 
     def reset(self) -> None:
         """The file was rewritten and is read again from the start, so counting starts over."""
         self.__init__(self.sid, self.buffer)  # type: ignore[misc]
+        self.buffer.forget_files(self.sid, "")
+        if self.buffer.book is not None:
+            self.buffer.book.reset(self.sid, TRANSCRIPT_PART)
+
+    def _turn_index(self) -> int | None:
+        return self.turn or None
+
+    def _outcome(self, ts: float) -> dict | None:
+        book = self.buffer.book
+        return None if book is None else book.part(self.sid, TRANSCRIPT_PART, ts, tool="copilot-cli", project=self.cwd)
 
     def feed(self, obj: dict) -> None:
         kind = obj.get("type")
@@ -1003,8 +1406,10 @@ class CopilotFacts:
             self._custom_agent(data, ts, agent_id)
         elif kind == "session.model_change" and data.get("newModel"):
             self.model = str(data["newModel"])
-        elif kind == "assistant.message" and data.get("model"):
-            self.model = str(data["model"])
+        elif kind == "assistant.message":
+            if data.get("model"):
+                self.model = str(data["model"])
+            self._thinking(data, ts, agent_id)
         elif kind == "session.usage_record":
             usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
             for key in ("requestId", "apiCallId"):
@@ -1021,10 +1426,23 @@ class CopilotFacts:
             self._compaction(data, ts, agent_id, event_id)
         elif kind == "session.shutdown":
             self._split(data, ts, agent_id, event_id)
+            self._shutdown(data, ts)
         elif kind == "session.error":
             self._api_error(data, ts, agent_id, event_id)
         elif kind == "user.message":
+            if not agent_id:
+                self.turn += 1
             self._prompt(data, ts, agent_id, event_id)
+        elif kind == "session.mode_changed" and data.get("newMode"):
+            if (part := self._outcome(ts)) is not None:
+                _add_unique(part.setdefault("modes", []), str(data["newMode"])[:40])
+                part["last_mode"] = str(data["newMode"])[:40]
+        elif kind == "hook.end":
+            if (part := self._outcome(ts)) is not None:
+                part["hook_runs"] = part.get("hook_runs", 0) + 1
+                part["hook_failures"] = part.get("hook_failures", 0) + (1 if data.get("success") is False else 0)
+        elif kind == "session.task_complete":
+            self._task_complete(data, ts)
         elif kind == "skill.invoked":
             self._skill(data, ts, agent_id, event_id)
         elif kind == "subagent.started":
@@ -1060,7 +1478,7 @@ class CopilotFacts:
         model = str(usage.get("model") or self.model)
         billable = max(0, raw - read - write)
         key = copilot_call_key(self.sid, tokens, n)
-        self.buffer.add_request(
+        request = (
             fact_rows.RequestRow(
                 dedup_key=key,
                 ts=ts,
@@ -1081,14 +1499,82 @@ class CopilotFacts:
                 max_prompt_tokens=to_count(usage.get("maxPromptTokens")),
                 request_bytes=to_count(usage.get("requestBodyBytes")),
                 available_tools=to_count(usage.get("availableToolCount")),
+                turn_index=self._turn_index(),
+                effort=str(usage.get("reasoningEffort") or "")[:20],
+                thinking_tokens=to_count(usage.get("reasoningTokens")),
             )
         )
+        self.buffer.add_request(request)
+        if usage.get("apiCallId"):
+            self._calls_by_api[str(usage["apiCallId"])] = [request, 0, 0, 0, key]
+            while len(self._calls_by_api) > 256:
+                self._calls_by_api.pop(next(iter(self._calls_by_api)))
         if self.steps and link is not None:
             self.steps.link_request(link, key, usage.get("apiCallId"))
+
+    def _thinking(self, data: dict, ts: float, agent_id: str) -> None:
+        """A message's reasoning: ``reasoningText`` is visible; ``reasoningOpaque`` and encrypted blocks are counted only."""
+        text = data.get("reasoningText") if isinstance(data.get("reasoningText"), str) else ""
+        blocks = data.get("reasoningBlocks") if isinstance(data.get("reasoningBlocks"), dict) else {}
+        encrypted = [b for b in blocks.get("blocks") or [] if isinstance(b, dict) and b.get("encrypted_content")]
+        hidden = len(encrypted) or (1 if data.get("reasoningOpaque") or data.get("encryptedContent") else 0)
+        if not text and not hidden:
+            return
+        api = str(data.get("apiCallId") or "")
+        call = self._calls_by_api.get(api) if api else None
+        key = call[4] if call else ""
+        if call is not None:
+            call[1] += len(text)
+            call[2] += 1 if text else 0
+            call[3] += hidden
+            row = call[0]
+            if row is not None:
+                # The usage record's row, again with the thinking it had.
+                call[0] = replace(row, thinking_chars=call[1], thinking_blocks=call[2], thinking_redacted=call[3])
+                self.buffer.add_request(call[0])
+        if text:
+            index = call[2] - 1 if call is not None else 0
+            message = str(data.get("messageId") or "")
+            self.buffer.add_thinking(fact_rows.SessionThinkingRow(
+                session_id=self.sid, thinking_key=fact_rows._dedup_key("copilot-thinking", self.sid, api or message, str(index)),
+                ts=ts, agent_id=agent_id, request_key=key, message_id=message, turn_index=self._turn_index(),
+                block_index=index, model=str(data.get("model") or self.model), chars=len(text), text=digest_text(text, THINKING_TEXT_MAX),
+                tool="copilot-cli", project_path=self.cwd))
+
+    def _shutdown(self, data: dict, ts: float) -> None:
+        """The session's own totals at shutdown. A resumed session states them again, so the last one counts."""
+        part = self._outcome(ts)
+        if part is None:
+            return
+        changes = data.get("codeChanges") if isinstance(data.get("codeChanges"), dict) else {}
+        for name, key in (("lines_added", "linesAdded"), ("lines_removed", "linesRemoved")):
+            if type(changes.get(key)) is int:
+                part[name] = changes[key]
+        if isinstance(changes.get("filesModified"), list):
+            part["files_changed"] = len(changes["filesModified"])
+        if type(data.get("totalApiDurationMs")) in (int, float):
+            part["reported_api_ms"] = float(data["totalApiDurationMs"])
+        if type(data.get("totalPremiumRequests")) in (int, float):
+            part["premium_requests"] = float(data["totalPremiumRequests"])
+
+    def _task_complete(self, data: dict, ts: float) -> None:
+        if (part := self._outcome(ts)) is not None:
+            part["task_complete"] = 1
+        self._summaries += 1
+        self.buffer.add_digest(fact_rows.SessionDigestRow(
+            session_id=self.sid, kind="task_summary", seq=self._summaries, ts=ts, text=digest_text(data.get("summary")),
+            tool="copilot-cli", project_path=self.cwd))
 
     def _compaction(self, data: dict, ts: float, agent_id: str, event_id: str) -> None:
         if data.get("success") is False:
             return
+        self._compaction_count += 1
+        if (part := self._outcome(ts)) is not None:
+            part["compactions"] = part.get("compactions", 0) + 1
+        number = data.get("checkpointNumber")
+        self.buffer.add_digest(fact_rows.SessionDigestRow(
+            session_id=self.sid, kind="compact_summary", seq=number if type(number) is int else self._compaction_count,
+            ts=ts, text=digest_text(data.get("summaryContent")), tool="copilot-cli", project_path=self.cwd))
         self.buffer.add_context_event(
             fact_rows.ContextEventRow(
                 dedup_key=fact_rows._dedup_key("copilot-compact", self.sid, event_id or str(ts)),
@@ -1135,6 +1621,7 @@ class CopilotFacts:
                 is_error=1,
                 error_type=str(data.get("errorType") or "error")[:80],
                 http_status=to_int(data.get("statusCode")),
+                turn_index=self._turn_index(),
             )
         )
 
@@ -1215,6 +1702,8 @@ class CopilotFacts:
     def _agent_started(self, obj: dict, data: dict, ts: float) -> None:
         agent_id = str(obj.get("agentId") or data.get("agentId") or "")
         if agent_id:
+            call_id = str(data.get("toolCallId") or "")
+            caller, label = self._tasks.get(call_id, ("", ""))
             self.buffer.add_agent(
                 fact_rows.AgentRow(
                     agent_id=agent_id,
@@ -1224,6 +1713,11 @@ class CopilotFacts:
                     model=str(data.get("model") or ""),
                     is_sidechain=1,
                     started_at=ts,
+                    description=label,
+                    parent_agent_id=caller,
+                    parent_tool_use_id=call_id[:120],
+                    resolved_model=str(data.get("model") or "")[:120],
+                    status="running",
                 )
             )
 
@@ -1240,6 +1734,7 @@ class CopilotFacts:
                     is_sidechain=1,
                     ended_at=ts,
                     completed=1,
+                    status="failed" if obj.get("type") == "subagent.failed" else "completed",
                 )
             )
 
@@ -1251,9 +1746,10 @@ class CopilotFacts:
         if not call_id:
             return
         name = str(data.get("toolName") or "")
+        server, server_tool = str(data.get("mcpServerName") or ""), str(data.get("mcpToolName") or "")
         # One spelling for a server's tools across all tools, so a reader can tell them apart.
-        if data.get("mcpServerName"):
-            name = f"mcp__{data['mcpServerName']}__{data.get('mcpToolName') or name}"
+        if server:
+            name = f"mcp__{server}__{server_tool or name}"
         args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
         # apply_patch passes the patch as the whole argument, a string and not an object.
         raw_args = data.get("arguments")
@@ -1261,6 +1757,15 @@ class CopilotFacts:
             args = {"input": raw_args}
         if name == "apply_patch":
             self._patches[call_id] = _patch_counts(args, self.cwd)
+        found = target_fields(name, args, keep_text=self.keep_text)
+        server, server_tool = split_mcp(name, server=server, tool=server_tool)
+        if server:
+            found["target_id"] = server_tool
+        kind, target = found["target_kind"], found["target_id"]
+        if kind == AGENT:
+            self._tasks[call_id] = (agent_id, agent_label(args.get("description") or args.get("name")))
+        elif kind == FILE and name == "view" and target:
+            self._views[call_id] = absolute_path(target, self.cwd)
         row = fact_rows.ToolInvocationRow(
             dedup_key=self._tool_key(call_id),
             ts=ts,
@@ -1273,6 +1778,10 @@ class CopilotFacts:
             source_event_id=call_id,
             target=target_of(args, self.keep_text),
             input_bytes=byte_size(raw_args),
+            mcp_server=server,
+            mcp_tool=server_tool,
+            **found,
+            turn_index=self._turn_index(),
         )
         self._running[call_id] = row
         self.buffer.add_tool(row)
@@ -1304,6 +1813,7 @@ class CopilotFacts:
         error = data.get("error") if isinstance(data.get("error"), dict) else {}
         if failed and self.keep_text:
             row.result_summary = _redact(str(error.get("message") or error.get("code") or "")[:RESULT_MAX_CHARS])
+            row.error_summary = error_excerpt(str(error.get("message") or error.get("code") or ""), True)
         if isinstance(shell.get("exitCode"), int):
             row.exit_code = shell["exitCode"]
         # The runtime records a permission event whenever it asks, so no event means nobody was asked.
@@ -1313,6 +1823,10 @@ class CopilotFacts:
         if row.tool_name in _PERSON_TOOLS:
             row.duration_ms = 0.0
         self.buffer.add_tool(row)
+        viewed = self._views.pop(call_id, "")
+        if viewed and not failed:
+            # Writes are summed up by the tool itself in the store's ``session_files``.
+            self.buffer.touch_file(self.sid, "", viewed, "read", row.tool_name, row.ts, row.tool, self.cwd)
         self._file_edits(row, data, patch_counts)
 
     def _file_edits(self, row: fact_rows.ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]]) -> None:
@@ -1449,6 +1963,7 @@ class VSCodeDebugFacts:
         self.keep_text = _keep_text(buffer.store)
         self.agent_id = ""
         self.role = ""
+        self.turn = 0  # prompts in the main log so far
 
     def feed(self, obj: dict) -> None:
         kind = obj.get("type")
@@ -1462,6 +1977,8 @@ class VSCodeDebugFacts:
         elif kind == "tool_call":
             self._tool(obj, attrs, ts, span)
         elif kind == "user_message":
+            if self.is_main:
+                self.turn += 1
             self._prompt(attrs, ts, span)
         elif kind == "child_session_ref":
             self._child(attrs, ts)
@@ -1531,6 +2048,7 @@ class VSCodeDebugFacts:
                 ttft_ms=to_float(attrs.get("ttft")),
                 is_error=1 if failed else 0,
                 error_type=(" ".join(str(attrs.get("error") or "error").split())[:80]) if failed else "",
+                turn_index=self.turn if self.is_main and self.turn else None,
             )
         )
 
@@ -1542,6 +2060,9 @@ class VSCodeDebugFacts:
             args = {}
         failed = obj.get("status") == "error"
         code = _VSCODE_EXIT_CODE.search(str(attrs.get("result") or "")) if name == "run_in_terminal" else None
+        found = target_fields(name, args, keep_text=self.keep_text)
+        kind, target = found["target_kind"], found["target_id"]
+        server, server_tool = split_mcp(name)
         row = fact_rows.ToolInvocationRow(
             dedup_key=fact_rows._dedup_key("vscode-tool", self.sid, span or f"{name}{ts}"),
             ts=ts,
@@ -1554,15 +2075,23 @@ class VSCodeDebugFacts:
             duration_ms=to_float(obj.get("dur")),
             input=stored_input(args, self.keep_text),
             result_summary=_redact(str(attrs.get("error") or "")[:RESULT_MAX_CHARS]) if failed and self.keep_text else "",
+            error_summary=error_excerpt(str(attrs.get("error") or ""), self.keep_text) if failed else "",
             source_event_id=span,
             target=target_of(args, self.keep_text),
             exit_code=int(code.group(1)) if code else None,
             input_bytes=byte_size(attrs.get("args")),
             output_bytes=byte_size(attrs.get("result")),
+            mcp_server=server,
+            mcp_tool=server_tool,
+            **found,
+            turn_index=self.turn if self.is_main and self.turn else None,
         )
         self.buffer.add_tool(row)
         if failed:
             return
+        if name in _VSCODE_READ_TOOLS and kind == FILE and target:
+            self.buffer.touch_file(self.sid, self.agent_id, absolute_path(target, self.project_path), "read", name, ts,
+                                   "copilot-vscode", self.project_path)
         # VS Code loads a skill by reading its SKILL.md with the file-read tool.
         skill = skill_of_path(args.get("filePath")) if name in _VSCODE_READ_TOOLS else ""
         if skill:
@@ -1579,6 +2108,9 @@ class VSCodeDebugFacts:
                 )
             )
         for path, added, removed in _vscode_file_edits(name, args):
+            self.buffer.touch_file(self.sid, self.agent_id, absolute_path(decode_file_uri(path), self.project_path),
+                                   "created" if name == "create_file" else "edited", name, ts, "copilot-vscode",
+                                   self.project_path)
             self.buffer.add_file_write(
                 fact_rows.FileWriteRow(
                     dedup_key=fact_rows._dedup_key("vscode-edit", self.sid, span, path),
@@ -1638,6 +2170,10 @@ class VSCodeChatFacts:
         value = obj.get("v")
         if obj.get("kind") == 0 and isinstance(value, dict):
             self._requests = []
+            # A snapshot states the whole session again: what is summed up from this file starts over.
+            self.buffer.forget_files(self.sid, "")
+            if self.buffer.book is not None:
+                self.buffer.book.reset(self.sid, TRANSCRIPT_PART)
             for req in value.get("requests") or []:
                 self._add_request(req)
             return
@@ -1659,19 +2195,51 @@ class VSCodeChatFacts:
                 self._elapsed[path[1]] = to_float(value)
             elif path[2] == "response" and isinstance(value, list):
                 self._response_parts(req, value)
+            elif path[2] == "editedFileEvents":
+                self._edited_files(req, value)
 
     def _add_request(self, req: Any) -> None:
         if not isinstance(req, dict):
             return
         index = len(self._requests)
-        self._requests.append({"id": str(req.get("requestId") or index), "ts": coerce_ts(req.get("timestamp")), "model": req.get("modelId")})
+        self._requests.append({"id": str(req.get("requestId") or index), "ts": coerce_ts(req.get("timestamp")),
+                               "model": req.get("modelId"), "turn": index + 1})
         slot = self._requests[index]
         if not req.get("isSystemInitiated"):
             self._prompt(req, slot)
+        self._request_outcome(req, slot)
         self._response_parts(slot, req.get("response"))
         if req.get("result") is not None:
             self._elapsed[index] = to_float(req.get("elapsedMs"))
             self._turn_result(slot, req["result"], index)
+
+    def _outcome(self, ts: float) -> dict | None:
+        book = self.buffer.book
+        return None if book is None else book.part(self.sid, TRANSCRIPT_PART, ts, tool="copilot-vscode",
+                                                   project=self.project_path)
+
+    def _request_outcome(self, req: dict, slot: dict) -> None:
+        """The mode a request ran in, and the files it edited."""
+        mode = req.get("modeInfo") if isinstance(req.get("modeInfo"), dict) else {}
+        if mode and (part := self._outcome(slot["ts"])) is not None:
+            name = str(mode.get("modeId") or mode.get("kind") or "")[:40]
+            if name:
+                _add_unique(part.setdefault("modes", []), name)
+                part["last_mode"] = name
+            if mode.get("permissionLevel"):
+                _add_unique(part.setdefault("permission_modes", []), str(mode["permissionLevel"])[:40])
+        self._edited_files(slot, req.get("editedFileEvents"))
+
+    def _edited_files(self, slot: dict, events: Any) -> None:
+        # A session with a debug log has the edit calls themselves, with their tool.
+        if self.has_debug_log or not isinstance(events, list):
+            return
+        for event in events:
+            uri = event.get("uri") if isinstance(event, dict) else None
+            path = (uri.get("fsPath") or decode_file_uri(str(uri.get("external") or ""))) if isinstance(uri, dict) else ""
+            if path:
+                self.buffer.touch_file(self.sid, "", str(path), "edited", "editedFileEvents", slot["ts"],
+                                       "copilot-vscode", self.project_path)
 
     def _prompt(self, req: dict, slot: dict) -> None:
         message = req.get("message")
@@ -1714,15 +2282,58 @@ class VSCodeChatFacts:
                 cost_usd=list_price(model, tokens_in, tokens_out, 0, 0, 0, slot["ts"]),
                 duration_ms=to_float(timings.get("totalElapsed")) or self._elapsed.get(index, 0.0),
                 ttft_ms=to_float(timings.get("firstProgress")),
+                turn_index=slot.get("turn"),
+                thinking_chars=sum(slot.get("thinking", {}).values()),
+                thinking_blocks=len(slot.get("thinking", {})),
+                thinking_redacted=0,
             )
         )
 
     def _response_parts(self, slot: dict, parts: Any) -> None:
-        if self.has_debug_log or not isinstance(parts, list):
+        if not isinstance(parts, list):
             return
         for part in parts:
             if isinstance(part, dict) and part.get("kind") == "toolInvocationSerialized" and part.get("toolCallId"):
-                self._tool_part(slot, part)
+                self._tool_outcome(slot, part)
+                if not self.has_debug_log:
+                    self._tool_part(slot, part)
+            elif isinstance(part, dict) and part.get("kind") == "thinking":
+                self._thinking_part(slot, part)
+
+    def _thinking_part(self, slot: dict, part: dict) -> None:
+        """A thinking part of a turn's response. Its text can grow in later patches, under the same id."""
+        value = part.get("value")
+        text = "".join(v for v in value if isinstance(v, str)) if isinstance(value, list) else value
+        if not isinstance(text, str) or not text:
+            return
+        seen = slot.setdefault("thinking", {})
+        key = str(part.get("id") or f"text:{hash(text[:64])}")
+        if seen.get(key) == len(text):
+            return
+        index = list(seen).index(key) if key in seen else len(seen)
+        seen[key] = len(text)
+        request_key = "" if self.has_debug_log else fact_rows._dedup_key("vscode-chat-turn", self.sid, slot["id"])
+        self.buffer.add_thinking(fact_rows.SessionThinkingRow(
+            session_id=self.sid, thinking_key=fact_rows._dedup_key("vscode-thinking", self.sid, slot["id"], key),
+            ts=slot["ts"], request_key=request_key, turn_index=slot.get("turn"), block_index=index,
+            model=str(slot.get("model") or "").removeprefix("copilot/"), chars=len(text), text=digest_text(text, THINKING_TEXT_MAX),
+            tool="copilot-vscode", project_path=self.project_path))
+
+    def _tool_outcome(self, slot: dict, part: dict) -> None:
+        """What a tool call says about the session: its todo list, and whether the task was marked complete."""
+        data = part.get("toolSpecificData") if isinstance(part.get("toolSpecificData"), dict) else {}
+        todos = data.get("todoList") if part.get("toolId") == "manage_todo_list" else None
+        book_part = self._outcome(slot["ts"])
+        if isinstance(todos, list) and book_part is not None:
+            items = [t for t in todos if isinstance(t, dict)]
+            book_part["todos_total"] = len(items)
+            book_part["todos_completed"] = sum(1 for t in items if t.get("status") == "completed")
+            listing = "\n".join(f"- [{t.get('status') or ''}] {t.get('title') or ''}" for t in items)
+            self.buffer.add_digest(fact_rows.SessionDigestRow(
+                session_id=self.sid, kind="todo_list", seq=0, ts=slot["ts"], text=digest_text(listing),
+                tool="copilot-vscode", project_path=self.project_path))
+        elif part.get("toolId") == "task_complete" and book_part is not None:
+            book_part["task_complete"] = 1
 
     def _tool_part(self, slot: dict, part: dict) -> None:
         confirmed = part.get("isConfirmed")
@@ -1730,18 +2341,25 @@ class VSCodeChatFacts:
         message = part.get("invocationMessage")
         shown = message.get("value") if isinstance(message, dict) else message
         call_id = str(part["toolCallId"])
+        tool_name = str(part.get("toolId") or "")
+        found = target_fields(tool_name, _vscode_part_args(part), keep_text=self.keep_text)
+        server, server_tool = split_mcp(tool_name)
         self.buffer.add_tool(
             fact_rows.ToolInvocationRow(
                 dedup_key=fact_rows._dedup_key("vscode-chat-tool", self.sid, call_id),
                 ts=slot["ts"],
                 session_id=self.sid,
                 tool="copilot-vscode",
-                tool_name=str(part.get("toolId") or ""),
+                tool_name=tool_name,
                 project_path=self.project_path,
                 source_event_id=call_id,
                 confirm=_VSCODE_CONFIRM.get(kind, "") if isinstance(kind, int) else "",
                 is_error=1 if kind == 0 else 0,
                 target=_short(shown) if self.keep_text and isinstance(shown, str) else "",
+                mcp_server=server,
+                mcp_tool=server_tool,
+                **found,
+                turn_index=slot.get("turn"),
             )
         )
         # "Reading skill [name](file:///.../name/SKILL.md?vscodeLinkType=skill)"
@@ -1758,6 +2376,29 @@ class VSCodeChatFacts:
                     trigger="agent-invoked",
                 )
             )
+
+
+def target_fields(name: str, args: Any, *, keep_text: bool, server_hint: str = "") -> dict[str, Any]:
+    """``tool_targets.describe_call`` as ToolInvocationRow fields (its ``target`` is ``target_id`` here)."""
+    found = describe_call(name, args, keep_text=keep_text, server_hint=server_hint)
+    found["target_id"] = found.pop("target")
+    return found
+
+
+def error_excerpt(text: Any, keep_text: bool) -> str:
+    """A failed call's error message as kept a year: redacted, one line, at most 300 characters."""
+    return redact_secrets(" ".join(text.split()))[:ERROR_SUMMARY_MAX] if keep_text and isinstance(text, str) else ""
+
+
+def _vscode_part_args(part: dict) -> dict:
+    """The arguments a chat file keeps of a tool call: its ``toolSpecificData``, in argument form."""
+    data = part.get("toolSpecificData") if isinstance(part.get("toolSpecificData"), dict) else {}
+    line = data.get("commandLine")
+    if isinstance(line, dict) and isinstance(line.get("original"), str):
+        return {"command": line["original"]}
+    if isinstance(data.get("agentName"), str):
+        return {"agentName": data["agentName"]}
+    return {}
 
 
 def _vscode_prompt_file(variable_data: Any) -> str:

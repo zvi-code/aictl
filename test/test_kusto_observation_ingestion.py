@@ -382,10 +382,13 @@ def test_fact_privacy_is_applied_before_writer_handoff():
     writer = MemoryWriter()
     buffer = FactBuffer(SessionFacts(writer), tool_calls=ToolCalls(writer, keeps_text=lambda: False))
     buffer.add_tool(ToolInvocationRow(ts=100, session_id="s", tool_name="Bash",
-                                      input={"command": "private text"}, result_summary="private"))
+                                      input={"command": "ls private text"}, result_summary="private"))
     buffer.flush()
     assert any(table == "tool_invocations" for _, table, _ in writer.operations)
     assert "private" not in repr(writer.operations)
+    # The program a command ran is metadata and is kept; its arguments are text.
+    assert any(row.get("target") == "ls" for _, table, rows in writer.operations if table == "tool_invocations"
+               for row in rows)
 
 
 def test_otel_derived_write_path_does_not_read_canonical_rows(tmp_path, monkeypatch):

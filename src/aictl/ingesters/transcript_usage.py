@@ -53,6 +53,7 @@ from ..data.provenance import COPILOT_COST_REASON
 from ..state_file import StateFile
 from ._common import SQLITE_UNAVAILABLE, coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
 from .call_facts import (
+    CLAUDE_SESSION_LINES,
     ClaudeFacts,
     CopilotFacts,
     FactBuffer,
@@ -61,8 +62,9 @@ from .call_facts import (
     copilot_call_key,
     copilot_model,
     list_price,
-    read_claude_agent_role,
+    read_claude_agent_meta,
 )
+from .session_outcomes import MetadataReaders, OutcomeBook
 from .session_titles import (
     CLAUDE_TITLE_TYPES,
     USER,
@@ -110,7 +112,8 @@ PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
 
 
 # Record types consumed by ClaudeAccumulator + ClaudeFacts; all other Claude JSONL lines are skipped before json.loads.
-_CLAUDE_RECORD_TYPES = frozenset({b"assistant", b"user", b"api-request", b"system", b"attachment"}) | CLAUDE_TITLE_TYPES
+_CLAUDE_RECORD_TYPES = frozenset({b"assistant", b"user", b"api-request", b"system", b"attachment"}) | CLAUDE_TITLE_TYPES | {
+    kind.encode() for kind in CLAUDE_SESSION_LINES}
 
 
 @functools.lru_cache(maxsize=4096)
@@ -508,6 +511,16 @@ def iter_claude_files(projects_dir: Path) -> Iterable[Path]:
     return projects_dir.glob("**/*.jsonl")
 
 
+def _parents_first(paths: list[Path]) -> list[Path]:
+    """The files in their order, but a subagent's file after its session's main file when both are read.
+
+    A subagent's lines carry its caller's prompt id; the main file says which turn that is.
+    """
+    mains = {_claude_session_id(p): i for i, p in enumerate(paths) if "subagents" not in p.parts}
+    order = {p: (max(i, mains.get(_claude_session_id(p), -1)), "subagents" in p.parts, i) for i, p in enumerate(paths)}
+    return sorted(paths, key=order.__getitem__)
+
+
 # ── Codex ──────────────────────────────────────────────────────────────
 
 
@@ -713,7 +726,8 @@ class CopilotStoreReader:
     """
 
     # Columns read for the per-call rows. Older stores may lack some.
-    _CALL_COLUMNS = ("agent_id", "duration_ms", "time_to_first_token_ms", "output_ttft_ms", "finish_reason")
+    _CALL_COLUMNS = ("agent_id", "duration_ms", "time_to_first_token_ms", "output_ttft_ms", "finish_reason",
+                     "reasoning_effort", "reasoning_tokens")
 
     def __init__(self, copilot_home: Path, facts: FactBuffer | None = None) -> None:
         self.facts = facts
@@ -807,7 +821,7 @@ class CopilotStoreReader:
             self._cwd = {str(i): str(c or "") for i, c in conn.execute("SELECT id, cwd FROM sessions")}
         occurrence = self._occurrence.get((sid, tokens), 0)
         self._occurrence[(sid, tokens)] = occurrence + 1
-        agent_id, duration, ttft, output_ttft, finish = call
+        agent_id, duration, ttft, output_ttft, finish, effort, reasoning = call
         if not store:
             # Stored by an earlier run. The occurrence count above keeps later keys the same.
             if agent_id:
@@ -833,6 +847,9 @@ class CopilotStoreReader:
                 duration_ms=float(duration or 0),
                 ttft_ms=float(ttft or output_ttft or 0),
                 finish_reason=str(finish or ""),
+                # The store numbers turns its own way; the events file gives turn_index.
+                effort=str(effort or "")[:20],
+                thinking_tokens=int(reasoning) if isinstance(reasoning, int) else None,
             )
         )
         if agent_id and agent_id not in self._agents_seen:
@@ -1130,6 +1147,9 @@ class TranscriptUsageIngester:
         # and profiles, and the chats of windows that had no folder open.
         self._discover_vscode = vscode_workspaces is None
         self.facts = FactBuffer(self._fact_target, time.time() - backfill_days * 86400, tool_calls=tool_calls)
+        # What each session achieved, from its transcripts and its metadata files.
+        self._book = self.facts.book = OutcomeBook()
+        self._metadata = MetadataReaders(self.facts, self._book)
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
         self.facts.surface = self._store.surface
         self._claude_facts = ClaudeFacts(self.facts)
@@ -1222,6 +1242,8 @@ class TranscriptUsageIngester:
             self._tails = {Path(path): str(tail) for path, tail in entry.get("tails", {}).items()}
             row_id, mark = entry.get("copilot_store", (0, ""))
             self._store.stored = self._saved_store = (int(row_id), str(mark))
+            self._book.load(entry.get("outcomes"))
+            self._metadata.load(entry.get("metadata"))
             return checkpoints
         except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
             log.warning("transcript-usage: checkpoints unavailable; source files will be read again: %s", exc)
@@ -1229,7 +1251,8 @@ class TranscriptUsageIngester:
 
     def _save_checkpoints(self, ts: float) -> None:
         position = self._store.position()
-        if self._checkpoint is None or not (self._read_complete or position != self._saved_store):
+        if self._checkpoint is None or not (self._read_complete or position != self._saved_store
+                                            or self._book.dirty or self._metadata.dirty):
             return
         cutoff_ns = int((ts - self.backfill_days * 86400) * 1e9)
         self._checkpoints = {p: sig for p, sig in self._checkpoints.items() if sig[0] >= cutoff_ns}
@@ -1239,9 +1262,12 @@ class TranscriptUsageIngester:
                 "ts": ts, "files": {str(p): sig for p, sig in self._checkpoints.items()},
                 "copilot_store": list(position),
                 "tails": {str(p): tail for p, tail in self._tails.items() if p in self._checkpoints},
+                "outcomes": self._book.dump(ts - self.backfill_days * 86400),
+                "metadata": self._metadata.dump(),
             }})
             self._read_complete.clear()
             self._saved_store = position
+            self._book.dirty = self._metadata.dirty = False
         except OSError as exc:
             log.warning("transcript-usage: checkpoints not saved; the next poll will retry: %s", exc)
 
@@ -1340,12 +1366,15 @@ class TranscriptUsageIngester:
             finally:
                 self.facts.replaying = False
 
-        for path in self._changed(claude_files, cutoff, "claude-code"):
+        for path in _parents_first(self._changed(claude_files, cutoff, "claude-code")):
             sid = _claude_session_id(path)
-            agent_id, role = self._claude_agent(path)
+            agent_id, meta = self._claude_agent(path)
+            role = str(meta.get("agentType") or "")[:120]
+            if not self._offsets.get(path):
+                self._claude_facts.begin_file(sid, agent_id)
             for obj in read(path, _CLAUDE_RECORD_TYPES):
                 self._claude.feed(sid, obj)
-                self._claude_facts.feed(sid, obj, agent_id=agent_id, role=role)
+                self._claude_facts.feed(sid, obj, agent_id=agent_id, role=role, meta=meta)
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
             self._check_fact_write()
@@ -1456,9 +1485,11 @@ class TranscriptUsageIngester:
             self._check_fact_write()
             self._save_progress(touched, now, published)
 
+        self._read_metadata()
         self._claude_facts.close_idle_agents(now - IDLE_END_S)
         self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
         self._claude_facts.flush_open_agents()
+        self._add_outcomes()
         self.facts.flush(retry=False)
         self._check_fact_write()
         if self.facts.tool_calls is not None:
@@ -1597,12 +1628,30 @@ class TranscriptUsageIngester:
         self._claude_facts.close_idle_agents(now - IDLE_END_S)
         self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
         self._claude_facts.flush_open_agents()
+        self._add_outcomes()
         self.facts.flush(retry=False)
         if len(self.facts) or self.facts.write_error is not None:
             return
         self._persist(touched.values(), now, published)
         self._save_checkpoints(now)
         self._progress_saved = time.monotonic()
+
+    def _read_metadata(self) -> None:
+        """The session files that are not transcripts, each read again only when it changed."""
+        readers = self._metadata
+        for root in self._roots("claude", self.claude_projects):
+            readers.claude_workflows(root)
+        try:
+            import sqlite3  # noqa: F401 - the Copilot metadata files are SQLite
+        except ImportError:
+            return
+        for root in self._roots("copilot", self.copilot_state):
+            readers.copilot_todos(root)
+            readers.copilot_store(root.parent / "session-store.db")
+
+    def _add_outcomes(self) -> None:
+        for row in self._book.changed_rows():
+            self.facts.add_outcome(row)
 
     def _check_fact_write(self) -> None:
         if self.facts.write_error is not None:
@@ -1670,11 +1719,11 @@ class TranscriptUsageIngester:
         workspaces, empty_windows = chat_session_dirs()
         return [self.vscode_workspaces, *(d for d in workspaces if d != self.vscode_workspaces)], empty_windows
 
-    def _claude_agent(self, path: Path) -> tuple[str, str]:
-        """(agent id, role) of a file under ``subagents/``, or empty for a main session."""
+    def _claude_agent(self, path: Path) -> tuple[str, dict]:
+        """(agent id, ``meta.json`` fields) of a file under ``subagents/``, or empty for a main session."""
         if "subagents" not in path.parts:
-            return "", ""
-        return path.stem.removeprefix("agent-"), read_claude_agent_role(path)
+            return "", {}
+        return path.stem.removeprefix("agent-"), read_claude_agent_meta(path)
 
     def _debug_facts_for(self, path: Path, sid: str) -> VSCodeDebugFacts:
         facts = self._vscode_debug_facts.get(path)

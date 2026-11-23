@@ -209,7 +209,7 @@ class TestDbStats:
         assert result.exit_code == 0
         rows = {r["table"]: r for line in result.output.splitlines() if (r := json.loads(line))}
         assert rows["events"]["key"] == ["project", "node_id", "source_key"]
-        assert rows["events_text"]["retention_days"] == 14
+        assert rows["events_text"]["retention_days"] == 365
         assert rows["files"]["columns"]["_deleted"] == "bool"
 
 

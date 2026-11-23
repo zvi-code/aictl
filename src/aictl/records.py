@@ -312,6 +312,19 @@ class RequestRow:
     # which a transcript names too. "" when not sent.
     request_id: str = ""
     response_id: str = ""
+    # Which user turn of the session the call belongs to (1 = the first); None when the source does not say.
+    turn_index: int | None = None
+    effort: str = ""  # reasoning effort the tool asked for: low, medium, high, ...
+    thinking_ms: float | None = None
+    # What the tool itself says caused the call (Claude Code ``attributionMcpServer``, ``attributionSkill``).
+    attribution_mcp_server: str = ""
+    attribution_skill: str = ""
+    requested_model: str = ""  # set only when it differs from the model that answered
+    # Thinking (reasoning) of the call, without its text. None means the source did not report it.
+    thinking_chars: int | None = None  # length of the visible thinking text
+    thinking_blocks: int | None = None  # visible thinking blocks
+    thinking_redacted: int | None = None  # redacted or encrypted blocks: counted, never stored
+    thinking_tokens: int | None = None  # reasoning tokens, where the tool reports them
 
 
 @dataclass(slots=True)
@@ -351,6 +364,26 @@ class ToolInvocationRow:
     dedup_key: str = ""
     input_bytes: int | None = None  # size of the arguments the agent sent, as UTF-8 text
     output_bytes: int | None = None  # size of the result the agent got back, as UTF-8 text
+    # Kept a year, never prose (see aictl.tool_targets). ``target_id`` is column ``target`` of
+    # ``tool_invocations``; ``target`` above is the display text of the 14-day text table.
+    mcp_server: str = ""
+    mcp_tool: str = ""
+    target_kind: str = ""
+    target_id: str = ""
+    target_chars: int | None = None  # length of the command line, URL or search text before it was cut
+    target_truncated: bool | None = None
+    command_name: str = ""  # the program a command ran
+    url_host: str = ""
+    search_path: str = ""  # the folder a search looked in
+    arg_names: str = ""  # an MCP call's argument names, comma-separated
+    read_offset: int | None = None
+    read_limit: int | None = None
+    agent_label: str = ""  # the caller's short description of a subagent call
+    error_summary: str = ""  # a failed call's error message, redacted and short (text: only while text is kept)
+    interrupted: bool | None = None
+    turn_index: int | None = None
+    prompt_id: str = ""
+    request_key: str = ""  # dedup_key of the requests row of the model call that asked for this tool call
 
 
 @dataclass(slots=True)
@@ -484,6 +517,13 @@ class AgentRow:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     cost_usd: float = 0.0
+    # The short task label the calling agent gave (a name, at most 200 characters; the prompt is text).
+    description: str = ""
+    spawn_depth: int | None = None
+    parent_agent_id: str = ""  # '' when the main agent started it
+    parent_tool_use_id: str = ""
+    resolved_model: str = ""
+    status: str = ""
 
 
 @dataclass(slots=True)
@@ -551,6 +591,12 @@ class SessionStepRow:
 
 _STEP_FIELDS = tuple(k for k in SessionStepRow.__dataclass_fields__ if k != "text")
 STEP_TEXT_LIMIT = 32768
+# The longest text value kept at all. A value over [storage] large_payload_bytes keeps a preview
+# in its own table and its full text in text_payloads (SessionFacts.spill).
+TEXT_VALUE_MAX = 1_000_000
+TEXT_PREVIEW_CHARS = 4000
+# Thinking is exempt from the payload table: it keeps its whole text, up to what a Kusto value holds.
+THINKING_TEXT_MAX = 250_000
 
 
 @dataclass(slots=True)
@@ -570,6 +616,85 @@ class TurnRequestLink:
 
 
 @dataclass(slots=True)
+class SessionTurnRow:
+    """One user turn of a Claude Code session: one ``promptId``. Counts include the turn's subagents."""
+
+    session_id: str
+    prompt_id: str
+    ts: float  # when the turn started
+    turn_index: int | None = None
+    tool: str = "claude-code"
+    project_path: str = ""
+    origin: str = ""  # human, task_notification, peer, ... (Claude Code ``turnOrigin`` / ``origin.kind``)
+    permission_mode: str = ""
+    ended_at: float = 0.0
+    request_count: int = 0
+    tool_call_count: int = 0
+    error_count: int = 0
+    api_error_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    files_changed: int = 0
+    compactions: int = 0
+    ended_with_api_error: int = 0
+    thinking_chars: int = 0
+    thinking_blocks: int = 0
+    thinking_redacted: int = 0
+    thinking_ms: float = 0.0
+
+
+@dataclass(slots=True)
+class SessionFileRow:
+    """How one file was touched in a session, by one tool, from one agent's record."""
+
+    session_id: str
+    path: str
+    how: str  # read | edited | created
+    tool_name: str
+    agent_id: str = ""
+    ts: float = 0.0  # last time
+    first_ts: float = 0.0
+    count: int = 0
+    tool: str = ""
+    project_path: str = ""
+
+
+@dataclass(slots=True)
+class SessionDigestRow:
+    """A readable "what happened" text the tool wrote about a session. Text: kept 14 days, only with text kept."""
+
+    session_id: str
+    kind: str  # checkpoint | task_summary | compact_summary | todo_list | workflow_summary
+    seq: int
+    ts: float
+    title: str = ""
+    text: str = ""
+    tool: str = ""
+    project_path: str = ""
+
+
+@dataclass(slots=True)
+class SessionThinkingRow:
+    """One visible thinking block of a model call. Text: kept 14 days, only with text kept."""
+
+    session_id: str
+    thinking_key: str  # the block's own key: the call's ids and the block's index
+    ts: float
+    agent_id: str = ""
+    request_key: str = ""  # dedup_key of the requests row; '' when the source cannot tell the call
+    message_id: str = ""
+    turn_index: int | None = None
+    block_index: int = 0
+    model: str = ""
+    chars: int = 0  # length of the whole text, also when the stored text is cut
+    text: str = ""
+    tool: str = ""
+    project_path: str = ""
+
+
+@dataclass(slots=True)
 class CallFacts:
     """Rows read from a tool's own session files, written in one transaction."""
 
@@ -584,10 +709,16 @@ class CallFacts:
     context_items: list[ContextItemRow] = field(default_factory=list)
     steps: list[SessionStepRow] = field(default_factory=list)
     cost_links: list[TurnRequestLink] = field(default_factory=list)
+    turns: list[SessionTurnRow] = field(default_factory=list)
+    session_files: list[SessionFileRow] = field(default_factory=list)
+    digests: list[SessionDigestRow] = field(default_factory=list)
+    outcomes: list[dict[str, Any]] = field(default_factory=list)
+    thinking: list[SessionThinkingRow] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.steps) + len(self.cost_links) + len(self.context_items)
+            len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
+            + len(self.steps) + len(self.cost_links) + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)
             + len(self.requests)

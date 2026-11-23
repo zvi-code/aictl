@@ -16,6 +16,7 @@ from ..cli_context import CliContext
 from ..kusto import kusto_settings
 from ..platforms import config_path, show_config, write_default_config
 from ..stores.base import StoreError
+from ..stores.kusto.tables import RETENTION_CLASSES
 
 # ─── db ─────────────────────────────────────────────────────────────────────
 
@@ -398,6 +399,110 @@ def reset(ctx, yes, kusto_cluster, kusto_database):
             raise click.exceptions.Exit(1)
     except StoreError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+def _retention_commands(ctx):
+    """(settings, management command, query) for the configured Kusto store."""
+    from ..stores.kusto.client import KustoClientFactory, Result
+
+    settings = _admin_settings(ctx)
+    client = KustoClientFactory.client(settings)
+    return (
+        settings,
+        lambda text: Result.from_response(client.execute_mgmt(settings.database, text)),
+        lambda text: Result.from_response(client.execute_query(settings.database, text)),
+    )
+
+
+def _retention_by_class() -> tuple[dict[str, int], int]:
+    """(hours per retention class, large_payload_bytes) as configured."""
+    from ..platforms import load_config
+
+    try:
+        cfg = load_config()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return cfg.retention_by_class(), cfg.large_payload_bytes
+
+
+@db.group("retention", invoke_without_command=True)
+@click.pass_context
+def retention(ctx):
+    """Show how long each class of data is kept, as configured and on the cluster, with table sizes."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from ..stores.kusto import retention as kusto_retention
+    from ..stores.kusto.tables import format_period
+
+    hours, threshold = _retention_by_class()
+    settings, mgmt, _ = _retention_commands(ctx)
+    try:
+        rows = kusto_retention.status(hours, mgmt)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    total = sum(row.extent_bytes for row in rows) or 1
+    click.echo(f"Retention in {settings.uri} (set in [storage.retention] of {config_path()}):")
+    click.echo(f"  {'Class':<15} {'Kept':>6} {'Size MB':>11} {'Share':>6}")
+    for cls, value in hours.items():
+        size = sum(row.extent_bytes for row in rows if row.retention_class == cls)
+        click.echo(f"  {cls:<15} {format_period(value):>6} {size / 1e6:>11.1f} {100 * size / total:5.1f}%")
+    click.echo(f"  A text value over large_payload_bytes = {threshold} keeps a preview; its full text is in "
+               "text_payloads (class large_payload).")
+    click.echo("")
+    click.echo(f"  {'Table':<38} {'Class':<14} {'Configured':>10} {'On cluster':>11} {'Rows':>12} {'MB':>10} {'Share':>6}")
+    for row in sorted(rows, key=lambda r: (-r.extent_bytes, r.table)):
+        cluster = "-" if row.cluster_hours is None else (
+            format_period(int(row.cluster_hours)) if row.cluster_hours == int(row.cluster_hours) else f"{row.cluster_hours:g}h")
+        note = "  differs" if row.differs else ""
+        click.echo(f"  {row.table:<38} {row.retention_class:<14} {format_period(row.configured_hours):>10} {cluster:>11}"
+                   f" {row.rows:>12} {row.extent_bytes / 1e6:>10.1f} {100 * row.extent_bytes / total:5.1f}%{note}")
+    differing = sum(1 for row in rows if row.differs)
+    if differing:
+        click.echo(f"\n{differing} table(s) differ; the daemon applies the configured periods when it starts.")
+
+
+@retention.command("set")
+@click.argument("retention_class", metavar="CLASS", type=click.Choice(RETENTION_CLASSES))
+@click.argument("period")
+@click.option("--yes", "-y", is_flag=True, help="Confirm deleting data older than a shorter limit")
+@click.pass_context
+def retention_set(ctx, retention_class, period, yes):
+    """Keep CLASS for PERIOD (such as 24h or 365d; a bare number is days): save it and apply it.
+
+    Lowering a period deletes data older than the new limit, which cannot be undone.
+    """
+    import sys
+
+    from ..platforms import set_retention_setting
+    from ..stores.kusto import retention as kusto_retention
+    from ..stores.kusto.tables import format_period, parse_period
+
+    try:
+        hours = parse_period(int(period) if period.isdigit() else period)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="PERIOD") from exc
+    settings, mgmt, query = _retention_commands(ctx)
+    try:
+        change, lower = kusto_retention.plan(retention_class, hours, mgmt)
+        removed = kusto_retention.removals(lower, hours, query)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    if lower:
+        click.echo(f"Keeping {retention_class} for {format_period(hours)} deletes, by ingestion time:")
+        for item in removed:
+            oldest = item.oldest.isoformat() if hasattr(item.oldest, "isoformat") else "-"
+            click.echo(f"  {item.table}: {item.rows} rows, oldest {oldest}")
+        if not yes:
+            if not sys.stdin.isatty():
+                raise click.ClickException("Lowering retention deletes data and cannot be undone; run again with --yes")
+            click.confirm("Delete this data? This cannot be undone", abort=True)
+    path = set_retention_setting(retention_class, format_period(hours))
+    try:
+        applied = kusto_retention.apply(change, hours, mgmt)
+    except Exception as exc:
+        raise click.ClickException(f"{exc} (the setting is saved in {path}; the daemon applies it when it starts)") from exc
+    click.echo(f"Set {retention_class} = \"{format_period(hours)}\" in {path}; {len(applied)} table(s) changed "
+               f"in {settings.uri}.")
 
 
 # ─── config ──────────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ from aictl.stores.kusto.client import KustoClientFactory, Result
 from aictl.stores.kusto.reader import KustoReader
 from aictl.stores.kusto.recorded import UnrecordedQueryError
 from aictl.stores.kusto.schema import SchemaStatus, ensure_schema
-from aictl.stores.kusto.tables import SESSION_HISTORY_TABLES, TABLES
+from aictl.stores.kusto.tables import SESSION_HISTORY_TABLES, TABLE_RETENTION_CLASS, TABLES, tables_with_retention
 
 RECORDINGS = Path(__file__).parent / "recordings"
 SETTINGS = KustoSettings("https://recording.invalid", "test_db", auth="none")
@@ -47,7 +47,7 @@ assert "aictl.kusto.connection" not in sys.modules
         open_store("missing")
 
 
-def test_native_tables_use_scoped_keys_and_text_tables_retain_less_history():
+def test_native_tables_use_scoped_keys_and_text_tables_have_their_own_retention_class():
     assert not any(name.startswith("ui_") for name in TABLES)
     for name, spec in TABLES.items():
         columns = dict(spec.columns)
@@ -59,19 +59,27 @@ def test_native_tables_use_scoped_keys_and_text_tables_retain_less_history():
         if spec.tombstone:
             assert columns[spec.tombstone] == "bool"
         if moved := TABLES.get(f"{name}_text"):
-            assert moved.retention_days == 14
-            assert spec.retention_days == (365 if name.removesuffix("_observations") in SESSION_HISTORY_TABLES else 30)
+            # A text table can be shortened without its metadata table.
+            assert TABLE_RETENTION_CLASS[f"{name}_text"] != TABLE_RETENTION_CLASS[name]
+            assert spec.retention_days == 365
+            assert moved.retention_period_hours == (24 if TABLE_RETENTION_CLASS[f"{name}_text"] == "tool_content" else 8760)
             assert moved.key[:len(spec.key)] == spec.key
 
 
-def test_session_history_is_kept_for_a_year_and_text_is_not():
+def test_session_history_and_text_are_kept_for_a_year_by_default_and_text_can_be_kept_less():
     assert SESSION_HISTORY_TABLES <= TABLES.keys()
     for name in ("sessions", "session_usage", "requests", "session_sources", "sessions_observations"):
-        assert TABLES[name].retention_days == 365
-    for name, spec in TABLES.items():
-        if name.endswith("_text") or name in ("session_prompts", "vscode_chat_messages", "copilot_session_messages"):
-            assert spec.retention_days == 14
-    assert TABLES["system_snapshots"].retention_days == TABLES["metrics"].retention_days == 30
+        assert TABLES[name].retention_days == 365 and TABLE_RETENTION_CLASS[name] == "history"
+    texts = [name for name in TABLES
+             if name.endswith("_text") or name in ("session_prompts", "vscode_chat_messages", "copilot_session_messages")]
+    # Tool call content is kept 24 hours; every other text a year.
+    assert {name: TABLES[name].retention_literal for name in texts if TABLES[name].retention_literal != "365d"} == {
+        "tool_invocations_text": "24h", "tool_invocations_observations_text": "24h", "hook_calls_text": "24h"}
+    assert TABLES["system_snapshots"].retention_days == TABLES["metrics"].retention_days == 365
+    shorter = tables_with_retention({"text": 14 * 24, "message": 14 * 24, "file_text": 14 * 24})
+    assert all(shorter[name].retention_days == 14 for name in texts
+               if TABLE_RETENTION_CLASS[name] in ("text", "message", "file_text"))
+    assert shorter["session_prompts"].retention_days == shorter["sessions"].retention_days == 365
 
 
 def response(columns=(), rows=()):
@@ -196,7 +204,7 @@ def test_schema_widens_tables_then_falls_back_when_streaming_policy_denied():
                            tables={"files": TABLES["files"]})
     assert not status.streaming_available and "Database Admin" in status.warning
     assert "['project']:string" in next(s for s in sent if s.startswith(".create-merge"))
-    assert sent[-2].endswith("policy retention softdelete = 30d")
+    assert sent[-2].endswith("policy retention softdelete = 365d")
     assert sent[-1].startswith(".set-or-append ['schema_version'] <|")
     assert not any(s.startswith(".clear") for s in sent)
 

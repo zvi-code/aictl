@@ -33,7 +33,7 @@ class MessageFacts:
         return self.sessions.keeps_text()
 
     def text(self, ts, content) -> str:
-        return content[:20_000] if self.sessions.allows_text(ts) else ""
+        return content[:20_000] if self.sessions.allows_text(ts, "message") else ""
 
     def record_data_quality(self, *args, **kwargs) -> None:
         self.quality.record_data_quality(*args, **kwargs)

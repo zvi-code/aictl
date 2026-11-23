@@ -63,7 +63,7 @@ def schema_rows():
 TRIM_TIMESTAMPS = {
     name: ("ts", "real") for name in (
         "agents_text", "events_text", "file_history_text", "hook_calls_text", "memory_snapshots_text",
-        "session_prompts", "session_step_text",
+        "session_prompts", "session_step_text", "session_digests", "session_thinking",
     )
 }
 TRIM_TIMESTAMPS.update({

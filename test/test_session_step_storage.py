@@ -21,9 +21,11 @@ def test_steps_keep_replay_keys_and_apply_the_capture_floor():
     assert (row["turn_id"], row["context_tokens"], row["context_limit"], row["text_status"]) == (
         "turn", 0, None, "truncated",
     )
-    text, = current(writer, "session_step_text")
-    assert len(text["text"]) == STEP_TEXT_LIMIT
+    text, = current(writer, "session_step_text")  # a preview; the full text is in text_payloads
+    assert "preview of" in text["text"] and len(text["text"]) < STEP_TEXT_LIMIT
     assert "secretvalue" not in text["text"] and "\npytest" in text["text"]
+    full = "".join(r["text"] for r in sorted(written(writer, "text_payloads"), key=lambda r: r["chunk_no"]))
+    assert len(full) > STEP_TEXT_LIMIT and "secretvalue" not in full
     writer.operations.clear()
     floor = ts + 1
     facts.write(CallFacts(steps=[SessionStepRow("event:1", ts, "s", "message", text="old")]))

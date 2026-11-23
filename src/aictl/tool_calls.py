@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING
 
 from .stores import writer_or_discard
 from .stores.base import Row, Writer
+from .tool_targets import describe_call, split_mcp
+
+# The fields of a ToolInvocationRow that say what the call acted on (``target_id`` is column ``target``).
+_TARGET_FIELDS = ("target_kind", "target_id", "target_chars", "target_truncated", "command_name", "url_host",
+                  "search_path", "arg_names", "read_offset", "read_limit", "agent_label")
 
 if TYPE_CHECKING:
     from .records import ToolInvocationRow
@@ -36,9 +41,12 @@ def _key(row: ToolInvocationRow) -> str:
 
 
 class ToolCalls:
-    def __init__(self, writer: Writer | None, *, keeps_text: Callable[[], bool], limit: int = 20_000) -> None:
+    def __init__(self, writer: Writer | None, *, keeps_text: Callable[[], bool], limit: int = 20_000,
+                 text_floor: Callable[[], float] = lambda: 0.0) -> None:
         self._writer = writer_or_discard(writer)
         self._keeps_text = keeps_text
+        # Tool content (arguments, edit text, result excerpt) older than its retention is not written.
+        self._text_floor = text_floor
         self._limit = limit
         self._lock = threading.Lock()
         self._calls: OrderedDict[str, tuple[Row, Row]] = OrderedDict()
@@ -75,16 +83,27 @@ class ToolCalls:
             is_error=max(row.is_error, previous.get("is_error", 0)),
         )
         for field in ("project_path", "source_event_id", "agent_id", "confirm", "duration_ms",
-                      "confirm_wait_ms", "pid", "request_id"):
+                      "confirm_wait_ms", "pid", "request_id", "prompt_id", "request_key", "error_summary"):
             metadata[field] = getattr(row, field) or previous.get(field, getattr(row, field))
-        for field in ("exit_code", "input_bytes", "output_bytes"):
+        for field in ("exit_code", "input_bytes", "output_bytes", "turn_index", "interrupted"):
             value = getattr(row, field)
             metadata[field] = value if value is not None else previous.get(field)
+        # What the call acted on, kept a year: from the reader, else from the name and arguments.
+        found = {name: getattr(row, name) for name in _TARGET_FIELDS}
+        found["target"] = found.pop("target_id")
+        if not row.target_kind:
+            found = describe_call(row.tool_name, row.input, keep_text=self._keeps_text())
+        server, tool = (row.mcp_server, row.mcp_tool) if row.mcp_server else split_mcp(row.tool_name)
+        found.update(mcp_server=server, mcp_tool=tool)
+        for field, value in found.items():
+            metadata[field] = value if value not in ("", None) else previous.get(field, value)
         if metadata["confirm"] == "pending" and previous.get("confirm") in ("auto", "approved", "denied"):
             metadata["confirm"] = previous["confirm"]
         if previous.get("source") == "transcript" and not transcript:
             for field in ("tool", "source", "confirm", "confirm_wait_ms", "agent_id", "project_path",
-                          "duration_ms", "exit_code", "input_bytes", "output_bytes"):
+                          "duration_ms", "exit_code", "input_bytes", "output_bytes", "turn_index", "prompt_id",
+                          "request_key", "error_summary", "interrupted", "mcp_server", "mcp_tool",
+                          *(name if name != "target_id" else "target" for name in _TARGET_FIELDS)):
                 if previous.get(field) not in (None, ""):
                     metadata[field] = previous[field]
             metadata["source"] = "transcript"
@@ -92,7 +111,7 @@ class ToolCalls:
         if previous and project != previous["project"]:
             self._writer.delete("tool_invocations", [self._key_fields(previous)])
         text = {}
-        if self._keeps_text():
+        if self._keeps_text() and row.ts >= self._text_floor():
             text = self._key_fields(metadata) | {
                 "input": (row.input if isinstance(row.input, str) else json.dumps(row.input, default=str))
                 if row.input else prev_text.get("input", "{}"),

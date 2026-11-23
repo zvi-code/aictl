@@ -12,6 +12,7 @@ from typing import Any
 
 from ..context_audit import _redact
 from ..records import _session_uuid as _raw_session_uuid
+from ..tool_targets import split_mcp
 from ..tools import TOOL_LABELS
 from .history_scope import ScopeError, identity, identity_parts
 from .projections.history import (
@@ -197,6 +198,9 @@ def mcp_server_of(tool_name: str, known: Iterable[str] = ()) -> str | None:
     """
     if not is_server_tool(tool_name):
         return None
+    server = split_mcp(tool_name)[0]
+    if server:
+        return server
     if tool_name.startswith("mcp__"):
         return tool_name[5:].split("__", 1)[0]
     if tool_name.startswith("mcp:"):
