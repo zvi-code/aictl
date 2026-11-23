@@ -147,7 +147,8 @@ export const overviewB: readonly PanelDef[] = [
       metric('cpu_peak', 'procs.tool.live.cpu', 'Peak CPU'), metric('workspace_bytes', 'board.machine.traffic.workspace', 'Workspace size'),
       metric('workspace_list', 'procs.tool.live.workspaces', 'Workspaces')],
     empty: 'No traffic reports.', load: () => import('./b/Machine').then(m => ({ default: m.Traffic })) },
-  // Daemon resources combine stats, helper rows and a Health navigation action.
+  // Daemon resources combine stats, helper rows and a Health navigation action; outside local scope they show
+  // each node's daemon from its last health report (`/api/board/nodes?view=health`).
   { ...base, id: 'daemon', title: 'aictl resources and history', kind: 'custom',
     sources: [{ field: 'self' }, { ...health, path: 'pipeline.self' }, { ...health, path: 'pipeline.stream' }],
     columns: [metric('cpu', 'self.cpu_percent', 'CPU'), metric('rss', 'self.memory_rss', 'RAM'),

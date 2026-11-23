@@ -7,7 +7,8 @@ import { SeriesView } from '../../kinds/Series'
 import type { PanelProps, Read, Row } from '../../types'
 import { buckets, field, health, machine, metric, processes, stamp } from '../b'
 import { Bars, bins, Comparisons, severityLabel, severityTone, StatStrip, topRows, usable } from '../Summary'
-import { completeSum, coreBars, latestTotal, procTree, runningSessions, UNLISTED_SESSION } from './resources'
+import { healthNodePath } from '../../health/scopedHealth'
+import { completeSum, coreBars, daemonReports, latestTotal, procTree, runningSessions, UNLISTED_SESSION } from './resources'
 import { DataTable, detailRead, displayField, identity, join, Metrics, number, rowsFrom, scopedPath, scopeMatches, styles, text, toolName, View, withRows, type Entry } from './View'
 
 type ReportedMachine = Extract<DetailMachine, { hosts: unknown }>
@@ -340,9 +341,30 @@ const historyFields = [
 ]
 const streamFields = [field('connected_clients', 'Stream clients'), metric('snapshot_age_s', 'board.self.stream', 'Snapshot age')]
 
+const daemonColumns = [field('reporting', 'Reporting now'), stamp('captured_at', 'Last report'),
+  metric('cpu', 'self.cpu_percent', 'Daemon CPU'), metric('rss', 'self.memory_rss', 'Daemon RAM'), metric('threads', 'self.threads', 'Threads'),
+  metric('uptime_s', 'self.uptime', 'Running for'), field('writer', 'Store writer'),
+  metric('rows_sent', 'self.db_rows', 'Rows written since start'), metric('rows_dropped', 'self.db_rows', 'Rows dropped'),
+  metric('ingest_failures', 'board.kpi.failures', 'Ingest failures')]
+
+/** In node and fleet scope: each node's aictl daemon as its last health report states it. */
+function FleetDaemons(props: PanelProps) {
+  const { ctx, def } = untrack(() => props)
+  const response = ctx.detail<DetailNodes>(() => healthNodePath(ctx.scope(), ctx.nodeId()))
+  const view = () => {
+    const value = response()?.data
+    return value && value.view === 'health' && value.scope === ctx.scope() &&
+      (ctx.scope() !== 'node' || value.rows.every(row => row.node_id === ctx.nodeId())) ? value : undefined
+  }
+  const rows = createMemo(() => rowsFrom(daemonReports(view()?.rows ?? []), row => identity(row.node_id)))
+  return <View result={() => withRows(detailRead(response(), view()?.rows, ctx.paused()), rows())} retry={ctx.refresh} empty={def.empty}>
+    <p class={styles.note}>The last health report of each node’s aictl daemon. The time range does not apply.</p>
+    <DataTable ctx={ctx} label="aictl on each node" columns={daemonColumns} rows={rows()} />
+  </View>
+}
+
 export function Daemon(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
-  const remote = useMachine(ctx)
   const local = () => ctx.scope() === 'local'
   const read = () => ctx.read(def.sources[1])
   const self = () => ctx.board('self')
@@ -351,11 +373,7 @@ export function Daemon(props: PanelProps) {
   const helpers = createMemo(() => rowsFrom(self()?.children ?? [], row => identity(row.pid)))
   return <div class={styles.stack}>
     <div class={styles.actions}><button type="button" onClick={() => ctx.navigate({ screen: 'health' })}>Open aictl Health</button></div>
-    <Show when={local()} fallback={<View result={() => remote.result(remote.data()?.hosts)} retry={ctx.refresh} empty={def.empty}>
-      <DataTable ctx={ctx} label="Recorded daemons" columns={[field('daemon_pid', 'Daemon PID')]}
-        rows={rowsFrom(remote.data()?.hosts ?? [], row => identity(row.node_id))} />
-      <p class={styles.note}>Local daemon resources are not available from this source.</p>
-    </View>}>
+    <Show when={local()} fallback={<FleetDaemons {...props} />}>
       <View result={() => self() && read().state === 'unavailable' ? ctx.read(def.sources[0]) : read()} retry={ctx.refresh} empty={def.empty}>
         <Metrics fixed ctx={ctx} columns={def.columns} value={{ ...pipeline(), cpu: pipeline()?.cpu ?? self()?.cpu_percent,
           rss: pipeline()?.rss ?? self()?.memory_rss_bytes }} />

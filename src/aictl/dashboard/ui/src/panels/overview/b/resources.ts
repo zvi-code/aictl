@@ -122,3 +122,29 @@ export function runningSessions(nodes: readonly RuntimeNode[], processes: readon
   const capped = nodes.filter(node => node.agents && node.agents.total > node.agents.rows.length).map(node => node.node_id)
   return { rows, silent, capped }
 }
+
+const record = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+
+/** What each node's last health report says about its aictl daemon and its writes to the store. */
+export function daemonReports(nodes: readonly object[]) {
+  return nodes.flatMap(entry => {
+    const node = entry as Record<string, unknown>
+    const id = word(node.node_id)
+    if (!id) return []
+    const sample = record(node.client_sample)
+    const daemon = record(record(sample?.runtime)?.daemon)
+    const writer = record(record(sample?.store)?.writer)
+    const tables = Object.values(record(writer?.tables) ?? {}).map(record)
+    const total = (key: string) => {
+      const values = tables.map(table => finite(table?.[key]))
+      return values.length && values.every(value => value != null) ? values.reduce<number>((sum, value) => sum + value!, 0) : undefined
+    }
+    return [{
+      node_id: id, captured_at: finite(node.captured_at),
+      reporting: node.status === 'reported' ? 'Yes' : node.status === 'stale' ? 'No, last report older than 5 minutes' : 'No report',
+      cpu: finite(daemon?.cpu_percent), rss: finite(daemon?.rss_bytes), threads: finite(daemon?.threads),
+      uptime_s: finite(daemon?.uptime_s), writer: word(writer?.status),
+      rows_sent: total('rows_sent'), rows_dropped: total('rows_dropped'), ingest_failures: total('ingest_failures'),
+    }]
+  })
+}

@@ -3,7 +3,7 @@ import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { metric, overviewB } from '../../src/panels/overview/b'
 import { Coverage } from '../../src/panels/overview/b/Effects'
-import { Processes, Traffic } from '../../src/panels/overview/b/Machine'
+import { Daemon, Processes, Traffic } from '../../src/panels/overview/b/Machine'
 import { displayField } from '../../src/panels/overview/b/View'
 import type { PanelContext, PanelDef, PanelProps } from '../../src/panels/types'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -105,6 +105,31 @@ describe('BOARD-MACHINE-02 · Network, tokens and files writes each unit once an
     const headers = Array.from(view.querySelectorAll('thead th')).map(cell => cell.textContent?.replace(/\s*↕$/, ''))
     expect(headers).not.toContain('Tokens per second (estimate)')
     expect(text).not.toContain('network estimates')
+    dispose()
+  })
+})
+
+describe('BOARD-MACHINE-03 · aictl resources and history in fleet scope shows what each node’s daemon reported', () => {
+  it('shows report time, whether it is current, the daemon’s own load and its writes, never a remote PID', () => {
+    const report = (node_id: string, status: string, extra: Record<string, unknown> = {}) => ({
+      node_id, status, captured_at: 1000, cpu_percent: 40, daemon_pid: 53160, active_sessions: 3, ...extra })
+    const health = { scope: 'fleet', view: 'health', generated_at: 1, read_only: true, fleet_available: true, local_node: {},
+      shared_kusto: null, rows: [
+        report(node, 'reported', { client_sample: { at: 1000, runtime: { daemon: { cpu_percent: 23.3, rss_bytes: 410_000_000, threads: 33, uptime_s: 185 } },
+          store: { writer: { status: 'active', tables: { a: { rows_sent: 1200, rows_dropped: 0, ingest_failures: 0 },
+            b: { rows_sent: 300, rows_dropped: 2, ingest_failures: 1 } } } } } }),
+        report('mac-02', 'stale'),
+      ] }
+    const { ctx } = boardContext('fleet', { '/api/board/nodes?view=health': health })
+    const { host, dispose } = mount(() => <Daemon ctx={ctx} def={def('daemon')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    const text = host.textContent!
+    expect(text).not.toContain('PID')
+    expect(text).not.toContain('53160')
+    expect(text).not.toContain('Local daemon resources are not available')
+    expect(text).toContain('23.3%')
+    expect(text).toContain('410 MB')
+    expect(text).toContain('1,500')
+    expect(text).toContain('No, last report older than 5 minutes')
     dispose()
   })
 })
