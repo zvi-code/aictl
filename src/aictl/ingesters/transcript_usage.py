@@ -537,7 +537,8 @@ def _meta_signature(transcript: Path) -> tuple[int, int] | None:
 
 
 def iter_claude_files(projects_dir: Path) -> Iterable[Path]:
-    return projects_dir.glob("**/*.jsonl")
+    """The transcripts under a Claude Code ``projects`` folder, by the rules of :mod:`.session_files`."""
+    return session_files.scan("claude-code", projects_dir)[0]
 
 
 def claude_resume_origin(path: Path, scan_lines: int = 5000) -> str:
@@ -1426,10 +1427,20 @@ class TranscriptUsageIngester:
         self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
         # Publish only path identities before any replay or storage work. Native
         # output follows active append-only tails, never this history backlog.
-        claude_roots = {p: root for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)}
+        unclaimed: dict[str, list[Path]] = {}
+        claude_roots: dict[Path, Path] = {}
+        for root in self._roots("claude", self.claude_projects):
+            found, other = session_files.scan("claude-code", root)
+            claude_roots.update(dict.fromkeys(found, root))
+            unclaimed.setdefault("claude-code", []).extend(other)
         claude_files = list(claude_roots)
-        codex_files, codex_unclaimed = self._codex_rollouts()
-        copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
+        codex_files, unclaimed["codex-cli"] = self._codex_rollouts()
+        copilot_files = []
+        for root in self._roots("copilot", self.copilot_state):
+            found, other = session_files.scan("copilot-cli", root)
+            copilot_files += found
+            unclaimed.setdefault("copilot-cli", []).extend(other)
+        unclaimed = {tool: paths for tool, paths in unclaimed.items() if paths}
         self._note_transcript_paths(claude_files, "claude-code")
         # A compressed rollout is a finished session: nothing tails it, so only plain ones are announced.
         self._note_transcript_paths([p for p in codex_files if p.suffix != session_files.ZSTD], "codex-cli")
@@ -1650,10 +1661,10 @@ class TranscriptUsageIngester:
             self.quality,
             "transcript-usage",
             self.claude_projects.parent,
-            "unavailable" if self.unavailable else "degraded" if errors or pending or unreadable or codex_unclaimed else "ok",
-            severity="warning" if self.unavailable or errors or pending or unreadable or codex_unclaimed else "info",
+            "unavailable" if self.unavailable else "degraded" if errors or pending or unreadable or unclaimed else "ok",
+            severity="warning" if self.unavailable or errors or pending or unreadable or unclaimed else "info",
             message="; ".join(filter(None, (
-                self._unread_rollouts_message(unreadable, codex_unclaimed),
+                self._unread_rollouts_message(unreadable, unclaimed),
                 self.unavailable
                 or (f"{pending} fact row(s) waiting for storage"
                 if pending
@@ -1664,7 +1675,7 @@ class TranscriptUsageIngester:
             detail={
                 **({"unreadable": {"codex-cli": len(unreadable), "reason": "; ".join(sorted(set(unreadable.values())))}}
                    if unreadable else {}),
-                **({"unclaimed_files": {"codex-cli": len(codex_unclaimed)}} if codex_unclaimed else {}),
+                **({"unclaimed_files": {tool: len(paths) for tool, paths in unclaimed.items()}} if unclaimed else {}),
                 "older_files_waiting": len(self._deferred),
                 "pending_fact_rows": pending,
                 "session_files": dict(self.source_counts),
@@ -1762,13 +1773,15 @@ class TranscriptUsageIngester:
         return [p for p in found if p.suffix != session_files.ZSTD or session_files.logical_path(p) not in plain], unclaimed
 
     @staticmethod
-    def _unread_rollouts_message(unreadable: dict[Path, str], unclaimed: list[Path]) -> str:
+    def _unread_rollouts_message(unreadable: dict[Path, str], unclaimed: dict[str, list[Path]]) -> str:
         notes = []
         if unreadable:
             reasons = "; ".join(sorted(set(unreadable.values())))
             notes.append(f"{len(unreadable)} Codex rollout(s) cannot be read: {reasons}")
-        if unclaimed:
-            notes.append(f"{len(unclaimed)} file(s) in the Codex sessions folder look like rollouts but are not a form the reader knows")
+        names = {"claude-code": "Claude Code projects", "codex-cli": "Codex sessions", "copilot-cli": "Copilot session-state"}
+        for tool, paths in sorted(unclaimed.items()):
+            notes.append(f"{len(paths)} file(s) in the {names.get(tool, tool)} folder look like session files "
+                         "but are not a form the reader knows")
         return "; ".join(notes)
 
     def _read_compressed(self, path: Path, logical: Path, no_library: dict[Path, str]) -> Iterator[dict]:
@@ -1941,8 +1954,9 @@ class TranscriptUsageIngester:
         """The session a file belongs to, from where the tool puts it."""
         if path.name == "events.jsonl" or "debug-logs" in path.parts:
             return path.parent.name
-        if tool == "claude-code" and path.parent.name == "subagents":
-            return path.parents[1].name
+        if tool == "claude-code":
+            # A workflow's agents are one folder deeper: <session>/subagents/workflows/<run>/agent-x.jsonl.
+            return _claude_session_id(path)
         return session_files.logical_path(path).stem
 
     def _vscode_dirs(self) -> tuple[list[Path], list[Path]]:
@@ -1983,7 +1997,8 @@ class TranscriptUsageIngester:
         its transcript; only meta files changed at or after *since*. Reads no transcript."""
         found: dict[tuple[str, str], dict] = {}
         for root in self._roots("claude", self.claude_projects):
-            for meta_path in root.glob("**/subagents/agent-*.meta.json"):
+            # A workflow's agents keep theirs below the session's subagents/workflows/<run>/.
+            for meta_path in root.glob("**/subagents/**/agent-*.meta.json"):
                 if since:
                     try:
                         if meta_path.stat().st_mtime < since:

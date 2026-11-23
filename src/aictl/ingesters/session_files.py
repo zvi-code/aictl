@@ -23,7 +23,13 @@ class SessionFileRules:
 RULES: dict[str, SessionFileRules] = {
     "claude-code": SessionFileRules(
         read=("*.jsonl",),
-        ignored={"*.jsonl.bak": "a backup copy of a transcript; the transcript itself is read"},
+        ignored={
+            "*.jsonl.bak": "a backup copy of a transcript; the transcript itself is read",
+            # <session>/subagents/workflows/<run>/journal.jsonl holds the lines started, launched,
+            # result and failed of a workflow run. No reader takes it yet.
+            "journal.jsonl": "a workflow run's journal of its agents' starts and results, not a transcript; "
+                             "the agents' own transcripts beside it are read",
+        },
     ),
     "codex-cli": SessionFileRules(read=("rollout-*.jsonl", "rollout-*.jsonl" + ZSTD)),
     "copilot-cli": SessionFileRules(read=("events.jsonl",)),
@@ -36,24 +42,31 @@ def looks_like_session(name: str) -> bool:
 
 
 def classify(tool: str, name: str) -> str | None:
-    """``read``, ``ignored`` or ``unclaimed`` for a session-like file name; None for any other file."""
+    """``read``, ``ignored`` or ``unclaimed`` for a session-like file name; None for any other file.
+
+    The ignored names are checked first: one can be a narrower form of a read pattern (``journal.jsonl``)."""
     if not looks_like_session(name):
         return None
     rules = RULES[tool]
-    if any(fnmatchcase(name, pattern) for pattern in rules.read):
-        return "read"
     if any(fnmatchcase(name, pattern) for pattern in rules.ignored):
         return "ignored"
+    if any(fnmatchcase(name, pattern) for pattern in rules.read):
+        return "read"
     return "unclaimed"
 
 
-def codex_rollouts(root: Path) -> tuple[list[Path], list[Path]]:
-    """The rollout files under a Codex ``sessions`` folder, and the session-like files nothing reads."""
+# Where each tool keeps its session files below its session folder: Claude Code and Codex at any
+# depth, Copilot CLI in one folder per session.
+SCAN_GLOB = {"claude-code": "**/*", "codex-cli": "**/*", "copilot-cli": "*/*"}
+
+
+def scan(tool: str, root: Path) -> tuple[list[Path], list[Path]]:
+    """The files of *tool* under *root* its reader reads, and the session-like files no rule covers."""
     read: list[Path] = []
     unclaimed: list[Path] = []
     try:
-        for path in root.glob("**/*"):
-            kind = classify("codex-cli", path.name)
+        for path in root.glob(SCAN_GLOB[tool]):
+            kind = classify(tool, path.name)
             if kind == "read":
                 read.append(path)
             elif kind == "unclaimed":
@@ -61,6 +74,11 @@ def codex_rollouts(root: Path) -> tuple[list[Path], list[Path]]:
     except OSError:
         pass
     return read, unclaimed
+
+
+def codex_rollouts(root: Path) -> tuple[list[Path], list[Path]]:
+    """The rollout files under a Codex ``sessions`` folder, and the session-like files nothing reads."""
+    return scan("codex-cli", root)
 
 
 def logical_path(path: Path) -> Path:
