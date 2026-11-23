@@ -14,12 +14,12 @@
           "lines_added": {"type": ["integer", "null"]},
           "lines_removed": {"type": ["integer", "null"]},
           "edits": {"type": "integer"},
-          "agents": {"type": "integer"},
+          "sessions": {"type": "integer"},
           "last_ts": {"type": "number"},
           "node_id": {"type": "string"},
           "record": {"type": "string"}
         },
-        "required": ["path", "project", "lines_added", "lines_removed", "edits", "agents", "last_ts"]
+        "required": ["path", "project", "lines_added", "lines_removed", "edits", "last_ts"]
       }
     },
     "totals": {

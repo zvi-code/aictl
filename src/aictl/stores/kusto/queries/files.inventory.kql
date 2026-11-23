@@ -1,6 +1,7 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
     requested_tool:string='', requested_path:string='', requested_paths:dynamic=dynamic([]),
-    inventory_mode:string='all', after_row:string='', row_limit:long);
+    inventory_mode:string='all', project_path_key:string='', fold_project:bool=false, after_row:string='', row_limit:long);
+let folded = (p:string) { iff(fold_project, trim_end(@'/+', replace_string(tolower(p), '\\', '/')), trim_end(@'/+', p)) };
 let cursor_row = parse_json(after_row);
 files
 | where all_nodes or node_id == requested_node
@@ -8,10 +9,13 @@ files
 | summarize arg_max(_v,deleted,tool,category,scope,size_bytes,tokens,lines,mtime,meta,last_changed)
     by ['project'],node_id,path
 | where not(deleted)
-| where (isnull(last_changed) or last_changed between (since .. until))
+// Memory files are counted when they exist; the time a scan saw a change does not decide that.
+| where inventory_mode == 'memory' or isnull(last_changed) or last_changed between (since .. until)
 | where isempty(requested_tool) or tool in (requested_tool,'')
 | where array_length(requested_paths)==0 or path in (requested_paths)
 | where inventory_mode != 'memory' or category contains 'memory' or category contains 'instruction'
+| where isempty(project_path_key) or folded(['project']) == project_path_key
+    or folded(path) startswith strcat(project_path_key,'/')
 | where inventory_mode != 'session' or scope in ('global','user')
     or (isnotempty(requested_path) and (replace_string(path,@'\','/') =~ requested_path
        or replace_string(path,@'\','/') startswith strcat(requested_path,'/')))

@@ -11,10 +11,10 @@ file_write_events
 | where array_length(requested_paths)==0 or path in (requested_paths)
 | extend added=tolong(parse_json(detail).lines_added), removed=tolong(parse_json(detail).lines_removed)
 | summarize project_path=max(project_path), session_id=max(session_id), edits=count(),
-    agents=count_distinct(session_id), last_ts=max(ts), tool=max(tool),
+    sessions=count_distinct(session_id), last_ts=max(ts), tool=max(tool),
     added=sum(added), removed=sum(removed), added_n=countif(isnotnull(added)), removed_n=countif(isnotnull(removed))
     by node_id,path
-| project node_id,path,project_path,session_id,edits,agents,last_ts,tool,
+| project node_id,path,project_path,session_id,edits,sessions,last_ts,tool,
     added=iff(added_n==0,long(null),added),removed=iff(removed_n==0,long(null),removed)
 | order by last_ts desc,node_id asc,path asc
 | take row_limit

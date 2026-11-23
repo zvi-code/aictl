@@ -95,7 +95,7 @@ export const overviewB: readonly PanelDef[] = [
   // Changes pair the reported totals with a capped file table and source links.
   { ...base, id: 'changesT', title: 'Changes', kind: 'custom', sources: [{ field: 'changes' }],
     columns: [field('path', 'File'), field('project', 'Project'), metric('lines_added', 'board.project.lines', 'Added'),
-      metric('lines_removed', 'board.project.lines', 'Removed'), count('edits', 'Edits'), field('agents', 'Agents'), stamp('last_ts', 'Last')],
+      metric('lines_removed', 'board.project.lines', 'Removed'), count('edits', 'Edits'), field('sessions', 'Sessions'), stamp('last_ts', 'Last')],
     empty: 'No file changes in this time.', load: () => import('./b/History').then(m => ({ default: m.Changes })) },
   // Testing needs a chart, a command table and the pipe status caveat.
   { ...base, id: 'tests', title: 'Testing', kind: 'chart', sources: [tests, { field: 'tests' }, buckets, { field: 'tests_piped' }],

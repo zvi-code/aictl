@@ -28,7 +28,9 @@ export function sectionSummary(id: string, board: Board): string {
     }
     case 'context': {
       const files = board('memory_files')
-      return files ? plural(files.length, 'memory file') : ''
+      if (!files) return ''
+      const memory = files.filter(file => file.category === 'memory').length
+      return `${plural(memory, 'memory file')} · ${plural(files.length - memory, 'instruction file')}`
     }
     case 'tools': return kpis ? `${fmtN(kpis.tool_calls)} calls · ${fmtRate(kpis.fail_rate)} failed` : ''
     case 'changes': {

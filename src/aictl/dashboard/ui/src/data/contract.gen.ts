@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: b4b36bc2d09ea39973b37434a9bfa1331d972650b41459d1365d2079ef7d911f
+// Schema digest: 134890c31d74f3873c9e158007cf418c0ff6f9dc4be72301418fa2ec34258ca3
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -114,7 +114,7 @@ export type BoardChanges = {
     lines_added: number | null;
     lines_removed: number | null;
     edits: number;
-    agents: number;
+    sessions?: number;
     last_ts: number;
     node_id?: string;
     record?: string;
@@ -242,6 +242,7 @@ export type BoardLoops = Array<BoardLoopRow>;
 export type BoardMemoryFiles = Array<{
   path: string;
   read_by: string;
+  category?: string;
   scope: string;
   tokens: number | null;
   lines_added: number | null;
@@ -3094,6 +3095,7 @@ export type TopicHistoryBoard = {
   value: {
     path: string;
     read_by: string;
+    category?: string;
     scope: string;
     tokens: number | null;
     lines_added: number | null;

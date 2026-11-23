@@ -208,10 +208,10 @@ _VIEWS = {
     "sequence.context": (f"{_TIME} requested_session after_row", "row_type values"),
     "files.changes": (
         f"{_TIME} requested_session session_keys restrict_sessions requested_paths",
-        "node_id path project_path session_id edits agents added removed last_ts tool",
+        "node_id path project_path session_id edits sessions added removed last_ts tool",
     ),
     "files.inventory": (
-        f"{_TIME} requested_tool requested_path requested_paths inventory_mode after_row",
+        f"{_TIME} requested_tool requested_path requested_paths inventory_mode project_path_key fold_project after_row",
         "node_id path tool category scope size_bytes tokens lines mtime meta last_changed",
     ),
     "files.session_inventory": ("all_nodes requested_node requested_tool requested_path", "path"),

@@ -692,6 +692,18 @@ class TestNulls:
         assert files["/p/alpha/src/a.py"]["lines_added"] == 2
 
 
+    def test_a_changed_file_counts_the_sessions_that_changed_it_and_does_not_call_them_agents(self, db):
+        """The write rows hold a session, never an agent: the number is named for what it counts."""
+        for sid in ("looper", "waiter"):
+            _insert(db, "file_write_events", ts=NOW - 3 * DAY, session_id=sid, tool="claude-code",
+                    path="/p/alpha/shared.py", project_path="/p/alpha")
+        _insert(db, "file_write_events", ts=NOW - 2 * DAY, session_id="looper", tool="claude-code",
+                path="/p/alpha/shared.py", project_path="/p/alpha")
+        shared = next(f for f in _board(db)["changes"]["files"] if f["path"] == "/p/alpha/shared.py")
+        assert shared["edits"] == 3 and shared["sessions"] == 2 and "agents" not in shared
+
+
+
 # ─── Sections ─────────────────────────────────────────────────────
 
 
@@ -955,6 +967,47 @@ class TestSections:
         assert rows[0]["read_by"] == "claude-code"
         assert rows[0]["changed_by"] == "claude-code"
         assert rows[0]["lines_added"] == 1
+
+    def test_memory_file_list_does_not_depend_on_when_aictl_scanned_a_file(self, db):
+        """The rows carry their category; a file scanned long ago is still a file that exists."""
+        conn = db
+        for path, category, last_changed, project in (
+            ("/p/alpha/CLAUDE.md", "instructions", NOW - 50, ""),
+            ("/h/.claude/projects/-p-alpha/memory/new.md", "memory", NOW - 50, "/p/alpha"),
+            ("/h/.claude/projects/-p-alpha/memory/old.md", "memory", NOW - 90 * DAY, "/p/alpha"),
+            ("/h/.claude/projects/-p-beta/memory/MEMORY.md", "memory", NOW - 90 * DAY, "/p/beta"),
+            ("/p/beta/AGENTS.md", "instructions", NOW - 90 * DAY, ""),
+        ):
+            _insert(conn, "files", path=path, tool="claude-code", category=category, scope="project",
+                    last_changed=last_changed, **{"project": project})
+        rows = _board(db)["memory_files"]
+        assert {r["path"]: r["category"] for r in rows} == {
+            "/p/alpha/CLAUDE.md": "instructions", "/h/.claude/projects/-p-alpha/memory/new.md": "memory",
+            "/h/.claude/projects/-p-alpha/memory/old.md": "memory", "/h/.claude/projects/-p-beta/memory/MEMORY.md": "memory",
+            "/p/beta/AGENTS.md": "instructions"}
+
+    def test_memory_inventory_ignores_a_time_window_that_a_caller_passes(self, db):
+        """The time a file was scanned says nothing about whether the file exists."""
+        _insert(db, "files", path="/h/m/old.md", tool="claude-code", category="memory", scope="project",
+                last_changed=NOW - 90 * DAY)
+        reader = db.history_store.reader
+        window = {"since": NOW - DAY, "until": NOW, "limit": 10}
+        assert [r["path"] for r in reader.read("files.inventory", {**window, "inventory_mode": "memory"}).rows] == ["/h/m/old.md"]
+
+    def test_memory_file_project_filter_uses_the_project_a_row_is_attributed_to(self, db):
+        conn = db
+        for path, project in (("/h/.claude/projects/-p-alpha/memory/a.md", "/p/alpha"),
+                              ("/h/.claude/projects/-p-beta/memory/b.md", "/p/beta")):
+            _insert(conn, "files", path=path, tool="claude-code", category="memory", scope="project", **{"project": project})
+        _insert(conn, "files", path="/p/alpha/CLAUDE.md", tool="claude-code", category="instructions", scope="project")
+        rows = _board(db, project="/p/alpha")["memory_files"]
+        assert sorted(r["path"] for r in rows) == ["/h/.claude/projects/-p-alpha/memory/a.md", "/p/alpha/CLAUDE.md"]
+
+    def test_memory_file_list_is_not_cut_at_one_page(self, db):
+        """A count of the rows is a count of the files, however many there are."""
+        for n in range(board_projection.MAX_LIST_ROWS + 50):
+            _insert(db, "files", path=f"/h/m/{n:04}.md", tool="claude-code", category="memory", scope="project")
+        assert len(_board(db)["memory_files"]) == board_projection.MAX_LIST_ROWS + 50
 
     def test_sources(self, db):
         rows = {s["tool"]: s for s in _board(db)["sources"]}

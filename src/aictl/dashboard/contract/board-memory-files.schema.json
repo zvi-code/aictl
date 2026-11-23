@@ -8,6 +8,7 @@
     "properties": {
       "path": {"type": "string"},
       "read_by": {"type": "string"},
+      "category": {"type": "string"},
       "scope": {"type": "string"},
       "tokens": {"type": ["integer", "null"]},
       "lines_added": {"type": ["integer", "null"]},

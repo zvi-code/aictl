@@ -2116,7 +2116,7 @@ def _errors_section(board: _Board) -> tuple[list[dict], list[int], dict[str, int
 
 def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
     selected = board.narrowed and board.only_session is None
-    fields = ("path", "project_path", "added", "removed", "edits", "agents", "last_ts", "session_id")
+    fields = ("path", "project_path", "added", "removed", "edits", "sessions", "last_ts", "session_id")
     rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
             for r in board._history_window("files.changes", restrict_sessions=selected,
                                            session_keys=board.history.keys(board.scope) if selected else [])]
@@ -2124,7 +2124,7 @@ def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
     by_project: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     added_any = removed_any = False
     added_total = removed_total = edits_total = 0
-    for path, project, added, removed, edits, agents, last_ts, sid, *nodes in rows:
+    for path, project, added, removed, edits, sessions, last_ts, sid, *nodes in rows:
         project = project or board.session_project.get(sid, "")
         files.append(
             {
@@ -2133,7 +2133,7 @@ def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
                 "lines_added": None if added is None else int(added),
                 "lines_removed": None if removed is None else int(removed),
                 "edits": edits,
-                "agents": agents,
+                "sessions": sessions,
                 "last_ts": last_ts,
                 **({"node_id": node_label(nodes[0]), "id": identity(nodes[0], path)} if nodes else {}),
             }
@@ -2528,16 +2528,19 @@ def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> li
 
 
 def _memory_files(board: _Board) -> list[dict]:
+    """Every memory and instruction file that exists, each with its category.
+
+    A file counts whenever it exists: the time window does not apply to it (it is not a record of
+    one period), the project filter applies in the query before any page is cut, and the read is
+    not cut at one page.
+    """
     selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
-    fields = ("path", "tool", "scope", "tokens", "last_changed")
+    fields = ("path", "tool", "scope", "tokens", "last_changed", "category")
+    folded = bool(board.f.project and PureWindowsPath(project_key(board.f.project)).drive)
     rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
-            for r in board.history.read("files.inventory", inventory_mode="memory", limit=MAX_LIST_ROWS, page=True)]
-    rows = [
-        r
-        for r in rows
-        if (selected is None or r[1] in selected)
-        and (not board.f.project or project_key(r[0]).startswith(project_key(board.f.project).rstrip("/") + "/"))
-    ]
+            for r in board.history.read("files.inventory", inventory_mode="memory",
+                                        project_path_key=project_key(board.f.project), fold_project=folded)]
+    rows = [r for r in rows if selected is None or r[1] in selected]
     if not rows:
         return []
     writes: dict[str, tuple] = {}
@@ -2549,12 +2552,13 @@ def _memory_files(board: _Board) -> list[dict]:
     for path, added, removed, tool, ts, *nodes in write_rows:
         writes[identity(nodes[0], path) if nodes else path] = (added, removed, tool, ts)
     out = []
-    for path, tool, scope, tokens, last_changed, *nodes in rows:
+    for path, tool, scope, tokens, last_changed, category, *nodes in rows:
         key = identity(nodes[0], path) if nodes else path
         added, removed, changed_by, changed_ts = writes.get(key, (None, None, None, None))
         out.append(
             {
                 "path": path,
+                "category": category,
                 **({"id": key, "node_id": node_label(nodes[0])} if nodes else {}),
                 "read_by": tool or None,
                 "scope": scope,
