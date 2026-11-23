@@ -1,12 +1,11 @@
 import { createEffect, createMemo, createUniqueId, For, lazy, Loading, Show, untrack } from 'solid-js'
 import type uPlot from 'uplot'
-import { alignChartData, type ChartPoint } from './chartData'
+import { alignChartData, flatRange, isolatedIndices, tickLabels, type ChartPoint } from './chartData'
 import { PanelState } from './PanelState'
 import styles from './Chart.module.css'
 
 const colors = ['--color-chart-1', '--color-chart-2', '--color-chart-3', '--color-chart-4'] as const
 const marks = [styles.first, styles.second, styles.third, styles.fourth]
-const tickNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumSignificantDigits: 3 })
 // uPlot's default value-axis width in CSS pixels.
 const AXIS_SIZE = 50
 type ChartSeries = { label: string; color?: 0 | 1 | 2 | 3; paths?: uPlot.Series.PathBuilder; visible?: boolean }
@@ -17,7 +16,7 @@ const Plot = lazy(() => Promise.all([import('uplot'), import('uplot/dist/uPlot.m
 })))
 
 type PlotProps = {
-  series: readonly ChartSeries[]; points: readonly ChartPoint[]; time: boolean; unit?: string; yRange?: YRange
+  series: readonly ChartSeries[]; points: readonly ChartPoint[]; time: boolean; unit?: string; axisLabel?: string; yRange?: YRange
   ticks?: (values: readonly number[]) => string[]
   stack?: boolean; sync?: string; onBrush?: (start: number, end: number) => void; onHover?: (index: number) => void
 }
@@ -42,8 +41,8 @@ function scheduleColdPlot() {
 // Callers often rebuild equal series arrays on each live update. Rebuilding
 // the uPlot instance for them clears the canvas, so compare the plot shape by
 // value and apply series visibility in place.
-type Shape = { series: readonly ChartSeries[]; time: boolean; unit?: string; yRange?: YRange; stack?: boolean }
-const sameShape = (a: Shape, b: Shape) => a.time === b.time && a.unit === b.unit && a.stack === b.stack &&
+type Shape = { series: readonly ChartSeries[]; time: boolean; unit?: string; axisLabel?: string; yRange?: YRange; stack?: boolean }
+const sameShape = (a: Shape, b: Shape) => a.time === b.time && a.unit === b.unit && a.axisLabel === b.axisLabel && a.stack === b.stack &&
   a.yRange?.[0] === b.yRange?.[0] && a.yRange?.[1] === b.yRange?.[1] && a.series.length === b.series.length &&
   a.series.every((item, i) => item.label === b.series[i].label && item.color === b.series[i].color && item.paths === b.series[i].paths)
 
@@ -55,11 +54,11 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
   let plot: uPlot | undefined
   const data = createMemo(() => alignChartData(props.points, props.series.length))
   const shape = createMemo<Shape>(() => ({
-    series: props.series, time: props.time, unit: props.unit, yRange: props.yRange, stack: props.stack,
+    series: props.series, time: props.time, unit: props.unit, axisLabel: props.axisLabel, yRange: props.yRange, stack: props.stack,
   }), { equals: sameShape })
   const shown = createMemo(() => props.series.map(item => item.visible !== false),
     { equals: (a, b) => a.length === b.length && a.every((value, i) => value === b[i]) })
-  createEffect(shape, ({ series, time, unit, yRange, stack }) => {
+  createEffect(shape, ({ series, time, unit, axisLabel, yRange, stack }) => {
     let frame = 0
     let width = 0, height = 0
     let nextWidth = 0, nextHeight = 0
@@ -73,7 +72,8 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
         if (plot) plot.setSize({ width, height })
         else plot = new UPlot({
           width, height,
-          scales: { x: { time }, y: yRange ? { range: [...yRange] } : {} },
+          scales: { x: { time }, y: { range: yRange ? [...yRange] : (_chart: uPlot, min: number, max: number) =>
+            flatRange(min, max) ?? UPlot.rangeNum(min, max, 0.1, true) } },
           series: [{}, ...series.map((item, index) => ({
             label: item.label,
             show: untrack(shown)[index] ?? true,
@@ -81,6 +81,10 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
             stroke: () => color(colors[item.color ?? index % colors.length]),
             ...(stack && index === 0 ? { fill: () => `${color(colors[item.color ?? 0])}55` } : {}),
             ...(item.paths ? { paths: item.paths } : {}),
+            // A value with no neighbour draws no line, so it is drawn as a filled point.
+            points: { fill: () => color(colors[item.color ?? index % colors.length]),
+              filter: (chart: uPlot, seriesIndex: number, show: boolean) =>
+                show ? null : isolatedIndices(chart.data[seriesIndex] as (number | null)[]) },
           }))],
           axes: [0, 1].map(index => ({
             // uPlot needs the computed pixel size to scale text for the device.
@@ -89,8 +93,8 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
             grid: { stroke: () => color('--chart-grid-color'), width: parseFloat(color('--chart-grid-width')) || 1 },
             ticks: { stroke: () => color('--color-border') },
             ...(index === 1 ? {
-              values: (_plot: uPlot, ticks: number[]) => untrack(() => props.ticks)?.(ticks) ??
-                ticks.map(tick => `${tickNumber.format(tick)}${unit ?? ''}`),
+              ...(axisLabel ? { label: axisLabel, labelFont: `${Math.round(parseFloat(style.fontSize))}px ${style.fontFamily}` } : {}),
+              values: (_plot: uPlot, ticks: number[]) => untrack(() => props.ticks)?.(ticks) ?? tickLabels(ticks, unit),
               // Widen the value axis for long labels such as "30 GiB"; uPlot's fixed default clips them.
               size: (chart: uPlot, values: string[] | null, axis: number, cycle: number) => {
                 const current = chart.axes[axis] as uPlot.Axis & { _size?: number }
@@ -163,6 +167,8 @@ export function Chart(props: {
   points: readonly ChartPoint[]
   xAxis?: 'time' | 'number'
   unit?: string
+  // Names the value axis when its ticks carry no unit ("tokens").
+  axisLabel?: string
   // Formats the value-axis ticks together; replaces the compact number and unit suffix.
   ticks?: (values: readonly number[]) => string[]
   yRange?: YRange
@@ -180,7 +186,7 @@ export function Chart(props: {
     <figure class={styles.figure} aria-labelledby={caption}>
       <figcaption class={styles.caption} id={caption}><span class={styles.srOnly}>{props.label} — </span>{props.description}</figcaption>
       <Loading fallback={<div class={styles.plot} aria-hidden="true" />}>
-        <Plot series={props.series} points={props.points} time={props.xAxis === 'time'} unit={props.unit} ticks={props.ticks} yRange={props.yRange}
+        <Plot series={props.series} points={props.points} time={props.xAxis === 'time'} unit={props.unit} axisLabel={props.axisLabel} ticks={props.ticks} yRange={props.yRange}
           stack={props.stack} sync={props.sync} onBrush={props.onBrush} onHover={props.onHover} />
       </Loading>
       <ul class={styles.legend} aria-label="Chart series">
