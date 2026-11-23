@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 8a9f7fa04c3d1b13171d4e04c7565fe33e64ac066e6c3fdab0942bb51946c021
+// Schema digest: 815afb96bf76a02ada95d10808d0cf9e3c4a6aff0e5d1194810833f49584946d
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -502,12 +502,18 @@ export type ContextLocal = {
         conditional: number;
         tokens: number;
         estimate: number;
-        share: number;
+        share: number | null;
       }>;
       raw_total: number;
       survives_compaction: number;
       unknown_policy_tokens: number | null;
       window_assumed: boolean;
+      window_note?: string | null;
+      models_observed?: Array<{
+        model: string;
+        tokens: number;
+        window: number | null;
+      }>;
     }>;
     totals: {
       always: number;

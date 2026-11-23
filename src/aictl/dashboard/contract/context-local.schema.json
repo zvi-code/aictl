@@ -43,7 +43,7 @@
                     "conditional": {"type": "integer"},
                     "tokens": {"type": "integer"},
                     "estimate": {"type": "integer"},
-                    "share": {"type": "number"}
+                    "share": {"type": ["number", "null"]}
                   },
                   "required": [
                     "project",
@@ -59,7 +59,21 @@
               "raw_total": {"type": "integer"},
               "survives_compaction": {"type": "integer"},
               "unknown_policy_tokens": {"type": ["integer", "null"]},
-              "window_assumed": {"type": "boolean"}
+              "window_assumed": {"type": "boolean"},
+              "window_note": {"type": ["string", "null"]},
+              "models_observed": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "model": {"type": "string"},
+                    "tokens": {"type": "integer"},
+                    "window": {"type": ["integer", "null"]}
+                  },
+                  "required": ["model", "tokens", "window"],
+                  "additionalProperties": false
+                }
+              }
             },
             "required": [
               "tool",

@@ -808,10 +808,11 @@ board.context.survives_compaction:
 board.context.window:
   explanation: >
     Model context window used for the share figures: the known size of the
-    detected model, else 200 000 tokens (marked assumed).
+    model the tool's calls used most in the last seven days (else its setting).
+    With no known size the shares are not given and window_note says why.
   source: >
-    board_api._context_budget: model_pricing.context_window_for(model), else
-    DEFAULT_CONTEXT_WINDOW.
+    context_projection._context_budget: model_pricing.context_window_for(model);
+    no default is assumed.
   source_type: raw
   unit: tokens
   update_freq: on-collect

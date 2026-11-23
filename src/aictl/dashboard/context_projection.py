@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs
@@ -48,7 +49,8 @@ CONTEXT_DB_TTL_S = 60.0
 CONTEXT_MEMO_KEYS = 8
 
 
-DEFAULT_CONTEXT_WINDOW = 200_000
+# Where a budget's model came from when the tool's calls named it.
+OBSERVED_MODEL = "most used in the last 7 days"
 
 
 _CONTEXT_SKIP = frozenset({"aictl", "any"})
@@ -148,8 +150,16 @@ def _context_tools(snapshot: Any, tools: tuple[str, ...] | None) -> list[Any]:
     return budget_tools(listed, tools)
 
 
-def _context_model(tool: str, configs: list, telemetry: dict[str, dict]) -> tuple[str | None, str | None]:
-    """The model a tool is set to use, and where that came from."""
+def _context_model(tool: str, configs: list, telemetry: dict[str, dict],
+                   observed: dict[str, list[dict]] | None = None) -> tuple[str | None, str | None]:
+    """The model a tool's budget is measured against, and where that came from.
+
+    The model its calls used most in the last seven days comes first: a setting such as
+    "sonnet" names what new sessions start with, not what the sessions ran.
+    """
+    used = _observed_for(tool, observed)
+    if used:
+        return str(used[0]["model"]), OBSERVED_MODEL
     for c in configs:
         if isinstance(c, dict) and c.get("tool") == tool and c.get("model"):
             return str(c["model"]), "settings"
@@ -164,13 +174,28 @@ def _context_model(tool: str, configs: list, telemetry: dict[str, dict]) -> tupl
     return None, None
 
 
-def _context_budget(tool: Any, root: str, model: str | None, model_from: str | None) -> dict:
+def _observed_for(tool: str, observed: dict[str, list[dict]] | None) -> list[dict]:
+    if not observed:
+        return []
+    for name in (tool, *stored_ids_for([tool])):
+        if observed.get(name):
+            return observed[name]
+    return []
+
+
+def _share(tokens: int, window: int | None) -> float | None:
+    return round(tokens / window, 4) if window else None
+
+
+def _context_budget(tool: Any, root: str, model: str | None, model_from: str | None,
+                    observed: list[dict] | None = None) -> dict:
     from ..data.model_pricing import context_window_for
     from ..tools import compute_token_budget
 
     b = compute_token_budget([tool], root)
-    known = context_window_for(model) if model else None
-    window = known or DEFAULT_CONTEXT_WINDOW
+    # No limit is assumed: a model whose limit no source states gives no share.
+    window = context_window_for(model) if model else None
+    window_note = None if window else (f"no context limit is known for {model}" if model else "no model observed or set")
     global_tokens = b["global_tokens"]
     projects = []
     for name, buckets in (b.get("projects") or {}).items():
@@ -183,7 +208,7 @@ def _context_budget(tool: Any, root: str, model: str | None, model_from: str | N
                 "conditional": buckets["conditional"],
                 "tokens": own,
                 "estimate": global_tokens + own,
-                "share": round((global_tokens + own) / window, 4),
+                "share": _share(global_tokens + own, window),
             }
         )
     projects.sort(key=lambda p: -p["tokens"])
@@ -195,7 +220,10 @@ def _context_budget(tool: Any, root: str, model: str | None, model_from: str | N
         "model": model,
         "model_from": model_from,
         "window": window,
-        "window_assumed": known is None,
+        "window_assumed": False,
+        "window_note": window_note,
+        # Each model the tool's calls named in the last seven days, with its own limit when known.
+        "models_observed": observed or [],
         "always": always,
         "on_demand": b["on_demand_tokens"],
         "conditional": b["conditional_tokens"],
@@ -203,8 +231,8 @@ def _context_budget(tool: Any, root: str, model: str | None, model_from: str | N
         "survives_compaction": b["survives_compaction_tokens"],
         "never_sent_files": b["never_sent_count"],
         "max_potential": potential,
-        "always_share": round(always / window, 4),
-        "potential_share": round(potential / window, 4),
+        "always_share": _share(always, window),
+        "potential_share": _share(potential, window),
         "global_tokens": global_tokens,
         "largest_project": b["largest_project"] or None,
         "raw_total": b["raw_total_all_projects"],
@@ -452,10 +480,36 @@ def _read_context_daily(history: HistoryScope, tools: tuple[str, ...] | None, no
 
 def _daily_from_rows(rows: list[dict], now: float) -> dict:
     days, first = _context_days(now)
-    fields = ("model", "calls", "input", "output", "cache_read", "cache_write",
-              "stored", "ri", "ro", "rcr", "rcw", "last_ts")
-    # Kusto can parse a date in the dynamic calendar as a datetime.
-    return _project_context_daily(days, first, [(str(r["day"])[:10], *(r[k] for k in fields)) for r in rows])
+    sums = ("calls", "input", "output", "cache_read", "cache_write", "stored", "ri", "ro", "rcr", "rcw")
+    # The view answers per tool; the daily table is per day and model.
+    merged: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        # Kusto can parse a date in the dynamic calendar as a datetime.
+        key = (str(r["day"])[:10], r["model"] or "")
+        into = merged.setdefault(key, {"model": r["model"], **{k: None for k in sums}, "last_ts": None})
+        for k in sums:
+            if r.get(k) is not None:
+                into[k] = (into[k] or 0) + r[k]
+        if r.get("last_ts") is not None:
+            into["last_ts"] = max(into["last_ts"] or 0.0, r["last_ts"])
+    fields = ("model", *sums, "last_ts")
+    return _project_context_daily(days, first, [(day, *(row[k] for k in fields)) for (day, _m), row in merged.items()])
+
+
+def observed_models(rows: list[dict]) -> dict[str, list[dict]]:
+    """The models each tool's calls named in the last seven days, most tokens first, with each one's context limit.
+
+    A limit comes from data/model_pricing.context_window_for; None when no source states it.
+    """
+    from ..data.model_pricing import context_window_for
+
+    tokens: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in rows:
+        if r.get("model") and r.get("tool"):
+            tokens[str(r["tool"])][str(r["model"])] += sum(_ctx_int(r.get(k)) for k in ("input", "output", "cache_read", "cache_write"))
+    return {tool: [{"model": m, "tokens": n, "window": context_window_for(m)}
+                   for m, n in sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))]
+            for tool, models in tokens.items()}
 
 
 def _project_context_daily(days, first, values):
@@ -490,15 +544,18 @@ def _context_db_parts(db: Any, tools: tuple[str, ...] | None, now: float, *, his
         hit = _context_db_memo.get(key)
     if hit and 0 <= now - hit[0] < CONTEXT_DB_TTL_S:
         return hit[1]
+    observed: dict[str, list[dict]] = {}
     try:
-        daily = _daily_from_rows(_read_context_daily(history, tools, now), now)
+        daily_rows = _read_context_daily(history, tools, now)
+        daily, observed = _daily_from_rows(daily_rows, now), observed_models(daily_rows)
     except UnresolvedObservationsError as exc:
         daily = {**_context_daily_empty(now), "available": False, **exc.to_dict()}
     except StoreConfigurationError as exc:
-        return {"daily": {**_context_daily_empty(now), "available": False, "reason": str(exc).lower()}, "growth": []}
+        return {"daily": {**_context_daily_empty(now), "available": False, "reason": str(exc).lower()}, "growth": [],
+                "observed": {}}
     growth = history.read("context.growth", since=now - CONTEXT_GROWTH_S, until=now,
                           growth_points=CONTEXT_GROWTH_POINTS)
-    parts = {"daily": daily, "growth": [
+    parts = {"daily": daily, "observed": observed, "growth": [
         {"ts": r["ts"], "mem_tokens": _ctx_int(r["mem_tokens"]), "memory_entries": _ctx_int(r["memory_entries"])}
         for r in growth
     ]}
@@ -560,8 +617,9 @@ def _context_from_snapshot(snapshot: Any, tools: tuple[str, ...] | None, now: fl
             if global_budget and not budget_tool.files:
                 continue
         budget_tools.append(budget_tool)
-        model, model_from = _context_model(t.tool, configs, by_tool)
-        budget_row = _context_budget(budget_tool, root, model, model_from)
+        observed = db_parts.get("observed") or {}
+        model, model_from = _context_model(t.tool, configs, by_tool, observed)
+        budget_row = _context_budget(budget_tool, root, model, model_from, _observed_for(t.tool, observed))
         if queryable:
             budget_row["unknown_policy_tokens"] = sum(f.tokens for f in t.files if f.sent_to_llm == "unknown")
         budget_rows.append(budget_row)

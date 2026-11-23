@@ -3206,8 +3206,35 @@ class TestContext:
         assert cc["largest_project"] == "alpha" and cc["never_sent_files"] == 1
         assert [(p["project"], p["tokens"], p["estimate"]) for p in cc["projects"]] == [("alpha", 160, 360), ("beta", 40, 240)]
         cx = rows["codex-cli"]
-        assert cx["model"] is None and cx["window"] == context_projection.DEFAULT_CONTEXT_WINDOW and cx["window_assumed"] is True
+        # No model and no limit: nothing is assumed, and the row says so.
+        assert (cx["model"], cx["window"], cx["window_assumed"]) == (None, None, False)
+        assert cx["window_note"] == "no model observed or set" and cx["potential_share"] is None
         assert (cx["always"], cx["conditional"]) == (0, 70)
+
+    def test_the_budget_uses_the_model_the_calls_used_not_the_setting(self, monkeypatch):
+        """Found on real data: settings said "sonnet", so every tool got an assumed 200,000 window
+        and the potential share read 145.8%, while the sessions ran other models."""
+        rows = [
+            {"node_id": "n", "day": "2023-11-14", "model": "claude-opus-5", "tool": "claude-code", "calls": 3, "input": 10,
+             "output": 5, "cache_read": 900, "cache_write": 0, "stored": None, "ri": 10, "ro": 5, "rcr": 900, "rcw": 0,
+             "last_ts": self.NOW - 60},
+            {"node_id": "n", "day": "2023-11-14", "model": "unpriced-x", "tool": "claude-code", "calls": 1, "input": 1,
+             "output": 1, "cache_read": 0, "cache_write": 0, "stored": None, "ri": 1, "ro": 1, "rcr": 0, "rcw": 0,
+             "last_ts": self.NOW - 60},
+        ]
+        monkeypatch.setattr(context_projection, "_context_db_parts", lambda *a, **k: {
+            "daily": context_projection._daily_from_rows(rows, self.NOW), "growth": [],
+            "observed": context_projection.observed_models(rows)})
+        snap = _csnap(self._tools(), tool_configs=[{"tool": "claude-code", "model": "sonnet"}])
+        cc = next(b for b in self._ctx(snap)["budget"]["tools"] if b["tool"] == "claude-code")
+        assert (cc["model"], cc["model_from"], cc["window"]) == ("claude-opus-5", context_projection.OBSERVED_MODEL, 1_000_000)
+        assert cc["models_observed"] == [{"model": "claude-opus-5", "tokens": 915, "window": 1_000_000},
+                                         {"model": "unpriced-x", "tokens": 2, "window": None}]
+        assert cc["potential_share"] == round(360 / 1_000_000, 4)
+        # A set model whose limit no source states gives no share, and says why.
+        snap = _csnap(self._tools(), tool_configs=[{"tool": "codex-cli", "model": "sonnet"}])
+        cx = next(b for b in self._ctx(snap)["budget"]["tools"] if b["tool"] == "codex-cli")
+        assert (cx["window"], cx["window_note"], cx["always_share"]) == (None, "no context limit is known for sonnet", None)
 
     def test_each_file_names_the_live_sessions_it_can_affect(self, monkeypatch):
         from aictl import tree_walk
@@ -3221,7 +3248,8 @@ class TestContext:
     def test_a_model_without_settings_comes_from_telemetry(self):
         tel = [{"tool": "codex-cli", "by_model": {"gpt-5": {"input_tokens": 10}, "o3": {"input_tokens": 90}}}]
         cx = next(b for b in self._ctx(_csnap(self._tools(), tool_telemetry=tel))["budget"]["tools"] if b["tool"] == "codex-cli")
-        assert (cx["model"], cx["model_from"], cx["window"]) == ("o3", "most used", 200_000)
+        assert (cx["model"], cx["model_from"], cx["window"]) == ("o3", "most used", None)
+        assert cx["window_note"] == "no context limit is known for o3"
 
     def test_categories_split_what_is_sent_from_what_never_is(self):
         cats = {c["tool"]: c for c in self._ctx(_csnap(self._tools()))["categories"]}

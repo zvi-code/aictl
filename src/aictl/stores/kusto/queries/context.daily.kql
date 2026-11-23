@@ -18,6 +18,6 @@ requests
     ri=sumif(input_tokens,not(cost_usd>0) or isnull(cost_usd)), ro=sumif(output_tokens,not(cost_usd>0) or isnull(cost_usd)),
     rcr=sumif(cache_read_tokens,not(cost_usd>0) or isnull(cost_usd)),
     rcw=sumif(cache_creation_tokens,not(cost_usd>0) or isnull(cost_usd)), last_ts=max(ts)
-    by node_id,day,model
-| order by node_id asc,day asc,model asc
+    by node_id,day,model,tool
+| order by node_id asc,day asc,model asc,tool asc
 | take row_limit

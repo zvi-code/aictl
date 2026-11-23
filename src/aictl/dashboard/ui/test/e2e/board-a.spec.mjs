@@ -511,7 +511,7 @@ test('BRD-15/16: filter workflow inventory and unfold a reported tool budget', a
   const tool = recording.tools.find(tool => tool.projects.length > 0);
   const toolRow = row(budget, JSON.stringify([tool.tool]));
   await expect(toolRow).toContainText(tool.window.toLocaleString('en-US'));
-  await expect(toolRow).toContainText('Window assumed');
+  await expect(toolRow).toContainText(tool.window != null ? tool.model_from ?? '' : tool.window_note ?? '');
   await toolRow.getByRole('button', { name: `Unfold ${tool.label}` }).press('Enter');
   await expect(budget.getByRole('cell', { name: tool.projects[0].project, exact: true })).toBeVisible();
 });

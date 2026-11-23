@@ -260,7 +260,7 @@ _VIEWS = {
     "files.recent_writes": (f"{_TIME}", "ts session_id tool tool_name path"),
     "context.daily": (
         f"{_TIME} calendar_starts calendar_days requested_tools restrict_tools",
-        "node_id day model calls input output cache_read cache_write stored ri ro rcr rcw last_ts",
+        "node_id day model tool calls input output cache_read cache_write stored ri ro rcr rcw last_ts",
     ),
     "context.growth": (f"{_TIME} growth_points calendar_bins", "node_id ts mem_tokens memory_entries"),
     "context.telemetry": (f"{_TIME}", "node_id ts tool source confidence"),

@@ -171,7 +171,7 @@ export const overviewA: readonly PanelDef[] = [
     id: 'budget', title: 'Context window budget', kind: 'table', defaultSize: 'medium', requiredCapabilities: [],
     sources: [context('budget.tools')], rowIdentity: ['tool'],
     columns: [field('label', 'Tool or project'), field('model', 'Model'), field('window', 'Token window', 'board.context.window'),
-      field('policy', 'Window source'), field('always', 'Always loaded', 'budget.context_window.always_loaded'),
+      field('policy', 'Model and limit from'), field('always', 'Always loaded', 'budget.context_window.always_loaded'),
       share('always_share', 'Always loaded share'), field('on_demand', 'On demand', 'budget.context_window.on_demand'),
       field('conditional', 'Conditional', 'budget.context_window.conditional'), field('cacheable', 'Cacheable', 'budget.context_window.cacheable'),
       tokens('max_potential', 'Max potential'), field('never_sent_files', 'Never sent files', 'board.context.never_sent_files'),

@@ -43,7 +43,11 @@ export function budgetOptions({ ctx }: PanelProps) {
         max_potential: project.estimate, potential_share: project.share, node_id: tool.node_id },
     }))
     return [{ ...entry, folded: children.length ? true : undefined, row: { ...tool, label: tool.label ?? tool.tool,
-      policy: tool.window_assumed ? 'Window assumed' : tool.window != null ? tool.model_from : undefined } }, ...children]
+      // The limit is never assumed: with none known the row says why; the models the calls used follow.
+      policy: [tool.window != null ? tool.model_from : tool.window_note,
+        tool.models_observed?.length ? `observed: ${tool.models_observed.map(item =>
+          `${item.model} (${item.window != null ? `${fmtN(item.window)} limit` : 'limit not known'})`).join(', ')}` : undefined,
+      ].filter(Boolean).join(' · ') || undefined } }, ...children]
   }))
   return { rows, result, retry: context.retry, description: <p class={css.note}>
     {ctx.scope() === 'local'

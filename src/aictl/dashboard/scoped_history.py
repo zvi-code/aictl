@@ -39,6 +39,7 @@ def _reported_context(history, tools, now):
         snapshot.agent_memory = [r for r in snapshot.agent_memory if is_selected(r["tool"], tools)]
         data = context_projection._context_from_snapshot(snapshot, tools, now, True, {
             "daily": context_projection._daily_from_rows([r for r in daily if r["node_id"] == node], now),
+            "observed": context_projection.observed_models([r for r in daily if r["node_id"] == node]),
             "growth": [{k: r[k] for k in ("ts", "mem_tokens", "memory_entries")}
                        for r in growth if r["node_id"] == node],
         }, global_budget=True)
