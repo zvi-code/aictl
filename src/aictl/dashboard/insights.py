@@ -124,10 +124,17 @@ def pause_tax(rows: list[dict]) -> dict:
             "tools": counted, "requests": long_requests, "cost_usd": long_cost if counted else None,
             "baseline_usd": baseline if counted else None, "extra_usd": long_cost - baseline if counted else None,
             "not_reported": [tool["tool"] for tool in tools if not tool["cache_reported"]],
+            "unpriced_requests": _unpriced([cell for tool in tools if tool["cache_reported"]
+                                            for cell in tool["buckets"] if cell["bucket"] in LONG_PAUSE]),
         },
         "sessions": sorted(_sessions(rows, ("requests", "cost_usd")),
                            key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
     }
+
+
+def _unpriced(cells: list[dict]) -> int:
+    """Requests a cost total leaves out: their model had no list price when they were stored."""
+    return sum(cell["requests"] - cell["priced"] for cell in cells)
 
 
 def context_carry(rows: list[dict]) -> dict:
@@ -188,6 +195,7 @@ def subagents(rows: list[dict]) -> dict:
             "subagent_share": _ratio(sub_cost, main_cost + sub_cost) if priced else None,
             "subagents": sum(tool["subagents"]["agents"] for tool in tools),
             "subagent_requests": sum(tool["subagents"]["requests"] for tool in tools),
+            "unpriced_requests": _unpriced([tool[side] for tool in tools for side in ("main", "subagents")]),
         },
         "sessions": sorted(_sessions(rows, ("requests", "cost_usd", "main_cost", "agents")),
                            key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
@@ -356,6 +364,7 @@ def context_weight(rows: list[dict]) -> dict:
             "small_requests": sum(_int(tool["small_requests"]) for tool in counted) if counted else None,
             "small_cost_usd": sum(small_costs) if small_costs else None,
             "not_reported": [tool["tool"] for tool in tools if not tool["reported"]],
+            "unpriced_requests": _unpriced([cell for tool in counted for cell in tool["buckets"]]),
         },
         "sessions": sorted(_sessions(rows, ("requests", "cost_usd")), key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
     }
@@ -378,6 +387,7 @@ def orientation(rows: list[dict]) -> dict:
             "no_project": _int(row.get("no_project")),
             "p50_requests": _cost(row.get("p50_requests")) if edited else None,
             "never": never, "never_requests": never_requests,
+            "never_unpriced": never_requests - _int(row.get("never_priced")),
             "never_cost_usd": _n(row.get("never_cost")) if _int(row.get("never_priced")) or not never_requests else None,
         })
     tools.sort(key=lambda tool: -tool["sessions"])
@@ -394,6 +404,7 @@ def orientation(rows: list[dict]) -> dict:
             "projects": len(projects), "never": sum(tool["never"] for tool in tools),
             "never_cost_usd": sum(never_costs) if never_costs else None,
             "no_project": sum(tool["no_project"] for tool in tools),
+            "unpriced_requests": sum(tool["never_unpriced"] for tool in tools if tool["never"]),
         },
         "sessions": sessions,
     }

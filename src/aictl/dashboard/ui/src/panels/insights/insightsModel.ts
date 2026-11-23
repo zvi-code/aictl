@@ -21,7 +21,7 @@ type Base<C extends CardId> = {
 export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
 export type PauseBody = Base<'pause'> & {
   tools: { tool: string; cache_reported: boolean; buckets: PauseCell[] }[]
-  summary: { tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[] }
+  summary: { tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[]; unpriced_requests?: number }
 }
 export type CarryName = { tool: string; tool_name: string; calls: number; output_bytes: number; carried_bytes: number; avg_later_requests: Num }
 export type CarryBody = Base<'carry'> & {
@@ -33,7 +33,7 @@ type Side = { requests: number; priced: number; cost_usd: Num }
 export type SubagentTool = { tool: string; main: Side; subagents: Side & { agents: number }; subagent_share: Num }
 export type SubagentBody = Base<'subagents'> & {
   tools: SubagentTool[]
-  summary: { main_cost_usd: Num; subagent_cost_usd: Num; subagent_share: Num; subagents: number; subagent_requests: number }
+  summary: { main_cost_usd: Num; subagent_cost_usd: Num; subagent_share: Num; subagents: number; subagent_requests: number; unpriced_requests?: number }
 }
 export type FailureTool = {
   tool: string; calls: number; failures: number; last_failures: number; outcomes: Record<Outcome, number>
@@ -77,7 +77,7 @@ export type ContextBody = Base<'context'> & {
   tools: ContextTool[]
   summary: {
     reported: number; heavy_requests: number; heavy_share: Num; cost_usd: Num; heavy_cost_usd: Num; heavy_cost_share: Num
-    small_requests: Num; small_cost_usd: Num; not_reported: string[]
+    small_requests: Num; small_cost_usd: Num; not_reported: string[]; unpriced_requests?: number
   }
 }
 export type OrientationProject = { project_path: string; sessions: number; tools: string[]; p50_requests: Num; p50_cost_usd: Num }
@@ -87,7 +87,7 @@ export type OrientationTool = {
 }
 export type OrientationBody = Base<'orientation'> & {
   projects: OrientationProject[]; tools: OrientationTool[]
-  summary: { sessions: number; edited: number; projects: number; never: number; never_cost_usd: Num; no_project: number }
+  summary: { sessions: number; edited: number; projects: number; never: number; never_cost_usd: Num; no_project: number; unpriced_requests?: number }
 }
 export type FixedKind = 'instruction_file' | 'memory_file' | 'system_prompt_other' | 'skills' | 'mcp_instructions' | 'custom_agents' | 'tools_listed'
 export type FixedCell = {
@@ -164,6 +164,11 @@ export function learnToolLabels(labels: Record<string, string> | undefined) {
 }
 export const toolLabel: Label = tool => toolLabels()[tool] ?? tool
 
+/** What a cost in a card's sentence leaves out: requests whose model had no list price when they were stored. */
+export function leftOut(requests: number | undefined) {
+  return requests ? ` ${fmtNum(requests)} ${requests === 1 ? 'request' : 'requests'} with no list price ${requests === 1 ? 'is' : 'are'} left out of the cost.` : ''
+}
+
 export function pauseFinding(body: PauseBody, label: Label) {
   const s = body.summary
   if (!s.tools.length) {
@@ -173,7 +178,7 @@ export function pauseFinding(body: PauseBody, label: Label) {
   }
   const sentence = `${fmtNum(s.requests)} ${list(s.tools.map(label))} requests followed a pause of over 5 minutes and cost ` +
     `${money(s.cost_usd)} at list price; the same number at each tool's under-1-minute average would cost ${money(s.baseline_usd)}.`
-  return s.requests ? sentence : `No ${list(s.tools.map(label))} request followed a pause of over 5 minutes in this period.`
+  return s.requests ? sentence + leftOut(s.unpriced_requests) : `No ${list(s.tools.map(label))} request followed a pause of over 5 minutes in this period.`
 }
 
 export function carryFinding(body: CarryBody, label: Label) {
@@ -191,7 +196,7 @@ export function subagentFinding(body: SubagentBody, label: Label) {
     (b.subagents.cost_usd ?? 0) - (a.subagents.cost_usd ?? 0))[0]
   return `${fmtNum(s.subagents)} subagents made ${fmtNum(s.subagent_requests)} requests costing ${money(s.subagent_cost_usd)} at list price, ` +
     `${share(s.subagent_share)} of all cost` +
-    (top ? `; in ${label(top.tool)}, subagents were ${share(top.subagent_share)} of its cost.` : '.')
+    (top ? `; in ${label(top.tool)}, subagents were ${share(top.subagent_share)} of its cost.` : '.') + leftOut(s.unpriced_requests)
 }
 
 export function failureFinding(body: FailureBody, label: Label) {
@@ -252,12 +257,12 @@ export function contextFinding(body: ContextBody, label: Label) {
   const heavy = `${share(s.heavy_share)} of requests (${fmtNum(s.heavy_requests)} of ${fmtNum(s.reported)}) read a context of 200k tokens or more ` +
     `and carried ${share(s.heavy_cost_share)} of the cost (${money(s.heavy_cost_usd)} of ${money(s.cost_usd)} at list price).`
   return `${heavy} Small steps, requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time, were ` +
-    `${count(s.small_requests)} requests costing ${money(s.small_cost_usd)}.`
+    `${count(s.small_requests)} requests costing ${money(s.small_cost_usd)}.${leftOut(s.unpriced_requests)}`
 }
 
 export function orientationFinding(body: OrientationBody) {
   const s = body.summary
-  const never = s.never ? ` ${fmtNum(s.never)} sessions never edited; they cost ${money(s.never_cost_usd)}.` : ''
+  const never = s.never ? ` ${fmtNum(s.never)} sessions never edited; they cost ${money(s.never_cost_usd)}.${leftOut(s.unpriced_requests)}` : ''
   if (!s.sessions) return 'No session started in this period.'
   const top = body.projects[0]
   if (!top) return `No project has 3 or more sessions that edit in this period.${never}`

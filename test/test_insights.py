@@ -81,7 +81,7 @@ def test_pause_tax_buckets_pauses_within_one_session_and_agent(kusto_store):
     assert all(cell["cache_hit_share"] is None for cell in vscode["buckets"])
     assert body["summary"] == {
         "tools": ["claude-code"], "requests": 2, "cost_usd": pytest.approx(12.0), "baseline_usd": pytest.approx(1.0),
-        "extra_usd": pytest.approx(11.0), "not_reported": ["copilot-vscode"],
+        "extra_usd": pytest.approx(11.0), "not_reported": ["copilot-vscode"], "unpriced_requests": 0,
     }
     assert [row["session_id"] for row in body["sessions"]] == ["s1", "s3"]
     assert body["sessions"][0]["cost_usd"] == pytest.approx(12.0)
@@ -312,6 +312,23 @@ def test_context_weight_buckets_requests_by_the_tokens_the_model_read(kusto_stor
     assert [(row["session_id"], row["cost_usd"]) for row in body["sessions"]] == [("s1", 26.0), ("s2", 10.0)]
 
 
+def test_a_stored_zero_cost_with_tokens_is_unpriced_and_the_cards_say_how_many_requests_they_leave_out(kusto_store):
+    s = kusto_store
+    # The ingest stored 0 for a model with no list price; a request with no tokens costs 0 and is priced.
+    _request(s, "m1", 10.0, cost=1.0)
+    _request(s, "m2", 11.0, cost=0.0)
+    _request(s, "x1", 12.0, agent="a", cost=2.0)
+    _request(s, "x2", 13.0, agent="a", cost=0.0)
+    s.insert("requests", dedup_key="z1", ts=14.0, session_id="s1", agent_id="a", tool="claude-code", cost_usd=0.0)
+    body = _card(s, "subagents")
+    (claude,) = body["tools"]
+    assert claude["main"] == {"requests": 2, "priced": 1, "cost_usd": 1.0}
+    assert claude["subagents"] == {"requests": 3, "priced": 2, "cost_usd": 2.0, "agents": 1}
+    assert body["summary"]["unpriced_requests"] == 2
+    context = _card(s, "context")
+    assert context["summary"]["unpriced_requests"] == 2 and context["summary"]["cost_usd"] == pytest.approx(3.0)
+
+
 def _main(store, key, ts, *, session, cost=1.0, agent="", tool="claude-code", project="/p/alpha", **values):
     store.insert("requests", dedup_key=key, ts=ts, session_id=session, agent_id=agent, tool=tool, project_path=project,
                  cost_usd=cost, **values)
@@ -360,7 +377,8 @@ def test_orientation_counts_main_agent_requests_up_to_the_first_edit(kusto_store
     assert (tools["copilot-cli"]["edited"], tools["copilot-cli"]["never_cost_usd"]) == (1, 0.0)
     assert [(row["session_id"], row["requests"], row["before_cost"]) for row in body["sessions"]] == [
         ("s1", 3, 7.0), ("s2", 2, 2.0), ("s3", 1, 1.0), ("s5", 1, 0.5)]
-    assert body["summary"] == {"sessions": 5, "edited": 4, "projects": 1, "never": 1, "never_cost_usd": 8.0, "no_project": 0}
+    assert body["summary"] == {"sessions": 5, "edited": 4, "projects": 1, "never": 1, "never_cost_usd": 8.0, "no_project": 0,
+                               "unpriced_requests": 0}
 
 
 def test_orientation_names_edit_calls_by_the_board_rule():

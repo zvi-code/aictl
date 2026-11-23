@@ -4,9 +4,12 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 let per_agent = materialize(requests
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
-    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, cost_usd
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, cost_usd,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
+    | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(output_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
     | extend subagent=isnotempty(agent_id) and agent_id != session_id
     | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), first_ts=min(ts),
                 last_ts=max(ts), tool=take_any(tool) by node_id, session_id, subagent, agent=iff(subagent, agent_id, ''));

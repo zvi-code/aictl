@@ -11,6 +11,8 @@ let reqs = materialize(requests
               cache_creation_tokens, output_tokens, thinking_ms, cost_usd
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
+    | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(output_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
     | extend context=coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0)
     | extend context=iff(context > 0, context, long(null))
     | extend bucket=case(isnull(context), '', context < 50000, 'under_50k', context < 100000, '50_100k',
