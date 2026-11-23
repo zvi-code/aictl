@@ -126,7 +126,8 @@ export const overviewB: readonly PanelDef[] = [
     columns: [field('severity', 'Severity'), field('text', 'Finding'), field('detail', 'Detail'),
       field('tool', 'Tool'), field('pid_list', 'PIDs'), metric('action', 'board.machine.cleanup', 'Command')],
     empty: 'No process anomalies found on this node.', load: () => import('./b/Machine').then(m => ({ default: m.Alerts })) },
-  // Processes need list/tree views, an owner join and local cleanup controls.
+  // Processes need list/tree views, an owner join and local cleanup controls; outside local scope they list
+  // the sessions each node reports running (`/api/board/nodes?view=runtime`) with their recorded process ids.
   { ...base, id: 'procs', title: 'Processes', kind: 'custom',
     sources: [processes, { ...machine, path: 'processes' }, { topic: 'runtime.agent' }, { field: 'agents' }],
     columns: [metric('name', 'board.machine.process_name', 'Process'), field('pid', 'PID'), field('tool', 'Tool'),

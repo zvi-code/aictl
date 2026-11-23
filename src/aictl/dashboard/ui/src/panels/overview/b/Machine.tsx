@@ -1,12 +1,12 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
-import type { BoardSeries, DetailMachine, MachineLocal, MachinePipeline, TopicRuntimeAgent, TopicRuntimeProcess } from '../../../data/contract.gen'
+import type { BoardSeries, DetailMachine, DetailNodes, MachineLocal, MachinePipeline, TopicRuntimeAgent, TopicRuntimeProcess } from '../../../data/contract.gen'
 import { Segmented } from '../../../ui/Segmented'
 import { isStoredToolSelected } from '../../../data/toolScope'
 import { SeriesView } from '../../kinds/Series'
 import type { PanelProps, Read, Row } from '../../types'
-import { buckets, field, health, machine, metric, processes } from '../b'
+import { buckets, field, health, machine, metric, processes, stamp } from '../b'
 import { Bars, bins, Comparisons, severityLabel, severityTone, StatStrip, topRows, usable } from '../Summary'
-import { completeSum, coreBars, latestTotal, procTree } from './resources'
+import { completeSum, coreBars, latestTotal, procTree, runningSessions, UNLISTED_SESSION } from './resources'
 import { DataTable, detailRead, displayField, identity, join, Metrics, number, rowsFrom, scopedPath, scopeMatches, styles, text, toolName, View, withRows, type Entry } from './View'
 
 type ReportedMachine = Extract<DetailMachine, { hosts: unknown }>
@@ -133,13 +133,85 @@ export function Alerts(props: PanelProps) {
   </div>
 }
 
+type RuntimeNodes = Extract<DetailNodes, { view: 'runtime' }>
+/** The node reports of the running sessions: `view=runtime` of the node list, in the board's scope. */
+export function runtimeNodesPath(ctx: PanelProps['ctx']) {
+  if (ctx.scope() === 'local') return
+  const query = new URLSearchParams({ view: 'runtime', scope: ctx.scope() })
+  if (ctx.scope() === 'node') {
+    if (!ctx.nodeId()) return
+    query.set('node_id', ctx.nodeId()!)
+  }
+  return '/api/board/nodes?' + query
+}
+
+const sessionColumns = [field('title', 'Session'), field('tool_label', 'Tool'), field('status', 'Activity'),
+  stamp('started_at', 'Running since'), metric('cpu_percent', 'procs.tool.cpu_pct', 'CPU'),
+  { ...metric('mem_mb', 'procs.tool.mem_rss', 'RAM'), scale: 1048576 }, field('pid_list', 'Process ids')]
+
+/** In node and fleet scope: the sessions each node runs now, what they hold, and their recorded process ids. */
+function FleetProcesses(props: PanelProps) {
+  const { ctx } = untrack(() => props)
+  const response = ctx.detail<DetailNodes>(() => runtimeNodesPath(ctx))
+  const recorded = useMachine(ctx, true)
+  const view = () => {
+    const value = response()?.data
+    if (!value || value.view !== 'runtime' || value.scope !== ctx.scope()) return
+    return ctx.scope() === 'node' && value.rows.some(row => row.node_id !== ctx.nodeId()) ? undefined : value as RuntimeNodes
+  }
+  const model = createMemo(() => runningSessions(view()?.rows ?? [], recorded.data()?.recorded_processes ?? [],
+    ctx.board('agents') ?? [], tool => isStoredToolSelected(tool, ctx.tools())))
+  const rows = createMemo(() => rowsFrom(model().rows.map(row => ({ ...row, tool_label: toolName(ctx, row.tool),
+    pid_list: row.pid_list ?? (recorded.data() ? 'None recorded' : undefined) })), row => row.open_id))
+  const result = () => withRows(detailRead(response(), view()?.rows, ctx.paused()), rows())
+  const cpuField = sessionColumns[4], ramField = sessionColumns[5]
+  const label = ({ row }: Entry) => `${row.title === UNLISTED_SESSION ? toolName(ctx, String(row.tool)) : row.title} · ${row.node_id}`
+  const cpu = createMemo(() => topRows(rows(), 'cpu_percent', label))
+  const memory = createMemo(() => topRows(rows(), 'mem_mb', label))
+  const held = (path: string, column: typeof cpuField) => {
+    const total = completeSum(rows().map(({ row }) => (row as Row)[path]))
+    return total == null ? undefined : displayField(ctx, column).format(total)
+  }
+  const reporting = () => view()?.rows.length
+  return <div class={styles.stack}>
+    <StatStrip label="Running sessions summary" items={[
+      { label: 'Running sessions', value: view() ? rows().length : undefined },
+      ...(reporting() ? [{ label: 'Nodes reporting now', value: `${reporting()! - model().silent.length} of ${reporting()}` }] : []),
+      ...(held('cpu_percent', cpuField) ? [{ label: 'CPU held by these sessions', value: held('cpu_percent', cpuField) }] : []),
+      ...(held('mem_mb', ramField) ? [{ label: 'Memory held by these sessions', value: held('mem_mb', ramField) }] : []),
+    ]} />
+    <Show when={cpu()?.length || memory()?.length}>
+      <Comparisons>
+        <Show when={cpu()?.length}><Bars label="Top sessions by CPU" items={cpu()} format={displayField(ctx, cpuField).format} /></Show>
+        <Show when={memory()?.length}><Bars label="Top sessions by memory" items={memory()} format={displayField(ctx, ramField).format} /></Show>
+      </Comparisons>
+    </Show>
+    <View result={result} retry={ctx.refresh}
+      empty={model().silent.length ? 'No node reports its running sessions.' : 'No node reports a running session for the selected tools.'}>
+      <p class={styles.note}>Sessions running now, as each node last reported them in the past five minutes. The time range does not apply.</p>
+      <DataTable ctx={ctx} label="Running sessions" columns={sessionColumns} rows={rows()} action={{
+        label: ({ row }) => row.title === UNLISTED_SESSION ? 'Open session' : `Open ${row.title}`,
+        run: ({ row }) => ctx.openAgent(String(row.open_id)),
+      }} />
+    </View>
+    <Show when={model().silent.length}>
+      <p class={styles.note}>Not reported by {model().silent.join(', ')}: that daemon sends no list of its running sessions.</p>
+    </Show>
+    <Show when={model().capped.length}>
+      <p class={styles.note}>{model().capped.join(', ')} runs more sessions than its report lists; only the listed ones are shown.</p>
+    </Show>
+  </div>
+}
+
 export function Processes(props: PanelProps) {
+  return <Show when={props.ctx.scope() === 'local'} fallback={<FleetProcesses {...props} />}><LocalProcesses {...props} /></Show>
+}
+
+function LocalProcesses(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const [mode, setMode] = createSignal('list')
   const [selected, setSelected] = createSignal<string>()
   const [closed, setClosed] = createSignal(new Set<number>())
-  const local = () => ctx.scope() === 'local'
-  const remote = useMachine(ctx, true)
   const runtime = createMemo(() => ctx.read(processes))
   const info = createMemo(() => new Map(((ctx.read(def.sources[1]).value ?? []) as MachineLocal['processes']).map(row => [row.pid, row])))
   const historical = createMemo(() => new Map((ctx.board('agents') ?? []).filter(agent => !agent.placeholder)
@@ -173,15 +245,8 @@ export function Processes(props: PanelProps) {
         [{ ...x, name: `${'↳ '.repeat(Math.min(depth, 8))}${x.name}`, children }]
     })
   })
-  const rows = createMemo(() => {
-    if (local()) return rowsFrom(mode() === 'tree' ? activeTree() : localRows(), row => identity(row.pid, row.created_at))
-    return rowsFrom((remote.data()?.recorded_processes ?? []).map(process => ({
-      ...process, name: text(process.role) ?? 'Recorded process',
-      owner: process.session_id, owner_id: (ctx.board('agents') ?? []).find(agent =>
-        agent.node_id === process.node_id && !agent.placeholder && (agent.id === process.session_id || agent.session_id === process.session_id))?.id,
-    })), row => identity(row.node_id, row.pid, row.joined_at, row.session_id))
-  })
-  const result = () => local() ? withRows(runtime(), rows()) : remote.result(remote.data()?.recorded_processes)
+  const rows = createMemo(() => rowsFrom(mode() === 'tree' ? activeTree() : localRows(), row => identity(row.pid, row.created_at)))
+  const result = () => withRows(runtime(), rows())
   const samplesForRank = createMemo(() => samples() && rowsFrom(samples()!.map(process => {
     const extra = info().get(process.pid)
     const rss = number(process.memory_rss_bytes)
@@ -200,20 +265,15 @@ export function Processes(props: PanelProps) {
     return next
   })
   return <div class={styles.stack}>
-    <StatStrip label="Process summary" items={[{
-      label: local() ? 'Live processes' : 'Recorded process rows',
-      value: local() ? samples()?.length : remote.data()?.recorded_processes?.length,
-    }]} />
+    <StatStrip label="Process summary" items={[{ label: 'Live processes', value: samples()?.length }]} />
     <Comparisons>
-      <Bars label="Top processes by CPU" items={local() ? cpu() : undefined} format={displayField(ctx, cpuField).format} />
-      <Bars label="Top processes by resident memory" items={local() ? memory() : undefined} format={displayField(ctx, ramField).format} />
+      <Bars label="Top processes by CPU" items={cpu()} format={displayField(ctx, cpuField).format} />
+      <Bars label="Top processes by resident memory" items={memory()} format={displayField(ctx, ramField).format} />
     </Comparisons>
     <View result={result} retry={ctx.refresh} empty={def.empty}>
-    <p class={styles.note}>{local() ? 'Live processes. The time range does not apply.' : 'Recorded session processes. Local process diagnostics are not available.'}</p>
-    <Show when={local()}>
-      <Segmented label="Show processes as" value={mode()} onChange={setMode}
-        options={[{ id: 'list', label: 'List' }, { id: 'tree', label: 'Tree' }]} />
-    </Show>
+    <p class={styles.note}>Live processes. The time range does not apply.</p>
+    <Segmented label="Show processes as" value={mode()} onChange={setMode}
+      options={[{ id: 'list', label: 'List' }, { id: 'tree', label: 'Tree' }]} />
     <Show when={selectedRow()}>{row =>
       <div class={styles.actions} role="group" aria-label={`Actions for process ${row().pid}`}>
         <Show when={mode() === 'tree' && row().children}>
@@ -223,13 +283,13 @@ export function Processes(props: PanelProps) {
         <Show when={text(row().owner_id)}>{id =>
           <button type="button" onClick={() => ctx.openAgent(id())}>Open owner</button>}
         </Show>
-        <Show when={local() && text(row().cleanup_cmd)}>{command =>
+        <Show when={text(row().cleanup_cmd)}>{command =>
           <button type="button" onClick={() => ctx.copy(command())}>Copy cleanup command</button>}
         </Show>
-        <Show when={local() && text(row().cmdline)}>{command => <p class={styles.previewPath}>{command()}</p>}</Show>
+        <Show when={text(row().cmdline)}>{command => <p class={styles.previewPath}>{command()}</p>}</Show>
       </div>}
     </Show>
-    <DataTable ctx={ctx} label={local() && mode() === 'tree' ? 'Process tree' : def.title} columns={def.columns}
+    <DataTable ctx={ctx} label={mode() === 'tree' ? 'Process tree' : def.title} columns={def.columns}
       rows={rows()} action={{
         label: ({ row }) => row.children || row.owner_id || row.cleanup_cmd || row.cmdline ? `Inspect process ${row.pid}` : '',
         run: ({ id }) => setSelected(value => value === id ? undefined : id),

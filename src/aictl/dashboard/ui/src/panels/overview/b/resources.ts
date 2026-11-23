@@ -66,3 +66,59 @@ export function coreBars(perCore: readonly (number | null)[] | null | undefined)
     })),
   }
 }
+
+type RuntimeNode = {
+  node_id: string
+  agents?: { total: number; rows: readonly Record<string, unknown>[] } | null
+}
+type RecordedProcess = { node_id: string; session_id: string; pid: number }
+type KnownSession = { id: string; title: string; node_id?: string; session_id?: string; native_session_id?: string; placeholder?: boolean }
+
+const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined
+const word = (value: unknown) => typeof value === 'string' && value ? value : undefined
+/** The id the board, the agent drawer and the session-process records give one session of one node. */
+export const sessionKey = (node: string, session: string) => JSON.stringify([node, session])
+export const UNLISTED_SESSION = 'Not in this board’s session list'
+
+/**
+ * The sessions each reporting node runs now, named as the board names them, with the process ids
+ * recorded for them. A node that sends no session list is named, never counted as zero sessions.
+ */
+export function runningSessions(nodes: readonly RuntimeNode[], processes: readonly RecordedProcess[],
+  known: readonly KnownSession[], selected: (tool: string) => boolean) {
+  const byKey = new Map<string, KnownSession>()
+  for (const agent of known) {
+    if (agent.placeholder) continue
+    for (const id of [agent.id, agent.session_id]) if (id) byKey.set(id, agent)
+    if (agent.node_id && agent.native_session_id) byKey.set(sessionKey(agent.node_id, agent.native_session_id), agent)
+  }
+  const pids = new Map<string, Set<number>>()
+  for (const process of processes) {
+    const list = pids.get(process.session_id) ?? new Set<number>()
+    list.add(process.pid)
+    pids.set(process.session_id, list)
+  }
+  const silent: string[] = []
+  const rows = nodes.flatMap(node => {
+    if (!node.agents) { silent.push(node.node_id); return [] }
+    return node.agents.rows.flatMap(agent => {
+      const session = word(agent.native_session_id) ?? word(agent.session_id)
+      const tool = word(agent.tool) ?? 'unknown'
+      if (!session || agent.running !== true || !selected(tool)) return []
+      const keys = [...new Set([session, word(agent.session_id)].filter(Boolean).map(id => sessionKey(node.node_id, id!)))]
+      const board = keys.map(key => byKey.get(key)).find(Boolean)
+      const list = [...keys, board?.id].flatMap(key => key ? [...pids.get(key) ?? []] : [])
+      return [{
+        node_id: node.node_id, open_id: board?.id ?? keys[0], tool,
+        title: board?.title || UNLISTED_SESSION,
+        status: word(agent.status) ?? word(agent.native_activity),
+        started_at: finite(agent.started_at), cpu_percent: finite(agent.cpu_percent), mem_mb: finite(agent.mem_mb),
+        pid_list: list.length ? [...new Set(list)].sort((a, b) => a - b).join(', ') : undefined,
+      }]
+    })
+  })
+  rows.sort((a, b) => (b.cpu_percent ?? -1) - (a.cpu_percent ?? -1) || (b.started_at ?? 0) - (a.started_at ?? 0) ||
+    a.node_id.localeCompare(b.node_id) || a.open_id.localeCompare(b.open_id))
+  const capped = nodes.filter(node => node.agents && node.agents.total > node.agents.rows.length).map(node => node.node_id)
+  return { rows, silent, capped }
+}
