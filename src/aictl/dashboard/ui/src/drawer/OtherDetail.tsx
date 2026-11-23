@@ -3,10 +3,12 @@ import type { DetailError, DetailExcerpt, DetailFile, DetailPrompt, DetailSkill,
 import { boardQuery, windowOf } from '../data/filters'
 import type { Detail, PanelContext } from '../panels/types'
 import type { DrawerProps } from '../shell/drawerTypes'
+import { createBoxes, HiddenBoxes } from '../ui/Box'
 import { CodeView } from '../ui/CodeView'
 import { Drawer } from '../ui/Drawer'
 import { Markdown } from '../ui/Markdown'
 import { PanelState } from '../ui/PanelState'
+import { MemoryVersions } from './MemoryViews'
 import { path, Resource, Rows, Section, Stats } from './shared'
 import styles from './drawer.module.css'
 
@@ -28,7 +30,9 @@ function File(props: Props) {
   const [editing, edit] = createSignal(false)
   const read = ctx.detail<DetailFile>(createMemo(() => path(ctx, '/api/board/file', { ...rangeQuery(ctx), path: props.entry.path, record: props.entry.record })))
   const excerpt = ctx.detail<DetailExcerpt>(createMemo(() => local() && props.entry.line ? path(ctx, '/api/board/excerpt', { path: props.entry.path, line: props.entry.line }) : undefined))
+  const boxes = createBoxes('aictl-pref-file-boxes')
   return <>
+    <HiddenBoxes boxes={boxes} />
     <Show when={local()}>
       <Show when={editing()} fallback={<div class={styles.bar}>
         <button type="button" class={styles.button} onClick={() => edit(true)}>Edit file</button>
@@ -62,6 +66,7 @@ function File(props: Props) {
           action={{ label: row => `Open ${row.title}`, run: row => props.shell.open({ type: 'agent', id: row.agent_id, tab: 'changes' }) }} />
       </Section>
     </>}</Resource>
+    <Show when={props.entry.path}>{file => <MemoryVersions shell={props.shell} boxes={boxes} path={file()} record={props.entry.record} />}</Show>
   </>
 }
 

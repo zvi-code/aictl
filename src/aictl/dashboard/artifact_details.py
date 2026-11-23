@@ -327,7 +327,7 @@ def _edit_pairs(raw: str | None) -> list[tuple[str, str]] | None:
     return None
 
 
-def _diff_lines(pairs: list[tuple[str, str]]) -> list[dict]:
+def _diff_lines(pairs: list[tuple[str, str]], limit: int = MAX_DIFF_LINES) -> list[dict]:
     lines: list[dict] = []
     for old, new in pairs:
         old_lines = mask_secrets(old).splitlines()
@@ -347,7 +347,7 @@ def _diff_lines(pairs: list[tuple[str, str]]) -> list[dict]:
                 old_n += 1
                 new_n += 1
                 lines.append({"kind": "same", "n": new_n, "text": text})
-            if len(lines) >= MAX_DIFF_LINES:
+            if len(lines) >= limit:
                 return lines
     return lines
 

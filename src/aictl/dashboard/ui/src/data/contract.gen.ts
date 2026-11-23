@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 58709a0ceaf1026bfa89815deba83a53169c2a829e9cbd5c135102f88b14c4c2
+// Schema digest: f4d9710b2f8a569ca3eff112a1686132f973b60ac595ec17106674dbe6116890
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1009,6 +1009,24 @@ export type DetailBoardHistory = {
   unpriced?: BoardUnpriced;
 };
 
+export type DetailCheckpointFiles = {
+  message_id: string;
+  files: Array<{
+    path: string;
+    ts: number;
+    origin: string;
+    mechanism: string;
+    version: number | null;
+    state: string;
+    blob_hash: string;
+    size_bytes: number | null;
+    lines: number | null;
+    lines_added: number | null;
+    lines_removed: number | null;
+  }>;
+  node_scope?: NodeScope;
+};
+
 export type DetailContextAudit = {
   status: string;
   elapsed_s: number;
@@ -1258,6 +1276,67 @@ export type DetailMachine = (MachineLocal) & ({
     role: string | null;
     joined_at: number | null;
   }>;
+};
+
+export type DetailMemoryDiff = {
+  first: {
+    hash: string;
+    state: "kept" | "absent" | "not_recorded" | "not_kept" | "expired";
+    bytes: number | null;
+    text: string | null;
+  };
+  second: {
+    hash: string;
+    state: "kept" | "absent" | "not_recorded" | "not_kept" | "expired";
+    bytes: number | null;
+    text: string | null;
+  };
+  diff: Array<{
+    n: number | null;
+    text: string;
+    kind: "same" | "add" | "del";
+  }> | null;
+  truncated: boolean;
+  node_scope?: NodeScope;
+};
+
+export type DetailMemoryRecalls = {
+  recalls: Array<{
+    ts: number;
+    agent_id: string;
+    tool: string;
+    trigger: string;
+    path: string;
+    content_hash: string;
+    tool_call_id: string;
+    prompt_id: string;
+    turn_index: number | null;
+    bytes: number | null;
+  }>;
+  node_scope?: NodeScope;
+};
+
+export type DetailMemoryVersions = {
+  path: string;
+  mechanism: string;
+  versions: Array<{
+    ts: number;
+    origin: string;
+    session_id: string;
+    title: string;
+    agent_id: string;
+    actor: string;
+    operation: string;
+    content_hash: string;
+    size_bytes: number | null;
+    before_hash: string;
+    before_source: string;
+    after_source: string;
+    lines_added: number | null;
+    lines_removed: number | null;
+    state: string;
+  }>;
+  node_scope?: NodeScope;
 };
 
 export type DetailNodes = {
@@ -3601,14 +3680,18 @@ export interface LiveTopicData {
 export interface DetailResponses {
   "/api/api-calls": DetailApiCalls;
   "/api/board/agent": DetailAgent;
+  "/api/board/agent/checkpoint/files": DetailCheckpointFiles;
   "/api/board/agent/flow": DetailAgentFlow;
   "/api/board/agent/kql": DetailKqlTemplates;
+  "/api/board/agent/recalls": DetailMemoryRecalls;
   "/api/board/agent/transcript": DetailAgentTranscript;
   "/api/board/context": DetailContext;
   "/api/board/error": DetailError;
   "/api/board/excerpt": DetailExcerpt;
   "/api/board/file": DetailFile;
   "/api/board/machine": DetailMachine;
+  "/api/board/memory/diff": DetailMemoryDiff;
+  "/api/board/memory/versions": DetailMemoryVersions;
   "/api/board/nodes": DetailNodes;
   "/api/board/prompt": DetailPrompt;
   "/api/board/session/records": DetailSessionRecords;

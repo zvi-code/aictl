@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-memory-diff.schema.json",
+  "title": "DetailMemoryDiff",
+  "type": "object",
+  "properties": {
+    "first": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "kept",
+            "absent",
+            "not_recorded",
+            "not_kept",
+            "expired"
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "hash",
+        "state",
+        "bytes",
+        "text"
+      ]
+    },
+    "second": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "kept",
+            "absent",
+            "not_recorded",
+            "not_kept",
+            "expired"
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "hash",
+        "state",
+        "bytes",
+        "text"
+      ]
+    },
+    "diff": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "same",
+                  "add",
+                  "del"
+                ]
+              }
+            },
+            "required": [
+              "n",
+              "text",
+              "kind"
+            ]
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "node_scope": {
+      "$ref": "node-scope.schema.json"
+    }
+  },
+  "required": [
+    "first",
+    "second",
+    "diff",
+    "truncated"
+  ]
+}

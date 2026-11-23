@@ -79,6 +79,10 @@ def _dashboard_requests(root):
         "/api/board/mcp/server": "/api/board/mcp/server?id=mcp:github&since=1795130000&until=1795135200",
         "/api/board/convergence": "/api/board/convergence?since=1795130000&until=1795135200",
         "/api/board/session/convergence": "/api/board/session/convergence?session_id=no-sqlite-probe",
+        "/api/board/memory/diff": "/api/board/memory/diff?first=no-sqlite-probe",
+        "/api/board/memory/versions": "/api/board/memory/versions?path=/no-sqlite-probe/CLAUDE.md",
+        "/api/board/agent/recalls": "/api/board/agent/recalls?id=no-sqlite-probe",
+        "/api/board/agent/checkpoint/files": "/api/board/agent/checkpoint/files?id=no-sqlite-probe&message_id=u-1",
         **{route: recorded[route] for route in (
             "/api/api-calls", "/api/board/agent", "/api/board/agent/flow", "/api/board/agent/transcript",
             "/api/board/context", "/api/board/error", "/api/board/excerpt", "/api/board/file",

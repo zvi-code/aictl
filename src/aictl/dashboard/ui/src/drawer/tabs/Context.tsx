@@ -5,6 +5,8 @@ import { CodeView } from '../../ui/CodeView'
 import { Meter } from '../../ui/Meter'
 import { PanelState } from '../../ui/PanelState'
 import { Segmented } from '../../ui/Segmented'
+import { createBoxes, HiddenBoxes } from '../../ui/Box'
+import { Checkpoints } from '../MemoryViews'
 import { clip, number, openAgent, records, Resource, Rows, Section, Series, Stats, text, type TabProps } from '../shared'
 import { EvidenceBrowser } from './Evidence'
 import styles from '../drawer.module.css'
@@ -37,7 +39,9 @@ export default function Context(props: TabProps) {
   const [pickedResponse, setPickedResponse] = createSignal<Row>()
   const [fullResponse, setFullResponse] = createSignal(false)
   createEffect(category, () => { setPickedItem(undefined); setFullItem(false) })
+  const boxes = createBoxes('aictl-pref-context-boxes')
   return <>
+    <HiddenBoxes boxes={boxes} />
     <Resource read={props.detail}>{data => {
       const context = () => data().context
       const observed = () => data().otel?.context
@@ -176,6 +180,7 @@ export default function Context(props: TabProps) {
           <Rows label="Compactions" rows={context()?.compactions} identity={['ts', 'trigger']}
             columns={[[ 'ts', 'Time', 'time' ], 'trigger', 'before', 'after', 'freed', ['duration_ms', 'Duration (ms)', 'number']]} />
         </Section>
+        <Checkpoints tab={props} boxes={boxes} rows={data().checkpoints} />
         <Section title="Largest tool responses">
           <Rows label="Largest tool responses" rows={largest()} identity={['ts', 'name', 'target']}
             columns={['name', 'target', 'output_bytes', 'input_bytes', ['ts', 'Time', 'time']]} actionColumn="name"

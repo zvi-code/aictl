@@ -46,6 +46,8 @@ def handle_get(
             raise ScopeError("A node-qualified record requires a historical scope")
         if path in {"/api/board/agent", "/api/board/sessions", "/api/board/file"}:
             history.require_reader()
+        from . import memory_views
+
         snapshot = getattr(store, "snapshot", None)
         if path in {
             "/api/board/terminal/resources", "/api/board/terminal/sessions", "/api/board/terminal/events",
@@ -60,6 +62,8 @@ def handle_get(
                 )
             except ValueError as exc:
                 status, payload = 400, {"error": str(exc)}
+        elif path in memory_views.ROUTES:
+            status, payload = memory_views.handle(path, one, db, history, now)
         elif path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now, history=history) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/sessions":

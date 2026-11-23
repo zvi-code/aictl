@@ -81,6 +81,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
         artifact_details,
         board_filters,
         flow_projection,
+        memory_views,
         projection_utils,
         session_details,
     )
@@ -207,6 +208,17 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 raise ScopeError("A fleet file detail requires a node-qualified record")
             return result(*artifact_details.file_detail(db, name, now, since=lo, until=hi,
                                              history=HistoryScope(reader, node, qualified=True)))
+        if path in memory_views.ROUTES:
+            if endpoint.startswith("agent/"):
+                node, raw = parse_identity(one("id"), scope)
+                return result(*memory_views.handle(path, one, db, HistoryScope(reader, node, qualified=True), now,
+                                                   agent=identity(node, raw)))
+            node = scope.node
+            if endpoint == "memory/versions" and (record := one("record")):
+                node, raw_path = parse_identity(record, scope, max_length=4096)
+                if raw_path != one("path"):
+                    raise ScopeError("The record does not match the requested path")
+            return result(*memory_views.handle(path, one, db, HistoryScope(reader, node, qualified=True), now))
         if endpoint in {"agent", "agent/flow", "agent/transcript", "/api/session-evidence"}:
             is_agent = endpoint.startswith("agent")
             node, raw = parse_identity(one("id" if is_agent else "session_id"), scope)

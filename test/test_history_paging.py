@@ -153,6 +153,17 @@ def _checkpoints(seed):
     return {None: 8}
 
 
+def _recalls(seed):
+    for project in ("p", "q"):
+        for node in ("test-node", "n2"):
+            for i in range(2):
+                seed("context_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key=f"r{i}",
+                     kind="memory_recall", path=MEMORY)
+            seed("context_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key="c",
+                 kind="compaction")
+    return {None: 8}
+
+
 def _checkpoint_files(seed):
     for project in ("p", "q"):
         for node in ("test-node", "n2"):
@@ -191,6 +202,7 @@ KEYS = [f"{len(node)}:{node}{SID}" for node in ("test-node", "n2")]
                        "min_tokens": 200_000}, _long_requests),
     ("memory.changes", {"sid": SID}, _memory_changes),
     ("memory.versions", {"requested_path": MEMORY}, _memory_versions),
+    ("memory.recalls", {"sid": SID}, _recalls),
     ("checkpoints.session", {"sid": SID}, _checkpoints),
     ("checkpoints.files", {"sid": SID, "requested_message": "u-1"}, _checkpoint_files),
     ("sessions.config", {"sid": SID}, _config),
@@ -257,6 +269,7 @@ BOUNDED = {
     "context.telemetry": "one row per node and tool",
     "files.changes": "one row per node and path changed",
     "files.detail": "edit_limit edits and two revisions of one path",
+    "memory.diff": "at most two rows, one per requested content hash",
     "files.session_inventory": "the inventory files of one folder, which no session adds to",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",

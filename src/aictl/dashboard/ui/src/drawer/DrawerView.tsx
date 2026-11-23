@@ -48,12 +48,16 @@ const pending = () => <PanelState state="loading" />
 
 function detailCounts(data: DetailAgent): Partial<Record<typeof items[number][0], number>> {
   const loaded = new Set(data.context_files?.loaded?.map(row => row.path).filter(path => typeof path === 'string' && path))
+  // A memory file the session edited is in both lists: it counts once.
+  const changed = data.files || data.memory_changes
+    ? new Set([...(data.files ?? []).map(row => row.path), ...(data.memory_changes ?? []).map(row => row.path)]).size : undefined
   return {
+    context: data.checkpoints?.length,
     instructions: loaded.size || undefined,
     turns: data.turns?.length,
     tools: data.tool_calls?.length,
     errors: data.errors ? data.errors.length + Number(!!data.loop) : undefined,
-    changes: data.files?.length,
+    changes: changed,
     artifacts: data.artifacts_total,
     commits: data.commits?.length,
   }

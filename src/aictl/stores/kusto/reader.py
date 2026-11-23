@@ -192,6 +192,10 @@ _VIEWS = {
         "after_source lines_added lines_removed source_event_id state",
     ),
     "memory.diff": ("all_nodes requested_node keep_text first_hash second_hash", "side hash content size_bytes"),
+    "memory.recalls": (
+        f"{_SCOPE} requested_session after_row",
+        "node_id ts key agent_id tool trigger path content_hash tool_call_id prompt_id turn_index detail",
+    ),
     "checkpoints.session": (
         f"{_SCOPE} requested_session after_row",
         "node_id ts key kind agent_id tool trigger checkpoint_no message_id files_count lines_added lines_removed "
@@ -353,7 +357,7 @@ _LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
 _PAGED_VIEWS = {
     "files.artifacts", "files.inventory", "prompts.page", "requests.long", "sequence.context", "sequence.flow", "sequence.otel",
     "sequence.skills", "sessions.commits", "skills.detail", "skills.window", "tools.activity_rows", "tools.detail",
-    "memory.changes", "memory.versions", "checkpoints.session", "checkpoints.files", "sessions.config",
+    "memory.changes", "memory.versions", "memory.recalls", "checkpoints.session", "checkpoints.files", "sessions.config",
 }
 
 

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-memory-recalls.schema.json",
+  "title": "DetailMemoryRecalls",
+  "type": "object",
+  "properties": {
+    "recalls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {
+            "type": "number"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "prompt_id": {
+            "type": "string"
+          },
+          "turn_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ts",
+          "agent_id",
+          "tool",
+          "trigger",
+          "path",
+          "content_hash",
+          "tool_call_id",
+          "prompt_id",
+          "turn_index",
+          "bytes"
+        ]
+      }
+    },
+    "node_scope": {
+      "$ref": "node-scope.schema.json"
+    }
+  },
+  "required": [
+    "recalls"
+  ]
+}

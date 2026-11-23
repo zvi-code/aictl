@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-checkpoint-files.schema.json",
+  "title": "DetailCheckpointFiles",
+  "type": "object",
+  "properties": {
+    "message_id": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "number"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "mechanism": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "blob_hash": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines_added": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines_removed": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "ts",
+          "origin",
+          "mechanism",
+          "version",
+          "state",
+          "blob_hash",
+          "size_bytes",
+          "lines",
+          "lines_added",
+          "lines_removed"
+        ]
+      }
+    },
+    "node_scope": {
+      "$ref": "node-scope.schema.json"
+    }
+  },
+  "required": [
+    "message_id",
+    "files"
+  ]
+}

@@ -46,6 +46,11 @@ TERMINAL_DETAILS = {
     "/api/board/terminal/resources", "/api/board/terminal/sessions",
 }
 
+# Read on demand by the drawer; their bodies are checked against Kusto replay in test_memory_views.py.
+MEMORY_DETAILS = {
+    "/api/board/memory/diff", "/api/board/memory/versions", "/api/board/agent/recalls", "/api/board/agent/checkpoint/files",
+}
+
 
 # Routes whose contract gained required fields after the tapes of 2026-11-20 were captured.
 # A capture cannot hold a field that did not exist yet, so these taped bodies are not checked.
@@ -143,7 +148,7 @@ def test_recorded_rest_payloads():
     # Board history is exercised against seeded local and scoped readers.
     no_capture = local_file_routes | {
         "/api/board/error", "/api/board/prompt", "/api/board/agent/kql", "/api/history/board",
-    } | TERMINAL_DETAILS
+    } | TERMINAL_DETAILS | MEMORY_DETAILS
     assert (set(VALIDATORS["details"]) | {"/api/board"}) - seen <= no_capture | CHANGED_SINCE_CAPTURE
     # A route leaves the list when a new capture has it; an entry no tape holds is stale.
     assert CHANGED_SINCE_CAPTURE <= taped

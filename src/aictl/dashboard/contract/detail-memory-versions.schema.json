@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-memory-versions.schema.json",
+  "title": "DetailMemoryVersions",
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "mechanism": {
+      "type": "string"
+    },
+    "versions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {
+            "type": "number"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "before_hash": {
+            "type": "string"
+          },
+          "before_source": {
+            "type": "string"
+          },
+          "after_source": {
+            "type": "string"
+          },
+          "lines_added": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines_removed": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ts",
+          "origin",
+          "session_id",
+          "title",
+          "agent_id",
+          "actor",
+          "operation",
+          "content_hash",
+          "size_bytes",
+          "before_hash",
+          "before_source",
+          "after_source",
+          "lines_added",
+          "lines_removed",
+          "state"
+        ]
+      }
+    },
+    "node_scope": {
+      "$ref": "node-scope.schema.json"
+    }
+  },
+  "required": [
+    "path",
+    "mechanism",
+    "versions"
+  ]
+}
