@@ -1,0 +1,233 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Of the commits the agent made, how many had a test run after the last change to a source file. Read
+// from tool calls only, by any agent of the session (a subagent's test run tests the session's tree):
+// - a commit is a successful shell call that runs `git commit` (git by name or by path, git.exe; not
+//   --dry-run, not commit-tree, not printed by echo or searched for by grep); a failed call made no commit;
+// - a test run is a shell call that runs a known test runner at a command position (start of the line,
+//   after ; && || | ( { then do, or inside bash -c, pwsh/powershell -Command, cmd /c), not one that only
+//   lists tests, or a call of VS Code's runTests tool. Its result is "failed" when the call failed and the
+//   runner's status reached the tool, "passed" only when that status reached a tool in PassTools as exit
+//   code 0, and "unknown" otherwise (piped without pipefail, followed by ; || &, no exit code, no text);
+// - a change to a source file is a successful call of an edit tool on a file that is not documentation or
+//   data (.md .mdx .markdown .rst .txt .adoc .json .jsonl .ndjson .csv .tsv .log .lock .yaml .yml .toml
+//   .ini), or a shell call that edits files in place (sed -i, perl -i, (Get-Content f) -replace | Set-Content,
+//   git apply/restore/checkout --, patch). Redirects and whole-file writes (cat > f, > f, Out-File, Set-Content,
+//   Add-Content) are not changes: agents write helper scripts and data that way. An edit call that names no file is an unknown change: it never
+//   decides a commit's outcome by itself.
+// - text inside the body of a heredoc is not read as a command; what follows `ssh host` runs on another
+//   machine and is not counted (remote_commits says how many commits were left out for that).
+// Order is time. Events of one call keep their order in the line (sed -i && pytest && git commit).
+// At the same time, a test run of its own comes before a change of its own (the run did not see it),
+// and a call that holds more than one event comes after both.
+// A commit counts in the period its call falls in; the history before it counts at any time.
+// Not classified: commits of a session whose edits are not recorded (its only source is Copilot's
+// session-store.db, which keeps shell commands only: not_recorded) and commits whose deciding change names
+// no file (unknown_change). own_unseen repeats the split with only the committing agent's own edits and tests.
+// A session whose shell calls carry no command text (capture not full on its node) is left out of
+// every count but sessions_no_text: none of its commits can be seen and most test runs cannot.
+let EditTools = dynamic(['edit', 'write', 'multiedit', 'notebookedit', 'create', 'apply_patch', 'str_replace_editor',
+    'str_replace_based_edit_tool', 'create_file', 'replace_string_in_file', 'multi_replace_string_in_file',
+    'insert_edit_into_file', 'edit_file', 'edit_notebook_file', 'copilot_replacestring', 'copilot_multireplacestring',
+    'copilot_createfile', 'copilot_applypatch', 'copilot_insertedit', 'copilot_editnotebook']);
+let TestTools = dynamic(['runtests', 'copilot_runtests']);
+// The shell tools: Claude Code Bash and PowerShell, Copilot CLI and app bash/powershell, VS Code run_in_terminal.
+let ShellTools = dynamic(['bash', 'powershell', 'pwsh', 'shell', 'run_in_terminal', 'send_to_terminal', 'exec_command',
+    'run_command', 'execute_command', 'run_shell_command', 'terminal']);
+// A command position, then env settings and launchers, then a runner. Case does not matter (Windows).
+let Pos = @'(?:^|[;&|({]|\bthen\b|\bdo\b|\b(?:ba|z)?sh\s+-\w*c|\b(?:pwsh|powershell)(?:\.exe)?(?:\s+(?:-\w+|Bypass|Unrestricted|RemoteSigned))*?\s+-c(?:ommand)?|\bcmd(?:\.exe)?\s+/[ck])\s*["'']?\s*(?:[A-Za-z_]\w*=\S*\s+)*';
+let Launch = @'(?:(?:sudo|env|time|nohup|g?timeout(?:\s+-\S+)*\s+\d\S*|uv\s+run|poetry\s+run|pipenv\s+run|pdm\s+run|hatch\s+run|npx|bunx|pnpm\s+exec|yarn\s+exec)\s+(?:-\S+\s+)*)*';
+// The writer redacts `-p` followed by four or more characters, so Invoke-Pester is stored as Invoke-P<redacted>.
+let Runner = @'(?:\S*[/\\])?(?:(?:py\.?test|vitest|jest|tox|ctest|mocha|nox|playwright\s+test)(?:\.exe|\.cmd)?\b|(?:python[\d.]*|py(?:\s+-[\d.]+)?|\$\{?\w+\}?)(?:\.exe)?["'']?\s+(?:-[A-Za-z]+\s+)*-m\s+(?:pytest|unittest|tox|nox)\b|(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?test|(?:go|cargo|dotnet|deno|swift|mix|mvn|mvnw|gradle|gradlew)(?:\.exe|\.cmd|\.bat)?\s+(?:-\S+\s+)*(?:test|nextest)\b|(?:node|tsx)(?:\.exe)?\s+(?:--\S+\s+)*--test\b|make\s+(?:-\S+\s+)*(?:test|check)\S*|Invoke-P(?:ester\b|<redacted>))';
+let TestRe = strcat('(?i)', Pos, Launch, Runner);
+// The writer redacts `-p` followed by four or more characters, so `--no-pager` is stored as `--no-p<redacted>`.
+let CommitRe = @'(?i)(?:^|[\s;&|({"''])(?:[^\s;&|({"'']*[/\\])?git(?:\.exe)?["'']?(?:\s+-c\s+\S+|\s+--no-p\S*|\s+--(?:git-dir|work-tree)=\S+)*\s+commit(?:[\s"'';)]|$)';
+// A commit that is only printed or searched for: the words before it.
+let PrintedRe = @'(?i)\b(?:echo|printf|grep|egrep|fgrep|rg|Write-Host|Write-Output|Select-String|findstr)\s+(?:-\S+\s+)*["'']?\s*$';
+let SshRe = @'(?i)(?:^|[;&|(])\s*(?:[A-Za-z_]\w*=\S*\s+)*ssh(?:\.exe)?\s';
+let ListOnlyRe = @'(?i)--collect-only|\s--co\b|--list-tests|--listtests|--version|--help|\s-h\b|--fixtures|^\s*list\b';
+let ShellWriteRe = @'(?i)(?:^|[\s;&|(])(?:[^\s;&|(]*[/\\])?(?:sed\s+(?:-\S+\s+)*-i|perl\s+-\S*i|git(?:\.exe)?(?:\s+-c\s+\S+)*\s+(?:apply|restore)\b|git(?:\.exe)?(?:\s+-c\s+\S+)*\s+checkout\s+(?:\S+\s+)?--(?:\s|$)|patch\s+(?:-\S+\s+)*-p)|\(\s*Get-Content\b[^)]*\)[^;&]*-replace[^;&]*\|\s*Set-Content';
+let HeredocRe = @'<<-?\s*[''"]?(\w+)[''"]?';
+let NotSourceRe = @'(?i)\.(?:md|mdx|markdown|rst|txt|adoc|json|jsonl|ndjson|csv|tsv|log|lock|ya?ml|toml|ini)$';
+// A pass is recorded only by tools that report the command's exit code when it is 0: Copilot CLI and the app
+// (since October 2026, and from session-store.db). Claude Code reports failure only, and a run it started in
+// the background reports success at launch; VS Code keeps an exit code only for a failed command.
+let PassTools = dynamic(['copilot-cli', 'copilot-desktop']);
+let versions = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | where tool_name in~ (EditTools) or tool_name in~ (ShellTools) or tool_name in~ (TestTools);
+// Keys first: the sessions with a call in the period, then every version of their calls.
+let period_sessions = versions | where ts >= since and ts < until | distinct session_id;
+let reduced = materialize(versions
+    | where since <= 0 or session_id in (period_sessions)
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
+             cmd=target_kind == 'command'
+    // Only a line that can hold a commit, a test run, an in-place edit or ssh keeps its text into the reduction.
+    | extend keep=cmd and (target contains 'commit' or target contains 'test' or target contains 'invoke-p'
+                           or target contains 'set-content'
+                           or target has_any ('jest', 'tox', 'mocha', 'nox', 'check', 'sed', 'perl', 'apply', 'restore', 'checkout', 'patch', 'ssh'))
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, source, is_error, exit_code,
+              cmd, has_text=cmd and (isnotnull(target_chars) or target != command_name), command_name, target=iff(cmd and not(keep), '', target)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts < until and isnotempty(session_id)
+    | extend failed=coalesce(is_error, 0) == 1 or (isnotnull(exit_code) and exit_code != 0),
+             is_edit=tool_name in~ (EditTools), test_tool=tool_name in~ (TestTools)
+    | where cmd or test_tool or (is_edit and not(failed))
+    | project-away ['project'], fact_key, _v, deleted);
+// Per session: whether its edits are recorded, whether its command lines carry text, whether OTel rows
+// only repeat its transcript.
+let session_facts = materialize(reduced
+    | summarize recorded=countif(source != 'copilot-session-store') > 0, transcript=countif(source != 'otel') > 0,
+                cmds=countif(cmd), cmds_text=countif(has_text) by node_id, session_id
+    | extend readable=cmds == 0 or cmds_text > 0);
+let calls = materialize(reduced
+    | lookup kind=inner session_facts on node_id, session_id
+    | where not(source == 'otel' and transcript)
+    | extend line=iff(has_text, replace_regex(target, @'\d?>&\d|&>', ' '), '')
+    // The first heredoc of the line: its body runs from the marker to the next stand-alone terminator word
+    // (the writer joins the lines of a command with spaces).
+    | extend hd_at=iff(line contains_cs '<<', indexof_regex(line, HeredocRe), -1)
+    | extend hd_mark=iff(hd_at >= 0, extract(strcat('(', HeredocRe, ')'), 1, line), ''), hd_word=iff(hd_at >= 0, extract(HeredocRe, 1, line), '')
+    | extend hd_rest=iff(hd_at >= 0, indexof(strcat(substring(line, hd_at + strlen(hd_mark)), ' '), strcat(' ', hd_word, ' ')), -1)
+    | extend hd_end=iff(hd_at < 0, -1, iff(hd_rest < 0, strlen(line), hd_at + strlen(hd_mark) + hd_rest))
+    | extend ssh_at=iff(line has 'ssh', indexof_regex(line, SshRe), -1)
+    // A commit that is printed or searched for is skipped once, and the next one in the line is read.
+    | extend c1=iff(line contains 'commit', indexof_regex(line, CommitRe), -1)
+    | extend c1_printed=c1 >= 0 and substring(line, 0, c1 + 1) matches regex PrintedRe
+    | extend c2=iff(c1_printed, indexof_regex(substring(line, c1 + 4), CommitRe), -1)
+    | extend commit_at=case(c1 < 0, -1, not(c1_printed), c1, c2 < 0, -1, c1 + 4 + c2)
+    | extend commit_at=iff(commit_at >= 0 and c1_printed and substring(line, 0, commit_at + 1) matches regex PrintedRe, -1, commit_at)
+    | extend test_at=iff(line contains 'test' or line contains 'invoke-p' or line has_any ('jest', 'tox', 'mocha', 'nox', 'check'),
+                         indexof_regex(line, TestRe), -1),
+             write_at=iff(line has_any ('sed', 'perl', 'Set-Content', 'apply', 'restore', 'checkout', 'patch'),
+                          indexof_regex(line, ShellWriteRe), -1)
+    | extend commit_at=iff(commit_at > hd_at and commit_at < hd_end, -1, commit_at),
+             test_at=iff(test_at > hd_at and test_at < hd_end, -1, test_at),
+             write_at=iff(write_at > hd_at and write_at < hd_end, -1, write_at)
+    | extend remote_commit=commit_at >= 0 and ssh_at >= 0 and commit_at > ssh_at and not(failed) and not(line has '--dry-run'),
+             commit_at=iff(ssh_at >= 0 and commit_at > ssh_at, -1, commit_at),
+             test_at=iff(ssh_at >= 0 and test_at > ssh_at, -1, test_at),
+             write_at=iff(ssh_at >= 0 and write_at > ssh_at, -1, write_at)
+    | extend test_tail=iff(test_at >= 0, extract(strcat(TestRe, @'([^;&|]*)(&&|\|\||\||;|&|$)'), 1, substring(line, test_at)), ''),
+             test_sep=iff(test_at >= 0, extract(strcat(TestRe, @'[^;&|]*(&&|\|\||\||;|&|$)'), 1, substring(line, test_at)), '')
+    | extend is_commit=commit_at >= 0 and not(failed) and not(line has '--dry-run'),
+             is_test=(test_at >= 0 and not(test_tail matches regex ListOnlyRe)) or test_tool
+                 or (cmd and not(has_text) and command_name in~ ('pytest', 'vitest', 'jest', 'tox', 'ctest', 'mocha', 'nox')),
+             no_file=is_edit and isempty(target),
+             is_write=(is_edit and isnotempty(target) and not(target matches regex NotSourceRe)) or write_at >= 0
+    | extend status=case(
+        not(is_test), '',
+        // Piped (without pipefail) or followed by ; || &: the runner's status did not reach the tool.
+        test_sep in ('|', ';', '||', '&') and not(test_sep == '|' and line has 'pipefail'), 'unknown',
+        failed, 'failed',
+        // Before October 2026 Copilot's success flag could be true for a failed command and no exit code
+        // was kept: without an exit code of 0 the result is unknown.
+        not(test_tool) and has_text and tool in (PassTools) and exit_code == 0, 'passed',
+        'unknown')
+    | where is_commit or remote_commit or is_test or is_write or no_file
+    | extend multi=toint(is_commit) + toint(is_test) + toint(is_write or no_file) > 1
+    | project node_id, session_id, agent_id, ts, tool, cmd, has_text, recorded, readable, is_commit, remote_commit, is_test,
+              is_write, no_file, status, multi, commit_at, test_at, write_at);
+// The sessions with a commit in the period, with their whole history up to `until`.
+let commit_sessions = calls | where is_commit and ts >= since and readable | distinct node_id, session_id;
+let call_steps = materialize(union
+        (calls | where is_write or no_file
+            | project node_id, session_id, agent_id, ts, tool, ev='write', known=is_write, slot=iff(multi, 2, 1),
+                      pos=iff(write_at >= 0, write_at, 0), status='', recorded),
+        (calls | where is_test | project node_id, session_id, agent_id, ts, tool, ev='test', known=false, slot=iff(multi, 2, 0),
+                                       pos=test_at, status, recorded),
+        (calls | where is_commit | project node_id, session_id, agent_id, ts, tool, ev='commit', known=false, slot=2, pos=commit_at,
+                                         status='', recorded)
+    | join kind=inner commit_sessions on node_id, session_id
+    | project-away node_id1, session_id1
+    | extend agent=iff(isempty(agent_id) or agent_id == session_id, '', agent_id));
+// The session's own history (every agent), then the committing agent's own history.
+let by_session = call_steps
+    | sort by node_id asc, session_id asc, ts asc, slot asc, pos asc
+    | extend new_session=row_number() == 1 or node_id != prev(node_id) or session_id != prev(session_id)
+    | extend tests_before=row_cumsum(toint(ev == 'test'), new_session),
+             known_before=row_cumsum(toint(ev == 'write' and known), new_session),
+             unknown_before=row_cumsum(toint(ev == 'write' and not(known)), new_session),
+             known_since=row_cumsum(toint(ev == 'write' and known), new_session or ev == 'test'),
+             unknown_since=row_cumsum(toint(ev == 'write' and not(known)), new_session or ev == 'test')
+    | extend segment=row_cumsum(toint(new_session or ev == 'test'));
+let commits = materialize(by_session
+    | where ev == 'commit' and ts >= since
+    | lookup kind=leftouter (by_session | where ev == 'test' | project segment, last_status=status) on segment
+    | extend outcome=case(
+        not(recorded), 'edits_not_recorded',
+        known_before == 0 and unknown_before == 0, 'no_code_change',
+        tests_before == 0 and known_before > 0, 'never_tested',
+        tests_before == 0, 'unknown_change',
+        known_since > 0, 'changed_after_test',
+        unknown_since > 0, 'unknown_change',
+        last_status == 'failed', 'test_failed',
+        last_status == 'passed', 'test_passed',
+        'test_unreported'));
+let own = call_steps
+    | sort by node_id asc, session_id asc, agent asc, ts asc, slot asc, pos asc
+    | extend new_agent=row_number() == 1 or node_id != prev(node_id) or session_id != prev(session_id) or agent != prev(agent)
+    | extend known_since=row_cumsum(toint(ev == 'write' and known), new_agent or ev == 'test')
+    | where ev == 'commit' and ts >= since and recorded
+    | summarize own_unseen=countif(known_since > 0) by node_id, session_id;
+let per_session = materialize(commits
+    | summarize commits=count(), passed=countif(outcome == 'test_passed'), unreported=countif(outcome == 'test_unreported'),
+                failed=countif(outcome == 'test_failed'), changed_after=countif(outcome == 'changed_after_test'),
+                never_tested=countif(outcome == 'never_tested'), no_change=countif(outcome == 'no_code_change'),
+                unknown_change=countif(outcome == 'unknown_change'), not_recorded=countif(outcome == 'edits_not_recorded'),
+                by_subagent=countif(isnotempty(agent)), last_commit=max(ts), tool=take_any(tool)
+          by node_id, session_id
+    | lookup kind=leftouter own on node_id, session_id
+    | extend own_unseen=coalesce(own_unseen, 0));
+let edit_sessions = calls
+    | where readable and recorded
+    | summarize writes=countif(is_write and ts >= since), tests=countif(is_test), tool=take_any(tool) by node_id, session_id
+    | where writes > 0;
+union
+    // One row per tool from three parts; a count a part does not have stays null.
+    (union
+        (per_session
+            | summarize commits=sum(commits), passed=sum(passed), unreported=sum(unreported), failed=sum(failed),
+                        changed_after=sum(changed_after), never_tested=sum(never_tested), no_change=sum(no_change),
+                        unknown_change=sum(unknown_change), not_recorded=sum(not_recorded), by_subagent=sum(by_subagent),
+                        own_unseen=sum(own_unseen), commit_sessions=count(),
+                        top_session_commits=max(commits) by tool),
+        (edit_sessions | summarize edit_sessions=count(), untested_sessions=countif(tests == 0) by tool),
+        (reduced | where ts >= since
+            | lookup kind=inner session_facts on node_id, session_id
+            | summarize commands=countif(cmd), commands_with_text=countif(has_text), sessions_no_text=dcountif(session_id, not(readable)),
+                        sessions_edits_unrecorded=dcountif(session_id, not(recorded) and readable) by tool),
+        (calls | where ts >= since
+            | summarize test_runs=countif(is_test and readable), test_results=countif(is_test and readable and status != 'unknown'),
+                        remote_commits=countif(remote_commit and readable), edits_no_file=countif(no_file) by tool)
+        | summarize commits=max(commits), passed=max(passed), unreported=max(unreported), failed=max(failed),
+                    changed_after=max(changed_after), never_tested=max(never_tested), no_change=max(no_change),
+                    unknown_change=max(unknown_change), not_recorded=max(not_recorded), by_subagent=max(by_subagent),
+                    own_unseen=max(own_unseen), commit_sessions=max(commit_sessions), top_session_commits=max(top_session_commits),
+                    edit_sessions=max(edit_sessions), untested_sessions=max(untested_sessions), commands=max(commands),
+                    commands_with_text=max(commands_with_text), test_runs=max(test_runs), test_results=max(test_results),
+                    remote_commits=max(remote_commits), edits_no_file=max(edits_no_file), sessions_no_text=max(sessions_no_text),
+                    sessions_edits_unrecorded=max(sessions_edits_unrecorded) by tool
+        // With command text, a count no part returned is 0; without any, commits and untested sessions are not reported.
+        // Passed and failed are not reported when no test run of the period has a recorded result.
+        | extend text=commands_with_text > 0
+        | extend commits=iff(text, coalesce(commits, 0), long(null)), unreported=iff(text, coalesce(unreported, 0), long(null)),
+                 failed=iff(text and coalesce(test_results, 0) > 0, coalesce(failed, 0), long(null)), changed_after=iff(text, coalesce(changed_after, 0), long(null)),
+                 never_tested=iff(text, coalesce(never_tested, 0), long(null)), no_change=iff(text, coalesce(no_change, 0), long(null)),
+                 unknown_change=iff(text, coalesce(unknown_change, 0), long(null)), not_recorded=iff(text, coalesce(not_recorded, 0), long(null)),
+                 by_subagent=iff(text, coalesce(by_subagent, 0), long(null)), own_unseen=iff(text, coalesce(own_unseen, 0), long(null)),
+                 commit_sessions=iff(text, coalesce(commit_sessions, 0), long(null)),
+                 passed=iff(text and tool in (PassTools) and coalesce(test_results, 0) > 0, coalesce(passed, 0), long(null)),
+                 edit_sessions=coalesce(edit_sessions, 0), untested_sessions=iff(text, coalesce(untested_sessions, 0), long(null))
+        | project-away text
+        | extend row_type='tool'),
+    (per_session
+        | extend untested=changed_after + never_tested, passed=iff(tool in (PassTools), passed, long(null))
+        | where untested > 0
+        | sort by untested desc, commits desc
+        | take 10
+        | extend row_type='session'),
+    (reduced | where ts >= since
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, commits desc, tool asc
+| take row_limit

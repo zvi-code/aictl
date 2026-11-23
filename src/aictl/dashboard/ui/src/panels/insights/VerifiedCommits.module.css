@@ -1,0 +1,10 @@
+/* Verified before commit: one 100% bar per tool, tested on the left, untested in warning colours, unclassified hatched. */
+.passed { background: var(--color-success); }
+.unreported { background: repeating-linear-gradient(45deg, var(--color-success) 0 3px, color-mix(in srgb, var(--color-success) 35%, var(--color-surface)) 3px 6px); }
+.failed { background: var(--color-chart-1); }
+.changed_after { background: var(--color-warning); }
+.never_tested { background: var(--color-danger); }
+.no_change { background: var(--color-border); }
+.unclassified { background: repeating-linear-gradient(45deg, var(--color-muted) 0 2px, var(--color-raised) 2px 6px); }
+.untested { color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.missing { color: var(--color-muted); font-style: italic; }

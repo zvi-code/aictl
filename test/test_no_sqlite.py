@@ -84,6 +84,7 @@ def _dashboard_requests(root):
             "/api/board/insights/context", "/api/board/insights/orientation", "/api/board/insights/fixed",
             "/api/board/insights/problems",
             "/api/board/insights/autonomy",
+            "/api/board/insights/verified",
         )},
         "/api/board/session/convergence": "/api/board/session/convergence?session_id=no-sqlite-probe",
         "/api/board/memory/diff": "/api/board/memory/diff?first=no-sqlite-probe",

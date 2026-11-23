@@ -324,6 +324,13 @@ _VIEWS = {
         "resumed no_stop active prompted scripted store_only start_unread no_calls unread first_ts last_ts bin_unit "
         "prompts_from computed_at",
     ),
+    "insights.verified_commits": (
+        _TIME,
+        "row_type tool node_id session_id commits passed unreported failed changed_after never_tested no_change unknown_change "
+        "not_recorded by_subagent own_unseen commit_sessions top_session_commits edit_sessions untested_sessions commands "
+        "commands_with_text test_runs test_results remote_commits edits_no_file sessions_no_text sessions_edits_unrecorded "
+        "untested last_commit first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -419,6 +426,7 @@ _CACHE_TTL_S = {
     "insights.context_weight": _INSIGHT_TTL_S, "insights.orientation": _INSIGHT_TTL_S, "insights.fixed_context": _INSIGHT_TTL_S,
     "insights.problem_sessions": _INSIGHT_TTL_S,
     "insights.work_per_instruction": _INSIGHT_TTL_S,
+    "insights.verified_commits": _INSIGHT_TTL_S,
 }
 _NODE_STALE_MAX_S = 300.0
 _FAILURE_COOLDOWN_S = 5.0

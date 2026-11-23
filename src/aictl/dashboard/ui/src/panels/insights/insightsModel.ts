@@ -6,16 +6,17 @@ import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, pr
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'
+import type { VerifiedBody } from './verifiedModel'
 
 export type { QueryBlock }
 export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
-  | 'autonomy'
+  | 'autonomy' | 'verified'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
 export type InsightSession = { session_id: string; node_id?: string | null; tool?: string | null } & Record<string, unknown>
 
-type Base<C extends CardId> = {
+export type Base<C extends CardId> = {
   card: C; view: string; range: { since: number; until: number }
   data_range: { first_ts: Num; last_ts: Num }; computed_at: number; query: QueryBlock
   sessions: InsightSession[]; tool_labels?: Record<string, string>; node_scope?: { kind: string; node_id: string | null }
@@ -127,6 +128,7 @@ export type ProblemBody = Base<'problems'> & {
 export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody | FixedBody
   | ProblemBody
   | AutonomyBody
+  | VerifiedBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',

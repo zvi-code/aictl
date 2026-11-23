@@ -29,6 +29,7 @@ CARDS = {
     "fixed": "insights.fixed_context",
     "problems": "insights.problem_sessions",
     "autonomy": "insights.work_per_instruction",
+    "verified": "insights.verified_commits",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -42,6 +43,14 @@ FIXED_KINDS = ("instruction_file", "memory_file", "system_prompt_other", "skills
                "tools_listed")
 # The problem signals of insights.problem_sessions, in the order the card lists them.
 SIGNALS = ("compaction", "failure_streak", "failed_delegation", "api_error", "open_todos", "hook_failure")
+# The runs of failed calls, as insights.after_failure and insights.problem_sessions both define them (each view
+# carries this text as it is; test_insights checks it).
+# The counts of insights.verified_commits, one row per tool; the view leaves a count null where the tool does not
+# record it (no command text: commits; no recorded result: failed; no exit code of 0: passed).
+VERIFIED_COUNTS = ("commits", "passed", "unreported", "failed", "changed_after", "never_tested", "no_change", "unknown_change",
+                   "not_recorded", "by_subagent", "own_unseen", "commit_sessions", "top_session_commits", "edit_sessions",
+                   "untested_sessions", "commands", "commands_with_text", "test_runs", "test_results", "remote_commits",
+                   "edits_no_file", "sessions_no_text", "sessions_edits_unrecorded")
 # The runs of failed calls, as insights.after_failure and insights.problem_sessions both define them (each view
 # carries this text as it is; test_insights checks it).
 FAILURE_RUNS_KQL = """let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
@@ -628,11 +637,79 @@ def work_per_instruction(rows: list[dict]) -> dict:
     }
 
 
+def _count(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _total(values: list[int | None]) -> int | None:
+    """The sum of the counts that are reported; None when none is."""
+    found = [value for value in values if value is not None]
+    return sum(found) if found else None
+
+
+def verified_commits(rows: list[dict]) -> dict:
+    """Per tool: agent commits split by whether a test run saw their source changes; sessions that changed source untested.
+
+    A commit is classified when the tool records the session's edits and its deciding change names a file. A tool's
+    share of commits no test run saw (changed after the last test, or never tested) is over its classified commits, and
+    only when at least half of its commits are classified: otherwise the tool is "not classified" and its commits are
+    counted as unchecked. A tool that keeps no command text reports no commits (None), and a tool with no recorded exit
+    code of 0 reports no passes.
+    """
+    tools = []
+    for row in _of(rows, "tool"):
+        tool = {"tool": row.get("tool"), **{name: _count(row.get(name)) for name in VERIFIED_COUNTS}}
+        commits = tool["commits"]
+        classified = None if commits is None else commits - _int(tool["not_recorded"]) - _int(tool["unknown_change"])
+        checked = bool(classified) and _int(classified) * 2 >= _int(commits)
+        unseen = None if commits is None else _int(tool["changed_after"]) + _int(tool["never_tested"])
+        tool.update(classified=classified, unseen=unseen, checked=checked,
+                    unseen_share=_ratio(_n(unseen), _n(classified)) if checked else None,
+                    own_unseen_share=_ratio(_n(tool["own_unseen"]), _n(classified)) if checked and tool["own_unseen"] is not None
+                    else None,
+                    unchecked=None if commits is None else commits - (_int(classified) if checked else 0))
+        tools.append(tool)
+    tools.sort(key=lambda tool: (-_n(tool["commits"]), str(tool["tool"])))
+    counted = [tool for tool in tools if tool["commits"] is not None]
+    pooled = [tool for tool in counted if tool["checked"]]
+    classified = sum(_int(tool["classified"]) for tool in pooled)
+    unseen = sum(_int(tool["unseen"]) for tool in pooled)
+    own = _total([tool["own_unseen"] for tool in pooled])
+    reporting = [tool for tool in counted if tool["untested_sessions"] is not None]
+    sessions = []
+    for row in _sessions(rows, ("commits", "untested", "never_tested", "own_unseen", "by_subagent", "last_commit")):
+        sessions.append({**{key: value for key, value in row.items() if key != "untested"}, "unseen": _count(row["untested"])})
+    sessions.sort(key=lambda row: (-_n(row["unseen"]), -_n(row["commits"])))
+    return {
+        "tools": tools,
+        "summary": {
+            "commits": _total([tool["commits"] for tool in tools]), "classified": classified if counted else None,
+            "unseen": unseen if pooled else None, "unseen_share": _ratio(unseen, classified) if classified else None,
+            "own_unseen": own, "own_unseen_share": _ratio(_n(own), classified) if classified and own is not None else None,
+            "changed_after": sum(_int(tool["changed_after"]) for tool in pooled) if pooled else None,
+            "never_tested": sum(_int(tool["never_tested"]) for tool in pooled) if pooled else None,
+            "failed": _total([tool["failed"] for tool in counted]), "passed": _total([tool["passed"] for tool in counted]),
+            "unchecked": sum(_int(tool["unchecked"]) for tool in counted) if counted else None,
+            "edit_sessions": sum(_int(tool["edit_sessions"]) for tool in reporting) if reporting else None,
+            "untested_sessions": sum(_int(tool["untested_sessions"]) for tool in reporting) if reporting else None,
+            "remote_commits": _total([tool["remote_commits"] for tool in tools]),
+            "sessions_no_text": _total([tool["sessions_no_text"] for tool in tools]),
+            "checked_tools": [tool["tool"] for tool in pooled],
+            "not_reported": [tool["tool"] for tool in tools if tool["commits"] is None],
+            "not_classified": [tool["tool"] for tool in counted if tool["commits"] and not tool["checked"]],
+            "one_session": [tool["tool"] for tool in counted
+                            if tool["commits"] and _n(tool["top_session_commits"]) * 2 > tool["commits"]],
+        },
+        "sessions": sessions,
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
     "time": time_split, "context": context_weight, "orientation": orientation, "fixed": fixed_context,
     "problems": problem_sessions,
     "autonomy": work_per_instruction,
+    "verified": verified_commits,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -647,6 +724,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "fixed": lambda history, params: history.read("insights.fixed_context", limit=ROW_LIMIT, **params),
     "problems": lambda history, params: history.read("insights.problem_sessions", limit=ROW_LIMIT, **params),
     "autonomy": lambda history, params: history.read("insights.work_per_instruction", limit=ROW_LIMIT, **params),
+    "verified": lambda history, params: history.read("insights.verified_commits", limit=ROW_LIMIT, **params),
 }
 
 
