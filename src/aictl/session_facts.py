@@ -29,7 +29,7 @@ AGENTS_KEPT_ACROSS_RESTART = 2_000
 PAYLOAD_CHUNK_CHARS = 200_000  # a chunk stays under what one Kusto string value holds
 log = logging.getLogger(__name__)
 _COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
-             "cost_usd", "request_count", "tool_call_count", "files_modified")
+             "cost_usd", "request_count", "tool_call_count")
 # What a telemetry report of a model call knows and its transcript line may not.
 _TELEMETRY_ONLY = ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason", "request_id", "response_id")
 # What a request tombstone must carry of the row it deletes; a waiting telemetry call keeps it.
@@ -70,6 +70,8 @@ class SessionFacts:
         self._dirty = False
         self._sessions: OrderedDict = OrderedDict()
         self._agents: OrderedDict = OrderedDict()
+        # The files_changed of each session's last outcome row: the session row's files_modified.
+        self._outcome_files: OrderedDict = OrderedDict()
         # Agent rows known from the restart state only: the store may hold a newer version of them.
         self._restored_agents: set[tuple[str, str]] = set()
         self._requests: OrderedDict = OrderedDict()
@@ -140,6 +142,8 @@ class SessionFacts:
                 row = self._gated(row)
                 entry = staged.get(sid, self._sessions.get(sid, {}))
                 merged = self._merge_session(row, activity, terminal, entry)
+                if (files := self._outcome_files.get(sid)) is not None:
+                    merged["row"]["files_modified"] = files
                 if merged != entry:
                     staged[sid] = merged
                     staged.move_to_end(sid)
@@ -234,6 +238,8 @@ class SessionFacts:
         merged["started_at"] = min(starts, default=0.0)
         for name in _COUNTERS:
             merged[name] = max(merged[name], incoming[name])
+        # One source: the files the session's outcome row counts (files_changed), never a reader's own count.
+        merged["files_modified"] = prior.get("files_modified", 0) if prior else 0
         # Lifecycle: an event with a time (activity) orders by the clock; a row without one
         # (a transcript's idle end) ends the session only when it is newer than the clock, so
         # an idle end cannot close a session that a live process or a hook reported later.
@@ -256,6 +262,27 @@ class SessionFacts:
             merged["ended_at"] = None
             merged["end_reason"] = ""
         return {"row": merged, "clock": clock}
+
+    def _files_modified(self, outcomes: list[dict]) -> None:
+        """Give each known session the file count of its outcome row, so sessions.files_modified and
+        session_outcomes.files_changed are one number. A session this node holds no row of keeps
+        its stored row: a session row is written whole."""
+        with self._lock:
+            changed = []
+            for outcome in outcomes:
+                count = outcome.get("files_changed")
+                if count is None:
+                    continue
+                self._remember(self._outcome_files, outcome["session_id"], int(count))
+                entry = self._sessions.get(outcome["session_id"])
+                if entry is None or entry["row"].get("files_modified") == count:
+                    continue
+                entry["row"] = dict(entry["row"], files_modified=int(count))
+                self._remember(self._sessions, outcome["session_id"], entry)
+                changed.append(dict(entry["row"], project=entry["row"]["project_path"]))
+            if changed:
+                self.writer.upsert("sessions", changed)
+                self._dirty = True
 
     def started_at(self, session_id: str) -> float:
         with self._lock:
@@ -727,6 +754,8 @@ class SessionFacts:
                 values.append(dict(data, project=project))
             if attr == "context_items":
                 values = self._context_items(values)
+            if attr == "outcomes":
+                self._files_modified(values)
             try:
                 self.writer.append(table, values)
             except InvalidRowError:

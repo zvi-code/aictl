@@ -186,3 +186,26 @@ def test_each_shutdown_and_resume_is_an_event_of_its_own():
     assert json.loads(next(r for r in rows if r["kind"] == "session_shutdown" and r["detail"])["detail"])[
         "totalPremiumRequests"] == 3
     assert sum(r["kind"] == "config.session_resume" for r in rows) == 1
+
+
+def outcome(sid: str, files: int) -> dict:
+    from aictl.ingesters.session_outcomes import COLUMNS
+
+    return {"session_id": sid, "tool": "copilot-cli", "project_path": "/p", "ts": T + 50,
+            **dict.fromkeys(COLUMNS), "files_changed": files}
+
+
+def test_a_session_row_counts_the_files_its_outcome_row_counts():
+    from aictl.records import CallFacts, SessionRow
+
+    writer = MemoryWriter()
+    facts = SessionFacts(writer)
+    # A reader's own count is not the session's: only the outcome row gives it.
+    facts.session(SessionRow("cp-a", "copilot-cli", project_path="/p", started_at=T, files_modified=7), activity=T)
+    facts.write(CallFacts(outcomes=[outcome("cp-a", 13), outcome("cp-b", 33)]), only="outcomes")
+    # A session whose row is written after its outcome takes the outcome's count too.
+    facts.session(SessionRow("cp-b", "copilot-cli", project_path="/p", started_at=T), activity=T)
+    facts.session(SessionRow("cp-a", "copilot-cli", project_path="/p", started_at=T, files_modified=40), activity=T + 60)
+    sessions = {r["session_id"]: r["files_modified"] for r in current(writer, "sessions")}
+    outcomes = {r["session_id"]: r["files_changed"] for r in current(writer, "session_outcomes")}
+    assert sessions == outcomes == {"cp-a": 13, "cp-b": 33}
