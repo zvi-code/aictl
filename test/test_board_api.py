@@ -2944,8 +2944,8 @@ class TestMachine:
         }
         m = self._health(_machine_snapshot([_machine_tool(live=live)], live_monitor=lm))
         assert m["monitor"]["collectors"] == [
-            {"name": "fs", "mode": "poll", "status": "degraded", "detail": None},
-            {"name": "network", "mode": "nettop", "status": "active", "detail": "2 tools"},
+            {"name": "fs", "mode": "poll", "status": "degraded", "detail": None, "last_run_at": None},
+            {"name": "network", "mode": "nettop", "status": "active", "detail": "2 tools", "last_run_at": None},
         ]
         assert m["monitor"]["roots"] == [{"kind": "workspace", "path": "/p/one"}, {"kind": "state", "path": "/home/me/.claude"}]
         row = m["monitor"]["per_tool"][0]
