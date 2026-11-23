@@ -66,6 +66,7 @@ _VIEWS = {
         "key label tab section explanation source_static source_type unit update_freq otel_metric dynamic_source source_dynamic query calc updated_at",
     ),
     "nodes.inventory": ("all_nodes requested_node", "node_id captured_at"),
+    "nodes.first_seen": ("all_nodes requested_node", "node_id first_seen"),
     "nodes.sessions": (
         f"{_SCOPE} since until node_limit session_limit",
         f"row_type node_id {_SESSION} sessions requests",

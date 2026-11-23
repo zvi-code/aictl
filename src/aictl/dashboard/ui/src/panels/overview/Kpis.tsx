@@ -9,6 +9,7 @@ import { States } from '../kinds/States'
 import { monitoredReport } from './monitoredReport'
 import { runtimeSummary } from '../../data/runtimeAgents'
 import { runningDetail, unlinkedText } from './agentTree'
+import { previousText } from './kpiCompare'
 import styles from '../kinds/kinds.module.css'
 
 const metrics = [
@@ -22,6 +23,8 @@ const metrics = [
   ['p95_ms', 'p95 reply', 'tools', 'p95'],
   ['loops', 'Loops', 'tools', 'loops'],
 ] as const
+/** The tiles the board reads a previous period for. */
+const comparable = new Set<string>(['messages', 'tokens', 'cost_usd', 'tool_calls'])
 
 function Spark(props: { values: readonly (number | null)[] }) {
   const path = createMemo(() => sparkPath(props.values, 60, 18))
@@ -63,11 +66,8 @@ export default function Kpis(props: PanelProps) {
             monitored() ? `${monitored()!.hosts} reporting ${monitored()!.hosts === 1 ? 'node' : 'nodes'}` : 'No fresh monitor report'} />
         <For each={metrics}>{([key, label, section, spark]) => {
         const detail = () => {
-          const previous = at(data()?.prev, key), current = data()?.[key]
-          if (typeof previous === 'number' && previous && typeof current === 'number') {
-            const delta = Math.round(((current - previous) / previous) * 100)
-            return `${delta > 0 ? '+' : ''}${delta}% vs before`
-          }
+          const compared = comparable.has(key) ? previousText(data()?.prev, at(data()?.prev, key), data()?.[key]) : undefined
+          if (compared) return <span title={compared.title}>{compared.text}</span>
           if (key === 'running') return runningDetail(runtime(), data() as Parameters<typeof runningDetail>[1])
           if (key === 'failures') return format('fail_rate', data()?.fail_rate)
           if (key === 'p95_ms') return `p50: ${format('p50_ms', data()?.p50_ms) ?? 'Not available from this source'}`

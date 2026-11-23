@@ -343,7 +343,32 @@ class TestTotals:
 
     def test_previous_window_empty_is_null(self, db):
         k = _board(db)["kpis"]
-        assert k["prev"] == {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
+        usage = {key: k["prev"][key] for key in ("messages", "tokens", "cost_usd", "tool_calls")}
+        assert usage == {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
+
+    def test_previous_window_is_compared_only_when_the_store_covers_it(self, db):
+        # The previous window of a 1.5-day range starts 3 days ago. With no snapshot, nothing says
+        # the store holds that whole window: it is not compared.
+        k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]["prev"]
+        assert (k["since"], k["until"]) == (NOW - 3 * DAY, NOW - 1.5 * DAY)
+        assert (k["data_since"], k["covered"]) == (None, False)
+        assert k["tokens"] == 3015  # the usage is still read
+        # The node began to collect 2 days ago: in the previous window, so it is not covered.
+        db.insert("system_snapshots", ts=NOW - 2 * DAY)
+        k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]["prev"]
+        assert (k["data_since"], k["covered"]) == (NOW - 2 * DAY, False)
+
+    def test_previous_window_is_covered_from_the_last_node_to_begin(self, db):
+        db.insert("system_snapshots", ts=NOW - 10 * DAY)
+        db.insert("system_snapshots", ts=NOW - 5 * DAY, node_id="other-node")
+        k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]["prev"]
+        assert (k["data_since"], k["covered"]) == (NOW - 10 * DAY, True)
+        # Over all nodes, the store covers a time once the last of them collects.
+        from aictl.dashboard.board_projection import _data_since
+        from aictl.dashboard.projections.history import HistoryScope
+
+        every_node = HistoryScope(db.history_store.reader, None, qualified=True)
+        assert _data_since(SimpleNamespace(history=every_node)) == NOW - 5 * DAY
 
     def test_range(self, db):
         rng = compute_board(db, _filters(buckets=7), None, NOW)["range"]

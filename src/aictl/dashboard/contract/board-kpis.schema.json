@@ -23,7 +23,11 @@
         "messages": {"type": ["integer", "null"]},
         "tokens": {"type": ["integer", "null"]},
         "cost_usd": {"type": ["number", "null"]},
-        "tool_calls": {"type": ["integer", "null"]}
+        "tool_calls": {"type": ["integer", "null"]},
+        "since": {"type": "number", "description": "Start of the previous window, epoch seconds."},
+        "until": {"type": "number", "description": "End of the previous window, epoch seconds."},
+        "data_since": {"type": ["number", "null"], "description": "When every node of the scope began to collect: the latest of their first stored snapshots."},
+        "covered": {"type": "boolean", "description": "The store covers the whole previous window, so a comparison with it is meaningful."}
       },
       "required": ["messages", "tokens", "cost_usd", "tool_calls"]
     },

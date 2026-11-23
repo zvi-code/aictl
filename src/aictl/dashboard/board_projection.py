@@ -2641,7 +2641,27 @@ def _resource_series(board: _Board) -> tuple[dict, dict]:
     return {t: cpu[t] for t in order}, {t: mem[t] for t in order}
 
 
+def _data_since(board: _Board) -> float | None:
+    """When the nodes of this scope all collect: the latest of their first stored snapshots.
+
+    Rows from before a node's first snapshot come from files it read later, which may still be
+    importing, so a period before this time is not known to be complete. None when no node of
+    the scope has a snapshot."""
+    seen = [row["first_seen"] for row in board.history.read("nodes.first_seen", limit=1000) if row["first_seen"] is not None]
+    return max(seen) if seen else None
+
+
 def _previous(board: _Board) -> dict:
+    """The window before this one, its usage under the same filters, and whether the store
+    covers that whole window. The board compares with it only when it is covered."""
+    f = board.f
+    since, until = f.since - (f.until - f.since), f.since
+    usage, data_since = _gather(board.conn, [lambda: _previous_usage(board), lambda: _data_since(board)])
+    covered = data_since is not None and data_since <= since
+    return {**usage, "since": since, "until": until, "data_since": data_since, "covered": covered}
+
+
+def _previous_usage(board: _Board) -> dict:
     """The same filters over the window before this one. Null when it holds no data."""
     f = board.f
     if board.history.qualified:
