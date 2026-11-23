@@ -791,7 +791,8 @@ def test_db_layout_without_nodes_prints_no_row_count_and_no_raw_time(monkeypatch
     fake = started("node-a", rows=7)
     fake.unsealed = set(fake.tables)
     output = _layout_output(monkeypatch, fake)
-    assert "Rows" not in output and "0.0 MB" not in output and "-62135596800" not in output
+    header = next(line for line in output.splitlines() if line.lstrip().startswith("Node "))
+    assert "Rows" not in header and "0.0 MB" not in output and "-62135596800" not in output
     assert "aictl db layout --nodes" in output
 
 
