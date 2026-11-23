@@ -7,7 +7,7 @@ import PauseTax from '../../src/panels/insights/PauseTax'
 import Rereads from '../../src/panels/insights/Rereads'
 import Subagents from '../../src/panels/insights/Subagents'
 import {
-  carryFinding, failureFinding, flowBands, insightWindow, pauseFinding, rereadFinding, subagentFinding,
+  carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
   type CarryBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
 } from '../../src/panels/insights/insightsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -183,6 +183,15 @@ describe('INS-03 · Open sessions opens the drawer for a listed session', () => 
 })
 
 describe('INS-04 · The period and the flow geometry', () => {
+  it('names a tool by the label the answer carried, and by its id until one arrives', () => {
+    expect(toolLabel('invented-tool')).toBe('invented-tool')
+    learnToolLabels({ 'invented-tool': 'Invented Tool' })
+    flush()
+    expect(toolLabel('invented-tool')).toBe('Invented Tool')
+    expect(pauseFinding({ ...pause, tools: pause.tools.map(tool => ({ ...tool, tool: 'invented-tool' })),
+      summary: { ...pause.summary, tools: ['invented-tool'] } } as PauseBody, toolLabel)).toContain('Invented Tool requests')
+  })
+
   it('reads all history or the board range from the URL key range', () => {
     expect(insightWindow('?range=all', 1000)).toEqual({ id: 'all', since: 0, until: 3600 })
     const day = insightWindow('?range=24h', 86_400 * 10)

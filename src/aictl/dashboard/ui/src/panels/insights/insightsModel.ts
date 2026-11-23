@@ -1,6 +1,7 @@
 // ─── Insights — the payloads of /api/board/insights/* and the finding each card states ─
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
+import { createSignal, untrack } from 'solid-js'
 import { fmtBytes, fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
@@ -15,7 +16,7 @@ export type InsightSession = { session_id: string; node_id?: string | null; tool
 type Base<C extends CardId> = {
   card: C; view: string; range: { since: number; until: number }
   data_range: { first_ts: Num; last_ts: Num }; computed_at: number; query: QueryBlock
-  sessions: InsightSession[]; node_scope?: { kind: string; node_id: string | null }
+  sessions: InsightSession[]; tool_labels?: Record<string, string>; node_scope?: { kind: string; node_id: string | null }
 }
 export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
 export type PauseBody = Base<'pause'> & {
@@ -85,6 +86,13 @@ export const count = (value: Num) => value == null ? NOT_REPORTED : fmtNum(value
 const list = (items: readonly string[]) => items.length < 2 ? items.join('') :
   `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
 export type Label = (tool: string) => string
+
+const [toolLabels, setToolLabels] = createSignal<Record<string, string>>({})
+/** The tool labels a card's answer carried: the board's labels are not loaded on this screen. */
+export function learnToolLabels(labels: Record<string, string> | undefined) {
+  if (labels && Object.entries(labels).some(([tool, label]) => untrack(toolLabels)[tool] !== label)) setToolLabels(known => ({ ...known, ...labels }))
+}
+export const toolLabel: Label = tool => toolLabels()[tool] ?? tool
 
 export function pauseFinding(body: PauseBody, label: Label) {
   const s = body.summary

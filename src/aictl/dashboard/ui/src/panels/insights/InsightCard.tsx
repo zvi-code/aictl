@@ -9,7 +9,7 @@ import type { Field } from '../../ui/tableModel'
 import { detailPath, detailRead } from '../data'
 import { States } from '../kinds/States'
 import type { PanelContext, Read } from '../types'
-import type { CardId, InsightBody, InsightSession, QueryBlock } from './insightsModel'
+import { learnToolLabels, type CardId, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
 import styles from './Insights.module.css'
 
 export type CardProps = { ctx: PanelContext; boxes: Boxes; since: number; until: number }
@@ -77,6 +77,7 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
     return value.state === 'error' ? { ...value, message: `Could not load ${props.title}: ${value.message ?? 'The request failed.'}` }
       : value.state === 'stale' ? { ...value, updatedAt: data()?.computed_at } : value
   }
+  createEffect(() => data()?.tool_labels, labels => { learnToolLabels(labels) })
   const body = () => data()!
   const sessionFields = createMemo((): Field<InsightSession>[] => [{
     id: 'session_id', label: 'Session', read: row => row.session_id,

@@ -1,7 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { bytes, rereadFinding, share, type Label, type RereadBody } from './insightsModel'
+import { bytes, rereadFinding, share, toolLabel, type Label, type RereadBody } from './insightsModel'
 import styles from './Insights.module.css'
 
 /** Per tool: file reads split into first reads and reads of a file the same agent had already read. */
@@ -32,7 +32,7 @@ function ReadBars(props: { body: RereadBody; label: Label }) {
 
 export default function Rereads(props: CardProps) {
   const ctx = untrack(() => props.ctx)
-  const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? tool
+  const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<RereadBody> {...props} card="rereads" title="Repeated file reads" tab="tools"
     finding={body => rereadFinding(body)}
     visual={body => <ReadBars body={body} label={label} />}

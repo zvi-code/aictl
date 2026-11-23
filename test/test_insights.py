@@ -140,6 +140,8 @@ def test_subagent_spend_splits_by_agent_id(kusto_store):
     assert claude["subagent_share"] == pytest.approx(0.8)
     assert tools["codex-cli"]["main"]["cost_usd"] is None and tools["codex-cli"]["subagent_share"] is None
     assert body["summary"]["subagents"] == 2 and body["summary"]["subagent_share"] == pytest.approx(0.8)
+    # The card names a tool as the board does; the labels come with the answer.
+    assert body["tool_labels"] == {"claude-code": "Claude Code", "codex-cli": "Codex CLI"}
     assert body["sessions"] == [{"session_id": "s1", "node_id": "test-node", "tool": "claude-code", "requests": 3,
                                  "cost_usd": 8.0, "main_cost": 2.0, "agents": 2}]
 

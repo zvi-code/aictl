@@ -13,6 +13,7 @@ from typing import Any
 
 from .board_filters import Filters
 from .panel_kql import query_block
+from .projection_utils import _label
 from .projections.history import HistoryScope
 
 ROW_LIMIT = 1000
@@ -249,11 +250,14 @@ def insight(card: str, filters: Filters, now: float | None = None, *, history: H
     rows = READS[card](history, params)
     meta = next(iter(_of(rows, "meta")), {})
     node = {} if history.node is None else {"all_nodes": False, "requested_node": history.node}
+    shape = SHAPES[card](rows)
     return 200, {
         "card": card, "view": view,
         "range": {"since": filters.since, "until": filters.until},
         "data_range": {"first_ts": meta.get("first_ts"), "last_ts": meta.get("last_ts")},
         "computed_at": _cost(meta.get("computed_at")) or (time.time() if now is None else now),
-        **SHAPES[card](rows),
+        **shape,
+        # The cards name a tool as the board does; the board's own labels are not loaded on this screen.
+        "tool_labels": {tool: _label(tool) for tool in sorted({str(row.get("tool") or "") for row in rows} - {""})},
         "query": query_block(history, view, {**params, **node, "limit": ROW_LIMIT}),
     }

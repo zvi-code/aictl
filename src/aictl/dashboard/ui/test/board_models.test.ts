@@ -162,8 +162,8 @@ describe('numbers people can read', () => {
     expect(fmtN(12_300_000_000)).toBe('12.3 B');
     expect(fmtN(999_400_000)).toBe('999.4 M');
     expect(fmtUsd(13482)).toBe('$13 k');
-    expect(fmtUsd(9999)).toBe('$9999');
-    expect(fmtUsd(1746)).toBe('$1746');
+    expect(fmtUsd(9999)).toBe('$9,999');
+    expect(fmtUsd(1746)).toBe('$1,746');
     expect(fmtCredits(48955.93)).toBe('49 k');
     expect(fmtCredits(5423.85)).toBe('5,423.85');
     expect(fmtMs(87.6 * 60000)).toBe('1 h 28 min');

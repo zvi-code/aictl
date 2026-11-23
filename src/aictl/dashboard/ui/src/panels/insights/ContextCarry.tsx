@@ -1,7 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, toolDisplayName } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { bytes, carryFinding, count, scaled, type CarryBody, type Label } from './insightsModel'
+import { bytes, carryFinding, count, scaled, type CarryBody, toolLabel, type Label } from './insightsModel'
 import styles from './Insights.module.css'
 
 const width = (value: number | null, largest: number) => `max(var(--space-1), ${(scaled(value, largest) * 85).toFixed(2)}%)`
@@ -31,7 +31,7 @@ function CarryBars(props: { body: CarryBody; label: Label }) {
 
 export default function ContextCarry(props: CardProps) {
   const ctx = untrack(() => props.ctx)
-  const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? tool
+  const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<CarryBody> {...props} card="carry" title="Context carry" tab="context"
     finding={body => carryFinding(body, label)}
     visual={body => <CarryBars body={body} label={label} />}

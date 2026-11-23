@@ -1,7 +1,7 @@
 import { For, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { money, share, subagentFinding, type Label, type SubagentBody } from './insightsModel'
+import { money, share, subagentFinding, toolLabel, type Label, type SubagentBody } from './insightsModel'
 import styles from './Insights.module.css'
 
 /** Per tool: one bar split into the cost of the main agent and the cost of its subagents. */
@@ -32,7 +32,7 @@ function SplitBars(props: { body: SubagentBody; label: Label }) {
 
 export default function Subagents(props: CardProps) {
   const ctx = untrack(() => props.ctx)
-  const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? tool
+  const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<SubagentBody> {...props} card="subagents" title="Spend in subagents" tab="team"
     finding={body => subagentFinding(body, label)}
     visual={body => <SplitBars body={body} label={label} />}
