@@ -9,7 +9,8 @@
 }
 .caption { color: var(--color-muted); font-size: var(--text-sm); }
 .srOnly { composes: visuallyHidden from "./control.module.css"; }
-.plot { min-inline-size: 0; min-block-size: 0; overflow: hidden; font-family: var(--font-ui); font-size: var(--text-sm); }
+.plot { position: relative; min-inline-size: 0; min-block-size: 0; overflow: hidden; font-family: var(--font-ui); font-size: var(--text-sm); }
+.canvas { overflow: hidden; }
 .legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-5); margin: 0; padding: 0; list-style: none; font-size: var(--text-sm); }
 .legend li { display: inline-flex; gap: var(--space-2); align-items: center; }
 .legend span { inline-size: var(--space-4); block-size: var(--space-4); border-radius: var(--radius-pill); }

@@ -48,7 +48,10 @@ const sameShape = (a: Shape, b: Shape) => a.time === b.time && a.unit === b.unit
   a.series.every((item, i) => item.label === b.series[i].label && item.color === b.series[i].color && item.paths === b.series[i].paths)
 
 function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
+  // `host` is the box that is measured. uPlot draws into `canvas`, which is out of flow,
+  // so the plot never adds to the height of the box it is sized from.
   let host!: HTMLDivElement
+  let canvas!: HTMLDivElement
   let plot: uPlot | undefined
   const data = createMemo(() => alignChartData(props.points, props.series.length))
   const shape = createMemo<Shape>(() => ({
@@ -115,7 +118,7 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
             })],
             setCursor: [chart => untrack(() => { if (chart.cursor.idx != null) props.onHover?.(chart.cursor.idx) })],
           },
-        }, untrack(data), host)
+        }, untrack(data), canvas)
     }
     const observer = new ResizeObserver(([{ contentRect }]) => {
       nextWidth = Math.round(contentRect.width)
@@ -148,7 +151,9 @@ function PlotCanvas(props: PlotProps, UPlot: typeof uPlot) {
   // When the series count changes, this effect can run before the shape effect
   // replaces the plot. The new plot takes the current data when it is built.
   createEffect(data, next => { if (plot && plot.series.length === next.length) plot.setData(next) })
-  return <div ref={host} class={styles.plot} aria-hidden="true" />
+  return <div ref={host} class={styles.plot} aria-hidden="true">
+    <div ref={canvas} class={styles.canvas} style={{ position: 'absolute', inset: 0 }} />
+  </div>
 }
 
 export function Chart(props: {
