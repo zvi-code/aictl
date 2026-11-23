@@ -134,8 +134,10 @@ READER_VERSIONS: dict[str, int] = {
     "copilot-store": 1,  # session-store.db assistant_usage_events: CopilotStoreReader
     # session-store.db sessions, turns, forge_trajectory_events of sessions with no events.jsonl: CopilotStoreContent
     "copilot-store-content": 1,
-    "vscode-debug-log": 1,  # GitHub.copilot-chat/debug-logs/<id>/*.jsonl: VSCodeDebugLogAccumulator, VSCodeDebugFacts
-    "vscode-chat-session": 1,  # chatSessions/<id>.jsonl: VSCodeChatSessionAccumulator, VSCodeChatFacts
+    # Version 2 of both VS Code kinds: a request whose source does not report the cached part of the
+    # prompt is stored with no cost (cost_usd null), not priced as all uncached input.
+    "vscode-debug-log": 2,  # GitHub.copilot-chat/debug-logs/<id>/*.jsonl: VSCodeDebugLogAccumulator, VSCodeDebugFacts
+    "vscode-chat-session": 2,  # chatSessions/<id>.jsonl: VSCodeChatSessionAccumulator, VSCodeChatFacts
     # Claude workflows/wf_*.json, Copilot session.db todos and session-store.db checkpoints:
     # session_outcomes.MetadataReaders. Small files, read again at once, not paced.
     "session-metadata": 1,
@@ -258,12 +260,15 @@ class SessionUsage:
         cost_delta: float | None = None,
         nano_aiu: int = 0,
         premium_requests: float = 0.0,
+        priceable: bool = True,
     ) -> None:
         """Add one request's disjoint classes; negative values correct a prior add.
 
         *cache_write* includes *cache_write_1h*, which only selects the rate.
         *cost_delta* replaces pricing these tokens, for a correction whose
         tokens alone do not show the request's prompt-length tier.
+        *priceable* False: the source does not report what a list price needs
+        (the cached part of the prompt), so the request has tokens and no cost.
         """
         m = self.models.setdefault(model or "unknown", ModelUsage())
         m.requests += requests
@@ -273,7 +278,7 @@ class SessionUsage:
         m.cache_creation_tokens += cache_write
         tokens = input_tokens + output_tokens + cache_read + cache_write
         cost = cost_delta
-        if cost is None:
+        if cost is None and priceable:
             cost = _signed_cost(
                 model, input_tokens, output_tokens, cache_read, cache_write - cache_write_1h, cache_write_1h, ts, speed, inference_geo
             )
@@ -1089,6 +1094,8 @@ class VSCodeDebugLogAccumulator:
                 quality_reason="debug log has no cache-write counts; credits only on some requests",
             ),
         )
+        # Only some requests report cachedTokens. Without it the cached part of the prompt is
+        # not known, and pricing all of it as uncached input overstates the cost several times.
         kind = obj.get("type")
         ts = coerce_ts(obj.get("ts"))
         s.touch(ts)
@@ -1105,6 +1112,7 @@ class VSCodeDebugLogAccumulator:
                 cached,
                 0,
                 nano_aiu=_i(attrs.get("copilotUsageNanoAiu")),
+                priceable="cachedTokens" in attrs,
             )
         elif kind == "tool_call":
             s.tool_calls += 1

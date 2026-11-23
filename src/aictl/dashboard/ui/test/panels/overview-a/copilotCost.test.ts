@@ -10,7 +10,7 @@ describe('Copilot cost', () => {
   it('leads with what Copilot billed and names the list price as an estimate with what it leaves out', () => {
     expect(billedCost(credits)).toBe(12.77)
     expect(copilotBilledText(credits)).toBe(
-      'Copilot billed $12.77 (1,277 AI credits at $0.01); list-price estimate $6.60, leaves out 10.3 M tokens with no list price')
+      'Copilot billed $12.77 (1,277 AI credits at $0.01); list-price estimate $6.60, leaves out 10.3 M tokens with no known cost')
   })
 
   it('says when whole days stand for a window that cuts through them', () => {

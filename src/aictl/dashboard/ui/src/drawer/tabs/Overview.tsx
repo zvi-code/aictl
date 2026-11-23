@@ -60,7 +60,8 @@ export default function Overview(props: TabProps) {
       <Show when={!agent()?.parent_id}><InstructionsCard data={data()} tab={props} /></Show>
       <GitCard data={data()} tab={props} />
       <Section title="Usage by model"><Rows label="Usage by model" rows={data().by_model} identity={['model']}
-        columns={['model', ['msgs', 'Calls'], 'input', 'output', 'cache_read', 'cache_write', 'cost_usd']} /></Section>
+        columns={['model', ['msgs', 'Calls'], 'input', 'output', 'cache_read', 'cache_write', 'cost_usd']}
+        hints={{ cost_usd: row => row.cost_reason ? `Cost not known: ${row.cost_reason}` : undefined }} /></Section>
       <Section title="Session resources">
         <Stats items={[
           { label: 'CPU', value: live()?.cpu_percent ?? data().process?.cpu_percent, unit: '%' },

@@ -166,7 +166,7 @@ export const toolLabel: Label = tool => toolLabels()[tool] ?? tool
 
 /** What a cost in a card's sentence leaves out: requests whose model had no list price when they were stored. */
 export function leftOut(requests: number | undefined) {
-  return requests ? ` ${fmtNum(requests)} ${requests === 1 ? 'request' : 'requests'} with no list price ${requests === 1 ? 'is' : 'are'} left out of the cost.` : ''
+  return requests ? ` ${fmtNum(requests)} ${requests === 1 ? 'request' : 'requests'} with no known cost ${requests === 1 ? 'is' : 'are'} left out of the cost.` : ''
 }
 
 export function pauseFinding(body: PauseBody, label: Label) {

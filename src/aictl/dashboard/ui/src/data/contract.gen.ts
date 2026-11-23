@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 9c40d29387dc7ae19053c164796e4fa0a690e725c610bd1729ba57179f9ef662
+// Schema digest: f54d7aaaa9f8fa6d1e2b7b94c2cf464bfb9e727cd118e4c99f49c94ac2cfbbbe
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -20,6 +20,7 @@ export type BoardAgentRow = {
   cache_write: number | null;
   cached_share: number | null;
   cost_usd: number | null;
+  cost_reason?: string | null;
   tool_calls: number | null;
   failures: number | null;
   confirms_asked: number | null;
@@ -475,6 +476,7 @@ export type BoardUnpriced = {
   models: Array<{
     model: string;
     tokens: number;
+    reason?: string;
   }>;
 };
 
@@ -640,6 +642,7 @@ export type ContextLocal = {
       cache_read: number;
       cache_write: number;
       cost_usd: number | null;
+      cost_reason?: string;
       date: string;
       input: number;
       model: string;
@@ -831,6 +834,7 @@ export type DetailAgent = {
     tokens: number;
     cached_share: number | null;
     estimated?: boolean;
+    cost_reason?: string;
   }>;
   process: {
     cpu_percent: number | null;
@@ -2438,6 +2442,7 @@ export type HistoryAgentRow = {
   cache_write: number | null;
   cached_share: number | null;
   cost_usd: number | null;
+  cost_reason?: string | null;
   tool_calls: number | null;
   failures: number | null;
   confirms_asked: number | null;

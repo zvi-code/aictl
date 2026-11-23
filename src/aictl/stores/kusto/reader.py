@@ -91,11 +91,12 @@ _VIEWS = {
     "events.lm_usage": (f"{_SCOPE} requested_session raw_session", "ts tool kind detail session_id pid seq"),
     "requests.models": (
         f"{_SCOPE} requested_session requested_agent since until",
-        "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd",
+        "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd cost_known",
     ),
     "requests.loop_models": (
         "all_nodes requested_node spans",
-        "span_index model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd",
+        "span_index model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd "
+        "cost_known",
     ),
     "usage.sessions": (
         f"{_SCOPE} since until requested_session without_requests session_keys",
@@ -106,7 +107,7 @@ _VIEWS = {
     "requests.cells": (
         f"{_WINDOW} requested_session session_keys",
         f"{_BOARD_ID} model g tool project_path calls input_tokens output_tokens cache_read_tokens cache_creation_tokens "
-        "errors first_ts last_ts last_error duration_count max_duration ttft_count max_ttft cost_usd",
+        "errors first_ts last_ts last_error duration_count max_duration ttft_count max_ttft cost_usd cost_known",
     ),
     "requests.long": (
         f"{_WINDOW} requested_session session_keys requested_models min_tokens after_row",
@@ -263,7 +264,7 @@ _VIEWS = {
     "files.recent_writes": (f"{_TIME}", "ts session_id tool tool_name path"),
     "context.daily": (
         f"{_TIME} calendar_starts calendar_days requested_tools restrict_tools",
-        "node_id day model tool calls input output cache_read cache_write stored ri ro rcr rcw last_ts",
+        "node_id day model tool calls input output cache_read cache_write stored ri ro rcr rcw unknown last_ts",
     ),
     "context.growth": (f"{_TIME} growth_points calendar_bins", "node_id ts mem_tokens memory_entries"),
     "context.telemetry": (f"{_TIME}", "node_id ts tool source confidence"),

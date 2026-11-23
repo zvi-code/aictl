@@ -12,7 +12,9 @@ poll can complete a row written in an earlier one.
 
 Token classes are disjoint, as everywhere in aictl: ``input_tokens`` excludes
 cache. ``cost_usd`` is list price times tokens, for every tool. For Copilot that
-is an estimate of value, not the amount billed, which is in AI credits.
+is an estimate of value, not the amount billed, which is in AI credits. It is
+None (not known) for a VS Code request whose source does not report the cached
+part of the prompt: see data.provenance.CACHE_NOT_REPORTED.
 """
 
 from __future__ import annotations
@@ -2785,6 +2787,8 @@ class VSCodeDebugFacts:
         cached = to_int(attrs.get("cachedTokens"))
         billable = max(0, raw - cached)
         model = str(attrs.get("model") or "")
+        # Most requests do not report cachedTokens; their cost is not known (CACHE_NOT_REPORTED).
+        known = "cachedTokens" in attrs
         self.buffer.add_request(
             fact_rows.RequestRow(
                 dedup_key=fact_rows._dedup_key("vscode-call", self.sid, span or str(ts)),
@@ -2797,7 +2801,7 @@ class VSCodeDebugFacts:
                 input_tokens=billable,
                 output_tokens=out,
                 cache_read_tokens=cached,
-                cost_usd=list_price(model, billable, out, cached, 0, 0, ts),
+                cost_usd=list_price(model, billable, out, cached, 0, 0, ts) if known else None,
                 duration_ms=to_float(obj.get("dur")),
                 ttft_ms=to_float(attrs.get("ttft")),
                 is_error=1 if failed else 0,
@@ -3065,7 +3069,8 @@ class VSCodeChatFacts:
                 model=model or "unknown",
                 input_tokens=tokens_in,
                 output_tokens=tokens_out,
-                cost_usd=list_price(model, tokens_in, tokens_out, 0, 0, 0, slot["ts"]),
+                # promptTokens has no cached split: the cost is not known (CACHE_NOT_REPORTED).
+                cost_usd=None,
                 duration_ms=to_float(timings.get("totalElapsed")) or self._elapsed.get(index, 0.0),
                 ttft_ms=to_float(timings.get("firstProgress")),
                 turn_index=slot.get("turn"),

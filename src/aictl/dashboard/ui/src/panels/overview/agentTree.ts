@@ -239,6 +239,7 @@ export function lastMissing(row: TreeAgent) {
 export function missingReason(row: TreeAgent, field: 'tokens' | 'cost' | 'tool_calls' | 'requests') {
   if (row.placeholder) return 'Only a process was seen; no session record yet'
   if (row.queryable === false) return 'Seen in the runtime report only; no recorded history for this agent'
+  if (field === 'cost' && typeof row.cost_reason === 'string' && row.cost_reason) return `Cost not known: ${row.cost_reason}`
   if (field === 'cost' && (typeof row.input === 'number' || typeof row.output === 'number')) {
     return 'No list price is known for this model'
   }

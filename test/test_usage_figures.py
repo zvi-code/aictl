@@ -220,7 +220,8 @@ class TestUnpricedTokens:
         assert payload["unpriced"] == {
             "tokens": 105,
             "share": 0.095,
-            "models": [{"model": "no-such-model", "tokens": 100}, {"model": "other-unknown", "tokens": 5}],
+            "models": [{"model": "no-such-model", "tokens": 100, "reason": "no list price"},
+                       {"model": "other-unknown", "tokens": 5, "reason": "no list price"}],
         }
         # The cost stays the priced part only, and is not zero.
         assert payload["kpis"]["cost_usd"] > 0

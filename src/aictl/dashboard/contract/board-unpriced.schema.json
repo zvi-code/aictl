@@ -10,7 +10,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "properties": {"model": {"type": "string"}, "tokens": {"type": "integer"}},
+        "properties": {"model": {"type": "string"}, "tokens": {"type": "integer"}, "reason": {"type": "string"}},
         "required": ["model", "tokens"]
       }
     }

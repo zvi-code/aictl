@@ -133,7 +133,8 @@ def pause_tax(rows: list[dict]) -> dict:
 
 
 def _unpriced(cells: list[dict]) -> int:
-    """Requests a cost total leaves out: their model had no list price when they were stored."""
+    """Requests a cost total leaves out: their model had no list price when they were stored, or they were
+    stored with no cost because none can be known (data.provenance.CACHE_NOT_REPORTED)."""
     return sum(cell["requests"] - cell["priced"] for cell in cells)
 
 

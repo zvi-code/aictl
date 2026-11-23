@@ -443,7 +443,8 @@ class SessionFacts:
                 if data["finish_reason"] == "error" and not data["is_error"]:
                     # The source reports the call as ended by an error (Copilot finishReason "error").
                     data.update(is_error=1, error_type=data["error_type"] or "error")
-                data["cost_usd"] = round(data["cost_usd"], 6)
+                if data["cost_usd"] is not None:
+                    data["cost_usd"] = round(data["cost_usd"], 6)
                 for name in ("duration_ms", "ttft_ms"):
                     data[name] = round(data[name], 1)
                 prior = staged.get(key, self._requests.get(key))

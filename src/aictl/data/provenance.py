@@ -20,6 +20,11 @@ from typing import Any
 
 from .model_pricing import resolve_pricing
 
+# Why a model call is stored with no cost (requests.cost_usd null): a list price needs the cached
+# part of the prompt, and VS Code reports it on few requests. Pricing all of the prompt as uncached
+# input overstates the cost several times, so the cost is not known.
+CACHE_NOT_REPORTED = "VS Code does not report how much of the prompt was cached"
+NO_LIST_PRICE = "no list price"
 COPILOT_COST_REASON = (
     "Copilot bills AI credits or premium requests, not vendor list prices; "
     "see billing_amount. estimated_list_usd is an estimate, not a charge"

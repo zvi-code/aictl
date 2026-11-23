@@ -823,6 +823,38 @@ class TestVSCode:
         assert edits["/work/vs/b.py"] == {"lines_added": 2, "lines_removed": 1}
         assert rows(db, "session_prompts", "agent_id", "text") == [{"agent_id": "child-1", "text": "find it"}]
 
+    def test_a_request_without_its_cached_split_has_no_cost(self, db, tmp_path):
+        # Measured on a real Mac: 14,300 of 15,369 VS Code requests report no cachedTokens. Priced as all
+        # uncached input they cost several times what they did; their cost is not known.
+        from aictl.data.model_pricing import request_cost_usd
+
+        d = debug_dir(tmp_path)
+        write_lines(d / "main.jsonl", [
+            v_line("llm_request", 400, "l1", model=MODEL, inputTokens=1000, outputTokens=20, cachedTokens=900),
+            v_line("llm_request", 390, "l2", model=MODEL, inputTokens=2000, outputTokens=30),
+        ])
+        write_lines(chat_file(tmp_path, CHAT_ONLY_SID), [
+            {"kind": 0, "v": {"sessionId": CHAT_ONLY_SID, "creationDate": int((NOW - 500) * 1000), "requests": [
+                chat_request("req-1", 400, "hi", modelId=MODEL,
+                             result={"metadata": {"promptTokens": 3000, "outputTokens": 40}})]}},
+        ])
+        make_ingester(db, tmp_path).poll()
+        got = {r["output_tokens"]: r for r in rows(db, "requests")}
+        assert got[20]["cost_usd"] == pytest.approx(request_cost_usd(MODEL, 100, 20, 900, ts=NOW - 400), abs=1e-6)
+        assert got[30]["input_tokens"] == 2000 and got[30]["cost_usd"] is None
+        assert got[40]["input_tokens"] == 3000 and got[40]["cost_usd"] is None
+
+        # The session's list-price estimate leaves the same request out.
+        from aictl.ingesters.transcript_usage import VSCodeDebugLogAccumulator
+
+        acc = VSCodeDebugLogAccumulator()
+        for line in (v_line("llm_request", 400, "l1", model=MODEL, inputTokens=1000, outputTokens=20, cachedTokens=900),
+                     v_line("llm_request", 390, "l2", model=MODEL, inputTokens=2000, outputTokens=30)):
+            acc.feed(VSCODE_SID, True, line)
+        usage = acc.sessions[VSCODE_SID].to_row()
+        assert usage["input_tokens"] == 2100
+        assert usage["estimated_list_usd"] == pytest.approx(got[20]["cost_usd"], abs=1e-6)
+
     def test_totals_match_the_session_row(self, db, tmp_path):
         d = debug_dir(tmp_path)
         write_lines(d / "main.jsonl", [v_line("llm_request", 400, "l1", model=MODEL, inputTokens=100, outputTokens=20, cachedTokens=60)])

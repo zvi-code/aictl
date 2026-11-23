@@ -94,6 +94,9 @@ describe('row text', () => {
     expect(missingReason(sub('a', 'p', 'running', T), 'tokens')).toMatch(/transcript has not been imported/)
     expect(missingReason({ id: 'r', queryable: false }, 'tokens')).toMatch(/runtime report only/)
     expect(missingReason({ id: 'r', input: 5 }, 'cost')).toMatch(/No list price/)
+    // A VS Code session whose calls do not report the cached part of the prompt has no list price either way.
+    expect(missingReason({ id: 'r', input: 5, cost_reason: 'VS Code does not report how much of the prompt was cached' }, 'cost'))
+      .toBe('Cost not known: VS Code does not report how much of the prompt was cached')
     expect(lastMissing({ id: 'old' })).toBe('Not reported by this data source')
     expect(lastMissing({ id: 'new', last_activity_at: null })).toMatch(/No line or call recorded/)
     expect(durationMissing({ id: 'x' })).toBe('No start time recorded')

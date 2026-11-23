@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ContextLocal } from '../../../src/data/contract.gen'
-import { dailyValues, knownSum, messageBuckets, modelAllocation, pricedCost, rankedSeries } from '../../../src/panels/overview/overviewMath'
+import { dailyValues, knownSum, leftOutText, messageBuckets, modelAllocation, pricedCost, rankedSeries } from '../../../src/panels/overview/overviewMath'
 
 describe('Overview usage projection', () => {
   it('aligns message counts to the returned starts without filling missing roles, gaps or tail samples', () => {
@@ -25,8 +25,18 @@ describe('Overview usage projection', () => {
     // Found on real data: one unpriced model (claude-fable-5-2) made the whole seven-day cost N/A.
     const rows = [{ model: 'opus', tokens: 10, cost_usd: 1.5 }, { model: 'fable', tokens: 70, cost_usd: null },
       { model: 'fable', tokens: 1, cost_usd: null }, { model: null, tokens: 0, cost_usd: null }, { model: 'sonnet', tokens: 5, cost_usd: 0.25 }]
-    expect(pricedCost(rows)).toEqual({ cost: 1.75, unpriced: [{ model: 'fable', tokens: 71 }] })
+    expect(pricedCost(rows)).toEqual({ cost: 1.75, unpriced: [{ model: 'fable', tokens: 71, reason: 'no list price' }] })
     expect(pricedCost([]).cost).toBeUndefined()
+  })
+
+  it('says why each left-out model has no cost', () => {
+    // VS Code calls with no cached split are stored with no cost; their tokens must not read as unpriced models.
+    const why = 'VS Code does not report how much of the prompt was cached'
+    const { unpriced } = pricedCost([{ model: 'sonnet', tokens: 900, cost_usd: null, cost_reason: why },
+      { model: 'fable', tokens: 10, cost_usd: null, cost_reason: 'no list price' }, { model: 'opus', tokens: 5, cost_usd: 2 }])
+    expect(unpriced).toEqual([{ model: 'sonnet', tokens: 900, reason: why }, { model: 'fable', tokens: 10, reason: 'no list price' }])
+    expect(leftOutText(unpriced, String)).toBe(`excludes sonnet (900 tokens): ${why}; fable (10 tokens): no list price`)
+    expect(leftOutText([], String)).toBeUndefined()
   })
 
   it('keeps an unknown node cost unknown in the daily series', () => {

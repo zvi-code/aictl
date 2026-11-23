@@ -62,13 +62,14 @@ let req = materialize(requests
     | summarize calls=count(), i=sum(coalesce(input_tokens,long(0))), o=sum(coalesce(output_tokens,long(0))),
         cr=sum(coalesce(cache_read_tokens,long(0))), cw=sum(coalesce(cache_creation_tokens,long(0))),
         stored_cost=sum(cost_usd), errors=countif(is_error != 0), last_ts=max(ts)
-        by node_id,session_id,agent_id,model
+        by node_id,session_id,agent_id,model,cost_known=isnotnull(cost_usd)
     // As on the board: the cost stored with the calls of an agent and model, or else their list price.
-    | extend listed=isnull(stored_cost) or stored_cost == 0, rate=model_prices[model_key(model)]
+    // Calls stored with no cost have none that can be known: neither stored nor listed.
+    | extend listed=cost_known and stored_cost == 0, rate=model_prices[model_key(model)]
     | extend list_cost=iff(listed and isnotnull(rate), (i * todouble(rate[0]) + o * todouble(rate[1]) + cr * todouble(rate[2])
         + cw * todouble(rate[3])) / 1e6, real(null))
-    | summarize calls=sum(calls), tokens=sum(i + o + cr + cw), stored=sumif(stored_cost, not(listed)),
-        stored_n=countif(not(listed)), list_cost=sum(list_cost), list_n=countif(isnotnull(list_cost)),
+    | summarize calls=sum(calls), tokens=sum(i + o + cr + cw), stored=sumif(stored_cost, cost_known and not(listed)),
+        stored_n=countif(cost_known and not(listed)), list_cost=sum(list_cost), list_n=countif(isnotnull(list_cost)),
         li=sumif(i, listed), lo=sumif(o, listed), lcr=sumif(cr, listed), lcw=sumif(cw, listed),
         errors=sum(errors), last_ts=max(last_ts)
         by node_id,session_id,model

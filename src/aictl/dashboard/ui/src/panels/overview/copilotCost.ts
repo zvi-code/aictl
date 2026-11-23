@@ -12,7 +12,7 @@ export function billedCost(credits: BoardCredits | undefined): number | undefine
 /** What Copilot billed, then the list-price estimate of the same usage and what that estimate leaves out. */
 export function copilotBilledText(credits: BoardCredits | undefined): string | undefined {
   if (credits?.usd == null || credits.amount == null) return undefined
-  const left = credits.list_unpriced_tokens ? `, leaves out ${fmtN(credits.list_unpriced_tokens)} tokens with no list price` : ''
+  const left = credits.list_unpriced_tokens ? `, leaves out ${fmtN(credits.list_unpriced_tokens)} tokens with no known cost` : ''
   return `Copilot billed ${fmtUsd(credits.usd)} (${fmtCredits(credits.amount)} AI credits at $${credits.usd_per_credit ?? 0.01})` +
     `${credits.approximate ? ', whole days' : ''}; list-price estimate ${fmtUsd(credits.list_usd)}${left}`
 }

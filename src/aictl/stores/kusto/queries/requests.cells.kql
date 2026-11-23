@@ -20,14 +20,17 @@ versions
 | where not(coalesce(column_ifexists('_deleted', false), false))
 | where wanted(ts, node_id, session_id)
 | extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
+// A call stored with no cost has none that can be known (its source lacks what a price needs): it is
+// a cell of its own, so its tokens are never priced at read time like a stored zero is.
+| extend cost_known=isnotnull(cost_usd)
 | summarize arg_max(ts, tool, project_path), calls=count(),
             input_tokens=sum(input_tokens), output_tokens=sum(output_tokens),
             cache_read_tokens=sum(cache_read_tokens), cache_creation_tokens=sum(cache_creation_tokens),
             errors=countif(is_error != 0), first_ts=min(ts), last_ts=max(ts), last_error=maxif(ts, is_error != 0),
             duration_count=countif(duration_ms > 0), max_duration=max(duration_ms), ttft_count=countif(ttft_ms > 0),
             max_ttft=max(ttft_ms), prices=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd)
-        by node_id, session_id, agent_id, model, g
+        by node_id, session_id, agent_id, model, g, cost_known
 | extend cost_usd=iff(prices == 0, real(null), sum_cost)
 | project-away ts, prices, sum_cost
-| order by node_id asc, session_id asc, agent_id asc, model asc, g asc
+| order by node_id asc, session_id asc, agent_id asc, model asc, g asc, cost_known desc
 | take row_limit

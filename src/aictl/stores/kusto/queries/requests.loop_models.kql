@@ -22,11 +22,13 @@ raw_requests()
 | join kind=inner bounds on session_id
 | where (isempty(span_node) or node_id == span_node) and (isempty(span_agent) or agent_id == span_agent)
     and ts >= since_ts and ts <= until_ts
+// A call stored with no cost has none that can be known: a row of its own, never priced at read time.
+| extend cost_known=isnotnull(cost_usd)
 | summarize calls=count(), input_tokens=sum(input_tokens), output_tokens=sum(output_tokens),
             cache_read_tokens=sum(cache_read_tokens), cache_creation_tokens=sum(cache_creation_tokens),
-            last_ts=max(ts), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd) by span_index, model
+            last_ts=max(ts), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd) by span_index, model, cost_known
 | where isnotempty(model) or input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens > 0
 | project span_index, model, calls, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-          last_ts, cost_usd=iff(priced == 0, real(null), sum_cost)
-| order by span_index asc, model asc
+          last_ts, cost_usd=iff(priced == 0, real(null), sum_cost), cost_known
+| order by span_index asc, model asc, cost_known desc
 | take row_limit

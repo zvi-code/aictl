@@ -22,6 +22,7 @@ from typing import Any
 
 from .. import session_lifecycle
 from ..data.model_pricing import canonical_model_id, request_cost_usd, resolve_pricing
+from ..data.provenance import CACHE_NOT_REPORTED, NO_LIST_PRICE
 from ..ingesters._common import project_key, project_root
 from ..tool_scope import is_unattributed, stored_ids_for
 from . import subagents
@@ -205,8 +206,16 @@ def _earlier_start(first_seen: float, pid: Any) -> float:
     return min(first_seen, began) if began and first_seen else (began or first_seen)
 
 
-def _cost_of(stored: float | None, model: str, i: float, o: float, cr: float, cw: float, ts: float) -> float | None:
-    """The cost stored per call, which knows the cache tier and speed, or else list price."""
+def _cost_of(
+    stored: float | None, model: str, i: float, o: float, cr: float, cw: float, ts: float, known: bool | None = True
+) -> float | None:
+    """The cost stored per call, which knows the cache tier and speed, or else list price.
+
+    *known* False (a view's ``cost_known``): the calls were stored with no cost because none can be
+    known, so they have none here either, never a list price of tokens whose split is not reported.
+    """
+    if known is False:
+        return None
     return stored if stored else _list_cost(model, i, o, cr, cw, ts)[0]
 
 
@@ -330,12 +339,13 @@ def find_loops(calls: list[_Call]) -> list[dict]:
 
 
 class _Usage:
-    __slots__ = ("calls", "input", "output", "cache_read", "cache_write", "cost", "saved", "errors")
+    __slots__ = ("calls", "input", "output", "cache_read", "cache_write", "cost", "saved", "errors", "unknown")
 
     def __init__(self) -> None:
         self.calls = self.input = self.output = self.cache_read = self.cache_write = self.errors = 0
         self.cost: float | None = None
         self.saved: float | None = None
+        self.unknown = 0  # tokens of calls whose cost cannot be known (the cost leaves them out)
 
     def add(self, cell: _Cell) -> None:
         self.calls += cell.n
@@ -344,6 +354,8 @@ class _Usage:
         self.cache_read += cell.cr
         self.cache_write += cell.cw
         self.errors += cell.errs
+        if not cell.cost_known:
+            self.unknown += cell.i + cell.o + cell.cr + cell.cw
         if cell.cost is not None:
             self.cost = (self.cost or 0.0) + cell.cost
             self.saved = (self.saved or 0.0) + (cell.saved or 0.0)
@@ -390,6 +402,8 @@ class _Cell:
     s: int = 0
     # The model id as the tool reported and the store keeps it; ``model`` is its canonical id.
     reported: str = ""
+    # False: the calls were stored with no cost because none can be known (CACHE_NOT_REPORTED).
+    cost_known: bool = True
 
 
 @dataclass(slots=True)
@@ -558,7 +572,7 @@ class _Board:
         ).split()
         rows = self._history_window("requests.cells", grid=True)
         b_of, s_of = self.b_of, self.s_of
-        cells = [_Cell(*(row[k] for k in fields)) for row in rows]
+        cells = [_Cell(*(row[k] for k in fields), cost_known=row.get("cost_known") is not False) for row in rows]
         for c in cells:
             c.b, c.s = b_of[c.g], s_of[c.g]
             c.reported, c.model = c.model, canonical_model_id(c.model)
@@ -677,6 +691,9 @@ class _Board:
     def _price_cells(self) -> None:
         tiered: dict[str, int] = {}
         for c in self.cells:
+            if not c.cost_known:
+                c.cost = c.saved = None  # never priced at read time: the stored data cannot give a price
+                continue
             c.cost, c.saved = _list_cost(c.model, c.i, c.o, c.cr, c.cw, c.max_ts)
             if c.stored_cost:
                 c.cost = c.stored_cost
@@ -694,7 +711,8 @@ class _Board:
         if not rows:
             return
         # The rows carry the stored model id, so the cells are found by the id they were read under.
-        cells = {(c.sid, c.aid, c.reported, c.g): c for c in self.cells if not c.estimated and not c.stored_cost}
+        cells = {(c.sid, c.aid, c.reported, c.g): c for c in self.cells
+                 if not c.estimated and not c.stored_cost and c.cost_known}
         for row in rows:
             sid, aid, model, g, i, o, cr, cw, ts = (row[k] for k in fields)
             if i + cr + cw <= tiered[model]:
@@ -1138,7 +1156,9 @@ class _Board:
         self.cost_by_project: dict[str, list] = defaultdict(lambda: [None] * n)
         self.cost_by_model: dict[str, list] = defaultdict(lambda: [None] * n)
         self.estimated: set[str] = set()
-        self.unpriced: dict[str, int] = {}
+        # Tokens with no cost, by model and why: the model has no list price, or the source does not
+        # report what a price needs.
+        self.unpriced: dict[tuple[str, str], int] = {}
         self.fallback_user: dict[str, int] = {}
         self.fallback_tools: dict[str, int] = {}
         self.fallback_tool_buckets = [0] * n
@@ -1166,8 +1186,9 @@ class _Board:
             if c.max_ts > self.last_ts.get(key, 0.0):
                 self.last_ts[key] = c.max_ts
             if c.cost is None and (c.i or c.o or c.cr or c.cw):
-                # No stored cost and no list rate for the model: the cost total leaves these tokens out.
-                self.unpriced[c.model] = self.unpriced.get(c.model, 0) + c.i + c.o + c.cr + c.cw
+                # No cost that can be known, or no list rate for the model: the cost total leaves these tokens out.
+                why = (c.model, NO_LIST_PRICE if c.cost_known else CACHE_NOT_REPORTED)
+                self.unpriced[why] = self.unpriced.get(why, 0) + c.i + c.o + c.cr + c.cw
             if c.cost is not None:
                 for series, name in (
                     (self.cost_by_tool, c.tool),
@@ -1318,6 +1339,8 @@ class _Board:
             "cache_write": cache_write,
             "cached_share": usage.cached_share if usage else None,
             "cost_usd": _usd(usage.cost) if usage else None,
+            # Set when calls of the row have no cost that can be known: the cost leaves them out.
+            "cost_reason": CACHE_NOT_REPORTED if usage and usage.unknown else None,
             "tool_calls": calls,
             "failures": failures,
             "confirms_asked": asked,
@@ -1727,13 +1750,15 @@ def _model_credits(models: dict, model: str) -> float | None:
 
 
 def _unpriced_section(board: _Board) -> dict:
-    """Tokens that carry no cost in the cost figures, because the model has no known price."""
+    """Tokens that carry no cost in the cost figures, per model with the reason: the model has no
+    list price, or the source does not report what a price needs (the cost is not known)."""
     total = board.total.tokens
     tokens = sum(board.unpriced.values())
     return {
         "tokens": tokens,
         "share": _ratio(tokens, total),
-        "models": [{"model": m, "tokens": t} for m, t in sorted(board.unpriced.items(), key=lambda kv: (-kv[1], kv[0]))],
+        "models": [{"model": m, "tokens": t, "reason": why}
+                   for (m, why), t in sorted(board.unpriced.items(), key=lambda kv: (-kv[1], kv[0]))],
     }
 
 
@@ -2267,7 +2292,7 @@ def _loop_rows(board: _Board) -> list[dict]:
         for row in loop_models:
             model, i, o, cr, cw, ts, stored = (row[k] for k in fields)
             tokens = (tokens or 0) + i + o + cr + cw
-            cell_cost = _cost_of(stored, model, i, o, cr, cw, ts)
+            cell_cost = _cost_of(stored, model, i, o, cr, cw, ts, row.get("cost_known"))
             if cell_cost is not None:
                 cost = (cost or 0.0) + cell_cost
         status = board.status.get(sid) if agent == sid else board.sub_status.get((sid, agent))

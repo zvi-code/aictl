@@ -15,9 +15,10 @@ requests
 | where ts >= day_start and ts < day_end
 | summarize calls=count(), input=sum(input_tokens), output=sum(output_tokens), cache_read=sum(cache_read_tokens),
     cache_write=sum(cache_creation_tokens), stored=sumif(cost_usd,cost_usd>0),
-    ri=sumif(input_tokens,not(cost_usd>0) or isnull(cost_usd)), ro=sumif(output_tokens,not(cost_usd>0) or isnull(cost_usd)),
-    rcr=sumif(cache_read_tokens,not(cost_usd>0) or isnull(cost_usd)),
-    rcw=sumif(cache_creation_tokens,not(cost_usd>0) or isnull(cost_usd)), last_ts=max(ts)
+    // A stored zero is priced at list price on read; a call stored with no cost has none that can be known.
+    ri=sumif(input_tokens,cost_usd<=0), ro=sumif(output_tokens,cost_usd<=0),
+    rcr=sumif(cache_read_tokens,cost_usd<=0), rcw=sumif(cache_creation_tokens,cost_usd<=0),
+    unknown=sumif(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens,isnull(cost_usd)), last_ts=max(ts)
     by node_id,day,model,tool
 | order by node_id asc,day asc,model asc,tool asc
 | take row_limit

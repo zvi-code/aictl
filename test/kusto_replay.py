@@ -101,6 +101,10 @@ class Facts:
         zero = {"_v": EPOCH, **dict.fromkeys(_ZERO, 0)}
         if schema.tombstone:
             zero[schema.tombstone] = False
+        if table == "requests":
+            # The writer stores a number (RequestRow.cost_usd = 0.0); null is the marker of a call
+            # whose cost cannot be known (data.provenance.CACHE_NOT_REPORTED), which a test sets.
+            zero["cost_usd"] = 0.0
         return {key: zero.get(key, "" if kind == "string" else None) for key, kind in schema.columns}
 
     def inline(self, table, packed, bind):

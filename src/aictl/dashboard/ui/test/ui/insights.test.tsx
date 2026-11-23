@@ -221,13 +221,13 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
   it('says next to each cost how many requests it leaves out because their model has no list price', () => {
     const label = (tool: string) => tool
     expect(pauseFinding({ ...pause, summary: { ...pause.summary, unpriced_requests: 3 } }, label))
-      .toMatch(/would cost \$3\.00\. 3 requests with no list price are left out of the cost\.$/)
+      .toMatch(/would cost \$3\.00\. 3 requests with no known cost are left out of the cost\.$/)
     expect(subagentFinding({ ...subagents, summary: { ...subagents.summary, unpriced_requests: 1 } }, label))
-      .toMatch(/of its cost\. 1 request with no list price is left out of the cost\.$/)
+      .toMatch(/of its cost\. 1 request with no known cost is left out of the cost\.$/)
     expect(contextFinding({ ...contextBody, summary: { ...contextBody.summary, unpriced_requests: 12 } }, label))
-      .toMatch(/ 12 requests with no list price are left out of the cost\.$/)
+      .toMatch(/ 12 requests with no known cost are left out of the cost\.$/)
     expect(orientationFinding({ ...orientation, summary: { ...orientation.summary, never: 2, unpriced_requests: 4 } }))
-      .toMatch(/ 4 requests with no list price are left out of the cost\.$/)
+      .toMatch(/ 4 requests with no known cost are left out of the cost\.$/)
     expect(subagentFinding({ ...subagents, summary: { ...subagents.summary, unpriced_requests: 0 } }, label)).not.toContain('left out')
   })
 

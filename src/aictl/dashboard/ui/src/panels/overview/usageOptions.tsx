@@ -5,7 +5,8 @@ import type { VisualRowOptions } from '../kinds/Rows'
 import type { PanelProps, Read } from '../types'
 import { Choice, Measures } from './aControls'
 import { cost, count, field, tokens } from './aFields'
-import { knownSum, rankedSeries } from './overviewMath'
+import { fmtN } from '../../design/format'
+import { knownSum, leftOutText, rankedSeries } from './overviewMath'
 import { promptSummary } from './RowSummaries'
 import { copilotBilledText } from './copilotCost'
 import css from './overviewA.module.css'
@@ -31,7 +32,7 @@ export function costOptions({ ctx, def }: PanelProps) {
     summary: <><Measures ctx={ctx} items={[
       { field: cost('cost_usd', 'List price'), value: ctx.board('kpis')?.cost_usd, detail: 'Not a bill' },
       { field: field('tokens', 'Unpriced tokens', 'board.unpriced'), value: unpriced()?.tokens,
-        detail: unpriced()?.models?.map(model => model.model).filter(Boolean).join(', ') || undefined },
+        detail: leftOutText(unpriced()?.models ?? [], fmtN)?.replace(/^excludes /, '') },
       { field: count('amount', 'Copilot credits', 'board.credits'), value: credits()?.amount,
         detail: copilotBilledText(credits()) ?? (credits()?.approximate ? 'Whole days' : undefined) },
     ]} /></>,

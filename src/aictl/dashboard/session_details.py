@@ -13,6 +13,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
+from ..data.provenance import CACHE_NOT_REPORTED
 from ..utils import estimate_tokens_from_size
 from .board_filters import SPARK_POINTS, _detail_filters
 from .board_projection import (
@@ -337,26 +338,28 @@ def _checkpoint(row: dict, keep_text: bool) -> dict:
 
 def _agent_models(history: HistoryScope, sid: str, requested_agent: str, root: bool, now: float) -> list[dict]:
     """Calls, tokens and cost per model. A main agent without request rows uses its fallback usage, as estimates."""
-    by_model = []
+    by_model: list[dict] = []
+    seen: dict[str, dict] = {}
     for model_row in history.read("requests.models", sid=sid, requested_agent=requested_agent):
-        model, n, i, o, cr, cw, ts, stored = (
+        model, n, i, o, cr, cw, ts, stored, known = (
             model_row[k] for k in ("model", "calls", "input_tokens", "output_tokens", "cache_read_tokens",
-                                   "cache_creation_tokens", "last_ts", "cost_usd")
+                                   "cache_creation_tokens", "last_ts", "cost_usd", "cost_known")
         )
-        cost = _cost_of(stored, model, i, o, cr, cw, ts)
-        by_model.append(
-            {
-                "model": model,
-                "msgs": n,
-                "tokens": i + o + cr + cw,
-                "input": i,
-                "output": o,
-                "cache_read": cr,
-                "cache_write": cw,
-                "cached_share": _ratio(cr, i + cr + cw),
-                "cost_usd": _usd(cost),
-            }
-        )
+        cost = _cost_of(stored, model, i, o, cr, cw, ts, known)
+        row = seen.get(model)
+        if row is None:
+            row = seen[model] = {"model": model, "msgs": 0, "tokens": 0, "input": 0, "output": 0, "cache_read": 0,
+                                 "cache_write": 0, "cached_share": None, "cost_usd": None}
+            by_model.append(row)
+        for key, value in (("msgs", n), ("tokens", i + o + cr + cw), ("input", i), ("output", o),
+                           ("cache_read", cr), ("cache_write", cw)):
+            row[key] += value
+        row["cached_share"] = _ratio(row["cache_read"], row["input"] + row["cache_read"] + row["cache_write"])
+        if known is False:
+            # The model's calls with no cost that can be known: its cost is not known, never a part shown as all.
+            row["cost_usd"], row["cost_reason"] = None, CACHE_NOT_REPORTED
+        elif "cost_reason" not in row:
+            row["cost_usd"] = _usd((row["cost_usd"] or 0.0) + cost) if cost is not None else row["cost_usd"]
     if not by_model and root:
         for fallback in _fallback_rows(history, 0.0, now + 60.0, sid):
             for model, usage in _fallback_models(fallback).items():

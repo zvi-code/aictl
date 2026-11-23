@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs
 
+from ..data.provenance import CACHE_NOT_REPORTED, NO_LIST_PRICE
 from ..stores.base import StoreConfigurationError
 from ..tool_scope import normalize_selection, stored_ids_for
 from .board_filters import MEMO_TTL_S
@@ -514,7 +515,7 @@ def _read_context_daily(history: HistoryScope, tools: tuple[str, ...] | None, no
 
 def _daily_from_rows(rows: list[dict], now: float) -> dict:
     days, first = _context_days(now)
-    sums = ("calls", "input", "output", "cache_read", "cache_write", "stored", "ri", "ro", "rcr", "rcw")
+    sums = ("calls", "input", "output", "cache_read", "cache_write", "stored", "ri", "ro", "rcr", "rcw", "unknown")
     # The view answers per tool; the daily table is per day and model.
     merged: dict[tuple[str, str], dict] = {}
     for r in rows:
@@ -549,7 +550,7 @@ def observed_models(rows: list[dict]) -> dict[str, list[dict]]:
 def _project_context_daily(days, first, values):
     rows = []
     models: dict[str, dict] = {}
-    for day, model, n, i, o, cr, cw, stored, ri, ro, rcr, rcw, last in values:
+    for day, model, n, i, o, cr, cw, stored, ri, ro, rcr, rcw, unknown, last in values:
         if day not in days:
             continue
         name = model or None
@@ -557,9 +558,14 @@ def _project_context_daily(days, first, values):
         rest = _ctx_int(ri) + _ctx_int(ro) + _ctx_int(rcr) + _ctx_int(rcw)
         listed = _list_cost(model, _ctx_int(ri), _ctx_int(ro), _ctx_int(rcr), _ctx_int(rcw), last)[0] if rest and model else None
         cost = None if rest and listed is None else round((stored or 0.0) + (listed or 0.0), 6)
+        reason = NO_LIST_PRICE if cost is None else None
+        if _ctx_int(unknown):
+            # Calls stored with no cost have none that can be known, so the day's cost of the model is not known.
+            cost, reason = None, CACHE_NOT_REPORTED
         tokens = i + o + cr + cw
         rows.append(
-            {"date": day, "model": name, "requests": n, "input": i, "output": o, "cache_read": cr, "cache_write": cw, "tokens": tokens, "cost_usd": cost}
+            {"date": day, "model": name, "requests": n, "input": i, "output": o, "cache_read": cr, "cache_write": cw,
+             "tokens": tokens, "cost_usd": cost} | ({"cost_reason": reason} if reason and tokens else {})
         )
         m = models.setdefault(name or "", {"model": name, "tokens": 0, "requests": 0, "cost_usd": 0.0})
         m["tokens"] += tokens

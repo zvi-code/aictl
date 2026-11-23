@@ -6,7 +6,7 @@ import type { KeyedRow, PanelProps, Read, Row } from '../types'
 import { Choice, Measures } from './aControls'
 import { cost, count, field, tokens } from './aFields'
 import { useContext } from './contextData'
-import { dailyValues, knownSum, pricedCost, type DailyMetric } from './overviewMath'
+import { dailyValues, knownSum, leftOutText, pricedCost, type DailyMetric } from './overviewMath'
 import { fmtN } from '../../design/format'
 import { workflowSummary } from './RowSummaries'
 import css from './overviewA.module.css'
@@ -118,9 +118,7 @@ export function dailyOptions(props: PanelProps) {
       <Measures ctx={ctx} items={[
         { field: tokens('tokens', 'Tokens'), value: total('tokens') },
         { field: count('requests', 'Calls'), value: total('requests') },
-        { field: cost(), value: priced().cost, detail: priced().unpriced.length
-          ? `excludes ${priced().unpriced.map(item => `${item.model} (${fmtN(item.tokens)} tokens)`).join(', ')}: no list price`
-          : undefined },
+        { field: cost(), value: priced().cost, detail: leftOutText(priced().unpriced, fmtN) },
       ]} /></>,
     table: () => <RowTable panel={props} label="Daily usage by model data" rows={rows()} />,
   }

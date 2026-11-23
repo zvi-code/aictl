@@ -101,17 +101,34 @@ export function knownSum(values: readonly unknown[]): number | undefined {
   return total
 }
 
-/** The cost of the rows that have a price, and the models left out of it with their tokens.
- * A row with tokens and no cost is a model the price list (data/model_pricing.py) does not have,
- * priced by the same path as the Cost panel: the total names what it leaves out, never says N/A. */
-export function pricedCost(rows: readonly { model?: string | null; tokens?: number | null; cost_usd?: number | null }[]) {
+/** The cost of the rows that have a price, and the models left out of it with their tokens and why.
+ * A row with tokens and no cost is a model the price list (data/model_pricing.py) does not have, or
+ * calls whose cost cannot be known (`cost_reason` says which), priced by the same path as the Cost
+ * panel: the total names what it leaves out, never says N/A. */
+export function pricedCost(rows: readonly { model?: string | null; tokens?: number | null; cost_usd?: number | null; cost_reason?: string | null }[]) {
   let cost: number | undefined
-  const unpriced = new Map<string, number>()
+  const unpriced = new Map<string, { model: string; tokens: number; reason: string }>()
   for (const row of rows) {
     if (typeof row.cost_usd === 'number' && Number.isFinite(row.cost_usd)) cost = (cost ?? 0) + row.cost_usd
-    else if ((row.tokens ?? 0) > 0) unpriced.set(row.model || 'model not reported', (unpriced.get(row.model || 'model not reported') ?? 0) + row.tokens!)
+    else if ((row.tokens ?? 0) > 0) {
+      const model = row.model || 'model not reported'
+      const reason = row.cost_reason || 'no list price'
+      const item = unpriced.get(`${model}\u0000${reason}`) ?? { model, tokens: 0, reason }
+      item.tokens += row.tokens!
+      unpriced.set(`${model}\u0000${reason}`, item)
+    }
   }
-  return { cost, unpriced: [...unpriced].sort((a, b) => b[1] - a[1]).map(([model, tokens]) => ({ model, tokens })) }
+  return { cost, unpriced: [...unpriced.values()].sort((a, b) => b.tokens - a.tokens) }
+}
+
+/** "excludes m1 (N tokens), m2 (N tokens): reason; m3 (N tokens): reason", one clause per reason. */
+export function leftOutText(items: readonly { model: string; tokens: number; reason?: string }[], tokens: (n: number) => string) {
+  const byReason = new Map<string, string[]>()
+  for (const item of items) {
+    const reason = item.reason || 'no list price'
+    byReason.set(reason, [...(byReason.get(reason) ?? []), `${item.model} (${tokens(item.tokens)} tokens)`])
+  }
+  return items.length ? `excludes ${[...byReason].map(([reason, models]) => `${models.join(', ')}: ${reason}`).join('; ')}` : undefined
 }
 
 export function modelAllocation(agent: Row, model: unknown) {

@@ -482,6 +482,48 @@ class TestPricing:
         expected = request_cost_usd(model, 150_000, 10, ts=ts) + request_cost_usd(model, 10, 10, ts=ts + 1)
         assert _agent(_board(db), "tier")["cost_usd"] == pytest.approx(expected, abs=1e-6)
 
+    def test_a_call_stored_with_no_cost_is_not_priced_on_read(self, db):
+        # VS Code calls that do not report the cached part of the prompt are stored with cost_usd null.
+        # The board priced them at list price as all uncached input: $4,036.73 for 3.27 billion tokens
+        # on a real Mac, several times the real cost. A stored zero is still priced at list price.
+        conn = db
+        ts = NOW - 3 * DAY
+        for sid in ("vs-known", "vs-zero", "vs-none"):
+            _session(conn, sid, "copilot-vscode", "/p/alpha", ts - 10, ts + 10)
+        _request(conn, ts, "vs-known", "copilot-vscode", "/p/alpha", HAIKU, i=100, o=10, cr=900, cost_usd=0.002)
+        _request(conn, ts + 1, "vs-known", "copilot-vscode", "/p/alpha", HAIKU, i=5000, o=10, cost_usd=None)
+        _request(conn, ts + 2, "vs-zero", "copilot-vscode", "/p/alpha", HAIKU, i=50, o=5, cost_usd=0.0)
+        _request(conn, ts + 3, "vs-none", "copilot-vscode", "/p/alpha", HAIKU, i=7000, o=20, cost_usd=None)
+
+        payload = _board(db, tools=("copilot-vscode",), project="/p/alpha")
+        assert _agent(payload, "vs-known")["cost_usd"] == pytest.approx(0.002, abs=1e-6)
+        assert _agent(payload, "vs-zero")["cost_usd"] == pytest.approx(cost_usd(HAIKU, 50, 5, 0, 0), abs=1e-6)
+        why = "VS Code does not report how much of the prompt was cached"
+        none = _agent(payload, "vs-none")
+        assert none["input"] == 7000 and none["cost_usd"] is None and none["cost_reason"] == why
+        assert _agent(payload, "vs-known")["cost_reason"] == why  # its cost leaves a call out
+        assert _agent(payload, "vs-zero")["cost_reason"] is None
+        assert payload["kpis"]["cost_usd"] == pytest.approx(0.002 + cost_usd(HAIKU, 50, 5, 0, 0), abs=1e-6)
+        assert payload["unpriced"]["models"] == [{"model": HAIKU, "tokens": 12030, "reason": why}]
+        assert payload["unpriced"]["tokens"] == 12030
+
+        # The drawer's usage by model: the model's cost is not known when part of it cannot be.
+        detail = agent_detail(db, "vs-known", None, NOW)[1]
+        assert detail["by_model"] == [{"model": HAIKU, "msgs": 2, "tokens": 6020, "input": 5100, "output": 20,
+                                       "cache_read": 900, "cache_write": 0, "cached_share": pytest.approx(900 / 6000),
+                                       "cost_usd": None, "cost_reason": why}]
+        assert agent_detail(db, "vs-zero", None, NOW)[1]["by_model"][0]["cost_usd"] == pytest.approx(
+            cost_usd(HAIKU, 50, 5, 0, 0), abs=1e-6)
+
+        # The session finder prices as the board does.
+        from aictl.dashboard.session_record import SessionQuery, search_sessions
+
+        found = search_sessions(db, query=SessionQuery(since=NOW - 7 * DAY, until=NOW, tools=["copilot-vscode"]), now=NOW)
+        costs = {r["id"]: r["cost_usd"] for r in found["rows"]}
+        assert costs["vs-known"] == pytest.approx(0.002, abs=1e-6)
+        assert costs["vs-zero"] == pytest.approx(cost_usd(HAIKU, 50, 5, 0, 0), abs=1e-6)
+        assert costs["vs-none"] is None
+
     def test_unknown_model_cost_is_null_and_tokens_stay(self, db):
         conn = db
         _request(conn, NOW - 3 * DAY, "mystery", "claude-code", "/p/alpha", "no-such-model", i=7)
@@ -3521,6 +3563,8 @@ class TestContext:
             (120, "s1", "claude-code", SONNET, 10, 5, 0.5),
             (90, "s2", "copilot-cli", "no-such-model", 7, 0, 0),
             (10 * 86400, "s3", "claude-code", SONNET, 999, 0, 0),
+            (80, "s4", "copilot-vscode", HAIKU, 4000, 10, None),  # stored with no cost: none can be known
+            (70, "s4", "copilot-vscode", HAIKU, 1, 1, 0),
         ]):
             kusto_store.insert("requests", id=i + 1, ts=self.NOW - ago, session_id=sid, tool=tool,
                                model=model, input_tokens=inp, output_tokens=out, cost_usd=cost, project_path="/r/alpha")
@@ -3532,6 +3576,11 @@ class TestContext:
         assert (son["requests"], son["input"], son["output"], son["tokens"]) == (2, 110, 55, 165)
         assert son["cost_usd"] == round(0.5 + cost_usd(SONNET, 100, 50, 0, 0), 6), "a stored cost plus list price for the rest"
         assert rows["no-such-model"]["cost_usd"] is None, "no price is not $0"
+        assert rows["no-such-model"]["cost_reason"] == "no list price"
+        # A day of a model with calls whose cost cannot be known is not priced at list price on read.
+        assert rows[HAIKU]["tokens"] == 4012 and rows[HAIKU]["cost_usd"] is None
+        assert rows[HAIKU]["cost_reason"] == "VS Code does not report how much of the prompt was cached"
+        assert "cost_reason" not in son
         assert [m["model"] for m in only["models"]] == [SONNET]
 
     def test_workflows_and_prompt_files_leave_test_fixtures_out(self):

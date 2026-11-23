@@ -20,6 +20,7 @@
     "cache_write": {"type": ["integer", "null"]},
     "cached_share": {"type": ["number", "null"]},
     "cost_usd": {"type": ["number", "null"]},
+    "cost_reason": {"type": ["string", "null"]},
     "tool_calls": {"type": ["integer", "null"]},
     "failures": {"type": ["integer", "null"]},
     "confirms_asked": {"type": ["integer", "null"]},

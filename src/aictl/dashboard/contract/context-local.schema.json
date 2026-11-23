@@ -372,6 +372,7 @@
               "cache_read": {"type": "integer"},
               "cache_write": {"type": "integer"},
               "cost_usd": {"type": ["number", "null"]},
+              "cost_reason": {"type": "string"},
               "date": {"type": "string"},
               "input": {"type": "integer"},
               "model": {"type": "string"},

@@ -1042,7 +1042,7 @@ A call reported by OTel and read again from the transcript is stored once. The t
 | `output_tokens` | long | Output tokens |
 | `cache_read_tokens` | long | Cache read tokens |
 | `cache_creation_tokens` | long | Cache write tokens |
-| `cost_usd` | real | Cost in USD, rounded to 6 decimals |
+| `cost_usd` | real | List-price cost in USD, rounded to 6 decimals; 0 when the model had no list price when stored (views price it on read); null when no cost can be known: a VS Code call whose source does not report the cached part of the prompt (views never price it) |
 | `duration_ms` | real | Duration of the call in ms, from telemetry |
 | `finish_reason` | string | Finish or stop reason |
 | `is_error` | long | 1 when the call failed |

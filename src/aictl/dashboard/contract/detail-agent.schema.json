@@ -138,7 +138,8 @@
           "cost_usd": {"type": ["number", "null"]},
           "tokens": {"type": "integer"},
           "cached_share": {"type": ["number", "null"]},
-          "estimated": {"type": "boolean"}
+          "estimated": {"type": "boolean"},
+          "cost_reason": {"type": "string"}
         },
         "required": [
           "model",

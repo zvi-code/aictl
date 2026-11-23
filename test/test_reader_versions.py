@@ -528,7 +528,8 @@ def test_a_huge_recent_claude_session_does_not_hold_back_the_other_tools(tmp_pat
     saved = _saved(state)
     # The small sessions of the other tools are read and saved in the first poll ...
     for path in files["small"]:
-        assert path in ing._offsets and saved[str(path)][2] == 1, path
+        tool = "copilot-cli" if path.name == "events.jsonl" else "copilot-vscode"
+        assert path in ing._offsets and saved[str(path)][2] == READER_VERSIONS[reader_kind(tool, path)], path
     # ... the huge session's main file too, and the state is saved before the session is done.
     assert str(claude_path(tmp_path)) in saved
     waiting = {p for p in files["claude"] if p in ing._waiting}
