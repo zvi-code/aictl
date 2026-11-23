@@ -425,6 +425,244 @@ def test_the_status_record_carries_the_backlog_per_tool(tmp_path):
                                                      "reread_bytes_waiting", "oldest_waiting"}
 
 
+# ── Bounded passes: a huge recent session, progress saved as it goes, a throttling store ──
+
+
+class Quality:
+    def __init__(self):
+        self.events = []
+
+    def record_data_quality(self, component, status, **kw):
+        self.events.append({"status": status, **kw})
+
+
+class Clock:
+    """The progress clock of a test: each reading moves it on by *step* seconds."""
+
+    def __init__(self, step: float) -> None:
+        self.now, self.step = 0.0, step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+SUBAGENTS = 12
+
+
+def subagent_path(root, n: int) -> Path:
+    return claude_path(root).parent / SESSION / "subagents" / f"agent-s{n}.jsonl"
+
+
+def huge_recent_tree(root) -> dict[str, list[Path]]:
+    """A running Claude Code session with many large subagent transcripts, and a small recent
+    Copilot CLI session and VS Code session beside it. Every file was changed in the last hour."""
+    write_lines(claude_path(root), [c_user("main prompt", 900, promptId="p1",
+                                           turnPosition={"promptIndex": 1, "turnIndex": 1}),
+                                    c_assistant("m0", "r0", 895)])
+    subagents = []
+    for n in range(SUBAGENTS):
+        path = subagent_path(root, n)
+        write_lines(path, [
+            {**c_user(f"subagent task {n} " + "x" * 4000, 800 - n, agentId=f"s{n}", isSidechain=True), "promptId": "p1"},
+            c_assistant(f"sm{n}", f"sr{n}", 799 - n, agentId=f"s{n}", isSidechain=True),
+        ])
+        subagents.append(path)
+    write_lines(copilot_events(root), _copilot_segment(1, 300))
+    workspace_json(root)
+    write_lines(debug_dir(root) / "main.jsonl", [
+        v_line("user_message", 500, "u1", content="please refactor"),
+        v_line("llm_request", 490, "l1", model=MODEL, inputTokens=100, outputTokens=20, cachedTokens=60)])
+    return {"claude": [claude_path(root), *subagents], "small": [copilot_events(root), debug_dir(root) / "main.jsonl"]}
+
+
+def _saved(state: StateFile) -> dict[str, list]:
+    data = state.read()
+    return next(iter(data.values()))["files"] if data else {}
+
+
+def _current_rows(facts: Facts, name: str) -> list[tuple]:
+    from core_store_fakes import current
+
+    keep = {"session_id", "prompt_id", "turn_index", "request_count", "input_tokens", "output_tokens",
+            "agent_id", "dedup_key"}
+    return sorted(tuple(sorted((k, str(v)) for k, v in row.items() if k in keep)) for row in current(facts.writer, name))
+
+
+def test_a_huge_recent_claude_session_does_not_hold_back_the_other_tools(tmp_path, monkeypatch):
+    # The upgrade seen on a real machine: the files changed in the last two days were read at once,
+    # whatever their size, Claude Code first; one running session with gigabytes of subagent
+    # transcripts held every Copilot and VS Code file back for the whole pass.
+    files = huge_recent_tree(tmp_path)
+    sub_size = files["claude"][1].stat().st_size
+    monkeypatch.setattr(transcript_usage, "DEFERRED_BYTES_PER_POLL", 3 * sub_size)
+    state = StateFile(tmp_path / "state.json")
+    facts = Facts()
+    ing = ingester(facts, tmp_path, checkpoint=state, defer_old=True)
+    ing.poll()
+    saved = _saved(state)
+    # The small sessions of the other tools are read and saved in the first poll ...
+    for path in files["small"]:
+        assert path in ing._offsets and saved[str(path)][2] == 1, path
+    # ... the huge session's main file too, and the state is saved before the session is done.
+    assert str(claude_path(tmp_path)) in saved
+    waiting = {p for p in files["claude"] if p in ing._waiting}
+    assert len(waiting) >= SUBAGENTS - 4
+    polls = 1
+    while ing._waiting:
+        before = set(ing._offsets)
+        ing.poll()
+        polls += 1
+        read = sum(p.stat().st_size for p in set(ing._offsets) - before)
+        # A poll reads its budget and at most one file more.
+        assert read <= 3 * sub_size + sub_size
+        assert polls < 3 * SUBAGENTS
+    assert all(str(p) in _saved(state) for p in files["claude"])
+    # Read in parts, the session gives the rows of one whole read.
+    whole = Facts()
+    ingester(whole, tmp_path).poll()
+    for name in ("requests", "session_turns", "agents"):
+        assert _current_rows(facts, name) == _current_rows(whole, name), name
+
+
+def test_a_restart_in_the_middle_of_a_session_read_in_parts_resumes_it_with_its_main_file(tmp_path, monkeypatch):
+    files = huge_recent_tree(tmp_path)
+    # The main file was saved as read long ago and is not read again at a restart of its own accord.
+    os.utime(claude_path(tmp_path), (NOW - 3 * DAY, NOW - 3 * DAY))
+    sub_size = files["claude"][1].stat().st_size
+    monkeypatch.setattr(transcript_usage, "DEFERRED_BYTES_PER_POLL", 3 * sub_size)
+    state = StateFile(tmp_path / "state.json")
+    facts = Facts()  # one store across the restart
+    ingester(facts, tmp_path, checkpoint=state, defer_old=True).poll()
+    assert any(p.name.startswith("agent-") and str(p) not in _saved(state) for p in files["claude"])
+    restarted = ingester(facts, tmp_path, checkpoint=state, defer_old=True)
+    restarted.poll()
+    assert claude_path(tmp_path) in restarted._offsets
+    while restarted._waiting:
+        restarted.poll()
+    whole = Facts()
+    ingester(whole, tmp_path).poll()
+    for name in ("requests", "agents"):
+        assert _current_rows(facts, name) == _current_rows(whole, name), name
+
+
+class _CrashAfterWrites(Facts):
+    """A process that dies after the store took its *batches*-th fact batch, before anything else."""
+
+    def __init__(self, batches: int) -> None:
+        super().__init__()
+        self.left = batches
+
+    def write_call_facts(self, facts):
+        written = super().write_call_facts(facts)
+        self.left -= 1
+        if self.left == 0:
+            raise SystemExit("killed")
+        return written
+
+
+def test_a_crash_between_a_write_and_its_checkpoint_repeats_only_that_file(tmp_path):
+    files = huge_recent_tree(tmp_path)
+    state = StateFile(tmp_path / "state.json")
+    crashed = _CrashAfterWrites(batches=5)
+    ing = ingester(crashed, tmp_path, checkpoint=state, defer_old=True)
+    ing._clock = Clock(step=transcript_usage.PROGRESS_SAVE_S)
+    with pytest.raises(SystemExit):
+        ing.poll()
+    # Each finished file was saved after its rows were handed over: four of them.
+    assert len([p for p in files["claude"] if str(p) in _saved(state)]) == 4
+    resumed = Facts()
+    ingester(resumed, tmp_path, checkpoint=state, defer_old=True).poll()
+    again = keys(crashed)["requests"] & keys(resumed)["requests"]
+    # Only the rows of the file whose checkpoint the crash prevented are written a second time.
+    assert len(again) == 1
+    whole = Facts()
+    ingester(whole, tmp_path).poll()
+    assert keys(crashed)["requests"] | keys(resumed)["requests"] == keys(whole)["requests"]
+
+
+def _saves(root, step: float) -> int:
+    """The state writes of a first poll over *root*, with a progress clock that moves *step* a reading."""
+    state = StateFile(root / "state.json")
+    writes = []
+    replace = state.replace
+    state.replace = lambda data: (writes.append(1), replace(data))[1]
+    ing = ingester(Facts(), root, checkpoint=state, defer_old=True)
+    ing._clock = Clock(step)
+    ing.poll()
+    return len(writes)
+
+
+def test_progress_is_saved_at_most_once_per_interval_and_at_the_end_of_a_poll(tmp_path):
+    huge_recent_tree(tmp_path / "never")
+    # The interval never passes: only the end of the poll saves.
+    assert _saves(tmp_path / "never", 0.0) == 1
+    files = huge_recent_tree(tmp_path / "every")
+    # Each interval passes: one save per file finished, which leaves the end of the poll nothing to save.
+    assert _saves(tmp_path / "every", transcript_usage.PROGRESS_SAVE_S) == len(files["claude"]) + len(files["small"])
+
+
+class _Throttling(Facts):
+    """A store that refuses fact batches while *refuse* is above zero, as a throttled cluster does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refuse = 0
+
+    def write_call_facts(self, facts):
+        if self.refuse > 0:
+            self.refuse -= 1
+            raise StoreError("Kusto ingestion into requests failed: throttled (429)")
+        return super().write_call_facts(facts)
+
+
+def test_a_throttling_store_halves_the_next_polls_and_writes_that_succeed_restore_them(tmp_path, monkeypatch):
+    files = backlog_tree(tmp_path)
+    state = StateFile(tmp_path / "state.json")
+    ingester(Facts(), tmp_path, checkpoint=state).poll()
+    as_older_aictl(state)
+    largest = max(size for group in files.values() for _, size in group)
+    budget = 6 * largest  # room for the whole backlog in one poll
+    monkeypatch.setattr(transcript_usage, "DEFERRED_BYTES_PER_POLL", budget)
+    facts, quality = _Throttling(), Quality()
+    ing = ingester(facts, tmp_path, checkpoint=state, defer_old=True, quality=quality)
+    ing.poll()  # the first poll reads recent files only
+    facts.refuse = 1
+    with pytest.raises(StoreError):
+        ing.poll()
+    with pytest.raises(StoreError):
+        facts.refuse = 1  # still throttled when the next poll hands the kept rows over
+        ing.poll()
+    ing.poll()
+    # Two refusals: a quarter of the budget, so the backlog is not all read in this poll.
+    assert quality.events[-2]["detail"]["backlog_budget_bytes"] == budget // 4
+    assert ing._waiting
+    # Each poll whose rows were stored doubles the budget again, up to the full budget.
+    ing.poll()
+    ing.poll()
+    assert quality.events[-1]["detail"]["backlog_budget_bytes"] == budget
+    assert not ing._waiting
+
+
+def test_the_queue_is_reported_when_a_poll_starts_even_if_the_poll_then_fails(tmp_path):
+    # Seen on a real machine: the status record still had the last poll of the earlier process,
+    # with no backlog, while thousands of files waited; the long first poll had not ended.
+    backlog_tree(tmp_path)
+    state = StateFile(tmp_path / "state.json")
+    ingester(Facts(), tmp_path, checkpoint=state).poll()
+    as_older_aictl(state)
+    write_lines(copilot_events(tmp_path, "abababab-0000-4000-8000-000000000000"), _copilot_segment(1, 300))
+    facts, quality = _Throttling(), Quality()
+    facts.refuse = 10
+    with pytest.raises(StoreError):
+        ingester(facts, tmp_path, checkpoint=state, defer_old=True, quality=quality).poll()
+    detail = quality.events[0]["detail"]
+    assert detail["older_files_waiting"] == 6
+    assert {tool: entry["reread_files_waiting"] for tool, entry in detail["backlog"].items()} == {
+        "copilot-cli": 3, "claude-code": 3}
+    assert "6 session file(s) waiting" in quality.events[0]["message"]
+
+
 # ── The Copilot call key ──────────────────────────────────────────────
 
 # The folder make_store gives the session: a row's key holds its project, so both readers must see the same one.

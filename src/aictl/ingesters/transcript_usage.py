@@ -95,6 +95,9 @@ RESTART_GRACE_S = 3600.0
 # Here 30 days of transcripts are 3.2 GB and cost 40 CPU-seconds read in one burst.
 RECENT_FIRST_S = 2 * 86400.0
 DEFERRED_BYTES_PER_POLL = 128 * 1024 * 1024
+# A poll whose rows the store refused reads half as much at the next poll, down to this part of
+# DEFERRED_BYTES_PER_POLL; each poll whose rows were all handed over doubles it again.
+MIN_BUDGET_SCALE = 1 / 128
 # Windows can report the size a file had when another process opened it, and a
 # Copilot CLI session keeps its events file open while it lives. A file this recent
 # that looks unchanged is measured through its own handle.
@@ -1314,8 +1317,13 @@ class TranscriptUsageIngester:
         self._external_titles: dict[str, Title] = {}
         self._title_retry: set[str] = set()
         self._title_readers: dict[tuple[str, Path], CopilotTitles | CodexTitles] = {}
-        self._first_poll = True
+        self._first_plan = True
+        self._budget_scale = 1.0
+        # The clock of PROGRESS_SAVE_S; a test gives its own.
+        self._clock: Callable[[], float] = time.monotonic
         self._progress_saved = 0.0
+        # The last status recorded at the end of a poll: (status, severity, message, detail).
+        self._status: tuple[str, str, str, dict] = ("ok", "info", "", {})
         identity = [
             socket.gethostname(),
             platforms.path_key(str(Path.home())),
@@ -1346,6 +1354,8 @@ class TranscriptUsageIngester:
         self._stats: dict[Path, tuple[int, float, int]] = {}
         self._kinds: dict[Path, str] = {}
         self._waiting: dict[Path, tuple[str, int, float, bool]] = {}
+        # Claude Code main files read again in this poll because a subagent file of theirs is read.
+        self._forced: set[Path] = set()
         self._transcript_paths: dict[Path, str] = {}
         self._path_observers: tuple[Callable[[Path, str], None], ...] = ()
         self._path_lock = threading.RLock()
@@ -1413,7 +1423,8 @@ class TranscriptUsageIngester:
         self._checkpoints.update(self._read_complete)
         try:
             self._checkpoint.replace({self._checkpoint_key: {
-                "ts": ts, "files": {str(p): list(sig) for p, sig in self._checkpoints.items()},
+                # ts is the start of the poll whose positions these are; saved_at is when they were saved.
+                "ts": ts, "saved_at": time.time(), "files": {str(p): list(sig) for p, sig in self._checkpoints.items()},
                 "copilot_store": list(position),
                 # Every row up to the position was read by this version, and stored (see CopilotStoreReader).
                 "copilot_store_version": self._store_version,
@@ -1532,19 +1543,31 @@ class TranscriptUsageIngester:
         return saved is not None and (kind is None or saved[2] >= READER_VERSIONS[kind])
 
     def _plan(self, files: dict[str, list[Path]], cutoff: float, now: float) -> None:
-        """Stat every session file and choose the backlog files this poll reads.
+        """Stat every session file and choose the files of the backlog this poll reads.
 
-        A file this process has not read waits in its tool's backlog when it is old (older than
-        RECENT_FIRST_S) and was never read, or was read to its end, unchanged since, by a lower
-        reader version. A poll reads up to DEFERRED_BYTES_PER_POLL of backlog (none in the first
-        poll, which reads the recent files), shared out between the tools with a backlog in the
-        order of BACKLOG_PRIORITY: each takes an equal part of what is left, so no tool waits for
-        another's backlog. Within a tool the never-read files come first, then the files to read
-        again, newest first. Without *defer_old* every file is read at once.
+        A file this process has not read is in its tool's backlog when it was never read, or was
+        last read by a lower reader version, whether it is recent or old. A file this reader
+        version read to its end is not: the lines added to it since are read at once, as is every
+        file this process is reading. A poll reads up to DEFERRED_BYTES_PER_POLL of backlog
+        (less while the store refuses rows, see _check_fact_write), shared out between the tools
+        with a backlog in the order of BACKLOG_PRIORITY: each takes an equal part of what is left,
+        so no tool waits for another's backlog. Within a tool the files changed in the last
+        RECENT_FIRST_S come first, newest first, then the never-read older files, then the older
+        files to read again, newest first; the first poll of a process reads recent files only.
+        A tool takes files until its part is used, so a poll reads at most its part and one file
+        more per tool, and a file larger than the budget is read alone.
+
+        A Claude Code session's files are taken in order, its main file first (see
+        _claude_sessions): a subagent's lines name their turn by the prompt id the main file
+        numbers, which this process remembers once it has read the main file. A session can so
+        be read over several polls; after a restart in between, its main file is read again
+        with its next subagent files, not stored again. Without *defer_old* every file is read
+        at once.
         """
         self._stats.clear()
         self._waiting.clear()
-        backlog: dict[str, list[tuple[bool, float, int, Path]]] = {}
+        self._forced.clear()
+        backlog: dict[str, list[tuple[tuple, Path, int, float, bool, bool]]] = {}
         for tool, paths in files.items():
             for p in paths:
                 try:
@@ -1556,33 +1579,61 @@ class TranscriptUsageIngester:
                 offset = self._offsets.get(p, saved[1] if saved else 0)
                 size = _current_size(p, st.st_size, st.st_mtime, offset, now)
                 self._stats[p] = (st.st_mtime_ns, st.st_mtime, size)
-                if p in self._offsets or not self.defer_old:
+                if p in self._offsets or not self.defer_old or st.st_mtime < cutoff:
                     continue
-                unchanged = saved is not None and saved[:2] == (st.st_mtime_ns, size)
-                if unchanged and st.st_mtime < self._resume_before and self._version_current(p):
+                if saved is not None and self._version_current(p):
+                    continue  # unchanged, or what was added since is read now
+                if platforms.IS_WINDOWS and _held(p):
                     continue
-                if st.st_mtime < cutoff or st.st_mtime >= now - RECENT_FIRST_S:
-                    continue
-                again = unchanged and not self._version_current(p)
-                if (saved is None or again) and not (platforms.IS_WINDOWS and _held(p)):
-                    backlog.setdefault(tool, []).append((again, -st.st_mtime, size, p))
-        remaining = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
+                recent = st.st_mtime >= now - RECENT_FIRST_S
+                again = saved is not None
+                rank = (0, 0, -st.st_mtime) if recent else (1, int(again), -st.st_mtime)
+                backlog.setdefault(tool, []).append((rank, p, size, st.st_mtime, again, recent))
+        first, self._first_plan = self._first_plan, False
+        remaining = DEFERRED_BYTES_PER_POLL * self._budget_scale
         tools = [t for t in (*BACKLOG_PRIORITY, *sorted(backlog.keys() - set(BACKLOG_PRIORITY))) if backlog.get(t)]
         for i, tool in enumerate(tools):
-            # A Claude Code session's main file and its subagents' files are read in one poll: a
-            # subagent's lines name their turn by the prompt id that the main file numbers.
-            units: dict[object, list[tuple[bool, float, int, Path]]] = {}
-            for item in backlog[tool]:
-                units.setdefault(_claude_session_id(item[3]) if tool == "claude-code" else item[3], []).append(item)
+            # (path, size, mtime, read again, recent, read again only to rebuild this process's state)
+            items = [(p, size, mtime, again, recent, False)
+                     for _, p, size, mtime, again, recent in sorted(backlog[tool], key=lambda x: x[0])]
+            if tool == "claude-code":
+                items = self._claude_sessions(items, files[tool], cutoff)
             share = remaining / (len(tools) - i)
             used = 0
-            for unit in sorted(units.values(), key=lambda u: (min(x[0] for x in u), min(x[1] for x in u))):
-                if used < share:
-                    used += sum(x[2] for x in unit)
+            for p, size, mtime, again, recent, replay in items:
+                if used >= share or (first and not recent):
+                    if not replay:
+                        self._waiting[p] = (tool, size, mtime, again)
                     continue
-                for again, neg_mtime, size, p in unit:
-                    self._waiting[p] = (tool, size, -neg_mtime, again)
+                used += size
+                if replay:
+                    self._forced.add(p)
             remaining -= used
+
+    def _claude_sessions(self, items: list[tuple], paths: list[Path], cutoff: float) -> list[tuple]:
+        """The Claude Code files of the backlog, *items*, in sessions, each session's main file first.
+        A main file this process has not read and that needs no reading of its own comes too, to
+        be read again from its start (its stored rows are not stored again): the subagents' lines
+        name their turn by the prompt id it numbers. A session is recent when one of its files of
+        the backlog is. The sessions come in the order of their first file in *items*."""
+        sessions: dict[str, list[tuple]] = {}
+        for item in items:
+            sessions.setdefault(_claude_session_id(item[0]), []).append(item)
+        listed = {item[0] for item in items}
+        mains: dict[str, Path] = {}
+        for p in paths:
+            stat = self._stats.get(p)
+            if ("subagents" not in p.parts and p not in listed and p not in self._offsets and p in self._checkpoints
+                    and stat is not None and stat[1] >= cutoff and p.stem in sessions):
+                mains[p.stem] = p
+        ordered = []
+        for sid, group in sessions.items():
+            recent = any(item[4] for item in group)
+            main = mains.get(sid)
+            replay = [(main, self._stats[main][2], self._stats[main][1], False, recent, True)] if main else []
+            ordered += sorted(replay + [(*item[:4], recent, False) for item in group],
+                              key=lambda item: "subagents" in item[0].parts)
+        return ordered
 
     def backlog_status(self) -> dict[str, dict]:
         """Per tool, what waits in the backlog: files and bytes, those of them to read again for a
@@ -1613,7 +1664,7 @@ class TranscriptUsageIngester:
                 self._found[p] = (tool, mtime_ns, size)
             if p not in self._offsets:
                 if (saved is not None and saved[:2] == (mtime_ns, size) and mtime < self._resume_before
-                        and self._version_current(p)):
+                        and self._version_current(p) and p not in self._forced):
                     continue
                 held = platforms.IS_WINDOWS and mtime < time.time() - RECENT_FIRST_S and _held(p)
                 if mtime < cutoff and not held:
@@ -1653,6 +1704,11 @@ class TranscriptUsageIngester:
         debug_files = [p for p in files["copilot-vscode"] if "debug-logs" in p.parts]
         chat_files = [p for p in files["copilot-vscode"] if "debug-logs" not in p.parts]
         self._plan(files, cutoff, now)
+        if self._waiting:
+            # The queue is shown while this poll reads, not only when it ends: a poll can take long.
+            status, severity, message, extra = self._status
+            waiting = f"{len(self._waiting)} session file(s) waiting to be read"
+            self._record_status(status, severity, f"{message}; {waiting}" if status != "ok" else waiting, extra)
         self._note_transcript_paths(claude_files, "claude-code")
         # A compressed rollout is a finished session: nothing tails it, so only plain ones are announced.
         self._note_transcript_paths([p for p in codex_files if p.suffix != session_files.ZSTD], "codex-cli")
@@ -1867,20 +1923,18 @@ class TranscriptUsageIngester:
         written = len(published)
         self.last_poll_ts = now
         self.last_poll_inserted = written
-        self._first_poll = False
         pending = len(self.facts)
         if not pending:
             touched.clear()
             self._save_checkpoints(now)
+            # Every row of this poll was handed over: the next poll may read more again.
+            self._budget_scale = min(1.0, self._budget_scale * 2)
         self._index_sources(now)
         self.unavailable = self._store.unavailable
-        record_quality(
-            self.quality,
-            "transcript-usage",
-            self.claude_projects.parent,
+        self._status = (
             "unavailable" if self.unavailable else "degraded" if errors or pending or unreadable or unclaimed else "ok",
-            severity="warning" if self.unavailable or errors or pending or unreadable or unclaimed else "info",
-            message="; ".join(filter(None, (
+            "warning" if self.unavailable or errors or pending or unreadable or unclaimed else "info",
+            "; ".join(filter(None, (
                 self._unread_rollouts_message(unreadable, unclaimed),
                 self.unavailable
                 or (f"{pending} fact row(s) waiting for storage"
@@ -1889,19 +1943,35 @@ class TranscriptUsageIngester:
                 if errors
                 else f"{written} session(s) updated"),
             ))),
-            detail={
+            {
                 **({"unreadable": {"codex-cli": len(unreadable), "reason": "; ".join(sorted(set(unreadable.values())))}}
                    if unreadable else {}),
                 **({"unclaimed_files": {tool: len(paths) for tool, paths in unclaimed.items()}} if unclaimed else {}),
+            },
+        )
+        self._record_status(*self._status)
+        return written
+
+    def _record_status(self, status: str, severity: str, message: str, extra: dict) -> None:
+        record_quality(
+            self.quality,
+            "transcript-usage",
+            self.claude_projects.parent,
+            status,
+            severity=severity,
+            message=message,
+            detail={
+                **extra,
                 # Files of the backlog not read yet: never read, or to read again for a newer reader.
                 "older_files_waiting": len(self._waiting),
                 "backlog": self.backlog_status(),
-                "pending_fact_rows": pending,
+                # The bytes of backlog a poll reads now: less while the store refuses rows.
+                "backlog_budget_bytes": int(DEFERRED_BYTES_PER_POLL * self._budget_scale),
+                "pending_fact_rows": len(self.facts),
                 "session_files": dict(self.source_counts),
                 "history_days": 0 if self.backfill_days >= ALL_DAYS else self.backfill_days,
             },
         )
-        return written
 
     @staticmethod
     def _chat_files(workspace_roots: list[Path], empty_window_dirs: list[Path]) -> list[Path]:
@@ -2058,7 +2128,7 @@ class TranscriptUsageIngester:
         the store, as at the end of a poll.
         """
         if (self._checkpoint is None or not self._read_complete
-                or time.monotonic() - self._progress_saved < PROGRESS_SAVE_S):
+                or self._clock() - self._progress_saved < PROGRESS_SAVE_S):
             return
         self._claude_facts.close_idle_agents(now - IDLE_END_S)
         self._claude_facts.drop_abandoned_calls(now - IDLE_END_S)
@@ -2069,7 +2139,7 @@ class TranscriptUsageIngester:
             return
         self._persist(touched.values(), now, published)
         self._save_checkpoints(now)
-        self._progress_saved = time.monotonic()
+        self._progress_saved = self._clock()
 
     def _read_metadata(self) -> None:
         """The session files that are not transcripts, each read again only when it changed."""
@@ -2089,7 +2159,10 @@ class TranscriptUsageIngester:
             self.facts.add_outcome(row)
 
     def _check_fact_write(self) -> None:
+        """End the poll when the store refused rows (a throttled or failed batch, which the buffer
+        keeps). The next poll hands the kept rows over first and reads half as much backlog."""
         if self.facts.write_error is not None:
+            self._budget_scale = max(MIN_BUDGET_SCALE, self._budget_scale / 2)
             raise self.facts.write_error
 
     def _read_rewind_index(self, index: Path, facts: CopilotFacts) -> None:
