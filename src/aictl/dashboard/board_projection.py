@@ -2979,8 +2979,16 @@ def _reported_as(cells: Iterable[_Cell]) -> dict[str, list[dict]]:
     }
 
 
-def _options(board: _Board) -> dict:
-    """The filter menus, from the time range alone so a filter never hides its own choices."""
+# The owner's order of tools in the Tool menu and the coverage table; others follow by tokens.
+TOOL_PRIORITY = ("copilot-cli", "copilot-desktop", "copilot-vscode", "claude-code")
+
+
+def _options(board: _Board, stored_tools: Iterable[str] = ()) -> dict:
+    """The filter menus, from the time range alone so a filter never hides its own choices.
+
+    The Tool menu also lists every tool with any stored session (``stored_tools``, from
+    board.sources) or a live process, with 0 agents when none ran in the time range.
+    """
     tool_agents: dict[str, set[str]] = defaultdict(set)
     tool_tokens: dict[str, int] = defaultdict(int)
     project_agents: dict[str, set[str]] = defaultdict(set)
@@ -3005,6 +3013,12 @@ def _options(board: _Board) -> dict:
     # A running tool with no session in this time is still a choice in the Tool menu.
     for group in board.placeholders:
         tool_agents[group["tool"]].update(())
+    for live in board.live_sessions:
+        if live.get("tool") and not live.get("ended"):
+            tool_agents[str(live["tool"])].update(())
+    for tool in stored_tools:
+        if tool and not is_unattributed(tool):
+            tool_agents[tool].update(())
     tool_agents.pop("", None)
     project_agents.pop("", None)
     model_agents.pop("", None)
@@ -3012,7 +3026,9 @@ def _options(board: _Board) -> dict:
     def ordered(groups: dict[str, set[str]]) -> list[dict]:
         return [{"id": k, "agents": len(v)} for k, v in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
 
-    tools = sorted(tool_agents.items(), key=lambda kv: (-tool_tokens.get(kv[0], 0), -len(kv[1]), kv[0]))
+    rank = {tool: i for i, tool in enumerate(TOOL_PRIORITY)}
+    tools = sorted(tool_agents.items(), key=lambda kv: (
+        rank.get(kv[0], len(rank)), -tool_tokens.get(kv[0], 0), -len(kv[1]), kv[0]))
     reported = _reported_as(board.all_cells)
     return {
         "tools": [{"id": k, "label": _label(k), "agents": len(v)} for k, v in tools],
@@ -3335,7 +3351,8 @@ def compute_board(
     ]
 
     tool_order = list(board.tool_order)
-    options = _options(board)
+    source_rows = _source_rows(history, memo_key)
+    options = _options(board, (tool for tool, _source, _ts in source_rows))
     option_tools = [o["id"] for o in options["tools"]]
     selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
     project_list = sorted(project_ids - {""})
@@ -3381,7 +3398,7 @@ def compute_board(
         "processes": _processes(board),
         # Names for tools that have processes but no activity in this range.
         "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in _processes(board)} | set(cpu)},
-        "sources": _sources(_source_rows(history, memo_key), tool_order or option_tools, selected,
+        "sources": _sources(source_rows, tool_order or option_tools, selected,
                             reported=historical),
         "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
         "self": None if historical else _self_section(db),

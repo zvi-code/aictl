@@ -446,15 +446,24 @@ class TestAgents:
         assert rows[SONNET]["p95_ms"] == 3000
         assert rows[HAIKU]["agent_ids"] == ["done/sub-1"]
 
-    def test_tool_order_follows_activity(self, db):
+    def test_tool_menu_follows_the_owners_order_then_activity(self, db):
         payload = _board(db)
-        # By tokens: claude-code, copilot-vscode, codex-cli.
-        assert [t["id"] for t in payload["options"]["tools"]] == ["claude-code", "copilot-vscode", "codex-cli"]
+        # The owner's order (Copilot CLI, Copilot desktop, VS Code, Claude Code), then others by tokens.
+        assert [t["id"] for t in payload["options"]["tools"]] == ["copilot-vscode", "claude-code", "codex-cli"]
+        # The cost series keeps the order of activity.
         assert list(payload["series"]["cost"]["by_tool"]) == ["claude-code", "copilot-vscode", "codex-cli"]
         conn = db
         _request(conn, NOW - 3600, "codex-big", "codex-cli", "/p/gamma", GPT, i=999999)
 
-        assert [t["id"] for t in _board(db)["options"]["tools"]][0] == "codex-cli"
+        assert [t["id"] for t in _board(db)["options"]["tools"]] == ["copilot-vscode", "claude-code", "codex-cli"]
+
+    def test_the_tool_menu_lists_tools_with_stored_sessions_outside_the_range(self, db):
+        """Found on real data: the menu listed 2 tools while Copilot desktop sessions were stored."""
+        conn = db
+        _request(conn, NOW - 40 * DAY, "old-desktop", "copilot-desktop", "/p/delta", GPT, i=10)
+        tools = {t["id"]: t for t in _board(db)["options"]["tools"]}
+        assert tools["copilot-desktop"]["agents"] == 0
+        assert list(tools)[:2] == ["copilot-desktop", "copilot-vscode"]
 
 
 class TestFallback:
