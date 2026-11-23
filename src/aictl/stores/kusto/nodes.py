@@ -127,28 +127,26 @@ def legacy_name(logical: str) -> str:
 
 @dataclass
 class Node:
-    """One node as the database knows it: its tables, its recorded layout, its traffic."""
+    """One node as the database knows it: its tables, its recorded layout, the sealed size of its tables.
+
+    There is no row count and no last ingestion time here: table details leave out rows still in the
+    row store, so they give neither. ``aictl db layout --nodes`` counts them by query.
+    """
 
     key: str
     node_id: str | None = None
     tables: dict[str, str] = field(default_factory=dict)  # logical -> physical
     stored: object = None  # layout.StoredLayout | None
-    rows: int = 0
     extents: int = 0
-    size: int = 0
-    last_ingestion: object = None
+    sealed: int = 0  # bytes of the sealed extents
     included: bool = False
     reason: str = ""
 
     def as_dict(self) -> dict:
-        from datetime import datetime
-
         stored = self.stored
-        last = self.last_ingestion
         return {
-            "node_id": self.node_id, "node_key": self.key, "tables": len(self.tables), "rows": self.rows,
-            "extents": self.extents, "size_bytes": self.size,
-            "last_ingestion": last.isoformat() if isinstance(last, datetime) else last,
+            "node_id": self.node_id, "node_key": self.key, "tables": len(self.tables),
+            "extents": self.extents, "sealed_bytes": self.sealed,
             "version": getattr(stored, "version", None), "compatible_since": getattr(stored, "compatible_since", None),
             "data_epoch": getattr(stored, "data_epoch", None) or None, "included": self.included,
             "reason": self.reason,

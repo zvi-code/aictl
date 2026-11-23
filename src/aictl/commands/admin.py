@@ -334,7 +334,7 @@ def _print_nodes(state, settings, *, details: bool, counts=None, echo=click.echo
             mine_counts = [counts[name] for name in state.nodes[node["node_key"]].tables.values()]
             rows = sum(n for n, _ in mine_counts)
             newest = max((t for _, t in mine_counts if t is not None), default=None)
-            line += f"{rows:>12,} {_sealed(node['size_bytes'], rows):>15}  {N.utc_text(newest):<24}"
+            line += f"{rows:>12,} {_sealed(node['sealed_bytes'], rows):>15}  {N.utc_text(newest):<24}"
         echo(line + included)
         if node["data_epoch"]:
             echo(f"    data epoch {node['data_epoch']}")

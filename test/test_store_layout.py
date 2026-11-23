@@ -1010,3 +1010,28 @@ def test_a_copy_of_rows_past_the_retention_period_gets_a_creation_time_the_clust
     old = [{"n": 3, "newest": "2020-01-01T00:00:00Z"}]
     command = M.copy_commands("tool_invocations_text", "t__k", "node-a", old, keep_hours=24)[0]
     assert "2020-01-01" not in command and "creationTime=" in command
+
+
+def test_the_layout_summary_in_the_store_health_has_no_row_count_and_no_table_details_time():
+    """Table details leave out rows in the row store, so a summary shows no row count or ingestion time of a node;
+    its size is the sealed size, named so."""
+    fake = started("node-a", rows=7)
+    fake.unsealed = set(fake.tables)
+    summary = check_layout(fake, "db", "node-a").summary()
+    [node] = summary["nodes"]
+    assert "rows" not in node and "last_ingestion" not in node and "size_bytes" not in node
+    assert node["sealed_bytes"] == 0 and node["extents"] == 0
+
+
+def test_the_layout_summary_lists_the_legacy_tables_with_a_sealed_size_and_no_row_count():
+    fake = migrated_fake()
+    ensure(fake, migrate=migrations.runner(fake, "db"))
+    fake.unsealed = set(fake.tables)
+    summary = check_layout(fake, "db", "node-a").summary()
+    assert summary["legacy_tables"]
+    for table in summary["legacy_tables"]:
+        assert set(table) == {"table", "sealed_bytes"}
+
+
+def test_no_node_traffic_report_with_table_details_numbers_remains():
+    assert not hasattr(maintenance, "node_traffic")

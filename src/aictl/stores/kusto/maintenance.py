@@ -280,18 +280,3 @@ def drop_legacy(settings, tables: list[str]) -> str:
     text = legacy_drop_command(tables)
     management(client, settings.database)(text, "Database Admin", "Drop the legacy shared tables")
     return text
-
-
-def node_traffic(settings) -> list[dict]:
-    """Per node: rows, extents, size and last ingestion per table and in total, and its layout."""
-    state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
-    out = []
-    for _, node in sorted(state.nodes.items()):
-        tables = []
-        for logical, name in sorted(node.tables.items()):
-            row = state.details.get(name, {})
-            tables.append({"table": logical, "physical": name, "rows": row.get("TotalRowCount"),
-                           "extents": row.get("TotalExtents"), "size_bytes": row.get("TotalExtentSize"),
-                           "last_ingestion": row.get("MaxExtentsCreationTime")})
-        out.append({**node.as_dict(), "table_details": tables})
-    return out

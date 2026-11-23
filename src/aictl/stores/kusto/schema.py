@@ -331,8 +331,7 @@ class LayoutState:
         return [node.as_dict() for _, node in sorted(self.nodes.items())]
 
     def legacy_list(self) -> list[dict]:
-        return [{"table": name, "rows": self.counts.get(name),
-                 "size_bytes": int(self.details.get(name, {}).get("TotalExtentSize") or 0)}
+        return [{"table": name, "sealed_bytes": int(self.details.get(name, {}).get("TotalExtentSize") or 0)}
                 for name in sorted(self.renamed)]
 
     def summary(self, verdict: str | None = None, warning: str | None = None) -> dict[str, Any]:
@@ -405,12 +404,8 @@ def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
         node.tables[table.logical] = name
         node.node_id = node.node_id if node.node_id is not None else table.node_id
         row = details.get(name, {})
-        node.rows += int(row.get("TotalRowCount") or 0)
         node.extents += int(row.get("TotalExtents") or 0)
-        node.size += int(row.get("TotalExtentSize") or 0)
-        last = row.get("MaxExtentsCreationTime")
-        if last is not None and (node.last_ingestion is None or str(last) > str(node.last_ingestion)):
-            node.last_ingestion = last
+        node.sealed += int(row.get("TotalExtentSize") or 0)
     for row in _plain_layouts(rows):
         ident = str(row.get("node_id") or "")
         node = nodes.setdefault(N.node_key(ident), N.Node(N.node_key(ident)))
