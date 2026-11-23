@@ -24,12 +24,15 @@ CARDS = {
     "failures": "insights.after_failure",
     "rereads": "insights.rereads",
     "time": "insights.time_split",
+    "context": "insights.context_weight",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
 LONG_PAUSE = ("5_60m", "over_60m")
 OUTCOMES = ("identical_failed", "identical_succeeded", "changed_failed", "changed_succeeded", "other_tool")
 SHOWN_TOOL_NAMES = 10
+CONTEXT_BUCKETS = ("under_50k", "50_100k", "100_200k", "200_500k", "over_500k")
+HEAVY_CONTEXT = ("200_500k", "over_500k")
 
 
 def _n(value: Any) -> float:
@@ -283,9 +286,58 @@ def time_split(rows: list[dict]) -> dict:
     }
 
 
+def context_weight(rows: list[dict]) -> dict:
+    """Per tool and context bucket: requests and cost; per tool: median and 90th percentile context, and small steps."""
+    cells = {(row.get("tool"), row.get("bucket")): row for row in _of(rows, "bucket")}
+    tools = []
+    for row in sorted(_of(rows, "tool"), key=lambda row: str(row.get("tool") or "")):
+        tool, reported = row.get("tool"), _int(row.get("reported"))
+        found = [cells.get((tool, bucket), {}) for bucket in CONTEXT_BUCKETS]
+        priced = [cell for cell in found if _int(cell.get("priced"))]
+        cost = sum(_n(cell.get("cost_usd")) for cell in priced) if priced else None
+        buckets = [{
+            "bucket": bucket, "requests": _int(cell.get("requests")), "priced": _int(cell.get("priced")),
+            "cost_usd": _cost(cell.get("cost_usd")) if _int(cell.get("priced")) else None,
+            "request_share": _ratio(_n(cell.get("requests")), reported) if reported else None,
+            "cost_share": _ratio(_n(cell.get("cost_usd")), cost) if cost is not None else None,
+        } for bucket, cell in zip(CONTEXT_BUCKETS, found)]
+        heavy = [cell for cell in buckets if cell["bucket"] in HEAVY_CONTEXT]
+        small, small_priced = _int(row.get("small")), _int(row.get("small_priced"))
+        tools.append({
+            "tool": tool, "requests": _int(row.get("requests")), "reported": reported,
+            "p50_context": _cost(row.get("p50_context")) if reported else None,
+            "p90_context": _cost(row.get("p90_context")) if reported else None,
+            "cost_usd": cost, "buckets": buckets,
+            "heavy_requests": sum(cell["requests"] for cell in heavy),
+            "heavy_cost_usd": sum(_n(cell["cost_usd"]) for cell in heavy) if cost is not None else None,
+            "small_requests": small if reported else None,
+            "small_cost_usd": None if not reported or cost is None or (small and not small_priced) else _n(row.get("small_cost")),
+        })
+    tools.sort(key=lambda tool: (-_n(tool["cost_usd"]), -tool["requests"]))
+    counted = [tool for tool in tools if tool["reported"]]
+    priced = [tool for tool in counted if tool["cost_usd"] is not None]
+    reported = sum(tool["reported"] for tool in counted)
+    heavy = sum(tool["heavy_requests"] for tool in counted)
+    cost = sum(tool["cost_usd"] for tool in priced) if priced else None
+    heavy_cost = sum(_n(tool["heavy_cost_usd"]) for tool in priced) if priced else None
+    small_costs = [tool["small_cost_usd"] for tool in counted if tool["small_cost_usd"] is not None]
+    return {
+        "tools": tools,
+        "summary": {
+            "reported": reported, "heavy_requests": heavy, "heavy_share": _ratio(heavy, reported),
+            "cost_usd": cost, "heavy_cost_usd": heavy_cost,
+            "heavy_cost_share": _ratio(heavy_cost, cost) if cost is not None and heavy_cost is not None else None,
+            "small_requests": sum(_int(tool["small_requests"]) for tool in counted) if counted else None,
+            "small_cost_usd": sum(small_costs) if small_costs else None,
+            "not_reported": [tool["tool"] for tool in tools if not tool["reported"]],
+        },
+        "sessions": sorted(_sessions(rows, ("requests", "cost_usd")), key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
-    "time": time_split,
+    "time": time_split, "context": context_weight,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -295,6 +347,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "failures": lambda history, params: history.read("insights.after_failure", limit=ROW_LIMIT, **params),
     "rereads": lambda history, params: history.read("insights.rereads", limit=ROW_LIMIT, **params),
     "time": lambda history, params: history.read("insights.time_split", limit=ROW_LIMIT, **params),
+    "context": lambda history, params: history.read("insights.context_weight", limit=ROW_LIMIT, **params),
 }
 
 

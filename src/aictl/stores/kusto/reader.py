@@ -301,6 +301,11 @@ _VIEWS = {
         "row_type tool group program node_id session_id requests calls timed duration_ms overlong overlong_ms "
         "thinking_reported thinking_ms p50_ms p95_ms failures tool_ms model_ms first_ts last_ts computed_at",
     ),
+    "insights.context_weight": (
+        _TIME,
+        "row_type tool bucket node_id session_id requests priced cost_usd reported p50_context p90_context small small_priced "
+        "small_cost first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -393,6 +398,7 @@ _CACHE_TTL_S = {
     "health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0,
     "insights.pause_tax": _INSIGHT_TTL_S, "insights.context_carry": _INSIGHT_TTL_S, "insights.subagents": _INSIGHT_TTL_S,
     "insights.after_failure": _INSIGHT_TTL_S, "insights.rereads": _INSIGHT_TTL_S, "insights.time_split": _INSIGHT_TTL_S,
+    "insights.context_weight": _INSIGHT_TTL_S,
 }
 _NODE_STALE_MAX_S = 300.0
 _FAILURE_COOLDOWN_S = 5.0

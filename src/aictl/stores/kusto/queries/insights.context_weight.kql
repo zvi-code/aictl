@@ -1,0 +1,43 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// The context of a request: input + cache read + cache write tokens, everything the model read for it.
+// Buckets: under 50k, 50k to under 100k, 100k to under 200k, 200k to under 500k, 500k and more.
+// A request whose context is 0 or not recorded carries no token counts: it is not reported, not a
+// request of 0 tokens. A small step: a request with token counts, under 150 output tokens and no
+// thinking time recorded (a source that does not report thinking records none).
+let reqs = materialize(requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, input_tokens, cache_read_tokens,
+              cache_creation_tokens, output_tokens, thinking_ms, cost_usd
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | extend context=coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0)
+    | extend context=iff(context > 0, context, long(null))
+    | extend bucket=case(isnull(context), '', context < 50000, 'under_50k', context < 100000, '50_100k',
+                         context < 200000, '100_200k', context < 500000, '200_500k', 'over_500k'),
+             small=isnotnull(context) and isnotnull(output_tokens) and output_tokens < 150 and coalesce(thinking_ms, 0.0) == 0
+    | project node_id, session_id, ts, tool, context, bucket, small, cost_usd);
+union
+    (reqs
+        | where isnotempty(bucket)
+        | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd) by tool, bucket
+        | extend row_type='bucket'),
+    (reqs
+        | summarize requests=count(), reported=countif(isnotnull(context)), p50_context=percentile(context, 50),
+                    p90_context=percentile(context, 90), small=countif(small), small_priced=countif(small and isnotnull(cost_usd)),
+                    small_cost=sumif(cost_usd, small) by tool
+        | extend row_type='tool'),
+    (reqs
+        | where bucket in ('200_500k', 'over_500k')
+        | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), tool=take_any(tool)
+              by node_id, session_id
+        | order by sum_cost desc, requests desc, node_id asc, session_id asc
+        | take 10
+        | extend row_type='session'),
+    (reqs
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| extend cost_usd=iff(priced == 0, real(null), sum_cost)
+| project-away sum_cost
+| order by row_type asc, tool asc, bucket asc, cost_usd desc
+| take row_limit

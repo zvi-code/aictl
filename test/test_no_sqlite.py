@@ -81,6 +81,7 @@ def _dashboard_requests(root):
         **{route: f"{route}?since=1795130000&until=1795135200" for route in (
             "/api/board/insights/pause", "/api/board/insights/carry", "/api/board/insights/subagents",
             "/api/board/insights/failures", "/api/board/insights/rereads", "/api/board/insights/time",
+            "/api/board/insights/context",
         )},
         "/api/board/session/convergence": "/api/board/session/convergence?session_id=no-sqlite-probe",
         "/api/board/memory/diff": "/api/board/memory/diff?first=no-sqlite-probe",

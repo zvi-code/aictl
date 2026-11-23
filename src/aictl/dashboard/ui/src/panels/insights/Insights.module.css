@@ -76,3 +76,13 @@
 /* Where the time goes: thinking inside the model part of a bar. */
 .think { background: var(--color-chart-4); }
 .subhead { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-medium); }
+
+/* Context weight: two stacked bars per tool over the same buckets, light to heavy. */
+.stackRow { display: grid; grid-template-columns: 4.5rem 1fr; gap: var(--space-2); align-items: center; }
+.stackName { color: var(--color-muted); }
+.c0 { background: color-mix(in srgb, var(--color-chart-1) 30%, var(--color-surface)); }
+.c1 { background: color-mix(in srgb, var(--color-chart-1) 60%, var(--color-surface)); }
+.c2 { background: var(--color-chart-1); }
+.c3 { background: color-mix(in srgb, var(--color-chart-2) 70%, var(--color-surface)); }
+.c4 { background: var(--color-chart-2); }
+.smallSteps { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-5); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); font-variant-numeric: tabular-nums; }

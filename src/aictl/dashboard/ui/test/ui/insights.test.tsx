@@ -7,10 +7,11 @@ import PauseTax from '../../src/panels/insights/PauseTax'
 import Rereads from '../../src/panels/insights/Rereads'
 import Subagents from '../../src/panels/insights/Subagents'
 import TimeSplit from '../../src/panels/insights/TimeSplit'
+import ContextWeight from '../../src/panels/insights/ContextWeight'
 import { fmtHours } from '../../src/design/format'
 import {
   carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
-  timeFinding, type CarryBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
+  contextFinding, timeFinding, type CarryBody, type ContextBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
 } from '../../src/panels/insights/insightsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -87,7 +88,24 @@ const time = {
     top_program: { group: 'program', program: 'cargo', calls: 5812, untimed: 0, overlong: 0, duration_ms: 63.4 * H, p50_ms: 8372, p95_ms: 175_864, failure_share: 0.009 } },
   sessions: [{ session_id: 's-time', node_id: 'n', tool: 'claude-code', tool_ms: 78 * H, calls: 36000, model_ms: 96 * H, requests: 34000 }],
 } as unknown as TimeBody
-const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time }
+const ctxCell = (bucket: string, requests: number, cost: number | null, reported: number, total: number | null) =>
+  ({ bucket, requests, priced: cost == null ? 0 : requests, cost_usd: cost, request_share: requests / reported, cost_share: cost == null || !total ? null : cost / total })
+const contextBody = {
+  ...base, card: 'context',
+  tools: [
+    { tool: 'claude-code', requests: 1000, reported: 1000, p50_context: 193_526, p90_context: 416_710, cost_usd: 100,
+      buckets: [ctxCell('under_50k', 30, 1, 1000, 100), ctxCell('50_100k', 150, 7, 1000, 100), ctxCell('100_200k', 340, 23, 1000, 100),
+        ctxCell('200_500k', 430, 52, 1000, 100), ctxCell('over_500k', 50, 17, 1000, 100)],
+      heavy_requests: 480, heavy_cost_usd: 69, small_requests: 150, small_cost_usd: 14.6 },
+    { tool: 'codex-cli', requests: 83, reported: 0, p50_context: null, p90_context: null, cost_usd: null,
+      buckets: ['under_50k', '50_100k', '100_200k', '200_500k', 'over_500k'].map(bucket => ({ bucket, requests: 0, priced: 0, cost_usd: null, request_share: null, cost_share: null })),
+      heavy_requests: 0, heavy_cost_usd: null, small_requests: null, small_cost_usd: null },
+  ],
+  summary: { reported: 1000, heavy_requests: 480, heavy_share: 0.48, cost_usd: 100, heavy_cost_usd: 69, heavy_cost_share: 0.69,
+    small_requests: 150, small_cost_usd: 14.6, not_reported: ['codex-cli'] },
+  sessions: [{ session_id: 's-ctx', node_id: 'n', tool: 'claude-code', requests: 300, cost_usd: 40 }],
+} as unknown as ContextBody
+const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody }
 
 type State = DetailState<unknown> | undefined
 function context(states: (card: string) => State, opened: string[] = []) {
@@ -136,6 +154,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     const { host, dispose } = mount(() => <>
       <PauseTax {...props(ctx)} /><ContextCarry {...props(ctx)} /><Subagents {...props(ctx)} />
       <AfterFailure {...props(ctx)} /><Rereads {...props(ctx)} /><TimeSplit {...props(ctx)} />
+      <ContextWeight {...props(ctx)} />
     </>)
     for (const id of Object.keys(bodies)) {
       const box = card(host, id)
@@ -282,5 +301,44 @@ describe('INS-05 · Where the time goes', () => {
     expect(fmtHours(63.44 * H)).toBe('63.4 h')
     expect(fmtHours(30 * 60_000)).toBe('30 min')
     expect(fmtHours(null)).toBe('n/a')
+  })
+})
+
+describe('INS-06 · Context weight', () => {
+  it('states the share of heavy requests, the share of cost they carry and the small steps with their limit', () => {
+    expect(contextFinding(contextBody, tool => tool)).toBe('48% of requests (480 of 1,000) read a context of 200k tokens or more and ' +
+      'carried 69% of the cost ($69.00 of $100 at list price). Small steps, requests with under 150 output tokens and no ' +
+      'thinking time, were 150 requests costing $14.60.')
+    const none = { ...contextBody, tools: [contextBody.tools[1]], summary: { ...contextBody.summary, reported: 0, heavy_requests: 0,
+      heavy_share: null, cost_usd: null, heavy_cost_usd: null, heavy_cost_share: null, small_requests: null, small_cost_usd: null } } as ContextBody
+    expect(contextFinding(none, tool => tool)).toBe('The sources in this period do not report token counts (codex-cli).')
+  })
+
+  it('draws a request bar and a cost bar over the same buckets, and a tool without token counts as not reported', () => {
+    const { ctx } = context(ready)
+    const { host, dispose } = mount(() => <ContextWeight {...props(ctx)} />)
+    const box = card(host, 'context')
+    const claude = box.querySelector('[data-tool="claude-code"]')!
+    const bars = claude.querySelectorAll('[role="img"]')
+    expect(bars).toHaveLength(2)
+    expect(bars[0].getAttribute('aria-label')).toBe('claude-code, share of requests by context: under 50k 3%, 50k–100k 15%, ' +
+      '100k–200k 34%, 200k–500k 43%, 500k and more 5%')
+    expect(bars[1].getAttribute('aria-label')).toContain('200k–500k 52%, 500k and more 17%')
+    for (const bar of bars) expect(bar.children).toHaveLength(5)
+    expect(claude.textContent).toContain('median 194 k tokens · 90th percentile 417 k tokens')
+    const codex = box.querySelector('[data-tool="codex-cli"]')!
+    expect(codex.querySelectorAll('[role="img"]')).toHaveLength(0)
+    expect(codex.textContent).toContain('token counts not reported')
+    expect(box.textContent).toContain('Small steps: under 150 output tokens and no thinking time')
+    expect(box.querySelector('[data-small]')!.textContent).toContain('codex-cli: not reported')
+    dispose()
+  })
+
+  it('keeps its own loading and error state', () => {
+    const { ctx } = context(id => id === 'context' ? { data: undefined, status: 'error', error: new Error('Kusto view insights.context_weight failed') } : ready(id))
+    const { host, dispose } = mount(() => <><ContextWeight {...props(ctx)} /><TimeSplit {...props(ctx)} /></>)
+    expect(card(host, 'context').textContent).toContain('Could not load Context weight: Kusto view insights.context_weight failed')
+    expect(card(host, 'time').querySelector('[data-finding]')).not.toBeNull()
+    dispose()
   })
 })

@@ -2,12 +2,12 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-import { fmtBytes, fmtHours, fmtMs, fmtNum, fmtShare, fmtUsd } from '../../design/format'
+import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 
 export type { QueryBlock }
-export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time'
+export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -67,7 +67,20 @@ export type TimeBody = Base<'time'> & {
     untimed_calls: number; overlong: number; overlong_ms: number; top_program: TimeProgram | null
   }
 }
-export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody
+export type ContextBucket = 'under_50k' | '50_100k' | '100_200k' | '200_500k' | 'over_500k'
+export type ContextCell = { bucket: ContextBucket; requests: number; priced: number; cost_usd: Num; request_share: Num; cost_share: Num }
+export type ContextTool = {
+  tool: string; requests: number; reported: number; p50_context: Num; p90_context: Num; cost_usd: Num; buckets: ContextCell[]
+  heavy_requests: number; heavy_cost_usd: Num; small_requests: Num; small_cost_usd: Num
+}
+export type ContextBody = Base<'context'> & {
+  tools: ContextTool[]
+  summary: {
+    reported: number; heavy_requests: number; heavy_share: Num; cost_usd: Num; heavy_cost_usd: Num; heavy_cost_share: Num
+    small_requests: Num; small_cost_usd: Num; not_reported: string[]
+  }
+}
+export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
@@ -179,6 +192,26 @@ export function timeFinding(body: TimeBody, label: Label) {
     `${label(top.tool)}: ${hours(top.model_ms)} model (${thinking}) against ${hours(top.tool_ms)} tools.` +
     (program ? ` The program with the most time is ${programName(program)}: ${hours(program.duration_ms)} over ${fmtNum(program.calls)} calls, ` +
       `95th percentile ${millis(program.p95_ms)}.` : '')
+}
+
+export const CONTEXT_LABELS: Record<ContextBucket, string> = {
+  under_50k: 'under 50k', '50_100k': '50k–100k', '100_200k': '100k–200k', '200_500k': '200k–500k', over_500k: '500k and more',
+}
+export const CONTEXT_BUCKETS = Object.keys(CONTEXT_LABELS) as ContextBucket[]
+/** The small-step limit the view applies, stated wherever the figure is shown. */
+export const SMALL_STEP_OUTPUT = 150
+export const tokens = (value: Num) => value == null ? NOT_REPORTED : `${fmtN(value)} tokens`
+
+export function contextFinding(body: ContextBody, label: Label) {
+  const s = body.summary
+  if (!s.reported) {
+    return s.not_reported.length ? `The sources in this period do not report token counts (${list(s.not_reported.map(label))}).`
+      : 'No model request in this period.'
+  }
+  const heavy = `${share(s.heavy_share)} of requests (${fmtNum(s.heavy_requests)} of ${fmtNum(s.reported)}) read a context of 200k tokens or more ` +
+    `and carried ${share(s.heavy_cost_share)} of the cost (${money(s.heavy_cost_usd)} of ${money(s.cost_usd)} at list price).`
+  return `${heavy} Small steps, requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time, were ` +
+    `${count(s.small_requests)} requests costing ${money(s.small_cost_usd)}.`
 }
 
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */

@@ -263,6 +263,53 @@ def test_time_split_sums_request_and_call_durations_and_groups_programs(kusto_st
     assert body["sessions"][0]["session_id"] == "s1" and body["sessions"][0]["tool_ms"] == pytest.approx(62_055.0)
 
 
+def _sized(store, key, ts, context, *, output=1000, cost=1.0, session="s1", tool="claude-code", **values):
+    store.insert("requests", dedup_key=key, ts=ts, session_id=session, agent_id="", tool=tool, input_tokens=context,
+                 cache_read_tokens=0, cache_creation_tokens=0, output_tokens=output, cost_usd=cost, **values)
+
+
+def test_context_weight_buckets_requests_by_the_tokens_the_model_read(kusto_store):
+    s = kusto_store
+    # Bucket edges: each bound belongs to the bucket above it.
+    _sized(s, "e1", 10.0, 49_999, cost=1.0)
+    _sized(s, "e2", 11.0, 50_000, cost=1.0)
+    _sized(s, "e3", 12.0, 199_999, cost=2.0)
+    _sized(s, "e4", 13.0, 200_000, cost=6.0)
+    s.insert("requests", dedup_key="e5", ts=14.0, session_id="s2", agent_id="", tool="claude-code", input_tokens=100_000,
+             cache_read_tokens=350_000, cache_creation_tokens=50_000, output_tokens=1000, cost_usd=10.0)  # 500k: the top bucket
+    _sized(s, "e6", 15.0, 10_000, cost=1.0)
+    _sized(s, "e6", 15.0, 600_000, cost=20.0, _v=NEWER)            # the winning version
+    _sized(s, "e7", 16.0, 900_000, cost=99.0)
+    s.insert("requests", dedup_key="e7", ts=16.0, session_id="s1", tool="claude-code", _deleted=True, _v=NEWER)
+    # Small steps: under 150 output tokens and no thinking time recorded.
+    _sized(s, "m1", 17.0, 20_000, output=149, cost=0.5)
+    _sized(s, "m2", 18.0, 20_000, output=150, cost=0.5)
+    _sized(s, "m3", 19.0, 20_000, output=10, cost=0.5, thinking_ms=800.0)
+    # A source that records no token counts (zeros) is not reported, and none of its requests is a small step.
+    _sized(s, "z1", 20.0, 0, output=0, cost=0.0, session="c1", tool="codex-cli")
+    _sized(s, "o1", 200_000.0, 300_000, cost=50.0)                 # outside the period
+    body = _card(s, "context")
+    tools = {tool["tool"]: tool for tool in body["tools"]}
+    claude = tools["claude-code"]
+    cells = {cell["bucket"]: cell for cell in claude["buckets"]}
+    assert {bucket: cells[bucket]["requests"] for bucket in insights.CONTEXT_BUCKETS} == \
+        {"under_50k": 4, "50_100k": 1, "100_200k": 1, "200_500k": 1, "over_500k": 2}
+    assert cells["over_500k"]["cost_usd"] == pytest.approx(30.0)
+    assert (claude["requests"], claude["reported"], claude["heavy_requests"]) == (9, 9, 3)
+    assert claude["cost_usd"] == pytest.approx(41.5) and claude["heavy_cost_usd"] == pytest.approx(36.0)
+    assert cells["200_500k"]["request_share"] == pytest.approx(1 / 9)
+    assert cells["over_500k"]["cost_share"] == pytest.approx(30.0 / 41.5)
+    assert claude["p50_context"] == pytest.approx(50_000, rel=0.01)
+    assert (claude["small_requests"], claude["small_cost_usd"]) == (1, pytest.approx(0.5))
+    codex = tools["codex-cli"]
+    assert (codex["reported"], codex["p50_context"], codex["small_requests"], codex["cost_usd"]) == (0, None, None, None)
+    assert all(cell["request_share"] is None for cell in codex["buckets"])
+    summary = body["summary"]
+    assert (summary["heavy_requests"], summary["reported"], summary["not_reported"]) == (3, 9, ["codex-cli"])
+    assert summary["heavy_cost_share"] == pytest.approx(36.0 / 41.5)
+    assert [(row["session_id"], row["cost_usd"]) for row in body["sessions"]] == [("s1", 26.0), ("s2", 10.0)]
+
+
 def _kql_regexes(view: str) -> list[str]:
     text = (QUERIES / f"{view}.kql").read_text()
     return re.findall(r"matches regex @'([^']*)'", text)
