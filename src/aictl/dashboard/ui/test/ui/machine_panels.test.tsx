@@ -3,7 +3,7 @@ import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { metric, overviewB } from '../../src/panels/overview/b'
 import { Coverage } from '../../src/panels/overview/b/Effects'
-import { Daemon, Processes, Traffic } from '../../src/panels/overview/b/Machine'
+import { Daemon, Processes, ResourceHistory, Traffic } from '../../src/panels/overview/b/Machine'
 import { displayField } from '../../src/panels/overview/b/View'
 import type { PanelContext, PanelDef, PanelProps } from '../../src/panels/types'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -130,6 +130,22 @@ describe('BOARD-MACHINE-03 · aictl resources and history in fleet scope shows w
     expect(text).toContain('410 MB')
     expect(text).toContain('1,500')
     expect(text).toContain('No, last report older than 5 minutes')
+    dispose()
+  })
+})
+
+describe('BOARD-MACHINE-04 · CPU in fleet scope does not show this machine’s cores as the fleet’s', () => {
+  it('names the summing over nodes and leaves out the local core meters', () => {
+    const { ctx } = boardContext('fleet', {}, { series: { cpu: { 'copilot-cli': [1, 2] } }, range: { bucket_starts: [0, 60] } })
+    const read = ctx.read
+    ctx.read = (source => 'topic' in source && source.topic === 'runtime.machine'
+      ? { state: 'ready', value: [10, 90] } : read(source)) as typeof ctx.read
+    const { host, dispose } = mount(() => <ResourceHistory ctx={ctx} def={def('cpu')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    const text = host.textContent!
+    expect(text).toContain('summed over every node')
+    expect(text).toContain('across tools and nodes')
+    expect(text).not.toContain('Whole machine')
+    expect(host.querySelector('meter')).toBeNull()
     dispose()
   })
 })

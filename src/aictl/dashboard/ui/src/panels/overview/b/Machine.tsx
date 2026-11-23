@@ -76,8 +76,9 @@ export function ResourceHistory(props: PanelProps) {
     ...history(), value: Object.fromEntries(seriesIds().map(id => [seriesKey(id), data()?.[id]])),
   })
   return <div class={styles.stack}>
-    <p class={styles.note}>History follows the Tool filter and time range, not project, model or status.</p>
-    <Metrics ctx={ctx} columns={[{ ...def.columns[0], label: `${metricLabel()} across tools` }]}
+    <p class={styles.note}>{ctx.scope() === 'local' ? '' : `Each line is one tool, summed over ${ctx.scope() === 'fleet' ? 'every node' : 'the selected node'}. `}
+      History follows the Tool filter and time range, not project, model or status.</p>
+    <Metrics ctx={ctx} columns={[{ ...def.columns[0], label: `${metricLabel()} across tools${ctx.scope() === 'fleet' ? ' and nodes' : ''}` }]}
       value={{ [def.columns[0].path]: total() }} />
     <Show when={seriesIds().length} fallback={
       <View result={() => history().state === 'ready' ? { state: 'empty' } : history()} empty={def.empty} retry={ctx.refresh} />
@@ -87,7 +88,8 @@ export function ResourceHistory(props: PanelProps) {
           description={cpu ? 'CPU by tool over time. 100% is one full core.' : 'Resident memory by tool over time (MiB).'} />
       </div>
     </Show>
-    <Show when={cpu}>
+    {/* The core meters are this machine's live readings: they do not describe a node or the fleet. */}
+    <Show when={cpu && ctx.scope() === 'local'}>
       <View result={() => cores() ? coresRead() : coresRead().state === 'ready' ? { state: 'unavailable' } : coresRead()}
         retry={ctx.refresh} empty="No whole-machine core samples.">
         <p>Whole machine, all programs: {cores()?.label}</p>
