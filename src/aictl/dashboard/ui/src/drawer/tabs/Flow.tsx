@@ -10,15 +10,16 @@ import { Tooltip } from '../../ui/Tooltip'
 import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
 import { createHover, HoverCard, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { FLOW_PAGE, flowPages } from '../flowPages'
-import { barScale, definitions, lanesFor, layoutOf, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
+import { definitions, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
+import { collapseRuns, repeatsOf, scalesOf, tracksOf, workCounts, type ChartRow } from '../chartModel'
+import { chartColumns, FlowChart, WorkKey } from '../FlowChart'
 import {
-  arrangeLanes, clampWidth, emptyWidths, fitWidths, hideLane, moveLane, readWidths, resolveWidths, writeWidths, type WidthState,
+  arrangeColumns, clampWidth, emptyWidths, hideColumn, isDefault, moveColumn, readWidths, resolveWidths, writeWidths, type WidthState,
 } from '../flowWidths'
 import { agentPath, labelOf, openAgent, Resource, type TabProps } from '../shared'
 import { kustoLink, saveFlowFilters } from '../kqlLink'
 import { watchedDetail } from '../liveAgent'
 import { flowStatus } from '../sessionSpan'
-import { chSize, SwimLanes } from '../SwimLanes'
 import styles from '../flow.module.css'
 
 const categories = ['prompts', 'messages', 'models', 'tools', 'skills', 'agents', 'context', 'hooks', 'lifecycle']
@@ -82,11 +83,13 @@ export default function Flow(props: TabProps) {
   const [reveal, setReveal] = createSignal<{ id: string }>()
   const [visible, setVisible] = createSignal<readonly [number, number]>()
   const [missing, setMissing] = createSignal(false)
-  const [mode, setMode] = pref('aictl-pref-flow-mode', 'timeline')
-  const [lanes, setLanes] = pref('aictl-pref-flow-lanes', 'individual')
+  // The chart is the default; the list reads the steps as text. A stored "swimlane" from before the chart is the chart.
+  const [storedMode, setMode] = pref('aictl-pref-flow-mode', 'chart')
+  const mode = () => storedMode() === 'timeline' ? 'timeline' : 'chart'
   // Compact rows are the default; the key is new so an older stored choice does not override it.
   const [density, setDensity] = pref('aictl-pref-flow-density-v2', 'compact')
-  const [groupCalls, setGroupCalls] = pref('aictl-pref-flow-group-calls', 'each')
+  const [runs, setRuns] = pref('aictl-pref-flow-runs', 'each')
+  const [expandedRuns, setExpandedRuns] = createSignal<ReadonlySet<string>>(new Set())
   const boxes = createBoxes('aictl-pref-flow-boxes')
   const [wholeEnd, rememberEnd] = createSignal<number>()
   const [evidence, setEvidence] = createSignal(false)
@@ -116,41 +119,40 @@ export default function Flow(props: TabProps) {
   })
   const rows = createMemo(() => rowsOf(steps(), { collapsed: collapsedSpans(), scopeAgent: scopeAgent() }))
   const loaded = createMemo(() => totalsOf(steps()))
-  const grouped = () => lanes() === 'grouped'
-  const grouping = () => groupCalls() === 'grouped'
-  const laneList = createMemo(() => lanesFor(steps(), grouped()))
-  const scale = createMemo(() => barScale(steps()))
-  const widthKey = () => `aictl-pref-flow-widths:${grouped() ? 'grouped' : 'individual'}`
+  // The chart: one scale per loaded flow for each column, a track per agent, repeats, and runs when the reader collapses them.
+  const tracks = createMemo(() => tracksOf(steps(), scopeAgent()))
+  const scales = createMemo(() => scalesOf(steps()))
+  const repeats = createMemo(() => repeatsOf(steps()))
+  const counts = createMemo(() => workCounts(steps()))
+  const collapsing = () => runs() === 'collapsed'
+  const chartRows = createMemo<readonly ChartRow[]>(() => collapsing() ? collapseRuns(rows(), expandedRuns()) : rows())
+  const shownRows = (): readonly ChartRow[] => mode() === 'chart' ? chartRows() : rows()
+  const toggleRun = (id: string) => setExpandedRuns(old => {
+    const next = new Set(old)
+    if (!next.delete(id)) next.add(id)
+    return next
+  })
+  const widthKey = 'aictl-pref-flow-columns'
   const storage = () => { try { return localStorage } catch { return undefined } }
-  const [widthState, setWidthState] = createSignal<WidthState>(readWidths(storage(), untrack(widthKey)))
-  createEffect(widthKey, key => { setWidthState(readWidths(storage(), key)) })
-  const keepWidths = (next: WidthState) => { setWidthState(next); writeWidths(storage(), widthKey(), next) }
-  const columns = createMemo(() => resolveWidths(laneList(), widthState()))
-  const arranged = createMemo(() => arrangeLanes(laneList(), widthState()))
-  const hiddenLanes = createMemo(() => new Set(arranged().hidden.map(lane => lane.id)))
-  const placeLane = (id: string, to: number) => keepWidths(moveLane(widthState(), arranged().shown.map(lane => lane.id), id, to))
-  const showLane = (id: string, show = true) => keepWidths(hideLane(widthState(), id, !show))
-  const collapsedLanes = createMemo(() => new Set(widthState().collapsed))
+  const [widthState, setWidthState] = createSignal<WidthState>(readWidths(storage(), widthKey))
+  const keepWidths = (next: WidthState) => { setWidthState(next); writeWidths(storage(), widthKey, next) }
+  const columnList = createMemo(() => chartColumns(scales(), tracks().count))
+  const widths = createMemo(() => resolveWidths(columnList(), widthState()))
+  const arranged = createMemo(() => arrangeColumns(columnList(), widthState()))
+  const placeColumn = (id: string, to: number) => keepWidths(moveColumn(widthState(), arranged().shown.map(column => column.id), id, to))
+  const showColumn = (id: string, show = true) => keepWidths(hideColumn(widthState(), id, !show))
   const resize = (id: string, width: number) => {
-    const state = widthState()
-    keepWidths({ ...state, widths: { ...state.widths, [id]: clampWidth(id, width) }, collapsed: state.collapsed.filter(lane => lane !== id) })
+    const column = columnList().find(item => item.id === id)
+    keepWidths({ ...widthState(), widths: { ...widthState().widths, [id]: clampWidth(width, column?.min, column?.max) } })
   }
-  let flowRoot!: HTMLDivElement
-  const [shown, setShown] = createSignal<readonly [number, number]>()
-  const fitToWidth = () => {
-    const region = flowRoot.querySelector<HTMLElement>('[role="region"][aria-label="Session streams"]')
-    if (!region) return
-    const [first, last] = shown() ?? [0, rows().length - 1]
-    const used = new Set<string>(['Assistant'])
-    for (const row of rows().slice(first, last + 1)) {
-      if (row.type !== 'step') continue
-      const layout = layoutOf(row.step, { grouped: grouped(), groupCalls: grouping() })
-      for (const chip of layout.chips) used.add(chip.lane)
-      if (layout.edge) { used.add(layout.edge.from); used.add(layout.edge.to) }
-    }
-    keepWidths(fitWidths(arranged().shown, widthState(), Math.floor(region.clientWidth / chSize(region)) - 1, used))
+  const columnName = (id: string) => columnList().find(column => column.id === id)?.name ?? id
+  /** A step inside a collapsed run: open the run so the step has a row. */
+  const uncover = (id: string) => {
+    if (!collapsing()) return
+    const run = chartRows().find(row => row.type === 'run' && !row.expanded && row.steps.some(step => step.id === id))
+    if (run) toggleRun(run.id)
   }
-  const opening = (list: readonly FlowRow[]) => openingRow(list, selected())
+  const opening = (list: readonly ChartRow[]) => openingRow(list as readonly FlowRow[], selected())
   const compact = () => density() === 'compact'
   const marks = () => summary()?.turn_marks ?? []
   const picked = createMemo(() => {
@@ -166,7 +168,7 @@ export default function Flow(props: TabProps) {
   const show = (event?: PlacedEvent) => {
     if (!event) return
     const step = steps().find(item => item.events.includes(event))
-    if (step) { select(step.id); setReveal({ id: step.id }) }
+    if (step) { uncover(step.id); select(step.id); setReveal({ id: step.id }) }
   }
   // A reference from another tab selects its step, reading older windows until the event is loaded.
   let found: object | undefined
@@ -216,9 +218,9 @@ export default function Flow(props: TabProps) {
   }
   const older = () => { if (pages.oldest() > 0 && !pages.loading() && !pages.problem()) void pages.loadOlder() }
   const range = (first: number, last: number) => {
-    setShown([first, last])
-    const start = rows()[first], end = rows()[last]
-    const at = (row: typeof start) => row.type === 'step' ? row.step.ts : undefined
+    const list = shownRows()
+    const start = list[first], end = list[last]
+    const at = (row: ChartRow) => row.type === 'step' ? row.step.ts : row.type === 'run' ? row.steps[0].ts : undefined
     const from = start && at(start), to = end && at(end)
     if (from != null && to != null) setVisible([from, to])
   }
@@ -238,10 +240,10 @@ export default function Flow(props: TabProps) {
   const goToAgent = (agent: string) => {
     if (collapsedSpans().has(agent)) toggleSpan(agent)
     const start = steps().find(step => step.agent === agent && step.kind === 'agent')
-    if (start) { select(start.id); setReveal({ id: start.id }) }
+    if (start) { uncover(start.id); select(start.id); setReveal({ id: start.id }) }
   }
 
-  return <div class={styles.flow} ref={flowRoot}>
+  return <div class={styles.flow}>
     <header class={styles.header}>
       <div class={styles.title}>
         <h3>{agentScope() ? 'Subagent flow' : 'Session flow'}</h3>
@@ -362,32 +364,27 @@ export default function Flow(props: TabProps) {
           </Box>
         </Show>
         <Box boxes={boxes} id="chart" label="Flow chart" class={styles.chart} head={<div class={styles.toolbar}>
-          <Segmented label="Flow diagram" value={mode()} onChange={setMode} options={[
-            { id: 'timeline', label: 'Timeline', glyph: 'events', iconOnly: true }, { id: 'swimlane', label: 'Swim-lane', glyph: 'flow', iconOnly: true }]} />
-          <Show when={mode() === 'swimlane'}>
-            <Segmented label="Session streams" value={lanes()} onChange={setLanes} options={[
-              { id: 'individual', label: 'Individual lanes: one lane per tool', glyph: 'tools', iconOnly: true },
-              { id: 'grouped', label: 'Grouped lanes: one lane for all tools', glyph: 'layout', iconOnly: true }]} />
-            <Tooltip label="Fit to width" text="Size the lanes so the whole flow fits the visible width" class={styles.iconButton}
-              onClick={fitToWidth}><Icon glyph="effect" small /></Tooltip>
-            <Tooltip label="Reset lanes" text="Back to the default lane widths and order, with every lane shown" class={styles.iconButton}
-              disabled={!Object.keys(widthState().widths).length && !widthState().collapsed.length && !widthState().order?.length && !widthState().hidden?.length}
-              onClick={() => keepWidths(emptyWidths())}><Icon glyph="refresh" small /></Tooltip>
+          <Segmented label="Flow view" value={mode()} onChange={setMode} options={[
+            { id: 'chart', label: 'Chart: time, context and size of each step', glyph: 'bars', iconOnly: true },
+            { id: 'timeline', label: 'List: each step with its numbers as text', glyph: 'events', iconOnly: true }]} />
+          <Show when={mode() === 'chart'} fallback={
+            <Segmented label="Row density" value={density()} onChange={setDensity} options={[
+              { id: 'compact', label: 'Compact rows: one line per call', glyph: 'menu', iconOnly: true },
+              { id: 'comfortable', label: 'Comfortable rows: the command on a second line', glyph: 'density', iconOnly: true }]} />}>
+            <Tooltip label="Collapse runs" pressed={collapsing()} class={styles.iconButton}
+              text={collapsing() ? 'Show every step on its own row' : 'One row for each run of 3 or more steps that call the same tool or program in a row'}
+              onClick={() => { setRuns(collapsing() ? 'each' : 'collapsed'); setExpandedRuns(new Set<string>()) }}><Icon glyph="layout" small /></Tooltip>
+            <Tooltip label="Reset columns" text="Back to the default column widths and order, with every column shown" class={styles.iconButton}
+              disabled={isDefault(widthState())} onClick={() => keepWidths(emptyWidths())}><Icon glyph="refresh" small /></Tooltip>
             <Show when={arranged().hidden.length}>
               <span class={styles.hiddenLanes}>
-                <Menu label={`Hidden lanes (${arranged().hidden.length})`} items={[
-                  ...arranged().hidden.map(lane => ({ id: lane.id, label: `Show ${lane.label || lane.group}`, onSelect: () => showLane(lane.id) })),
-                  { id: '#all', label: 'Show all lanes', onSelect: () => keepWidths({ ...widthState(), hidden: [] }) },
+                <Menu label={`Hidden columns (${arranged().hidden.length})`} items={[
+                  ...arranged().hidden.map(column => ({ id: column.id, label: `Show ${columnName(column.id)}`, onSelect: () => showColumn(column.id) })),
+                  { id: '#all', label: 'Show all columns', onSelect: () => keepWidths({ ...widthState(), hidden: [] }) },
                 ]} />
               </span>
             </Show>
           </Show>
-          <Tooltip label="Group repeated calls" pressed={grouping()} class={styles.iconButton}
-            text={grouping() ? 'Show each call as its own box' : 'One box per tool for repeated calls in a step, with the count of calls'}
-            onClick={() => setGroupCalls(grouping() ? 'each' : 'grouped')}><Icon glyph="layout" small /></Tooltip>
-          <Segmented label="Row density" value={density()} onChange={setDensity} options={[
-            { id: 'compact', label: 'Compact rows: one line per call', glyph: 'menu', iconOnly: true },
-            { id: 'comfortable', label: 'Comfortable rows: the command on a second line', glyph: 'density', iconOnly: true }]} />
           <span class={styles.count} aria-live="polite">{fmtN(Math.max(0, pages.matched() - pages.oldest()))} of {fmtN(pages.matched())} {filtered() ? 'matching ' : ''}events loaded</span>
           <div class={styles.paging}>
             <Show when={pages.oldest() > 0}>
@@ -406,16 +403,17 @@ export default function Flow(props: TabProps) {
         <Show when={pages.loading()}><p class={styles.notice} role="status"><Icon glyph="refresh" small />Loading older events…</p></Show>
         <Show when={pages.problem()}><p class={styles.problem} role="alert">Could not load older events: {pages.problem()}</p></Show>
         <Show when={missing()}><p class={styles.notice} role="status">No event matches this reference.</p></Show>
+        <Show when={mode() === 'chart' && steps().length}><WorkKey counts={counts()} failed={loaded().failures} /></Show>
         <div class={styles.body} data-inspecting={picked() ? 'true' : 'false'}>
-          <Show when={mode() === 'swimlane' && rows().length} fallback={
+          <Show when={mode() === 'chart' && rows().length} fallback={
             <StepList rows={rows()} selected={selected()} select={select} hover={hover} reveal={reveal()} compact={compact()}
               initial={opening} toggleSpan={toggleSpan}
               onStart={older} onRange={range} empty={filtered() ? 'No events match these filters.' : 'No events reported for this flow.'} />
           }>
-            <SwimLanes rows={rows()} lanes={arranged().shown} hidden={hiddenLanes()} columns={columns()} collapsed={collapsedLanes()}
-              grouped={grouped()} groupCalls={grouping()} compact={compact()} scale={scale()} selected={selected()} select={select} hover={hover}
-              reveal={reveal()} onStart={older} onRange={range} initial={opening} resize={resize} moveLane={placeLane}
-              hideLane={id => showLane(id, false)} toggleSpan={toggleSpan} />
+            <FlowChart rows={chartRows()} columns={arranged().shown} widths={widths()} tracks={tracks()} scales={scales()} repeats={repeats()}
+              scopeAgent={scopeAgent()} selected={selected()} select={select} hover={hover} reveal={reveal()} onStart={older} onRange={range}
+              initial={opening} toggleSpan={toggleSpan} toggleRun={toggleRun} close={() => select(undefined)}
+              moveColumn={placeColumn} hideColumn={id => showColumn(id, false)} resize={resize} />
           </Show>
           <Show when={picked()}>{step =>
             <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} openAgent={goToAgent} />

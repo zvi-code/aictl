@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commandText, isShellTool, programLabel, programOf } from '../src/drawer/shellCommand'
+import { commandText, isShellTool, programHeadline, programLabel, programOf } from '../src/drawer/shellCommand'
 
 const label = (command: string) => { const program = programOf(command); return program && programLabel(program) }
 
@@ -52,5 +52,21 @@ describe('DRW-FL-08 · What a shell call ran', () => {
     expect(label(commandText('{"cmd":["bash","-lc","make all"]}', ''))).toBe('make')
     expect(commandText('not json', 'ls -la')).toBe('ls -la')
     expect(commandText(null, 'ls -la')).toBe('ls -la')
+  })
+
+  it.each([
+    // The title skips a leading cd, pushd or variable and names the program with its first meaningful argument.
+    ['cd /Users/zvi/Projects/aictl && python3 scripts/flow_check.py --all', 'python3 flow_check.py'],
+    ['pushd src >/dev/null; git -C /repo status --short', 'git status'],
+    ['FOO=1 AZURE_CONFIG_DIR=/x python -m pytest test/test_flow.py -q', 'pytest test_flow.py'],
+    ['cd /repo && npm run build 2>&1 | tail -20', 'npm run build +1'],
+    ['time make test', 'make test'],
+    ['make', 'make'],
+    ['grep -n "def x" src/a.py | head', 'grep def x +1'],
+    ['curl -s http://localhost:8484/api/x', 'curl http://localhost:8484/api/x'],
+    ['echo hi > out.txt', 'echo hi'],
+  ])('titles %j as %j', (command, expected) => {
+    const program = programOf(command)
+    expect(program && programHeadline(program)).toBe(expected)
   })
 })

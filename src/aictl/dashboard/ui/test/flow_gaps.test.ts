@@ -32,10 +32,10 @@ describe('DRW-FL-07 · One rule for the pauses between steps', () => {
   })
 })
 
-describe('DRW-FL-08 · Rows of the swim-lane list stay in the visible part', () => {
+describe('DRW-FL-08 · Rows of the chart stay in the visible part when it scrolls sideways', () => {
   const css = readFileSync(new URL('../src/drawer/flow.module.css', import.meta.url), 'utf8')
   it.each(['gap', 'spanRow'])('keeps the %s row at the left edge of the scroll box, as wide as the box', name => {
-    const rule = new RegExp(`\\.laneList \\.${name} \\{([^}]*)\\}`).exec(css)?.[1] ?? ''
+    const rule = new RegExp(`\\.chartItem > \\.${name}[,\\s][^{]*\\{([^}]*)\\}`).exec(css)?.[1] ?? ''
     expect(rule).toContain('position: sticky')
     expect(rule).toContain('inline-size: min(100%, 100cqi)')
   })

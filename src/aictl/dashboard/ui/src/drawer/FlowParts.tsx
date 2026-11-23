@@ -155,7 +155,7 @@ export function GapRow(props: { row: GapRowData }) {
   const meaning = () => `${definitions.wait} ${props.row.before === 'prompt' ? 'The next step is a prompt.' : 'No step was recorded.'}`
   return <div class={styles.gap} title={meaning()}>
     <Sign glyph="clock" label={`Waited ${waitLabel(props.row.seconds)}`} title={meaning()} />
-    <strong>{waitLabel(props.row.seconds)}</strong>
+    <strong>{waitLabel(props.row.seconds)}</strong><span>{props.row.before === 'prompt' ? 'idle until the next prompt' : 'no step recorded'}</span>
   </div>
 }
 
@@ -186,8 +186,8 @@ export function StepPreview(props: { step: Step }) {
   const step = () => props.step
   return <>
     <div class={styles.hoverHead} data-kind={stepColor(step())}>
-      <span class={styles.kindLabel}><Icon glyph={stepGlyph(step())} small />{stepLabel(step())} · {stepKindLabels[step().kind]}</span>
-      <time>{clockTime(step().ts)}</time>
+      <span class={styles.kindLabel}><Icon glyph={stepGlyph(step())} small />Step {stepLabel(step())}{step().call?.request_n != null ? ` · request #${step().call!.request_n}` : ''} · {stepKindLabels[step().kind]}</span>
+      <time>{clockTime(step().start)}{step().end > step().start ? `–${clockTime(step().end)}` : ''}</time>
     </div>
     <p class={styles.hoverTitle}>{stepTitle(step())}</p>
     <Show when={step().model || step().agent}><span class={styles.hoverHint}>{[step().model && `Model ${step().model}`, step().agent && `subagent ${step().agent}`].filter(Boolean).join(' · ')}</span></Show>

@@ -21,6 +21,11 @@ export interface Program {
   program: string
   /** How many more programs follow in a pipeline or chain. */
   more: number
+  /**
+   * The first meaningful argument of that program: not a flag, not a redirection; `-C <dir>` and `-c <x>` of git are
+   * skipped, and `run` keeps the script it runs (`npm run build`). Absent when the program has none.
+   */
+  arg?: string
 }
 
 /** Tool names whose argument is a command line for a shell. Compared without case. */
@@ -133,7 +138,8 @@ function partsOf(tokens: readonly Token[]): Part[] {
   return parts
 }
 
-type Read = { program: string } | 'setup' | 'unknown'
+type Ran = { program: string; args: string[] }
+type Read = Ran | 'setup' | 'unknown'
 
 function readPart(part: Part, depth: number): Read | { inner: string } {
   const words = [...part.words]
@@ -172,29 +178,32 @@ function readPart(part: Part, depth: number): Read | { inner: string } {
       return { inner: rest.length === 1 ? rest[0].text : rest.map(word => word.quoted ? `'${word.text}'` : word.text).join(' ') }
     }
   }
-  if (PYTHONS.has(key) && words[1]?.text === '-m' && words[2] && NAME.test(words[2].text)) return { program: words[2].text }
+  const rest = (from: number) => words.slice(from).map(word => word.text)
+  if (PYTHONS.has(key) && words[1]?.text === '-m' && words[2] && NAME.test(words[2].text)) return { program: words[2].text, args: rest(3) }
   if (!name || !NAME.test(name)) return 'unknown'
-  return { program: name }
+  return { program: name, args: rest(1) }
 }
 
-function programsOf(command: string, depth: number): string[] | undefined {
-  const programs: string[] = []
+const UNKNOWN: Ran = { program: '?', args: [] }
+
+function programsOf(command: string, depth: number): Ran[] | undefined {
+  const programs: Ran[] = []
   for (const part of partsOf(tokenize(command))) {
     const read = readPart(part, depth)
     if (read === 'setup') continue
     if (read === 'unknown') {
       // An unknown first part leaves the program unknown; an unknown later part still counts as one more.
       if (!programs.length) return undefined
-      programs.push('?')
+      programs.push(UNKNOWN)
       continue
     }
     if ('inner' in read) {
       const inner = programsOf(read.inner, depth + 1)
-      if (!inner) { if (!programs.length) return undefined; programs.push('?'); continue }
+      if (!inner) { if (!programs.length) return undefined; programs.push(UNKNOWN); continue }
       programs.push(...inner)
       continue
     }
-    programs.push(read.program)
+    programs.push(read)
   }
   return programs
 }
@@ -204,12 +213,43 @@ export function programOf(command: string | null | undefined): Program | undefin
   const text = (command ?? '').trim()
   if (!text) return undefined
   const programs = programsOf(text, 0)
-  if (!programs?.length || programs[0] === '?') return undefined
-  return { program: programs[0], more: programs.length - 1 }
+  if (!programs?.length || programs[0] === UNKNOWN) return undefined
+  const arg = firstArgument(programs[0])
+  return { program: programs[0].program, more: programs.length - 1, ...arg ? { arg } : {} }
+}
+
+const REDIRECT = /^(\d*[<>]|&>)/
+const VALUE_FLAGS: Record<string, ReadonlySet<string>> = { git: new Set(['-C', '-c']) }
+
+/** The first argument of a program that says what it worked on: see `Program.arg`. */
+function firstArgument(ran: Ran) {
+  const flags = VALUE_FLAGS[ran.program.toLowerCase()]
+  for (let index = 0; index < ran.args.length; index++) {
+    const word = ran.args[index]
+    if (REDIRECT.test(word)) {
+      if (/^\d*[<>]{1,2}$|^&>$/.test(word)) index++
+      continue
+    }
+    if (flags?.has(word)) { index++; continue }
+    if (word.startsWith('-') || !word) continue
+    const next = ran.args[index + 1]
+    return word === 'run' && next && !next.startsWith('-') && !REDIRECT.test(next) ? `run ${next}` : word
+  }
+  return undefined
 }
 
 /** "git", or "git +2" when two more programs follow. */
 export const programLabel = (program: Program) => program.more ? `${program.program} +${program.more}` : program.program
+
+/**
+ * What a shell call ran, for a title: the program and its first meaningful argument, a path cut to its last
+ * part ("python3 run.py", "git status", "pytest tests"), and "+2" when two more programs follow.
+ */
+export function programHeadline(program: Program) {
+  const arg = program.arg && (/[\\/]/.test(program.arg) && !/^[a-z]+:\/\//i.test(program.arg)
+    ? program.arg.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || program.arg : program.arg)
+  return [program.program, arg, program.more ? `+${program.more}` : ''].filter(Boolean).join(' ')
+}
 
 /** The command text of a shell call: the `command` argument when the arguments are JSON, else the text. */
 export function commandText(params: string | null | undefined, target: string | null | undefined) {

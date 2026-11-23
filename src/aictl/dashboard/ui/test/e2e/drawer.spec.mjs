@@ -157,27 +157,25 @@ test('DRW-FL-01/02 and DRW-EV-01: filter, page and inspect source evidence witho
   await expect(drawer(page).getByRole('heading', { name: 'Session flow' })).toBeVisible();
   await drawer(page).getByRole('button', { name: /Load older/ }).click();
   await expect.poll(() => flow.some(request => request.offset === '500' && request.limit === '500')).toBe(true);
-  await drawer(page).getByRole('radio', { name: 'Swim-lane' }).click();
-  const lanes = drawer(page).getByRole('region', { name: 'Session streams', exact: true });
-  await expect(lanes.getByRole('button', { name: 'Hide lane Read' })).toBeVisible();
-  // Hiding a lane removes its column and lifelines; the row still counts its call; the lane comes back from one control.
-  const guides = () => lanes.locator('[data-step-row]').first().locator('[data-lane-guide]').count();
-  const before = await guides();
-  await lanes.getByRole('button', { name: 'Hide lane Read' }).click();
-  await expect(lanes.getByRole('button', { name: 'Hide lane Read' })).toHaveCount(0);
-  expect(await guides()).toBe(before - 1);
-  await expect(lanes.getByRole('img', { name: '1 in hidden lanes' }).first()).toBeVisible();
-  await drawer(page).getByRole('button', { name: 'Hidden lanes (1)' }).click();
-  await page.getByRole('menuitem', { name: 'Show Read' }).click();
-  await expect(lanes.getByRole('button', { name: 'Hide lane Read' })).toBeVisible();
-  await drawer(page).getByRole('radio', { name: 'Grouped lanes' }).click();
-  await expect(lanes.getByRole('button', { name: 'Hide lane Tools' })).toBeVisible();
+  // The chart is the default view; a column hides, its cells go with it, and it comes back from one control.
+  await expect(drawer(page).getByRole('radio', { name: /^Chart/ })).toBeChecked();
+  const chart = drawer(page).getByRole('region', { name: 'Flow chart rows', exact: true });
+  const cells = () => chart.locator('[data-step-row]').first().locator(':scope > *').count();
+  const before = await cells();
+  await chart.getByRole('button', { name: 'Hide column Result' }).click();
+  await expect(chart.getByRole('button', { name: 'Hide column Result' })).toHaveCount(0);
+  expect(await cells()).toBe(before - 1);
+  await drawer(page).getByRole('button', { name: 'Hidden columns (1)' }).click();
+  await page.getByRole('menuitem', { name: 'Show Result' }).click();
+  await expect(chart.getByRole('button', { name: 'Hide column Result' })).toHaveCount(1);
+  // The rows carry no running number; the step and request ids are in the accessible name and the hover card.
+  await expect(chart.locator('[data-step-row]').filter({ hasText: /#\d|req \d/ })).toHaveCount(0);
   // The chart fills the screen and Escape returns it.
   await drawer(page).getByRole('button', { name: 'Full screen: Flow chart' }).click();
   await expect(drawer(page).getByRole('button', { name: 'Exit full screen: Flow chart' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(drawer(page).getByRole('button', { name: 'Full screen: Flow chart' })).toBeVisible();
-  await lanes.getByRole('button', { name: /Read/ }).click();
+  await chart.getByRole('button', { name: /Read/ }).click();
   await expect(drawer(page).getByRole('heading', { name: /^Step #/ })).toBeVisible();
   await drawer(page).getByRole('button', { name: 'User prompts' }).click();
   await drawer(page).getByRole('searchbox', { name: 'Search prompt text' }).fill('retained');
@@ -191,7 +189,7 @@ test('DRW-FL-01/02 and DRW-EV-01: filter, page and inspect source evidence witho
   await expect(drawer(page).getByText('full retained text', { exact: true })).toBeVisible();
   expect(steps.some(request => request.q === 'needle' && request.offset === '100')).toBe(true);
   await drawer(page).getByRole('button', { name: 'Show Flow' }).click();
-  await expect(drawer(page).getByRole('radio', { name: 'Swim-lane' })).toBeChecked();
+  await expect(drawer(page).getByRole('radio', { name: /^Chart/ })).toBeChecked();
   await drawer(page).getByRole('button', { name: 'Source steps' }).click();
   await expect(drawer(page).getByText('full retained text', { exact: true })).toBeVisible();
 });

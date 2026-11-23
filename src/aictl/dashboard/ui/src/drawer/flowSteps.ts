@@ -20,6 +20,11 @@ export interface Step {
   kind: StepKind
   agent: string
   ts: number
+  /**
+   * When the step's work began, in seconds: a model request is recorded when its reply arrived, so a round
+   * starts its reported duration before that; any other step starts at its time.
+   */
+  start: number
   /** When the step's last result came back, in seconds. */
   end: number
   events: PlacedEvent[]
@@ -75,6 +80,11 @@ const joins = new Set(['tool_use', 'api_response'])
 
 const agentOf = (event: FlowEvent) => event.agent_id || ''
 
+/** When an event's work began: a model request's reply time less its duration; else the event's time. */
+export function startOf(event: FlowEvent) {
+  return event.type === 'api_call' && event.duration_ms ? event.ts - event.duration_ms / 1000 : event.ts
+}
+
 /** When an event's work ended: its end time, or its start plus the measured duration of a tool call. */
 export function endOf(event: FlowEvent) {
   const measured = event.type === 'tool_use' && event.duration_ms ? event.ts + event.duration_ms / 1000 : event.ts
@@ -84,12 +94,13 @@ export function endOf(event: FlowEvent) {
 function newStep(event: PlacedEvent, id: string): Step {
   return {
     id, n: event.step ?? undefined, kind: leadKinds[event.type] ?? 'other', agent: agentOf(event), ts: event.ts,
-    end: endOf(event), events: [], lead: event, tools: [], modelChanged: false, modelShown: false, failed: false,
+    start: startOf(event), end: endOf(event), events: [], lead: event, tools: [], modelChanged: false, modelShown: false, failed: false,
   }
 }
 
 function add(step: Step, event: PlacedEvent) {
   step.events.push(event)
+  step.start = Math.min(step.start, startOf(event))
   step.end = Math.max(step.end, endOf(event))
   step.failed ||= failedEvent(event)
   if (event.type === 'api_call' && !step.call) { step.call = event; step.kind = 'round'; step.model = event.model || undefined }
@@ -192,7 +203,8 @@ export function spanSummary(span: Span) {
 const activeEnd = (step: Step) => step.kind === 'prompt' ? step.ts : step.end
 
 /**
- * Steps with a marker before each step that started more than GAP_S after the previous one ended,
+ * Steps with a marker before each step whose work began more than GAP_S after the previous one ended (a model
+ * request begins its reported duration before its reply arrived, so a long reply is work, not a wait),
  * and a summary row before each subagent span. A collapsed span shows its summary row only.
  */
 export function rowsOf(steps: readonly Step[], options: { collapsed?: ReadonlySet<string>; scopeAgent?: string } = {}): FlowRow[] {
@@ -202,7 +214,7 @@ export function rowsOf(steps: readonly Step[], options: { collapsed?: ReadonlySe
   let end: number | undefined
   for (const step of steps) {
     const span = step.agent ? spans.get(step.agent) : undefined
-    if (end != null && step.ts - end > GAP_S) rows.push({ type: 'gap', id: `gap:${step.id}`, seconds: step.ts - end, before: step.kind })
+    if (end != null && step.start - end > GAP_S) rows.push({ type: 'gap', id: `gap:${step.id}`, seconds: step.start - end, before: step.kind })
     end = Math.max(end ?? activeEnd(step), activeEnd(step))
     if (!span) { rows.push({ type: 'step', id: step.id, step }); continue }
     const collapsed = !!options.collapsed?.has(span.agent)
@@ -326,11 +338,13 @@ const approvals: Record<string, string> = {
 }
 export const approvalOf = (event: FlowEvent) => approvals[(event.confirm || event.decision || '').toLowerCase()]
 
-/** The numbers of a model request, in reading order. Absent values are left out, never shown as zero. */
+/**
+ * The numbers of a model request, in reading order. Absent values are left out, never shown as zero. The request
+ * number is an identifier, not a measure: it is in the hover card and the step panel, not in the row.
+ */
 export function callMetrics(call: FlowEvent): Metric[] {
   const t = call.tokens
   const metrics: (Metric | undefined)[] = [
-    call.request_n != null ? { key: 'request', text: `req ${call.request_n}`, title: definitions.request } : undefined,
     t?.input != null ? { key: 'input', text: `in ${fmtN(t.input)}`, title: definitions.input } : undefined,
     t?.output != null ? { key: 'output', text: `out ${fmtN(t.output)}`, title: definitions.output } : undefined,
     t?.cache_read != null ? { key: 'cacheRead', text: `cache r ${fmtN(t.cache_read)}`, title: definitions.cacheRead } : undefined,
@@ -410,207 +424,6 @@ export function toolGroups(tools: readonly FlowEvent[]) {
 
 const groupText = (tools: readonly FlowEvent[]) =>
   toolGroups(tools).map(group => `${group.name}${group.calls.length > 1 ? ` (${callCount(group.calls.length)})` : ''}`).join(', ')
-
-/** Summed numbers of several calls to one tool in a round, for its lane chip. */
-export function groupMetrics(calls: readonly FlowEvent[]): Metric[] {
-  const sum = (read: (tool: FlowEvent) => number | null | undefined) => {
-    const values = calls.map(read).filter((value): value is number => value != null)
-    return values.length ? values.reduce((total, value) => total + value, 0) : undefined
-  }
-  const out = sum(tool => tool.input_bytes), back = sum(tool => tool.output_bytes), tokens = sum(resultTokens)
-  const duration = sum(tool => tool.duration_ms || undefined)
-  const failed = calls.filter(failedEvent).length
-  const many = calls.length > 1 ? ' (sum of the calls in this round)' : ''
-  const metrics: (Metric | undefined)[] = [
-    out == null && back == null ? { key: 'payload', text: 'payload not reported', tone: 'muted',
-      title: 'The source did not report the size of the arguments or of the results of these calls.' } : undefined,
-    out != null ? payloadOut(out, many) : undefined,
-    back != null ? payloadIn(back, many) : undefined,
-    tokens ? { key: 'resultTokens', text: `≈${fmtN(tokens)} tok est.`, title: definitions.resultTokens + many } : undefined,
-    duration ? { key: 'duration', text: fmtMs(duration), title: definitions.toolDuration + many } : undefined,
-    failed ? { key: 'error', text: calls.length > 1 ? `${failed} of ${calls.length} failed` : 'failed', title: 'Tool calls that returned an error.',
-      tone: 'danger', icon: 'warn', label: 'Failed' } : undefined,
-  ]
-  return metrics.filter((metric): metric is Metric => !!metric)
-}
-
-/**
- * The size bars of a tool box: bytes sent, bytes returned and the estimated tokens of the result.
- * `reported` is false when the source gave no size at all: a distinct state, never a zero.
- */
-export interface Bars { out?: number; back?: number; tokens?: number; estimated: boolean; reported: boolean }
-
-export function barsOf(calls: readonly FlowEvent[]): Bars {
-  const sum = (read: (tool: FlowEvent) => number | null | undefined) => {
-    const values = calls.map(read).filter((value): value is number => value != null)
-    return values.length ? values.reduce((total, value) => total + value, 0) : undefined
-  }
-  const out = sum(tool => tool.input_bytes), back = sum(tool => tool.output_bytes)
-  const tokens = sum(resultTokens) ?? undefined
-  return { out, back, tokens, estimated: tokens != null, reported: out != null || back != null }
-}
-
-/** The largest bar values of these steps, the scale of every bar in view; at least 1 KB and 256 tokens. */
-export function barScale(steps: readonly Step[]) {
-  let bytes = 1024, tokens = 256
-  for (const step of steps) {
-    for (const tool of step.tools) {
-      bytes = Math.max(bytes, tool.input_bytes ?? 0, tool.output_bytes ?? 0)
-      tokens = Math.max(tokens, resultTokens(tool) ?? 0)
-    }
-  }
-  return { bytes, tokens }
-}
-export type BarScale = ReturnType<typeof barScale>
-
-/** The widest bar, in px. */
-export const BAR_PX = 40
-
-/**
- * The length of a bar in px: square root of the value over the largest value in view, so a 100 KB
- * result is plainly longer than a 1 KB one without the small ones vanishing. A value above the scale
- * is capped at the full length; any value above zero is at least 2 px; zero is 0; absent is undefined.
- */
-export function barLength(value: number | null | undefined, max: number, px = BAR_PX) {
-  if (value == null || !Number.isFinite(value)) return undefined
-  if (value <= 0) return 0
-  return Math.max(2, Math.round(px * Math.min(1, Math.sqrt(value / Math.max(1, max)))))
-}
-
-export interface Lane { id: string; label: string; group: string; width: number }
-
-const LANE_MIN = 12, LANE_MAX = 30
-
-/** The lane of a tool call: one lane per tool, or one lane for all tools when grouped. */
-export const toolLane = (tool: FlowEvent, grouped: boolean) => grouped ? 'Tools' : `Tools · ${toolDisplayName(tool.to || tool.name || NO_TOOL)}`
-
-/** Lanes for these steps, each as wide as the longest text it shows, between LANE_MIN and LANE_MAX characters. */
-export function lanesFor(steps: readonly Step[], grouped: boolean): Lane[] {
-  const widths = new Map<string, number>([['User', LANE_MIN], ['Assistant', LANE_MIN]])
-  const fit = (lane: string, text: string) => widths.set(lane, Math.min(LANE_MAX, Math.max(widths.get(lane) ?? LANE_MIN, text.length + 6)))
-  let user = false
-  for (const step of steps) {
-    if (step.kind === 'prompt') { user = true; fit('User', firstLine(promptLine(step.lead), LANE_MAX)) }
-    for (const tool of step.tools) {
-      const lane = toolLane(tool, grouped)
-      fit(lane, lane.replace(/^Tools · /, ''))
-      fit(lane, `${callTitle(tool)} ${toolTarget(tool)}`.slice(0, LANE_MAX))
-    }
-    if (step.kind === 'agent' || step.kind === 'agent_end' || step.kind === 'task') fit('Subagents', NO_AGENT.slice(0, 14))
-    if (step.kind === 'hook') fit('Hooks', step.lead.hook_name || 'hook name not reported')
-  }
-  // Subagents sit next to the assistant that starts them, before the tool lanes.
-  const order = (id: string) => id === 'User' ? 0 : id === 'Assistant' ? 1 : id === 'Subagents' ? 2 : id.startsWith('Tools') ? 3 : 4
-  return [...widths].filter(([id]) => id !== 'User' || user)
-    .sort((a, b) => order(a[0]) - order(b[0]))
-    .map(([id, width]) => ({ id, label: id === 'Tools' || !id.startsWith('Tools · ') ? '' : id.slice('Tools · '.length), group: id.split(' · ', 1)[0], width }))
-}
-
-export interface Chip {
-  lane: string; title: string; detail: string; metrics: Metric[]; failed: boolean
-  /** The tool calls this box stands for: one, or several when repeated calls are grouped. */
-  calls: readonly FlowEvent[]
-  /** Which line of its lane the box takes when several boxes share a lane in one step, from 0. */
-  line: number
-  bars?: Bars
-  /** The whole text for hover. */
-  full?: string
-}
-export interface Layout {
-  /** The edge of the step, from lane to lane; absent when the step stays in one lane. */
-  edge?: { from: string; to: string; dashed: boolean }
-  chips: Chip[]
-  /** Lines the row needs: the most boxes one lane holds. */
-  lines: number
-  /** What comes back to the assistant: the summed result size and tokens, for the end of the line. */
-  back?: Metric[]
-}
-
-export interface LayoutOptions {
-  /** One lane for all tools. */
-  grouped?: boolean
-  /** One box per tool and lane for repeated calls, with their count, instead of one box per call. */
-  groupCalls?: boolean
-}
-
-/** Every number of a tool call in one line, for the hover text of its box. */
-const callHover = (calls: readonly FlowEvent[]) => calls.map(call => [
-  [toolName(call), callTitle(call) !== toolName(call) ? `ran ${callTitle(call)}` : ''].filter(Boolean).join(' '),
-  toolTarget(call),
-  toolMetrics(call).map(metric => `${metric.label ? `${metric.label} ` : ''}${metric.text}`).join(' · '),
-].filter(Boolean).join('\n')).join('\n\n')
-
-/** Where a step sits in the lanes: its edge, the boxes in each lane and what comes back. */
-export function layoutOf(step: Step, options: LayoutOptions | boolean = {}): Layout {
-  const { grouped = false, groupCalls = false } = typeof options === 'boolean' ? { grouped: options } : options
-  const lead = step.lead
-  const chip = (lane: string, title: string, detail = '', metrics: Metric[] = [], full?: string): Chip =>
-    ({ lane, title, detail, metrics, failed: step.failed, calls: [], line: 0, full })
-  if (step.tools.length) {
-    const boxes: FlowEvent[][] = []
-    if (groupCalls) {
-      const byName = new Map<string, FlowEvent[]>()
-      for (const tool of step.tools) {
-        const key = `${toolLane(tool, grouped)}\u0000${tool.to || tool.name || NO_TOOL}`
-        if (!byName.has(key)) { byName.set(key, []); boxes.push(byName.get(key)!) }
-        byName.get(key)!.push(tool)
-      }
-    } else boxes.push(...step.tools.map(tool => [tool]))
-    const lines = new Map<string, number>()
-    const chips = boxes.map((calls): Chip => {
-      const lane = toolLane(calls[0], grouped)
-      const line = lines.get(lane) ?? 0
-      lines.set(lane, line + 1)
-      const many = calls.length > 1
-      return {
-        lane, line, calls, failed: calls.some(failedEvent), metrics: groupMetrics(calls), bars: barsOf(calls),
-        title: many ? `${toolName(calls[0])} · ${callCount(calls.length)}` : callTitle(calls[0]),
-        detail: many ? calls.map(toolTarget).filter(Boolean).join(' ; ') : toolTarget(calls[0]),
-        full: callHover(calls),
-      }
-    })
-    const far = chips.at(-1)!.lane
-    const sized = step.tools.filter(tool => tool.output_bytes != null).length
-    const partial = sized && sized < step.tools.length ? ` Only ${sized} of ${step.tools.length} calls reported a result size.` : ''
-    const back = groupMetrics(step.tools).filter(metric => metric.key === 'payloadIn' || metric.key === 'resultTokens')
-      .map(metric => ({ ...metric, title: metric.title + partial }))
-    return {
-      edge: { from: 'Assistant', to: far, dashed: false },
-      chips: step.call ? [chip('Assistant', step.call.request_n != null ? `req ${step.call.request_n}` : 'request'), ...chips] : chips,
-      lines: Math.max(1, ...lines.values()),
-      back,
-    }
-  }
-  const one = (layout: Omit<Layout, 'lines'>): Layout => ({ ...layout, lines: 1 })
-  switch (step.kind) {
-    case 'prompt': return one({ edge: { from: 'User', to: 'Assistant', dashed: false },
-      chips: [chip('User', promptLine(lead), '', [], lead.redacted ? undefined : lead.message || lead.preview || undefined)] })
-    case 'task': return one({ edge: { from: 'Assistant', to: 'Subagents', dashed: false },
-      chips: [chip('Subagents', promptLine(lead, 'Task'), '', [], lead.redacted ? undefined : lead.message || undefined)] })
-    case 'agent': return one({ edge: { from: 'Assistant', to: 'Subagents', dashed: false },
-      chips: [chip('Subagents', firstLine(lead.prompt, 80) || lead.to || NO_AGENT, 'started', [], lead.prompt || undefined)] })
-    case 'agent_end': return one({ edge: { from: 'Subagents', to: 'Assistant', dashed: true },
-      chips: [chip('Subagents', outcomeOf(lead), lead.duration_ms ? fmtMs(lead.duration_ms) : '')] })
-    case 'hook': return one({ edge: { from: 'Assistant', to: 'Hooks', dashed: false }, chips: [chip('Hooks', lead.hook_name || 'hook name not reported')] })
-    case 'round': return one({ chips: [chip('Assistant', step.call?.request_n != null ? `req ${step.call.request_n}` : 'request', step.reply ? 'reply' : 'answer')] })
-    default: return one({ chips: [chip('Assistant', stepTitle(step))] })
-  }
-}
-
-/**
- * The boxes of a step that sit in hidden lanes: how many calls (or events) they hold and in which
- * lanes, so hiding a lane never hides that the step did something there.
- */
-export function hiddenCalls(layout: Layout, hidden: ReadonlySet<string>) {
-  let count = 0
-  const lanes: string[] = []
-  for (const chip of layout.chips) {
-    if (!hidden.has(chip.lane)) continue
-    count += Math.max(1, chip.calls.length)
-    if (!lanes.includes(chip.lane)) lanes.push(chip.lane)
-  }
-  return { count, lanes }
-}
 
 /** How a subagent ended: failed, completed, or not reported. */
 export function outcomeOf(end: FlowEvent) {

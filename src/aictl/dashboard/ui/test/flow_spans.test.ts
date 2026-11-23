@@ -2,11 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { FlowEvent } from '../src/data/contract.gen'
 import { flowModel } from '../src/drawer/flowModel'
 import {
-  layoutOf, modelFamily, openingRow, promptLine, rowsOf, spansOf, spanSummary, stepsOf, stepTitle, toolMetrics,
+  modelFamily, openingRow, promptLine, rowsOf, spansOf, spanSummary, stepsOf, stepTitle, toolMetrics,
 } from '../src/drawer/flowSteps'
 import {
-  arrangeLanes, clampWidth, COLLAPSED, fitWidths, GUTTER, GUTTER_DEFAULT, GUTTER_MAX, hideLane, LANE_MAX, LANE_MIN, laneGrid, moveLane, readWidths,
-  resolveWidths, STEP_MIN, textFit, writeWidths,
+  arrangeColumns, clampWidth, COL_MAX, COL_MIN, columnGrid, hideColumn, moveColumn, readWidths, resolveWidths, writeWidths,
 } from '../src/drawer/flowWidths'
 
 const event = (type: string, ts: number, extra: Partial<FlowEvent> = {}): FlowEvent =>
@@ -49,7 +48,6 @@ describe('DRW-FL-05 · Opening position and prompt text', () => {
   it('shows the first line of a prompt, or its length when the text was not retained', () => {
     const steps = turn()
     expect(stepTitle(steps[2])).toBe('launch a sub agent and have it check')
-    expect(layoutOf(steps[2], false).chips[0]).toMatchObject({ lane: 'User', title: 'launch a sub agent and have it check' })
     expect(promptLine(event('user_message', 1, { redacted: true, prompt_length: 116 }))).toBe('Prompt, 116 chars, text not retained')
     expect(promptLine(event('user_message', 1, { redacted: true }))).toBe('Prompt, text not retained')
     expect(promptLine(event('user_message', 1, { message: 'x'.repeat(400) }))).toHaveLength(160)
@@ -104,71 +102,50 @@ describe('DRW-FL-06 · Subagent spans', () => {
   })
 })
 
-describe('DRW-FL-07 · Lane widths', () => {
-  const lanes = [{ id: 'User', width: 12 }, { id: 'Assistant', width: 16 }, { id: 'Tools · Bash', width: 30 }, { id: 'Tools · Read', width: 24 }]
+describe('DRW-FL-07 · Chart columns', () => {
+  const columns = [{ id: 'time', width: 9 }, { id: 'step', width: 34, min: 12 }, { id: 'duration', width: 18, flex: true }, { id: 'context', width: 16 }]
+  const memory = () => {
+    const store = new Map<string, string>()
+    return { store, storage: { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) },
+      removeItem: (key: string) => { store.delete(key) } } }
+  }
 
   it('keeps every width between its minimum and maximum', () => {
-    expect([clampWidth('Tools · Bash', 1), clampWidth('Tools · Bash', 999), clampWidth(GUTTER, 2), clampWidth(GUTTER, 99), clampWidth('x', Number.NaN)])
-      .toEqual([LANE_MIN, LANE_MAX, 7, GUTTER_MAX, LANE_MIN])
-    expect(resolveWidths(lanes, { widths: { 'Tools · Bash': 2 }, collapsed: ['User'] }))
-      .toEqual({ [GUTTER]: GUTTER_DEFAULT, User: COLLAPSED, Assistant: 16, 'Tools · Bash': LANE_MIN, 'Tools · Read': 24 })
-  })
-
-  it('fits the lanes into the visible width, collapsing lanes with nothing in view', () => {
-    const fitted = fitWidths(lanes, { widths: {}, collapsed: [] }, 100, new Set(['Assistant', 'Tools · Bash']))
-    const columns = resolveWidths(lanes, fitted)
-    expect(fitted.collapsed).toEqual(['User', 'Tools · Read'])
-    const total = Object.values(columns).reduce((sum, width) => sum + width, 0) + STEP_MIN
-    expect(total).toBeLessThanOrEqual(100)
-    expect(columns['Tools · Bash'] / columns.Assistant).toBeCloseTo(30 / 16, 0)
-    // Too little room for the minimums: every shown lane is at its minimum, never below.
-    const tight = resolveWidths(lanes, fitWidths(lanes, { widths: {}, collapsed: [] }, 20))
-    expect(lanes.map(lane => tight[lane.id])).toEqual([LANE_MIN, LANE_MIN, LANE_MIN, LANE_MIN])
+    expect([clampWidth(1), clampWidth(999), clampWidth(Number.NaN), clampWidth(5, 12)]).toEqual([COL_MIN, COL_MAX, COL_MIN, 12])
+    expect(resolveWidths(columns, { widths: { step: 2, context: 20 } })).toEqual({ time: 9, step: 12, duration: 18, context: 20 })
   })
 
   it('reads persisted widths back and drops anything malformed', () => {
-    const store = new Map<string, string>()
-    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) },
-      removeItem: (key: string) => { store.delete(key) } }
-    writeWidths(storage, 'k', { widths: { 'Tools · Bash': 9, [GUTTER]: 12 }, collapsed: ['User'] })
-    expect(readWidths(storage, 'k')).toEqual({ widths: { 'Tools · Bash': 9, [GUTTER]: 12 }, collapsed: ['User'] })
-    store.set('k', '{"widths":{"a":"wide","b":500},"collapsed":[1,"c"]}')
-    expect(readWidths(storage, 'k')).toEqual({ widths: { b: LANE_MAX }, collapsed: ['c'] })
+    const { store, storage } = memory()
+    writeWidths(storage, 'k', { widths: { step: 40 }, hidden: ['context'] })
+    expect(readWidths(storage, 'k')).toEqual({ widths: { step: 40 }, hidden: ['context'] })
+    store.set('k', '{"widths":{"a":"wide","b":500},"order":[1,"c"]}')
+    expect(readWidths(storage, 'k')).toEqual({ widths: { b: COL_MAX }, order: ['c'] })
     store.set('k', 'not json')
-    expect(readWidths(storage, 'k')).toEqual({ widths: {}, collapsed: [] })
-    writeWidths(storage, 'k', { widths: {}, collapsed: [] })
+    expect(readWidths(storage, 'k')).toEqual({ widths: {} })
+    writeWidths(storage, 'k', { widths: {} })
     expect(store.has('k')).toBe(false)
     const broken = { getItem: () => { throw new Error('blocked') }, setItem: () => { throw new Error('blocked') }, removeItem: () => undefined }
-    expect(readWidths(broken, 'k')).toEqual({ widths: {}, collapsed: [] })
-    expect(() => writeWidths(broken, 'k', { widths: { a: 5 }, collapsed: [] })).not.toThrow()
+    expect(readWidths(broken, 'k')).toEqual({ widths: {} })
+    expect(() => writeWidths(broken, 'k', { widths: { a: 5 } })).not.toThrow()
   })
 
-  it('moves a lane, hides it with its column and lifeline, brings it back, and keeps the arrangement per browser', () => {
-    const empty = { widths: {}, collapsed: [] }
-    const ids = lanes.map(lane => lane.id)
-    const moved = moveLane(empty, ids, 'Tools · Read', 1)
-    expect(arrangeLanes(lanes, moved).shown.map(lane => lane.id)).toEqual(['User', 'Tools · Read', 'Assistant', 'Tools · Bash'])
-    // A lane seen for the first time keeps its default place among the moved ones.
-    const more = [...lanes.slice(0, 2), { id: 'Tools · Grep', width: 12 }, ...lanes.slice(2)]
-    expect(arrangeLanes(more, moved).shown.map(lane => lane.id)).toEqual(['User', 'Tools · Read', 'Tools · Grep', 'Assistant', 'Tools · Bash'])
-    const hidden = hideLane(moved, 'Tools · Bash')
-    const { shown, hidden: out } = arrangeLanes(lanes, hidden)
-    expect(out.map(lane => lane.id)).toEqual(['Tools · Bash'])
-    const grid = laneGrid(shown, resolveWidths(lanes, hidden))
-    expect(grid.guides).toEqual(['User', 'Tools · Read', 'Assistant'])
-    expect(grid.template).toBe(`${GUTTER_DEFAULT}ch 12ch 24ch 16ch minmax(${STEP_MIN}ch, 1fr)`)
-    expect(arrangeLanes(lanes, hideLane(hidden, 'Tools · Bash', false)).shown).toHaveLength(4)
-    const store = new Map<string, string>()
-    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) },
-      removeItem: (key: string) => { store.delete(key) } }
+  it('moves a column, hides it, brings it back, and lays out the grid with the flexible column', () => {
+    const empty = { widths: {} }
+    const ids = columns.map(column => column.id)
+    const moved = moveColumn(empty, ids, 'context', 1)
+    expect(arrangeColumns(columns, moved).shown.map(column => column.id)).toEqual(['time', 'context', 'step', 'duration'])
+    // A column seen for the first time keeps its default place among the moved ones.
+    const more = [...columns.slice(0, 2), { id: 'cost', width: 8 }, ...columns.slice(2)]
+    expect(arrangeColumns(more, moved).shown.map(column => column.id)).toEqual(['time', 'context', 'cost', 'step', 'duration'])
+    const hidden = hideColumn(moved, 'step')
+    const { shown, hidden: out } = arrangeColumns(columns, hidden)
+    expect(out.map(column => column.id)).toEqual(['step'])
+    expect(columnGrid(shown, resolveWidths(columns, hidden))).toEqual({ template: '9ch 16ch minmax(18ch, 1fr)', total: '43ch' })
+    expect(arrangeColumns(columns, hideColumn(hidden, 'step', false)).shown).toHaveLength(4)
+    const { storage } = memory()
     writeWidths(storage, 'k', hidden)
     expect(readWidths(storage, 'k')).toEqual(hidden)
-    writeWidths(storage, 'k', { ...empty, hidden: ['User'] })
-    expect(readWidths(storage, 'k')).toEqual({ ...empty, hidden: ['User'] })
-    expect(moveLane(empty, ids, 'missing', 0)).toBe(empty)
-  })
-
-  it('keeps a text on one line, wraps it to a second, or clips it after two', () => {
-    expect([textFit(10, 14), textFit(20, 14), textFit(40, 14), textFit(5, LANE_MIN)]).toEqual(['line', 'wrap', 'clip', 'clip'])
+    expect(moveColumn(empty, ids, 'missing', 0)).toBe(empty)
   })
 })
