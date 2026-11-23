@@ -51,6 +51,8 @@ VERIFIED_COUNTS = ("commits", "passed", "unreported", "failed", "changed_after",
                    "not_recorded", "by_subagent", "own_unseen", "commit_sessions", "top_session_commits", "edit_sessions",
                    "untested_sessions", "commands", "commands_with_text", "test_runs", "test_results", "remote_commits",
                    "edits_no_file", "sessions_no_text", "sessions_edits_unrecorded")
+# The tools whose rows record an exit code of 0, so a pass can be reported (PassTools in insights.verified_commits).
+VERIFIED_PASS_TOOLS = ("copilot-cli", "copilot-desktop")
 # The runs of failed calls, as insights.after_failure and insights.problem_sessions both define them (each view
 # carries this text as it is; test_insights checks it).
 FAILURE_RUNS_KQL = """let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
@@ -654,7 +656,7 @@ def verified_commits(rows: list[dict]) -> dict:
     share of commits no test run saw (changed after the last test, or never tested) is over its classified commits, and
     only when at least half of its commits are classified: otherwise the tool is "not classified" and its commits are
     counted as unchecked. A tool that keeps no command text reports no commits (None), and a tool with no recorded exit
-    code of 0 reports no passes.
+    code of 0 reports no passes; pass_tool says whether the tool can record one at all.
     """
     tools = []
     for row in _of(rows, "tool"):
@@ -663,7 +665,7 @@ def verified_commits(rows: list[dict]) -> dict:
         classified = None if commits is None else commits - _int(tool["not_recorded"]) - _int(tool["unknown_change"])
         checked = bool(classified) and _int(classified) * 2 >= _int(commits)
         unseen = None if commits is None else _int(tool["changed_after"]) + _int(tool["never_tested"])
-        tool.update(classified=classified, unseen=unseen, checked=checked,
+        tool.update(classified=classified, unseen=unseen, checked=checked, pass_tool=tool["tool"] in VERIFIED_PASS_TOOLS,
                     unseen_share=_ratio(_n(unseen), _n(classified)) if checked else None,
                     own_unseen_share=_ratio(_n(tool["own_unseen"]), _n(classified)) if checked and tool["own_unseen"] is not None
                     else None,
@@ -688,6 +690,7 @@ def verified_commits(rows: list[dict]) -> dict:
             "own_unseen": own, "own_unseen_share": _ratio(_n(own), classified) if classified and own is not None else None,
             "changed_after": sum(_int(tool["changed_after"]) for tool in pooled) if pooled else None,
             "never_tested": sum(_int(tool["never_tested"]) for tool in pooled) if pooled else None,
+            "no_change": sum(_int(tool["no_change"]) for tool in pooled) if pooled else None,
             "failed": _total([tool["failed"] for tool in counted]), "passed": _total([tool["passed"] for tool in counted]),
             "unchecked": sum(_int(tool["unchecked"]) for tool in counted) if counted else None,
             "edit_sessions": sum(_int(tool["edit_sessions"]) for tool in reporting) if reporting else None,

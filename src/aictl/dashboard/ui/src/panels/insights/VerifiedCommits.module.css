@@ -1,6 +1,7 @@
 /* Verified before commit: one 100% bar per tool, tested on the left, untested in warning colours, unclassified hatched. */
 .passed { background: var(--color-success); }
-.unreported { background: repeating-linear-gradient(45deg, var(--color-success) 0 3px, color-mix(in srgb, var(--color-success) 35%, var(--color-surface)) 3px 6px); }
+/* Tested, result not recorded: neutral, so that only a recorded pass reads as green. */
+.unreported { background: var(--color-muted); }
 .failed { background: var(--color-chart-1); }
 .changed_after { background: var(--color-warning); }
 .never_tested { background: var(--color-danger); }

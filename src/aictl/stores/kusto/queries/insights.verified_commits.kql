@@ -5,9 +5,9 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 //   --dry-run, not commit-tree, not printed by echo or searched for by grep); a failed call made no commit;
 // - a test run is a shell call that runs a known test runner at a command position (start of the line,
 //   after ; && || | ( { then do, or inside bash -c, pwsh/powershell -Command, cmd /c), not one that only
-//   lists tests, or a call of VS Code's runTests tool. Its result is "failed" when the call failed and the
-//   runner's status reached the tool, "passed" only when that status reached a tool in PassTools as exit
-//   code 0, and "unknown" otherwise (piped without pipefail, followed by ; || &, no exit code, no text);
+//   lists tests, or a call of VS Code's runTests tool. Its result is "unknown" when the runner's status did not
+//   reach the tool (piped without pipefail, followed by ; || &, no text, a runTests call), else "failed" when the
+//   call failed, "passed" only when a tool in PassTools reports exit code 0, and "unknown" otherwise;
 // - a change to a source file is a successful call of an edit tool on a file that is not documentation or
 //   data (.md .mdx .markdown .rst .txt .adoc .json .jsonl .ndjson .csv .tsv .log .lock .yaml .yml .toml
 //   .ini), or a shell call that edits files in place (sed -i, perl -i, (Get-Content f) -replace | Set-Content,
@@ -118,6 +118,8 @@ let calls = materialize(reduced
         not(is_test), '',
         // Piped (without pipefail) or followed by ; || &: the runner's status did not reach the tool.
         test_sep in ('|', ';', '||', '&') and not(test_sep == '|' and line has 'pipefail'), 'unknown',
+        // A runTests call and a call without text: what failed (the runner or the call) is not known.
+        test_tool or not(has_text), 'unknown',
         failed, 'failed',
         // Before October 2026 Copilot's success flag could be true for a failed command and no exit code
         // was kept: without an exit code of 0 the result is unknown.
@@ -197,7 +199,7 @@ union
             | summarize commands=countif(cmd), commands_with_text=countif(has_text), sessions_no_text=dcountif(session_id, not(readable)),
                         sessions_edits_unrecorded=dcountif(session_id, not(recorded) and readable) by tool),
         (calls | where ts >= since
-            | summarize test_runs=countif(is_test and readable), test_results=countif(is_test and readable and status != 'unknown'),
+            | summarize test_runs=countif(is_test and readable), test_results=countif(is_test and readable and recorded and status != 'unknown'),
                         remote_commits=countif(remote_commit and readable), edits_no_file=countif(no_file) by tool)
         | summarize commits=max(commits), passed=max(passed), unreported=max(unreported), failed=max(failed),
                     changed_after=max(changed_after), never_tested=max(never_tested), no_change=max(no_change),
@@ -208,7 +210,8 @@ union
                     remote_commits=max(remote_commits), edits_no_file=max(edits_no_file), sessions_no_text=max(sessions_no_text),
                     sessions_edits_unrecorded=max(sessions_edits_unrecorded) by tool
         // With command text, a count no part returned is 0; without any, commits and untested sessions are not reported.
-        // Passed and failed are not reported when no test run of the period has a recorded result.
+        // Passed and failed are not reported when no test run of the period, in a session whose edits are recorded (whose
+        // commits are classified), has a recorded result.
         | extend text=commands_with_text > 0
         | extend commits=iff(text, coalesce(commits, 0), long(null)), unreported=iff(text, coalesce(unreported, 0), long(null)),
                  failed=iff(text and coalesce(test_results, 0) > 0, coalesce(failed, 0), long(null)), changed_after=iff(text, coalesce(changed_after, 0), long(null)),

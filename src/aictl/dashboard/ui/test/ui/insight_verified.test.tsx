@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import VerifiedCommits from '../../src/panels/insights/VerifiedCommits'
-import { shareText, untestedText, verifiedFinding, verifiedHero, type VerifiedBody, type VerifiedTool } from '../../src/panels/insights/verifiedModel'
+import { passMissingText, shareText, untestedText, verifiedFinding, verifiedHero, type VerifiedBody, type VerifiedTool } from '../../src/panels/insights/verifiedModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { drawerPatch, nextAddress } from '../../src/shell/viewState'
 import { createBoxes } from '../../src/ui/Box'
@@ -16,7 +18,8 @@ const zero = {
   sessions_edits_unrecorded: 0, unchecked: 0,
 }
 const tool = (values: Partial<VerifiedTool> & { tool: string; commits: number | null }): VerifiedTool => ({
-  ...zero, classified: null, unseen: null, checked: false, unseen_share: null, own_unseen_share: null, ...values,
+  ...zero, classified: null, unseen: null, checked: false, unseen_share: null, own_unseen_share: null,
+  pass_tool: ['copilot-cli', 'copilot-desktop'].includes(values.tool), ...values,
 } as VerifiedTool)
 const cli = tool({
   tool: 'copilot-cli', commits: 506, passed: 0, unreported: 190, changed_after: 211, never_tested: 4, no_change: 6, not_recorded: 95,
@@ -74,19 +77,22 @@ beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '',
 
 describe('INS-11 · Verified before commit', () => {
   it('states the share of checked commits no test run saw, the own-agent share and the untested sessions', () => {
-    expect(verifiedFinding(only, label)).toBe('215 of the 411 Copilot CLI commits that can be checked (52%) contained source ' +
-      "changes no test run had seen (41% counting only the committing agent's own work), and 13 of the 59 sessions that " +
-      'changed source files never ran a recognised test. 95 more commits could not be checked because the tool did not ' +
+    expect(verifiedFinding(only, label)).toBe('215 of the 411 Copilot CLI commits that can be checked (52%) were made after ' +
+      "source changes no test run had seen (41% counting only the committing agent's own work), and 13 of the 59 Copilot CLI " +
+      'sessions that changed source files never ran a recognised test. 95 more commits could not be checked because the tool did not ' +
       'record what they changed.')
     expect(verifiedHero(only)).toEqual({ value: '52%',
-      label: 'of classified agent commits contained source changes no test run saw (215 of 411)' })
+      label: 'of classified agent commits were made after source changes no test run saw (215 of 411)' })
   })
 
   it('adds failing runs and one-session tools, and names no tool when several are pooled', () => {
     const text = verifiedFinding(fleet, label)
     expect(text).toMatch(/^218 of the 421 Copilot CLI and Claude Code commits that can be checked \(52%\)/)
     expect(text).toContain(' 236 more commits could not be checked')
-    expect(text).toContain(' 2 commits came right after a failing test run.')
+    expect(text).toContain(' 2 commits followed a failing test run with no source change in between.')
+    // Untested sessions per tool, so that no tool is credited with another tool's sessions.
+    expect(text).toContain('and 13 of the 59 Copilot CLI sessions, 22 of the 23 Copilot app sessions and 2 of the 6 Claude Code ' +
+      'sessions that changed source files never ran a recognised test.')
     expect(text).toMatch(/ Most of Copilot app's commits come from one session\.$/)
     const three = { ...fleet, summary: { ...fleet.summary, checked_tools: ['copilot-cli', 'claude-code', 'copilot-vscode'] } } as VerifiedBody
     expect(verifiedFinding(three, label)).toMatch(/^218 of the 421 commits that can be checked/)
@@ -105,13 +111,13 @@ describe('INS-11 · Verified before commit', () => {
       unseen_share: null, own_unseen: null, own_unseen_share: null, unchecked: 141, edit_sessions: 23, untested_sessions: 22,
       checked_tools: [], not_classified: ['copilot-desktop'], one_session: ['copilot-desktop'] } } as unknown as VerifiedBody
     expect(verifiedFinding(unchecked, label)).toBe('None of the 141 commits in this period can be checked because the tool did not ' +
-      "record what they changed, and 22 of the 23 sessions that changed source files never ran a recognised test. Most of Copilot app's " +
+      "record what they changed, and 22 of the 23 Copilot app sessions that changed source files never ran a recognised test. Most of Copilot app's " +
       'commits come from one session.')
     expect(verifiedHero(unchecked)).toBeUndefined()
     const quiet = { ...base, tools: [tool({ tool: 'copilot-cli', commits: 0, edit_sessions: 2, untested_sessions: 2 })], sessions: [],
       summary: { ...summary, commits: 0, classified: 0, unseen: null, unseen_share: null, own_unseen: null, own_unseen_share: null,
         unchecked: 0, edit_sessions: 2, untested_sessions: 2, checked_tools: [] } } as unknown as VerifiedBody
-    expect(verifiedFinding(quiet, label)).toBe('No agent commit in this period; 2 of the 2 sessions that changed source files never ran a recognised test.')
+    expect(verifiedFinding(quiet, label)).toBe('No agent commit in this period; 2 of the 2 Copilot CLI sessions that changed source files never ran a recognised test.')
   })
 
   it('draws a 100% bar per tool, with a pass segment only where the tool records one, and opens a session', () => {
@@ -130,7 +136,7 @@ describe('INS-11 · Verified before commit', () => {
     expect(segments[1].getAttribute('title')).toBe('Changed after last test: 211, 42% of all commits')
     expect(segments[1].getAttribute('style')).toContain('inline-size: 41.70%')
     const claudeRow = box.querySelector('[data-tool="claude-code"]')!
-    expect(claudeRow.textContent).toContain('pass not recorded by this tool')
+    expect(claudeRow.querySelector('[data-pass]')!.textContent).toBe('pass not recorded by this tool')
     expect(claudeRow.querySelector('[data-segment="passed"]')).toBeNull()
     expect(box.querySelector('[data-tool="copilot-desktop"] [data-segment="passed"]')).not.toBeNull()
     expect(box.querySelector('[data-tool="copilot-desktop"] [data-share]')!.textContent).toBe('not classified: edits not recorded')
@@ -144,6 +150,51 @@ describe('INS-11 · Verified before commit', () => {
     flush()
     expect(opened).toEqual(['s-commit:flow'])
     dispose()
+  })
+
+  it('names the tool of every untested session, also one with no commit beside a pooled tool', () => {
+    const idle = tool({ tool: 'copilot-cli', commits: 0, edit_sessions: 2, untested_sessions: 2 })
+    const pooled = { ...claude, untested_sessions: 0, edit_sessions: 5 }
+    const body = { ...base, tools: [pooled, idle], sessions: [], summary: { ...summary, commits: 10, classified: 10, unseen: 3,
+      unseen_share: 0.3, own_unseen: null, own_unseen_share: null, no_change: 1, failed: 0, unchecked: 0, edit_sessions: 7,
+      untested_sessions: 2, checked_tools: ['claude-code'] } } as unknown as VerifiedBody
+    expect(verifiedFinding(body, label)).toBe('3 of the 10 Claude Code commits that can be checked (30%) were made after source ' +
+      'changes no test run had seen, and 0 of the 5 Claude Code sessions and 2 of the 2 Copilot CLI sessions that changed ' +
+      'source files never ran a recognised test.')
+  })
+
+  it('gives no lead figure when no checked commit followed a source change, and says why', () => {
+    const cli4 = tool({ tool: 'copilot-cli', commits: 4, passed: null, failed: null, no_change: 4, edit_sessions: 3, untested_sessions: 3,
+      classified: 4, unseen: 0, checked: true, unseen_share: 0, own_unseen_share: 0 })
+    const body = { ...base, tools: [cli4], sessions: [], summary: { ...summary, commits: 4, classified: 4, unseen: 0, unseen_share: 0,
+      own_unseen: 0, own_unseen_share: 0, no_change: 4, failed: null, passed: null, unchecked: 0, edit_sessions: 3,
+      untested_sessions: 3, checked_tools: ['copilot-cli'] } } as unknown as VerifiedBody
+    expect(verifiedHero(body)).toBeUndefined()
+    expect(verifiedFinding(body, label)).toBe('None of the 4 Copilot CLI commits that can be checked followed a source change, and ' +
+      '3 of the 3 Copilot CLI sessions that changed source files never ran a recognised test.')
+    const most = { ...body, summary: { ...body.summary, classified: 10, unseen: 2, unseen_share: 0.2, own_unseen_share: null,
+      no_change: 6 } } as unknown as VerifiedBody
+    expect(verifiedHero(most)!.value).toBe('20%')
+    expect(verifiedFinding(most, label)).toContain('never ran a recognised test. 6 of the 10 checked commits followed no source change.')
+  })
+
+  it('says a Copilot pass is missing for want of a recorded result, not because the tool never records one', () => {
+    const quietCli = tool({ tool: 'copilot-cli', commits: 4, passed: null, failed: null, no_change: 4, test_results: 0, classified: 4,
+      unseen: 0, checked: true, unseen_share: 0 })
+    expect(passMissingText(quietCli)).toBe('no test run with a recorded result in this period')
+    expect(passMissingText(claude)).toBe('pass not recorded by this tool')
+    const body = { ...base, tools: [quietCli, claude], sessions: [], summary: { ...summary, commits: 14 } } as unknown as VerifiedBody
+    const { host, dispose } = mount(() => <VerifiedCommits {...props(context({ data: body, status: 'ready', error: null }))} />)
+    expect(host.querySelector('[data-tool="copilot-cli"] [data-pass]')!.textContent).toBe('no test run with a recorded result in this period')
+    expect(host.querySelector('[data-tool="claude-code"] [data-pass]')!.textContent).toBe('pass not recorded by this tool')
+    dispose()
+  })
+
+  it('draws only a recorded pass in the success colour', () => {
+    const css = readFileSync(join(__dirname, '../../src/panels/insights/VerifiedCommits.module.css'), 'utf8')
+    const rules = Object.fromEntries([...css.matchAll(/^\.(\w+)\s*\{([^}]*)\}/gm)].map(match => [match[1], match[2]]))
+    expect(rules.passed).toContain('--color-success')
+    expect(Object.entries(rules).filter(([, body]) => body.includes('--color-success')).map(([name]) => name)).toEqual(['passed'])
   })
 
   it('keeps its own loading and error state', () => {

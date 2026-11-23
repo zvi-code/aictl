@@ -138,6 +138,36 @@ def test_history_before_the_period_counts_and_commits_before_it_do_not(kusto_sto
     assert (cli["edit_sessions"], cli["untested_sessions"]) == (0, 0)
 
 
+def test_a_failed_call_without_the_runner_status_is_not_a_failed_test_run(kusto_store):
+    s = kusto_store
+    # v: VS Code's runTests tool failed; the call does not say whether a test failed, so the result is not recorded.
+    _edit(s, "v1", 10.0, "src/v.ts", session="v", tool="copilot-vscode", name="replace_string_in_file")
+    s.insert("tool_invocations", dedup_key="v2", ts=20.0, session_id="v", tool="copilot-vscode", tool_name="runTests",
+             target_kind="", target="", is_error=1, source="transcript")
+    _shell(s, "v3", 30.0, "git commit -m v", session="v", tool="copilot-vscode", name="run_in_terminal")
+    # w: a runner call with no command text failed: not recorded either.
+    _edit(s, "w1", 10.0, "src/w.py", session="w")
+    _shell(s, "w2", 20.0, "pytest", session="w", failed=1, code=1, target_chars=None)
+    _shell(s, "w3", 30.0, "git commit -m w", session="w", code=0)
+    # x: a session known only from Copilot's session store records a pass, but its commits are not classified, so
+    # the pass does not switch on Copilot CLI's passed and failed.
+    _shell(s, "x1", 10.0, "python -m pytest -q", session="x", code=0, source="copilot-session-store")
+    _shell(s, "x2", 20.0, "git commit -m x", session="x", code=0, source="copilot-session-store")
+    tools = _tools(_card(s))
+    vscode = tools["copilot-vscode"]
+    assert (vscode["commits"], vscode["failed"], vscode["unreported"], vscode["test_runs"], vscode["test_results"]) == (
+        1, None, 1, 1, 0)
+    cli = tools["copilot-cli"]
+    assert (cli["commits"], cli["unreported"], cli["not_recorded"], cli["test_runs"], cli["test_results"]) == (2, 1, 1, 2, 0)
+    assert (cli["passed"], cli["failed"], cli["pass_tool"], vscode["pass_tool"]) == (None, None, True, False)
+
+
+def test_the_pass_tools_of_the_shape_are_those_of_the_view():
+    text = (QUERIES / "insights.verified_commits.kql").read_text()
+    listed = re.search(r"^let PassTools = dynamic\(\[(.*?)\]\);", text, re.M)
+    assert listed and tuple(re.findall(r"'([^']+)'", listed.group(1))) == insights.VERIFIED_PASS_TOOLS
+
+
 def _tool(tool, **counts):
     row = {"row_type": "tool", "tool": tool, **dict.fromkeys(insights.VERIFIED_COUNTS, 0)}
     row.update(counts)
@@ -183,7 +213,8 @@ def test_the_shape_pools_classified_commits_and_keeps_unreported_counts_none():
     # Untested sessions count only tools that report them: Codex CLI keeps no command text.
     assert (summary["edit_sessions"], summary["untested_sessions"]) == (66, 15)
     assert summary["not_reported"] == ["codex-cli"] and summary["sessions_no_text"] == 4
-    assert summary["checked_tools"] == ["copilot-cli", "claude-code"]
+    assert summary["checked_tools"] == ["copilot-cli", "claude-code"] and summary["no_change"] == 91
+    assert [tool["pass_tool"] for tool in body["tools"]] == [True, True, False, False]
     assert summary["not_classified"] == ["copilot-desktop"] and summary["one_session"] == ["copilot-desktop"]
     assert [(row["session_id"], row["unseen"]) for row in body["sessions"]] == [("s1", 30), ("s2", 3)]
     assert "untested" not in body["sessions"][0]
