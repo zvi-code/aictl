@@ -73,6 +73,7 @@ log = logging.getLogger(__name__)
 TARGET_MAX_CHARS = 4000
 PROMPT_MAX_CHARS = 8000
 INPUT_VALUE_MAX_CHARS = 500
+INPUT_LIST_MAX = 50  # items kept of a list or object argument
 EDIT_VALUE_MAX_CHARS = 4000
 RESULT_MAX_CHARS = 500
 ERROR_SUMMARY_MAX = 300
@@ -187,8 +188,24 @@ def target_of(args: Any, keep_text: bool) -> str:
 _EDIT_KEYS = {"old_string", "new_string", "oldString", "newString", "content", "new_source", "input", "patch"}
 
 
+def _masked_value(value: Any, limit: int, depth: int = 0) -> Any:
+    """A list or object argument as reported, its strings masked and cut to *limit*; None for anything else."""
+    if isinstance(value, str):
+        return _redact(value[:limit])
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= 4:
+        return None
+    if isinstance(value, list):
+        return [_masked_value(v, limit, depth + 1) for v in value[:INPUT_LIST_MAX]]
+    if isinstance(value, dict):
+        return {str(k): _masked_value(v, limit, depth + 1) for k, v in list(value.items())[:INPUT_LIST_MAX]}
+    return None
+
+
 def stored_input(args: Any, keep_text: bool) -> dict:
-    """Arguments kept for display. Edit text is kept longer, because a diff is built from it."""
+    """Arguments kept for display: the whole object, strings masked and bounded, lists and objects
+    included. Edit text is kept longer, because a diff is built from it."""
     if not keep_text or not isinstance(args, dict):
         return {}
     out: dict[str, Any] = {}
@@ -197,6 +214,8 @@ def stored_input(args: Any, keep_text: bool) -> dict:
             out[key] = _redact(value[: EDIT_VALUE_MAX_CHARS if key in _EDIT_KEYS else INPUT_VALUE_MAX_CHARS])
         elif isinstance(value, (int, float, bool)):
             out[key] = value
+        elif isinstance(value, (list, dict)):
+            out[key] = _masked_value(value, INPUT_VALUE_MAX_CHARS)
     return out
 
 
