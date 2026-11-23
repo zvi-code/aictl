@@ -106,6 +106,14 @@ class TestWindowEdges:
         assert summary["totals"]["output_tokens"] == 70
         assert summary["window"]["approximate"] is False
 
+    def test_the_day_before_a_midnight_start_is_left_out(self, db):
+        # A session from 22:00 to 02:00 has a day before midnight that ends where the window starts.
+        db[1].append(_usage_result(usage_row("night", "claude-code", at(DAY1, 22), at(DAY2, 2),
+                                             [(at(DAY1, 22), {"output_tokens": 5}), (at(DAY2, 1), {"output_tokens": 7})])))
+        summary = compute_usage_summary(db[0], at(DAY2, 0), at(DAY3, 0))
+        assert summary["totals"]["output_tokens"] == 7
+        assert summary["window"]["approximate"] is False
+
     def test_the_running_day_is_marked_partial(self, db):
         now = time.time()
         db[1].append(_usage_result(usage_row("today", "claude-code", now - 60, now, [(now, {"output_tokens": 5})])))
@@ -266,6 +274,16 @@ class TestCredits:
         self.copilot(db, "a", None)
         credits = board(db, at(DAY2, 0), at(DAY3, 0))["credits"]
         assert credits["amount"] is None
+
+    def test_a_session_across_midnight_counts_only_the_days_in_the_window(self, db):
+        row = usage_row("night", "copilot-cli", at(DAY1, 22), at(DAY2, 2),
+                        [(at(DAY1, 22), {"input_tokens": 10}), (at(DAY2, 1), {"input_tokens": 10})], billing_unit="ai_credits")
+        for (day, values), credits in zip(sorted(row["daily"].items()), (5.0, 7.0)):
+            values["billing_amount"] = values["models"]["m"]["billing_amount"] = credits
+        row["billing_amount"] = 12.0
+        seed_usage(db, row)
+        credits = board(db, at(DAY2, 0), at(DAY3, 0))["credits"]
+        assert (credits["amount"], credits["approximate"]) == (7.0, False)
 
     def test_a_window_cutting_through_the_day_is_marked_approximate(self, db):
         self.copilot(db, "a", 10.0)

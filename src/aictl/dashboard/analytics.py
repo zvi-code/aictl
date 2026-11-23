@@ -435,6 +435,18 @@ def _day_span(day: str, started_at: float, last_activity_at: float) -> tuple[flo
     return (start, end) if start <= end else (lo, hi)
 
 
+def _span_outside(span: tuple[float, float] | None, since: float, until: float) -> bool:
+    """True when a session's activity on a day lies wholly outside the window [since, until).
+
+    A day that ends where the window starts touches it only at that instant: its
+    activity is before the window, so it is outside, as is one that starts at *until*.
+    """
+    if span is None:
+        return True
+    start, end = span
+    return end < since or start >= until or (start < since and end <= since)
+
+
 def window_sessions(db, since: float, until: float | None = None) -> tuple[list[dict], int]:
     """Every session with usage in the window, each logical session exactly once.
 
@@ -465,7 +477,7 @@ def window_sessions(db, since: float, until: float | None = None) -> tuple[list[
         approximate: list[str] = []
         for d, v in u["daily"].items():
             span = _day_span(d, u["started_at"] or 0.0, u["last_activity_at"] or 0.0)
-            if span is None or span[1] < since or span[0] > until:
+            if _span_outside(span, since, until):
                 continue
             days[d] = v
             if span[0] < since or span[1] > until:

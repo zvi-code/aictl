@@ -25,7 +25,7 @@ from ..data.model_pricing import canonical_model_id, request_cost_usd, resolve_p
 from ..ingesters._common import project_key, project_root
 from ..tool_scope import is_unattributed, stored_ids_for
 from . import subagents
-from .analytics import _day_span
+from .analytics import _day_span, _span_outside
 from .board_filters import SPARK_POINTS, Filters
 from .history_scope import identity, identity_parts
 from .history_scope import label as node_label
@@ -1664,7 +1664,7 @@ def _credits_section(board: _Board) -> dict | None:
         seen = True
         for day, values in u["daily"].items():
             span = _day_span(day, u["started_at"] or 0.0, u["last_activity_at"] or 0.0)
-            if span is None or span[1] < f.since or span[0] > f.until:
+            if _span_outside(span, f.since, f.until):
                 continue
             credits = _model_credits(values.get("models") or {}, f.model) if f.model else values.get("billing_amount")
             if credits is None:
