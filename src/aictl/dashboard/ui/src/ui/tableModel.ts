@@ -17,6 +17,8 @@ export type Field<T> = {
   /** Clip long text at its start, so a path keeps its file name visible. */
   clip?: 'start'
   action?: { label: (row: T) => string | undefined; run: (row: T) => void }
+  /** Tooltip text for this row's cell. */
+  hint?: (row: T) => string | undefined
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true })

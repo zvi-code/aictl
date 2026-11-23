@@ -161,6 +161,8 @@ class SessionUsage:
     turns: int = 0
     started_at: float = 0.0
     last_activity_at: float = 0.0
+    # When the transcript itself records the session's end (Copilot session.shutdown); 0 = it does not.
+    recorded_end_at: float = 0.0
     project_path: str = ""
     git_branch: str = ""
     premium_requests: float = 0.0
@@ -678,6 +680,7 @@ class CopilotAccumulator:
 
     def finish(self) -> SessionUsage:
         s = self.s
+        s.recorded_end_at = max((sd["ts"] for sd in self.shutdowns), default=0.0)
         if self.has_records:
             for used, ts in self._compactions:
                 self._add(used.get("model") or self.model, used, ts, requests=1)
@@ -1751,6 +1754,9 @@ class TranscriptUsageIngester:
 
             self._fact_target.upsert_session_usage(row)
             idle = now - s.last_activity_at > IDLE_END_S
+            # The transcript's own end record is the tool reporting the end; else the end is inferred.
+            recorded = bool(s.recorded_end_at) and s.recorded_end_at >= s.last_activity_at
+            ended = s.recorded_end_at if recorded else s.last_activity_at if idle and s.last_activity_at else None
             self._fact_target.upsert_session(
                 SessionRow(
                     session_id=s.session_id,
@@ -1759,7 +1765,9 @@ class TranscriptUsageIngester:
                     model=s.model,
                     git_branch=s.git_branch,
                     started_at=s.started_at,
-                    ended_at=s.last_activity_at if idle and s.last_activity_at else None,
+                    ended_at=ended,
+                    last_activity_at=s.last_activity_at,
+                    end_reason=("transcript" if recorded else "idle") if ended is not None else "",
                     source="transcript",
                     input_tokens=s.input_tokens,
                     output_tokens=s.output_tokens,

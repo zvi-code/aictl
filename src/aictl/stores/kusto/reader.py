@@ -107,7 +107,7 @@ _VIEWS = {
         f"{_BOARD_ID} calls failures asked denied pending first_ts last_ts last_error tool project_path",
     ),
     "prompts.series": (f"{_WINDOW} requested_session session_keys", f"{_BOARD_ID} g prompts tool project_path"),
-    "board.sessions": ("all_nodes requested_node session_keys", "node_id session_id tool project_path model pid started_at ended_at"),
+    "board.sessions": ("all_nodes requested_node session_keys", "node_id session_id tool project_path model pid started_at ended_at last_activity_at end_reason title title_source"),
     "board.agents": ("all_nodes requested_node session_keys", f"{_BOARD_ID} task model started_at ended_at completed"),
     "requests.ended": ("all_nodes requested_node session_keys", "node_id session_id"),
     "tools.activity": (f"{_WINDOW} session_keys", f"{_BOARD_ID} g calls"),

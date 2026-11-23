@@ -19,7 +19,8 @@ export const overviewA: readonly PanelDef[] = [
     id: 'agentsT', title: 'Agents and subagents', kind: 'table', defaultSize: 'large', requiredCapabilities: [],
     sources: [{ field: 'agents' }, { topic: 'runtime.agent' }, { field: 'scope' }, { field: 'tool_labels' }, { route: '/api/board/nodes' }],
     columns: [
-      field('title', 'Agent'), agentMetric('status', 'Status', 'status'), agentMetric('tool', 'Tool', 'tool'),
+      field('title', 'Agent'), { ...agentMetric('status', 'Status', 'status'), hint: 'status_evidence' },
+      field('status_evidence', 'Status evidence'), agentMetric('tool', 'Tool', 'tool'),
       agentMetric('messages', 'Messages', 'msgs'),
       agentMetric('tool_calls', 'Tool calls', 'tool_calls'), agentMetric('failures', 'Failures', 'failures'),
       agentMetric('project', 'Project', 'project'), agentMetric('model_names', 'Models', 'model'),

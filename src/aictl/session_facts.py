@@ -14,6 +14,7 @@ from typing import Any
 from .ingesters._common import project_key
 from .ingesters.session_titles import clean_title, outranks
 from .records import STEP_TEXT_LIMIT, SessionRow, _dedup_key, strip_event_text
+from .session_lifecycle import END_GRACE_S, END_OBSERVED
 from .state_file import StateFile
 from .stores import writer_or_discard
 from .stores.base import InvalidRowError
@@ -158,6 +159,22 @@ class SessionFacts:
         row["title"], row["title_source"] = text, source
         return True
 
+    def retire(self, sessions: Iterable[tuple[str, str]]) -> None:
+        """Delete session rows that stand for another session, such as a monitor row for a bound process.
+
+        Takes ``(session_id, project)``; the project of the row already written wins.
+        """
+        with self._lock:
+            gone = []
+            for sid, project in sessions:
+                entry = self._sessions.pop(sid, None)
+                if entry is not None:
+                    project = entry["row"]["project_path"]
+                    self._dirty = True
+                gone.append({"project": project, "session_id": sid})
+            if gone:
+                self.writer.delete("sessions", gone)
+
     @staticmethod
     def _merge_session(row: SessionRow, activity: float, terminal: bool, entry: dict) -> dict:
         incoming = asdict(row)
@@ -174,13 +191,27 @@ class SessionFacts:
         merged["started_at"] = min(starts, default=0.0)
         for name in _COUNTERS:
             merged[name] = max(merged[name], incoming[name])
+        # Lifecycle: an event with a time (activity) orders by the clock; a row without one
+        # (a transcript's idle end) ends the session only when it is newer than the clock, so
+        # an idle end cannot close a session that a live process or a hook reported later.
+        merged["last_activity_at"] = max(merged.get("last_activity_at") or 0.0, row.last_activity_at)
+        merged.setdefault("end_reason", "")
         if activity and activity >= clock:
             # If two sources share a timestamp, keep the terminal event.
-            if activity > clock or terminal:
+            # A second observed end (the process exits after the hook reported the end) keeps the first.
+            already = terminal and merged["ended_at"] is not None and merged["end_reason"] in END_OBSERVED
+            if (activity > clock or terminal) and not already:
                 merged["ended_at"] = row.ended_at if terminal else None
+                merged["end_reason"] = row.end_reason if terminal and row.ended_at is not None else ""
             clock = activity
-        elif not activity and not clock and row.ended_at is not None:
-            merged["ended_at"] = max(merged["ended_at"] or 0, row.ended_at)
+        elif not activity and row.ended_at is not None and row.ended_at > clock:
+            if row.ended_at >= (merged["ended_at"] or 0):
+                merged["ended_at"] = row.ended_at
+                merged["end_reason"] = row.end_reason
+        if merged["ended_at"] is not None and merged["last_activity_at"] > merged["ended_at"] + END_GRACE_S:
+            # The session did something after its end: it was resumed.
+            merged["ended_at"] = None
+            merged["end_reason"] = ""
         return {"row": merged, "clock": clock}
 
     def started_at(self, session_id: str) -> float:

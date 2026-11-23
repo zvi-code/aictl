@@ -9,6 +9,18 @@ not the local history file described here.
 
 The former default database was `~/.config/aictl/history.db`.
 
+## Session lifecycle columns (Kusto `sessions`, added after SQLite)
+
+| Column | Type | Meaning |
+|---|---|---|
+| `last_activity_at` | real | Last time the session did something (a transcript line); 0 = unknown |
+| `end_reason` | string | Why `ended_at` is set: `hook` (the tool's hook reported the end), `transcript` (the tool's session log recorded it, Copilot `session.shutdown`), `process_exit` (the bound process was seen to exit; `ended_at` is that time), `switched` (the bound process moved on to another session), `idle` (no activity for 15 min and no bound process: inferred). Empty while not ended |
+
+Activity after `ended_at` (more than 5 s) clears both `ended_at` and `end_reason`: the
+session was resumed. A process bound to a tool's own session (Claude Code
+`sessions/<pid>.json`, Copilot `inuse.<pid>.lock`, `--session-id`/`--resume`) is linked in
+`session_processes` and updates that session's row; it gets no `tool:pid:start` row of its own.
+
 ## One store per project
 
 `history.db` is the machine store. It holds machine-wide tables: system and process

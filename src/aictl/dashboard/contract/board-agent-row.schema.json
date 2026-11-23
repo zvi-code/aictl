@@ -28,6 +28,8 @@
     "ended_at": {"type": ["number", "null"]},
     "activity": {"type": "array", "items": {"type": "integer"}},
     "placeholder": {"type": "boolean"},
+    "status_evidence": {"type": ["string", "null"]},
+    "end_reason": {"type": "string"},
     "node_id": {"type": "string"},
     "native_id": {"type": "string"},
     "session_id": {"type": "string"},

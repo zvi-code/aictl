@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from .. import session_lifecycle
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..ingesters._common import project_key, project_root
 from ..tool_scope import is_unattributed, stored_ids_for
@@ -517,6 +518,7 @@ class _Board:
         self.loops: list[dict] = []
         self.status: dict[str, str] = {}
         self.sub_status: dict[str, str] = {}
+        self.lifecycle: dict[str, session_lifecycle.Lifecycle] = {}
         self.scope: set[str] = set()
         self._prefetched: dict[str, list[dict]] = {}
         facts = facts or {}
@@ -808,6 +810,12 @@ class _Board:
             return last_seen[sid] >= min(start, self.now - ACTIVE_WINDOW_S) and first_seen[sid] <= end
 
         def known_owner(live: dict) -> str | None:
+            native = str(live.get("native_session_id") or "")
+            if native:
+                # The tool's own file names the session of this process: no guess is needed.
+                found = native if native in last_seen else by_uuid.get(_session_uuid(native) or "")
+                if found:
+                    return found
             live_id = str(live.get("session_id") or "")
             if live_id in last_seen:
                 return live_id
@@ -848,13 +856,21 @@ class _Board:
         claimed.update(sid for _live, sid in matches if sid)
         # The processes that started last go first, as the newest session belongs to the newest.
         for live, known in sorted(matches, key=lambda m: began[id(m[0])], reverse=True):
-            sid = known or owner_by_project(live)
+            # A process bound to a session outside this view must not take another session here.
+            sid = known or (None if live.get("native_session_id") else owner_by_project(live))
             if sid is None:
                 unmatched.append(live)
                 continue
             claimed.add(sid)
-            merged = self.live_by_sid.setdefault(sid, {"pids": set(), "cpu_percent": None, "started_at": None})
-            merged["pids"].update(int(p) for p in live.get("pids") or [])
+            merged = self.live_by_sid.setdefault(
+                sid, {"pids": set(), "cpu_percent": None, "started_at": None, "matched_by": "project"})
+            if known:
+                merged["matched_by"] = "evidence"
+            if not live.get("ended"):
+                merged["pids"].update(int(p) for p in live.get("pids") or [])
+            elif known and live.get("last_seen_at"):
+                # The monitor saw the process exit; the stored end may not be readable yet.
+                merged["exited_at"] = max(merged.get("exited_at") or 0.0, float(live["last_seen_at"]))
             if live.get("cpu_percent") is not None:
                 merged["cpu_percent"] = round((merged["cpu_percent"] or 0.0) + float(live["cpu_percent"]), 2)
             start = live.get("started_at")
@@ -1029,8 +1045,19 @@ class _Board:
         for sid, agents in agents_by_root.items():
             if not sid:
                 continue
-            recent = self.now - last_activity.get(sid, 0.0) < ACTIVE_WINDOW_S
-            active = sid in self.live_by_sid or recent
+            meta = self.meta.get(sid) or {}
+            live = self.live_by_sid.get(sid) or {}
+            seen = max(last_activity.get(sid, 0.0), float(meta.get("last_activity_at") or 0.0))
+            ended_at, end_reason = meta.get("ended_at"), str(meta.get("end_reason") or "")
+            if live.get("exited_at") and not session_lifecycle.ended_by_fact(ended_at, end_reason, seen):
+                ended_at, end_reason = live["exited_at"], session_lifecycle.PROCESS_EXIT
+            lifecycle = session_lifecycle.assess(
+                now=self.now, pids=live.get("pids") or (), last_activity=seen, ended_at=ended_at,
+                end_reason=end_reason, matched_by=live.get("matched_by", ""), idle_window=ACTIVE_WINDOW_S,
+            )
+            self.lifecycle[sid] = lifecycle
+            recent = self.now - seen < ACTIVE_WINDOW_S
+            active = lifecycle.live
             if active and pending_by_root[sid]:
                 self.status[sid] = "waiting"
             elif active and sid in roots_looping:
@@ -1319,6 +1346,7 @@ class _Board:
             "started_at": started,
             "ended_at": ended,
             "activity": activity,
+            **self._status_evidence(sid, root, sub, active),
         }
         if root and sid in self.estimated:
             row["estimated"] = True
@@ -1332,6 +1360,22 @@ class _Board:
             row["cpu_percent"] = sampled if sampled is not None else live["cpu_percent"]
             row["pids"] = pids
         return row
+
+    def _status_evidence(self, sid: str, root: bool, sub: dict, active: bool) -> dict:
+        """Why the row has its status, in a few words, and the kind of end (empty while live)."""
+        lifecycle = self.lifecycle.get(sid)
+        if lifecycle is None:
+            return {"status_evidence": None, "end_reason": ""}
+        if root:
+            return {"status_evidence": lifecycle.evidence, "end_reason": lifecycle.end_reason}
+        if sub.get("completed"):
+            return {"status_evidence": "subagent reported completion", "end_reason": ""}
+        if active:
+            return {"status_evidence": f"session: {lifecycle.evidence}", "end_reason": ""}
+        reason = lifecycle.end_reason or session_lifecycle.IDLE
+        words = lifecycle.evidence if lifecycle.end_reason else session_lifecycle.end_words(
+            reason, None, self.now, ACTIVE_WINDOW_S)
+        return {"status_evidence": words, "end_reason": reason}
 
     def _pid_memory(self) -> dict[int, float]:
         if self.pid_memory is None:
@@ -1394,6 +1438,9 @@ class _Board:
                     "started_at": group["started_at"],
                     "ended_at": None,
                     "activity": [0] * SPARK_POINTS,
+                    "status_evidence": f"{session_lifecycle.process_words(pids)}; no session record yet" if pids
+                    else "no session record yet",
+                    "end_reason": "",
                     "placeholder": True,
                 }
             )

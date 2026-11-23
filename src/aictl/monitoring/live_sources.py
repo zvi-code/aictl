@@ -17,6 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .. import session_lifecycle
 from ..dashboard.live.protocol import stable_id
 from ..dashboard.projection_utils import mask_secrets
 from ..observe.collect import capture_mode as storage_capture_mode
@@ -123,6 +124,36 @@ def _flag_evidence(process: ProcessInfo, ts: float) -> dict[str, dict]:
             "observed_at": ts,
         }
     return out
+
+
+def _with_session_file(state: dict, samples: list[dict]) -> dict:
+    """A tool's session file states the session's activity directly; it wins over a transcript guess."""
+    sid = state.get("session_id")
+    for sample in samples:
+        reported = sample.get("native_state")
+        if sid and sample.get("native_session_id") == sid and reported:
+            out = dict(state)
+            out["status"] = "working" if reported == "running" else reported
+            out["native_activity"] = "working" if reported == "running" else reported
+            at = max(state.get("last_native_at") or 0.0, sample.get("native_status_at") or 0.0)
+            out["last_native_at"] = at or None
+            out["status_source"] = "session file"
+            return out
+    return state
+
+
+def _runtime_evidence(processes: list[ProcessInfo], status: str, native: dict) -> str:
+    """Why a runtime agent has its status: its processes, and what the tool itself reports."""
+    pids = [process.pid for process in processes]
+    words = session_lifecycle.process_words(pids) if pids else "no process"
+    if status == "ended":
+        return f"tool reported end; {words}"
+    if not native.get("session_id"):
+        return f"{words}; not linked to a session, activity unknown"
+    if status in ("unknown", ""):
+        return f"{words}; activity unknown"
+    source = native.get("status_source") or "session log"
+    return f"{words}; {source} reports {'running' if status == 'working' else status}"
 
 
 class LiveRuntimeSources:
@@ -430,6 +461,7 @@ class LiveRuntimeSources:
             ),
             "started_at": min((p.created_at for p in processes if p.created_at is not None), default=None),
             "last_native_at": native.get("last_native_at"),
+            "status_evidence": _runtime_evidence(processes, status, native),
         }
 
     def _publish_loaded(self, sid: str, tool: str, evidence: dict[str, dict], *, native: bool) -> str:
@@ -472,7 +504,12 @@ class LiveRuntimeSources:
             native = [dict(state) for state in self._native.values()]
         groups: dict[str, list[dict]] = {}
         for sample in samples.values():
-            sid = sample.get("session_id") or stable_id(self.host, *_identity(sample["process"]))
+            # A process bound to the tool's own session is listed under that session's id.
+            sid = (
+                sample.get("native_session_id")
+                or sample.get("session_id")
+                or stable_id(self.host, *_identity(sample["process"]))
+            )
             groups.setdefault(sid, []).append(sample)
         current = set()
         loaded: dict[str, str] = {}
@@ -486,7 +523,7 @@ class LiveRuntimeSources:
             if not owned:
                 continue
             sid = state["session_id"]
-            data = self._agent_data(sid, owned, state)
+            data = self._agent_data(sid, owned, _with_session_file(state, owned))
             # A desktop process may hold several sessions; its resource use is
             # not attributable to each one independently.
             if any(sum(pid in other["pids"] for other in native) > 1 for pid in state["pids"]):
@@ -495,18 +532,22 @@ class LiveRuntimeSources:
             self.hub.publish("runtime.agent", entity_id, data, source="runtime.collector")
             current.add(entity_id)
             bound_groups.update(sample.get("session_id") for sample in owned)
+            bound_groups.add(sid)
             evidence = self._process_evidence(owned)
             evidence.update(state["evidence"])
             loaded[self._publish_loaded(sid, state["tool"], evidence, native=True)] = "runtime.native"
         for sid, owned in groups.items():
-            if sid in bound_groups:
+            if sid in bound_groups or any(sample.get("session_id") in bound_groups for sample in owned):
                 continue
-            data = self._agent_data(sid, owned)
+            native_id = next((s["native_session_id"] for s in owned if s.get("native_session_id")), None)
+            file_state = _with_session_file({"session_id": native_id}, owned) if native_id else None
+            data = self._agent_data(sid, owned, file_state)
             entity_id = stable_id(self.host, data["tool"], sid)
             self.hub.publish("runtime.agent", entity_id, data, source="runtime.collector")
             current.add(entity_id)
             evidence = self._process_evidence(owned)
-            loaded[self._publish_loaded(sid, data["tool"], evidence, native=False)] = "runtime.evidence"
+            loaded[self._publish_loaded(sid, data["tool"], evidence, native=native_id is not None)] = (
+                "runtime.native" if native_id else "runtime.evidence")
         for entity_id in self._published_agents - current:
             self.hub.remove("runtime.agent", entity_id, source="runtime.collector")
         for entity_id, source in self._published_loaded.items():
@@ -532,6 +573,12 @@ class LiveRuntimeSources:
                 pass
         for pid, sample in samples.items():
             if self._tool(sample) != tool:
+                continue
+            native = sample.get("native_session_id")
+            if native and native in (path.stem, path.parent.name):
+                # The tool names this session for this exact process (aictl.monitoring.native_binding).
+                sid = native
+                pids.add(pid)
                 continue
             args = sample["process"].cmdline
             for index, arg in enumerate(args):

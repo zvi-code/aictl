@@ -38,8 +38,8 @@ export default function FoldTable(props: {
     visit(undefined, 0)
     return visible
   }
-  const fields = createMemo(() => props.fields.map(({ read, action, ...field }): Field<Entry> => ({
-    ...field, read: entry => read(entry.row),
+  const fields = createMemo(() => props.fields.map(({ read, action, hint, ...field }): Field<Entry> => ({
+    ...field, read: entry => read(entry.row), hint: hint && (entry => hint(entry.row)),
     action: action && { label: entry => action.label(entry.row), run: entry => action.run(entry.row) },
   })))
   const rows = createMemo(() => orderRows())

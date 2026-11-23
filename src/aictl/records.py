@@ -244,6 +244,10 @@ class SessionRow:
     git_commit: str = ""
     started_at: float = 0.0
     ended_at: float | None = None
+    # The last time the session did something (a transcript line, a request); 0 = unknown.
+    last_activity_at: float = 0.0
+    # Why ended_at is set: see aictl.session_lifecycle.END_REASONS. Empty while not ended.
+    end_reason: str = ""
     source: str = ""
     input_tokens: int = 0
     output_tokens: int = 0

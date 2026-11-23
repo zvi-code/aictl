@@ -9,7 +9,8 @@ export type NodeScope = ReturnType<typeof boardNodeScope>
 export type BoardSource = { field: keyof BoardFields; path?: string; wholeRange?: boolean }
 export type Source = BoardSource | { topic: keyof LiveTopicData; entity?: string; path?: string } |
   { route: '/api/board/context' | '/api/board/sessions' | '/api/board/nodes'; path?: string }
-export type FieldRef = { path: string; label?: string; datapoint?: string; format?: 'timestamp'; scale?: number }
+/** `hint` names a row field whose text is the cell's tooltip, such as why a status holds. */
+export type FieldRef = { path: string; label?: string; datapoint?: string; format?: 'timestamp'; scale?: number; hint?: string }
 export type Row = Readonly<Record<string, unknown>>
 export type Read = {
   state: 'loading' | 'empty' | 'error' | 'unavailable' | 'stale' | 'ready'

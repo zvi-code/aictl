@@ -7,7 +7,7 @@ export const liveCapabilities = {
   topics: {
     'runtime.agent': {
       sources: ['runtime.collector'], delivery: 'latest',
-      fields: ['id', 'session_id', 'native_session_id', 'tool', 'project', 'pids', 'running', 'native_activity', 'status', 'cpu_percent', 'mem_mb', 'title', 'parent_id', 'started_at'],
+      fields: ['id', 'session_id', 'native_session_id', 'tool', 'project', 'pids', 'running', 'native_activity', 'status', 'cpu_percent', 'mem_mb', 'title', 'parent_id', 'started_at', 'status_evidence'],
     },
     'runtime.process': { sources: ['runtime.collector'], delivery: 'latest' },
     'runtime.machine': { sources: ['runtime.collector'], delivery: 'latest' },

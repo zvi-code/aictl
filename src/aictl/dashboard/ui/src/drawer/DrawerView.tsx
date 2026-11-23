@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, lazy, Loading, Show, untrack, type Component } from 'solid-js'
 import type { BoardAgentRow, DetailAgent, TopicConfigurationLoaded, TopicRuntimeAgent } from '../data/contract.gen'
 import { fmtDur, isLive, projectName, stamp } from '../design/format'
+import { statusText } from '../data/runtimeAgents'
 import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Drawer } from '../ui/Drawer'
 import { Icon, type Glyph } from '../ui/Icon'
@@ -92,6 +93,7 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
     }
   })
   const status = () => ctx.stopped(props.entry.id) ? 'stopped' : runtime()?.status ?? agent()?.status
+  const evidence = () => ctx.stopped(props.entry.id) ? undefined : runtime()?.status_evidence ?? agent()?.status_evidence
   const started = () => runtime()?.started_at ?? agent()?.started_at
   const ended = () => runtime()?.running ? undefined : agent()?.ended_at
   const name = () => agent()?.parent_id ? `${agent()?.role || agent()?.title} (subagent)` : agent()?.title || runtime()?.title || props.entry.id
@@ -115,7 +117,9 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
         onClick={() => ctx.copy(session() ?? props.entry.id)}><Icon glyph="copy" /></Tooltip>
     </>}
     metadata={<div class={styles.meta}>
-      <span>{runtime()?.running && status() === 'unknown' ? 'Running · native activity unknown' : status() ?? NA}</span>
+      <span title={evidence() ?? undefined}>{runtime()?.running && status() === 'unknown' ? 'Running · native activity unknown'
+        : statusText(status(), runtime() ? undefined : agent()?.end_reason) ?? NA}</span>
+      <Show when={evidence()}>{words => <span>{words()}</span>}</Show>
       <Show when={started()}><span title={`Started ${stamp(started(), true)}`}>{fmtDur((ended() ?? Date.now() / 1000) - started()!)}</span></Show>
       <Show when={ended()}><span>Ended {stamp(ended(), true)}</span></Show>
       <Show when={agent()?.tool || runtime()?.tool}>{tool => <span>{ctx.board('tool_labels')?.[tool()] ?? tool()}</span>}</Show>

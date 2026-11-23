@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 2614fcd0758ffc90f55b62020104e977ea1f59a28fc150c242e6b217b753b96e
+// Schema digest: 3dacace1ba9559a8c9937324d173a4d86cb5fdb98d646992d18c75a707d40bd5
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -28,6 +28,8 @@ export type BoardAgentRow = {
   ended_at: number | null;
   activity: Array<number>;
   placeholder?: boolean;
+  status_evidence?: string | null;
+  end_reason?: string;
   node_id?: string;
   native_id?: string;
   session_id?: string;
@@ -2130,6 +2132,8 @@ export type HistoryAgentRow = {
   ended_at: number | null;
   activity: Array<number>;
   placeholder?: boolean;
+  status_evidence?: string | null;
+  end_reason?: string;
   node_id?: string;
   native_id?: string;
   session_id?: string;
@@ -3193,6 +3197,7 @@ export type TopicRuntimeAgent = {
   mem_mb: number | null;
   started_at: number | null;
   last_native_at: number | null;
+  status_evidence?: string | null;
   title?: string | null;
   parent_id?: string | null;
 };

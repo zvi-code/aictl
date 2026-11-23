@@ -19,6 +19,7 @@ from pathlib import Path
 from ..platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
 from ..utils import human_size as _format_bytes
 from ..utils import human_tokens as _format_tokens
+from . import native_binding
 from .collectors import BaseCollector, build_collectors
 from .collectors.network import (
     LinuxNetworkCollector,
@@ -105,7 +106,9 @@ class MonitorRuntime:
         self.platform = CURRENT_PLATFORM
         self.sink = sink
         self.workspace_sizes = {str(path): _dir_size(path, config.ignored_dir_names) for path in config.workspace_paths}
-        self.correlator = SessionCorrelator(config, workspace_sizes=self.workspace_sizes, sink=sink)
+        self.correlator = SessionCorrelator(
+            config, workspace_sizes=self.workspace_sizes, sink=sink, native_binder=native_binding.binder()
+        )
         self.collectors = self._build_collectors()
         for collector in self.collectors:
             if sink:

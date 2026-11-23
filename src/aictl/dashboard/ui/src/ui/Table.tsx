@@ -84,7 +84,7 @@ function Cells<T extends object>(props: TableProps<T> & { row: T }) {
         <span class={styles.visuallyHidden}>{display()}</span>
       </>}</Show>
       return <td class={styles.cell} data-numeric={props.pageSize && (typeof value() === 'number' || field().numeric) ? '' : undefined}
-        title={!props.pageSize && props.primaryCell ? display() : undefined}>
+        title={field().hint?.(props.row) ?? (!props.pageSize && props.primaryCell ? display() : undefined)}>
         <Show when={index() === 0 && props.primaryCell} fallback={
           <Show when={field().action?.label(props.row)} fallback={text}>{label =>
             <button type="button" class={styles.action} aria-label={actionName(display(), label())}

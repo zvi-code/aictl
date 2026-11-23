@@ -30,6 +30,9 @@ from .session import (
 log = logging.getLogger(__name__)
 
 LIVE_SESSION_S = 120.0  # a session without processes still owns repository changes this long after it was last seen
+# A bound session whose process is alive says so this often, so that an idle end inferred
+# from its transcript cannot close it while the process runs.
+ALIVE_EVERY_S = 300.0
 MAX_CWD_WORKSPACES = 4096
 _UNATTRIBUTED_TOOL = "unknown"
 
@@ -54,8 +57,20 @@ class SessionCorrelator:
     into ``self.pending_events`` for consumption by the dashboard layer.
     """
 
-    def __init__(self, config: MonitorConfig, workspace_sizes: dict[str, int] | None = None, sink=None) -> None:
+    def __init__(
+        self,
+        config: MonitorConfig,
+        workspace_sizes: dict[str, int] | None = None,
+        sink=None,
+        native_binder: Callable[[ProcessInfo, str], dict | None] | None = None,
+    ) -> None:
         self.config = config
+        # (process, tool) -> the tool's own session for that process, from a file the tool writes.
+        self.native_binder = native_binder
+        # Monitor session id -> the binding of its root process to a native session.
+        self.native: dict[str, dict] = {}
+        self._alive_at: dict[str, float] = {}
+        self._ended: set[str] = set()
         self.workspace_sizes = workspace_sizes or {}
         self.sink = sink  # SampleSink for derived metric emission
         self.sessions: dict[str, SessionState] = {}
@@ -147,6 +162,7 @@ class SessionCorrelator:
         self._handle_process_event_typed(process, cpu_percent, ts, is_new)
         sid = self.pid_to_session.get(process.pid)
         session = self.sessions.get(sid) if sid else None
+        binding = self.native.get(sid) if sid else None
         self._notify_runtime(
             "process",
             {
@@ -156,6 +172,9 @@ class SessionCorrelator:
                 "session_id": sid,
                 "tool": session.tool if session else None,
                 "root_pid": session.root_pid if session else None,
+                "native_session_id": binding["session_id"] if binding else None,
+                "native_state": binding["state"] if binding else None,
+                "native_status_at": binding["status_at"] if binding else None,
                 "ts": ts,
             },
         )
@@ -169,9 +188,18 @@ class SessionCorrelator:
         self.pid_cpu.pop(pid, None)
         self.pid_mem.pop(pid, None)
         if session_id and session_id in self.sessions:
-            self.sessions[session_id].pids.discard(pid)
-            self.sessions[session_id].cpu_percent = sum(self.pid_cpu.get(p, 0.0) for p in self.sessions[session_id].pids)
-            self.sessions[session_id].last_seen_at = max(self.sessions[session_id].last_seen_at, ts)
+            session = self.sessions[session_id]
+            session.pids.discard(pid)
+            session.cpu_percent = sum(self.pid_cpu.get(p, 0.0) for p in session.pids)
+            session.last_seen_at = max(session.last_seen_at, ts)
+            if process is not None and session_id not in self._ended and classify_process(process).tool == session.tool:
+                # The agent ends when its last process of the tool exits, at the time that was seen.
+                same_tool = [
+                    p for p in session.pids
+                    if (info := self.pid_to_process.get(p)) is not None and classify_process(info).tool == session.tool
+                ]
+                if not same_tool:
+                    self._end_session(session, ts, "process_exit")
         self._notify_runtime("process_exit", {"pid": pid, "process": process, "session_id": session_id, "ts": ts})
 
     def on_network(
@@ -320,19 +348,13 @@ class SessionCorrelator:
         stale_ids = [sid for sid, s in self.sessions.items() if s.last_seen_at < gc_cutoff]
         for sid in stale_ids:
             session = self.sessions.pop(sid)
-            self._emit_event(
-                now,
-                session.tool,
-                "session_end",
-                {
-                    "session_id": sid,
-                    "project": session.project,
-                    "duration_s": round(session.last_seen_at - session.started_at, 1),
-                    "pids": len(session.pids),
-                    "input_tokens": session.exact_input_tokens,
-                    "output_tokens": session.exact_output_tokens,
-                },
-            )
+            if sid not in self._ended:
+                # No exit was seen: the session ends when it was last seen, not now. One that
+                # had a process lost it; one that never had a process went quiet.
+                self._end_session(session, session.last_seen_at, "process_exit" if session.root_pid else "idle")
+            self._ended.discard(sid)
+            self.native.pop(sid, None)
+            self._alive_at.pop(sid, None)
             for pid in session.pids:
                 self.pid_to_session.pop(pid, None)
 
@@ -427,6 +449,11 @@ class SessionCorrelator:
             if session.last_seen_at >= cutoff:
                 d = session.to_dict()
                 d["process_tree"] = self._build_process_tree(session)
+                binding = self.native.get(session.session_id) or {}
+                d["native_session_id"] = binding.get("session_id")
+                d["native_state"] = binding.get("state")
+                d["native_status_at"] = binding.get("status_at")
+                d["ended"] = session.session_id in self._ended
                 results.append(d)
         return results
 
@@ -482,6 +509,64 @@ class SessionCorrelator:
             return "teammate"
         return "subprocess"
 
+    def _end_session(self, session: SessionState, ts: float, reason: str) -> None:
+        """Report the end of a monitor session once, at the time the end was observed."""
+        sid = session.session_id
+        self._ended.add(sid)
+        binding = self.native.get(sid)
+        self._emit_event(
+            ts,
+            session.tool,
+            "session_end",
+            {
+                "session_id": sid,
+                "native_session_id": binding["session_id"] if binding else "",
+                "end_reason": reason,
+                "project": session.project,
+                "duration_s": round(max(0.0, ts - session.started_at), 1),
+                "pids": len(session.pids),
+                "input_tokens": session.exact_input_tokens,
+                "output_tokens": session.exact_output_tokens,
+            },
+        )
+
+    def _lookup_native(self, process: ProcessInfo, tool: str) -> dict | None:
+        if self.native_binder is None:
+            return None
+        try:
+            return self.native_binder(process, tool)
+        except Exception:  # noqa: BLE001 - a binder failure leaves the process unbound
+            log.debug("Native session lookup failed for pid %s", process.pid, exc_info=True)
+            return None
+
+    def _bind(self, session: SessionState, process: ProcessInfo, ts: float) -> None:
+        """Keep the root process's native session current; report a new or changed binding."""
+        binding = self._lookup_native(process, session.tool)
+        sid = session.session_id
+        if binding is None or sid in self._ended:
+            return  # an unreadable file keeps the binding it had
+        current = self.native.get(sid)
+        self.native[sid] = binding
+        if current is not None and current["session_id"] == binding["session_id"]:
+            if ts - self._alive_at.get(sid, 0.0) >= ALIVE_EVERY_S:
+                self._alive_at[sid] = ts
+                self._emit_event(ts, session.tool, "session_alive", self._binding_detail(session, binding, process))
+            return
+        self._alive_at[sid] = ts
+        detail = self._binding_detail(session, binding, process)
+        detail["previous_native_session_id"] = current["session_id"] if current else ""
+        self._emit_event(ts, session.tool, "session_bound", detail)
+
+    @staticmethod
+    def _binding_detail(session: SessionState, binding: dict, process: ProcessInfo) -> dict:
+        return {
+            "session_id": session.session_id,
+            "native_session_id": binding["session_id"],
+            "native_started_at": binding.get("started_at") or 0.0,
+            "pid": process.pid,
+            "project": session.project,
+        }
+
     def drain_events(self) -> list[dict]:
         """Return and clear all pending events."""
         events = self.pending_events
@@ -504,6 +589,8 @@ class SessionCorrelator:
         session = self._resolve_session_for_process(process, ts)
         if session is None:
             return
+        if process.pid == session.root_pid:
+            self._bind(session, process, ts)
 
         session.pids.add(process.pid)
         if process.cwd:
@@ -614,9 +701,14 @@ class SessionCorrelator:
                 root_created_at=process.created_at,
             )
             self.sessions[session_id] = session
-            self._emit_event(
-                ts, match.tool, "session_start", {"pid": process.pid, "name": process.name, "session_id": session_id}
-            )
+            detail = {"pid": process.pid, "name": process.name, "session_id": session_id}
+            # A process bound from the start never gets a monitor session row of its own.
+            binding = self._lookup_native(process, match.tool)
+            if binding is not None:
+                self.native[session_id] = binding
+                self._alive_at[session_id] = ts
+                detail.update(native_session_id=binding["session_id"], native_started_at=binding.get("started_at") or 0.0)
+            self._emit_event(ts, match.tool, "session_start", detail)
 
         self.pid_to_session[process.pid] = session_id
         return session

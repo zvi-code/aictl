@@ -368,7 +368,8 @@ class IngestRoutes:
             started_at = facts.started_at(session_id)
             facts.session(SessionRow(
                 session_id, tool, project_path=cwd, model=detail.get("model", ""),
-                started_at=started_at or ts, ended_at=ts if terminal else None, source="hook",
+                started_at=started_at or ts, ended_at=ts if terminal else None,
+                end_reason="hook" if terminal else "", source="hook",
                 input_tokens=int(detail.get("input_tokens", 0) or 0),
                 output_tokens=int(detail.get("output_tokens", 0) or 0),
                 cache_read_tokens=int(detail.get("cache_read_tokens", 0) or 0),

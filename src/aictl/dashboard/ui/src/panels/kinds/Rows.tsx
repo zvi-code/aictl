@@ -105,8 +105,10 @@ export function RowTable(props: {
       const sample = props.rows.find(entry => read(entry) != null)
       numeric = !sample || typeof read(sample) === 'number'
     }
+    const hint = field.hint
     return {
       id: field.path, label, read, numeric, format,
+      hint: hint ? ({ row }: KeyedRow) => { const text = at(row, hint); return typeof text === 'string' && text ? text : undefined } : undefined,
       compact: unit === 'count' || unit === 'tokens' || unit === 'usd' ? (value: number) => {
         if (Math.abs(value) >= 1000) return unit === 'usd' ? fmtUsd(value) : fmtN(value)
       } : undefined,

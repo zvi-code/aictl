@@ -160,6 +160,8 @@ _DEFINED = (
                 ("git_commit", "string"),
                 ("started_at", "real"),
                 ("ended_at", "real"),
+                ("last_activity_at", "real"),
+                ("end_reason", "string"),
                 ("source", "string"),
                 ("input_tokens", "long"),
                 ("output_tokens", "long"),

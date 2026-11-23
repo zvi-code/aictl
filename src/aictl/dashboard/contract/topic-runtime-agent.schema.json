@@ -19,6 +19,7 @@
     "mem_mb": {"type": ["number", "null"]},
     "started_at": {"type": ["number", "null"]},
     "last_native_at": {"type": ["number", "null"]},
+    "status_evidence": {"type": ["string", "null"]},
     "title": {"type": ["string", "null"]},
     "parent_id": {"type": ["string", "null"]}
   },

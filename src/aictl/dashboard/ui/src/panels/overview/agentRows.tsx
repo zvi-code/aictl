@@ -1,6 +1,6 @@
 import { createMemo, createSignal, Show } from 'solid-js'
 import type { BoardAgentRow, DetailNodes } from '../../data/contract.gen'
-import { overlayAgents } from '../../data/runtimeAgents'
+import { overlayAgents, statusText } from '../../data/runtimeAgents'
 import { at, detailPath, object } from '../data'
 import { keyedRows } from '../kinds/model'
 import type { KeyedRow, PanelProps, Read } from '../types'
@@ -43,7 +43,7 @@ export function agentRows({ ctx, def }: PanelProps) {
     const topics = object(ctx.client.store.meta.capabilities?.topics)
     const declared = at(topics?.['runtime.agent'], 'fields')
     const fields = ctx.scope() === 'local' ? (Array.isArray(declared) ? declared.filter((field): field is string => typeof field === 'string') : []) :
-      ['node_id', 'tool', 'status', 'native_activity', 'running', 'cpu_percent', 'mem_mb', 'started_at']
+      ['node_id', 'tool', 'status', 'native_activity', 'running', 'cpu_percent', 'mem_mb', 'started_at', 'status_evidence']
     return overlayAgents(records().filter(agent => !agent.placeholder), observed(), fields, ctx.filters(), ctx.tools())
   })
   const keyed = createMemo(() => {
@@ -74,7 +74,8 @@ export function agentRows({ ctx, def }: PanelProps) {
       return { ...entry, parent, folded: typeof a.id === 'string' && parents.has(a.id) ? false : undefined, row: {
         ...a,
         title: a.parent_id ? a.role || a.title : a.title || a.id,
-        status: ctx.stopped(String(a.id)) ? 'Stopped' : processOnly || a.status === 'unknown' ? 'Activity unknown' : a.status,
+        status: ctx.stopped(String(a.id)) ? 'Stopped' : processOnly || a.status === 'unknown' ? 'Activity unknown'
+          : statusText(a.status, a.end_reason),
         tool: typeof a.tool === 'string' ? labels?.[a.tool] ?? a.tool : a.tool,
         model_names: Array.isArray(a.models) && a.models.length ? a.models.join(', ') : undefined,
         messages: knownSum(['user', 'assistant', 'tool'].map(key => at(a, `msgs.${key}`))),

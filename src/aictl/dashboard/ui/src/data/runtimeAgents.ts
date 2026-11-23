@@ -14,6 +14,12 @@ function matchesStatus(agent: Values, status = 'all') {
 
 const nativeStatus = (status: unknown) => status === 'running' || status === 'idle' || status === 'waiting' || status === 'looping';
 
+/** The status as shown: an end aictl only inferred from the idle window says so. */
+export function statusText<T>(status: T, endReason: unknown): T | string {
+  if ((status === 'ended' || status === 'failed') && endReason === 'idle') return `${status} (inferred)`;
+  return status;
+}
+
 function matchesAgent(agent: Agent, filters: Partial<Filters>, tools: string[] | null) {
   if (!isStoredToolSelected(agent.tool, tools)) return false;
   if (filters?.project && filters.project !== 'all' && projectKey(filters.project) !== projectKey(agent.project)) return false;

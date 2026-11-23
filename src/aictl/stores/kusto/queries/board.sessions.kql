@@ -9,4 +9,5 @@ sessions
 | summarize arg_max(_v, *) by node_id, session_id
 | order by node_id asc, session_id asc
 | take row_limit
-| project node_id, session_id, tool, project_path, model, pid, started_at, ended_at, title, title_source
+| project node_id, session_id, tool, project_path, model, pid, started_at, ended_at, last_activity_at, end_reason,
+    title, title_source

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { overlayAgents } from '../src/data/runtimeAgents';
+import { overlayAgents, statusText } from '../src/data/runtimeAgents';
 import { storeHarness } from './data/harness';
 import { liveCapabilities, liveEntity } from './fixtures/live.fixture';
 
@@ -12,6 +12,17 @@ function overlayAt(entities: ReturnType<typeof liveEntity>[]) {
   return (history: Parameters<typeof overlayAgents>[0], filters: Parameters<typeof overlayAgents>[3],
     tools?: string[]) => overlayAgents(history, rows, fields, filters, tools);
 }
+
+it('shows why a status holds and marks an inferred end as inferred', () => {
+  expect(statusText('ended', 'idle')).toBe('ended (inferred)');
+  expect(statusText('ended', 'process_exit')).toBe('ended');
+  expect(statusText('running', '')).toBe('running');
+  const overlay = overlayAt([liveEntity('runtime.agent', 's', {
+    id: 's', session_id: 's', status: 'idle', native_activity: 'idle', running: true,
+    status_evidence: 'process 4312 running; session file reports idle' })]);
+  const [agent] = overlay([{ id: 's', status: 'running', status_evidence: 'no process seen; last activity 1 min ago' }], {});
+  expect(agent).toMatchObject({ status: 'idle', status_evidence: 'process 4312 running; session file reports idle' });
+});
 
 it('honors the runtime field allowlist and filters agents after the overlay', () => {
   const history = [{ id: 'a', status: 'running', input: 10, cost_usd: 0.1, activity: [1, 2], tool_calls: 3 }, { id: 'b', status: 'running' }];

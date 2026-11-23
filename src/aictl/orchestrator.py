@@ -1361,10 +1361,13 @@ class SnapshotPersistence:
     def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
         """Write session_start/session_end events to the sessions table."""
         try:
+            from . import session_lifecycle
             from .records import SessionRow
 
             updates = []
             links = []
+            retired = []
+            facts = self._facts
             for e in events:
                 kind = e.get("kind", "")
                 detail = e.get("detail", {})
@@ -1374,21 +1377,45 @@ class SnapshotPersistence:
                 ts = e.get("ts", fallback_ts)
                 tool = e.get("tool", "")
                 project = detail.get("project", "")
-                if kind == "session_start":
-                    ev_pid = int(detail.get("pid", 0) or 0)
+                native = detail.get("native_session_id") or ""
+                ev_pid = int(detail.get("pid", 0) or 0)
+                if native and kind in ("session_start", "session_bound", "session_alive"):
+                    # The process belongs to the tool's own session: link it there and keep
+                    # that row open; a monitor row for it would list the agent twice. Tool and
+                    # project stay the ones the tool reported, so the two cannot flap.
+                    row = SessionRow(native, facts.session_tool(native) or tool, ev_pid,
+                                     facts.project_for(native) or project,
+                                     started_at=float(detail.get("native_started_at") or 0.0))
+                    updates.append((row, ts, False))
+                    if kind != "session_alive":
+                        links.append((native, ev_pid, tool, ts, "lead", project))
+                    if kind == "session_bound":
+                        retired.append((sid, project))
+                        previous = detail.get("previous_native_session_id") or ""
+                        if previous and previous != native:
+                            updates.append((SessionRow(previous, ended_at=ts, end_reason=session_lifecycle.SWITCHED),
+                                            ts, True))
+                elif kind == "session_start":
                     row = SessionRow(sid, tool, ev_pid, project, started_at=ts, source="correlator")
                     updates.append((row, ts, False))
                     links.append((sid, ev_pid, tool, ts, "lead", project))
                 elif kind == "session_end":
+                    reason = detail.get("end_reason") or session_lifecycle.IDLE
+                    if native:
+                        updates.append((SessionRow(native, ended_at=ts, end_reason=reason), ts, True))
+                        continue
                     row = SessionRow(
-                        sid, tool, project_path=project, started_at=ts, ended_at=ts, source="correlator",
+                        sid, tool, project_path=project, started_at=ts, ended_at=ts, end_reason=reason,
+                        source="correlator",
                         input_tokens=detail.get("input_tokens", 0),
                         output_tokens=detail.get("output_tokens", 0),
                         files_modified=detail.get("files_modified", 0),
                     )
                     updates.append((row, ts, True))
-            self._facts.sessions(updates)
-            self._facts.links(links)
+            facts.sessions(updates)
+            facts.links(links)
+            if retired:
+                facts.retire(retired)
         except Exception as exc:
             log.warning("Session event persistence failed: %s", exc)
 
