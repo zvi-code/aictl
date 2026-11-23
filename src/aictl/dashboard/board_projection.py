@@ -31,6 +31,7 @@ from .board_filters import SPARK_POINTS, Filters
 from .history_scope import identity, identity_parts
 from .history_scope import label as node_label
 from .projection_utils import (
+    AGENT_SEPARATOR,
     MAX_LIST_ROWS,
     STORED_TITLE_CHARS,
     TITLE_CHARS,
@@ -2177,16 +2178,17 @@ def _loop_rows(board: _Board) -> list[dict]:
         tokens = None
         cost = None
         fields = "model input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd".split()
+        # A subagent's loop is keyed by its address, "<session>/<agent>"; the store keeps the agent id.
+        raw_agent = board.history.split(agent)[1].rpartition(AGENT_SEPARATOR)[2] if agent != sid else ""
         for row in board.history.read(
-            "requests.models", sid=sid, since=loop["since_ts"], until=loop["until_ts"],
-            requested_agent=board.history.split(agent)[1] if agent != sid else "",
+            "requests.models", sid=sid, since=loop["since_ts"], until=loop["until_ts"], requested_agent=raw_agent,
         ):
             model, i, o, cr, cw, ts, stored = (row[k] for k in fields)
             tokens = (tokens or 0) + i + o + cr + cw
             cell_cost = _cost_of(stored, model, i, o, cr, cw, ts)
             if cell_cost is not None:
                 cost = (cost or 0.0) + cell_cost
-        status = board.status.get(sid) if agent == sid else board.sub_status.get(agent)
+        status = board.status.get(sid) if agent == sid else board.sub_status.get((sid, agent))
         rows.append(
             {
                 "agent_id": agent,
@@ -3126,7 +3128,7 @@ def compute_board(
             1
             for sid in board.scope
             for agent in board.agents_by_root.get(sid, ())
-            if agent != sid and board.sub_status.get(agent) in ACTIVE_STATUSES
+            if agent != sid and board.sub_status.get((sid, agent)) in ACTIVE_STATUSES
         ),
         "messages": messages_total,
         "tokens": board.total.tokens,

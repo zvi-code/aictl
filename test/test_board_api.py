@@ -52,7 +52,9 @@ def _insert(conn, table: str, **values) -> None:
     text = {key: values.pop(key) for key in text_fields if key in values}
     row = conn.facts.insert(table, **values)
     if text:
-        fields = ("agent_id",) if table == "agents" else ("dedup_key",) if table == "tool_invocations" else (
+        # agents_text is keyed by (session, agent), as session_facts writes it: an agent id is unique
+        # only within its session.
+        fields = ("session_id", "agent_id") if table == "agents" else ("dedup_key",) if table == "tool_invocations" else (
             ("path", "ts") if table == "file_history" else ("path",))
         retained = {k: row[k] for k in fields}
         if table == "agents":
@@ -365,14 +367,21 @@ class TestAgents:
         assert done["parent_id"] is None
 
     def test_subagent_row(self, db):
-        sub = _agent(_board(db), "sub-1")
+        # The Agent call that started sub-1, linked as Claude Code links it: meta.json toolUseId.
+        _call(db, NOW - 2 * DAY + 34, "done", "claude-code", "/p/alpha", "Agent", source_event_id="toolu_sub1",
+              input=json.dumps({"description": "Map the parser", "subagent_type": "Explore", "prompt": "Look around"}))
+        db.replace("agents", where={"agent_id": "sub-1"}, parent_tool_use_id="toolu_sub1")
+
+        sub = _agent(_board(db), "done/sub-1")
         assert sub["parent_id"] == "done"
         assert sub["role"] == "Explore"
+        assert sub["title"] == "Map the parser"
         assert (sub["input"], sub["output"]) == (10, 5)
         assert sub["tool_calls"] == 2
         assert sub["failures"] == 1
         assert sub["cpu_percent"] is None and sub["mem_mb"] is None
-        assert sub["status"] == "failed"
+        # Its newest line is its final reply (completed): its own end, even though a call of it failed.
+        assert sub["status"] == "ended"
 
     def test_title_from_first_prompt_with_secret_masked(self, db):
         title = _agent(_board(db), "done")["title"]
@@ -383,8 +392,9 @@ class TestAgents:
         assert _agent(_board(db), "vsc")["title"] == "Copilot VS Code · beta"
 
     def test_active_first(self, db):
+        # Active sessions come first, by status group: running and looping, then waiting and idle.
         ids = [a["id"] for a in _board(db)["agents"]]
-        assert ids[:2] == ["waiter", "looper"]
+        assert ids[:2] == ["looper", "waiter"]
 
     def test_row_cap_keeps_every_root_first(self, db):
         conn = db
@@ -409,7 +419,7 @@ class TestAgents:
         assert rows[SONNET]["tokens"] == 3000 + 220 + 20
         assert rows[SONNET]["agents"] == 3
         assert rows[SONNET]["p95_ms"] == 3000
-        assert rows[HAIKU]["agent_ids"] == ["sub-1"]
+        assert rows[HAIKU]["agent_ids"] == ["done/sub-1"]
 
     def test_tool_order_follows_activity(self, db):
         payload = _board(db)
@@ -696,8 +706,10 @@ class TestRowMeaning:
         assert payload["kpis"]["messages"] == 12 + 3 + 2 + 15
         done = _agent(payload, "done")
         assert done["msgs"]["user"] == 2
-        assert _agent(payload, "sub-1")["msgs"]["user"] == 1, "its own task prompt, on its own row only"
-        assert _agent(payload, "sub-1")["title"].startswith("Look around")
+        sub = _agent(payload, "done/sub-1")
+        assert sub["msgs"]["user"] == 1, "its own task prompt, on its own row only"
+        # A subagent is never named by its prompt; the prompt is its secondary line.
+        assert not sub["title"].startswith("Look around") and sub["prompt_line"] == "Look around"
         assert all(p["text"] != "Look around" for p in payload["prompts"])
         assert next(p for p in payload["projects"] if p["project"] == "/p/alpha")["prompts"] == 3
         assert all(r["file"] != "task.md" for r in payload["project_prompts"])
@@ -1266,13 +1278,14 @@ class TestStatusRules:
 
     def test_finished_subagent_of_an_active_session_is_ended(self, db):
         conn = db
-        _insert(conn, "agents", agent_id="s2", session_id="looper", tool="claude-code", task="Plan", is_sidechain=1, started_at=NOW - 100, ended_at=NOW - 90, completed=1)
+        # The Agent tool's result recorded s2 as completed; s3 wrote a line 70 s ago.
+        _insert(conn, "agents", agent_id="s2", session_id="looper", tool="claude-code", task="Plan", is_sidechain=1, started_at=NOW - 100, ended_at=NOW - 90, completed=1, status="completed")
         _insert(conn, "agents", agent_id="s3", session_id="looper", tool="claude-code", task="Plan", is_sidechain=1, started_at=NOW - 80)
         _request(conn, NOW - 70, "looper", "claude-code", "/p/alpha", SONNET, i=1, aid="s3")
 
         payload = _board(db)
-        assert _agent(payload, "s2")["status"] == "ended"
-        assert _agent(payload, "s3")["status"] == "running"
+        assert _agent(payload, "looper/s2")["status"] == "ended"
+        assert _agent(payload, "looper/s3")["status"] == "running"
         assert payload["kpis"]["subagents_running"] == 1
 
 
@@ -1343,7 +1356,7 @@ class TestLoopRule:
             _call(conn, ts + k * 2, "mix", "claude-code", "/p/alpha", "Bash", "a", is_error=1, aid="m-1")
             _call(conn, ts + k * 2 + 1, "mix", "claude-code", "/p/alpha", "Read", "b")
 
-        loops = [loop for loop in _board(db)["loops"] if loop["agent_id"] == "m-1"]
+        loops = [loop for loop in _board(db)["loops"] if loop["agent_id"] == "mix/m-1"]
         assert len(loops) == 1
 
     def test_board_loop_row(self, db):
@@ -1361,6 +1374,20 @@ class TestLoopRule:
         loop = next(row for row in _board(db)["loops"] if row["agent_id"] == "looper")
         assert loop["tokens"] == 42
         assert loop["cost_usd"] == pytest.approx(cost_usd(SONNET, 40, 2), abs=1e-6)
+
+    def test_a_subagent_loop_row_has_its_own_status_and_tokens(self, db):
+        """A subagent's loop row is keyed by its address; its status and model calls are its own."""
+        conn = db
+        ts = NOW - 3 * DAY
+        for k in range(3):
+            _call(conn, ts + k * 2, "mix", "claude-code", "/p/alpha", "Bash", "a", is_error=1, aid="m-1")
+        _request(conn, ts + 3, "mix", "claude-code", "/p/alpha", SONNET, i=40, o=2, aid="m-1")
+        _request(conn, ts + 3, "mix", "claude-code", "/p/alpha", SONNET, i=500, o=5)
+
+        payload = _board(db)
+        loop = next(row for row in payload["loops"] if row["agent_id"] == "mix/m-1")
+        assert loop["tokens"] == 42, "the subagent's model call inside the loop, not its main agent's"
+        assert loop["status"] is not None and loop["status"] == _agent(payload, "mix/m-1")["status"]
 
     def test_ended_session_with_loop_at_end_does_not_loop(self, db):
         conn = db
@@ -1585,7 +1612,7 @@ class TestDetails:
         assert status == 200
         assert d["agent"]["id"] == "done"
         assert d["agent"]["input"] == 310
-        assert [s["id"] for s in d["subagents"]] == ["sub-1"]
+        assert [s["id"] for s in d["subagents"]] == ["done/sub-1"]
         assert {m["model"]: m["msgs"] for m in d["by_model"]} == {SONNET: 3, HAIKU: 1}
         assert d["process"] == {"cpu_percent": None, "mem_mb": None, "pids": [], "started_at": NOW - 2 * DAY}
         assert len(d["turns"]) == 2
@@ -2232,9 +2259,9 @@ class TestAgentSkillsAndContext:
         ctx = session_details._agent_context(db, "ctx", "ctx", True, facts=facts)
         # The seed gives the main agent 1000, 5000, 9000, 2000 and "kid" one call of 77777.
         assert ctx["by_agent"] == [
-            {"agent_id": "", "calls": 4, "first": 1000, "last": 2000, "peak": 9000},
-            {"agent_id": "a-sub", "calls": 3, "first": 12000, "last": 20000, "peak": 28000},
-            {"agent_id": "kid", "calls": 1, "first": 77777, "last": 77777, "peak": 77777},
+            {"agent_id": "", "address": "ctx", "calls": 4, "first": 1000, "last": 2000, "peak": 9000},
+            {"agent_id": "a-sub", "address": "ctx/a-sub", "calls": 3, "first": 12000, "last": 20000, "peak": 28000},
+            {"agent_id": "kid", "address": "ctx/kid", "calls": 1, "first": 77777, "last": 77777, "peak": 77777},
         ]
         assert "by_agent" not in session_details._agent_context(db, "ctx", "a-sub", False, facts=facts)
 
@@ -2590,13 +2617,13 @@ class TestSubagentsInTheWindow:
     def test_a_subagent_that_ended_before_the_window_has_no_row(self, db):
         self._session_with_subagents(db)
         ids = [a["id"] for a in _board(db)["agents"]]
-        assert "new-sub" in ids
-        assert "old-sub" not in ids
+        assert "long/new-sub" in ids
+        assert "long/old-sub" not in ids
 
     def test_the_agent_detail_still_lists_every_subagent(self, db):
         self._session_with_subagents(db)
         subs = [s["id"] for s in agent_detail(db, "long", None, NOW)[1]["subagents"]]
-        assert sorted(subs) == ["new-sub", "old-sub"]
+        assert sorted(subs) == ["long/new-sub", "long/old-sub"]
 
 
 class TestActiveNowFilter:
@@ -3338,7 +3365,7 @@ class TestAgentFlow:
         assert flow["scope"]["matched"] == 0 and flow["summary"]["total_tool_uses"] == 2
         _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, q="ls src", tool_name="Bash", limit=1)
         assert [e["to"] for e in flow["turns"]] == ["Bash"]
-        assert flow["scope"]["matched"] == 1 and flow["scope"]["total"] == 12
+        assert flow["scope"]["matched"] == 1 and flow["scope"]["total"] == 13
         assert flow["scope"]["agents"] == ["sub-f"] and flow["scope"]["tools"] == ["Bash", "Read"]
         _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, failed=True, limit=1)
         assert flow["scope"]["matched"] == 2 and flow["summary"]["omitted_events"] == 1
@@ -3350,9 +3377,10 @@ class TestAgentFlow:
         status, flow = flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert status == 200
         kinds = [e["type"] for e in flow["turns"]]
+        # A subagent's span begins with the task prompt its main agent stored for it.
         assert kinds == [
-            "session_start", "user_message", "api_call", "tool_use", "subagent", "api_call", "subagent_end",
-            "compaction", "user_message", "api_call", "tool_use", "session_end",
+            "session_start", "user_message", "api_call", "tool_use", "subagent", "task_prompt", "api_call",
+            "subagent_end", "compaction", "user_message", "api_call", "tool_use", "session_end",
         ]
         first = flow["turns"][1]
         assert first["message"] == "Fix the parser"
@@ -3363,14 +3391,16 @@ class TestAgentFlow:
         assert bash["to"] == "Bash" and bash["success"] is True and bash["duration_ms"] == 40
         assert json.loads(bash["params"]) == {"command": "ls src"} and bash["result_summary"] == "a.py"
         assert flow["turns"][4]["prompt"] == "Explore the code" and flow["turns"][4]["to"] == "Explore"
-        assert flow["turns"][6]["duration_ms"] == 40_000 and flow["turns"][6]["completed"] is True
-        assert flow["turns"][7]["before_tokens"] == 1000 and flow["turns"][7]["after_tokens"] == 200
-        failed_call = flow["turns"][9]
+        task = flow["turns"][5]
+        assert (task["agent_id"], task["message"], task["source"]) == ("sub-f", "Explore the code", "store")
+        assert flow["turns"][7]["duration_ms"] == 40_000 and flow["turns"][7]["completed"] is True
+        assert flow["turns"][8]["before_tokens"] == 1000 and flow["turns"][8]["after_tokens"] == 200
+        failed_call = flow["turns"][10]
         assert failed_call["is_error"] is True and failed_call["error_type"] == "overloaded" and failed_call["http_status"] == 529
-        assert flow["turns"][10]["success"] is False
-        assert "ttft_ms" not in flow["turns"][5] and flow["turns"][2]["ttft_ms"] == 300
+        assert flow["turns"][11]["success"] is False
+        assert "ttft_ms" not in flow["turns"][6] and flow["turns"][2]["ttft_ms"] == 300
         assert [e["cum_tokens"] for e in flow["turns"] if e["type"] == "api_call"] == [120, 135, 195]
-        assert flow["turns"][9]["rt_tokens"] == 60
+        assert flow["turns"][10]["rt_tokens"] == 60
         assert flow["summary"] == {
             **flow["summary"],
             "total_turns": 2,
@@ -3431,17 +3461,17 @@ class TestAgentFlow:
         monkeypatch.setattr(flow_projection, "MAX_FLOW_EVENTS", 3)
         _, cut = flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert [e["type"] for e in cut["turns"]] == ["api_call", "tool_use", "session_end"]
-        assert cut["summary"]["omitted_events"] == 9 and cut["summary"]["event_count"] == 12
+        assert cut["summary"]["omitted_events"] == 10 and cut["summary"]["event_count"] == 13
         assert cut["summary"]["cumulative_tokens"] == 195 and cut["turns"][0]["cum_tokens"] == 195
-        _, window = flow_projection.agent_flow(db, "flow-s", now=NOW, offset=8, limit=2)
+        _, window = flow_projection.agent_flow(db, "flow-s", now=NOW, offset=9, limit=2)
         assert [(e["type"], e["turn_index"]) for e in window["turns"]] == [("user_message", 2), ("api_call", 2)]
         assert {k: window["summary"][k] for k in ("offset", "shown_events", "omitted_events", "matched_events")} == {
-            "offset": 8, "shown_events": 2, "omitted_events": 8, "matched_events": 12}
+            "offset": 9, "shown_events": 2, "omitted_events": 9, "matched_events": 13}
         assert flow_projection.agent_flow(db, "flow-s", now=NOW, offset=99)[1]["turns"] == []
         marks = [(m["turn"], m["offset"], m["events"], m["tokens"], m["tools"], m["errors"], m["subagents"], m["prompt"])
                  for m in cut["summary"]["turn_marks"]]
-        assert marks == [(0, 0, 1, 0, 0, 0, 0, ""), (1, 1, 7, 135, 1, 0, 1, "Fix the parser"),
-                         (2, 8, 4, 60, 1, 2, 0, "Now the tests")]
+        assert marks == [(0, 0, 1, 0, 0, 0, 0, ""), (1, 1, 8, 135, 1, 0, 1, "Fix the parser"),
+                         (2, 9, 4, 60, 1, 2, 0, "Now the tests")]
 
     def test_an_unknown_agent_is_404(self, db):
         assert flow_projection.agent_flow(db, "nobody", now=NOW, legacy_flow=_no_legacy)[0] == 404

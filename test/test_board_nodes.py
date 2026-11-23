@@ -555,7 +555,8 @@ def test_scoped_drilldowns_and_search_pagination(history):
     assert first[0] == second[0] == 200, (first, second)
     rows = first[1]["rows"] + second[1]["rows"]
     assert first[1]["total"] == second[1]["total"] == len(rows) == 3
-    assert [r["node_id"] for r in rows] == ["legacy", "host-b", "host-a"]
+    # The finder sorts by last activity: host-b's newest request version is at ts 20000.
+    assert [r["node_id"] for r in rows] == ["host-b", "legacy", "host-a"]
     assert first[1]["by_node"] == second[1]["by_node"] == [
         {"node_id": n, "sessions": 1} for n in ("host-a", "host-b", "legacy")
     ]
