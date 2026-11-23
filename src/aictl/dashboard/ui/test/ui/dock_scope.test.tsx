@@ -102,3 +102,20 @@ describe('BRD-SCOPE-02 · Every board panel has a decided scope (guard)', () => 
     expect(empty).toEqual(['effect'])
   })
 })
+
+describe('BRD-SIZE-01 · A panel takes the room its content needs', () => {
+  it('uses the layout height as the most a panel takes, never the least', () => {
+    const local = screen('local')
+    const cap = sections.board.flatMap(section => section.bands.flat()).find(panel => panel.id === 'coverage')!.height
+    const panel = local.host.querySelector<HTMLElement>('#p-coverage > section')!
+    expect(panel.style.maxBlockSize).toBe(`${cap}px`)
+    expect(panel.style.minBlockSize).toBe('')
+    expect(panel.hasAttribute('data-capped')).toBe(true)
+    // A mounted panel keeps no placeholder height.
+    expect(local.host.querySelector<HTMLElement>('#p-coverage')!.style.minBlockSize).toBe('')
+    // A summary without a layout height has neither a cap nor a floor.
+    const kpis = local.host.querySelector<HTMLElement>('#p-kpis > section')!
+    expect([kpis.style.maxBlockSize, kpis.style.minBlockSize]).toEqual(['', ''])
+    local.dispose()
+  })
+})

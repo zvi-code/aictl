@@ -222,9 +222,9 @@ export default function DockScreen(props: {
     const section = () => layout().find(section => section.id === where()?.section)!
     const params = () => section()?.tree.panels[id]?.params ?? {}
     const [cachedHeight, rememberHeight] = createSignal<number>()
-    // Keep offscreen estimates and loaded heights aligned so a section jump doesn't move away
-    // from its target as nearby panels finish loading. Only intrinsic summaries collapse to their content.
-    const height = () => section()?.minHeights?.[id] ?? (flow && !intrinsicHeight.has(id) ? estimate(id) : undefined)
+    // A flowing panel takes the room its content needs: its layout height (or the one set with
+    // Taller and Shorter) is the most it takes, so an empty, waiting or failed panel is a line or two.
+    const height = () => section()?.minHeights?.[id] ?? (intrinsicHeight.has(id) ? undefined : flow ? defaultHeights.get(id) : estimate(id))
     let dispose: (() => void) | undefined
     const hide = () => {
       if (!dispose) return
@@ -237,7 +237,8 @@ export default function DockScreen(props: {
     function placeholder() {
       if (flow && !dispose) element.style.minBlockSize = `${untrack(size)}px`
     }
-    const size = () => Math.max(height() ?? 0, cachedHeight() ?? (id === 'kpis' ? 192 : estimate(id)))
+    // An unmounted panel keeps its measured height, else its estimate, so a section jump lands on its target.
+    const size = () => Math.min(height() ?? Infinity, cachedHeight() ?? (id === 'kpis' ? 192 : estimate(id)))
     createEffect(size, () => placeholder())
     placeholder()
     return {
@@ -249,7 +250,8 @@ export default function DockScreen(props: {
         dispose = runWithOwner(owner, () => render(() => {
           const View = panelView(def)
           const hideTitle = () => !editing() && (where()?.stacked || flow && def.id === 'kpis')
-          return <Panel title={def.title} size={def.defaultSize} fill={!flow} flow={flow} height={height()}
+          return <Panel title={def.title} size={def.defaultSize} fill={!flow} flow={flow}
+            height={flow ? undefined : height()} maxHeight={flow ? height() : undefined}
             heading={hideTitle() ? 'sr-only' : 'visible'} observeViewport={false}
             actions={<Show when={editing() && section()?.tree.panels[id]}><div class={styles.panelActions}>
               <span class={styles.grip} title="Drag to arrange panels" draggable="true" aria-hidden="true"

@@ -25,6 +25,9 @@
 .panel[data-flow] > .header { border: 0; min-block-size: 0; padding-block-end: 0; }
 .panel[data-flow] > .header:not(:has(.title, button)) { padding: 0; }
 .panel[data-flow] > .content { overflow: visible; }
+.panel[data-flow][data-capped] { display: flex; flex-direction: column; overflow: hidden; }
+.panel[data-flow][data-capped] > .header { flex: none; }
+.panel[data-flow][data-capped] > .content { flex: 0 1 auto; min-block-size: 0; overflow: auto; }
 .panel[data-flow] .content figure:has(> figcaption + [aria-hidden="true"] + ul) {
   min-block-size: calc(var(--panel-sm) + var(--space-8));
 }

@@ -12,6 +12,8 @@ export function Panel(props: {
   flow?: boolean
   heading?: 'visible' | 'sr-only'
   height?: number
+  /** The most room a flowing panel takes; its content scrolls inside beyond that. */
+  maxHeight?: number
   actions?: JSX.Element
   children: JSX.Element
 }) {
@@ -30,7 +32,9 @@ export function Panel(props: {
   })
 
   return <section ref={box} class={styles.panel} data-size={props.size ?? 'medium'} data-fill={props.fill ? '' : undefined}
-    data-flow={props.flow ? '' : undefined} style={{ 'min-block-size': props.height ? `${props.height}px` : undefined }} aria-labelledby={title}>
+    data-flow={props.flow ? '' : undefined} data-capped={props.maxHeight ? '' : undefined}
+    style={{ 'min-block-size': props.height ? `${props.height}px` : undefined, 'max-block-size': props.maxHeight ? `${props.maxHeight}px` : undefined }}
+    aria-labelledby={title}>
     <header class={styles.header}>
       <h3 id={title} class={props.heading === 'sr-only' ? styles.visuallyHidden : styles.title}>{props.title}</h3>
       {props.actions}

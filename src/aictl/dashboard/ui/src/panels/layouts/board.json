@@ -3,15 +3,15 @@
   "screen": "board",
   "tree": [
     { "id": "top", "title": "Overview", "bands": [[{"id":"kpis","height":260}]] },
-    { "id": "usage", "title": "Usage and cost", "bands": [[{"id":"tokens","span":7,"height":336,"params":{"compact":true}},{"id":"cacheRate","span":5,"height":336,"params":{"compact":true}}], [{"id":"cost","span":6,"height":432},{"id":"messages","span":6,"height":432}], [{"id":"projects"}]] },
-    { "id": "agents", "title": "Agents", "bands": [[{"id":"agentActivity","height":296}], [{"id":"attention","height":72}], [{"id":"agentsT"}], [{"id":"byModel","span":8},{"id":"byRole","span":4}]] },
+    { "id": "usage", "title": "Usage and cost", "bands": [[{"id":"tokens","span":7,"height":400,"params":{"compact":true}},{"id":"cacheRate","span":5,"height":400,"params":{"compact":true}}], [{"id":"cost","span":6,"height":432},{"id":"messages","span":6,"height":432}], [{"id":"projects"}]] },
+    { "id": "agents", "title": "Agents", "bands": [[{"id":"agentActivity","height":416}], [{"id":"attention","height":72}], [{"id":"agentsT"}], [{"id":"byModel","span":8},{"id":"byRole","span":4}]] },
     { "id": "sessions", "title": "Sessions", "bands": [[{"id":"sessionsT","height":496}]] },
-    { "id": "prompts", "title": "Prompts and skills", "bands": [[{"id":"promptsL","span":8,"height":552},{"id":"skills","span":4}], [{"id":"workflows","height":448}]] },
-    { "id": "context", "title": "Context", "bands": [[{"id":"budget"}], [{"id":"tokenSplit","span":6},{"id":"ctxMap","span":6}], [{"id":"memory","span":6},{"id":"dailyModels","span":6,"height":432}], [{"id":"inventory","height":416}], [{"id":"lifetime"}]] },
-    { "id": "tools", "title": "Tools, failures and speed", "bands": [[{"id":"toolCalls","span":7},{"id":"confirms","span":5}], [{"id":"errors","span":5,"height":432},{"id":"latency","span":7,"height":432}], [{"id":"mcpServers","height":552}], [{"id":"convergence","height":616}], [{"id":"loops","height":552}]] },
-    { "id": "changes", "title": "Changes and testing", "bands": [[{"id":"changesT","span":6,"height":504},{"id":"tests","span":6,"height":432}], [{"id":"memfiles","height":432}]] },
-    { "id": "resources", "title": "Machine", "bands": [[{"id":"cpu","span":6,"height":336},{"id":"ram","span":6,"height":336}], [{"id":"alerts","height":416}], [{"id":"procs","height":568}], [{"id":"traffic"}], [{"id":"daemon"}]] },
-    { "id": "effect", "title": "Settings in effect", "bands": [[{"id":"findings","height":432}], [{"id":"settings","height":432}]] },
-    { "id": "sources", "title": "What each tool reports", "bands": [[{"id":"coverage","height":416}]] }
+    { "id": "prompts", "title": "Prompts and skills", "bands": [[{"id":"promptsL","span":8,"height":784},{"id":"skills","span":4}], [{"id":"workflows","height":448}]] },
+    { "id": "context", "title": "Context", "bands": [[{"id":"budget"}], [{"id":"tokenSplit","span":6},{"id":"ctxMap","span":6}], [{"id":"memory","span":6},{"id":"dailyModels","span":6,"height":432}], [{"id":"inventory","height":928}], [{"id":"lifetime"}]] },
+    { "id": "tools", "title": "Tools, failures and speed", "bands": [[{"id":"toolCalls","span":7},{"id":"confirms","span":5}], [{"id":"errors","span":5,"height":784},{"id":"latency","span":7,"height":784}], [{"id":"mcpServers","height":552}], [{"id":"convergence","height":616}], [{"id":"loops","height":552}]] },
+    { "id": "changes", "title": "Changes and testing", "bands": [[{"id":"changesT","span":6,"height":768},{"id":"tests","span":6,"height":800}], [{"id":"memfiles","height":720}]] },
+    { "id": "resources", "title": "Machine", "bands": [[{"id":"cpu","span":6,"height":512},{"id":"ram","span":6,"height":512}], [{"id":"alerts","height":480}], [{"id":"procs","height":800}], [{"id":"traffic"}], [{"id":"daemon"}]] },
+    { "id": "effect", "title": "Settings in effect", "bands": [[{"id":"findings","height":768}], [{"id":"settings","height":512}]] },
+    { "id": "sources", "title": "What each tool reports", "bands": [[{"id":"coverage","height":752}]] }
   ]
 }

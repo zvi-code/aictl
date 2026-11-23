@@ -8,6 +8,7 @@ export type LayoutScreen = 'board' | 'health'
 export type Placement = { id: string; span?: number; height?: number; params?: Record<string, unknown> }
 type Section = { id: string; title: string; bands: Placement[][] }
 export const sections: Record<LayoutScreen, Section[]> = { board: board.tree, health: health.tree }
+/** `minHeights` keeps its first name in saved layouts: on the flowing board it is the most room a panel takes. */
 export type SectionState = { id: string; open: boolean; height: number; tree: SerializedDockview; minHeights?: Record<string, number> }
 export type DockNode = SerializedDockview['grid']['root']
 export type GroupState = Exclude<DockNode['data'], DockNode[]>
