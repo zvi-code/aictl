@@ -278,6 +278,12 @@ class TestCredits:
         assert payload["kpis"]["cost_usd"] == 6.0  # list price: $3 per million input tokens, twice
         assert (credits["usd"], credits["list_usd"], credits["list_unpriced_tokens"]) == (12.77, 3.0, 500)
         assert credits["cost_usd"] == 15.77  # Claude Code at list price, Copilot at what it billed
+        # Fleet scope names a session by node and id, in the credits and in the requests alike.
+        from aictl.dashboard.projections.history import HistoryScope
+
+        fleet = HistoryScope(db.history_store.reader, None, qualified=True)
+        fleet_credits = compute_board(db, Filters(since=at(DAY2, 0), until=at(DAY3, 0)), None, at(DAY3, 0), history=fleet)["credits"]
+        assert (fleet_credits["list_usd"], fleet_credits["cost_usd"]) == (3.0, 15.77)
 
     def test_credits_follow_the_tool_filter(self, db):
         self.copilot(db, "a", 1200.5)
