@@ -158,6 +158,30 @@ describe('BOARD-MACHINE-04 · CPU in fleet scope does not show this machine’s 
     expect(host.querySelector('meter')).toBeNull()
     dispose()
   })
+
+  /** The CPU history source answers with the per-tool series, as the board's reader does. */
+  const cpuContext = (cpu: Record<string, (number | null)[]>) => {
+    const { ctx } = boardContext('fleet', {}, { range: { bucket_starts: [0, 60] } })
+    const read = ctx.read
+    ctx.read = (source => 'path' in source && source.path === 'cpu' ? { state: 'ready', value: cpu } : read(source)) as typeof ctx.read
+    return ctx
+  }
+
+  it('says CPU was not measured instead of drawing a flat line when every sample is unmeasured', () => {
+    const ctx = cpuContext({ 'copilot-cli': [null, null] })
+    const { host, dispose } = mount(() => <ResourceHistory ctx={ctx} def={def('cpu')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    expect(host.textContent).toContain('No CPU was measured in this time range')
+    expect(host.textContent).toContain('not drawn as 0')
+    dispose()
+  })
+
+  it('draws measured CPU and states that unmeasured samples are left out', () => {
+    const ctx = cpuContext({ 'copilot-cli': [null, 2] })
+    const { host, dispose } = mount(() => <ResourceHistory ctx={ctx} def={def('cpu')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    expect(host.textContent).not.toContain('No CPU was measured')
+    expect(host.textContent).toContain('not drawn as 0')
+    dispose()
+  })
 })
 
 describe('BOARD-COVERAGE-01 · What each tool reports shows short states and only the rows that differ', () => {

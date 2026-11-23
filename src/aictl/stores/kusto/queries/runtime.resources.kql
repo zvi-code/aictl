@@ -1,13 +1,32 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, grid:long,
                          restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), row_limit:long);
-process_snapshots
-| where (all_nodes or node_id == requested_node) and ts between (since .. until)
+// The daemon writes a tool's sample when it changes and rewrites an unchanged one every 300 s
+// (SAMPLE_HEARTBEAT_S), so a sample holds until the tool's next one, at most hold seconds:
+// longer means the daemon stopped, and nothing is drawn.
+let hold = 360.0;
+let width = (until - since) / grid;
+let samples = process_snapshots
+| where (all_nodes or node_id == requested_node) and ts between ((since - hold) .. until)
 | summarize arg_max(_v, *) by node_id, ['project'], ts, pid
 | where not(coalesce(column_ifexists('_deleted', false), false)) and (not(restrict_tools) or tool in (requested_tools))
 | summarize cpu=iff(countif(isnotnull(cpu_percent)) > 0, sum(cpu_percent), real(null)),
-            mem=iff(countif(isnotnull(memory_rss_mb)) > 0, sum(memory_rss_mb), real(null)) by tool, node_id, ts
-| extend b=min_of(grid - 1, tolong((ts - since) * grid / (until - since)))
-| summarize cpu=avg(cpu), mem=avg(mem) by tool, node_id, b
+            mem=iff(countif(isnotnull(memory_rss_mb)) > 0, sum(memory_rss_mb), real(null)) by tool, node_id, ts;
+// Daemons before the CPU fix stored 0 for every process: they could not measure it. A node's CPU is
+// drawn from its first non-zero sample on; its earlier zeros are not measurements.
+let measured = samples | where cpu > 0 | summarize cpu_from=min(ts) by node_id;
+samples
+| join kind=leftouter measured on node_id
+| extend cpu=iff(isnull(cpu_from) or ts < cpu_from, real(null), cpu)
+| order by node_id asc, tool asc, ts asc
+| extend next_ts=iff(next(node_id) == node_id and next(tool) == tool, next(ts), real(null))
+| extend end_ts=min_of(coalesce(next_ts, until), ts + hold, until)
+| where ts >= since or end_ts > since
+| extend b0=max_of(0, min_of(grid - 1, tolong((max_of(ts, since) - since) / width)))
+| extend b1=max_of(b0, min_of(grid - 1, tolong(ceiling((end_ts - since) / width)) - 1))
+| mv-expand b=range(b0, b1, 1) to typeof(long)
+// avg() of only nulls is NaN, not null.
+| summarize cpu=iff(countif(isnotnull(cpu)) > 0, avg(cpu), real(null)),
+            mem=iff(countif(isnotnull(mem)) > 0, avg(mem), real(null)) by tool, node_id, b
 | summarize cpu=iff(countif(isnotnull(cpu)) > 0, sum(cpu), real(null)),
             mem=iff(countif(isnotnull(mem)) > 0, sum(mem), real(null)) by tool, b
 | order by tool asc, b asc

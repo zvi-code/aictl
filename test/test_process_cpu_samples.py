@@ -126,3 +126,15 @@ def test_tool_with_no_process_stores_zero_and_unreadable_cpu_is_unknown():
         SimpleNamespace(tool="codex-cli", processes=[ProcessInfo(pid=1, name="a", cmdline="a", cpu_pct="", mem_mb="5.0")],
                         files=[], live=None),
     ])) == [("cursor", 0, 0, 0, 0.0), ("codex-cli", None, 5.0, 0, 0.0)]
+
+
+def test_resources_view_holds_a_sample_longer_than_the_daemon_heartbeat():
+    from importlib.resources import files
+
+    from aictl.orchestrator import SAMPLE_HEARTBEAT_S
+
+    text = (files("aictl.stores.kusto") / "queries" / "runtime.resources.kql").read_text()
+    hold = float(text.split("let hold = ", 1)[1].split(";", 1)[0])
+    # Shorter, and a held value would vanish between two heartbeats; much longer, and a stopped daemon's
+    # last sample would be drawn as if it were still measured.
+    assert SAMPLE_HEARTBEAT_S < hold <= SAMPLE_HEARTBEAT_S * 1.5

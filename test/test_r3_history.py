@@ -32,7 +32,8 @@ def test_runtime_averages_per_node_before_summing(kusto_store):
     history = HistoryScope(kusto_store.history_store.reader, None)
     board = SimpleNamespace(history=history, f=Filters(since=10, until=20, buckets=2), tool_order=[])
     cpu, mem = _resource_series(board)
-    assert cpu["copilot-cli"] == [100, None]
+    # Bucket 1 has no row: each node's last sample holds until the end of the range.
+    assert cpu["copilot-cli"] == [100, 110]
     assert mem["copilot-cli"] == [None, None]
     report = _reported_machine(history, None, 20)
     assert [(r["node_id"], r["active_processes"]) for r in report["hosts"]] == [("x", 2), ("y", None)]
@@ -40,6 +41,27 @@ def test_runtime_averages_per_node_before_summing(kusto_store):
     assert report["recorded_processes"][0]["node_id"] == "y"
     nodes = node_view(None, {"view": ["health"], "scope": ["fleet"]}, reader=history.reader, now=20)
     assert [r["status"] for r in nodes["rows"]] == ["reported", "reported"]
+
+
+def test_resource_samples_hold_until_the_next_and_unmeasured_cpu_is_not_drawn(kusto_store):
+    seed = kusto_store.insert
+    # An unchanged sample is rewritten every 300 s: a value that held for the hour has a row each 5 minutes.
+    for ts in range(10000, 13600, 300):
+        seed("process_snapshots", node_id="x", ts=ts, pid=1, tool="copilot-cli", cpu_percent=12.5, memory_rss_mb=800)
+    seed("process_snapshots", node_id="x", ts=10000, pid=2, tool="cursor", cpu_percent=0, memory_rss_mb=0)
+    # The daemon stopped after one sample: it holds for 360 s, not for the rest of the hour.
+    seed("process_snapshots", node_id="y", ts=10000, pid=3, tool="codex-cli", cpu_percent=4, memory_rss_mb=100)
+    # A daemon from before the CPU fix stored 0 for every process: memory is drawn, CPU is not.
+    for ts in (10000, 10300):
+        seed("process_snapshots", node_id="old", ts=ts, pid=4, tool="claude-desktop", cpu_percent=0, memory_rss_mb=500)
+    history = HistoryScope(kusto_store.history_store.reader, None)
+    board = SimpleNamespace(history=history, f=Filters(since=10000, until=13600, buckets=60), tool_order=[])
+    cpu, mem = _resource_series(board)
+    assert cpu["copilot-cli"] == [12.5] * 60 and mem["copilot-cli"] == [800] * 60
+    assert cpu["cursor"] == [0] * 6 + [None] * 54
+    assert cpu["codex-cli"] == [4] * 6 + [None] * 54
+    assert cpu["claude-desktop"] == [None] * 60
+    assert mem["claude-desktop"] == [500] * 11 + [None] * 49
 
 
 def test_history_catalog_samples_and_logical_totals(kusto_store):
