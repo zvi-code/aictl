@@ -80,7 +80,8 @@ export function ResourceHistory(props: PanelProps) {
   const unmeasured = 'CPU that a node’s aictl could not measure is left out, not drawn as 0: aictl versions before the CPU fix stored 0 for every process.'
   return <div class={styles.stack}>
     <p class={styles.note}>{ctx.scope() === 'local' ? '' : `Each line is one tool, summed over ${ctx.scope() === 'fleet' ? 'every node' : 'the selected node'}. `}
-      History follows the Tool filter and time range, not project, model or status.</p>
+      History follows the Tool filter and time range, not project, model or status.
+      {cpu && seriesIds().length && measured() ? ' CPU a node could not measure is left out, not drawn as 0.' : ''}</p>
     <Metrics ctx={ctx} columns={[{ ...def.columns[0], label: `${metricLabel()} across tools${ctx.scope() === 'fleet' ? ' and nodes' : ''}` }]}
       value={{ [def.columns[0].path]: total() }} />
     <Show when={seriesIds().length && measured()} fallback={
@@ -91,7 +92,6 @@ export function ResourceHistory(props: PanelProps) {
         <SeriesView panel={props} columns={columns} source={series} axis={() => ctx.read(buckets)} time select
           description={cpu ? 'CPU by tool over time. 100% is one full core.' : 'Resident memory by tool over time (MiB).'} />
       </div>
-      <Show when={cpu}><p class={styles.note}>{unmeasured}</p></Show>
     </Show>
     {/* The core meters are this machine's live readings: they do not describe a node or the fleet. */}
     <Show when={cpu && ctx.scope() === 'local'}>
