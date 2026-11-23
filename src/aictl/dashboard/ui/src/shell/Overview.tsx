@@ -52,7 +52,7 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
       <section class={styles.historyStatus} aria-label="Selected history">
         <h2>{scopeLabel(ctx.scope(), ctx.nodeId())} · {period()} history</h2>
         <p role="status">{history().state === 'error' ? 'History could not be loaded.' :
-          history().state === 'loading' ? 'Waiting for the first history result.' : 'No history result is available from this source.'}</p>
+          history().state === 'loading' ? 'Reading the selected history…' : 'No history result is available from this source.'}</p>
         <p>Usage, cost and failure trends appear when the selected history is available.</p>
         <Show when={history().message}>{reason => <details><summary>Read error</summary><p>{reason()}</p></details>}</Show>
         <div class={styles.controls}>

@@ -63,7 +63,7 @@ export function McpServers(props: PanelProps) {
   const result = (): Read => {
     if (noTools()) return { state: 'empty', message: 'No tools are selected.' }
     if (read()?.data && !data()) return { state: 'error', message: 'The server did not confirm the requested node scope.' }
-    const value = detailRead(read(), data()?.groups, ctx.paused(), 'the server to run the tools.mcp query')
+    const value = detailRead(read(), data()?.groups, ctx.paused(), 'MCP tool calls')
     return value.state === 'error' ? { ...value, message: `Could not load MCP usage: ${value.message ?? 'The request failed.'}` } : value
   }
   const rows = createMemo(() => mcpRows(data()))
@@ -127,7 +127,7 @@ export function Convergence(props: PanelProps) {
   const result = (): Read => {
     if (noTools()) return { state: 'empty', message: 'No tools are selected.' }
     if (read()?.data && !data()) return { state: 'error', message: 'The server did not confirm the requested node scope.' }
-    const value = detailRead(read(), data()?.rows, ctx.paused(), 'the server to run the sessions.convergence query')
+    const value = detailRead(read(), data()?.rows, ctx.paused(), 'session requests')
     return value.state === 'error' ? { ...value, message: `Could not load convergence: ${value.message ?? 'The request failed.'}` } : value
   }
   const rows = createMemo(() => (data()?.rows ?? []).filter(row => !only() || row.signals.some(signal => signal.id === only())))
