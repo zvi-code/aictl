@@ -7,7 +7,7 @@ import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 
 export type { QueryBlock }
-export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation'
+export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -89,7 +89,26 @@ export type OrientationBody = Base<'orientation'> & {
   projects: OrientationProject[]; tools: OrientationTool[]
   summary: { sessions: number; edited: number; projects: number; never: number; never_cost_usd: Num; no_project: number }
 }
-export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody
+export type FixedKind = 'instruction_file' | 'memory_file' | 'system_prompt_other' | 'skills' | 'mcp_instructions' | 'custom_agents' | 'tools_listed'
+export type FixedCell = {
+  kind: FixedKind; reported: boolean; sessions: Num; session_share: Num; p50_tokens: Num; avg_tokens: Num; p50_items: Num; estimated: boolean
+}
+export type FixedTool = {
+  tool: string; sessions: number; p50_tokens: Num; p90_tokens: Num; avg_tokens: Num; p50_skills: Num; estimated: boolean; kinds: FixedCell[]
+}
+export type FixedSkills = {
+  tool: string; listed: Num; used: Num; listing_tokens: Num; unused_tokens: Num; uses: number; skills_used: number; triggers: string[]
+}
+export type FixedSkill = { tool: string; name: string; sessions: number; tokens: number; uses: number }
+export type FixedFile = { tool: string; file: string; sessions: number; loads: number; avg_tokens: Num; max_tokens: Num; tokens: number }
+export type FixedBody = Base<'fixed'> & {
+  tools: FixedTool[]; skills: FixedSkills[]; top_skills: FixedSkill[]; files: FixedFile[]
+  summary: {
+    sessions: number; heaviest: { tool: string; p50_tokens: number } | null; listed: Num; never_used: Num; never_used_share: Num
+    listing_tokens: Num; unused_tokens: Num; listing_not_reported: string[]
+  }
+}
+export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody | FixedBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
@@ -236,6 +255,38 @@ export function orientationFinding(body: OrientationBody) {
     `${count(top.p50_requests)} requests costing ${money(top.p50_cost_usd)} before its first edit.${range}${never}`
 }
 
+/** A count and its noun: 1 session, 2 sessions. */
+export const plural = (n: number, noun: string) => `${fmtNum(n)} ${n === 1 ? noun : `${noun}s`}`
+
+export const FIXED_LABELS: Record<FixedKind, string> = {
+  instruction_file: 'Instruction files', memory_file: 'Memory files', system_prompt_other: 'Other system prompt',
+  skills: 'Skill listing', mcp_instructions: 'MCP instructions', custom_agents: 'Custom agents', tools_listed: 'Deferred tool list',
+}
+export const FIXED_KINDS = Object.keys(FIXED_LABELS) as FixedKind[]
+
+/** The kind with the largest median in a tool's fixed context, among the kinds it reports. */
+export const heaviestKind = (tool: FixedTool) => tool.kinds.filter(cell => cell.p50_tokens != null)
+  .sort((a, b) => (b.p50_tokens ?? 0) - (a.p50_tokens ?? 0))[0]
+
+export function fixedFinding(body: FixedBody, label: Label) {
+  const s = body.summary
+  if (!s.sessions) return 'No session in this period records its fixed context.'
+  const top = body.tools.find(tool => tool.tool === s.heaviest?.tool)
+  const kind = top && heaviestKind(top)
+  const heavy = top ? `${label(top.tool)} sessions carry the most fixed context: a median ${tokens(top.p50_tokens)} before any work ` +
+    `over ${plural(top.sessions, 'session')}` +
+    (kind ? `, ${FIXED_LABELS[kind.kind].toLowerCase()} a median ${tokens(kind.p50_tokens)} of it` : '') + ' (estimated).' : ''
+  const listing = body.skills.filter(row => row.listed != null)
+  const skills = s.listed == null
+    ? ' No tool in this period reports the skills it lists.'
+    : ` Of ${fmtNum(s.listed)} skills ${list(listing.map(row => label(row.tool)))} listed, ${count(s.never_used)} were never used in the period; ` +
+      `listing them took ${tokens(s.unused_tokens)} of ${tokens(s.listing_tokens)}.`
+  const file = body.files[0]
+  const files = file ? ` The costliest instruction or memory file is ${file.file} in ${label(file.tool)}: ` +
+    `${tokens(file.avg_tokens)} per load in ${plural(file.sessions, 'session')}.` : ''
+  return `${heavy}${skills}${files}`.trim()
+}
+
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */
 export const scaled = (value: Num, largest: number) => value == null || largest <= 0 ? 0 : Math.max(0, value / largest)
 
@@ -288,6 +339,10 @@ export const timeHero = (body: TimeBody) => hero(
   'of agent time went to its own tool calls, the rest to the model (summed durations)')
 export const contextHero = (body: ContextBody) => hero(body.summary.heavy_cost_share, fmtShare,
   'of the cost is in requests that read a context of 200k tokens or more')
+export const fixedHero = (body: FixedBody) => body.summary.never_used_share != null
+  ? hero(body.summary.never_used_share, fmtShare, `of the ${fmtNum(body.summary.listed)} skills listed in sessions' fixed context were never used in the period`)
+  : body.summary.heaviest ? hero(body.summary.heaviest.p50_tokens, value => `${fmtN(value)} tokens`,
+    `median fixed context of a ${toolLabel(body.summary.heaviest.tool)} session before any work (estimated)`) : undefined
 export function orientationHero(body: OrientationBody) {
   const most = body.projects.map(project => project.p50_requests).filter((value): value is number => value != null)
   return most.length ? hero(Math.max(...most), fmtNum,

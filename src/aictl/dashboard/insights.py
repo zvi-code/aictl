@@ -26,6 +26,7 @@ CARDS = {
     "time": "insights.time_split",
     "context": "insights.context_weight",
     "orientation": "insights.orientation",
+    "fixed": "insights.fixed_context",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -34,6 +35,9 @@ OUTCOMES = ("identical_failed", "identical_succeeded", "changed_failed", "change
 SHOWN_TOOL_NAMES = 10
 CONTEXT_BUCKETS = ("under_50k", "50_100k", "100_200k", "200_500k", "over_500k")
 HEAVY_CONTEXT = ("200_500k", "over_500k")
+# The kinds of a session's fixed context (ingesters/context_items.py), in the order the card stacks them.
+FIXED_KINDS = ("instruction_file", "memory_file", "system_prompt_other", "skills", "mcp_instructions", "custom_agents",
+               "tools_listed")
 
 
 def _n(value: Any) -> float:
@@ -374,9 +378,76 @@ def orientation(rows: list[dict]) -> dict:
     }
 
 
+def fixed_context(rows: list[dict]) -> dict:
+    """Per tool: the fixed context of its sessions by kind; the skills listed against those used; the heaviest files.
+
+    A kind no session of a tool reports is not reported (None), and so is the skill listing of a tool that has uses only.
+    """
+    kinds = {(row.get("tool"), row.get("kind")): row for row in _of(rows, "kind")}
+    tools = []
+    for row in _of(rows, "tool"):
+        tool, sessions = row.get("tool"), _int(row.get("sessions"))
+        cells = []
+        for kind in FIXED_KINDS:
+            cell = kinds.get((tool, kind), {})
+            found = _int(cell.get("sessions"))
+            cells.append({
+                "kind": kind, "reported": bool(found), "sessions": found or None,
+                "session_share": _ratio(found, sessions) if found else None,
+                "p50_tokens": _cost(cell.get("p50_tokens")) if found else None,
+                "avg_tokens": _ratio(_n(cell.get("sum_tokens")), sessions) if found else None,
+                "p50_items": _cost(cell.get("p50_items")) if found else None,
+                "estimated": bool(_int(cell.get("estimated"))),
+            })
+        tools.append({
+            "tool": tool, "sessions": sessions, "p50_tokens": _cost(row.get("p50_tokens")),
+            "p90_tokens": _cost(row.get("p90_tokens")), "avg_tokens": _ratio(_n(row.get("sum_tokens")), sessions),
+            "p50_skills": _cost(row.get("p50_skills")), "estimated": bool(_int(row.get("estimated"))), "kinds": cells,
+        })
+    tools.sort(key=lambda tool: (-_n(tool["p50_tokens"]), str(tool["tool"])))
+    listings = {row.get("tool"): row for row in _of(rows, "skills")}
+    uses = {row.get("tool"): row for row in _of(rows, "uses")}
+    skills = []
+    for tool in sorted(set(listings) | set(uses), key=str):
+        listing, used = listings.get(tool), uses.get(tool, {})
+        skills.append({
+            "tool": tool, "listed": _int(listing.get("listed")) if listing else None,
+            "used": _int(listing.get("used")) if listing else None,
+            "listing_tokens": _n(listing.get("sum_tokens")) if listing else None,
+            "unused_tokens": _n(listing.get("unused_tokens")) if listing else None,
+            "uses": _int(used.get("uses")), "skills_used": _int(used.get("used")),
+            "triggers": sorted(str(trigger) for trigger in (used.get("triggers") or []) if trigger),
+        })
+    skills.sort(key=lambda row: (-_n(row["listing_tokens"]), -row["uses"]))
+    top_skills = sorted(({"tool": row.get("tool"), "name": row.get("name"), "sessions": _int(row.get("sessions")),
+                          "tokens": _n(row.get("sum_tokens")), "uses": _int(row.get("uses"))} for row in _of(rows, "skill")),
+                        key=lambda row: (-row["tokens"], str(row["name"])))
+    files = sorted(({"tool": row.get("tool"), "file": row.get("file"), "sessions": _int(row.get("sessions")),
+                     "loads": _int(row.get("loads")), "avg_tokens": _cost(row.get("avg_tokens")),
+                     "max_tokens": _cost(row.get("max_tokens")), "tokens": _n(row.get("sum_tokens"))}
+                    for row in _of(rows, "file")), key=lambda row: (-row["tokens"], str(row["file"])))
+    listed = [row for row in skills if row["listed"] is not None]
+    count = sum(row["listed"] for row in listed)
+    never = sum(row["listed"] - row["used"] for row in listed)
+    heaviest = tools[0] if tools and tools[0]["p50_tokens"] is not None else None
+    return {
+        "tools": tools, "skills": skills, "top_skills": top_skills, "files": files,
+        "summary": {
+            "sessions": sum(tool["sessions"] for tool in tools),
+            "heaviest": {"tool": heaviest["tool"], "p50_tokens": heaviest["p50_tokens"]} if heaviest else None,
+            "listed": count if listed else None, "never_used": never if listed else None,
+            "never_used_share": _ratio(never, count) if listed else None,
+            "listing_tokens": sum(_n(row["listing_tokens"]) for row in listed) if listed else None,
+            "unused_tokens": sum(_n(row["unused_tokens"]) for row in listed) if listed else None,
+            "listing_not_reported": [row["tool"] for row in skills if row["listed"] is None],
+        },
+        "sessions": sorted(_sessions(rows, ("tokens", "skills")), key=lambda row: -_n(row["tokens"])),
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
-    "time": time_split, "context": context_weight, "orientation": orientation,
+    "time": time_split, "context": context_weight, "orientation": orientation, "fixed": fixed_context,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -388,6 +459,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "time": lambda history, params: history.read("insights.time_split", limit=ROW_LIMIT, **params),
     "context": lambda history, params: history.read("insights.context_weight", limit=ROW_LIMIT, **params),
     "orientation": lambda history, params: history.read("insights.orientation", limit=ROW_LIMIT, **params),
+    "fixed": lambda history, params: history.read("insights.fixed_context", limit=ROW_LIMIT, **params),
 }
 
 

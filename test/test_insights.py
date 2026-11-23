@@ -13,11 +13,13 @@ from pathlib import Path
 
 import pytest
 
+from aictl.context_lists import list_id
 from aictl.dashboard import board_routes, insights
 from aictl.dashboard.board_filters import Filters
 from aictl.dashboard.projections.history import HistoryScope
 from aictl.stores.base import ReadResult, StoreError
 from aictl.stores.kusto.reader import _CACHE_TTL_S, _VIEWS
+from aictl.stores.kusto.tables import TABLES
 
 QUERIES = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "kusto" / "queries"
 PERIOD = Filters(since=0.0, until=100_000.0)
@@ -397,6 +399,92 @@ def test_time_split_names_command_tools_and_shell_words_by_the_python_rules():
     rule = (shell_program._PREFIXES | shell_program._ENDS | shell_program._FOLDER
             | {"for", "foreach", "case", "select", "function"}) - {"!", "{", "}"}
     assert rule <= words, sorted(rule - words)
+
+
+def _item(store, session, kind, name, ts, tokens=0, *, agent="", tool="claude-code", path="", removed=0, **values):
+    store.insert("session_context_items", session_id=session, agent_id=agent, kind=kind, name=name, ts=ts, path=path,
+                 chars=tokens * 4, tokens=tokens, estimated=1, removed=removed, tool=tool, **values)
+
+
+def _listing(store, session, kind, items, ts, *, agent="", tool="claude-code", **values):
+    """A list row as context_lists.group writes it: the items once in context_lists, one pointer per announcement."""
+    lid = list_id(kind, [{"name": name, "tokens": tokens} for name, tokens in items])
+    for name, tokens in items:
+        store.insert("context_lists", list_id=lid, kind=kind, name=name, path="", chars=tokens * 4, tokens=tokens,
+                     estimated=1, removed=0, tool=tool)
+    _item(store, session, kind, f"list:{lid}", ts, sum(tokens for _, tokens in items), agent=agent, tool=tool, **values)
+
+
+def _use(store, key, ts, name, *, session="s1", tool="claude-code", trigger="agent-invoked", **values):
+    store.insert("skill_uses", dedup_key=key, ts=ts, session_id=session, agent_id="", tool=tool, name=name, trigger=trigger,
+                 **values)
+
+
+def test_fixed_context_counts_each_item_once_as_of_its_last_reset(kusto_store):
+    s = kusto_store
+    # s1: a skill listing, sent again after a compaction (the same list: one key, its newest record counts).
+    _item(s, "s1", "reset", "skills", 10.0)
+    _listing(s, "s1", "skills", [("alpha", 100), ("beta", 200)], 10.0)
+    _listing(s, "s1", "skills", [("zeta", 5000)], 10.0)                    # not sent again after the compaction
+    _item(s, "s1", "mcp_instructions", "srv", 20.0, 300)                   # not sent again either
+    _item(s, "s1", "reset", "*", 50.0)                                     # the compaction
+    _listing(s, "s1", "skills", [("alpha", 100), ("beta", 200)], 50.0, _v=NEWER)
+    _item(s, "s1", "memory_file", "/home/u/proj/CLAUDE.md", 50.0, 500, path="/home/u/proj/CLAUDE.md")
+    _item(s, "s1", "memory_file", "/home/u/proj/CLAUDE.md", 50.0, 1000, path="/home/u/proj/CLAUDE.md", _v=NEWER)
+    _item(s, "s1", "tools_listed", "Read", 55.0, 10)
+    _item(s, "s1", "tools_listed", "Grep", 60.0, removed=1)                # removed: not in the context
+    _listing(s, "s1", "skills", [("gamma", 999)], 55.0, agent="sub")       # a subagent's: not the session's fixed context
+    _item(s, "s1", "report", "", 60.0, 90_000)                             # the /context report: a measurement, not an item
+    # s2: a full listing replaces an earlier one; both lists hold alpha and were written in one version.
+    _listing(s, "s2", "skills", [("alpha", 100)], 20.0)
+    _item(s, "s2", "reset", "skills", 30.0)
+    _listing(s, "s2", "skills", [("alpha", 100), ("delta", 400)], 30.0)
+    _item(s, "s2", "memory_file", "/work/AGENTS.md", 30.0, 50, path="/work/AGENTS.md")
+    # c1: a Copilot CLI system prompt replaced an earlier one; its unnamed instruction block is no file.
+    _item(s, "c1", "instruction_file", "/r/.github/copilot-instructions.md", 5.0, 300, tool="copilot-cli",
+          path="/r/.github/copilot-instructions.md")
+    _item(s, "c1", "reset", "*", 10.0, tool="copilot-cli")
+    _item(s, "c1", "system_prompt_other", "tools", 10.0, 2000, tool="copilot-cli")
+    _item(s, "c1", "instruction_file", "custom instruction 1", 10.0, 700, tool="copilot-cli")
+    _item(s, "s9", "memory_file", "/x/CLAUDE.md", 200_000.0, 70, path="/x/CLAUDE.md")  # after the period
+    # Uses: alpha by a subagent in the period; delta after it; Copilot CLI uses a skill but reports no listing.
+    _use(s, "u1", 40.0, "alpha")
+    _use(s, "u2", 300_000.0, "delta", session="s2")
+    _use(s, "u3", 15.0, "alpha", session="c1", tool="copilot-cli", trigger="context-load")
+    _use(s, "u4", 16.0, "beta", trigger="")
+    _use(s, "u4", 300_000.0, "beta", _v=NEWER)                             # the winning version is after the period
+    body = _card(s, "fixed")
+    tools = {tool["tool"]: tool for tool in body["tools"]}
+    claude = {cell["kind"]: cell for cell in tools["claude-code"]["kinds"]}
+    assert tools["claude-code"]["sessions"] == 2
+    assert tools["claude-code"]["avg_tokens"] == pytest.approx((1310 + 550) / 2)
+    assert (claude["skills"]["sessions"], claude["skills"]["avg_tokens"]) == (2, pytest.approx(400.0))
+    assert claude["memory_file"]["avg_tokens"] == pytest.approx(525.0) and claude["memory_file"]["estimated"] is True
+    assert (claude["tools_listed"]["sessions"], claude["tools_listed"]["session_share"]) == (1, pytest.approx(0.5))
+    assert claude["mcp_instructions"] == {"kind": "mcp_instructions", "reported": False, "sessions": None,
+                                          "session_share": None, "p50_tokens": None, "avg_tokens": None,
+                                          "p50_items": None, "estimated": False}
+    copilot = {cell["kind"]: cell for cell in tools["copilot-cli"]["kinds"]}
+    assert copilot["instruction_file"]["avg_tokens"] == pytest.approx(700.0) and copilot["skills"]["reported"] is False
+    assert body["tools"][0]["tool"] == "copilot-cli" and body["tools"][0]["p50_tokens"] == pytest.approx(2700.0)
+    skills = {row["tool"]: row for row in body["skills"]}
+    assert skills["claude-code"] == {"tool": "claude-code", "listed": 3, "used": 1, "listing_tokens": 800.0,
+                                     "unused_tokens": 600.0, "uses": 1, "skills_used": 1, "triggers": ["agent-invoked"]}
+    assert skills["copilot-cli"] == {"tool": "copilot-cli", "listed": None, "used": None, "listing_tokens": None,
+                                     "unused_tokens": None, "uses": 1, "skills_used": 1, "triggers": ["context-load"]}
+    assert [(row["name"], row["sessions"], row["tokens"], row["uses"]) for row in body["top_skills"]] == [
+        ("delta", 1, 400.0, 0), ("alpha", 2, 200.0, 1), ("beta", 1, 200.0, 0)]
+    assert [(row["file"], row["tool"], row["sessions"], row["max_tokens"]) for row in body["files"]] == [
+        ("CLAUDE.md", "claude-code", 1, 1000.0), ("custom instruction (no file)", "copilot-cli", 1, 700.0),
+        ("AGENTS.md", "claude-code", 1, 50.0)]
+    assert body["summary"] == {
+        "sessions": 3, "heaviest": {"tool": "copilot-cli", "p50_tokens": 2700.0}, "listed": 3, "never_used": 2,
+        "never_used_share": pytest.approx(2 / 3), "listing_tokens": 800.0, "unused_tokens": 600.0,
+        "listing_not_reported": ["copilot-cli"],
+    }
+    assert [(row["session_id"], row["tokens"]) for row in body["sessions"]] == [("c1", 2700), ("s1", 1310), ("s2", 550)]
+    # Neither source table carries a tombstone; the view would drop one through column_ifexists('_deleted') if it did.
+    assert TABLES["session_context_items"].tombstone is None and TABLES["skill_uses"].tombstone is None
 
 
 class _Reader:

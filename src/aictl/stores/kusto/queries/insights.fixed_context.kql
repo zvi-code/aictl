@@ -1,0 +1,114 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// What a session's main agent carries before it does any work: the items the tool puts in its context
+// (memory and instruction files, the skills, MCP instruction, custom agent and deferred tool listings, other
+// system prompt sections), and which of the listed skills a session of the period used.
+// A session's fixed context: the main agent's (agent id empty or equal to the session id) items, each counted
+// once, as its newest record; an item removed, or recorded before a later reset of its kind or of all kinds
+// (a compaction or a new system prompt sends everything again), does not count. The stored rows keep only an
+// item's newest record, so a re-listing replaces the earlier listing instead of adding to it. A list row
+// (name list:<id>) stands for the items of one listing in context_lists and is expanded into them. The /context
+// report rows are the tool's own measurement, not items: they are left out. Item tokens are estimated from
+// their size (estimated = 1). A session counts in the period its earliest counted item falls in.
+// A skill is used when skill_uses holds a call of it by the same tool in the period, any trigger (the agent
+// invoked it, the user ran it, or the tool loaded its body into the context).
+// A file is the last segment of the item's path; an instruction block with no file is 'custom instruction (no file)'.
+let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
+        name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
+    let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
+        | extend list_key=substring(name,5);
+    union
+        (items | where not(name matches regex @'^list:[0-9a-f]{32}$')),
+        (pointers
+            | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
+                | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
+                | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
+                    item_tokens=tokens,item_estimated=estimated,item_removed=removed)
+                on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
+            | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
+                removed=item_removed
+            | project-away list_node,list_key,list_ref,item_*)
+};
+// entry keeps the stored row's name: with it, a plain row reduces by the table's key and the items of a list by the
+// list row they came from, so two lists that hold the same item are not reduced against each other by _v.
+let items = materialize(session_context_items | where isempty(agent_id) or agent_id == session_id | extend entry=name
+    | invoke context_items_expanded()
+    | where (all_nodes or node_id == requested_node) and not(['kind'] in ('report', 'report_category', 'report_item'))
+    | extend deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, session_id, agent_id, ['kind'], name, path, tokens, estimated, removed, _v, ts, tool,
+              deleted, entry
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, ['kind'], entry, name
+    | where not(coalesce(deleted, false))
+    | summarize arg_max(ts, *) by node_id, session_id, ['kind'], name
+    | project node_id, session_id, ['kind'], name, path, tokens, estimated, removed, ts, tool);
+let resets = items
+    | where ['kind'] == 'reset'
+    | project node_id, session_id, reset_of=name, reset_ts=ts;
+let fixed = materialize(items
+    | where ['kind'] != 'reset' and removed == 0
+    | lookup kind=leftouter (resets | where reset_of == '*' | project node_id, session_id, all_ts=reset_ts)
+        on node_id, session_id
+    | lookup kind=leftouter (resets | where reset_of != '*' | project node_id, session_id, ['kind']=reset_of, kind_ts=reset_ts)
+        on node_id, session_id, ['kind']
+    | where ts >= coalesce(all_ts, 0.0) and ts >= coalesce(kind_ts, 0.0)
+    | extend file=iff(['kind'] in ('memory_file', 'instruction_file'),
+        iff(isempty(path) and not(name matches regex @'[/\\]'), 'custom instruction (no file)',
+            extract(@'([^/\\]+)[/\\]*$', 1, iff(isempty(path), name, path))), '')
+    | project node_id, session_id, tool, ['kind'], name, file, tokens=coalesce(tokens, 0), estimated, ts);
+let per_session = materialize(fixed
+    | summarize started=min(ts), tool=take_any(tool), tokens=sum(tokens), estimated=max(estimated),
+                skills=countif(['kind'] == 'skills') by node_id, session_id
+    | where started >= since and started < until);
+let in_period = fixed
+    | join kind=inner (per_session | project node_id, session_id) on node_id, session_id;
+let used = skill_uses
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, name, trigger
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and isnotempty(name)
+    | summarize uses=count(), triggers=make_set(trigger) by tool, name;
+let listed = materialize(in_period
+    | where ['kind'] == 'skills' and name != 'skill listing'
+    | summarize sessions=count(), sum_tokens=sum(tokens) by tool, name
+    | lookup kind=leftouter (used | project tool, name, uses) on tool, name
+    | extend uses=coalesce(uses, 0));
+union
+    (in_period
+        | summarize tokens=sum(tokens), items=count(), estimated=max(estimated) by node_id, session_id, tool, ['kind']
+        | summarize sessions=count(), p50_tokens=percentile(tokens, 50), sum_tokens=sum(tokens), p50_items=percentile(items, 50),
+                    estimated=max(estimated) by tool, ['kind']
+        | extend row_type='kind'),
+    (per_session
+        | summarize sessions=count(), p50_tokens=percentile(tokens, 50), p90_tokens=percentile(tokens, 90),
+                    sum_tokens=sum(tokens), estimated=max(estimated), p50_skills=percentile(iff(skills > 0, skills, long(null)), 50)
+              by tool
+        | extend row_type='tool'),
+    (listed
+        | summarize listed=count(), used=countif(uses > 0), sum_tokens=sum(sum_tokens), unused_tokens=sumif(sum_tokens, uses == 0)
+              by tool
+        | extend row_type='skills'),
+    (used
+        | summarize uses=sum(uses), used=count(), triggers=make_set(triggers) by tool
+        | extend row_type='uses'),
+    (listed
+        | order by sum_tokens desc, name asc
+        | take 10
+        | extend row_type='skill'),
+    (in_period
+        | where ['kind'] in ('memory_file', 'instruction_file')
+        | summarize sessions=dcount(strcat(node_id, '/', session_id)), loads=count(), avg_tokens=avg(tokens),
+                    max_tokens=max(tokens), sum_tokens=sum(tokens) by tool, file
+        | order by sum_tokens desc, file asc
+        | take 10
+        | extend row_type='file'),
+    (per_session
+        | order by tokens desc, node_id asc, session_id asc
+        | take 10
+        | project node_id, session_id, tool, tokens, skills
+        | extend row_type='session'),
+    (per_session
+        | summarize first_ts=min(started), last_ts=max(started)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, tool asc, ['kind'] asc, sum_tokens desc
+| take row_limit

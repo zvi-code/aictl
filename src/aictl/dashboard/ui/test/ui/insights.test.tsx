@@ -9,10 +9,11 @@ import Subagents from '../../src/panels/insights/Subagents'
 import TimeSplit from '../../src/panels/insights/TimeSplit'
 import ContextWeight from '../../src/panels/insights/ContextWeight'
 import Orientation from '../../src/panels/insights/Orientation'
+import FixedContext from '../../src/panels/insights/FixedContext'
 import { fmtHours } from '../../src/design/format'
 import {
   carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
-  contextFinding, orientationFinding, timeFinding, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
+  contextFinding, fixedFinding, fixedHero, orientationFinding, timeFinding, type FixedBody, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
 } from '../../src/panels/insights/insightsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -119,7 +120,34 @@ const orientation = {
   summary: { sessions: 379, edited: 106, projects: 2, never: 273, never_cost_usd: 159.47, no_project: 0 },
   sessions: [{ session_id: 's-orient', node_id: 'n', tool: 'claude-code', requests: 399, before_cost: 86.64 }],
 } as unknown as OrientationBody
-const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody, orientation }
+const kinds = (found: Record<string, [number, number, number, number]>, sessions: number) =>
+  ['instruction_file', 'memory_file', 'system_prompt_other', 'skills', 'mcp_instructions', 'custom_agents', 'tools_listed'].map(kind => {
+    const cell = found[kind]
+    return cell ? { kind, reported: true, sessions: cell[0], session_share: cell[0] / sessions, p50_tokens: cell[1], avg_tokens: cell[2],
+      p50_items: cell[3], estimated: true }
+      : { kind, reported: false, sessions: null, session_share: null, p50_tokens: null, avg_tokens: null, p50_items: null, estimated: false }
+  })
+const fixed = {
+  ...base, card: 'fixed',
+  tools: [
+    { tool: 'copilot-desktop', sessions: 362, p50_tokens: 51_176, p90_tokens: 53_552, avg_tokens: 50_292, p50_skills: null, estimated: true,
+      kinds: kinds({ instruction_file: [362, 37_677, 36_772, 2], system_prompt_other: [362, 13_499, 13_520, 25] }, 362) },
+    { tool: 'claude-code', sessions: 364, p50_tokens: 7260, p90_tokens: 16_715, avg_tokens: 9109, p50_skills: 63, estimated: true,
+      kinds: kinds({ memory_file: [198, 3530, 1767, 3], skills: [247, 6215, 3721, 63], mcp_instructions: [348, 1856, 1576, 3],
+        custom_agents: [251, 1748, 1115, 14], tools_listed: [253, 1583, 931, 171] }, 364) },
+  ],
+  skills: [
+    { tool: 'claude-code', listed: 135, used: 22, listing_tokens: 1_354_622, unused_tokens: 980_051, uses: 57, skills_used: 23, triggers: ['agent-invoked'] },
+    { tool: 'copilot-cli', listed: null, used: null, listing_tokens: null, unused_tokens: null, uses: 1885, skills_used: 35, triggers: ['context-load'] },
+  ],
+  top_skills: [{ tool: 'claude-code', name: 'dataviz', sessions: 237, tokens: 82_830, uses: 5 },
+    { tool: 'claude-code', name: 'office:xlsx', sessions: 242, tokens: 50_188, uses: 0 }],
+  files: [{ tool: 'copilot-desktop', file: 'CLAUDE.md', sessions: 357, loads: 357, avg_tokens: 29_617, max_tokens: 31_961, tokens: 10_573_400 }],
+  summary: { sessions: 726, heaviest: { tool: 'copilot-desktop', p50_tokens: 51_176 }, listed: 135, never_used: 113, never_used_share: 113 / 135,
+    listing_tokens: 1_354_622, unused_tokens: 980_051, listing_not_reported: ['copilot-cli'] },
+  sessions: [{ session_id: 's-fixed', node_id: 'n', tool: 'copilot-desktop', tokens: 53_971, skills: 0 }],
+} as unknown as FixedBody
+const bodies: Record<string, InsightBody> = { pause, carry, subagents, failures, rereads, time, context: contextBody, orientation, fixed }
 
 type State = DetailState<unknown> | undefined
 function context(states: (card: string) => State, opened: string[] = []) {
@@ -168,7 +196,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     const { host, dispose } = mount(() => <>
       <PauseTax {...props(ctx)} /><ContextCarry {...props(ctx)} /><Subagents {...props(ctx)} />
       <AfterFailure {...props(ctx)} /><Rereads {...props(ctx)} /><TimeSplit {...props(ctx)} />
-      <ContextWeight {...props(ctx)} /><Orientation {...props(ctx)} />
+      <ContextWeight {...props(ctx)} /><Orientation {...props(ctx)} /><FixedContext {...props(ctx)} />
     </>)
     for (const id of Object.keys(bodies)) {
       const box = card(host, id)
@@ -402,5 +430,56 @@ describe('INS-07 · Orientation cost by repository', () => {
     expect(card(second.host, 'orientation').textContent).toContain('Could not load Orientation cost by repository: Kusto view insights.orientation failed')
     expect(card(second.host, 'context').querySelector('[data-finding]')).not.toBeNull()
     second.dispose()
+  })
+})
+
+describe('INS-08 · Fixed context overhead', () => {
+  it('states the heaviest fixed context, the skills never used and the costliest file from the response', () => {
+    expect(fixedFinding(fixed, tool => tool)).toBe('copilot-desktop sessions carry the most fixed context: a median 51 k tokens ' +
+      'before any work over 362 sessions, instruction files a median 38 k tokens of it (estimated). Of 135 skills claude-code listed, ' +
+      '113 were never used in the period; listing them took 980 k tokens of 1.35 M tokens. The costliest instruction or memory file ' +
+      'is CLAUDE.md in copilot-desktop: 30 k tokens per load in 357 sessions.')
+    expect(fixedHero(fixed)).toEqual({ value: '84%',
+      label: "of the 135 skills listed in sessions' fixed context were never used in the period" })
+    // No tool lists its skills: the sentence says so and the figure falls back to the heaviest median, never to 0%.
+    const unlisted = { ...fixed, top_skills: [], skills: [fixed.skills[1]], summary: { ...fixed.summary, listed: null, never_used: null,
+      never_used_share: null, listing_tokens: null, unused_tokens: null } } as FixedBody
+    expect(fixedFinding(unlisted, tool => tool)).toContain('No tool in this period reports the skills it lists.')
+    expect(fixedHero(unlisted)?.value).toBe('51 k tokens')
+    const empty = { ...unlisted, tools: [], files: [], summary: { ...unlisted.summary, sessions: 0, heaviest: null } } as FixedBody
+    expect(fixedFinding(empty, tool => tool)).toBe('No session in this period records its fixed context.')
+    expect(fixedHero(empty)).toBeUndefined()
+  })
+
+  it('stacks each tool by kind on one scale and names the kinds a tool does not report', () => {
+    const { ctx } = context(ready)
+    const { host, dispose } = mount(() => <FixedContext {...props(ctx)} />)
+    const box = card(host, 'fixed')
+    const desktop = box.querySelector('[data-tool="copilot-desktop"]')!
+    const bar = desktop.querySelector('[role="img"]')!
+    expect(bar.getAttribute('aria-label')).toBe('copilot-desktop, average fixed context by kind: Instruction files 37 k tokens, ' +
+      'Other system prompt 14 k tokens')
+    expect(bar.children).toHaveLength(2)
+    expect(desktop.textContent).toContain('not reported: Memory files, Skill listing, MCP instructions, Custom agents, Deferred tool list')
+    expect(desktop.textContent).toContain('median 51 k tokens · 90th percentile 54 k tokens · 362 sessions · estimated')
+    const claude = box.querySelector('[data-tool="claude-code"]')!
+    expect(claude.querySelector('[role="img"]')!.children).toHaveLength(5)
+    expect(claude.textContent).toContain('not reported: Instruction files, Other system prompt')
+    expect(box.querySelector('[data-files]')!.textContent).toContain('CLAUDE.md copilot-desktop30 k tokens per load · largest 32 k tokens · 357 sessions')
+    const skills = box.querySelectorAll('[data-skills] li')
+    expect(skills[0].textContent).toContain('5 uses')
+    expect(skills[1].textContent).toContain('never used')
+    expect(box.textContent).toContain('Skill listing not reported by copilot-cli; their uses are not compared.')
+    dispose()
+  })
+
+  it('keeps its own loading and error state', () => {
+    const { ctx } = context(id => id === 'fixed' ? { data: undefined, status: 'error', error: new Error('Kusto view insights.fixed_context failed') }
+      : id === 'orientation' ? { data: undefined, status: 'loading', error: null } : ready(id))
+    const { host, dispose } = mount(() => <><FixedContext {...props(ctx)} /><Orientation {...props(ctx)} /><ContextWeight {...props(ctx)} /></>)
+    expect(card(host, 'fixed').textContent).toContain('Could not load Fixed context overhead: Kusto view insights.fixed_context failed')
+    expect(card(host, 'orientation').querySelector('[data-finding]')).toBeNull()
+    expect(card(host, 'context').querySelector('[data-finding]')).not.toBeNull()
+    dispose()
   })
 })

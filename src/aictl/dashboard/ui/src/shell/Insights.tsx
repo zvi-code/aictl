@@ -15,6 +15,7 @@ const cards = [
   lazy(() => import('../panels/insights/TimeSplit')),
   lazy(() => import('../panels/insights/ContextWeight')),
   lazy(() => import('../panels/insights/Orientation')),
+  lazy(() => import('../panels/insights/FixedContext')),
 ]
 
 /** What months of agent history show: one finding per card, each computed in the store for the chosen period. */

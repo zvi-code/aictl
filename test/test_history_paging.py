@@ -275,6 +275,7 @@ BOUNDED = {
     "files.session_inventory": "the inventory files of one folder, which no session adds to",
     "insights.after_failure": "one row per tool and outcome, per tool, 10 sessions and one meta row",
     "insights.context_weight": "one row per tool and context bucket, per tool, 10 sessions and one meta row",
+    "insights.fixed_context": "one row per tool and kind, per tool, 10 skills, 10 files, 10 sessions and one meta row",
     "insights.context_carry": "the 25 tool names that carry most, one row per tool, 10 sessions and one meta row",
     "insights.orientation": "10 projects, one row per tool, 10 sessions and one meta row",
     "insights.pause_tax": "one row per tool and pause bucket, per tool, 10 sessions and one meta row",
