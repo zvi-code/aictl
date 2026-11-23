@@ -8,7 +8,6 @@ import type { NodeScope, PanelDef, Source } from './types'
 export const LOCAL_ONLY: Readonly<Record<string, string>> = {
   findings: 'reads the local settings audit, hooks and OTel status',
   settings: 'reads the local settings audit and effective models',
-  daemon: 'shows this daemon; other nodes report only a process ID',
 }
 
 /** Panels with only live-topic sources whose component reads a recorded view of each node. */

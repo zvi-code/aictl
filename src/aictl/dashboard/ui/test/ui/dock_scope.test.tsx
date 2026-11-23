@@ -81,7 +81,7 @@ describe('BRD-SCOPE-02 · Every board panel has a decided scope (guard)', () => 
   it('hides exactly the panels that read only this node in fleet and node scope', () => {
     // A new panel that reads only this node's stream joins this list on purpose, not by accident.
     const hidden = (scope: NodeScope) => board.filter(panel => !shownInScope(panel, scope)).map(panel => panel.id).sort()
-    expect(hidden('fleet')).toEqual(['alerts', 'daemon', 'findings', 'settings'])
+    expect(hidden('fleet')).toEqual(['alerts', 'findings', 'settings'])
     expect(hidden('node')).toEqual(hidden('fleet'))
     expect(hidden('local')).toEqual([])
   })
