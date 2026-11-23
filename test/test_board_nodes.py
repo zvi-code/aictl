@@ -707,6 +707,41 @@ def test_incomplete_scoped_board_is_read_again_after_its_short_lifetime(history,
     assert _serve_board(kusto_store, query)[1] == second
 
 
+def test_a_clock_following_scoped_board_is_not_read_again_for_every_new_window(history, kusto_store, monkeypatch):
+    """A slow board asked for with a moving window was read once per window, several at a time."""
+    from aictl.dashboard import history_board
+
+    clock = [5000.0]
+    reads = []
+
+    def compute(_store, filters, *_args, **_kwargs):
+        reads.append(filters.until)
+        clock[0] += 50.0  # the read takes 50 s
+        return {name: filters.until for name in history_board._PANEL_FIELDS}
+
+    monkeypatch.setattr(history_board, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0]))
+    monkeypatch.setattr(history_board, "compute_board", compute)
+    for name in ("_cache", "_inflight", "_latest"):
+        monkeypatch.setattr(history_board, name, {})
+
+    def board(until: float, now: float) -> float:
+        query = f"scope=fleet&since={until - 7 * 86400}&until={until}&buckets=14"
+        return json.loads(history_board.read_board(kusto_store, query, now))["range_marker"]
+
+    monkeypatch.setattr(history_board, "_PANEL_FIELDS", ("range_marker",))
+    now = 2_000_000_000.0
+    assert board(now, now) == now and reads == [now]
+    # The window moved on by a minute: the board read 50 s ago still answers, and nothing is read.
+    clock[0] += 60
+    assert board(now + 60, now + 60) == now and reads == [now]
+    # Past the rest that follows a 50 s read (4 times its length), the new window is read.
+    clock[0] += 50 * history_board._REST_FACTOR
+    later = now + 60 + 50 * history_board._REST_FACTOR + 50
+    assert board(later, later) == later and reads == [now, later]
+    # A window chosen in the past is its own request and is read as asked.
+    assert board(now - 86400, later) == now - 86400 and len(reads) == 3
+
+
 def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(tmp_path, monkeypatch, kusto_store):
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore

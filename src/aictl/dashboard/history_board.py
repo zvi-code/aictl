@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from concurrent.futures import Future
+from dataclasses import replace
 from urllib.parse import parse_qs
 
 from ..stores import UnresolvedObservationsError, has_history
@@ -31,6 +32,15 @@ _STALE_MAX_S = 600.0
 # An incomplete answer is kept this long, and never served once older, so a later request reads the
 # failed sections again; the same delay as the live board's retry.
 _INCOMPLETE_TTL_S = 5.0
+# A range that follows the clock is asked for with a new window every few seconds. The board of the
+# window read last answers such a request while it is younger than its lifetime and than this many
+# times the time it took to read, plus that time: a board that is slow to read is then read at most a
+# fifth of the time, and two windows of one range are never read side by side.
+_REST_FACTOR = 4.0
+# A request whose window ends this close to now follows the clock.
+_ROLLING_S = 120.0
+# Per range that follows the clock: the key of the window read last, and how long that read took.
+_latest: dict[tuple, tuple[tuple, float]] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +65,8 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
     history.require_reader()
     ttl = 15 if local else 120 if span > 86400 else 45
     key = (history.reader, history.node, scope, filters, charts)
+    rolling = (history.reader, history.node, scope, replace(filters, since=0.0, until=0.0), round(span), charts)
+    follows_clock = 0 <= now - filters.until < _ROLLING_S
 
     def build() -> tuple[bytes, bool]:
         # Only the panels view leaves a failed optional section out; the charts need none.
@@ -74,7 +86,39 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
         payload["node_scope"] = {"kind": scope.kind, "node_id": label(scope.node) if scope.node is not None else None}
         return json.dumps(payload).encode("utf-8"), not field_errors
 
+    def timed_build() -> tuple[bytes, bool]:
+        started = time.monotonic()
+        with _lock:
+            if follows_clock:
+                _latest[rolling] = (key, 0.0)
+        result = build()
+        with _lock:
+            if follows_clock and _latest.get(rolling, (None,))[0] == key:
+                _latest[rolling] = (key, time.monotonic() - started)
+                while len(_latest) > _CACHE_KEYS:
+                    _latest.pop(next(iter(_latest)))
+        return result
+
     # Each key is read by one caller at a time; other keys do not wait for it.
+    with _lock:
+        if follows_clock and (latest := _latest.get(rolling)) is not None and latest[0] != key:
+            earlier, cost = latest
+            answer = _cache.get(earlier)
+            behind = filters.until - earlier[3].until
+            return_pending = None
+            if earlier in _inflight:
+                # The window before this one is being read: its board answers this request too.
+                if answer and answer[2]:
+                    return answer[1]
+                return_pending = _inflight[earlier]
+            else:
+                rest = max(ttl, cost * (1.0 + _REST_FACTOR))
+                if answer and answer[2] and 0 <= behind < rest and time.monotonic() - answer[0] < rest:
+                    return answer[1]
+        else:
+            return_pending = None
+    if return_pending is not None:
+        return return_pending.result()
     with _lock:
         hit = _cache.get(key)
         pending = _inflight.get(key)
@@ -84,14 +128,14 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
         if hit and hit[2] and age < _STALE_MAX_S:
             if pending is None:
                 _inflight[key] = Future()
-                threading.Thread(target=_refresh_quietly, args=(key, build), daemon=True,
+                threading.Thread(target=_refresh_quietly, args=(key, timed_build), daemon=True,
                                  name="history-board").start()
             return hit[1]
         if pending is None:
             _inflight[key] = Future()
     if pending is not None:
         return pending.result()
-    return _refresh(key, build)
+    return _refresh(key, timed_build)
 
 
 def _refresh(key: tuple, build) -> bytes:
