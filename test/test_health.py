@@ -509,13 +509,13 @@ def test_traffic_groups_partition_shared_raw_and_history_ingestion(cached_health
     settings = KustoSettings("https://cluster.kusto.windows.net", ingestion="inline")
     client = ObservedKustoClient(SimpleNamespace(execute_mgmt=lambda *_: None))
     ingester = InlineIngester(client, "history", slots=2)
-    for table in ("OTELLogs", "hook_calls", "sessions", "system_snapshots", "tool_config", "maintenance_state"):
+    for table in ("OTELLogs", "hook_calls", "sessions", "system_snapshots", "tool_config", "maintenance_state", "no_such_table"):
         ingester.ingest_lines(table, ['{"x":1}', '{"x":2}'])
     store = runtime_health.compute_health(None, _kusto_store(settings, client, ingester))["store"]
     groups = store["traffic_groups"]
-    assert [g["id"] for g in groups] == ["otel", "hooks", "live-session", "monitoring", "files-config", "other"]
-    assert sum(g["requests"] for g in groups) == store["writes"]["total"] == 6
-    assert sum(g["rows"] for g in groups) == store["writes"]["rows"] == 12
+    assert [g["id"] for g in groups] == ["otel", "hooks", "live-session", "monitoring", "files-config", "store", "other"]
+    assert sum(g["requests"] for g in groups) == store["writes"]["total"] == 7
+    assert sum(g["rows"] for g in groups) == store["writes"]["rows"] == 14
     assert all(g["rows"] == 2 and g["bytes"] == 15 for g in groups)
     members = [table for group in groups for table in group["tables"]]
     assert len(members) == len(set(members))
@@ -523,7 +523,7 @@ def test_traffic_groups_partition_shared_raw_and_history_ingestion(cached_health
     assert details["batches"]["avg_rows"] == details["batches"]["last_rows"] == 2
     assert details["batches"]["avg_bytes"] == details["batches"]["last_bytes"] == 15
     assert details["policies"]["status"] == "pending"
-    assert store["ingestion_traffic"]["inline"]["rows"] == 12
+    assert store["ingestion_traffic"]["inline"]["rows"] == 14
     assert store["ingestion_traffic"]["queued"]["rows"] == 0
 
 

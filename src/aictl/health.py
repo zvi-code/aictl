@@ -158,6 +158,7 @@ TRAFFIC_LABELS = {
     "live-session": "Live sessions and transcripts",
     "monitoring": "CPU and process monitoring",
     "files-config": "Files and configuration",
+    "store": "Store bookkeeping",
     "other": "Other tables",
 }
 
@@ -170,31 +171,45 @@ SESSION_TABLES = frozenset({
 })
 
 
+_OBSERVATION_SUFFIXES = ("_observations_text", "_observations", "_text")
+_SESSION_EXTRA = frozenset({
+    "copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_attribution",
+    "tool_invocation_coverage", "tool_invocation_sizes", "text_payloads",
+})
+_MONITORING = frozenset({"metrics", "system_snapshots", "process_snapshots", "tool_stats", "processes"})
+_FILES_CONFIG = frozenset({
+    "memory_snapshots", "tool_config", "environment_vars", "path_defs", "process_defs", "datapoint_catalog", "tools", "projects",
+})
+_BOOKKEEPING = frozenset({"schema_version", "maintenance_state", "data_quality_status"})
+
+
+def logical_table(name: str) -> str:
+    """The logical table of a name the ingesters send: ``T__<node key>`` and ``legacy__T`` are physical tables of ``T``."""
+    from .stores.kusto.nodes import LEGACY_PREFIX, SEPARATOR
+
+    if name.startswith(LEGACY_PREFIX):
+        return name.removeprefix(LEGACY_PREFIX)
+    head, separator, _ = name.rpartition(SEPARATOR)
+    return head if separator and head else name
+
+
 def traffic_group(table: str) -> str:
-    """Return one traffic group for the table."""
+    """Return one traffic group for the table, given by its logical or its physical name."""
+    table = logical_table(table)
     if table.upper().startswith("OTEL"):
         return "otel"
-    if table == "hook_calls":
-        return "hooks"
-    if table in SESSION_TABLES or table in {
-        "copilot_session_messages",
-        "cursor_session_messages",
-        "vscode_chat_messages",
-    }:
-        return "live-session"
-    if table in {"metrics", "system_snapshots", "process_snapshots", "tool_stats"}:
-        return "monitoring"
-    if table.startswith(("file", "ui_")) or table in {
-        "memory_snapshots",
-        "tool_config",
-        "environment_vars",
-        "path_defs",
-        "process_defs",
-        "datapoint_catalog",
-        "tools",
-        "projects",
-    }:
-        return "files-config"
+    if table in _BOOKKEEPING:
+        return "store"
+    candidates = [table, *(table.removesuffix(suffix) for suffix in _OBSERVATION_SUFFIXES if table.endswith(suffix))]
+    for name in candidates:
+        if name == "hook_calls":
+            return "hooks"
+        if name in SESSION_TABLES or name in _SESSION_EXTRA:
+            return "live-session"
+        if name in _MONITORING:
+            return "monitoring"
+        if name.startswith(("file", "ui_")) or name in _FILES_CONFIG:
+            return "files-config"
     return "other"
 
 
