@@ -205,6 +205,7 @@
 .choice { display: flex; align-items: center; gap: var(--space-3); padding-block: var(--space-2); }
 .form { display: grid; justify-items: start; gap: var(--space-4); }
 .form label { display: grid; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-sm); }
+.paletteNote { margin-block: var(--space-2) 0; color: var(--color-muted); font-size: var(--text-sm); }
 .commandList { max-block-size: var(--overlay-sm); overflow: auto; margin-block: var(--space-4); }
 .commandList > div { cursor: pointer; padding: var(--space-3) var(--space-4); border-radius: var(--radius-control); }
 .commandList > div:hover { background: var(--color-hover); }

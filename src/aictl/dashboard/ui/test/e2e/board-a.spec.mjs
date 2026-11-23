@@ -2,7 +2,7 @@ import { boardUrl, captureFrame, checkAxe, checkConsole, dist, expect, goToBoard
 import { agentsFrame } from '../replay/agents-frame.mjs';
 import { startReplay } from '../replay/server.mjs';
 
-const sessionMiss = '/api/board/sessions?limit=50&offset=0&q=';
+const sessionMiss = '/api/board/sessions?limit=50&offset=0&order=desc&sort=last_activity';
 const unavailable = 'Not available from this source';
 const inventory = [
   ['BRD-03', 'agents', 'agentActivity', 'Recorded agent activity'],
@@ -382,7 +382,7 @@ test('BRD-06: report the unrecorded search read', async ({ page, snapshotReplay,
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'sessionsT');
   await expect(panel.getByRole('alert')).toContainText('Could not load sessions: No recorded response');
-  await expect(stat(panel, 'Matching sessions')).toHaveText(unavailable);
+  await expect(panel.getByRole('group', { name: 'Sessions by status' })).toContainText('… sessions');
   await expect(panel.getByRole('searchbox', { name: 'Search all past sessions' })).toBeVisible();
   expect(capture.misses).toContain(sessionMiss);
   checkConsole(capture, [sessionMiss]);
@@ -408,14 +408,13 @@ test('BRD-06: debounce, page, retry and follow the Tool filter', async ({ page, 
   });
   await goToBoard(page, snapshotReplay);
   const panel = await showPanel(page, 'sessionsT');
-  await expect(panel.getByText('No session is stored yet.')).toBeVisible();
-  await expect(stat(panel, 'Matching sessions')).toHaveText('0');
+  await expect(panel.getByText('No session is stored yet, and no session file was found on disk.')).toBeVisible();
   const search = panel.getByRole('searchbox', { name: 'Search all past sessions' });
   for (const text of ['sto', 'stor', 'stored']) await search.fill(text);
-  await expect(stat(panel, 'Matching sessions')).toHaveText('51');
-  await expect(stat(panel, 'Sessions loaded')).toHaveText('50');
-  await expect(panel.getByRole('group', { name: 'Top tools among loaded sessions' }).getByRole('meter')).toHaveAttribute('value', '50');
-  expect(paths.map(({ q }) => q)).toEqual(['', 'stored']);
+  const shown = panel.getByRole('status').filter({ hasText: 'Showing' });
+  await expect(shown).toContainText('Showing 50 of 51 sessions');
+  expect(paths.map(({ q }) => q)).toEqual([null, 'stored']);
+  await expect(panel.getByRole('button', { name: 'Remove filter Text: stored' })).toBeVisible();
   const table = panel.getByRole('table');
   const first = row(table, JSON.stringify([agent.id]));
   await expect(first).toContainText('Stored session 1');
@@ -425,18 +424,14 @@ test('BRD-06: debounce, page, retry and follow the Tool filter', async ({ page, 
   await more.press('Enter');
   await expect(panel.getByRole('alert')).toHaveText('Could not load more sessions: Page not ready');
   await more.press('Space');
-  await expect(stat(panel, 'Sessions loaded')).toHaveText('51');
+  await expect(shown).toContainText('Showing 51 of 51 sessions');
   await panel.getByRole('region', { name: 'Find a session scroll area' }).press('End');
   await expect(row(table, JSON.stringify(['50:0']))).toContainText('Last stored session');
   await panel.getByRole('region', { name: 'Find a session scroll area' }).press('Home');
   await first.getByRole('button', { name: 'Open Stored session 1' }).press('Enter');
   await expect(page).toHaveURL(/[?&]tab=flow/);
-  await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'Tool: All' }).click();
-  await page.getByRole('button', { name: 'No tools' }).click();
-  await page.keyboard.press('Escape');
-  await showPanel(page, 'sessionsT');
-  await expect(panel.getByText('No tools are selected.')).toBeVisible();
+  // The finder keeps its own keys: a shared link reproduces the search, and the board's q is untouched.
+  await expect(page).toHaveURL(/[?&]fq=stored/);
   await expect(page).not.toHaveURL(/[?&]q=stored/);
 });
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -20,16 +21,24 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass
 from typing import Any
 
+from .. import session_lifecycle
 from ..ingesters.session_titles import best_title
 from ..platforms import IS_WINDOWS
 from ..records import _session_uuid
 from ..stores.base import StoreError
-from .board_filters import SPARK_POINTS, Filters
-from .board_projection import _Board, _fallback_rows, _store_facts
-from .projection_utils import MAX_DETAIL_ROWS, STORED_TITLE_CHARS, TITLE_CHARS, _basename, _label, _one_line, _short
+from .projection_utils import (
+    MAX_DETAIL_ROWS,
+    STORED_TITLE_CHARS,
+    TITLE_CHARS,
+    _basename,
+    _label,
+    _one_line,
+    _short,
+    _usd,
+)
 from .projections.history import HistoryScope
 
 log = logging.getLogger(__name__)
@@ -433,7 +442,7 @@ def is_recorded_artifact(db: Any, path: str, *, history: HistoryScope | None = N
 
 # ─── Search over all sessions ─────────────────────────────────────
 
-_MATCH_ORDER = ("title", "project", "prompt", "artifact", "file", "commit", "id")
+_MATCH_ORDER = ("title", "project", "prompt", "artifact", "file", "commit", "id", "source")
 _RANK = {kind: i for i, kind in enumerate(_MATCH_ORDER)}
 
 
@@ -458,6 +467,177 @@ def _moving(db: Any) -> set[str]:
     return set(moving()) if callable(moving) else set()
 
 
+# ─── The session finder ───────────────────────────────────────────
+# One query (sessions.search) selects, filters, sorts and pages the sessions and counts the
+# facets; a second one (files.artifacts) counts the artifacts of the page. Nothing is read
+# per row, and no row is dropped: a row the agent detail cannot open says why.
+
+FINDER_STATUSES = ("running", "ended", "inferred", "importing", "not_imported")
+FINDER_SORTS = ("last_activity", "started", "duration", "tokens", "cost", "tool_calls")
+NAME_SOURCES = ("user", "tool", "prompt", "none")
+FACETS = ("sessions", "running", "ended", "inferred", "importing", "not_imported")
+WITHOUT = ("status", "model", "name_source", "errors", "min_tokens", "min_cost")
+NOT_IMPORTED_REASON = "Not imported yet: the history import has not read this session's file, so there is nothing to open."
+NO_RECORDS_REASON = "No records stored for this session yet, so the agent detail has nothing to open."
+
+
+@dataclass(frozen=True)
+class SessionQuery:
+    """What the finder asks for. ``tools`` None means all tools and [] none."""
+
+    q: str = ""
+    tools: list[str] | None = None
+    since: float | None = None
+    until: float | None = None
+    project: str = ""
+    model: str = ""
+    status: str = ""
+    name_source: str = ""
+    errors: bool = False
+    min_tokens: int = 0
+    min_cost: float = 0.0
+    sort: str = "last_activity"
+    ascending: bool = False
+    limit: int = SEARCH_DEFAULT_LIMIT
+    offset: int = 0
+
+    def view_params(self) -> dict[str, Any]:
+        """The parameters of sessions.search; defaults are left out."""
+        out: dict[str, Any] = {
+            "search_text": self.q, "requested_tools": list(self.tools or []), "page_size": self.limit,
+            "page_offset": min(self.offset, 20_000), "sort_key": self.sort, "ascending": self.ascending,
+            "requested_project": self.project, "requested_model": self.model, "requested_status": self.status,
+            "requested_name_source": self.name_source, "errors_only": self.errors,
+        }
+        if self.since is not None:
+            out["since"] = self.since
+        if self.until is not None:
+            out["until"] = self.until
+        if self.min_tokens > 0:
+            out["min_tokens"] = self.min_tokens
+        if self.min_cost > 0:
+            out["min_cost"] = self.min_cost
+        return out
+
+    def applied(self) -> dict[str, Any]:
+        """The filters and order the answer is for, so the page can say what excludes what."""
+        return {
+            "q": self.q, "tools": self.tools, "since": self.since, "until": self.until, "project": self.project,
+            "model": self.model, "status": self.status, "name_source": self.name_source, "errors": self.errors,
+            "min_tokens": self.min_tokens, "min_cost": self.min_cost, "sort": self.sort,
+            "order": "asc" if self.ascending else "desc", "limit": self.limit, "offset": self.offset,
+        }
+
+
+def finder_query(qs: dict[str, list[str]], *, max_limit: int = SEARCH_MAX_LIMIT, max_offset: int = 250_000) -> SessionQuery:
+    """Read the finder's query string. Raises ValueError with the reason for a bad value."""
+    from ..tool_scope import normalize_selection, stored_ids_for
+
+    def one(name: str) -> str:
+        values = qs.get(name) or [""]
+        if len(values) != 1 or len(values[0]) > 4096:
+            raise ValueError(f"Invalid {name}")
+        return values[0].strip()
+
+    def number(name: str) -> float | None:
+        raw = one(name)
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be a number of 0 or more")
+        return value
+
+    def whole(name: str, default: int, most: int) -> int:
+        value = number(name)
+        if value is None:
+            return default
+        if not value.is_integer() or value > most:
+            raise ValueError(f"{name} must be a whole number from 0 to {most}")
+        return int(value)
+
+    def choice(name: str, allowed: tuple[str, ...], default: str = "") -> str:
+        value = one(name)
+        if value and value not in allowed:
+            raise ValueError(f"{name} must be one of: {', '.join(allowed)}")
+        return value or default
+
+    since, until = number("since"), number("until")
+    if since is not None and until is not None and since >= until:
+        raise ValueError("since must be earlier than until")
+    tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+    errors = one("errors")
+    if errors not in ("", "0", "1", "true", "false"):
+        raise ValueError("errors must be 1 or 0")
+    limit = whole("limit", SEARCH_DEFAULT_LIMIT, max_limit) or SEARCH_DEFAULT_LIMIT
+    return SessionQuery(
+        q=one("q"), tools=stored_ids_for(tools) if tools is not None else None, since=since, until=until,
+        project=one("project"), model=one("model"), status=choice("status", FINDER_STATUSES),
+        name_source=choice("name", NAME_SOURCES), errors=errors in ("1", "true"),
+        min_tokens=whole("min_tokens", 0, 2**53), min_cost=number("min_cost") or 0.0,
+        sort=choice("sort", FINDER_SORTS, "last_activity"), ascending=choice("order", ("asc", "desc"), "desc") == "asc",
+        limit=limit, offset=whole("offset", 0, max_offset),
+    )
+
+
+def live_pids(snapshot: Any) -> dict[str, set[int]]:
+    """The processes alive now, by every id their session is known under.
+
+    Only processes whose session is known from evidence (the tool's own session file or
+    the monitor's binding) count; the board's guess by project does not apply here.
+    """
+    out: dict[str, set[int]] = {}
+    for live in getattr(snapshot, "sessions", None) or ():
+        if not isinstance(live, dict) or live.get("ended"):
+            continue
+        pids = {int(p) for p in live.get("pids") or () if p}
+        if not pids:
+            continue
+        for key in (live.get("native_session_id"), live.get("session_id")):
+            if not key:
+                continue
+            for name in {str(key), _session_uuid(str(key)) or ""} - {""}:
+                out.setdefault(name, set()).update(pids)
+    return out
+
+
+def model_prices(now: float) -> dict[str, list[float]]:
+    """USD per 1M input, output, cache read and cache write tokens of each priced model, as at *now*.
+
+    The query orders and filters by cost with these rates. A row shows its cost priced
+    here, by the board's rule, so the shown cost also follows dated price changes.
+    """
+    from ..data.model_pricing import MODEL_PRICING
+
+    out = {}
+    for key, pricing in MODEL_PRICING.items():
+        r = pricing.at(now, 0)
+        out[key] = [
+            r.input_per_m, r.output_per_m,
+            r.input_per_m if r.cache_read_per_m is None else r.cache_read_per_m,
+            r.input_per_m if r.cache_write_5m_per_m is None else r.cache_write_5m_per_m,
+        ]
+    return out
+
+
+def _cost_of_members(members: list[dict], now: float) -> float | None:
+    """The stored cost of the calls that carry one, and the list price of the rest, as the board counts it."""
+    from .board_projection import _list_cost
+
+    parts = []
+    for m in members:
+        if m.get("stored_cost") is not None:
+            parts.append(float(m["stored_cost"]))
+        for model, tokens in (m.get("list_tokens") or {}).items():
+            listed = _list_cost(model, *(float(t or 0) for t in tokens), float(m.get("last_ts") or now))[0]
+            if listed is not None:
+                parts.append(listed)
+    return _usd(sum(parts)) if parts else None
+
+
 def search_sessions(
     db: Any,
     q: str = "",
@@ -468,68 +648,196 @@ def search_sessions(
     offset: int = 0,
     *,
     history: HistoryScope | None = None,
+    query: SessionQuery | None = None,
+    live: dict[str, set[int]] | None = None,
+    now: float | None = None,
 ) -> dict:
-    """Return one page of matching sessions, newest first."""
-    q = (q or "").strip()
-    limit = max(1, min(int(limit or SEARCH_DEFAULT_LIMIT), SEARCH_MAX_LIMIT))
-    offset = max(0, int(offset or 0))
+    """Return one page of matching sessions: running ones first, then by last activity."""
+    if query is None:
+        query = SessionQuery(
+            q=(q or "").strip(), tools=tools, since=since, until=until,
+            limit=max(1, min(int(limit or SEARCH_DEFAULT_LIMIT), SEARCH_MAX_LIMIT)), offset=max(0, int(offset or 0)),
+        )
     history = history or HistoryScope.local(db)
-    return _reader_search(db, history, q, tools, since, until, limit, offset)
+    return _reader_search(db, history, query, now=now, live=live)
 
 
-def _reader_search(db, history, q, tools, since, until, limit, offset, *, now=None):
+def _reader_search(db, history, query: SessionQuery, *, now=None, live=None):
     from collections import Counter
 
     from .history_scope import identity, label
 
+    now = time.time() if now is None else now
+    live = {} if history.qualified else (live or {})
+    moving = set() if history.qualified else _moving(db)
     results = history.read(
-        "sessions.search", limit=20_000 if history.qualified else limit + 1,
-        page_offset=min(offset, 20_000), page_size=limit, search_text=q, requested_tools=tools or [],
-        restrict_tools=(tools is not None if history.qualified else bool(tools)),
-        moving_sessions=[] if history.qualified else sorted(_moving(db)),
-        **{k: v for k, v in (("since", since), ("until", until)) if v is not None},
+        "sessions.search", limit=20_000 if history.qualified else query.limit + 2,
+        restrict_tools=query.tools is not None, moving_sessions=sorted(moving), live_sessions=sorted(live),
+        now_ts=float(now), idle_window=session_lifecycle.IDLE_END_S, end_grace=session_lifecycle.END_GRACE_S,
+        observed_ends=sorted(session_lifecycle.END_OBSERVED), model_prices=model_prices(now), **query.view_params(),
     )
-    totals = Counter({label(r["node_id"]): r["total"] for r in results if r["row_type"] == "count"})
-    total = sum(totals.values())
-    base = {}
-    titles = {}
-    groups = {}
-    hits = {}
+    totals: Counter[str] = Counter()
+    facets: Counter[str] = Counter()
+    items = []
     for r in results:
-        if r["row_type"] != "item":
-            continue
-        key = r["session_id"]
-        for data in r["data"]:
-            raw = data["session_id"]
-            sid = identity(r["node_id"], raw) if history.qualified else raw
-            groups.setdefault(key, []).append(sid)
-            base[sid] = data
-            if data["title"]:
-                titles[sid] = data["title_ts"] or 0, data["title"]
-            if q:
-                hits[sid] = int(data["rank"]), data["match_text"]
-    page_keys = list(groups)
-    page = {k: _representative(k, groups[k]) for k in page_keys}
-    rows = _project_search_page(page, groups, base, titles)
-    if rows:
-        _add_numbers(rows, history, now=now)
+        if r["row_type"] == "count":
+            totals[label(r["node_id"])] += int(r["total"] or 0)
+        elif r["row_type"] == "facets":
+            facets.update({k: int(v or 0) for k, v in (r["data"] or {}).items()})
+        elif r["row_type"] == "item":
+            items.append(r)
+
+    def qualify(node: str, raw: str) -> str:
+        return identity(node, raw) if history.qualified else raw
+
     out = []
-    for key, sid in page.items():
-        row = rows[sid]
-        closed = row.pop("_closed", False)
-        if closed and not history.qualified:
-            total -= 1
-            continue
+    for r in items:
+        data, node = r["data"], r["node_id"]
+        if data.get("imported"):
+            row = _imported_row(data, node, qualify(node, r["session_id"]), qualify, query.q, live, moving, now)
+        else:
+            row = _unread_row(data, qualify(node, data.get("src_session") or r["session_id"]), query.q)
+        out.append((node, row))
+    _add_artifacts([row for _node, row in out], history)
+    rows = []
+    for node, row in out:
+        row.pop("_ids", None)
         if history.qualified:
-            node, raw = history.split(sid)
-            row.update(node_id=label(node), session_id=raw)
-        ids = [base[s]["session_id"] for s in groups[key] if s in base]
-        row["match"], row["match_text"] = _match_of(row["title"], [hits[s] for s in groups[key]], q, ids) if q else ("", "")
-        out.append(row)
-    result = {"rows": out, "total": max(total, len(out))}
+            row.update(node_id=label(node), session_id=history.split(row["id"])[1])
+        rows.append(row)
+    result = {
+        "rows": rows,
+        "total": sum(totals.values()),
+        "facets": {name: facets.get(name, 0) for name in FACETS},
+        "without": {name: facets.get(f"without_{name}", 0) for name in WITHOUT},
+        "unfiltered": facets.get("unfiltered", 0),
+        "query": query.applied(),
+    }
     if history.qualified:
         result["by_node"] = [{"node_id": node, "sessions": n} for node, n in sorted(totals.items())]
     return result
+
+
+def _imported_row(data, node, key, qualify, q, live, moving, now) -> dict:
+    members = data.get("members") or []
+    sids = [qualify(node, m["session_id"]) for m in members]
+    base = dict(zip(sids, members))
+    rep = _representative(key, sids) if sids else key
+    first = {s: (m.get("title_ts") or 0, m["title"]) for s, m in base.items() if m.get("title")}
+    named = _project_search_page({rep: rep}, {rep: sids}, base, first) if sids else {}
+    row = named.get(rep) or {
+        "id": rep, "tool": "", "title": _short(rep), "title_source": "", "project": "", "started_at": data.get("started"),
+    }
+    raw_ids = [m["session_id"] for m in members]
+    pids: set[int] = set()
+    for i in raw_ids:
+        pids |= live.get(i, set()) | live.get(_session_uuid(i) or "", set())
+    ended_at = data.get("ended_at")
+    lifecycle = session_lifecycle.assess(
+        now=now, pids=pids, last_activity=float(data.get("seen") or 0.0), ended_at=ended_at,
+        end_reason=str(data.get("end_reason") or ""), idle_window=session_lifecycle.IDLE_END_S,
+    )
+    openable = int(data.get("facts") or 0) > 0 or any(i in moving for i in raw_ids)
+    row.update(
+        model=next((m["model"] for m in members if m.get("model")), ""),
+        ended_at=ended_at,
+        last_activity_at=data.get("last_active") or None,
+        duration=data.get("duration"),
+        status="running" if lifecycle.live else "inferred" if lifecycle.inferred else "ended",
+        status_evidence=lifecycle.evidence,
+        end_reason=lifecycle.end_reason,
+        pids=sorted(pids),
+        tokens=int(data.get("tokens") or 0),
+        cost_usd=_cost_of_members(members, now),
+        tool_calls=int(data.get("tool_calls") or 0),
+        prompts=int(data.get("prompts") or 0),
+        errors=int(data.get("errors") or 0),
+        artifacts=0,
+        commits=sum(int(m.get("commits") or 0) for m in members),
+        openable=openable,
+        closed_reason=None if openable else NO_RECORDS_REASON,
+        _ids=sids,
+    )
+    row.update(_import_of(data))
+    hits = [(int(m["rank"]), m["match_text"]) for m in members if m.get("rank") is not None]
+    row["match"], row["match_text"] = _match_of(row["title"], hits, q, raw_ids) if q else ("", "")
+    return row
+
+
+def _unread_row(data, sid, q) -> dict:
+    """A session file found on disk whose history is not stored yet."""
+    tool, path = str(data.get("src_tool") or ""), str(data.get("source_file") or "")
+    name, source = str(data.get("name") or ""), str(data.get("name_source") or "")
+    row = {
+        "id": sid, "tool": tool,
+        "title": _one_line(name, STORED_TITLE_CHARS) if name else f"{_label(tool) or 'Session'} · {_basename(path) or _short(sid)}",
+        "title_source": source if name else "",
+        "project": str(data.get("project") or ""), "model": "",
+        "started_at": None, "ended_at": None, "last_activity_at": data.get("src_mtime"), "duration": None,
+        "status": "not_imported",
+        "status_evidence": f"session file found ({_size_words(data.get('size_bytes'))}), not read yet",
+        "end_reason": "", "pids": [],
+        "tokens": None, "cost_usd": None, "tool_calls": None, "prompts": None, "errors": None,
+        "artifacts": None, "commits": None,
+        "openable": False, "closed_reason": NOT_IMPORTED_REASON,
+    }
+    row.update(_import_of({**data, "import_state": "waiting"}))
+    rank = data.get("rank")
+    row["match"], row["match_text"] = "", ""
+    if q and rank is not None:
+        kind = _MATCH_ORDER[int(rank)]
+        text = {"title": name, "id": str(data.get("src_session") or sid), "source": path}.get(kind, "")
+        row["match"], row["match_text"] = kind, text if kind == "id" else _excerpt(text, q)
+    return row
+
+
+def _size_words(size: Any) -> str:
+    if isinstance(size, bool) or not isinstance(size, (int, float)):
+        return "size unknown"
+    value = float(size)
+    if value < 1024:
+        return f"{int(value)} bytes"
+    for unit in ("KB", "MB", "GB"):
+        value /= 1024
+        if value < 1024 or unit == "GB":
+            break
+    return f"{value:.1f} {unit}"
+
+
+def _import_of(data: dict) -> dict:
+    """Whether the stored history of a session is complete, in words and in numbers."""
+    files = data.get("files")
+    if files is None:
+        return {"import_state": "none", "import_evidence": "no session file indexed; recorded live only", "import": None}
+    state = str(data.get("import_state") or "complete")
+    files = int(files)
+    numbers = {
+        "files": files, "complete": int(data.get("complete") or 0), "reading": int(data.get("reading") or 0),
+        "waiting": int(data.get("waiting") or 0), "outside_window": int(data.get("outside") or 0),
+        "size_bytes": data.get("size_bytes"), "bytes_read": data.get("bytes_read"),
+        "modified_at": data.get("src_mtime"), "source_file": data.get("source_file") or "",
+    }
+    of = f"{files} file" + ("s" if files != 1 else "")
+    if state == "waiting":
+        words = f"found on disk, not read yet: {of}, {_size_words(numbers['size_bytes'])}"
+    elif state == "reading":
+        words = f"still importing: {_size_words(numbers['bytes_read'])} of {_size_words(numbers['size_bytes'])} read"
+    elif state == "partial":
+        words = f"partly outside the import window: {numbers['outside_window']} of {of} not imported"
+    else:
+        words = f"complete: {of}, {_size_words(numbers['size_bytes'])}"
+    return {"import_state": state, "import_evidence": words, "import": numbers}
+
+
+def _add_artifacts(rows: list[dict], history: HistoryScope) -> None:
+    """The artifact count of each stored row of the page, by the agent detail's rule, in one query."""
+    wanted = {row["id"]: (row["_ids"], row["project"]) for row in rows if row.get("_ids")}
+    if not wanted:
+        return
+    counts = artifact_counts(wanted, history=history)
+    for row in rows:
+        if row.get("_ids"):
+            row["artifacts"] = counts.get(row["id"], 0)
 
 
 def _representative(key: str, sids: list[str]) -> str:
@@ -585,83 +893,3 @@ def _project_search_page(page, groups, base, first_prompt):
             "commits": 0,
         }
     return out
-
-
-class _PageBoard(_Board):
-    """The agent detail's board for several sessions of one store at once.
-
-    It reads the window of all the given sessions with one query per kind of row, and
-    gives each the numbers its agent detail shows. Only the counts are loaded.
-    """
-
-    def __init__(self, conn: Any, now: float, sids: list[str], facts: dict[str, set[str]], history: HistoryScope) -> None:
-        super().__init__(conn, Filters(since=0.0, until=now + 60.0, buckets=1), now, None, facts=facts, history=history)
-        self._page = sorted(set(sids))
-        self._keys = history.keys(self._page)
-
-    # It reads its own fallback rows, per session, and shows no confirmation rows.
-    _prefetch_fallback = False
-    _reads_confirms = False
-
-    def _history_window(self, view: str, *, grid: bool = False, **params) -> list[dict]:
-        return super()._history_window(view, grid=grid, session_keys=self._keys, **params)
-
-    def _load_fallback_cells(self) -> None:
-        found = _fallback_rows(self.history, self.f.since, self.f.until, session_keys=self._keys)
-        if not found:
-            return
-        keys = self.history.keys(row["session_id"] for row in found)
-        firsts = {row["session_id"]: row["first_ts"] for row in self.history.read("sessions.first_activities", session_keys=keys)}
-        window = self.f
-        try:
-            for row in found:
-                sid = row["session_id"]
-                first = firsts.get(sid)
-                self.f = replace(window, since=first) if first and first < window.until else window
-                self._add_fallback_cells((row,))
-        finally:
-            self.f = window
-
-    def _load_confirms(self) -> None:
-        # The confirmation rows show the pending questions, not the counts.
-        self.confirm_rows = []
-
-    def numbers(self, sid: str) -> dict | None:
-        """Tokens, cost, tool calls and prompts of a main agent, as its agent detail shows them."""
-        if sid not in self.scope:
-            return None
-        row = self._agent_row(sid, sid, "", [0] * SPARK_POINTS)
-        parts = [row.get(k) for k in ("input", "output", "cache_read", "cache_write")]
-        return {
-            "tokens": sum(int(v or 0) for v in parts),
-            "cost_usd": row["cost_usd"],
-            "tool_calls": row["tool_calls"],
-            "prompts": (row.get("msgs") or {}).get("user"),
-        }
-
-
-def _numbers_in(sids: list[str], now: float, history: HistoryScope) -> dict[str, dict | None]:
-    facts = _store_facts("memory", history)
-    board = _PageBoard(None, now, sids, facts, history).load(counts_only=True)
-    return {sid: board.numbers(sid) for sid in sids}
-
-
-def _add_numbers(rows: dict[str, dict], history: HistoryScope, *, now: float | None = None) -> None:
-    """Add the usage, artifact and commit counts shown in agent detail."""
-    now = time.time() if now is None else now
-    numbers = _numbers_in(list(rows), now, history)
-    wanted = {sid: (_artifact_sids(sid, {}), row["project"]) for sid, row in rows.items()}
-    artifacts = artifact_counts(wanted, history=history)
-    commits = {r["session_id"]: r["count"] for r in history.read("sessions.commit_counts", session_keys=history.keys(rows))}
-    for sid, row in rows.items():
-        found = numbers.get(sid)
-        if found is None:
-            # Records the board does not count (in another store, or outside its window): no agent to open.
-            row["_closed"] = True
-            continue
-        row["tokens"] = int(found["tokens"] or 0)
-        row["cost_usd"] = found["cost_usd"]
-        row["tool_calls"] = int(found["tool_calls"] or 0)
-        row["prompts"] = int(found["prompts"] or 0)
-        row["artifacts"] = artifacts.get(sid, 0)
-        row["commits"] = commits.get(sid, 0)

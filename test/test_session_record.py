@@ -437,12 +437,42 @@ class TestSearch:
         assert out["total"] == 3
         assert search_sessions(db, "claude")["total"] == 0
 
-    def test_every_search_row_opens_in_the_agent_detail(self, db, tmp_path):
+    def test_a_session_file_not_imported_yet_is_listed_and_an_imported_one_shows_its_state(self, db, tmp_path):
+        _seed_search(db, tmp_path)
+        db.insert("session_sources", source_file="/h/.codex/sessions/rollout-x-" + SID2 + ".jsonl", session_id=SID2,
+                  tool="codex-cli", size_bytes=5000, mtime=NOW - 3000, bytes_read=0, status="waiting", indexed_at=NOW)
+        db.insert("session_sources", source_file="/h/.claude/projects/p/s-old.jsonl", session_id="s-old",
+                  tool="claude-code", size_bytes=4096, mtime=NOW - 8000, bytes_read=1024, status="reading", indexed_at=NOW)
+        out = search_sessions(db)
+        assert out["total"] == 4 and out["facets"]["not_imported"] == 1 and out["facets"]["importing"] == 1
+        rows = {r["id"]: r for r in out["rows"]}
+        assert (rows[SID2]["status"], rows[SID2]["openable"]) == ("not_imported", False)
+        assert rows["s-old"]["import_state"] == "reading" and rows["s-old"]["import"]["bytes_read"] == 1024
+        assert rows["s-mid"]["import_state"] == "none"
+        only = search_sessions(db, query=session_record.finder_query({"status": ["not_imported"]}))
+        assert [r["id"] for r in only["rows"]] == [SID2]
+
+    def test_filters_and_sorts_are_applied_before_paging(self, db, tmp_path):
+        _seed_search(db, tmp_path)
+        query = session_record.finder_query
+        by_tokens = search_sessions(db, query=query({"sort": ["tokens"], "order": ["desc"], "limit": ["1"]}))
+        assert (by_tokens["total"], [r["id"] for r in by_tokens["rows"]]) == (3, ["s-old"])
+        assert [r["id"] for r in search_sessions(db, query=query({"min_tokens": ["50"]}))["rows"]] == ["s-old"]
+        assert [r["id"] for r in search_sessions(db, query=query({"project": ["beta"]}))["rows"]] == ["s-mid"]
+        assert [r["id"] for r in search_sessions(db, query=query({"name": ["prompt"]}))["rows"]] == ["s-mid", "s-old"]
+        assert [r["id"] for r in search_sessions(db, query=query({"model": ["claude-sonnet-4-5"]}))["rows"]] == ["s-old"]
+        none = search_sessions(db, query=query({"status": ["running"]}))
+        assert none["total"] == 0 and none["without"]["status"] == 3
+
+    def test_every_search_row_opens_in_the_agent_detail_or_says_why_not(self, db, tmp_path):
         _seed_search(db, tmp_path)
         _session(db, "placeholder:1:2", "claude-desktop", "", NOW - 1)
         for q in ("", "widget", "p"):
             for row in search_sessions(db, q)["rows"]:
-                assert agent_detail(db, row["id"], None, NOW)[0] == 200, row["id"]
+                if row["openable"]:
+                    assert agent_detail(db, row["id"], None, NOW)[0] == 200, row["id"]
+                else:
+                    assert row["closed_reason"], row["id"]
 
     def test_the_route_answers_with_the_contract_shape(self, db, tmp_path):
         _seed_search(db, tmp_path)
@@ -450,8 +480,10 @@ class TestSearch:
         payload = json.loads(body)
         assert status == 200 and payload["total"] == 2
         assert set(payload["rows"][0]) == {
-            "id", "tool", "title", "project", "started_at", "ended_at", "tokens", "cost_usd",
-            "tool_calls", "prompts", "artifacts", "commits", "match", "match_text",
+            "id", "tool", "title", "title_source", "project", "model", "started_at", "ended_at", "last_activity_at",
+            "duration", "status", "status_evidence", "end_reason", "pids", "import_state", "import_evidence", "import",
+            "openable", "closed_reason", "tokens", "cost_usd", "tool_calls", "prompts", "errors", "artifacts", "commits",
+            "match", "match_text",
         }
 
 # ─── Viewing an artifact through /api/file ────────────────────────
@@ -607,9 +639,10 @@ def test_a_search_row_has_the_numbers_of_the_agent_detail(kusto_store, tmp_path)
     assert (row["tool_calls"], row["prompts"], row["artifacts"]) == (4, 1, 6)
 
 
-def test_transcript_usage_counts_from_the_same_time_as_in_the_agent_detail(kusto_store):
-    """A session with usage from its transcript and no model call rows: the search row and the
-    agent detail count its usage over the same time window."""
+def test_a_session_with_transcript_usage_only_shows_the_transcript_totals(kusto_store):
+    """A session with usage from its transcript and no model call rows: the finder row shows the
+    whole transcript's usage. The finder sorts and filters by tokens in its one query, so it
+    does not apply the agent detail's window of daily usage from the first stored activity."""
     db = kusto_store
     day = 86400.0
     start = NOW - 3 * day
@@ -627,4 +660,4 @@ def test_transcript_usage_counts_from_the_same_time_as_in_the_agent_detail(kusto
     # The first tool call comes long after the transcript's first day.
     db.insert("tool_invocations", ts=NOW - 150, session_id="u-1", tool="codex-cli", tool_name="shell")
     row = next(r for r in search_sessions(db)["rows"] if r["id"] == "u-1")
-    assert _numbers(row) == _detail_numbers(db, "u-1")
+    assert (row["tokens"], row["tool_calls"], row["status"], row["import_state"]) == (390, 1, "running", "none")

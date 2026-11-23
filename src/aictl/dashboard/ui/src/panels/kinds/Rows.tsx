@@ -90,6 +90,10 @@ export default function Rows(props: PanelProps & { setup?: (props: PanelProps) =
 export function RowTable(props: {
   panel: PanelProps; rows: readonly KeyedRow[]; columns?: readonly FieldRef[]; label?: string; pageSize?: number
   action?: (row: KeyedRow) => { label: string; run: () => void } | undefined
+  /** Rows sorted by the caller (the server); only the listed columns can be sorted. */
+  sorted?: { sort: { id: string; desc: boolean } | undefined; onSort: (column: string) => void; columns: ReadonlySet<string> }
+  /** The narrowest the table may get before its region scrolls sideways. */
+  minWidth?: string
 }) {
   const { ctx, def } = untrack(() => props.panel)
   const columns = () => props.columns ?? def.columns
@@ -108,6 +112,7 @@ export function RowTable(props: {
     const hint = field.hint
     return {
       id: field.path, label, read, numeric, format,
+      sortable: props.sorted ? props.sorted.columns.has(field.path) : undefined,
       hint: hint ? ({ row }: KeyedRow) => { const text = at(row, hint); return typeof text === 'string' && text ? text : undefined } : undefined,
       compact: unit === 'count' || unit === 'tokens' || unit === 'usd' ? (value: number) => {
         if (Math.abs(value) >= 1000) return unit === 'usd' ? fmtUsd(value) : fmtN(value)
@@ -118,7 +123,9 @@ export function RowTable(props: {
   }))
   const action = (entry: KeyedRow) => props.action ? props.action(entry) : rowAction(def, ctx, entry.row)
   return <Show when={props.rows.some(row => row.folded !== undefined)}
-    fallback={<Table label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} rowId={row => row.id} />}>
+    fallback={<Table label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} rowId={row => row.id}
+      sorted={props.sorted ? { sort: props.sorted.sort, onSort: field => props.sorted?.onSort(field.id) } : undefined}
+      minWidth={props.minWidth} />}>
     <FoldTable label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} action={action} />
   </Show>
 }

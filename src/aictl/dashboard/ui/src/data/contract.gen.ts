@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 6725d580f658f661b28db271651214db3df7ce52e281e6ae94a92306ed8ce1a0
+// Schema digest: 53c8584edfeb35f44a40423f57b7390082d31b58ae0a77038d884fa0c7380c94
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1641,19 +1641,76 @@ export type DetailSessionTeam = {
 
 export type DetailSessions = {
   total: number;
+  unfiltered: number;
   node_scope?: NodeScope;
+  facets: {
+    sessions: number;
+    running: number;
+    ended: number;
+    inferred: number;
+    importing: number;
+    not_imported: number;
+  };
+  without: {
+    status: number;
+    model: number;
+    name_source: number;
+    errors: number;
+    min_tokens: number;
+    min_cost: number;
+  };
+  query: {
+    q: string;
+    tools: Array<string> | null;
+    since: number | null;
+    until: number | null;
+    project: string;
+    model: string;
+    status: string;
+    name_source: string;
+    errors: boolean;
+    min_tokens: number;
+    min_cost: number;
+    sort: string;
+    order: "asc" | "desc";
+    limit: number;
+    offset: number;
+  };
   rows: Array<{
     id: string;
     title: string;
     title_source: string;
     project: string;
     tool: string;
+    model: string;
     started_at: number | null;
     ended_at: number | null;
-    artifacts: number;
-    commits: number;
+    last_activity_at: number | null;
+    duration: number | null;
+    status: "running" | "ended" | "inferred" | "not_imported";
+    status_evidence: string;
+    end_reason: string;
+    pids: Array<number>;
+    import_state: "complete" | "reading" | "partial" | "waiting" | "none";
+    import_evidence: string;
+    import: {
+      files: number;
+      complete: number;
+      reading: number;
+      waiting: number;
+      outside_window: number;
+      size_bytes: number | null;
+      bytes_read: number | null;
+      modified_at: number | null;
+      source_file: string;
+    } | null;
+    openable: boolean;
+    closed_reason: string | null;
+    artifacts: number | null;
+    commits: number | null;
     cost_usd: number | null;
-    prompts: number;
+    prompts: number | null;
+    errors: number | null;
     tokens: number | null;
     tool_calls: number | null;
     match: string;

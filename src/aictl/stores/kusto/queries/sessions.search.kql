@@ -1,94 +1,270 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=real(null), until:real=real(null),
     restrict_tools:bool=false, requested_tools:dynamic=dynamic([]), search_text:string='', moving_sessions:dynamic=dynamic([]),
-    page_offset:long=0, page_size:long=200, row_limit:long);
-let candidates = materialize(sessions
+    live_sessions:dynamic=dynamic([]), requested_project:string='', requested_model:string='', requested_status:string='',
+    requested_name_source:string='', errors_only:bool=false, min_tokens:long=0, min_cost:real=0.0,
+    sort_key:string='last_activity', ascending:bool=false, now_ts:real=0.0, idle_window:real=900.0, end_grace:real=5.0,
+    observed_ends:dynamic=dynamic([]), model_prices:dynamic=dynamic({}), page_offset:long=0, page_size:long=200,
+    row_limit:long);
+// One page of the session finder, its total and its facet counts, in one query.
+// A session is one logical id per node: the tool's UUID when the id carries one.
+let uuid_of = (s:string) { coalesce(extract(@"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", 0, s), s) };
+// aictl.data.model_pricing.normalize_model_id; model_prices holds USD per 1M tokens by that id.
+let model_key = (m:string) {
+    let a = replace_regex(tolower(trim(@"\s+", m)), @"^(?:openai|anthropic|google|models)/", "");
+    let b = replace_regex(replace_regex(a, @"^(?:[a-z]{2,4}\.)?anthropic\.", ""), @"-v\d+(?::\d+)?$", "");
+    let c = replace_regex(replace_regex(b, @"\[[^\]]*\]$", ""), @"-\d{8}$", "");
+    iff(c startswith "claude-", replace_string(c, ".", "-"), c)
+};
+let stored = materialize(sessions
     | where (all_nodes or node_id == requested_node) and isnotempty(session_id)
     | summarize arg_max(_v, *) by ['project'],node_id,session_id
     | where not(column_ifexists('_deleted',false))
     | summarize arg_max(_v, *) by node_id,session_id
-    | where (isnull(since) or started_at >= since) and (isnull(until) or started_at <= until)
+    | project node_id,session_id,tool,project_path,model,started_at,ended_at,
+        last_activity_at=column_ifexists('last_activity_at',real(null)),end_reason=column_ifexists('end_reason',''),
+        stored_name=column_ifexists('title',''),stored_source=column_ifexists('title_source',''),logical_id=uuid_of(session_id));
+// Keys first: the sessions the cheap filters keep. Only their facts are deduplicated below.
+let candidates = materialize(stored
+    | where isnull(until) or coalesce(started_at,0.0) <= until
     | where not(restrict_tools) or tool in (requested_tools)
-    | project node_id,session_id,tool,project_path,started_at,ended_at,
-        ['title']=column_ifexists('title',''),title_source=column_ifexists('title_source',''));
-let candidate_ids = candidates | project node_id,session_id;
-let prompts = materialize(session_prompts
+    | where isempty(requested_project) or project_path contains requested_project);
+// The import state of each session: one row per session file the transcript reader found.
+let sources = materialize(session_sources
+    | where (all_nodes or node_id == requested_node) and isnotempty(session_id)
+    | summarize arg_max(_v, *) by ['project'],node_id,source_file
+    | extend logical_id=uuid_of(session_id)
+    | summarize arg_max(mtime, source_file, tool, session_id), src_files=count(), waiting=countif(status == 'waiting'),
+        reading=countif(status == 'reading'), outside=countif(status == 'outside_window'),
+        complete=countif(status == 'complete'), size_bytes=sum(size_bytes), bytes_read=sum(bytes_read)
+        by node_id,logical_id
+    | project-rename src_mtime=mtime, src_tool=tool, src_session=session_id);
+// Found on disk and not read at all: the history import has not reached these sessions yet.
+let unread = materialize(sources
+    | where waiting == src_files
+    | where not(restrict_tools) or src_tool in (requested_tools)
+    | where (isnull(until) or src_mtime <= until) and (isnull(since) or src_mtime >= since));
+let fact_keys = union (candidates | project node_id,session_id), (unread | project node_id,session_id=src_session),
+    (unread | project node_id,session_id=logical_id)
+    | distinct node_id,session_id;
+let req = materialize(requests
     | where all_nodes or node_id == requested_node
-    | join kind=leftsemi candidate_ids on node_id,session_id
+    | join kind=leftsemi fact_keys on node_id,session_id
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false))
+    | summarize calls=count(), i=sum(coalesce(input_tokens,long(0))), o=sum(coalesce(output_tokens,long(0))),
+        cr=sum(coalesce(cache_read_tokens,long(0))), cw=sum(coalesce(cache_creation_tokens,long(0))),
+        stored_cost=sum(cost_usd), errors=countif(is_error != 0), last_ts=max(ts)
+        by node_id,session_id,agent_id,model
+    // As on the board: the cost stored with the calls of an agent and model, or else their list price.
+    | extend listed=isnull(stored_cost) or stored_cost == 0, rate=model_prices[model_key(model)]
+    | extend list_cost=iff(listed and isnotnull(rate), (i * todouble(rate[0]) + o * todouble(rate[1]) + cr * todouble(rate[2])
+        + cw * todouble(rate[3])) / 1e6, real(null))
+    | summarize calls=sum(calls), tokens=sum(i + o + cr + cw), stored=sumif(stored_cost, not(listed)),
+        stored_n=countif(not(listed)), list_cost=sum(list_cost), list_n=countif(isnotnull(list_cost)),
+        li=sumif(i, listed), lo=sumif(o, listed), lcr=sumif(cr, listed), lcw=sumif(cw, listed),
+        errors=sum(errors), last_ts=max(last_ts)
+        by node_id,session_id,model
+    | summarize r_calls=sum(calls), r_tokens=sum(tokens), r_stored=sum(stored), r_stored_n=sum(stored_n),
+        r_cost=sum(list_cost) + sum(stored), r_priced=sum(stored_n) + sum(list_n), r_errors=sum(errors), r_last=max(last_ts),
+        r_models=make_set_if(model, isnotempty(model), 32),
+        r_list=make_bag_if(bag_pack(model, pack_array(li, lo, lcr, lcw)), isnotempty(model) and li + lo + lcr + lcw > 0)
+        by node_id,session_id);
+let calls = materialize(tool_invocations
+    | where all_nodes or node_id == requested_node
+    | join kind=leftsemi fact_keys on node_id,session_id
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'],node_id,key
+    | where not(column_ifexists('_deleted',false))
+    | summarize t_calls=count(), t_errors=countif(is_error != 0), t_last=max(ts) by node_id,session_id);
+let usage = materialize(session_usage
+    | where all_nodes or node_id == requested_node
+    | join kind=leftsemi fact_keys on node_id,session_id
+    | summarize arg_max(_v, *) by ['project'],node_id,session_id
+    | where not(column_ifexists('_deleted',false))
+    | summarize u_tokens=sum(coalesce(input_tokens,long(0)) + coalesce(output_tokens,long(0)) + coalesce(cache_read_tokens,long(0))
+            + coalesce(cache_creation_tokens,long(0))),
+        u_priced=countif(isnotnull(cost_usd)), u_cost=sum(cost_usd), u_tools=sum(tool_call_count),
+        u_last=max(last_activity_at), u_model=take_anyif(model, isnotempty(model))
+        by node_id,session_id);
+let prompt_rows = materialize(session_prompts
+    | where all_nodes or node_id == requested_node
+    | join kind=leftsemi fact_keys on node_id,session_id
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'],node_id,key
     | where not(column_ifexists('_deleted',false)));
-let eligible = union
-    (requests | where all_nodes or node_id == requested_node
-        | join kind=leftsemi candidate_ids on node_id,session_id
-        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
-        | summarize arg_max(_v, *) by ['project'],node_id,key
-        | where not(column_ifexists('_deleted',false)) | project node_id,session_id),
-    (tool_invocations | where all_nodes or node_id == requested_node
-        | join kind=leftsemi candidate_ids on node_id,session_id
-        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
-        | summarize arg_max(_v, *) by ['project'],node_id,key
-        | where not(column_ifexists('_deleted',false)) | project node_id,session_id),
-    (session_usage | where all_nodes or node_id == requested_node
-        | join kind=leftsemi candidate_ids on node_id,session_id
-        | summarize arg_max(_v, *) by ['project'],node_id,session_id
-        | where not(column_ifexists('_deleted',false)) | project node_id,session_id),
-    (prompts | project node_id,session_id),
+let prompt_stats = prompt_rows | summarize p_count=countif(isempty(agent_id)), p_last=max(ts) by node_id,session_id;
+// A session the agent detail can open has records of its own: model calls, tool calls, usage or prompts.
+let eligible = materialize(union (req | project node_id,session_id), (calls | project node_id,session_id),
+    (usage | project node_id,session_id), (prompt_stats | project node_id,session_id),
     (candidates | where session_id in (moving_sessions) | project node_id,session_id)
-    | distinct node_id,session_id;
+    | distinct node_id,session_id);
 let hits = union
-    (candidates | where isnotempty(search_text) and ['title'] contains search_text
-        | project node_id,session_id,rank=0,match_text=['title'],stamp=0.0),
+    (candidates | where isnotempty(search_text) and stored_name contains search_text
+        | project node_id,session_id,rank=0,match_text=stored_name,stamp=0.0),
     (candidates | where isnotempty(search_text) and session_id contains search_text
         | project node_id,session_id,rank=6,match_text=session_id,stamp=0.0),
     (candidates | where isnotempty(search_text) and project_path contains search_text
         | project node_id,session_id,rank=1,match_text=project_path,stamp=0.0),
-    (prompts | where isnotempty(search_text) and text contains search_text
+    (prompt_rows | where isnotempty(search_text) and text contains search_text
         | project node_id,session_id,rank=2,match_text=text,stamp=ts),
     (session_artifacts | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
-        | join kind=leftsemi candidate_ids on node_id,session_id
+        | join kind=leftsemi fact_keys on node_id,session_id
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,path
         | where not(column_ifexists('_deleted',false)) and path contains search_text
         | project node_id,session_id,rank=3,match_text=path,stamp=-mtime),
     (file_write_events | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
-        | join kind=leftsemi candidate_ids on node_id,session_id
+        | join kind=leftsemi fact_keys on node_id,session_id
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and path contains search_text
         | project node_id,session_id,rank=4,match_text=path,stamp=-ts),
     (session_commits | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
-        | join kind=leftsemi candidate_ids on node_id,session_id
+        | join kind=leftsemi fact_keys on node_id,session_id
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,sha
         | where not(column_ifexists('_deleted',false)) and subject contains search_text
         | project node_id,session_id,rank=5,match_text=subject,stamp=-ts)
     | order by rank asc,stamp asc,match_text asc
     | serialize priority=row_number()
     | summarize arg_min(priority,rank,match_text) by node_id,session_id;
+// The numbers of each stored id. Model calls count when the session has any; else the transcript's usage.
 let found = materialize(candidates
     | join kind=leftsemi eligible on node_id,session_id
     | lookup kind=leftouter hits on node_id,session_id
     | where isempty(search_text) or isnotnull(rank)
-    | extend logical_id=coalesce(extract(@"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-                                        0,session_id),session_id));
-let groups = materialize(found | summarize last_start=max(started_at) by node_id,logical_id);
-let page_groups = materialize(groups
-    | order by last_start desc nulls last,node_id asc,logical_id asc
+    | lookup kind=leftouter req on node_id,session_id
+    | lookup kind=leftouter calls on node_id,session_id
+    | lookup kind=leftouter usage on node_id,session_id
+    | lookup kind=leftouter prompt_stats on node_id,session_id
+    | extend has_facts=isnotnull(r_calls) or isnotnull(t_calls) or isnotnull(u_tokens) or isnotnull(p_count)
+    | extend tokens=iff(isnotnull(r_calls), r_tokens, coalesce(u_tokens, long(0))),
+        cost=iff(isnotnull(r_calls), iff(r_priced > 0, r_cost, real(null)), iff(coalesce(u_priced, long(0)) > 0, u_cost, real(null))),
+        stored_cost=iff(isnotnull(r_calls), iff(r_stored_n > 0, r_stored, real(null)), iff(coalesce(u_priced, long(0)) > 0, u_cost, real(null))),
+        list_tokens=iff(isnull(r_list), dynamic({}), r_list),
+        tool_calls=iff(coalesce(t_calls, long(0)) > 0, t_calls, coalesce(u_tools, long(0))),
+        errors=coalesce(r_errors, long(0)) + coalesce(t_errors, long(0)),
+        prompts=coalesce(p_count, long(0)),
+        models=iff(isnull(r_models), dynamic([]), r_models),
+        seen=max_of(coalesce(last_activity_at, 0.0), coalesce(r_last, 0.0), coalesce(t_last, 0.0), coalesce(p_last, 0.0),
+            coalesce(u_last, 0.0)),
+        live=session_id in (live_sessions) or logical_id in (live_sessions)
+    | extend model=coalesce(model, u_model, tostring(models[0])),
+        model_hit=isempty(requested_model) or model == requested_model or u_model == requested_model
+            or set_has_element(models, requested_model),
+        end_key=coalesce(ended_at, 0.0), has_end=isnotnull(ended_at) and ended_at > 0);
+// The status rules of aictl.session_lifecycle.assess, on the folded session: a bound live process,
+// then an observed end not overtaken by activity, then activity inside the idle window.
+let imported_rows = found
+    | summarize started=min(started_at), seen=max(seen), member_n=count(), ended_n=countif(has_end), last_ended=max(ended_at),
+        arg_max(end_key, end_reason), live_n=countif(live), facts_n=countif(has_facts), tokens=sum(tokens),
+        cost=sum(cost), priced=countif(isnotnull(cost)), tool_calls=sum(tool_calls), errors=sum(errors), prompts=sum(prompts),
+        model_n=countif(model_hit), user_names=countif(stored_source == 'user' and isnotempty(stored_name)),
+        tool_names=countif(stored_source == 'tool' and isnotempty(stored_name)),
+        prompt_names=countif(stored_source == 'prompt' and isnotempty(stored_name)), rank=min(rank)
+        by node_id,logical_id
+    | extend ended_at=iff(ended_n == member_n, last_ended, real(null)), cost=iff(priced > 0, cost, real(null))
+    | extend last_active=max_of(seen, coalesce(ended_at, 0.0), coalesce(started, 0.0)),
+        status=case(live_n > 0, 'running',
+            isnotnull(ended_at) and ended_at > 0 and end_reason in (observed_ends) and seen <= ended_at + end_grace, 'ended',
+            seen > 0 and now_ts - seen < idle_window, 'running',
+            'inferred'),
+        name_kind=case(user_names > 0, 'user', tool_names > 0, 'tool', prompt_names > 0 or prompts > 0, 'prompt', 'none')
+    | lookup kind=leftouter sources on node_id,logical_id
+    | extend import_state=case(isnull(src_files), 'none', reading > 0 or waiting > 0, 'reading', outside > 0, 'partial', 'complete'),
+        imported=true, duration=iff(last_active > 0 and isnotnull(started), last_active - started, real(null)),
+        pass_since=isnull(since) or last_active >= since,
+        pass_model=model_n > 0,
+        pass_errors=not(errors_only) or errors > 0,
+        pass_tokens=tokens >= min_tokens,
+        pass_cost=min_cost <= 0 or coalesce(cost, 0.0) >= min_cost
+    | extend pass_name=isempty(requested_name_source) or name_kind == requested_name_source;
+let names = stored
+    | extend has_name=toint(isnotempty(stored_name))
+    | project node_id,logical_id,has_name,n_title=stored_name,n_source=stored_source,n_project=project_path
+    | summarize arg_max(has_name, n_title, n_source, n_project) by node_id,logical_id;
+let unread_rows = unread
+    | join kind=leftanti (eligible | extend logical_id=uuid_of(session_id) | distinct node_id,logical_id) on node_id,logical_id
+    | lookup kind=leftouter names on node_id,logical_id
+    | where isempty(requested_project) or n_project contains requested_project
+    | extend rank=case(isempty(search_text), int(null), n_title contains search_text, 0, src_session contains search_text, 6,
+        source_file contains search_text, 7, int(null))
+    | where isempty(search_text) or isnotnull(rank)
+    | extend imported=false, status='not_imported', import_state='waiting', last_active=src_mtime,
+        name_kind=iff(isnotempty(n_title), n_source, 'none'), tokens=long(null), cost=real(null), tool_calls=long(null),
+        pass_since=true, pass_model=isempty(requested_model), pass_errors=not(errors_only), pass_tokens=min_tokens <= 0,
+        pass_cost=min_cost <= 0
+    | extend pass_name=isempty(requested_name_source) or name_kind == requested_name_source;
+let base = materialize(union (imported_rows), (unread_rows)
+    | where pass_since
+    | extend pass_status=isempty(requested_status) or status == requested_status
+        or (requested_status == 'importing' and import_state == 'reading'));
+let facets = base
+    | summarize sessions=countif(pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        running=countif(status == 'running' and pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        ended=countif(status == 'ended' and pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        inferred=countif(status == 'inferred' and pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        importing=countif(import_state == 'reading' and pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        not_imported=countif(status == 'not_imported' and pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        without_status=countif(pass_model and pass_name and pass_errors and pass_tokens and pass_cost),
+        without_model=countif(pass_status and pass_name and pass_errors and pass_tokens and pass_cost),
+        without_name_source=countif(pass_status and pass_model and pass_errors and pass_tokens and pass_cost),
+        without_errors=countif(pass_status and pass_model and pass_name and pass_tokens and pass_cost),
+        without_min_tokens=countif(pass_status and pass_model and pass_name and pass_errors and pass_cost),
+        without_min_cost=countif(pass_status and pass_model and pass_name and pass_errors and pass_tokens),
+        unfiltered=count()
+        by node_id;
+// Sorted before paging, so every page is a slice of one order. Running sessions lead the default order.
+let matched = materialize(base
+    | where pass_status and pass_model and pass_name and pass_errors and pass_tokens and pass_cost
+    | extend sort_value=case(sort_key == 'started', started, sort_key == 'duration', duration,
+            sort_key == 'tokens', todouble(tokens), sort_key == 'cost', cost, sort_key == 'tool_calls', todouble(tool_calls),
+            last_active),
+        lead_rank=iff(sort_key == 'last_activity' and not(ascending) and status == 'running', 0, 1)
+    | extend sort_signed=iff(ascending, sort_value, -sort_value));
+let page_groups = materialize(matched
+    | order by lead_rank asc, sort_signed asc nulls last, node_id asc, logical_id asc
     | serialize page_n=row_number()
     | where page_n > page_offset
     | take page_size);
-let page = materialize(found | lookup kind=inner page_groups on node_id,logical_id);
-let titles = prompts | where isempty(agent_id) and isnotempty(text)
-    | join kind=leftsemi (page | project node_id,session_id) on node_id,session_id
+let page_ids = materialize(found | join kind=inner (page_groups | where imported | project node_id,logical_id) on node_id,logical_id
+    | project node_id,session_id,logical_id);
+let titles = prompt_rows | where isempty(agent_id) and isnotempty(text)
+    | join kind=leftsemi page_ids on node_id,session_id
     | order by ts asc,key asc
     | serialize position=row_number()
     | summarize arg_min(position, ts,text) by node_id,session_id;
+let commit_counts = session_commits
+    | where all_nodes or node_id == requested_node
+    | join kind=leftsemi page_ids on node_id,session_id
+    | summarize arg_max(_v, *) by ['project'],node_id,session_id,sha
+    | where not(column_ifexists('_deleted',false))
+    | summarize commits=dcount(sha) by node_id,session_id;
+let members = found
+    | join kind=leftsemi page_ids on node_id,session_id
+    | lookup kind=leftouter titles on node_id,session_id
+    | lookup kind=leftouter commit_counts on node_id,session_id
+    | order by started_at desc, session_id asc
+    | summarize member_list=make_list(bag_pack('session_id',session_id,'tool',tool,'project',project_path,'model',model,
+            'started_at',started_at,'ended_at',ended_at,'end_reason',end_reason,'title',text,'title_ts',ts,
+            'name',stored_name,'name_source',stored_source,'rank',rank,'match_text',match_text,'has_facts',has_facts,
+            'commits',coalesce(commits,long(0)),'stored_cost',stored_cost,'list_tokens',list_tokens,'last_ts',seen))
+        by node_id,logical_id;
 union
-    (groups | summarize total=count() by node_id | project row_type='count',node_id,total),
-    (page | lookup kind=leftouter titles on node_id,session_id
-        | order by page_n asc, started_at desc, session_id asc
-        | summarize data=make_list(bag_pack('session_id',session_id,'tool',tool,'project',project_path,
-                    'started_at',started_at,'ended_at',ended_at,'title',text,'title_ts',ts,'name',['title'],'name_source',title_source,
-                    'rank',rank,'match_text',match_text)) by node_id,logical_id,page_n
-        | project row_type='item',node_id,session_id=logical_id,page_n,data)
+    (matched | summarize total=count() by node_id | project row_type='count',node_id,total),
+    (facets | project row_type='facets',node_id,total=sessions,data=bag_pack('sessions',sessions,'running',running,
+        'ended',ended,'inferred',inferred,'importing',importing,'not_imported',not_imported,
+        'without_status',without_status,'without_model',without_model,'without_name_source',without_name_source,
+        'without_errors',without_errors,'without_min_tokens',without_min_tokens,'without_min_cost',without_min_cost,
+        'unfiltered',unfiltered)),
+    (page_groups | lookup kind=leftouter members on node_id,logical_id
+        | project row_type='item',node_id,session_id=logical_id,page_n,data=bag_pack(
+            'imported',imported,'status',status,'seen',seen,'last_active',last_active,'started',started,'ended_at',ended_at,
+            'end_reason',end_reason,'live',live_n > 0,'facts',facts_n,'tokens',tokens,'cost',cost,'tool_calls',tool_calls,
+            'errors',errors,'prompts',prompts,'duration',duration,'import_state',import_state,'files',src_files,
+            'waiting',waiting,'reading',reading,'outside',outside,'complete',complete,'size_bytes',size_bytes,
+            'bytes_read',bytes_read,'src_mtime',src_mtime,'source_file',source_file,'src_tool',src_tool,
+            'src_session',src_session,'rank',rank,'name',n_title,'name_source',n_source,'project',n_project,
+            'members',iff(isnull(member_list), dynamic([]), member_list)))
 | order by row_type asc,page_n asc,node_id asc
 | take row_limit
 | project row_type, total, node_id, session_id, data

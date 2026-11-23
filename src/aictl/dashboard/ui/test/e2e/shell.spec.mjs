@@ -44,7 +44,7 @@ test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overvi
   await expect(page).toHaveURL(/#sec-agents$/);
   await sections.click();
   await expect(page.getByRole('navigation', { name: 'Overview sections' })).toBeHidden();
-  checkConsole(capture, ['/api/board/sessions?limit=50&offset=0&q=']);
+  checkConsole(capture, ['/api/board/sessions?limit=50&offset=0&order=desc&sort=last_activity']);
 });
 
 test('Overview snapshot', async ({ page, snapshotReplay }) => {
@@ -110,7 +110,7 @@ test('SHL-01: Health navigation and snapshot', async ({ page, snapshotReplay, ca
   await captureFrame(page);
   // The history window follows the wall clock. HLT-01 captures it with a fixed clock.
   await expect(page).toHaveScreenshot('health.png', { mask: [page.locator('#p-healthTrends')] });
-  checkConsole(capture, ['/api/board/sessions?limit=50&offset=0&q=']);
+  checkConsole(capture, ['/api/board/sessions?limit=50&offset=0&order=desc&sort=last_activity']);
 });
 
 test('BRD-02: each attention kind opens its agent tab', async ({ page, snapshotReplay }) => {

@@ -5,7 +5,54 @@
   "type": "object",
   "properties": {
     "total": {"type": "integer"},
+    "unfiltered": {"type": "integer"},
     "node_scope": {"$ref": "node-scope.schema.json"},
+    "facets": {
+      "type": "object",
+      "properties": {
+        "sessions": {"type": "integer"},
+        "running": {"type": "integer"},
+        "ended": {"type": "integer"},
+        "inferred": {"type": "integer"},
+        "importing": {"type": "integer"},
+        "not_imported": {"type": "integer"}
+      },
+      "required": ["sessions", "running", "ended", "inferred", "importing", "not_imported"]
+    },
+    "without": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "integer"},
+        "model": {"type": "integer"},
+        "name_source": {"type": "integer"},
+        "errors": {"type": "integer"},
+        "min_tokens": {"type": "integer"},
+        "min_cost": {"type": "integer"}
+      },
+      "required": ["status", "model", "name_source", "errors", "min_tokens", "min_cost"]
+    },
+    "query": {
+      "type": "object",
+      "properties": {
+        "q": {"type": "string"},
+        "tools": {"type": ["array", "null"], "items": {"type": "string"}},
+        "since": {"type": ["number", "null"]},
+        "until": {"type": ["number", "null"]},
+        "project": {"type": "string"},
+        "model": {"type": "string"},
+        "status": {"type": "string"},
+        "name_source": {"type": "string"},
+        "errors": {"type": "boolean"},
+        "min_tokens": {"type": "integer"},
+        "min_cost": {"type": "number"},
+        "sort": {"type": "string"},
+        "order": {"enum": ["asc", "desc"]},
+        "limit": {"type": "integer"},
+        "offset": {"type": "integer"}
+      },
+      "required": ["q", "tools", "since", "until", "project", "model", "status", "name_source", "errors",
+        "min_tokens", "min_cost", "sort", "order", "limit", "offset"]
+    },
     "rows": {
       "type": "array",
       "items": {
@@ -16,12 +63,40 @@
           "title_source": {"type": "string"},
           "project": {"type": "string"},
           "tool": {"type": "string"},
+          "model": {"type": "string"},
           "started_at": {"type": ["number", "null"]},
           "ended_at": {"type": ["number", "null"]},
-          "artifacts": {"type": "integer"},
-          "commits": {"type": "integer"},
+          "last_activity_at": {"type": ["number", "null"]},
+          "duration": {"type": ["number", "null"]},
+          "status": {"enum": ["running", "ended", "inferred", "not_imported"]},
+          "status_evidence": {"type": "string"},
+          "end_reason": {"type": "string"},
+          "pids": {"type": "array", "items": {"type": "integer"}},
+          "import_state": {"enum": ["complete", "reading", "partial", "waiting", "none"]},
+          "import_evidence": {"type": "string"},
+          "import": {
+            "type": ["object", "null"],
+            "properties": {
+              "files": {"type": "integer"},
+              "complete": {"type": "integer"},
+              "reading": {"type": "integer"},
+              "waiting": {"type": "integer"},
+              "outside_window": {"type": "integer"},
+              "size_bytes": {"type": ["integer", "null"]},
+              "bytes_read": {"type": ["integer", "null"]},
+              "modified_at": {"type": ["number", "null"]},
+              "source_file": {"type": "string"}
+            },
+            "required": ["files", "complete", "reading", "waiting", "outside_window", "size_bytes", "bytes_read",
+              "modified_at", "source_file"]
+          },
+          "openable": {"type": "boolean"},
+          "closed_reason": {"type": ["string", "null"]},
+          "artifacts": {"type": ["integer", "null"]},
+          "commits": {"type": ["integer", "null"]},
           "cost_usd": {"type": ["number", "null"]},
-          "prompts": {"type": "integer"},
+          "prompts": {"type": ["integer", "null"]},
+          "errors": {"type": ["integer", "null"]},
           "tokens": {"type": ["integer", "null"]},
           "tool_calls": {"type": ["integer", "null"]},
           "match": {"type": "string"},
@@ -35,12 +110,25 @@
           "title_source",
           "project",
           "tool",
+          "model",
           "started_at",
           "ended_at",
+          "last_activity_at",
+          "duration",
+          "status",
+          "status_evidence",
+          "end_reason",
+          "pids",
+          "import_state",
+          "import_evidence",
+          "import",
+          "openable",
+          "closed_reason",
           "artifacts",
           "commits",
           "cost_usd",
           "prompts",
+          "errors",
           "tokens",
           "tool_calls",
           "match",
@@ -57,5 +145,5 @@
       }
     }
   },
-  "required": ["total", "rows"]
+  "required": ["total", "rows", "facets", "without", "unfiltered", "query"]
 }

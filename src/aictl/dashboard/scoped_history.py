@@ -84,7 +84,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
         projection_utils,
         session_details,
     )
-    from .session_record import _reader_search
+    from .session_record import _reader_search, finder_query
 
     def one(name):
         values = params.get(name, [""])
@@ -177,11 +177,11 @@ def route(db, scope, path, query, params, now, *, reader=None):
             detail = artifact_details.tool_detail if endpoint == "tool" else artifact_details.error_detail
             return result(*detail(db, name, now, filters=filters, history=history))
         if endpoint == "sessions":
-            tools = selected()
-            return result(200, _reader_search(
-                None, history, one("q").strip(), stored_ids_for(tools) if tools is not None else None,
-                lo, hi, max(1, integer("limit", 50, 200)), integer("offset", 0, 250_000), now=now,
-            ))
+            try:
+                finder = finder_query({**params, "limit": [str(integer("limit", 50, 200) or 1)]}, max_limit=200)
+            except ValueError as exc:
+                raise ScopeError(str(exc)) from exc
+            return result(200, _reader_search(None, history, finder, now=now))
         if endpoint == "prompt":
             node, raw = parse_identity(one("session_id"), scope)
             ts = number("ts")

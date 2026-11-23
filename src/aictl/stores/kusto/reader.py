@@ -242,7 +242,9 @@ _VIEWS = {
         "new_files sig n reps failed first_rn last_rn tool_name label rns file before_tokens after_tokens",
     ),
     "sessions.search": (
-        f"{_TIME} restrict_tools requested_tools search_text moving_sessions page_offset page_size",
+        f"{_TIME} restrict_tools requested_tools search_text moving_sessions page_offset page_size live_sessions "
+        "requested_project requested_model requested_status requested_name_source errors_only min_tokens min_cost "
+        "sort_key ascending now_ts idle_window end_grace observed_ends model_prices",
         "row_type total node_id session_id data",
     ),
 }
@@ -266,9 +268,14 @@ _PARAMETER_TYPES = {
     "include_spans": bool,
     "calendar_bins": bool,
     "counts_only": bool,
+    "errors_only": bool,
     "since": float,
     "until": float,
     "step": float,
+    "min_cost": float,
+    "now_ts": float,
+    "idle_window": float,
+    "end_grace": float,
     "text_floor": float,
     "prompt_ts": float,
     "open_end": float,
@@ -288,6 +295,8 @@ _PARAMETER_TYPES = {
     "requested_paths": list,
     "requested_tool_names": list,
     "moving_sessions": list,
+    "live_sessions": list,
+    "observed_ends": list,
     "search_terms": list,
     "calendar_days": list,
     "pids": tuple,
@@ -325,6 +334,12 @@ def _parameter(name: str, value: Any) -> str:
         type(item) in (float, int) and math.isfinite(item) for item in value
     ):
         return f"dynamic({json.dumps(value)})"
+    if name == "model_prices" and isinstance(value, Mapping) and all(
+        isinstance(k, str) and isinstance(v, (list, tuple)) and len(v) == 4
+        and all(type(x) in (float, int) and math.isfinite(x) for x in v)
+        for k, v in value.items()
+    ):
+        return f"dynamic({json.dumps(dict(value))})"
     if name == "evidence_filters" and isinstance(value, Mapping) and all(
         isinstance(k, str) and isinstance(v, str) for k, v in value.items()
     ):

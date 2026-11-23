@@ -10,13 +10,13 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..stores.base import StoreError
-from ..tool_scope import normalize_selection, stored_ids_for
+from ..tool_scope import normalize_selection
 from .artifact_details import error_detail, file_detail, file_excerpt, prompt_detail, skill_detail, tool_detail
 from .board_filters import BoardRequestError, parse_filters
 from .history_scope import ScopeError, identity_parts, parse_scope
 from .http_request import _local_request
 from .live import stream as live_stream
-from .projection_utils import _as_int, _as_number
+from .projection_utils import _as_number
 from .projections.history import (
     HistoryScope,
 )
@@ -63,18 +63,14 @@ def handle_get(
         elif path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now, history=history) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/sessions":
-            from .session_record import search_sessions
+            from .session_record import finder_query, live_pids, search_sessions
 
-            tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+            try:
+                finder = finder_query(qs)
+            except ValueError as exc:
+                raise BoardRequestError(str(exc)) from exc
             status, payload = 200, search_sessions(
-                db,
-                one("q"),
-                stored_ids_for(tools) if tools else None,
-                _as_number(one("since")),
-                _as_number(one("until")),
-                _as_int(one("limit")) or 200,
-                _as_int(one("offset")) or 0,
-                history=history,
+                db, query=finder, history=history, live=live_pids(snapshot), now=now,
             )
         elif path == "/api/board/tool":
             if one("name"):

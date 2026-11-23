@@ -2,10 +2,12 @@ import { createEffect, createMemo, createSignal, For, lazy, Loading, onCleanup, 
 import { render } from '@solidjs/web'
 import { boardLiveRequest, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
-import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, toolsToParams, type UrlPatch } from '../data/urlState'
+import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
 import { agentView, selectAgentWatch, supportsLiveAgent } from '../drawer/liveAgent'
 import { drawerStack } from '../drawer/navigation'
-import { at, json, panelData, statuses, topic } from '../panels/data'
+import { at, detailPath, json, panelData, statuses, topic } from '../panels/data'
+import { FIND_EVENT, rowState } from '../panels/overview/sessionFinder'
+import type { DetailSessions } from '../data/contract.gen'
 import { sections } from '../panels/layout'
 import type { Command, NodeScope, PanelContext } from '../panels/types'
 import { AppShell } from '../ui/AppShell'
@@ -17,7 +19,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { BoardControls } from './BoardControls'
 import type { DrawerEntry } from './drawerTypes'
 import { NodePicker, scopeLabel } from './NodePicker'
-import { Palette, type PaletteCommand } from './Palette'
+import { Palette, type PaletteCommand, type SessionLookup } from './Palette'
 import { sectionSummary } from './railSummary'
 import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored, typing } from './viewState'
 import '../design/tokens.css'
@@ -252,6 +254,26 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     { id: 'shortcuts', label: 'Show keyboard shortcuts', run: () => setShortcuts(true) },
     ...agents().slice(0, 100).map(agent => ({ id: `agent-${agent.id}`, label: `Open agent: ${agent.title}`, run: () => ctx.openAgent(agent.id) })),
   ]
+  // Any stored session by name, id or text, not only the agents of the current window.
+  const sessionLookup: SessionLookup = async (text, signal) => {
+    const query = new URLSearchParams({ q: text, sort: 'last_activity', order: 'desc', limit: '8', offset: '0' })
+    const page = await json<DetailSessions>(detailPath(ctx, '/api/board/sessions', query), { signal })
+    return { total: page.total, rows: page.rows.map(row => {
+      const view = rowState(row)
+      const tool = ctx.board('tool_labels')?.[row.tool] ?? row.tool
+      return {
+        id: `session-${row.node_id ?? ''}-${row.id}`,
+        label: `${view.opens ? 'Open' : 'Find'} session: ${row.title} · ${tool} · ${view.label.replace('● ', '')}` +
+          (view.opens ? '' : ' (cannot open: not imported yet)'),
+        run: () => {
+          if (view.opens) { ctx.openAgent(row.id, 'flow'); return }
+          writeUrl({ fq: row.session_id ?? row.id, fsort: 'last_activity' })
+          jump('sessions')
+          document.dispatchEvent(new CustomEvent(FIND_EVENT, { detail: { q: row.session_id ?? row.id } }))
+        },
+      }
+    }) }
+  }
   const onPop = () => {
     landOnFlow = false
     clearTimeout(findTimer)
@@ -409,7 +431,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
           }} />
       </Loading>
     </Show>
-    <Palette open={palette()} close={() => setPalette(false)} commands={commands} />
+    <Palette open={palette()} close={() => setPalette(false)} commands={commands} sessions={sessionLookup} />
     <Dialog title="Keyboard shortcuts" open={shortcuts()} onClose={() => setShortcuts(false)}>
       <dl class={styles.sources}>
         <dt>Ctrl/Cmd+K</dt><dd>Open the command palette</dd>

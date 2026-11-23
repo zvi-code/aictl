@@ -1,9 +1,12 @@
-import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { Dialog } from '../ui/Dialog'
+import { sessionSearcher, type SearchState } from './sessionSearch'
 import { remember } from './viewState'
 import styles from './Shell.module.css'
 
 export type PaletteCommand = { id: string; label: string; run: () => void }
+/** Sessions that match a text, from the session search API; any stored session, not only this window's agents. */
+export type SessionLookup = (text: string, signal: AbortSignal) => Promise<{ rows: readonly PaletteCommand[]; total: number }>
 const key = 'aictl-shell-recent-commands'
 function recent(): string[] {
   try {
@@ -12,7 +15,13 @@ function recent(): string[] {
   } catch { return [] }
 }
 
-export function Palette(props: { open: boolean; close: () => void; commands: () => PaletteCommand[] }) {
+export function Palette(props: { open: boolean; close: () => void; commands: () => PaletteCommand[]; sessions?: SessionLookup }) {
+  const [found, setFound] = createSignal<SearchState<PaletteCommand>>({ state: 'idle' })
+  const searcher = sessionSearcher<PaletteCommand>({
+    load: (text, signal) => props.sessions ? props.sessions(text, signal) : Promise.resolve({ rows: [], total: 0 }),
+    update: setFound,
+  })
+  onCleanup(searcher.dispose)
   const [find, setFind] = createSignal('')
   const [index, setIndex] = createSignal(0)
   const [ids, setIds] = createSignal(recent())
@@ -25,13 +34,23 @@ export function Palette(props: { open: boolean; close: () => void; commands: () 
     const query = find().trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
     const all = query.length ? commands.filter(command => query.every(term => command.label.toLocaleLowerCase().includes(term))) :
       [...ids().flatMap(id => commands.find(command => command.id === id) ?? []), ...commands.filter(command => !ids().includes(command.id))]
-    return all.slice(0, 80)
+    const sessions = found()
+    const extra = sessions.state === 'ready' && sessions.text === find().trim() ? sessions.rows : []
+    return [...all.slice(0, 80), ...extra.filter(row => !all.some(command => command.id === row.id))]
   })
+  const sessionNote = () => {
+    const sessions = found()
+    if (!props.sessions || sessions.state === 'idle') return props.sessions ? 'Type 2 or more characters to search all sessions.' : undefined
+    if (sessions.state === 'loading') return `Searching all sessions for “${sessions.text}”…`
+    if (sessions.state === 'error') return `Could not search sessions: ${sessions.message}`
+    return `${sessions.rows.length} of ${sessions.total.toLocaleString()} matching sessions shown.`
+  }
   createEffect(() => props.open, visible => {
     if (!visible) {
       setShown(false)
       setFind('')
       setIndex(0)
+      searcher.query('')
     }
   })
   const run = (command?: PaletteCommand) => {
@@ -47,7 +66,7 @@ export function Palette(props: { open: boolean; close: () => void; commands: () 
     <input class={styles.input} autofocus role="combobox" aria-label="Search commands"
       aria-controls="shell-commands" aria-expanded="true" aria-autocomplete="list"
       aria-activedescendant={matches().length ? `command-${active()}` : undefined}
-      value={find()} onInput={event => { setFind(event.currentTarget.value); setIndex(0) }}
+      value={find()} onInput={event => { setFind(event.currentTarget.value); setIndex(0); searcher.query(event.currentTarget.value) }}
       onKeyDown={event => {
         const size = matches().length
         if (!size) return
@@ -61,6 +80,7 @@ export function Palette(props: { open: boolean; close: () => void; commands: () 
         } else if (event.key === 'Enter') { event.preventDefault(); run(matches()[active()]) }
       }} />
     <Show when={!matches().length}><p role="status">No matching commands.</p></Show>
+    <Show when={sessionNote()}><p role="status" class={styles.paletteNote}>{sessionNote()}</p></Show>
     <div class={styles.commandList} id="shell-commands" role="listbox" aria-label="Commands">
       <For each={matches()} keyed={command => command.id}>{(command, i) =>
         <div id={`command-${i()}`} role="option" aria-selected={active() === i() ? 'true' : 'false'}

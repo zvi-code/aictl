@@ -16,12 +16,15 @@ type TableProps<T> = {
   orderRows?: (sort: SortingState[number] | undefined) => readonly T[]
   primaryCell?: (row: Accessor<T>, value: Accessor<string>, content: JSX.Element) => JSX.Element
   minWidth?: string
+  /** A sort the caller applies, such as a server-side order: the rows arrive sorted and a header click calls onSort. */
+  sorted?: { sort: SortingState[number] | undefined; onSort: (field: Field<T>) => void }
 }
 
 export function Table<T extends object>(props: TableProps<T>): JSX.Element {
   const [sort, setSort] = createSignal<SortingState[number]>()
-  const active = createMemo(() => props.fields.some(field => field.id === sort()?.id) ? sort() : undefined)
-  const changeSort = (field: Field<T>) => setSort(previous => previous?.id !== field.id
+  const active = createMemo(() => props.sorted ? props.sorted.sort
+    : props.fields.some(field => field.id === sort()?.id) ? sort() : undefined)
+  const changeSort = (field: Field<T>) => props.sorted ? props.sorted.onSort(field) : setSort(previous => previous?.id !== field.id
     ? { id: field.id, desc: false } : previous.desc ? undefined : { id: field.id, desc: true })
   return <Show when={props.rows.length > 0} fallback={<PanelState state="empty" />}>
     <Show when={props.pageSize} fallback={<VirtualTable {...props} sort={active()} changeSort={changeSort} />}>
@@ -41,7 +44,7 @@ function sortedRows<T extends object>(props: SortedTableProps<T>) {
   const input = createMemo(() => Array.from(props.rows))
   return createMemo(() => {
     if (props.orderRows) return props.orderRows(props.sort)
-    if (!props.sort) return input()
+    if (!props.sort || props.sorted) return input()
     const data = input(), defs = columns(), order = [props.sort]
     // The row model tracks structure. Read live display values in each cell.
     return untrack(() => updateTableModel(model, data, defs, order).map(row => row.original))
