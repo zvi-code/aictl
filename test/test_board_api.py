@@ -3627,6 +3627,18 @@ class TestAgentFlow:
         _, result = flow_projection.agent_flow(db, "flow-s", now=NOW, category="prompts", q="Kusto", legacy_flow=_no_legacy)
         assert result["turns"] == []
 
+    def test_the_turns_copilot_keeps_only_in_its_store_are_the_prompts_and_replies(self, db):
+        # A Copilot session whose events file is gone: its turns come from session-store.db, marked so.
+        t = NOW - 10
+        _seed_flow(db, NOW - DAY)
+        for key, ts, role, text in (("sp", t, "user", "Question from the store"), ("sa", t + 1, "assistant", "Reply from the store")):
+            db.insert("session_steps", step_key=key, ts=ts, session_id="flow-s", kind="message",
+                      source="copilot-session-store", role=role, text_status="captured")
+            db.insert("session_step_text", step_key=key, ts=ts, session_id="flow-s", text=text)
+        _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, legacy_flow=_no_legacy)
+        assert [e["message"] for e in flow["turns"] if e["type"] == "user_message"] == ["Question from the store"]
+        assert [e["response"] for e in flow["turns"] if e["type"] == "api_response"] == ["Reply from the store"]
+
     def test_combined_filters_precede_event_limit_but_do_not_shrink_totals(self, db):
         _seed_flow(db, NOW - DAY)
         _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, category="tools", q="parser", limit=1)

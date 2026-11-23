@@ -51,6 +51,7 @@ from typing import IO, TYPE_CHECKING, Any
 from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
+from ..records import COPILOT_STORE_SOURCE
 from ..state_file import StateFile
 from . import session_files, zstd_stream
 from ._common import SQLITE_UNAVAILABLE, coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
@@ -67,6 +68,7 @@ from .call_facts import (
     list_price,
     read_claude_agent_meta,
 )
+from .copilot_store_content import CopilotStoreContent, StoreSession
 from .session_outcomes import MetadataReaders, OutcomeBook
 from .session_titles import (
     CLAUDE_TITLE_TYPES,
@@ -130,6 +132,8 @@ READER_VERSIONS: dict[str, int] = {
     "codex-rollout": 1,  # sessions/**/rollout-*.jsonl[.zst]: CodexAccumulator
     "copilot-events": 1,  # session-state/<id>/events.jsonl: CopilotAccumulator, CopilotFacts
     "copilot-store": 1,  # session-store.db assistant_usage_events: CopilotStoreReader
+    # session-store.db sessions, turns, forge_trajectory_events of sessions with no events.jsonl: CopilotStoreContent
+    "copilot-store-content": 1,
     "vscode-debug-log": 1,  # GitHub.copilot-chat/debug-logs/<id>/*.jsonl: VSCodeDebugLogAccumulator, VSCodeDebugFacts
     "vscode-chat-session": 1,  # chatSessions/<id>.jsonl: VSCodeChatSessionAccumulator, VSCodeChatFacts
     # Claude workflows/wf_*.json, Copilot session.db todos and session-store.db checkpoints:
@@ -1343,6 +1347,17 @@ class TranscriptUsageIngester:
         self._saved_store: tuple[int, str] = (0, "")
         # The Copilot store reader version saved with the position; 0 asks for its rows again.
         self._store_version = READER_VERSIONS["copilot-store"]
+        # session-store.db content of the sessions with no events file, per Copilot home (see _read_store_content):
+        # the readers, their saved positions and reader version, and the sessions they list.
+        self._content: dict[Path, CopilotStoreContent] = {}
+        self._content_saved: dict[str, dict] = {}
+        self._content_version = READER_VERSIONS["copilot-store-content"]
+        self._db_only: dict[str, StoreSession] = {}
+        self._listed: dict[str, SessionUsage] = {}
+        # Every Copilot session whose events.jsonl this reader saw, also after Copilot removed its folder:
+        # the events file stays its only source of prompts, replies and tool calls.
+        self._event_sessions: set[str] = set()
+        self._saved_content: tuple = ()
         self._checkpoint_unsaved = False
         # Per file read to its end: a digest of its last bytes, to know the file again after a restart.
         self._tails: dict[Path, str] = {}
@@ -1400,6 +1415,13 @@ class TranscriptUsageIngester:
             self._store.stored = self._saved_store if current else (0, "")
             if not current:
                 self._saved_store = (-1, "")  # saved again, with the version, once the rows are stored
+            # The store's content positions count only when this reader version took them; the sessions with
+            # an events file are kept whatever the version, and include every events file read before.
+            if int(entry.get("copilot_store_content_version", 0)) >= READER_VERSIONS["copilot-store-content"]:
+                saved_content = entry.get("copilot_store_content")
+                self._content_saved = dict(saved_content) if isinstance(saved_content, dict) else {}
+            self._event_sessions = {str(sid) for sid in entry.get("copilot_event_sessions") or ()}
+            self._event_sessions.update(Path(path).parent.name for path in saved if Path(path).name == "events.jsonl")
             self._book.load(entry.get("outcomes"))
             # The metadata files (Claude workflows, Copilot todos and store checkpoints) are read again
             # when their reader is newer than the one that read them.
@@ -1412,9 +1434,17 @@ class TranscriptUsageIngester:
             log.warning("transcript-usage: checkpoints unavailable; source files will be read again: %s", exc)
             return {}
 
+    def _content_position(self) -> tuple[dict[str, dict], int]:
+        """The saved positions of the store content readers, with those of homes not read in this process."""
+        positions = dict(self._content_saved)
+        positions.update({str(db): reader.position() for db, reader in self._content.items()})
+        return positions, len(self._event_sessions)
+
     def _save_checkpoints(self, ts: float, *, force: bool = False) -> None:
         position = self._store.position()
+        content = (self._content_position(), self._content_version)
         if self._checkpoint is None or not (force or self._read_complete or position != self._saved_store
+                                            or content != self._saved_content
                                             or self._book.dirty or self._metadata.dirty):
             return
         self._checkpoint_unsaved = True
@@ -1428,6 +1458,10 @@ class TranscriptUsageIngester:
                 "copilot_store": list(position),
                 # Every row up to the position was read by this version, and stored (see CopilotStoreReader).
                 "copilot_store_version": self._store_version,
+                # Rows up to these ids were read by this version, and stored (see CopilotStoreContent).
+                "copilot_store_content": content[0][0],
+                "copilot_store_content_version": self._content_version,
+                "copilot_event_sessions": sorted(self._event_sessions),
                 "tails": {str(p): tail for p, tail in self._tails.items() if p in self._checkpoints},
                 "outcomes": self._book.dump(ts - self.backfill_days * 86400),
                 "metadata": self._metadata.dump(),
@@ -1435,6 +1469,7 @@ class TranscriptUsageIngester:
             }})
             self._read_complete.clear()
             self._saved_store = position
+            self._saved_content = content
             self._book.dirty = self._metadata.dirty = False
             self._checkpoint_unsaved = False
         except OSError as exc:
@@ -1516,7 +1551,7 @@ class TranscriptUsageIngester:
         for path in named & self._checkpoints.keys():
             self._checkpoints[path] = (*self._checkpoints[path][:2], 0)
         if store:
-            self._store_version = 0
+            self._store_version = self._content_version = 0
         self._save_checkpoints(time.time(), force=True)
         if self._checkpoint_unsaved:
             return False
@@ -1713,6 +1748,8 @@ class TranscriptUsageIngester:
         # A compressed rollout is a finished session: nothing tails it, so only plain ones are announced.
         self._note_transcript_paths([p for p in codex_files if p.suffix != session_files.ZSTD], "codex-cli")
         self._note_transcript_paths(copilot_files, "copilot-cli")
+        # Every events file found, read yet or not: its session's content is the file's, never the store's.
+        self._event_sessions.update(p.parent.name for p in copilot_files if p.name == "events.jsonl")
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
         self._mark_desktop_sessions()
@@ -1837,6 +1874,7 @@ class TranscriptUsageIngester:
             self._save_progress(touched, now, published)
 
         copilot_ids |= self._store.read() | app_ids
+        copilot_ids |= self._read_store_content(cutoff)
         for sid in copilot_ids:
             touched[sid] = self._pick_copilot_source(sid)
         self._check_fact_write()
@@ -2314,11 +2352,43 @@ class TranscriptUsageIngester:
                 self.facts.tool_calls.attribute(new, "copilot-desktop")
             self._desktop_marked.update(new)
 
+    def _read_store_content(self, cutoff: float) -> set[str]:
+        """The sessions, prompts, replies and shell calls ``session-store.db`` holds of the sessions that have
+        no events file, in every Copilot home. Returns the sessions whose row changed."""
+        changed: set[str] = set()
+        listed: dict[str, StoreSession] = {}
+        for root in self._roots("copilot", self.copilot_state):
+            db = root.parent / "session-store.db"
+            reader = self._content.get(db)
+            if reader is None:
+                reader = self._content[db] = CopilotStoreContent(self.facts, db)
+                reader.load(self._content_saved.get(str(db)))
+            changed |= reader.read(self._event_sessions, cutoff)
+            listed.update(reader.sessions)
+        self._db_only = {sid: info for sid, info in listed.items() if sid not in self._event_sessions}
+        # Rows of a session the sessions table does not list are stored; the session has no row of its own.
+        return {sid for sid in changed if sid in self._db_only or sid in self._store.sessions}
+
+    def _store_usage(self, sid: str) -> SessionUsage | None:
+        """The store's usage of *sid*; for a session with no events file, with what the store lists of it."""
+        stored = self._store.sessions.get(sid)
+        info = self._db_only.get(sid)
+        if info is None:
+            return stored
+        s = stored if stored is not None else self._listed.setdefault(sid, SessionUsage(session_id=sid, tool="copilot-cli"))
+        s.touch(info.created)
+        s.touch(info.updated)
+        s.project_path = s.project_path or info.cwd
+        s.git_branch = s.git_branch or info.branch
+        s.turns = max(s.turns, info.turns)
+        s.tool_calls = max(s.tool_calls, info.commands)
+        return s
+
     def _pick_copilot_source(self, sid: str) -> SessionUsage:
         """One source per session, never a sum. The store lags until its next
         checkpoint, so a live session's events may be ahead: the larger total wins.
-        Tool calls are only in the events file."""
-        stored = self._store.sessions.get(sid)
+        Tool calls are only in the events file, or for a session without one, in the store."""
+        stored = self._store_usage(sid)
         events = self._copilot_finished.get(sid)
         if stored is None:
             chosen = events
@@ -2346,7 +2416,9 @@ class TranscriptUsageIngester:
     def _persist(self, sessions: Iterable[SessionUsage], now: float, published: set[str] | None = None) -> int:
         written = 0
         for s in sessions:
-            if not s.models and not s.turns:
+            # A session the Copilot store lists and no events file holds has a row of its own.
+            listed = s.session_id in self._db_only
+            if not s.models and not s.turns and not listed:
                 continue  # nothing but metadata, e.g. a summary-only file
             row = s.to_row()
             title, title_source = s.title, s.title_source
@@ -2360,7 +2432,9 @@ class TranscriptUsageIngester:
                 continue
             from ..records import SessionRow
 
-            self._fact_target.upsert_session_usage(row)
+            if s.models or not listed:
+                # A listed session with no usage rows in the store has no token figures: not a zero.
+                self._fact_target.upsert_session_usage(row)
             idle = now - s.last_activity_at > IDLE_END_S
             # The transcript's own end record is the tool reporting the end; else the end is inferred.
             recorded = bool(s.recorded_end_at) and s.recorded_end_at >= s.last_activity_at
@@ -2376,7 +2450,7 @@ class TranscriptUsageIngester:
                     ended_at=ended,
                     last_activity_at=s.last_activity_at,
                     end_reason=("transcript" if recorded else "idle") if ended is not None else "",
-                    source="transcript",
+                    source=COPILOT_STORE_SOURCE if listed else "transcript",
                     input_tokens=s.input_tokens,
                     output_tokens=s.output_tokens,
                     cache_read_tokens=s.cache_read_tokens,

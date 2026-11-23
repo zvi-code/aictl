@@ -87,11 +87,12 @@ union
         | project row_type='prompt', ts, key, node_id, ['project'], values=pack_array(ts,agent_id,iff(keep_text and ts >= text_floor,text,''))),
     (message_rows | where ts >= since and ts < until and isnotempty(content) and role in ('user','assistant')
         | project row_type=role, ts, key, node_id, ['project'], values=pack_array(ts,iff(keep_text and ts >= text_floor,content,''),model)),
-    // The person's and agents' messages, and the replies that have text (Copilot CLI assistant.message).
-    (steps | where (source == 'user.message' and kind in ('message','agent_prompt'))
-            or (source == 'assistant.message' and kind == 'message' and role == 'assistant')
+    // The person's and agents' messages, and the replies that have text (Copilot CLI assistant.message;
+    // for a session with no events file, the turns of its session-store.db).
+    (steps | where (source in ('user.message','copilot-session-store') and role == 'user' and kind in ('message','agent_prompt'))
+            or (source in ('assistant.message','copilot-session-store') and kind == 'message' and role == 'assistant')
         | join kind=leftouter step_text on ['project'], node_id, session_id, step_key
-        | where source == 'user.message' or isnotempty(retained) or text_status in ('truncated','expired','withheld')
+        | where role == 'user' or isnotempty(retained) or text_status in ('truncated','expired','withheld')
         | project row_type='native', ts, key=step_key, source_order, node_id, ['project'],
                   values=pack_array(ts,kind,role,step_key,turn_id,text_status,retained,agent_id)),
     // What the agent said it achieved when it ended a task (Copilot CLI session.task_complete summary).

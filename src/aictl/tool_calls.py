@@ -11,10 +11,13 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from .records import COPILOT_STORE_SOURCE
 from .stores import writer_or_discard
 from .stores.base import Row, Writer
 from .tool_targets import describe_call, split_mcp
 
+# Sources that are the tool's own record of its calls: they win over hooks and telemetry.
+_OWN_RECORD = frozenset({"transcript", COPILOT_STORE_SOURCE})
 # The fields of a ToolInvocationRow that say what the call acted on (``target_id`` is column ``target``).
 _TARGET_FIELDS = ("target_kind", "target_id", "target_chars", "target_truncated", "command_name", "url_host",
                   "search_path", "arg_names", "read_offset", "read_limit", "agent_label")
@@ -60,7 +63,7 @@ class ToolCalls:
         transcript = False
         with self._lock:
             for row in rows:
-                transcript = transcript or row.source == "transcript"
+                transcript = transcript or row.source in _OWN_RECORD
                 count += self._record(row)
         if transcript and count:
             pace = getattr(self._writer, "pace", None)
@@ -72,8 +75,8 @@ class ToolCalls:
         key = _key(row)
         previous, prev_text = self._calls.get(key, ({}, {}))
         sid = row.session_id
-        transcript = row.source == "transcript"
-        if (not transcript and previous.get("source") != "transcript"
+        transcript = row.source in _OWN_RECORD
+        if (not transcript and previous.get("source") not in _OWN_RECORD
                 and row.ts <= self._coverage.get(sid, -1)):
             return 0
         project = row.project_path or previous.get("project", "")
@@ -99,14 +102,14 @@ class ToolCalls:
             metadata[field] = value if value not in ("", None) else previous.get(field, value)
         if metadata["confirm"] == "pending" and previous.get("confirm") in ("auto", "approved", "denied"):
             metadata["confirm"] = previous["confirm"]
-        if previous.get("source") == "transcript" and not transcript:
+        if previous.get("source") in _OWN_RECORD and not transcript:
             for field in ("tool", "source", "confirm", "confirm_wait_ms", "agent_id", "project_path",
                           "duration_ms", "exit_code", "input_bytes", "output_bytes", "turn_index", "prompt_id",
                           "request_key", "error_summary", "interrupted", "mcp_server", "mcp_tool",
                           *(name if name != "target_id" else "target" for name in _TARGET_FIELDS)):
                 if previous.get(field) not in (None, ""):
                     metadata[field] = previous[field]
-            metadata["source"] = "transcript"
+            metadata["source"] = previous["source"]
             metadata["project"] = project = metadata["project_path"]
         if previous and project != previous["project"]:
             self._writer.delete("tool_invocations", [previous])

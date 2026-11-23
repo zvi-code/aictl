@@ -98,7 +98,7 @@ def test_every_session_file_has_a_reader_kind_with_a_version(tmp_path):
     ing = ingester(Facts(), tmp_path)
     ing.poll()
     kinds = {reader_kind(tool, path) for path, (tool, _, _) in ing._found.items()}
-    assert kinds == set(READER_VERSIONS) - {"copilot-store", "session-metadata"}
+    assert kinds == set(READER_VERSIONS) - {"copilot-store", "copilot-store-content", "session-metadata"}
     assert all(type(v) is int and v >= 1 for v in READER_VERSIONS.values())
 
 
@@ -305,6 +305,31 @@ def test_the_copilot_store_rows_are_written_again_when_its_reader_version_rises(
     later = Facts()
     ingester(later, tmp_path, checkpoint=state).poll()
     assert not keys(later).get("requests")
+
+
+def test_the_copilot_store_content_is_read_again_when_its_reader_version_rises(tmp_path, monkeypatch):
+    # A session the store holds and no events file does; a store an older aictl read gets its rows the same way.
+    from test_copilot_store_content import STORE_SID, build
+
+    build(tmp_path).close()
+    state = StateFile(tmp_path / "state.json")
+    first = Facts()
+    ingester(first, tmp_path, checkpoint=state).poll()
+    prompts = {k for k in keys(first)["session_prompts"]}
+    assert len(prompts) >= 2 and keys(first)["tool_invocations"]
+    same = Facts()
+    ingester(same, tmp_path, checkpoint=state).poll()
+    assert not keys(same).get("session_prompts") and not keys(same).get("tool_invocations")
+    bump(monkeypatch, "copilot-store-content")
+    again = Facts()
+    ingester(again, tmp_path, checkpoint=state).poll()
+    # The store's rows again, under the same keys; the events file is not read again.
+    assert keys(again)["session_prompts"] < prompts and len(keys(again)["session_prompts"]) == 2
+    assert keys(again)["tool_invocations"] < keys(first)["tool_invocations"]
+    assert {row["session_id"] for row in again.writer.written("session_prompts")} == {STORE_SID}
+    later = Facts()
+    ingester(later, tmp_path, checkpoint=state).poll()
+    assert not keys(later).get("session_prompts")
 
 
 # ── The backlog: fair shares, newest first, progress ──────────────────

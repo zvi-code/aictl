@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-from aictl.ingesters import call_facts, session_outcomes, transcript_steps, transcript_usage
+from aictl.ingesters import call_facts, copilot_store_content, session_outcomes, transcript_steps, transcript_usage
 from aictl.ingesters.transcript_usage import READER_VERSIONS
 
 RECORD = Path(__file__).parent / "fixtures" / "reader_versions.json"
@@ -48,6 +48,10 @@ def material() -> dict[str, object]:
         "copilot-store": {
             "columns": list(transcript_usage.CopilotStoreReader._CALL_COLUMNS),
             "handlers": _handlers(transcript_usage.CopilotStoreReader),
+        },
+        "copilot-store-content": {
+            "tables": list(copilot_store_content.TABLES),
+            "handlers": _handlers(copilot_store_content.CopilotStoreContent),
         },
         "codex-rollout": {"handlers": _handlers(transcript_usage.CodexAccumulator)},
         "vscode-debug-log": {"handlers": _handlers(call_facts.VSCodeDebugFacts, transcript_usage.VSCodeDebugLogAccumulator)},

@@ -359,7 +359,7 @@ class FactBuffer:
             if self.tool_calls is not None:
                 tool = self.surface(row.session_id) if self.surface is not None and row.tool == "copilot-cli" else row.tool
                 try:
-                    self.written += self.tool_calls.record([replace(row, source="transcript", tool=tool)])
+                    self.written += self.tool_calls.record([replace(row, source=row.source or "transcript", tool=tool)])
                 except StoreError as exc:
                     self.write_error = exc
                 return

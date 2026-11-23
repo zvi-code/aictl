@@ -15,6 +15,10 @@ from .data.provenance import SOURCE_RANK
 from .data.provenance import row_provenance as row_provenance
 from .data.provenance import usage_provenance as usage_provenance
 
+# The source of a row read from GitHub Copilot's session-store.db for a session aictl has no
+# events.jsonl of (see aictl.ingesters.copilot_store_content). Like "transcript", it is the tool's own record.
+COPILOT_STORE_SOURCE = "copilot-session-store"
+
 
 class SystemSnapshotRow:
     """One global system snapshot row (was MetricsRow).

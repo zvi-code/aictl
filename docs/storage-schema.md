@@ -409,7 +409,7 @@ Sessions with `title_source` `prompt` lose the title when text is not kept.
 | `ended_at` | real | When the session ended, epoch seconds, UTC; null while no end is stored. Activity more than 5 s after it clears it (the session was resumed) |
 | `last_activity_at` | real | Last time the session did something (a transcript line, a request), epoch seconds, UTC; 0 when unknown |
 | `end_reason` | string | Why `ended_at` is set: `hook`, `transcript`, `process_exit`, `switched` or `idle` (inferred). Empty while not ended |
-| `source` | string | The source of the evidence that last set the row's fields, for example `transcript`, `otel`, `hook`, `process`, `correlator`. OTel and process evidence only fill empty fields |
+| `source` | string | The source of the evidence that last set the row's fields, for example `transcript`, `otel`, `hook`, `process`, `correlator`, or `copilot-session-store` for a Copilot session that only `session-store.db` holds (no events file). OTel and process evidence only fill empty fields |
 | `input_tokens` | long | Input tokens; the largest value any source reported |
 | `output_tokens` | long | Output tokens; the largest value any source reported |
 | `cache_read_tokens` | long | Cache read tokens; the largest value any source reported |
@@ -1127,7 +1127,7 @@ One row per tool call, without its text.
 | `pid` | long | Process id of the AI tool, when known |
 | `is_error` | long | 1 when the call failed |
 | `duration_ms` | real | Duration in ms |
-| `source` | string | `transcript`, `hook` or `otel`. A transcript row replaces hook and OTel rows of the same session up to `tool_invocation_coverage.covered_through` |
+| `source` | string | `transcript`, `copilot-session-store` (a shell command from Copilot's `session-store.db`, for a session with no events file), `hook` or `otel`. A transcript or store row replaces hook and OTel rows of the same session up to `tool_invocation_coverage.covered_through` |
 | `source_event_id` | string | The source's own id of the call, for example the `tool_use_id` |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `confirm` | string | "", `auto`, `approved`, `denied` or `pending` |
@@ -1377,7 +1377,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `trace_id` | string | Always empty: the writer sets none (Copilot events carry no trace id) |
 | `span_id` | string | Always empty: the writer sets none |
 | `parent_span_id` | string | Always empty: the writer sets none |
-| `source` | string | The Copilot event type, for example `user.message`, `tool.execution_start` |
+| `source` | string | The Copilot event type, for example `user.message`, `tool.execution_start`; `copilot-session-store` for a prompt or reply from a `turns` row of `session-store.db` (a session with no events file) |
 | `source_order` | long | Position of the step in the session file |
 | `role` | string | `user` or `assistant` on a message step |
 | `name` | string | A label: tool, skill, command or agent name; only names that look like identifiers |
