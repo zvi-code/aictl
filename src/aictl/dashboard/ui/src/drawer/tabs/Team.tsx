@@ -18,8 +18,11 @@ export default function Team(props: TabProps) {
     <Resource read={props.detail}>{data => <Section title="Subagents">
       <Stats items={[{ label: 'Subagents', value: data().subagents?.length },
         { label: 'Running', value: data().subagents?.filter(agent => ['running', 'waiting', 'looping'].includes(agent.status)).length }]} />
-      <Rows label="Subagents" rows={data().subagents} identity={['id']} columns={['title', 'role', 'status', ['started_at', 'Started', 'time'],
-        ['ended_at', 'Ended', 'time'], 'input', 'output', 'tool_calls']}
+      <Rows label="Subagents" rows={data().subagents?.map(agent => ({ ...agent, model: agent.primary_model ?? agent.resolved_model ?? undefined,
+        duration_s: agent.started_at != null && agent.ended_at != null && agent.ended_at >= agent.started_at ? agent.ended_at - agent.started_at : undefined }))}
+        identity={['id']} columns={['title', 'role', 'status', 'model', ['started_at', 'Started', 'time'], ['ended_at', 'Ended', 'time'],
+          ['duration_s', 'Duration (s)', 'number'], ['status_evidence', 'Why this status'], ['input', 'Input, cache excluded'],
+          ['cache_read', 'Cache read'], ['cache_write', 'Cache write'], 'output', 'tool_calls']}
         action={{ label: row => `Open ${row.title}`, run: row => openAgent(props, row.id, 'overview') }} />
     </Section>}</Resource>
     <Show when={ctx.scope() === 'local' && props.session()} fallback={<PanelState state="unavailable"
