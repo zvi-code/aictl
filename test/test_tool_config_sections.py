@@ -423,7 +423,7 @@ def test_model_row_first_then_configurable_models():
         "wins": 0,
         "locked": False,
         "set": True,
-        "documented": True,
+        "documented": False,  # these tests run without the catalog: no entry, not documented
     }
     plan = rows[1]
     assert plan["label"] == "Plan agent" and plan["source"] == "user"

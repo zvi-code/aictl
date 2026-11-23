@@ -773,7 +773,10 @@ def _finish_rows(
             row["locked"] = _locks(cfg, str(chain[wins]["scope"]), file_key, catalog)
             is_set = row.pop("_set", None)
             row["set"] = scope != "default" if is_set is None else bool(is_set)
-            row["documented"] = bool(row.pop("_documented", True)) or bool(entry)
+            row.pop("_documented", None)
+            # Documented only when the tool's catalog has an entry for the key; a key the catalog
+            # does not know is "present, not in catalog". A detected fact is not a setting at all.
+            row["documented"] = bool(entry)
             if not row["set"]:
                 # An unset knob has nothing behind it; the one default entry is implied by the row itself.
                 row["chain"] = []
@@ -910,8 +913,6 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
         row = _row(key, value, source_of(key), label=label, note=note)
         if key not in cfg.setting_sources:
             row["_fallback"] = True  # attributed to the first file; _finish_rows checks the key is in it
-        if key in cfg.generic_keys and key not in cfg.key_labels:
-            row["_documented"] = False  # catalog entries mark it documented in _finish_rows
         add(section, row)
 
     # Catalog keys no file sets: shown with their default so every knob is visible.
@@ -930,7 +931,9 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
         row["_set"] = False
         add(section, row)
 
-    _finish_rows(cfg, rows, {} if texts is None else texts, catalog)
+    # Copilot Chat in VS Code also shows VS Code's own chat.* keys: those are documented in VS Code's catalog.
+    lookup = {**settings_catalog(_CATALOG_ALSO[cfg.tool]), **catalog} if cfg.tool in _CATALOG_ALSO else catalog
+    _finish_rows(cfg, rows, {} if texts is None else texts, lookup)
     return [{"id": sid, "title": title, "rows": rows[sid]} for sid, title in SECTION_ORDER if rows[sid]]
 
 
@@ -1200,6 +1203,8 @@ def env_scope_fill(cfg: ToolConfig) -> None:
             _env_scope_text(scope, names, note[len(head) :].strip() if note.startswith(head) else note)
 
 
+# Tools whose rows include another tool's keys: a key missing from the tool's catalog is looked up there.
+_CATALOG_ALSO = {"copilot": "vscode"}
 # Tools that read another tool's settings file use that tool's catalog when they have none.
 _CATALOG_FALLBACK = {"copilot-desktop": "copilot-cli"}
 

@@ -130,3 +130,57 @@ def test_a_fallback_attribution_whose_key_is_missing_says_origin_unknown(tmp_pat
     rows = {r["key"]: r for r in _rows(_sections(cfg, tmp_path / "elsewhere"))}
     assert rows["present"]["source"] == str(settings) and rows["present"]["line"] == 1
     assert rows["made_up"]["source"] == "" and rows["made_up"]["scope"] == "unknown"
+
+
+# ─── Documented means "the catalog has an entry" ───────────────────
+
+
+def _shipped_catalog(monkeypatch):
+    shipped = Path(tc.__file__).resolve().parent.parent / "data" / "settings-catalog.yaml"
+    monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", shipped)
+
+
+def test_invented_key_is_present_not_in_catalog(homes, monkeypatch):
+    _shipped_catalog(monkeypatch)
+    (homes["copilot"] / "settings.json").write_text(
+        json.dumps({"logLevel": "debug", "zzInventedKeyNobodyDocuments": True}, indent=2)
+    )
+    root = homes["project"]
+    root.mkdir()
+    cfg = tc._parse_copilot_home_config(root, tool="copilot-cli")
+    rows = {r["key"]: r for r in _rows(_sections(cfg, root))}
+    assert rows["zzInventedKeyNobodyDocuments"]["set"] is True
+    assert rows["zzInventedKeyNobodyDocuments"]["documented"] is False
+    assert rows["logLevel"]["documented"] is True
+    assert rows["version"]["documented"] is False  # a detected fact has no catalog entry either
+
+
+def test_vscode_copilot_group_row_documented_only_when_catalogued(homes, monkeypatch, tmp_path):
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        "tools:\n  copilot:\n    keys:\n"
+        "      - {key: github.copilot.chat.agent.enabled, label: Agent mode, section: autonomy, type: boolean, default: true}\n"
+    )
+    monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", catalog)
+    user = tmp_path / "vscode-user"
+    user.mkdir()
+    (user / "settings.json").write_text(
+        json.dumps({"github.copilot.chat.agent.enabled": True, "github.copilot.chat.agent.autoFix": True}, indent=2)
+    )
+    monkeypatch.setattr(tc, "vscode_user_dir", lambda: user)
+    root = homes["project"]
+    root.mkdir()
+    cfg = tc._parse_copilot_config(root, tool="copilot")
+    rows = {r["key"]: r for r in _rows(_sections(cfg, root))}
+    assert rows["autoFix"]["set"] is True and rows["autoFix"]["documented"] is False  # not in the catalog
+    assert rows["enabled"]["documented"] is True
+
+
+def test_made_up_copilot_rows_are_not_documented(homes, monkeypatch):
+    _shipped_catalog(monkeypatch)
+    _copilot_fixture(homes)
+    (homes["copilot"] / "permissions-config.json").write_text(json.dumps({"locations": {"/x": {"tools": ["a"]}}}))
+    cfg = tc._parse_copilot_home_config(homes["project"], tool="copilot-cli")
+    rows = {r["key"]: r for r in _rows(_sections(cfg, homes["project"]))}
+    assert rows["savedToolApprovals"]["documented"] is False
+    assert rows["global_instructions"]["documented"] is False
