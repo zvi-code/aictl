@@ -48,14 +48,22 @@ function useBoardDetail<T extends { node_scope?: { kind: string; node_id: string
     if (!value || ctx.scope() === 'local') return value
     return value.node_scope?.kind === ctx.scope() && (ctx.scope() !== 'node' || value.node_scope?.node_id === ctx.nodeId()) ? value : undefined
   }
-  // When this page last received a current answer, so a stale one says how old it is.
-  const [received, setReceived] = createSignal<number>()
+  // When this page received each answer, so a stale one says how old it is, also after the panel
+  // scrolled away and back and shows the cached answer while it reads again.
+  const [tick, setTick] = createSignal(0)
   createEffect(() => read()?.status === 'ready' && data() ? data() : undefined, value => {
-    if (value) setReceived(Date.now() / 1000)
+    if (value && !receivedAt.has(value)) { receivedAt.set(value, Date.now() / 1000); setTick(n => n + 1) }
   })
-  const stamped = (value: Read): Read => value.state === 'stale' && received() ? { ...value, updatedAt: received() } : value
+  const stamped = (value: Read): Read => {
+    if (value.state !== 'stale') return value
+    const at = tick() >= 0 && data() ? receivedAt.get(data()!) : undefined
+    if (at) return { ...value, updatedAt: at }
+    // A new read of an answer whose age is not known: the answer is shown without a line that cannot say its age.
+    return read()?.status === 'refreshing' && !ctx.paused() ? { ...value, state: 'ready' } : value
+  }
   return { read, data, stamped, noTools: () => ctx.tools()?.length === 0 }
 }
+const receivedAt = new WeakMap<object, number>()
 
 const mcpLabels: Record<string, string> = {
   calls: 'Calls', sessions: 'Sessions', failures: 'Failures', fail_rate: 'Failure rate', total_ms: 'Total time',

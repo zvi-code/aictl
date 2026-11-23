@@ -50,5 +50,19 @@ describe('Convergence', () => {
     host.querySelector<HTMLButtonElement>('tbody button[aria-label="Open session Fix the parser"]')!.click()
     expect(agents).toEqual([JSON.stringify(['node-a', 's-1'])])
     dispose()
+    // Scrolled away and back: the cached answer, read again, still says when it arrived.
+    const again = mount(() => <Convergence {...props} />)
+    expect(again.host.querySelector('time')).not.toBeNull()
+    again.dispose()
+  })
+
+  it('draws no stale line for an answer of unknown age that is being read again', () => {
+    const { props } = panel('convergence', { detail: () => ({ data: { ...body, node_scope: undefined }, status: 'refreshing', error: null }) })
+    const { host, dispose } = mount(() => <Convergence {...props} />)
+    // The stale notice keeps its space but is hidden.
+    expect(Array.from(host.querySelectorAll('[aria-hidden]')).filter(el => el.textContent?.includes('Last updated'))
+      .map(el => el.getAttribute('aria-hidden'))).toEqual(['true'])
+    expect(host.textContent).toContain('Fix the parser')
+    dispose()
   })
 })
