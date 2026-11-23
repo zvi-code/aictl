@@ -128,19 +128,29 @@
         "properties": {
           "tool": {"type": "string"},
           "label": {"type": "string"},
-          "never_sent": {"type": "integer"},
-          "sent": {"type": "integer"},
+          "files": {"type": "integer"},
           "tokens": {"type": "integer"},
-          "unknown": {"type": "integer"},
+          "always": {"type": "integer"},
+          "on_demand": {"type": "integer"},
+          "conditional": {"type": "integer"},
           "kinds": {
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+              "properties": {
+                "kind": {"type": "string"},
+                "files": {"type": "integer"},
+                "bytes": {"type": "integer"},
+                "tokens": {"type": "integer"},
+                "always": {"type": "integer"},
+                "on_demand": {"type": "integer"},
+                "conditional": {"type": "integer"}
+              },
+              "required": ["kind", "files", "bytes", "tokens", "always", "on_demand", "conditional"]
             }
           }
         },
-        "required": ["tool", "label", "never_sent", "sent", "tokens", "kinds"]
+        "required": ["tool", "label", "files", "tokens", "always", "on_demand", "conditional", "kinds"]
       }
     },
     "map": {
@@ -242,9 +252,22 @@
           },
           "label": {"type": "string"},
           "tool": {"type": "string"},
-          "truncated": {"type": "boolean"}
+          "truncated": {"type": "boolean"},
+          "excluded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {"type": "string"},
+                "policy": {"enum": ["no", "unknown"]},
+                "files": {"type": "integer"},
+                "bytes": {"type": "integer"}
+              },
+              "required": ["kind", "policy", "files", "bytes"]
+            }
+          }
         },
-        "required": ["count", "files", "label", "tool", "truncated"]
+        "required": ["count", "files", "label", "tool", "truncated", "excluded"]
       }
     },
     "telemetry": {
@@ -382,6 +405,7 @@
           "path": {"type": "string"},
           "name": {"type": "string"},
           "kind": {"type": "string"},
+          "project": {"type": "string"},
           "files": {
             "type": "array",
             "items": {

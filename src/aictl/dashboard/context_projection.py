@@ -20,6 +20,7 @@ from .projection_utils import _as_number, _basename, _label
 from .projections.history import (
     HistoryScope,
 )
+from .queryable_context import _SENT_TO_MODEL
 
 CONTEXT_RECENT_S = 300.0
 
@@ -68,6 +69,10 @@ _CONTEXT_FIXTURE_RE = re.compile(r"/(fixtures?|__fixtures__|__tests__)/")
 _CONTEXT_SENTINEL_RE = re.compile(r"^(SKILL|skill|index|INDEX|README|readme)$")
 
 
+# A folder a tool reads from inside a repository; the folder above it names the repository.
+_REPO_MARKERS = frozenset({".github", ".claude", ".cursor", ".windsurf", ".codex", ".gemini", ".agents", ".vscode", ".continue"})
+
+
 _MEMORY_LABELS = {
     "claude-user-memory": "Claude user memory",
     "claude-project-memory": "Claude project memory",
@@ -112,8 +117,24 @@ def context_policy(sent_to_llm: str | None) -> str:
     return "no"
 
 
+def _repository(path: str) -> str | None:
+    """The folder that holds a tool folder such as ``.github`` or ``.claude``: the repository's name."""
+    parts = path.split("/")
+    for i, part in enumerate(parts):
+        if i > 0 and parts[i - 1] and part.lower() in _REPO_MARKERS:
+            return parts[i - 1]
+    return None
+
+
+def is_context(f: Any) -> bool:
+    """Whether the path tables say the tool loads this file into the model's context. Transcripts,
+    databases, logs, caches, settings and credentials are not; a file no row describes is not known."""
+    return (f.sent_to_llm or "") in _SENT_TO_MODEL
+
+
 def context_project(path: str, root: str, scope: str = "") -> str:
-    """The project a file belongs to: the first folder under the root, or a bracketed place."""
+    """The project a file belongs to: the first folder under the root, the repository that holds
+    the tool folder (a reported node has no root here), or a bracketed place."""
     if scope in _CONTEXT_GLOBAL_SCOPES:
         return "(global)"
     p = (path or "").replace("\\", "/")
@@ -125,6 +146,9 @@ def context_project(path: str, root: str, scope: str = "") -> str:
         return "(root)" if first.startswith(".") else first
     if "/.claude/projects/" in p:
         return "(shadow)"
+    repository = _repository(p) if scope == "project" else None
+    if repository:
+        return repository
     if any(part in p for part in _CONTEXT_GLOBAL_PARTS):
         return "(global)"
     return "(other)"
@@ -243,34 +267,39 @@ def _context_budget(tool: Any, root: str, model: str | None, model_from: str | N
 def _context_categories(tool: Any) -> dict:
     from ..tools import budget_bucket
 
+    # Only files the tool loads into the model count; transcripts, databases and logs never do.
     kinds: dict[str, dict] = {}
     for f in tool.files:
+        if not is_context(f):
+            continue
         kind = f.kind or "other"
-        row = kinds.setdefault(
-            kind, {"kind": kind, "files": 0, "bytes": 0, "tokens": 0, "sent": 0, "never_sent": 0, "always": 0, "on_demand": 0, "conditional": 0}
-        )
+        row = kinds.setdefault(kind, {"kind": kind, "files": 0, "bytes": 0, "tokens": 0, "always": 0, "on_demand": 0, "conditional": 0})
         tok = _ctx_int(f.tokens)
-        bucket = budget_bucket(f.sent_to_llm, f.loaded_when)
         row["files"] += 1
         row["bytes"] += _ctx_int(f.size)
         row["tokens"] += tok
-        if f.sent_to_llm == "unknown":
-            row["unknown"] = row.get("unknown", 0) + tok
-        elif bucket == "never":
-            row["never_sent"] += tok
-        else:
-            row["sent"] += tok
-            row[bucket] += tok
+        row[budget_bucket(f.sent_to_llm, f.loaded_when)] += tok
     rows = sorted(kinds.values(), key=lambda r: (-r["tokens"], r["kind"]))
     return {
         "tool": tool.tool,
         "label": _ctx_field(tool, "label", "") or _label(tool.tool),
-        "tokens": sum(r["tokens"] for r in rows),
-        "sent": sum(r["sent"] for r in rows),
-        "never_sent": sum(r["never_sent"] for r in rows),
-        **({"unknown": sum(r.get("unknown", 0) for r in rows)} if any("unknown" in r for r in rows) else {}),
+        **{key: sum(r[key] for r in rows) for key in ("files", "tokens", "always", "on_demand", "conditional")},
         "kinds": rows,
     }
+
+
+def _context_excluded(tool: Any) -> list[dict]:
+    """The files a tool keeps that are not model context, counted by kind: never sent, or no known policy."""
+    out: dict[tuple, dict] = {}
+    for f in tool.files:
+        if is_context(f):
+            continue
+        kind = f.kind or "other"
+        policy = "unknown" if (f.sent_to_llm or "unknown") == "unknown" else "no"
+        row = out.setdefault((kind, policy), {"kind": kind, "policy": policy, "files": 0, "bytes": 0})
+        row["files"] += 1
+        row["bytes"] += _ctx_int(f.size)
+    return sorted(out.values(), key=lambda r: (-r["files"], r["kind"], r["policy"]))
 
 
 def _file_sessions() -> dict[str, list[str]]:
@@ -293,7 +322,8 @@ def _context_file(f: Any, tool: str, root: str, now: float, sessions: dict[str, 
 
     mtime = _as_number(f.mtime) or None
     return {
-        "sessions": sorted(set((sessions or {}).get(os.path.normcase(os.path.normpath(str(f.path))), []))),
+        # Live sessions are known from this machine's discovery only; a reported inventory does not have them.
+        "sessions": None if sessions is None else sorted(set(sessions.get(os.path.normcase(os.path.normpath(str(f.path))), []))),
         "path": f.path,
         "name": _basename(f.path),
         "tool": tool,
@@ -315,10 +345,12 @@ def _context_file(f: Any, tool: str, root: str, now: float, sessions: dict[str, 
 def _context_map(tool_list: list[Any], root: str) -> dict:
     cells: dict[tuple, dict] = {}
     items: dict[tuple, dict[str, int]] = {}
-    policy = {"yes": 0, "on-demand": 0, "conditional": 0, "no": 0}
+    policy = {"yes": 0, "on-demand": 0, "conditional": 0}
     total = 0
     for t in tool_list:
         for f in t.files:
+            if not is_context(f):
+                continue
             tok = _ctx_int(f.tokens)
             kind = f.kind or "other"
             scope = f.scope or "external"
@@ -440,7 +472,7 @@ def _is_prompt(path: str, kind: str) -> bool:
     return path.endswith(".prompt.md") or kind == "prompt" or (kind in ("command", "commands") and ("/prompts/" in lower or "/commands/" in lower))
 
 
-def _context_workflows(tool_list: list[Any]) -> list[dict]:
+def _context_workflows(tool_list: list[Any], root: str) -> list[dict]:
     out: dict[str, dict] = {}
     for t in tool_list:
         for f in t.files:
@@ -462,11 +494,13 @@ def _context_workflows(tool_list: list[Any]) -> list[dict]:
                 "type": what,
                 "kind": kind or None,
                 "tool": t.tool,
+                # Files of one name in several repositories differ only here.
+                "project": context_project(path, root, f.scope or ""),
                 "size": _ctx_int(f.size),
                 "tokens": _ctx_int(f.tokens),
                 "mtime": _as_number(f.mtime) or None,
             }
-    return sorted(out.values(), key=lambda w: (w["type"], w["name"].lower(), w["path"]))
+    return sorted(out.values(), key=lambda w: (w["type"], w["name"].lower(), w["project"].lower(), w["path"]))
 
 
 def _read_context_daily(history: HistoryScope, tools: tuple[str, ...] | None, now: float) -> list[dict]:
@@ -626,9 +660,10 @@ def _context_from_snapshot(snapshot: Any, tools: tuple[str, ...] | None, now: fl
     budget_rows.sort(key=lambda b: (-b["always"], b["tool"]))
     totals = compute_token_budget(budget_tools, root)
     files = []
-    affects = {} if queryable else _file_sessions()
+    affects = None if queryable else _file_sessions()
     for t in tool_list:
-        listed = sorted(t.files, key=lambda f: (-_ctx_int(f.tokens), f.path))
+        # Only files the tool loads into the model are listed; the rest are counted by kind.
+        listed = sorted((f for f in t.files if is_context(f)), key=lambda f: (-_ctx_int(f.tokens), f.path))
         files.append(
             {
                 "tool": t.tool,
@@ -636,11 +671,12 @@ def _context_from_snapshot(snapshot: Any, tools: tuple[str, ...] | None, now: fl
                 "count": len(listed),
                 "truncated": len(listed) > CONTEXT_MAX_FILES,
                 "files": [_context_file(f, t.tool, root, now, affects) for f in listed[:CONTEXT_MAX_FILES]],
+                "excluded": _context_excluded(t),
             }
         )
-    files = [f for f in files if f["count"]]
+    files = [f for f in files if f["count"] or f["excluded"]]
     files.sort(key=lambda f: (-sum(x["tokens"] for x in f["files"]), f["tool"]))
-    categories = [_context_categories(t) for t in tool_list if t.files]
+    categories = [c for c in (_context_categories(t) for t in tool_list) if c["files"]]
     categories.sort(key=lambda c: (-c["tokens"], c["tool"]))
     telemetry = [_context_telemetry(t) for t in raw_telemetry if t.get("tool") and is_selected(str(t["tool"]), tools)]
     telemetry.sort(key=lambda t: (-(t["input"] + t["output"]), t["tool"]))
@@ -665,7 +701,7 @@ def _context_from_snapshot(snapshot: Any, tools: tuple[str, ...] | None, now: fl
         "files": files,
         "telemetry": telemetry,
         "daily": db_parts["daily"],
-        "workflows": _context_workflows(tool_list),
+        "workflows": _context_workflows(tool_list, root),
         **({
             "source": "kusto.queryable",
             "configuration_scope": "configured-on-disk; not the model or settings loaded by a running agent",

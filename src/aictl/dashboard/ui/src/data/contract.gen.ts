@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 27dcdef136148b50827b4f96c072e410e5f44cc1a577d2d3bee456407ec0f9d8
+// Schema digest: c9fee21baa66bd3e51b244bd07893ccf4eee072377f1354ae187e64f49187b54
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -528,11 +528,20 @@ export type ContextLocal = {
   categories: Array<{
     tool: string;
     label: string;
-    never_sent: number;
-    sent: number;
+    files: number;
     tokens: number;
-    unknown?: number;
-    kinds: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
+    always: number;
+    on_demand: number;
+    conditional: number;
+    kinds: Array<{
+      kind: string;
+      files: number;
+      bytes: number;
+      tokens: number;
+      always: number;
+      on_demand: number;
+      conditional: number;
+    }>;
   }>;
   map: {
     total: number;
@@ -578,6 +587,12 @@ export type ContextLocal = {
     label: string;
     tool: string;
     truncated: boolean;
+    excluded: Array<{
+      kind: string;
+      policy: "no" | "unknown";
+      files: number;
+      bytes: number;
+    }>;
   }>;
   telemetry: Array<{
     tool: string;
@@ -634,6 +649,7 @@ export type ContextLocal = {
     path?: string;
     name?: string;
     kind?: string;
+    project?: string;
     files?: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
   }>;
 };

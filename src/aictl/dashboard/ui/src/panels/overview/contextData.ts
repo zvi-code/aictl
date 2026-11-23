@@ -1,7 +1,25 @@
 import { createMemo } from 'solid-js'
 import type { DetailContext } from '../../data/contract.gen'
 import { at, detailPath, detailRead, scopeConfirmed } from '../data'
-import type { PanelContext, Read } from '../types'
+import type { PanelContext, Read, Row } from '../types'
+
+type Split = { always: number; on_demand: number; conditional: number }
+const loads = [['always', 'every call'], ['on_demand', 'on demand'], ['conditional', 'conditional']] as const
+/** How the tokens of a file set reach the model, largest share first; parts with no tokens are left out. */
+export function loadSplit(split: Split, format: (value: number) => string) {
+  const parts = loads.filter(([key]) => split[key] > 0).sort(([a], [b]) => split[b] - split[a])
+  return parts.length ? parts.map(([key, label]) => `${format(split[key])} ${label}`).join(' · ') : 'no tokens'
+}
+
+export const loadLabel = (load: unknown) => loads.find(([key]) => key === load)?.[1]
+
+/** A row that names a file opens the file's drawer; the drawer itself says what this scope can show. */
+export function openFile(ctx: Pick<PanelContext, 'openDetail'>, row: Row, path = 'path') {
+  const file = row[path]
+  if (typeof file !== 'string' || !file) return
+  const name = typeof row.name === 'string' && row.name ? row.name : file
+  return { label: `Open ${name}`, run: () => ctx.openDetail({ type: 'file', path: file, line: 1 }) }
+}
 
 export function useContext(ctx: PanelContext) {
   const resource = ctx.detail<DetailContext>(() => {

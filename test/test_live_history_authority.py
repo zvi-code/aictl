@@ -31,12 +31,12 @@ def test_context_inventory_and_usage_ignore_native_snapshot_values(kusto_store, 
     monkeypatch.setattr(context_projection, "_file_sessions", lambda: pytest.fail("Native inventory was consulted"))
     result = context_projection.compute_context(kusto_store, SimpleNamespace(snapshot=snapshot), now=1_700_000_000)
     files = [file for tool in result["files"] for file in tool["files"]]
-    assert {file["path"] for file in files} == {"C:/recorded/instructions.md", "C:/recorded/custom.data"}
+    # A file with no known loading policy is not listed as context; it is counted by kind.
+    assert {file["path"] for file in files} == {"C:/recorded/instructions.md"}
+    assert result["files"][0]["excluded"] == [{"kind": "custom-kind", "policy": "unknown", "files": 1, "bytes": 0}]
     assert result["telemetry"][0]["input"] == 7 and result["telemetry"][0]["output"] == 3
     assert result["budget"]["totals"]["always"] == 200
     assert result["budget"]["tools"][0]["unknown_policy_tokens"] == 50
-    assert next(file for file in files if file["path"].endswith("custom.data"))["policy"] == "unknown"
-    assert next(file for file in files if file["path"].endswith("custom.data"))["load"] is None
     assert all(row["file"] != "C:/pending-memory.md" for row in result["memory"]["entries"])
     assert result["source"] == "kusto.queryable"
 
@@ -62,7 +62,8 @@ def test_unresolved_daily_usage_does_not_hide_queryable_context_inventory(kusto_
         assert result["daily"]["retryable"] is False
         assert result["daily"]["unresolved_families"] == ["requests"]
         assert result["daily"]["rows"] == [] and result["daily"]["models"] == []
-        assert result["files"][0]["files"][0]["path"] == "C:/recorded/instructions.md"
+        # No path-table row describes this file here, so it is counted, not listed as context.
+        assert result["files"][0]["excluded"] == [{"kind": "instructions", "policy": "unknown", "files": 1, "bytes": 0}]
         assert result["memory"]["growth"] == [{"ts": 1_699_999_990, "mem_tokens": 200, "memory_entries": 1}]
         assert result["source"] == "kusto.queryable"
         context_projection.compute_context(kusto_store, store, now=1_700_000_001)

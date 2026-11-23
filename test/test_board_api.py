@@ -3388,22 +3388,38 @@ class TestContext:
         assert (cx["model"], cx["model_from"], cx["window"]) == ("o3", "most used", None)
         assert cx["window_note"] == "no context limit is known for o3"
 
-    def test_categories_split_what_is_sent_from_what_never_is(self):
+    def test_categories_count_only_files_the_model_loads(self):
+        """Found on a fleet board: transcripts and databases counted as "never sent" context, a billion
+        tokens for Copilot CLI and a "credentials" row. Only files a tool loads are context."""
         cats = {c["tool"]: c for c in self._ctx(_csnap(self._tools()))["categories"]}
         kinds = {k["kind"]: k for k in cats["claude-code"]["kinds"]}
-        assert (kinds["transcript"]["sent"], kinds["transcript"]["never_sent"]) == (0, 5000)
-        assert (kinds["instructions"]["files"], kinds["instructions"]["sent"], kinds["instructions"]["always"]) == (3, 340, 340)
+        assert set(kinds) == {"instructions", "skills"}, "a transcript is never context"
+        assert (kinds["instructions"]["files"], kinds["instructions"]["tokens"], kinds["instructions"]["always"]) == (3, 340, 340)
         assert kinds["skills"]["on_demand"] == 60 and kinds["instructions"]["bytes"] == 340 * 4
-        assert (cats["claude-code"]["sent"], cats["claude-code"]["never_sent"]) == (400, 5000)
+        cc = cats["claude-code"]
+        assert (cc["files"], cc["tokens"], cc["always"], cc["on_demand"], cc["conditional"]) == (4, 400, 340, 60, 0)
+        assert "never_sent" not in cc
+        only_logs = _ctool("gemini-cli", [_cfile("/h/.gemini/logs/a.log", kind="logs", sent="no", when=""),
+                                          _cfile("/h/.gemini/oauth.json", kind="credentials", sent="no", when=""),
+                                          _cfile("/h/.gemini/x.bin", kind="hidden", sent="unknown", when="")])
+        assert self._ctx(_csnap([only_logs]))["categories"] == [], "a tool with no context files has no row"
 
     def test_the_map_rows_carry_scope_project_and_policy(self):
         m = self._ctx(_csnap(self._tools()))["map"]
-        assert m["total"] == 5470 and m["policy"] == {"yes": 340, "on-demand": 60, "conditional": 70, "no": 5000}
+        assert m["total"] == 470 and m["policy"] == {"yes": 340, "on-demand": 60, "conditional": 70}
         keys = {(r["tool"], r["kind"], r["scope"], r["project"], r["policy"]): r["tokens"] for r in m["rows"]}
         assert keys[("claude-code", "instructions", "global", "(global)", "yes")] == 200
         assert keys[("claude-code", "instructions", "project", "alpha", "yes")] == 100
-        assert keys[("claude-code", "transcript", "shadow", "(shadow)", "no")] == 5000
+        assert not any(k[1] == "transcript" for k in keys), "a transcript is never context"
         assert {"project": "alpha", "kind": "skills", "name": "review", "tokens": 60} in m["items"], "SKILL.md takes its folder's name"
+
+    def test_a_reported_node_names_the_repository_of_a_project_file(self):
+        """A reported inventory has no root here: a project file is named by the folder that holds
+        its tool folder, on Windows paths too."""
+        files = [_cfile(r"C:\Users\me\src\billing\.github\copilot-instructions.md", tokens=50),
+                 _cfile("/home/me/work/web/.claude/CLAUDE.md", tokens=20)]
+        m = self._ctx(_csnap([_ctool("copilot-cli", files)], root=""))["map"]
+        assert {r["project"] for r in m["rows"]} == {"billing", "web"}
 
     def test_map_items_keep_the_largest_and_sum_the_rest(self):
         many = _ctool("claude-code", [_cfile(f"/r/alpha/rules/r{i:02d}.md", kind="rules", tokens=100 + i) for i in range(20)])
@@ -3418,14 +3434,37 @@ class TestContext:
         assert alpha["recent"] is True and rows["/r/beta/CLAUDE.md"]["recent"] is False
         assert (alpha["kind"], alpha["scope"], alpha["project"], alpha["size"], alpha["tokens"]) == ("instructions", "project", "alpha", 400, 100)
         assert (alpha["sent_to_llm"], alpha["loaded_when"], alpha["load"], alpha["name"]) == ("yes", "every-call", "always", "CLAUDE.md")
-        assert rows["/home/me/.claude/projects/x/s.jsonl"]["load"] == "never"
-        assert files["claude-code"]["files"][0]["tokens"] == 5000, "largest first"
+        assert files["claude-code"]["files"][0]["tokens"] == 200, "largest first"
         assert rows["/home/me/.claude/CLAUDE.md"]["mtime"] is None, "no mtime is not known, not 1970"
+
+    def test_files_list_context_and_count_the_rest_by_kind(self):
+        tool = _ctool("copilot-cli", [
+            _cfile("/h/.copilot/copilot-instructions.md", tokens=50, scope="global"),
+            *[_cfile(f"/h/.copilot/session-state/{i}.jsonl", kind="transcript", tokens=9000, sent="no", when="", size=10) for i in range(3)],
+            _cfile("/h/.copilot/x.db", kind="database", tokens=500, sent="no", when="", size=7),
+            _cfile("/h/.copilot/.cred", kind="hidden", tokens=5, sent="unknown", when="", size=1),
+        ])
+        from test_contract import validate_detail
+
+        out = context_projection._context_from_snapshot(_csnap([tool]), None, self.NOW, True, {
+            "daily": context_projection._context_daily_empty(self.NOW), "growth": [], "observed": {}})
+        validate_detail("/api/board/context", out)
+        f = out["files"][0]
+        assert (f["count"], [r["path"] for r in f["files"]]) == (1, ["/h/.copilot/copilot-instructions.md"])
+        assert f["excluded"] == [{"kind": "transcript", "policy": "no", "files": 3, "bytes": 30},
+                                 {"kind": "database", "policy": "no", "files": 1, "bytes": 7},
+                                 {"kind": "hidden", "policy": "unknown", "files": 1, "bytes": 1}]
+
+    def test_a_reported_inventory_does_not_claim_zero_sessions(self):
+        """Live sessions come from this machine's discovery; a reported node's file says not reported."""
+        snapshot = _csnap(self._tools())
+        out = context_projection._context_from_snapshot(snapshot, None, self.NOW, True, {"daily": {}, "growth": [], "observed": {}})
+        assert all(r["sessions"] is None for t in out["files"] for r in t["files"])
 
     def test_a_long_file_list_is_cut_and_says_so(self, monkeypatch):
         monkeypatch.setattr(context_projection, "CONTEXT_MAX_FILES", 2)
         f = self._ctx(_csnap(self._tools()))["files"][0]
-        assert (f["count"], f["truncated"], len(f["files"])) == (5, True, 2)
+        assert (f["count"], f["truncated"], len(f["files"])) == (4, True, 2)
 
     def test_memory_entries_and_their_growth_from_the_history(self, kusto_store, fixed_calendar):
         from aictl.tools import MemoryEntry
@@ -3490,6 +3529,13 @@ class TestContext:
         ]
         out = self._ctx(_csnap([_ctool("copilot-vscode", files)]))["workflows"]
         assert [(w["type"], w["name"], w["tool"]) for w in out] == [("prompt", "review", "copilot-vscode"), ("prompt", "ship", "copilot-vscode"), ("workflow", "release", "copilot-vscode")]
+
+    def test_prompt_files_of_one_name_name_their_repository(self):
+        """Found on Windows: "create-chart" twice in a row, the only difference cut off the Path column."""
+        files = [_cfile(rf"C:\Users\me\src\{repo}\.github\prompts\create-chart.prompt.md", kind="commands", tokens=20, sent="on-demand")
+                 for repo in ("web", "api")]
+        out = self._ctx(_csnap([_ctool("copilot-cli", files)], root=""))["workflows"]
+        assert [(w["name"], w["project"]) for w in out] == [("create-chart", "api"), ("create-chart", "web")]
 
     def test_the_tool_filter_applies_to_every_per_tool_list(self):
         tel = [{"tool": "claude-code", "input_tokens": 1}, {"tool": "codex-cli", "input_tokens": 2}]

@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { ContextLocal } from '../../data/contract.gen'
+import { fmtN } from '../../design/format'
 import { keyedRows, presentation } from '../kinds/model'
 import { RowTable } from '../kinds/Rows'
 import { States } from '../kinds/States'
@@ -10,7 +11,8 @@ import { useContext } from './contextData'
 import { logWidth, mapRows, type MapDimension } from './overviewMath'
 import css from './overviewA.module.css'
 
-const dimensions = [['kind', 'Category'], ['scope', 'Scope'], ['project', 'Project'], ['policy', 'Policy']] as const
+const dimensions = [['kind', 'Category'], ['scope', 'Scope'], ['project', 'Project'], ['policy', 'When loaded']] as const
+const policies: Record<string, string> = { yes: 'with the session', 'on-demand': 'on demand', conditional: 'conditional' }
 export default function ContextMap(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const [by, setBy] = createSignal<MapDimension>('kind')
@@ -18,17 +20,18 @@ export default function ContextMap(props: PanelProps) {
   const context = useContext(ctx)
   const source = createMemo(() => context.rows<ContextLocal['map']['rows'][number]>('map.rows'))
   const items = createMemo(() => context.rows<ContextLocal['map']['items'][number]>('map.items'))
-  const groups = createMemo(() => mapRows(source().value ?? [], by()))
-  const projects = createMemo(() => mapRows(source().value ?? [], 'project'))
+  const named = createMemo(() => source().value?.map(row => ({ ...row, policy: policies[row.policy] ?? row.policy })) ?? [])
+  const groups = createMemo(() => mapRows(named(), by()))
+  const projects = createMemo(() => mapRows(named(), 'project'))
   const maximum = () => groups().reduce((max, row) => Math.max(max, row.tokens ?? 0), 0)
   const format = (value: number | null) => value === null ? missing : presentation(ctx, tokens('', 'Tokens')).format(value)
   return <>
     <Choice label="Map by" items={dimensions} value={by} change={setBy} />
     <States result={source} retry={context.retry} empty={def.empty} reserveStaleSpace>
-      <p class={css.note}>File token estimates, not observed session load. Bar length uses a log scale.</p>
+      <p class={css.note}>Estimated tokens in the files tools can load into the model, not observed session load. Bar length uses a log scale.</p>
       <For each={groups()} keyed={row => row.key}>{row =>
         <div class={css.group}>
-          <div>{row().key} · {format(row().tokens)} tokens · {row().files?.toLocaleString() ?? missing} files</div>
+          <div>{row().key} · {format(row().tokens)} tokens · {row().files == null ? missing : fmtN(row().files)} files</div>
           <Show when={row().tokens !== null && maximum() > 0}>
             <div class={css.mapTrack} aria-hidden="true">
               <span class={css.mapBar} style={{ 'inline-size': `${logWidth(row().tokens!, maximum())}%` }}>

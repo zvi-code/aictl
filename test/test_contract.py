@@ -58,7 +58,8 @@ MEMORY_DETAILS = {
 # its test, so the contract itself is not loosened:
 #   /api/board/sessions  test_session_finder.py (validate_detail on search_sessions output)
 #   /api/board/agent     check_history_projections below (session_details.agent_detail)
-CHANGED_SINCE_CAPTURE = {"/api/board/sessions", "/api/board/agent"}
+#   /api/board/context   test_board_api.py TestContext.test_files_list_context_and_count_the_rest_by_kind
+CHANGED_SINCE_CAPTURE = {"/api/board/sessions", "/api/board/agent", "/api/board/context"}
 
 
 def _validate(validator, value, label):

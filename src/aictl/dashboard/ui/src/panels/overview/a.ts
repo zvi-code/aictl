@@ -174,9 +174,9 @@ export const overviewA: readonly PanelDef[] = [
     // Category bars select a related file table and an independent file preview.
     id: 'tokenSplit', title: 'Tokens by category', kind: 'custom', defaultSize: 'large', requiredCapabilities: [],
     sources: [context('categories'), context('files')],
-    columns: [field('name', 'File'), field('scope', 'Scope'), field('size', 'Size', 'board.drawer.excerpt'),
-      field('tokens', 'File tokens', 'board.context.file'), field('policy', 'Loading policy')],
-    actions: [{ kind: 'detail', field: 'path', type: 'file', localOnly: true }], empty: 'No file token categories were reported.',
+    columns: [field('name', 'File'), field('project', 'Project'), field('tokens', 'File tokens', 'board.context.file'),
+      field('load', 'Loaded'), stamp('mtime', 'Changed')],
+    actions: [{ kind: 'detail', field: 'path', type: 'file' }], empty: 'No file a tool loads into the model was reported.',
     load: () => import('./TokenSplit'),
   },
   {
@@ -184,7 +184,7 @@ export const overviewA: readonly PanelDef[] = [
     id: 'ctxMap', title: 'Context window map', kind: 'custom', defaultSize: 'large', requiredCapabilities: [],
     sources: [context('map.rows'), context('map.items'), context('map.total')],
     columns: [field('name', 'File'), field('kind', 'Category'), field('tokens', 'File tokens', 'board.context.map_item')],
-    actions: [], empty: 'No file token data was reported.', load: () => import('./ContextMap'),
+    actions: [], empty: 'No file a tool loads into the model was reported.', load: () => import('./ContextMap'),
   },
   {
     // Memory combines an independent trend with a folded file inventory and file preview.
