@@ -9,6 +9,7 @@ aictl, so discovery code can use it as well as the dashboard.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -163,8 +164,12 @@ def mask_arg(arg: str) -> str:
     return mask_url(arg) if "://" in arg else mask_text(arg)
 
 
-def mask_args(args: list) -> list:
-    """Arguments with the value of every secret-named flag replaced; flag names stay."""
+def mask_args(args: list, mask_item: Callable[[str], str] = mask_arg) -> list:
+    """Arguments with the value of every secret-named flag replaced; flag names stay.
+
+    ``mask_item`` masks an argument that no flag names; an MCP definition masks every
+    URL query value, a command line only the key-like ones.
+    """
     out: list = []
     pending = ""  # the flag whose value comes next
     for arg in args:
@@ -186,13 +191,16 @@ def mask_args(args: list) -> list:
         flag, eq, value = arg.partition("=")
         lowered = flag.lower()
         if arg.startswith("-") and (_SECRET_FLAG_RE.match(flag) or lowered in _ENV_FLAGS or lowered in _HEADER_FLAGS):
-            if eq:
+            if eq and lowered in _ENV_FLAGS and "=" in value:
+                name, _, env_value = value.partition("=")
+                out.append(f"{flag}={name}={_keep_reference(env_value) if env_value else env_value}")
+            elif eq:
                 out.append(f"{flag}={_keep_reference(value) if value else value}")
             else:
                 out.append(arg)
                 pending = lowered if lowered in _ENV_FLAGS or lowered in _HEADER_FLAGS else "secret"
             continue
-        out.append(mask_arg(arg))
+        out.append(mask_item(arg))
     return out
 
 
@@ -229,3 +237,132 @@ def mask_mcp_config(config: Any) -> Any:
     if not isinstance(config, dict):
         return config
     return {k: _mask_any(str(k), v) for k, v in config.items()}
+
+
+def masked_values(raw: Any, shown: Any) -> set[str]:
+    """The parts of ``raw`` that its masked form ``shown`` replaced, such as env and header values."""
+    out: set[str] = set()
+    if isinstance(raw, dict):
+        if isinstance(shown, dict):
+            for key, value in raw.items():
+                out |= masked_values(value, shown.get(key))
+    elif isinstance(raw, (list, tuple)):
+        if isinstance(shown, (list, tuple)) and len(shown) == len(raw):
+            for value, masked in zip(raw, shown):
+                out |= masked_values(value, masked)
+    elif isinstance(raw, str):
+        if raw and isinstance(shown, str) and raw != shown:
+            # Each placeholder stands for one replaced part; the text around it is kept as written.
+            pieces = shown.split(PLACEHOLDER)
+            found = re.fullmatch("(.+?)".join(re.escape(p) for p in pieces), raw, re.S) if len(pieces) > 1 else None
+            if found:
+                out.update(part for part in found.groups() if part)
+            else:
+                out.add(raw)
+    elif raw not in (None, "") and shown != raw:
+        out.add(str(raw))
+    return out
+
+
+# ── Process command lines ────────────────────────────────────────
+
+# A known value shorter than this is masked only when it is a whole argument.
+_MIN_CONTAINED = 6
+
+
+def _mask_known(arg: str, known: list[str]) -> str:
+    for value in known:
+        if arg == value:
+            return PLACEHOLDER
+        if len(value) >= _MIN_CONTAINED and value in arg:
+            arg = arg.replace(value, PLACEHOLDER)
+    return arg
+
+
+def mask_command_args(args: Iterable[Any], known: Iterable[str] = ()) -> list:
+    """A process's arguments with secret values replaced; item count and positions never change.
+
+    A value is masked when it equals or contains one of ``known`` (the values the linked MCP
+    definition masks), when a secret-named flag or variable names it, or when it has a known
+    token shape. Flag and variable names stay.
+    """
+    values = sorted({v for v in known if isinstance(v, str) and v}, key=len, reverse=True)
+    items = [_mask_known(a, values) if values and isinstance(a, str) else a for a in args]
+    return mask_args(items, mask_text)
+
+
+def mask_command_line(text: str, known: Iterable[str] = ()) -> str:
+    """A command line joined with spaces, masked by item and then across items ("Bearer V")."""
+    if not text:
+        return ""
+    return mask_text(" ".join(mask_command_args(text.split(" "), known)))
+
+
+class MaskedText(str):
+    """A command line as shown: secret values masked.
+
+    ``raw`` keeps the command line as the OS reported it, for classification and MCP
+    matching in this process only. Every copy, pickle and serialization (``json``,
+    ``dataclasses.asdict``, ``copy``) is the masked string alone.
+    """
+
+    raw: str
+    known: frozenset[str]
+    limit: int | None
+
+    def __new__(cls, raw: Any = "", known: Iterable[str] = (), limit: int | None = None) -> MaskedText:
+        raw = raw_text(raw) if raw is not None else ""
+        known = frozenset(known)
+        shown = mask_command_line(raw, known)
+        obj = super().__new__(cls, shown if limit is None else shown[:limit])
+        obj.raw, obj.known, obj.limit = raw, known, limit
+        return obj
+
+    def with_known(self, values: Iterable[str]) -> MaskedText:
+        """The same command line also masked for the values of a linked MCP definition."""
+        known = self.known | frozenset(values)
+        return self if known == self.known else MaskedText(self.raw, known, self.limit)
+
+    def __reduce__(self):
+        return (str, (str(self),))
+
+    def __copy__(self) -> str:
+        return str(self)
+
+    def __deepcopy__(self, memo) -> str:
+        return str(self)
+
+
+class MaskedArgs(tuple):
+    """A process's argv as shown: secret values masked, item count unchanged.
+
+    ``raw`` keeps the argv as the OS reported it, for in-process readers only, like
+    ``MaskedText``.
+    """
+
+    raw: tuple[str, ...]
+
+    def __new__(cls, raw: Iterable[Any] = (), known: Iterable[str] = ()) -> MaskedArgs:
+        raw = raw_args(raw)
+        obj = super().__new__(cls, mask_command_args(raw, known))
+        obj.raw = raw
+        return obj
+
+    def __reduce__(self):
+        return (tuple, (tuple(self),))
+
+    def __copy__(self) -> tuple:
+        return tuple(self)
+
+    def __deepcopy__(self, memo) -> tuple:
+        return tuple(self)
+
+
+def raw_text(value: Any) -> str:
+    """The command line as the OS reported it when this process read it, else the value itself."""
+    return value.raw if isinstance(value, MaskedText) else str(value)
+
+
+def raw_args(value: Iterable[Any]) -> tuple[str, ...]:
+    """The argv as the OS reported it when this process read it, else the value itself."""
+    return value.raw if isinstance(value, MaskedArgs) else tuple(value)

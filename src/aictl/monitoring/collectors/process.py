@@ -26,6 +26,7 @@ from ... import tree_walk
 from ...data.schema import metric_name as M
 from ...fsutil import warn_once
 from ...platforms import IS_WINDOWS, path_key
+from ...secret_mask import MaskedArgs, raw_args
 from ...tools import ORPHAN_TOOL, owner_tools
 from ..config import MonitorConfig
 from ..pace import PACE
@@ -144,7 +145,7 @@ def classify_process(process: ProcessInfo) -> MatchResult:
     ``owner_tool`` set to that tool, so the same program started by hand is not a tool.
     """
     name = _normalize_name(process.name)
-    cmdline = " ".join(part.lower() for part in process.cmdline)
+    cmdline = " ".join(part.lower() for part in raw_args(process.cmdline))
     exe = (process.exe or "").lower()
     combined = " ".join(part for part in (name, cmdline, exe) if part)
 
@@ -348,8 +349,9 @@ class PsutilProcessCollector(BaseCollector):
                 cached = self._identity.get((pid, name))
                 if cached is None:
                     extra = process.as_dict(["cmdline", "exe"])
+                    # Masked once per process: every ProcessInfo built from it shares the masked argv.
                     cached = (
-                        tuple(str(part) for part in (extra.get("cmdline") or ())),
+                        MaskedArgs(str(part) for part in (extra.get("cmdline") or ())),
                         str(extra["exe"]) if extra.get("exe") else None,
                     )
                 # An empty cmdline can be a race during exec: read it again. Windows

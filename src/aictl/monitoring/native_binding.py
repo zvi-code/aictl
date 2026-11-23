@@ -35,6 +35,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..secret_mask import raw_args
 from .session import ProcessInfo
 
 log = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ def _verified(data: dict, process: ProcessInfo) -> dict | None:
 
 def command_line_session(process: ProcessInfo) -> str | None:
     """The session id that ``--session-id``/``--resume`` names on the process's command line."""
-    args = process.cmdline
+    args = raw_args(process.cmdline)
     for index, arg in enumerate(args):
         key, sep, value = arg.partition("=")
         if key not in _ID_FLAGS:

@@ -45,11 +45,45 @@ SECRETS = {
     "claude_json_env": "FAKECLAUDEJSON0018value",
     "docker_env": "FAKEDOCKERENV0019value",
     "codex_env": "FAKECODEXENV0020value",
+    # Process command lines: rule 2 (a secret name in front of the value).
+    "proc_api_key": "FAKEPROCKEY0021value",
+    "proc_password": "FAKEPROCPASS0022value",
+    "proc_docker_env": "FAKEPROCENV0023value",
+    "proc_bearer": "FAKEPROCBEARER0024value",
+    "proc_url_pass": "FAKEPROCURLPASS0025value",
+    "proc_url_query": "FAKEPROCQUERY0026value",
+    # Rule 3 (a known token shape anywhere).
+    "proc_ghp": "ghp_FAKEPROCGHP0027value",
+    "proc_sk": "sk-FAKEPROCSK0028value",
+    "proc_jwt": "eyJGQUtFSldUMDAyOQ.eyJGQUtFSldUcGF5bG9hZA.RkFLRVNJRzAwMjk",
 }
 S = SECRETS
 # A settings env value under a name that says nothing about secrets. The settings
 # rows show such values on purpose; a file preview cannot tell, so it hides it.
 PLAIN_ENV_VALUE = "plain-setting-0014"
+
+# Arguments that must stay readable in every process output.
+RESUME_ID = "0f3c2a1e-9b7d-4c55-8e21-4a6b9d0c7f12"
+COMMIT = "3f786850e387550fdab836ed7e6dc881de23001b"
+CLAUDE_PID, MCP_PID = 990002, 990001
+# The claude CLI with secrets by name (rule 2) and by shape (rule 3) next to arguments that must stay.
+CLAUDE_ARGV = [
+    "claude", "--resume", RESUME_ID, "--model", "fake-model-x", "--add-dir", "/fake/project",
+    "--api-key", S["proc_api_key"], f"--password={S['proc_password']}", "-e", f"PROC_VALUE={S['proc_docker_env']}",
+    "--header", f"Authorization: Bearer {S['proc_bearer']}",
+    f"https://fakeuser:{S['proc_url_pass']}@proc.example.test/x?token={S['proc_url_query']}",
+    S["proc_ghp"], S["proc_sk"], S["proc_jwt"], COMMIT,
+]
+# The stdio-srv MCP server as started: its env value appears as a bare argument, which only the
+# definition can tell is a secret (rule 1); its flagged arguments are rule 2.
+MCP_ARGV = ["node", "server.js", "--api-key", S["arg_api_key"], f"--token={S['arg_token']}", S["env"]]
+
+
+def _ps_rows() -> list[tuple[str, str, str, str, str]]:
+    return [
+        (str(MCP_PID), "0.5", "4096", "node", " ".join(MCP_ARGV)),
+        (str(CLAUDE_PID), "1.0", "2048", "claude", " ".join(CLAUDE_ARGV)),
+    ]
 
 
 def _project_mcp() -> dict:
@@ -121,6 +155,9 @@ def leak_tree(tmp_path, monkeypatch) -> LeakTree:
         return "unknown"
 
     monkeypatch.setattr("aictl.tools._probe_http_mcp", probe)
+    # A fake process table: no real process is read, and these pids do not exist.
+    monkeypatch.setattr("aictl.tools._parse_ps_output", _ps_rows)
+    monkeypatch.setattr("aictl.tools._process_parents", lambda: {})
     files = [
         _write(project / ".mcp.json", json.dumps(_project_mcp(), indent=2)),
         _write(home / ".copilot" / "mcp-config.json", json.dumps({"mcpServers": {"copilot-srv": {
@@ -153,7 +190,7 @@ def _assert_no_secret(name: str, text: str) -> None:
 def _snapshot(tree: LeakTree):
     from aictl.orchestrator import collect
 
-    return collect(tree.project, include_processes=False, _live_monitor_override={})
+    return collect(tree.project, include_processes=True, _live_monitor_override={})
 
 
 def _board_get(tree: LeakTree, path: str, query: str = "") -> str:
@@ -215,6 +252,79 @@ def _discovery_pickle(tree: LeakTree) -> str:
     return "\n".join(b.decode("latin-1") for b in blobs) + json.dumps([dataclasses.asdict(t) for t in found])
 
 
+def _live_process(argv: list[str], pid: int = CLAUDE_PID, name: str = "claude"):
+    from aictl.monitoring.session import ProcessInfo
+
+    return ProcessInfo(pid=pid, ppid=1, name=name, exe=f"/fake/bin/{name}", cmdline=tuple(argv), cwd="/fake/project",
+                       created_at=10.0)
+
+
+def _live_records(tree: LeakTree) -> str:
+    record = _live_process(CLAUDE_ARGV)
+    return "\n".join([
+        pickle.dumps(record).decode("latin-1"), repr(record), repr(copy.deepcopy(record)),
+        json.dumps(dataclasses.asdict(record)),
+    ])
+
+
+def _live_sources(tree: LeakTree) -> str:
+    from types import SimpleNamespace
+
+    from aictl.dashboard.live.hub import LiveHub
+    from aictl.monitoring.config import MonitorConfig
+    from aictl.monitoring.correlator import SessionCorrelator
+    from aictl.monitoring.live_sources import LiveRuntimeSources
+
+    published: list = []
+
+    class Hub(LiveHub):
+        def publish(self, topic, entity_id, data, *, source):
+            published.append((topic, copy.deepcopy(data)))
+            return super().publish(topic, entity_id, data, source=source)
+
+    producer = LiveRuntimeSources(Hub(), tree.project, capture_mode=lambda: "full", config_provider=lambda _: [],
+                                  host="test-host")
+    runtime = SessionCorrelator(MonitorConfig(root=tree.project, workspace_paths=(tree.project,), state_paths=()))
+    producer.attach_runtime(SimpleNamespace(correlator=runtime))
+    try:
+        runtime.on_process(_live_process(CLAUDE_ARGV), 1.0, 2048, 0, ts=100)
+        producer.flush_runtime()
+        producer.poll_configuration()
+    finally:
+        producer.stop()
+    text = json.dumps(published)
+    assert "fake-model-x" in text, "launch-flag evidence still reads the model from the command line"
+    return text
+
+
+def _observe_nodes(tree: LeakTree) -> str:
+    from aictl.observe.procs import ProcRow, ProcTable
+
+    rows = [ProcRow(pid=CLAUDE_PID, ppid=None, name="claude", cmdline=tuple(CLAUDE_ARGV), tool="claude-code"),
+            ProcRow(pid=MCP_PID, ppid=CLAUDE_PID, name="node", cmdline=tuple(MCP_ARGV), tool="claude-code")]
+    table = ProcTable(rows)
+    # The table has no MCP definition, so its records are masked by name and shape (rules 2, 3);
+    # its nodes carry no argument at all.
+    return json.dumps(table.node(CLAUDE_PID, 100.0)) + repr(rows[0]) + json.dumps(dataclasses.asdict(rows[0]))
+
+
+def _machine(tree: LeakTree) -> str:
+    from aictl.dashboard.runtime_health import machine_processes
+
+    return json.dumps(machine_processes(_snapshot(tree)))
+
+
+def _store_rows(tree: LeakTree) -> str:
+    from aictl.orchestrator import SnapshotPersistence, SnapshotState
+    from aictl.stores.testing import MemoryWriter
+
+    snap = _snapshot(tree)
+    writer = MemoryWriter()
+    SnapshotPersistence(writer=writer).persist(snap, SnapshotState().update(snap))
+    assert writer.operations, "the snapshot wrote no rows"
+    return json.dumps(writer.operations, default=str)
+
+
 OUTPUTS: dict[str, Callable[[LeakTree], str]] = {
     "GET /api/board/terminal/resources": lambda t: _board_get(t, "/api/board/terminal/resources"),
     "GET /api/board/terminal/resources?export=1": lambda t: _board_get(t, "/api/board/terminal/resources", "export=1"),
@@ -228,12 +338,43 @@ OUTPUTS: dict[str, Callable[[LeakTree], str]] = {
     "aictl status --html": _status_cli("--html"),
     "aictl status": _status_cli(),
     "discovery records (pickle, deepcopy, asdict)": _discovery_pickle,
+    "aictl status --processes": _status_cli("--processes"),
+    "aictl status --json --processes": _status_cli("--json", "--processes"),
+    "machine processes": _machine,
+    "store rows from a snapshot": _store_rows,
+    "live process records (pickle, repr, asdict)": _live_records,
+    "live sources payload": _live_sources,
+    "observe process nodes": _observe_nodes,
 }
 
 
 @pytest.mark.parametrize("name", OUTPUTS)
 def test_output_carries_no_secret(leak_tree, name):
     _assert_no_secret(name, OUTPUTS[name](leak_tree))
+
+
+def test_processes_keep_their_ids_flags_and_bindings(leak_tree):
+    """The same fixture still classifies, matches the MCP server and binds the resumed session."""
+    from aictl.monitoring.collectors.process import classify_process
+    from aictl.monitoring.native_binding import command_line_session
+    from aictl.tools import collect_mcp_status, discover_all
+
+    found = discover_all(leak_tree.project, include_processes=True)
+    procs = {p.pid: (t.tool, p) for t in found for p in t.processes}
+    tool, claude = procs[CLAUDE_PID]
+    assert tool == "claude-code" and claude.name == "claude"
+    for kept in (f"--resume {RESUME_ID}", "--model fake-model-x", "--add-dir /fake/project", "--api-key <redacted>"):
+        assert kept in claude.cmdline
+    _, mcp = procs[MCP_PID]
+    assert mcp.name.startswith("[mcp:stdio-srv]")
+    assert mcp.cmdline == f"node server.js --api-key {PLACEHOLDER} --token={PLACEHOLDER} {PLACEHOLDER}"
+    detail = {s.name: s for s in collect_mcp_status(found)}
+    assert detail["stdio-srv"].pid == MCP_PID and detail["stdio-srv"].status == "running"
+
+    live = _live_process(CLAUDE_ARGV)
+    assert classify_process(live).tool == "claude-code"
+    assert command_line_session(live) == RESUME_ID
+    assert live.cmdline[2] == RESUME_ID and live.cmdline[-1] == COMMIT and len(live.cmdline) == len(CLAUDE_ARGV)
 
 
 def test_fixture_reaches_every_mcp_declaration(leak_tree):
@@ -287,6 +428,8 @@ def test_health_check_and_process_match_still_see_the_real_config(leak_tree):
     owner.processes.append(ProcessInfo(4242, "node", f"node {S['arg_api_key']}"))
     detail = {s.name: s for s in collect_mcp_status(found)}
     assert detail["stdio-srv"].status == "running" and detail["stdio-srv"].pid == 4242
+    # Linked to the definition, the process shows the definition's secret masked (rule 1).
+    assert owner.processes[-1].cmdline == f"node {PLACEHOLDER}"
     assert any(S["server_url_key"] in url for url in leak_tree.probed)
     _assert_no_secret("mcp_detail", json.dumps([dataclasses.asdict(s) for s in detail.values()]))
 

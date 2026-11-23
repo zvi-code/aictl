@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..secret_mask import MaskedArgs
 from ..tools import TOOL_LABELS
 from ..utils import BYTES_PER_TOKEN
 
@@ -48,6 +49,12 @@ class ProcessInfo:
     # Tool of the nearest ancestor process that is a known tool, when the reader of the
     # process table knows it. Rules with match_scope "tree" count only for that tool.
     owner_tool: str | None = None
+
+    def __post_init__(self) -> None:
+        # The argv is masked where the record is built. Readers that need it as the OS
+        # reported it (classification, --resume ids, launch flags) use secret_mask.raw_args.
+        if not isinstance(self.cmdline, MaskedArgs):
+            object.__setattr__(self, "cmdline", MaskedArgs(self.cmdline))
 
 
 def _derive_project(cwd: str | None) -> str:

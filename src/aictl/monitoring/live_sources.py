@@ -21,6 +21,7 @@ from .. import session_lifecycle
 from ..dashboard.live.protocol import stable_id
 from ..dashboard.projection_utils import mask_secrets
 from ..observe.collect import capture_mode as storage_capture_mode
+from ..secret_mask import raw_args
 from .collectors.process import classify_process
 from .native_sessions import NativeSessionTail
 from .session import ProcessInfo
@@ -107,7 +108,7 @@ def _flag_evidence(process: ProcessInfo, ts: float) -> dict[str, dict]:
     if tool == "codex-cli":
         flags.update({"--ask-for-approval": "approval_policy", "--sandbox": "sandbox_policy"})
     out = {}
-    args = process.cmdline
+    args = raw_args(process.cmdline)
     for index, arg in enumerate(args):
         key, sep, value = arg.partition("=")
         setting = flags.get(key)
@@ -613,7 +614,7 @@ class LiveRuntimeSources:
                 sid = native
                 pids.add(pid)
                 continue
-            args = sample["process"].cmdline
+            args = raw_args(sample["process"].cmdline)
             for index, arg in enumerate(args):
                 key, sep, value = arg.partition("=")
                 if key not in ("--session-id", "--resume", "resume"):

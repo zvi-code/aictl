@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..secret_mask import MaskedArgs
+
 _PLAIN_ARG = re.compile(r"[\w@./\\][\w@./\\:-]*")
 _SHELLS = {"bash", "zsh", "sh", "fish", "dash", "pwsh", "powershell", "cmd"}
 _STATUS = {"running": "running", "sleeping": "idle", "idle": "idle", "disk-sleep": "running", "stopped": "waiting"}
@@ -30,6 +32,10 @@ class ProcRow:
     status: str = ""
     tool: str | None = None
     children: list[int] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.cmdline, MaskedArgs):
+            self.cmdline = MaskedArgs(self.cmdline)
 
 
 def _stem(text: str) -> str:

@@ -864,7 +864,7 @@ def batch_resolve_paths(
 
 from .fsutil import safe_glob, safe_rglob, safe_stat, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
-from .secret_mask import mask_mcp_config
+from .secret_mask import MaskedText, mask_mcp_config, masked_values, raw_text
 from .tool_scope import is_selected
 from .utils import estimate_tokens, estimate_tokens_from_size, norm_path
 
@@ -910,6 +910,11 @@ class ProcessInfo:
     zombie_risk: str = ""  # none, low, medium, high
     cleanup_cmd: str = ""
     anomalies: list[dict] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # The command line is masked where the record is built; MaskedText.raw stays in this process.
+        if not isinstance(self.cmdline, MaskedText):
+            self.cmdline = MaskedText(self.cmdline)
 
 
 @dataclass(slots=True)
@@ -1071,6 +1076,19 @@ class McpConfig(dict):
 def _raw_config(config: dict) -> dict:
     """The definition as written when this process read it, else the masked one."""
     return config.raw if isinstance(config, McpConfig) else config
+
+
+def _mcp_secrets(config: dict) -> frozenset[str]:
+    """The values the definition masks: env and header values, secret arguments, URL credentials."""
+    return frozenset(masked_values(config.raw, dict(config))) if isinstance(config, McpConfig) else frozenset()
+
+
+def _mask_linked(proc: ProcessInfo, config: dict) -> None:
+    """Mask in a process's command line every value its MCP definition masks."""
+    secrets = _mcp_secrets(config)
+    if secrets:
+        shown = proc.cmdline if isinstance(proc.cmdline, MaskedText) else MaskedText(proc.cmdline)
+        proc.cmdline = shown.with_known(secrets)
 
 
 def _load_mcp(path: Path, res: ToolResources) -> None:
@@ -1461,7 +1479,7 @@ def _discover_processes_csv(
         pi = ProcessInfo(
             pid=pid,
             name=_process_display_name(args),
-            cmdline=args[:200],
+            cmdline=MaskedText(args, limit=200),
             cpu_pct=cpu,
             mem_mb=mem_mb_str,
             tool=spec.ai_tool,
@@ -1490,6 +1508,14 @@ def _discover_processes_csv(
         new_procs = _find_mcp_processes(tr.mcp_servers, tr.processes, global_mcp_pids, rows=rows)
         tr.processes.extend(new_procs)
         global_mcp_pids.update(p.pid for p in new_procs)
+
+    # A process a pattern matched can also be an MCP server: it shows that definition's values masked.
+    all_procs = [(tr.tool, p) for tr in results.values() for p in tr.processes]
+    for tr in results.values():
+        for srv in tr.mcp_servers:
+            config = srv.get("config", {})
+            for proc in _linked_processes(srv.get("name", ""), _raw_config(config), all_procs):
+                _mask_linked(proc, config)
 
 
 def _detect_anomalies(actual_mem_mb: float, pid: int, spec: ProcessSpec) -> list[dict]:
@@ -1555,14 +1581,14 @@ def _find_mcp_processes(
     if not mcp_servers:
         return []
 
-    search_terms: list[tuple[str, str]] = []
+    search_terms: list[tuple[str, str, frozenset[str]]] = []
     for srv in mcp_servers:
         name = srv.get("name", "")
         config = _raw_config(srv.get("config", {}))
         cmd = config.get("command", "")
         args = config.get("args", [])
         terms = [name, cmd] + [a for a in args if not a.startswith("-")]
-        search_terms.append((name, "|".join(re.escape(t) for t in terms if t)))
+        search_terms.append((name, "|".join(re.escape(t) for t in terms if t), _mcp_secrets(srv.get("config", {}))))
 
     if not search_terms:
         return []
@@ -1577,7 +1603,7 @@ def _find_mcp_processes(
         pid = int(pid_s)
         if pid in already_pids:
             continue
-        for srv_name, pattern in search_terms:
+        for srv_name, pattern, secrets in search_terms:
             if pattern and re.search(pattern, args):
                 cpu, rss = _proc_stats(pid, cpu, rss)
                 _, mem_mb = _rss_to_mb(rss)
@@ -1585,7 +1611,7 @@ def _find_mcp_processes(
                     ProcessInfo(
                         pid=pid,
                         name=f"[mcp:{srv_name}] {Path(comm).name}",
-                        cmdline=args[:200],
+                        cmdline=MaskedText(args, known=secrets, limit=200),
                         cpu_pct=cpu,
                         mem_mb=mem_mb,
                     )
@@ -1863,6 +1889,7 @@ def collect_mcp_status(all_tools: list[ToolResources]) -> list[McpServerInfo]:
 
             matched = _match_mcp_to_process(name, raw, all_procs)
             if matched:
+                _mask_linked(matched, config)
                 info.status = "running"
                 info.pid = matched.pid
                 info.cpu_pct = matched.cpu_pct
@@ -1891,21 +1918,26 @@ def _classify_mcp_transport(config: dict) -> tuple[str, str]:
     return ("stdio", f"{cmd} {args}".strip())
 
 
+def _linked_processes(name: str, config: dict, all_procs: list[tuple[str, ProcessInfo]]):
+    """The processes whose command line, as the OS reported it, runs this MCP definition."""
+    cmd = config.get("command", "")
+    args = config.get("args", [])
+    terms = [t for t in [name, cmd] + [a for a in args if not a.startswith("-")] if t]
+    if not terms:
+        return
+    for _tool, proc in all_procs:
+        line = raw_text(proc.cmdline)
+        matches = sum(1 for t in terms if t in line)
+        if matches >= 2 or (matches == 1 and name in line):
+            yield proc
+
+
 def _match_mcp_to_process(
     name: str,
     config: dict,
     all_procs: list[tuple[str, ProcessInfo]],
 ) -> ProcessInfo | None:
-    cmd = config.get("command", "")
-    args = config.get("args", [])
-    terms = [t for t in [name, cmd] + [a for a in args if not a.startswith("-")] if t]
-    if not terms:
-        return None
-    for _tool, proc in all_procs:
-        matches = sum(1 for t in terms if t in proc.cmdline)
-        if matches >= 2 or (matches == 1 and name in proc.cmdline):
-            return proc
-    return None
+    return next(_linked_processes(name, config, all_procs), None)
 
 
 # A probe is a network round trip of up to 3 s in the refresh thread. Its answer is kept this long.
