@@ -48,17 +48,8 @@ export function View(props: ParentProps<{ result: () => Read; empty?: string; re
   </States>
 }
 
-export function displayField(ctx: PanelContext, field: FieldRef) {
-  const p = presentation(ctx, field)
-  const unit = p.unit
-  const format = (value: string | number | boolean) => {
-    if (typeof value !== 'number') return p.format(value)
-    if (unit === 'bytes/s' || unit === 'rate_bps') return `${p.format(value)} B/s`
-    if (unit === 'ms') return `${p.format(value)} ms`
-    return p.format(value)
-  }
-  return { ...p, format }
-}
+/** The catalog's presentation already writes each unit (`rate_bps` as "11.7 KB/s"); never add one here. */
+export const displayField = (ctx: PanelContext, field: FieldRef) => presentation(ctx, field)
 
 export function useCached<T>(cache: ReturnType<typeof createResourceCache<string, T>>, path: () => string | undefined, revision: () => number) {
   const [handle, setHandle] = createSignal<{ path: string; resource: ReturnType<typeof cache.acquire> }>()

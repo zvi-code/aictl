@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { overviewB } from '../../src/panels/overview/b'
-import { Processes } from '../../src/panels/overview/b/Machine'
+import { metric, overviewB } from '../../src/panels/overview/b'
+import { Processes, Traffic } from '../../src/panels/overview/b/Machine'
+import { displayField } from '../../src/panels/overview/b/View'
 import type { PanelContext, PanelDef, PanelProps } from '../../src/panels/types'
 import { installDom, layoutHeaders, mount } from './dom'
 
@@ -74,6 +75,32 @@ describe('BOARD-MACHINE-01 · Processes in fleet scope lists the sessions each n
     expect(buttons.map(button => button.textContent)).toEqual(['Open Fix the build', 'Open session'])
     buttons[1].click()
     expect(openAgent).toHaveBeenCalledWith(JSON.stringify([node, 'copilot-desktop:90300:1795352502.287']))
+    dispose()
+  })
+})
+
+describe('BOARD-MACHINE-02 · Network, tokens and files writes each unit once and only columns with values', () => {
+  it('prints a rate with one unit', () => {
+    const { ctx } = boardContext('fleet', {})
+    expect(displayField(ctx, metric('inbound_bps', 'events.tool.live.inbound_rate_bps', 'Received')).format(11_700)).toBe('11.7 KB/s')
+  })
+
+  it('shows each node’s machine report without a repeated host label or empty columns', () => {
+    const host = { node_id: node, status: 'reported', ts: 1000, host_cpu_percent: 51.5, host_memory_used_mb: 32768,
+      host_memory_total_mb: 65536, live_sessions: 23, active_processes: 123, daemon_pid: 4, files: 9, live_in_rate: 11_700,
+      live_out_rate: 51_200, ai_token_rate: null }
+    const { ctx } = boardContext('fleet', { '/api/board/machine?': { ...machine, hosts: [host, { ...host, node_id: 'mac-02', status: 'stale' }] } })
+    const { host: view, dispose } = mount(() => <Traffic ctx={ctx} def={def('traffic')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    const text = view.textContent!
+    expect(text).toContain('11.7 KB/s')
+    expect(text).toContain('51.2 KB/s')
+    expect(text).not.toContain('B/s B/s')
+    expect(text).not.toContain('Whole host')
+    expect(text).toContain('34.4 GB of 68.7 GB')
+    expect(text).toContain('Older than 5 minutes')
+    const headers = Array.from(view.querySelectorAll('thead th')).map(cell => cell.textContent?.replace(/\s*↕$/, ''))
+    expect(headers).not.toContain('Tokens per second (estimate)')
+    expect(text).not.toContain('network estimates')
     dispose()
   })
 })

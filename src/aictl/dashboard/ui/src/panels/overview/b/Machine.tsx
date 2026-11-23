@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { BoardSeries, DetailMachine, DetailNodes, MachineLocal, MachinePipeline, TopicRuntimeAgent, TopicRuntimeProcess } from '../../../data/contract.gen'
+import { fmtBytes } from '../../../design/format'
 import { Segmented } from '../../../ui/Segmented'
 import { isStoredToolSelected } from '../../../data/toolScope'
 import { SeriesView } from '../../kinds/Series'
@@ -307,14 +308,30 @@ export function Traffic(props: PanelProps) {
     ? rowsFrom(((live().value ?? []) as MachineLocal['monitor']['per_tool']).map(row => ({
       ...row, label: toolName(ctx, row.tool), workspace_list: join(row.workspaces),
     })), row => identity(row.tool))
-    : rowsFrom((remote.data()?.hosts ?? []).map(host => ({ ...host, label: 'Whole host', sessions: host.live_sessions,
-      pids: host.active_processes, inbound_bps: host.live_in_rate, outbound_bps: host.live_out_rate,
-      est_tokens: host.ai_token_rate, cpu_pct: host.host_cpu_percent,
-    })), row => identity(row.node_id)))
+    : rowsFrom((remote.data()?.hosts ?? []).map(hostRow), row => identity(row.node_id)))
+  const estimates = () => rows().some(({ row }) => number(row.est_tokens) != null)
   return <View result={() => local() ? live() : remote.result(remote.data()?.hosts)} retry={ctx.refresh} empty={def.empty}>
-    <p class={styles.note}>{local() ? 'Live network and file measurements.' : 'Last host samples. The Tool filter and time range do not apply.'} Token values are network estimates, not tool-reported counts.</p>
-    <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} />
+    <p class={styles.note}>{local() ? 'Live network and file measurements.' : 'Each node’s last report of its whole machine. The Tool filter and time range do not apply.'}
+      {estimates() ? ' Token values are network estimates, not tool-reported counts.' : ''}</p>
+    <DataTable ctx={ctx} label={def.title} columns={local() ? def.columns : hostColumns} rows={rows()} />
   </View>
+}
+
+/** One node's last machine report: the columns that mean something for a whole host. */
+export const hostColumns = [stamp('ts', 'Last report'), field('report', 'Report'),
+  metric('sessions', 'procs.tool.live.session_count', 'Live sessions'), metric('pids', 'procs.tool.live.pid_count', 'Processes'),
+  metric('inbound_bps', 'events.tool.live.inbound_rate_bps', 'Received'), metric('outbound_bps', 'events.tool.live.outbound_rate_bps', 'Sent'),
+  metric('est_tokens', 'procs.tool.live.tokens', 'Tokens per second (estimate)'), metric('cpu_pct', 'procs.tool.live.cpu', 'Machine CPU'),
+  field('memory', 'Machine memory used')]
+
+export function hostRow(host: ReportedMachine['hosts'][number]) {
+  const used = number(host.host_memory_used_mb), total = number(host.host_memory_total_mb)
+  return {
+    node_id: host.node_id, ts: host.ts, report: host.status === 'reported' ? 'Current' : host.status === 'stale' ? 'Older than 5 minutes' : 'Unknown',
+    sessions: host.live_sessions, pids: host.active_processes, inbound_bps: host.live_in_rate, outbound_bps: host.live_out_rate,
+    est_tokens: host.ai_token_rate, cpu_pct: host.host_cpu_percent,
+    memory: used == null ? undefined : total == null ? fmtBytes(used * 1048576) : `${fmtBytes(used * 1048576)} of ${fmtBytes(total * 1048576)}`,
+  }
 }
 
 const historyFields = [
