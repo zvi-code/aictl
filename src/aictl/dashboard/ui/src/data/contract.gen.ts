@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: fe699fdec1d3083a978b7968ee0c1f0472ee41269208a2a57a5a1173a47e4cbd
+// Schema digest: 803de784642ea105d41c1a27713304f23a295fd6b4e23b99f51fb08587e6c13b
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -3631,6 +3631,8 @@ export type TopicSourceStatus = {
   incomplete?: boolean;
   retryable?: boolean;
   unresolved_families?: Array<string>;
+  pending_fields?: Array<string>;
+  field_errors?: Record<string, string>;
   frontier?: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>;
   component: "history";
 } | {

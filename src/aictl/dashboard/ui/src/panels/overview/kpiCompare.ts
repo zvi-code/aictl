@@ -1,4 +1,5 @@
 import type { BoardKpis } from '../../data/contract.gen'
+import type { Read } from '../types'
 
 const day = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
 const moment = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -22,4 +23,15 @@ export function previousText(prev: BoardKpis['prev'] | undefined, previous: unkn
   if (typeof previous !== 'number' || !previous || typeof current !== 'number') return
   const delta = Math.round(((current - previous) / previous) * 100)
   return { text: `${delta > 0 ? '+' : ''}${delta}% vs before`, title: `Compared with ${period}` }
+}
+
+/**
+ * What a comparable tile says while the period before has no value: the board shows the tile
+ * before that comparison is read, and a failed read names its reason on hover.
+ */
+export function previousState(read: Pick<Read, 'state' | 'message'>) {
+  if (read.state === 'loading') return { text: 'reading the period before…', title: 'The period before is still being read.' }
+  if (read.state === 'error') {
+    return { text: 'period before not read', title: read.message ?? 'The period before could not be read.' }
+  }
 }

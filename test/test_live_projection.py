@@ -456,6 +456,100 @@ def test_current_status_scope_waits_for_runtime_baseline_and_ignores_gauge_chang
         hub.close()
 
 
+def _scope_view(hub, scope):
+    """The board values and the history status a new subscriber of *scope* receives."""
+    entities = hub.subscribe(scope).next(0)[1]["entities"]
+    fields = {row["data"]["field"] for row in entities if row["topic"] == "history.board"}
+    status = next(row["data"] for row in entities
+                  if row["topic"] == "source.status" and row["data"].get("component") == "history")
+    return fields, status, entities
+
+
+def _staged_dashboard(compute):
+    hub, reader = LiveHub(), FakeReader()
+    dashboard = LiveDashboard(
+        hub, SimpleNamespace(_kusto=object()), SimpleNamespace(), health_provider=lambda: ({}, {}),
+        reader_factory=lambda _: reader, compute=compute,
+    )
+    return hub, reader, dashboard
+
+
+def test_a_first_load_publishes_the_complete_fields_before_the_slow_sections_finish():
+    """A first load showed nothing until every query returned: one slow or failed section blanked the board."""
+    partial_sent, finish = threading.Event(), threading.Event()
+
+    def compute(_db, _filters, *, snapshot, now, on_partial=None, field_errors=None):
+        on_partial({"kpis": {"tokens": 5}, "agents": [{"id": "agent", "input": 5}]}, ["loops", "kpis.prev"])
+        partial_sent.set()
+        assert finish.wait(3)
+        return {"kpis": {"tokens": 5, "prev": {"tokens": 1}}, "agents": [{"id": "agent", "input": 5}], "loops": []}
+
+    hub, _reader, dashboard = _staged_dashboard(compute)
+    subscription = dashboard.subscribe("since=1&until=2")
+    try:
+        assert partial_sent.wait(3)
+        fields, status, _ = _scope_view(hub, "since=1&until=2")
+        # The early fields are there while the slow section still runs; the late ones are absent, not empty.
+        assert fields == {"kpis", "agents"}
+        assert status["ready"] is False and status["pending"] is True
+        assert status["pending_fields"] == ["loops", "kpis.prev"]
+        assert not dashboard._scopes["since=1&until=2"].has_data
+        finish.set()
+        wait_for(lambda: dashboard._scopes["since=1&until=2"].has_data)
+        fields, status, _ = _scope_view(hub, "since=1&until=2")
+        assert fields == {"kpis", "agents", "loops"}
+        assert status["ready"] is True and status["pending"] is False and "pending_fields" not in status
+    finally:
+        finish.set()
+        subscription.close()
+        dashboard.close()
+        hub.close()
+
+
+def test_a_refresh_of_a_scope_with_a_board_publishes_nothing_partial():
+    calls = []
+
+    def compute(_db, _filters, *, snapshot, now, on_partial=None, field_errors=None):
+        calls.append(on_partial)
+        return {"kpis": {"tokens": len(calls)}}
+
+    hub, reader, dashboard = _staged_dashboard(compute)
+    subscription = dashboard.subscribe("since=1&until=2")
+    try:
+        wait_for(lambda: dashboard._scopes["since=1&until=2"].has_data)
+        reader.emit("changes")
+        wait_for(lambda: len(calls) == 2)
+        # The first load may show its fields early; a refresh keeps the whole board until the next whole one.
+        assert calls[0] is not None and calls[1] is None
+    finally:
+        subscription.close()
+        dashboard.close()
+        hub.close()
+
+
+def test_a_failed_optional_section_leaves_only_its_fields_out_with_the_reason():
+    def compute(_db, _filters, *, snapshot, now, on_partial=None, field_errors=None):
+        field_errors["changes"] = field_errors["projects"] = "Kusto view board.changes failed: timeout"
+        return {"kpis": {"tokens": 5}, "agents": [{"id": "agent", "input": 5}]}
+
+    hub, _reader, dashboard = _staged_dashboard(compute)
+    subscription = dashboard.subscribe("since=1&until=2")
+    try:
+        wait_for(lambda: dashboard._scopes["since=1&until=2"].has_data)
+        fields, status, _ = _scope_view(hub, "since=1&until=2")
+        assert fields == {"kpis", "agents"}
+        assert status["ready"] is True and status["error"] is None
+        assert status["field_errors"] == {"changes": "Kusto view board.changes failed: timeout",
+                                          "projects": "Kusto view board.changes failed: timeout"}
+        entry = dashboard._scopes["since=1&until=2"]
+        # The scope is read again, after the retry delay, without waiting for the refresh interval.
+        assert entry.retry_at > 0 and entry.started_at is None
+    finally:
+        subscription.close()
+        dashboard.close()
+        hub.close()
+
+
 def test_history_error_keeps_prior_entities_and_publishes_stale_status():
     hub = LiveHub()
     reader = FakeReader()

@@ -32,6 +32,8 @@ function requestedBaselinesReady(store: LiveStore, requiredTopics: readonly stri
       if (data.topic === topic || (Array.isArray(data.topics) && data.topics.includes(topic))
           || (topic === 'history.board' && data.component === 'history' && data.scope === store.meta.scope)) {
         matched = true
+        // A first load published in parts is not a baseline until its last part, which lists no pending fields.
+        if (Array.isArray(data.pending_fields) && data.pending_fields.length && data.pending !== false) continue
         if (data.ready === true || (data.pending === false && data.error)) return true
       }
     }

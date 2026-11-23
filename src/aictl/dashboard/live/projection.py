@@ -37,6 +37,17 @@ _ROW_KEYS = {
 }
 
 
+def _accepts(function: Any, name: str) -> bool:
+    """Whether *function* takes the keyword argument *name*."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
 def board_entities(scope: str, payload: dict) -> list[tuple[str, str, dict, str]]:
     """Keep row identity/order separate from values; separate mixed-source fields."""
     entities: list[tuple[str, str, dict, str]] = []
@@ -605,7 +616,18 @@ class LiveDashboard:
             attempted_at=now,
         )
         try:
-            payload = compute(self._projection_db, filters, snapshot=None, now=now)
+            field_errors: dict[str, str] = {}
+            options: dict[str, Any] = {}
+            if _accepts(compute, "field_errors"):
+                options["field_errors"] = field_errors
+            if not entry.has_data and _accepts(compute, "on_partial"):
+                # A first load shows each field once it is complete; a scope that shows a board
+                # keeps it until the next whole one is ready.
+                def on_partial(fields: dict, pending: list[str]) -> None:
+                    self._publish_partial(entry, fields, pending, frontier, reset_generation)
+
+                options["on_partial"] = on_partial
+            payload = compute(self._projection_db, filters, snapshot=None, now=now, **options)
             entities = board_entities(entry.query, payload)
             with self._lock:
                 if reset_generation != self._reset_generation:
@@ -631,6 +653,11 @@ class LiveDashboard:
                     "refresh_pending": refresh_pending,
                     "consistency": "queryable results; input frontier is not a cluster-wide atomic snapshot",
                 }
+                if field_errors:
+                    # The fields of a failed optional section are left out; each says why.
+                    status["field_errors"] = {
+                        field: self._safe_reason(reason) or "History read failed" for field, reason in field_errors.items()
+                    }
             entities.append(
                 ("source.status", f"history:{stable_id(entry.query)}", status, "runtime.operational")
             )
@@ -647,6 +674,11 @@ class LiveDashboard:
                 entry.grid = grid
                 entry.retry_at = 0.0
                 entry.status = status
+                if field_errors:
+                    # The failed sections are read again after the usual retry delay.
+                    entry.retry_at = time.monotonic() + 5.0
+                    entry.dirty = True
+                    entry.started_at = None
         except UnresolvedObservationsError as exc:
             self._block_history(entry, exc)
         except Exception as exc:  # noqa: BLE001 - a failed source must preserve the last complete projection
@@ -664,6 +696,41 @@ class LiveDashboard:
                 frontier=frontier,
                 refresh_pending=False,
             )
+
+    def _publish_partial(self, entry: _Scope, fields: dict, pending: list[str], frontier: dict,
+                         reset_generation: int) -> None:
+        """Publish the complete fields of a first load; *pending* names the fields still to come."""
+        if self._stop.is_set():
+            return
+        entities = board_entities(entry.query, fields)
+        with self._lock:
+            if self._scopes.get(entry.query) is not entry or not entry.refs or entry.has_data:
+                return
+            if reset_generation != self._reset_generation:
+                return
+            status = {
+                "scope": entry.query,
+                "component": "history",
+                "topic": "history.board",
+                "ready": False,
+                "pending": True,
+                "pending_fields": list(pending),
+                "error": None,
+                "stale": self._reader_stale,
+                "reader_ready": self._reader_ready,
+                "reason": (
+                    self._safe_reason(self._reader_reason)
+                    if self._reader_stale or not self._reader_ready
+                    else None
+                ),
+                "frontier": frontier,
+                "computed_at": time.time(),
+                "refresh_pending": True,
+                "consistency": "queryable results; input frontier is not a cluster-wide atomic snapshot",
+            }
+            entities.append(("source.status", f"history:{stable_id(entry.query)}", status, "runtime.operational"))
+            self._replace_scope_topics(entry.query, entities)
+            entry.status = status
 
     def _replace_scope_topics(self, scope: str, entities: list) -> None:
         """Publish a scope's board; unwatched scopes give up their space first. Call under the lock."""

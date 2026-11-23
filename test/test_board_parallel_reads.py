@@ -41,3 +41,24 @@ def test_another_failure_is_raised_without_a_second_try():
     with pytest.raises(StoreError, match="syntax error"):
         _gather(CLUSTER, [lambda: "first", call])
     assert len(calls) == 1
+
+
+def test_staged_reads_retry_a_memory_refusal_and_record_only_store_failures_where_asked():
+    from aictl.dashboard.board_projection import _FAILED, _StagedReads
+
+    call, calls = flaky(LOW_MEMORY)
+    failing, _ = flaky("Kusto view board.loops failed: timeout")
+
+    def broken():
+        raise RuntimeError("not a store failure")
+
+    with _StagedReads(CLUSTER, [lambda: "first", call, failing, broken]) as reads:
+        assert reads.result(0) == "first"
+        assert reads.result(1) == "rows" and len(calls) == 2
+        errors = {}
+        assert reads.result(2, errors) is _FAILED and list(errors) == [2]
+        with pytest.raises(StoreError, match="timeout"):
+            reads.result(2)
+        # Only a store failure makes a section optional; any other error fails the board as before.
+        with pytest.raises(RuntimeError, match="not a store failure"):
+            reads.result(3, {})

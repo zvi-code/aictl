@@ -658,6 +658,95 @@ class TestFilters:
             parse_filters(query, 100.0)
 
 
+# ─── Staged board ─────────────────────────────────────────────────
+
+
+def _late(field_path: str) -> str:
+    return field_path.split(".")[0]
+
+
+class TestStagedBoard:
+    """A first load shows each field once its inputs are read; a failed optional section leaves only its fields out."""
+
+    def _hold(self, monkeypatch, name, release):
+        """Make the late section *name* wait until *release* is set, and record that it finished."""
+        original = getattr(board_projection, name)
+        finished = []
+
+        def held(board):
+            assert release.wait(30), "the early fields were not published while the section waited"
+            result = original(board)
+            finished.append(name)
+            return result
+
+        monkeypatch.setattr(board_projection, name, held)
+        return finished
+
+    def test_the_early_fields_come_before_the_late_sections_and_the_whole_board_is_unchanged(self, db, monkeypatch):
+        whole = _board(db)
+        release = threading.Event()
+        finished = [self._hold(monkeypatch, name, release) for name in ("_previous", "_loop_rows", "_changes_section")]
+        partials = []
+
+        def on_partial(fields, pending):
+            partials.append((fields, pending, [list(done) for done in finished]))
+            release.set()
+
+        staged = compute_board(db, _filters(), None, NOW, on_partial=on_partial)
+        assert staged == whole
+        [(fields, pending, done)] = partials
+        assert done == [[], [], []]
+        assert pending == list(board_projection.LATE_FIELDS)
+        late = {_late(path) for path in pending if "." not in path}
+        # Every early field is final; a late one is absent, never an empty placeholder.
+        assert set(fields) == set(whole) - late
+        assert {name: value for name, value in fields.items() if name != "kpis"} == {
+            name: value for name, value in whole.items() if name in fields and name != "kpis"}
+        assert fields["kpis"] == {key: value for key, value in whole["kpis"].items() if key != "prev"}
+
+    @pytest.mark.parametrize(("section", "fields"), [
+        ("_changes_section", {"changes", "projects"}),
+        ("_loop_rows", {"loops", "attention"}),
+        ("_skill_rows", {"skills", "prompts", "latency"}),
+        ("_previous", {"kpis.prev"}),
+    ])
+    def test_a_failed_optional_section_leaves_only_its_fields_out(self, db, monkeypatch, section, fields):
+        from aictl.stores.base import StoreError
+
+        whole = _board(db)
+
+        def failing(*_args):
+            raise StoreError("Kusto view board.section failed: timeout")
+
+        monkeypatch.setattr(board_projection, section, failing)
+        field_errors = {}
+        payload = compute_board(db, _filters(), None, NOW, field_errors=field_errors)
+        assert field_errors == dict.fromkeys(fields, "Kusto view board.section failed: timeout")
+        top = {path for path in fields if "." not in path}
+        assert set(payload) == set(whole) - top
+        assert {k: v for k, v in payload.items() if k != "kpis"} == {
+            k: v for k, v in whole.items() if k not in top and k != "kpis"}
+        if "kpis.prev" in fields:
+            assert payload["kpis"] == {k: v for k, v in whole["kpis"].items() if k != "prev"}
+        else:
+            assert payload["kpis"] == whole["kpis"]
+        # Without a place for the reasons, the failure fails the board as before.
+        with pytest.raises(StoreError, match="timeout"):
+            compute_board(db, _filters(), None, NOW)
+
+    def test_a_failed_chart_section_still_fails_the_board(self, db, monkeypatch):
+        from aictl.stores.base import StoreError
+
+        def failing(*_args):
+            raise StoreError("Kusto view board.tools failed: timeout")
+
+        monkeypatch.setattr(board_projection, "_tools_section", failing)
+        partials = []
+        with pytest.raises(StoreError, match="timeout"):
+            compute_board(db, _filters(), None, NOW, field_errors={}, on_partial=lambda *a: partials.append(a))
+        assert partials == []
+
+
 # ─── Null versus 0 ────────────────────────────────────────────────
 
 

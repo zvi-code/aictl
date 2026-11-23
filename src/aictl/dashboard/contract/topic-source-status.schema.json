@@ -51,6 +51,8 @@
         "incomplete": {"type": "boolean"},
         "retryable": {"type": "boolean"},
         "unresolved_families": {"type": "array", "items": {"type": "string"}},
+        "pending_fields": {"type": "array", "items": {"type": "string"}},
+        "field_errors": {"type": "object", "additionalProperties": {"type": "string"}},
         "frontier": {
           "type": "object",
           "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}

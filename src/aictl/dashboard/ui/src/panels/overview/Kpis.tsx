@@ -9,7 +9,7 @@ import { States } from '../kinds/States'
 import { monitoredReport } from './monitoredReport'
 import { runtimeSummary } from '../../data/runtimeAgents'
 import { runningDetail, unlinkedText } from './agentTree'
-import { previousText } from './kpiCompare'
+import { previousState, previousText } from './kpiCompare'
 import styles from '../kinds/kinds.module.css'
 
 const metrics = [
@@ -37,6 +37,8 @@ export default function Kpis(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
   const history = createMemo(() => ctx.read({ field: 'kpis' }))
   const data = () => history().value as BoardKpis | undefined
+  // A first load shows the tiles before the period before is read; its own state says so.
+  const previous = createMemo(() => ctx.read({ field: 'kpis', path: 'prev' }))
   const report = monitoredReport(ctx)
   const runtime = createMemo(() => {
     if (ctx.scope() !== 'local') return
@@ -66,7 +68,9 @@ export default function Kpis(props: PanelProps) {
             monitored() ? `${monitored()!.hosts} reporting ${monitored()!.hosts === 1 ? 'node' : 'nodes'}` : 'No fresh monitor report'} />
         <For each={metrics}>{([key, label, section, spark]) => {
         const detail = () => {
-          const compared = comparable.has(key) ? previousText(data()?.prev, at(data()?.prev, key), data()?.[key]) : undefined
+          const compared = comparable.has(key)
+            ? previousText(data()?.prev, at(data()?.prev, key), data()?.[key]) ?? previousState(previous())
+            : undefined
           if (compared) return <span title={compared.title}>{compared.text}</span>
           if (key === 'running') return runningDetail(runtime(), data() as Parameters<typeof runningDetail>[1])
           if (key === 'failures') return format('fail_rate', data()?.fail_rate)

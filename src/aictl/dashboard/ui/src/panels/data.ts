@@ -100,7 +100,7 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     if ('route' in source) return { state: 'unavailable' }
     let value: unknown, rowKeys: readonly string[] | undefined
     let updatedAt: number | undefined
-    let stale = ctx.paused(), pending = false, fault: string | undefined
+    let stale = ctx.paused(), pending = false, fault: string | undefined, fieldFault: string | undefined
     if ('field' in source && (ctx.scope() !== 'local' || (source.wholeRange && ctx.filters().sel))) {
       const resource = source.wholeRange && ctx.filters().sel ? whole() : remote()
       value = at(at(resource?.data, source.field), source.path)
@@ -129,16 +129,25 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
       }
       const relevant = sourceStatuses().filter(status => ('topic' in status && status.topic === name) ||
         ('topics' in status && status.topics.includes(name)))
+      const history = 'field' in source ? relevant.find((status): status is Extract<TopicSourceStatus, { component: 'history' }> =>
+        'component' in status && status.component === 'history') : undefined
+      // A first load names the fields still to come: a field that is already there is final, not stale.
+      const fieldPath = 'field' in source ? [source.field, source.path].filter(Boolean).join('.') : ''
+      const covers = (listed: string) => fieldPath === listed || fieldPath.startsWith(listed + '.')
+      const staged = history?.pending && Array.isArray(history.pending_fields)
+      const waiting = (status: TopicSourceStatus) => 'pending' in status && status.pending &&
+        (status !== history || !staged || history.pending_fields!.some(covers))
       if ('field' in source) {
         const generated = store.boardField('generated_at').value
-        const history = relevant.find((status): status is Extract<TopicSourceStatus, { component: 'history' }> =>
-          'component' in status && status.component === 'history')
         updatedAt = typeof generated === 'number' ? generated : history?.computed_at
+        fieldFault = Object.entries(history?.field_errors ?? {}).find(([listed]) => covers(listed))?.[1]
       }
-      pending = !store.meta.ready || relevant.some(status => 'pending' in status && status.pending)
+      pending = !store.meta.ready || relevant.some(waiting)
       fault = relevant.flatMap(status => 'error' in status && status.error ? [status.error] : [])[0] ?? ctx.client.status.error?.message
-      stale ||= Boolean(fault) || relevant.some(status => ('stale' in status && status.stale) || ('pending' in status && status.pending))
+      stale ||= Boolean(fault) || relevant.some(status => ('stale' in status && status.stale) || waiting(status))
     }
+    // A field the server could not read while the rest of the board was read shows its own reason.
+    if (value == null && fieldFault) return { state: 'error', message: fieldFault }
     if (value == null) return { state: fault ? 'error' : pending ? 'loading' : 'unavailable', message: fault }
     if (stale) return { state: 'stale', value, rowKeys, updatedAt }
     if (Array.isArray(value) && !value.length) return { state: 'empty', value, rowKeys, updatedAt }

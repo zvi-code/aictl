@@ -2881,6 +2881,76 @@ def _gather(conn: Any, calls: list) -> list:
     return results
 
 
+_FAILED = object()
+# A board field whose value waits for a late section.
+_LATE = object()
+
+
+class _StagedReads:
+    """Reads that all start together and are collected in stages, so early results can be used first.
+
+    Like ``_gather``: on a cluster the calls run side by side, a read that ran out of
+    query memory runs once more alone, and every read has finished when the block ends.
+    """
+
+    def __init__(self, conn: Any, calls: list) -> None:
+        self._calls = calls
+        self._pool: Any = None
+        self._futures: list = []
+        if len(calls) >= 2 and _latency_bound(conn):
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._pool = ThreadPoolExecutor(
+                max_workers=min(PARALLEL_READ_WORKERS, len(calls)), thread_name_prefix="board-read"
+            )
+
+    def __enter__(self) -> _StagedReads:
+        if self._pool is not None:
+            def attempt(call):
+                try:
+                    return call(), None
+                except Exception as exc:  # noqa: BLE001 - sorted out in result(), so the other reads finish
+                    return None, exc
+
+            self._futures = [self._pool.submit(attempt, call) for call in self._calls]
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+
+    def result(self, index: int, errors: dict[int, Exception] | None = None) -> Any:
+        """The result of call *index*. With *errors*, a store failure is recorded there and gives ``_FAILED``."""
+        from ..stores.base import StoreError
+        from ..stores.kusto.client import query_memory_error
+
+        call = self._calls[index]
+        try:
+            if self._pool is None:
+                return call()
+            value, error = self._futures[index].result()
+            if error is None:
+                return value
+            if not query_memory_error(error):
+                raise error
+            return call()
+        except StoreError as exc:
+            if errors is None:
+                raise
+            errors[index] = exc
+            return _FAILED
+
+
+# The board fields that need each optional section; "kpis.prev" is one key of the kpis field.
+_LATE_FIELDS = {
+    "skills_and_turns": ("latency", "prompts", "skills"),
+    "changes": ("projects", "changes"),
+    "loops": ("attention", "loops"),
+    "previous": ("kpis.prev",),
+}
+LATE_FIELDS = tuple(sorted({field for fields in _LATE_FIELDS.values() for field in fields}))
+
+
 def _activity_facts(history: HistoryScope) -> dict[str, set[str]]:
     facts: dict[str, set[str]] = defaultdict(set)
     for row in history.read("board.activity_facts"):
@@ -3108,8 +3178,19 @@ def compute_board(
     *,
     history: HistoryScope | None = None,
     charts_only: bool = False,
+    on_partial: Any = None,
+    field_errors: dict[str, str] | None = None,
 ) -> dict:
-    """Project one history window for the live board or a historical read."""
+    """Project one history window for the live board or a historical read.
+
+    *on_partial(fields, pending)*, when given, receives the board fields that are complete
+    before the slower sections finish; *pending* names the fields still to come (``LATE_FIELDS``).
+    A field is in *fields* only when every input it is computed from is complete.
+
+    *field_errors*, when given, makes the optional sections of ``_LATE_FIELDS`` optional: a
+    store failure in one leaves its fields out of the board and names them here with the
+    reason. Without it, any failed read fails the whole board.
+    """
     history = history or HistoryScope.local(db)
     now = time.time() if now is None else now
     history.require_reader()
@@ -3120,48 +3201,62 @@ def compute_board(
     memo_key = str(getattr(db, "_path", "memory"))
     facts = _store_facts(memo_key, history)
     board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load(charts_only=charts_only)
-    f = filters
 
     # The sections read the loaded board and the store; none changes the board, so on a
     # cluster they run side by side. The charts need neither the rows nor the comparison.
-    if charts_only:
-        agents, skill_rows, turns, changes_section, loops, prev = [], [], None, ({}, {}), [], {}
-        latency, tool_section, errors_section, tests_section, resources = _gather(
-            conn,
-            [
-                lambda: _latency(board),
-                lambda: _tools_section(board),
-                lambda: _errors_section(board),
-                lambda: _tests_section(board),
-                lambda: _resource_series(board),
-            ],
-        )
-    else:
-        def skills_and_turns() -> tuple[list[tuple], _Turns]:
-            rows = _skill_rows(board)
-            return rows, _turns(board, rows)
+    # The early sections come first: the board can be shown from them while the late ones run.
+    def skills_and_turns() -> tuple[list[tuple], _Turns]:
+        rows = _skill_rows(board)
+        return rows, _turns(board, rows)
 
-        (agents, latency, (skill_rows, turns), tool_section, errors_section, changes_section, tests_section, loops,
-         prev, resources) = _gather(
-            conn,
-            [
-                board.agents,
-                lambda: _latency(board),
-                skills_and_turns,
-                lambda: _tools_section(board),
-                lambda: _errors_section(board),
-                lambda: _changes_section(board),
-                lambda: _tests_section(board),
-                lambda: _loop_rows(board),
-                lambda: _previous(board),
-                lambda: _resource_series(board),
-            ],
-        )
+    early = [
+        lambda: _latency(board),
+        lambda: _tools_section(board),
+        lambda: _errors_section(board),
+        lambda: _tests_section(board),
+        lambda: _resource_series(board),
+    ]
+    late = {
+        "skills_and_turns": skills_and_turns,
+        "changes": lambda: _changes_section(board),
+        "loops": lambda: _loop_rows(board),
+        "previous": lambda: _previous(board),
+    }
+    calls = early if charts_only else [*early, board.agents, *late.values()]
+    with _StagedReads(conn, calls) as reads:
+        latency, tool_section, errors_section, tests_section, resources = (
+            reads.result(i) for i in range(len(early)))
+        agents = [] if charts_only else reads.result(len(early))
+        early_fields, complete = _board_payload(db, board, history, facts, memo_key, now, agents, latency,
+                                                tool_section, errors_section, tests_section, resources, charts_only)
+        if complete is None:
+            return early_fields
+        if on_partial is not None:
+            on_partial(early_fields, list(LATE_FIELDS))
+        failures: dict[int, Exception] | None = None if field_errors is None else {}
+        first = len(early) + 1
+        results = {name: reads.result(first + i, failures) for i, name in enumerate(late)}
+    for i, name in enumerate(late):
+        if field_errors is not None and failures and (error := failures.get(first + i)) is not None:
+            reason = str(error) or type(error).__name__
+            logger.warning("Board section %s failed; its fields are left out: %s", name, mask_secrets(reason)[:600])
+            field_errors.update(dict.fromkeys(_LATE_FIELDS[name], reason))
+    return complete(results)
+
+
+def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, memo_key: str, now: float,
+                   agents: list[dict], latency: dict, tool_section: dict, errors_section: tuple,
+                   tests_section: tuple, resources: tuple, charts_only: bool) -> tuple[dict, Any]:
+    """The board fields that need no late section, and the function that completes the board from the late ones.
+
+    ``kpis`` holds every key but ``prev``, which comes from a late section. For the charts alone,
+    the chart fields and no function.
+    """
+    f = board.f
     tool_calls_bucket = tool_section["calls_bucket"]
     tool_fail_bucket = tool_section["fail_bucket"]
     tool_spark = {"spark_calls": tool_section["spark_calls"], "spark_failed": tool_section["spark_failed"]}
     errors, api_bucket, api_by_project = errors_section
-    changes, lines_by_project = changes_section
     tests, tests_passed, tests_failed, tests_by_project = tests_section
     tests_piped = sum(
         1
@@ -3262,7 +3357,6 @@ def compute_board(
         "p50_ms": _ms(_percentile(latency["replies"], 0.50)),
         "p95_ms": _ms(_percentile(latency["replies"], 0.95)),
         "loops": len(board.visible_loops),
-        "prev": prev,
         "spark": {
             "running": running_spark,
             "messages": [
@@ -3314,38 +3408,40 @@ def compute_board(
     for loop in board.visible_loops:
         loops_by_project[board.session_project.get(loop["session_id"], "")] += 1
     project_ids = set(board.by_project) | {board.session_project.get(sid, "") for sid in board.scope}
-    projects = []
-    for project in project_ids:
+
+    def project_rows(lines_by_project: dict) -> list[dict]:
+        return sorted(
+            (project_row(project, lines_by_project.get(project)) for project in project_ids),
+            key=lambda p: (-p["tokens"], -p["agents"], p["project"]),
+        )
+
+    def project_row(project: str, lines: tuple | None) -> dict:
         usage = board.by_project.get(project)
         calls = calls_by_project.get(project, 0)
         fails = fails_by_project.get(project, 0)
         test_counts = tests_by_project.get(project)
-        lines = lines_by_project.get(project)
         project_msgs = (usage.calls if usage else 0) + prompts_by_project.get(project, 0) + calls
         project_msgs += sum(
             board.fallback_user.get(sid, 0) for sid in board.scope if board.session_project.get(sid, "") == project
         )
-        projects.append(
-            {
-                "project": project,
-                "agents": len(agents_by_project.get(project, ())),
-                "prompts": prompts_by_project.get(project, 0) if user_known else None,
-                "msgs": project_msgs,
-                "tokens": usage.tokens if usage else 0,
-                "cached_share": usage.cached_share if usage else None,
-                "cost_usd": _usd(usage.cost) if usage else None,
-                "tool_calls": calls if calls_known else None,
-                "fail_rate": _ratio(fails, calls) if failures_kpi is not None else None,
-                "test_runs": test_counts[0] if test_counts else (0 if calls_known else None),
-                "test_passed": test_counts[1] if test_counts else (0 if calls_known else None),
-                "lines_added": lines[0] if lines else None,
-                "lines_removed": lines[1] if lines else None,
-                "api_errors": api_by_project.get(project, 0),
-                "loops": loops_by_project.get(project, 0),
-                "p95_ms": _ms(_percentile(latency["by_project"].get(project, []), 0.95)),
-            }
-        )
-    projects.sort(key=lambda p: (-p["tokens"], -p["agents"], p["project"]))
+        return {
+            "project": project,
+            "agents": len(agents_by_project.get(project, ())),
+            "prompts": prompts_by_project.get(project, 0) if user_known else None,
+            "msgs": project_msgs,
+            "tokens": usage.tokens if usage else 0,
+            "cached_share": usage.cached_share if usage else None,
+            "cost_usd": _usd(usage.cost) if usage else None,
+            "tool_calls": calls if calls_known else None,
+            "fail_rate": _ratio(fails, calls) if failures_kpi is not None else None,
+            "test_runs": test_counts[0] if test_counts else (0 if calls_known else None),
+            "test_passed": test_counts[1] if test_counts else (0 if calls_known else None),
+            "lines_added": lines[0] if lines else None,
+            "lines_removed": lines[1] if lines else None,
+            "api_errors": api_by_project.get(project, 0),
+            "loops": loops_by_project.get(project, 0),
+            "p95_ms": _ms(_percentile(latency["by_project"].get(project, []), 0.95)),
+        }
 
     series = {
         "tokens": {
@@ -3388,7 +3484,7 @@ def compute_board(
         "partial_bucket": n - 1 if f.until > now and n else None,
     }, "series": series}
     if charts_only:
-        return chart_fields
+        return chart_fields, None
 
     runs = []
     historical = history.qualified
@@ -3396,18 +3492,20 @@ def compute_board(
     for row in run_rows:
         if row["started_at"] and row["ended_at"] and row["ended_at"] > row["started_at"]:
             runs.append((row["ended_at"] - row["started_at"]) * 1000.0)
-    latency_rows = [
-        _latency_row("Model reply", latency["replies"], latency["reply_count"], latency["reply_max"]),
-        _latency_row(
-            "Time to first token",
-            latency["firsts"],
-            _reported(latency["first_count"], scope_tools, _NO_TTFT),
-            latency["first_max"],
-        ),
-        _latency_row("Tool call", tool_section["durations"], tool_section["timed"], tool_section["longest"]),
-        _latency_row("Whole turn", turns.lengths_ms, turns.count),
-        _latency_row("Agent run", sorted(runs)),
-    ]
+
+    def latency_rows(turns: _Turns) -> list[dict]:
+        return [
+            _latency_row("Model reply", latency["replies"], latency["reply_count"], latency["reply_max"]),
+            _latency_row(
+                "Time to first token",
+                latency["firsts"],
+                _reported(latency["first_count"], scope_tools, _NO_TTFT),
+                latency["first_max"],
+            ),
+            _latency_row("Tool call", tool_section["durations"], tool_section["timed"], tool_section["longest"]),
+            _latency_row("Whole turn", turns.lengths_ms, turns.count),
+            _latency_row("Agent run", sorted(runs)),
+        ]
 
     tool_order = list(board.tool_order)
     source_rows = _source_rows(history, memo_key)
@@ -3419,7 +3517,7 @@ def compute_board(
 
     from ..orchestrator import tool_configs_at
 
-    return {
+    payload = {
         "generated_at": now,
         # When the settings records last changed: the settings screen reads them again on a new value.
         "settings_at": None if historical else tool_configs_at(),
@@ -3432,26 +3530,26 @@ def compute_board(
             "all_agents": _count_agents(board, (sid for sid in board.agents_by_root if sid)),
         },
         "kpis": kpis,
-        "attention": _attention(board, loops, agents),
+        "attention": _LATE,
         "agents": agents,
         "by_model": by_model,
         "by_role": by_role,
         "saved_usd": _usd(board.total.saved),
         "unpriced": _unpriced_section(board),
         "credits": _credits_section(board),
-        "projects": projects[:MAX_LIST_ROWS],
-        "prompts": _prompts_section(board, turns.tokens),
+        "projects": _LATE,
+        "prompts": _LATE,
         "project_prompts": project_prompts,
         "project_prompts_searched": prompts_searched,
-        "skills": _skills_section(board, skill_rows, turns),
+        "skills": _LATE,
         "tests_piped": tests_piped,
         "prompts_total": sum(n for sid, _, _, _, n, _, _ in board.prompt_rows if not board.narrowed or sid in board.scope),
         "tools": tool_section["rows"],
         "confirms": _confirms_section(board, tool_section["calls_by_name"]),
         "errors": errors,
-        "latency": latency_rows,
-        "loops": loops,
-        "changes": changes,
+        "latency": _LATE,
+        "loops": _LATE,
+        "changes": _LATE,
         "tests": tests,
         "memory_files": _memory_files(board),
         "processes": _processes(board),
@@ -3462,3 +3560,30 @@ def compute_board(
         "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
         "self": None if historical else _self_section(db),
     }
+
+    def complete(results: dict[str, Any]) -> dict:
+        """The whole board from the late sections; a section that failed leaves its fields out."""
+        late: dict[str, Any] = {}
+        if (section := results["skills_and_turns"]) is not _FAILED:
+            skill_rows, turns = section
+            late |= {"latency": latency_rows(turns), "prompts": _prompts_section(board, turns.tokens),
+                     "skills": _skills_section(board, skill_rows, turns)}
+        if (section := results["changes"]) is not _FAILED:
+            changes, lines_by_project = section
+            late |= {"projects": project_rows(lines_by_project)[:MAX_LIST_ROWS], "changes": changes}
+        if (loops := results["loops"]) is not _FAILED:
+            late |= {"attention": _attention(board, loops, agents), "loops": loops}
+        whole = {}
+        for name, value in payload.items():
+            if value is _LATE:
+                if name in late:
+                    whole[name] = late[name]
+            elif name == "kpis" and results["previous"] is not _FAILED:
+                spark = value["spark"]
+                whole[name] = {**{k: v for k, v in value.items() if k != "spark"}, "prev": results["previous"],
+                               "spark": spark}
+            else:
+                whole[name] = value
+        return whole
+
+    return {name: value for name, value in payload.items() if value is not _LATE}, complete
