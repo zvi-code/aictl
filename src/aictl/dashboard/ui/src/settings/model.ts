@@ -277,6 +277,14 @@ export function mergeFiles(api: readonly ApiFile[] | undefined, entries: readonl
     entries.some(entry => entry.id === tool)))
 }
 
+/** The one definition of a file's counts: its top-level keys, and the distinct settings read from it. */
+export function fileCounts(file: Pick<ConfigFile, 'top_level_keys' | 'settings' | 'rows'>) {
+  const settings = file.settings ?? (file.rows.length ? new Set(file.rows.map(row => row.key)).size : undefined)
+  const top = file.top_level_keys ?? undefined
+  const parts = [top != null && `${top} top-level ${top === 1 ? 'key' : 'keys'}`,
+    settings != null && `${settings} ${settings === 1 ? 'setting' : 'settings'}`].filter(Boolean)
+  return { top, settings, text: parts.join(' · ') || undefined }
+}
 export function isRecent(file: ConfigFile, now: number) {
   return file.mtime != null && file.mtime <= now && now - file.mtime < 86400
 }

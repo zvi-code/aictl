@@ -22,6 +22,7 @@
           "bytes": {"type": ["integer", "null"]},
           "mtime": {"type": ["number", "null"]},
           "settings": {"type": ["integer", "null"]},
+          "top_level_keys": {"type": ["integer", "null"]},
           "tools": {"type": "array", "items": {"type": "string"}},
           "git_state": {"type": ["string", "null"]}
         },

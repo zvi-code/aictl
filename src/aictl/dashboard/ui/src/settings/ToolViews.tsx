@@ -115,13 +115,13 @@ function ToolSections(props: { w: Workspace; entry: Entry }) {
 }
 
 function SourceTable(props: { w: Workspace; entry: Entry }) {
-  const rows = () => props.entry.files.map(path => ({ path, count: props.entry.rows.filter(row => samePath(row.source, path)).length }))
+  const rows = () => props.entry.files.map(path => ({ path, count: new Set(props.entry.rows.filter(row => samePath(row.source, path)).map(row => row.key)).size }))
   const max = () => props.entry.rows.length
   return <div class={styles.stack}>
     <Meter label={`${props.entry.label} configuration files`} value={props.entry.files.length} max={Math.max(props.entry.files.length, max())}
       display={String(props.entry.files.length)} compact />
     <Table label="Configuration sources" rows={rows()} rowId={row => row.path}
-      fields={[{ id: 'path', label: 'Path', read: row => row.path }, { id: 'count', label: 'Settings', read: row => row.count }]}
+      fields={[{ id: 'path', label: 'Path', read: row => row.path }, { id: 'count', label: `Settings ${props.entry.label} reads here`, read: row => row.count }]}
       action={{ label: row => `Filter by ${basename(row.path)}`, run: row => {
         const sec = props.entry.rows.find(setting => samePath(setting.source, row.path))?.sec
         if (sec) props.w.change({ sec, scope: '', row: '' })

@@ -56,11 +56,12 @@ export function workspaceState(ctx: PanelContext, config: () => TopicConfigurati
   const section = () => state().sec || entry()?.sections.find(sec => sec.rows.some(row => !row.unset))?.id ||
     entry()?.sections[0]?.id || (entry()?.envVars.length ? 'env' : '')
   const hookPath = () => local() && state().view === 'tool' && section() === 'hooks' ? '/api/hooks-status' : undefined
-  const filesPath = () => local() && state().view === 'files' ? '/api/settings/files' : undefined
+  // The header counts files and findings, so both load with it, not only when their view opens.
+  const filesPath = () => local() ? '/api/settings/files' : undefined
   const hookStatus = untrack(() => ctx.detail<DetailHooksStatus>(hookPath))
   const fileDetail = untrack(() => ctx.detail<DetailSettingsFiles>(filesPath))
   const files = createMemo(() => mergeFiles(fileDetail()?.data?.files, entries(), ctx.tools()))
-  const auditActive = () => local() && state().view === 'findings'
+  const auditActive = () => local()
   const { scan, rescan } = untrack(() => auditSource(auditActive, fileDetail.retry))
   const findings = createMemo(() => {
     const result = scan().audit

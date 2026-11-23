@@ -5,7 +5,7 @@ import { Segmented } from '../ui/Segmented'
 import { Table } from '../ui/Table'
 import type { Field } from '../ui/tableModel'
 import {
-  basename, findingTools, folderOf, gitCategory, GIT_STATES, groupBy, isRecent, listOf, locationLabel, LOCATIONS,
+  basename, fileCounts, findingTools, folderOf, gitCategory, GIT_STATES, groupBy, isRecent, listOf, locationLabel, LOCATIONS,
   matches, MISSING, purposeLabel, PURPOSES, scopeLabel, SEVERITIES, title, toggleIn, type ConfigFile, type Finding,
 } from './model'
 import type { Workspace } from './workspaceState'
@@ -60,7 +60,7 @@ const fileFields: Field<FileTreeItem>[] = [
   { id: 'scope', label: 'Scope', read: row => row.file ? scopeLabel(row.file.scope) : '—', sortable: false },
   { id: 'git', label: 'Git', read: row => row.file ? row.file.git_state : '—', sortable: false },
   { id: 'bytes', label: 'Bytes', read: row => row.file ? row.file.bytes ?? undefined : '—', sortable: false },
-  { id: 'count', label: 'Items', read: row => row.count ?? row.file?.settings ?? undefined, sortable: false },
+  { id: 'count', label: 'Items', read: row => row.count ?? (row.file ? fileCounts(row.file).text : undefined), sortable: false },
 ]
 
 export function FilesView(props: { w: Workspace }) {

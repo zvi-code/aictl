@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  agentTools, DAEMON_ENV, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  agentTools, DAEMON_ENV, fileCounts, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
   settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
@@ -76,6 +76,11 @@ describe('settings contract projections', () => {
       in_process: true, process: 'medium', masked: false, value: '' })
     expect(value).toBe(`Not set where sessions start · only in ${DAEMON_ENV}`)
     expect(value).not.toContain('medium')
+  })
+
+  it('defines a file count once: top-level keys and distinct settings', () => {
+    expect(fileCounts({ top_level_keys: 31, settings: 46, rows: [] }).text).toBe('31 top-level keys · 46 settings')
+    expect(fileCounts({ top_level_keys: null, settings: null, rows: [] }).text).toBeUndefined()
   })
 
   it('never renders an unknown or absent list as 0', () => {

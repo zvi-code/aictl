@@ -1123,6 +1123,7 @@ SETTINGS_FILE_KEYS = {
     "kind",
     "tools",
     "settings",
+    "top_level_keys",
     "bytes",
     "mtime",
     "git_state",

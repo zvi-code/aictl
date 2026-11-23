@@ -102,6 +102,20 @@ def _location(path: str, root: str, home: str, vscode_user: str, tool_roots: lis
     return "other", os.path.dirname(path)
 
 
+def top_level_keys(path: str) -> int | None:
+    """Number of top-level keys of a JSON or TOML settings file; None for any other file or one that does not parse."""
+    from ..monitoring.tool_config import _read_json, _read_toml
+
+    low = path.lower()
+    if low.endswith((".json", ".jsonc")):
+        data = _read_json(Path(path))
+    elif low.endswith(".toml"):
+        data = _read_toml(Path(path))
+    else:
+        return None
+    return len(data) if isinstance(data, dict) else None
+
+
 def settings_files(
     root: str | Path,
     tool_configs: list[dict],
@@ -127,7 +141,7 @@ def settings_files(
         norm = os.path.normpath(os.path.expanduser(path))
         key = _path_key(norm)
         if key not in entries:
-            entries[key] = {"path": norm, "tools": [], "settings": 0, "audit": None, "is_dir": False}
+            entries[key] = {"path": norm, "tools": [], "keys": set(), "audit": None, "is_dir": False}
         return entries[key]
 
     def add_tool(e: dict, tool: str) -> None:
@@ -143,7 +157,8 @@ def settings_files(
             for row in section.get("rows") or []:
                 if (e := entry(str(row.get("source") or ""))) is not None:
                     add_tool(e, tool)
-                    e["settings"] += 1
+                    # A setting two tools read from one file is one setting of that file.
+                    e["keys"].add(str(row.get("key") or ""))
     for src in audit_sources or []:
         if src.get("scope") == "dynamic" or src.get("readable") is False:
             continue  # a label, not a file
@@ -195,7 +210,8 @@ def settings_files(
                 "kind": "other" if e["is_dir"] else _file_kind(path, str(audit.get("kind") or "")),
                 "tools": sorted(e["tools"]),
                 # A folder or an absent file has no size and holds no settings rows: unknown, never 0.
-                "settings": None if e["is_dir"] else e["settings"],
+                "settings": None if e["is_dir"] else len(e["keys"]),
+                "top_level_keys": None if e["is_dir"] or not exists else top_level_keys(path),
                 "bytes": size if exists and not e["is_dir"] else None,
                 "mtime": mtime if exists else None,
                 "git_state": git_state,

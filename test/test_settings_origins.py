@@ -335,6 +335,20 @@ def test_folders_and_absent_files_have_unknown_size_not_zero(tmp_path):
     assert files["settings.json"]["bytes"] == 2 and files["settings.json"]["settings"] == 0
 
 
+def test_file_counts_have_one_definition(tmp_path):
+    """A file shared by two tools counts each setting once, and its top-level keys are counted from the file."""
+    from aictl.dashboard.settings_routes import settings_files
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"a": 1, "b": {"c": 1, "d": 2}, "e": [1]}))
+    rows = [{"key": k, "source": str(path)} for k in ("a", "b.c", "b.d", "e")]
+    configs = [{"tool": t, "config_files": [str(path)], "sections": [{"id": "other", "rows": rows}]}
+               for t in ("copilot-cli", "copilot-desktop")]
+    (entry,) = settings_files(tmp_path, configs)["files"]
+    assert entry["settings"] == 4  # not 8: two readers of one file do not double its settings
+    assert entry["top_level_keys"] == 3
+
+
 # ─── The aictl daemon's environment is never a session's ───────────
 
 

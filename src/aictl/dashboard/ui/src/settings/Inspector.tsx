@@ -7,7 +7,7 @@ import { PanelState } from '../ui/PanelState'
 import { Stat } from '../ui/Stat'
 import { Table } from '../ui/Table'
 import {
-  agentInherits, agentTools, basename, DAEMON_ENV, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
+  agentInherits, agentTools, basename, DAEMON_ENV, fileCounts, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
   purposeLabel, rowState, rowValue, samePath, scopeLabel, title, type ConfigFile, type Environment, type Finding, type Setting,
 } from './model'
 import { permissionEdit } from './permissions'
@@ -199,7 +199,8 @@ function FileDetail(props: { w: Workspace; file: ConfigFile }) {
     <header><h2>{file().name}</h2><code>{file().path}</code></header>
     <div class={styles.metrics}>
       <Stat label="Bytes" value={file().bytes} />
-      <Stat label="Settings" value={file().settings ?? (file().rows.length || undefined)} />
+      <Stat label="Top-level keys" value={fileCounts(file()).top} />
+      <Stat label="Settings" value={fileCounts(file()).settings} />
       <Stat label="Readers" value={file().tools.length} />
     </div>
     <dl class={styles.facts}>

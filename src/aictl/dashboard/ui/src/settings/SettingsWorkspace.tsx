@@ -36,7 +36,7 @@ export default function SettingsWorkspace(props: { ctx: PanelContext; config: To
       <Stat label="Agents" value={w.totals().agents} />
       <Stat label="Unset" value={w.totals().knowsSet ? w.totals().unset : undefined} />
       <Stat label="Risky" value={w.totals().risky} tone={w.totals().risky ? 'warning' : 'neutral'} />
-      <Stat label="Findings" value={w.findings()?.length} />
+      <Stat label="Findings" value={w.findings()?.length} detail={w.findings() ? undefined : w.scan().pending ? 'Scanning…' : undefined} />
     </div>
     <div class={styles.controls}>
       <Segmented label="Settings view" options={PIVOTS} value={w.state().view}

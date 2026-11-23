@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: a7268565d7a6fdb125074b3a4d8f02e5964d3f9c719cf926e2d66d31ff887273
+// Schema digest: 2f22c59d53ba0c8b786a5ccc9281548326d7202b49f38dc83e709f46d6d8c0da
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1939,6 +1939,7 @@ export type DetailSettingsFiles = {
     bytes: number | null;
     mtime: number | null;
     settings: number | null;
+    top_level_keys?: number | null;
     tools: Array<string>;
     git_state: string | null;
   }>;
