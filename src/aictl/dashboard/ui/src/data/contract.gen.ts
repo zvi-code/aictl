@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 9007d713b053a4d3bff2a86d2c051903cab2578e1b6df1322569d91ced262f61
+// Schema digest: 073ce41450783e162f3da0ff1139c1ec537576e3e40ccafee65ccefd099d2aed
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2051,6 +2051,9 @@ export type FlowEvent = {
   output_bytes?: number | null;
   result_tokens_est?: number | null;
   confirm_wait_ms?: number | null;
+  outcome?: string;
+  spawned_agent_id?: string;
+  spawned_by_ts?: number;
 };
 
 export type FlowSummary = {

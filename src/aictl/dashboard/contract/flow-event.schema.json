@@ -76,7 +76,10 @@
     "input_bytes": {"type": ["integer", "null"], "description": "UTF-8 size of the arguments sent to the tool."},
     "output_bytes": {"type": ["integer", "null"], "description": "UTF-8 size of the result returned by the tool."},
     "result_tokens_est": {"type": ["integer", "null"], "description": "Estimated tokens of the tool result from its size (bytes / 4); an estimate, not a count."},
-    "confirm_wait_ms": {"type": ["number", "null"]}
+    "confirm_wait_ms": {"type": ["number", "null"]},
+    "outcome": {"type": "string", "description": "How a subagent ended: completed, failed, or not reported."},
+    "spawned_agent_id": {"type": "string", "description": "The subagent a tool call started."},
+    "spawned_by_ts": {"type": "number", "description": "Time of the tool call that started this subagent."}
   },
   "required": ["type", "ts", "source", "rt_tokens", "cum_tokens"]
 }

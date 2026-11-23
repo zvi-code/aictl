@@ -27,6 +27,13 @@ form.bar { align-items: flex-end; }
 .muted { color: var(--color-muted); font-size: var(--text-sm); }
 .meta { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); overflow-wrap: anywhere; }
 .meta span { font-variant-numeric: tabular-nums; }
+/* The status is a badge; its evidence is a muted note after a separator, never run into the status word. */
+.meta .statusWord {
+  padding: 0 var(--space-3); border-radius: var(--radius-pill); background: var(--color-hover);
+  color: var(--color-text); font-weight: var(--weight-strong);
+}
+.meta .statusEvidence { color: var(--color-muted); font-style: italic; }
+.meta .statusEvidence::before { content: "Evidence: "; font-style: normal; }
 .code { font-family: var(--font-mono); width: 100%; min-block-size: 12em; }
 .scroll { overflow: auto; overflow-anchor: none; min-block-size: 0; block-size: min(52dvh, var(--overlay-lg)); border: var(--border-size) solid var(--color-border); border-radius: var(--radius-sm); }
 .scroll:focus-visible { outline: var(--focus-size) solid var(--color-focus); }

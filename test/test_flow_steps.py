@@ -85,7 +85,7 @@ def test_a_subagent_flow_lists_only_its_own_steps_and_counts_them():
     body = flow(SUB)
     assert body["flow_scope"] == {"kind": "agent", "agent_id": SUB, "session_id": SID, "subagent": True}
     assert {e.get("agent_id") for e in body["turns"]} == {SUB}
-    assert [e["type"] for e in body["turns"]] == ["subagent", "api_call", "tool_use", "api_call", "subagent_end"]
+    assert [e["type"] for e in body["turns"]] == ["subagent", "task_prompt", "api_call", "tool_use", "api_call", "subagent_end"]
     summary = body["summary"]
     assert (summary["total_api_calls"], summary["total_tool_uses"], summary["errors"], summary["total_turns"]) == (
         2,
@@ -140,3 +140,54 @@ def test_a_count_or_duration_the_source_did_not_report_stays_unknown():
     assert call_event["duration_ms"] is None and "cost_usd" not in call_event
     assert next(e for e in body["turns"] if e["type"] == "tool_use")["duration_ms"] is None
     assert body["summary"]["total_output_tokens"] == 5 and body["summary"]["total_cost_usd"] is None
+
+
+def step_row(ts, kind, name, phase, aid, source=""):
+    return {"row_type": "step", "values": [ts, kind, name, phase, aid, "", None, None, None, None, None, source]}
+
+
+def native_row(ts, kind, role, key, text, aid="", status="captured"):
+    return {"row_type": "native", "values": [ts, kind, role, key, "turn", status, text, aid]}
+
+
+# A turn that starts two subagents with a task tool: the first fails at once, the second runs.
+FAILED, RAN = "sub-failed", "sub-ran"
+TURN = [
+    {"row_type": "session", "values": ["copilot-cli", "/p", T, T + 900]},
+    native_row(T + 1, "message", "user", "p1", "Launch a subagent\nand have it check OTel"),
+    call(T + 2),
+    use(T + 2.1, "task", target="Check OTel", is_error=1),
+    {"row_type": "agent", "values": [FAILED, "task", "claude-opus-5", T + 2.15, T + 2.2, 1]},
+    step_row(T + 2.16, "session_command", "model_change", "applied", FAILED, "session.model_change"),
+    step_row(T + 2.19, "agent", "task", "failed", FAILED, "subagent.failed"),
+    call(T + 3),
+    use(T + 3.1, "task", target="Check OTel"),
+    {"row_type": "agent", "values": [RAN, "task", "claude-opus-5.5", T + 3.2, T + 22, 1]},
+    step_row(T + 3.25, "session_command", "model_change", "applied", RAN, "session.model_change"),
+    native_row(T + 3.3, "agent_prompt", "user", "a1", "Check if OpenTelemetry is enabled", aid=RAN),
+    call(T + 10, aid=RAN, model="claude-opus-5.5"),
+    use(T + 10, "bash", aid=RAN, target="env"),
+    step_row(T + 21.9, "agent", "task", "completed", RAN, "subagent.completed"),
+]
+
+
+def test_a_failed_subagent_says_it_failed_and_the_task_call_names_it():
+    body = flow(SID, rows=TURN)
+    ends = {e["agent_id"]: e for e in body["turns"] if e["type"] == "subagent_end"}
+    assert (ends[FAILED]["outcome"], ends[FAILED]["completed"], ends[FAILED]["is_error"]) == ("failed", False, True)
+    assert (ends[RAN]["outcome"], ends[RAN]["completed"]) == ("completed", True)
+    tasks = [e for e in body["turns"] if e["type"] == "tool_use" and e["to"] == "task"]
+    assert [t.get("spawned_agent_id") for t in tasks] == [FAILED, RAN]
+    assert not any(e["type"] == "agent" for e in body["turns"])
+
+
+def test_a_subagent_task_prompt_is_the_first_step_of_its_span_and_its_model_change_joins_the_start():
+    body = flow(SID, rows=TURN)
+    ran = [e for e in body["turns"] if e.get("agent_id") == RAN]
+    assert [e["type"] for e in ran] == ["subagent", "session_command", "task_prompt", "api_call", "tool_use", "subagent_end"]
+    start, change, task = ran[:3]
+    assert change["step"] == start["step"] and task["step"] == start["step"] + 1
+    assert (task["message"], task["prompt_length"], task["step_key"]) == ("Check if OpenTelemetry is enabled", 33, "a1")
+    # A task prompt is not a person's prompt: the session still counts one.
+    assert body["summary"]["total_turns"] == 1
+    assert [e["type"] for e in flow(RAN, rows=TURN)["turns"]][:3] == ["subagent", "session_command", "task_prompt"]

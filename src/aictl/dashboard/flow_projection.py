@@ -48,7 +48,7 @@ REPLY_NOT_KEPT = "The reply text is not kept"
 _MESSAGE_TABLES = ("copilot_session_messages", "vscode_chat_messages", "cursor_session_messages")
 
 
-_FLOW_ORDER = {"session_start": 0, "user_message": 1, "subagent": 2, "api_call": 3, "api_response": 4, "tool_use": 5, "error": 6}
+_FLOW_ORDER = {"session_start": 0, "user_message": 1, "subagent": 2, "task_prompt": 2.5, "api_call": 3, "api_response": 4, "tool_use": 5, "error": 6}
 
 
 _FLOW_MARKERS = frozenset({"session_start", "session_end"})
@@ -105,10 +105,17 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
     prompt_info: list[dict] = [{} for _ in prompts]
     native_authorship = False
     native = rows("native")
+    # The task a subagent received, from its own transcript: (ts, text, step_key, text_status) by agent.
+    agent_tasks: dict[str, tuple[float, str, str, str]] = {}
     if native:
         native_authorship = True
         prompts, prompt_info = [], []
-        for ts, kind, role, key, turn, status, text in native:
+        for row in native:
+            ts, kind, role, key, turn, status, text = row[:7]
+            agent = row[7] if len(row) > 7 else ""
+            if kind == "agent_prompt" and role == "user" and agent:
+                agent_tasks.setdefault(agent, (ts, text or "", key, status))
+                continue
             if kind != "message" or role != "user":
                 continue
             prompts.append((ts, text or ""))
@@ -193,6 +200,8 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
             use["confirm_wait_ms"] = confirm_wait
         events.append(use)
 
+    # What the transcript says each subagent ended with: its subagent.completed or subagent.failed step.
+    outcomes = {aid: phase for _ts, kind, _name, phase, aid, *_rest in rows("step") if kind == "agent" and aid and phase in _AGENT_OUTCOMES}
     for aid, task, model, started, ended, completed in rows("agent"):
         label = task or "subagent"
         if inside(started):
@@ -202,8 +211,15 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
             if task_prompts.get(aid):
                 start["prompt"] = task_prompts[aid]
             events.append(start)
+            task = _task_prompt(aid, started, agent_tasks.get(aid), task_prompts.get(aid), keep_text=keep_text, text_floor=text_floor)
+            if task:
+                events.append(task)
         if inside(ended):
-            end = {"ts": ended, "type": "subagent_end", "from": label, "to": tool, "agent_id": aid, "completed": bool(completed), "source": "store"}
+            outcome = outcomes.get(aid) or ("completed" if completed else "not reported")
+            end = {"ts": ended, "type": "subagent_end", "from": label, "to": tool, "agent_id": aid,
+                   "completed": outcome == "completed", "outcome": outcome, "source": "store"}
+            if outcome == "failed":
+                end["is_error"] = True
             if started and ended >= started:
                 end["duration_ms"] = round((ended - started) * 1000)
             events.append(end)
@@ -222,6 +238,8 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
         events.append(compaction)
 
     for ts, kind, name, phase, aid, turn_id, used, capacity, before, after, estimated, source in rows("step"):
+        if kind == "agent":
+            continue  # read above as the outcome of a subagent; its start and end are the agent rows
         event = {"ts": ts, "type": {"context": "context_update", "skill": "skill_event"}.get(kind, kind),
                  "name": name, "phase": phase, "source": source, "agent_id": aid, "turn_id": turn_id}
         event.update({k: v for k, v in (("context_tokens", used), ("context_limit", capacity),
@@ -244,6 +262,52 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
             }
         )
     return events, native_authorship
+
+
+_AGENT_OUTCOMES = frozenset({"completed", "failed"})
+
+
+def _task_prompt(aid: str, started: float, native: tuple[float, str, str, str] | None, stored: str | None, *,
+                 keep_text: bool, text_floor: float) -> dict | None:
+    """The task a subagent received, as the first step of its span: from its own transcript, else from
+    the prompt its main agent stored for it. None when neither reports one."""
+    if native is None and not stored:
+        return None
+    ts, text, key, status = native if native is not None else (started, stored or "", "", "captured")
+    text = mask_secrets(text)
+    length = len(text)
+    if not keep_text or ts < text_floor:
+        status, text = ("withheld" if not keep_text else "expired"), ""
+    elif not text and status in ("captured", "truncated"):
+        status = "expired"
+    task = {"ts": max(ts, started), "type": "task_prompt", "from": "parent", "to": aid, "agent_id": aid,
+            "message": text, "preview": text[:FLOW_PREVIEW_CHARS], "redacted": not text, "text_status": status,
+            "source": "user.message" if native is not None else "store"}
+    if length:
+        task["prompt_length"] = length
+    if key:
+        task["step_key"] = key
+    return task
+
+
+def _link_spawns(events: list[dict]) -> None:
+    """Give a tool call that started a subagent the subagent's id (``spawned_agent_id``), and the
+    subagent start the parent call's time (``spawned_by_ts``). A call is the one of the same agent whose
+    run contains the subagent's start, within FLOW_MATCH_S."""
+    calls = [e for e in events if e["type"] == "tool_use"]
+    taken: set[int] = set()
+    for start in (e for e in events if e["type"] == "subagent" and e.get("agent_id")):
+        best = None
+        for call in calls:
+            if id(call) in taken or (call.get("agent_id") or "") == start.get("agent_id"):
+                continue
+            begin, end = call["ts"] - FLOW_MATCH_S, call["ts"] + (call.get("duration_ms") or 0) / 1000 + FLOW_MATCH_S
+            if begin <= start["ts"] <= end and (best is None or abs(call["ts"] - start["ts"]) < abs(best["ts"] - start["ts"])):
+                best = call
+        if best is not None:
+            taken.add(id(best))
+            best["spawned_agent_id"] = start["agent_id"]
+            start["spawned_by_ts"] = best["ts"]
 
 
 def _legacy_flow_events(legacy: dict) -> tuple[list[dict], str]:
@@ -417,6 +481,8 @@ def _number_steps(events: list[dict]) -> int:
     and paging, so a step keeps its number in every window.
     """
     open_round: dict[str, int] = {}
+    # A subagent's configuration right after its start (its model) belongs to the start step.
+    starting: dict[str, int] = {}
     step = request = 0
     for event in events:
         kind = event["type"]
@@ -424,8 +490,14 @@ def _number_steps(events: list[dict]) -> int:
         if kind in _STEP_JOINS and agent in open_round:
             event["step"] = open_round[agent]
             continue
+        if kind == "session_command" and agent in starting:
+            event["step"] = starting[agent]
+            continue
         step += 1
         event["step"] = step
+        starting.pop(agent, None)
+        if kind == "subagent":
+            starting[agent] = step
         if kind == "api_call":
             request += 1
             event["request_n"] = request
@@ -611,6 +683,7 @@ def agent_flow(
                       "subagent": bool(agent_raw and agent_raw != session_raw)}
         if own is not None:
             events = own
+        _link_spawns(events)
         cumulative, largest = _aggregate_flow(events)
         summary = _flow_summary(events, source, cumulative, largest)
         summary["total_steps"] = _number_steps(events)

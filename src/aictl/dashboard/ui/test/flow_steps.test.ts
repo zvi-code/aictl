@@ -88,11 +88,12 @@ describe('DRW-FL-04 · Step numbers and lanes', () => {
 
   it('labels the result tokens of a tool call as an estimate from its size', () => {
     const metrics = toolMetrics(event('tool_use', 1, { input_bytes: 120, output_bytes: 30_000, duration_ms: 56, exit_code: 0, confirm: 'denied' }))
-    expect(metrics.map(metric => metric.text)).toEqual(['↑ 120 B', '↓ 30 KB', '≈7.5 k tok est.', '56 ms', 'exit 0', 'denied'])
+    expect(metrics.map(metric => metric.text)).toEqual(['120 B', '30 KB', '≈7.5 k tok est.', '56 ms', 'exit 0', 'denied'])
+    expect(metrics.map(metric => metric.icon && metric.label)).toEqual(['Payload out', 'Payload in', undefined, undefined, undefined, 'Approval'])
     expect(metrics.find(metric => metric.key === 'resultTokens')?.title).toMatch(/estimate/i)
     expect(toolMetrics(event('tool_use', 1, { duration_ms: 3 })).map(metric => metric.text)).toEqual(['payload not reported', '3 ms'])
     expect(groupMetrics([event('tool_use', 1, { output_bytes: 100 }), event('tool_use', 2, { output_bytes: 300, success: false })])
-      .map(metric => metric.text)).toEqual(['↓ 400 B', '≈100 tok est.', '1 of 2 failed'])
+      .map(metric => metric.text)).toEqual(['400 B', '≈100 tok est.', '1 of 2 failed'])
   })
 
   it('draws a round as one edge from the assistant to its farthest tool lane, labelled with the model', () => {

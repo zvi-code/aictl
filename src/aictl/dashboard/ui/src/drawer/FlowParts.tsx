@@ -7,7 +7,7 @@ import { Icon, type Glyph } from '../ui/Icon'
 import { moveFocus } from '../ui/keyboard'
 import { clockTime, durationOf, eventTokens, failedEvent, inputOf, outputOf, type EventKind, type PlacedEvent } from './flowModel'
 import {
-  approvalOf, definitions, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, waitLabel,
+  approvalOf, definitions, spanSummary, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, waitLabel,
   type FlowRow, type Metric, type Step, type StepKind,
 } from './flowSteps'
 import { clip } from './shared'
@@ -97,47 +97,86 @@ export function TurnScrubber(props: {
 }
 
 const stepGlyphs: Record<StepKind, Glyph> = {
-  round: 'bot', tool: 'tools', reply: 'reply', prompt: 'prompts', agent: 'agents', agent_end: 'agents',
+  round: 'bot', tool: 'tools', reply: 'reply', prompt: 'prompts', task: 'prompts', agent: 'agents', agent_end: 'agents',
   compaction: 'context', skill: 'spark', context: 'context', error: 'warn', hook: 'hook', lifecycle: 'clock', other: 'dots',
 }
 const stepColors: Record<StepKind, EventKind> = {
-  round: 'model', tool: 'tool', reply: 'reply', prompt: 'prompt', agent: 'agent', agent_end: 'agent', compaction: 'context',
+  round: 'model', tool: 'tool', reply: 'reply', prompt: 'prompt', task: 'agent', agent: 'agent', agent_end: 'agent', compaction: 'context',
   skill: 'skill', context: 'context', error: 'error', hook: 'hook', lifecycle: 'other', other: 'other',
 }
 export const stepKindLabels: Record<StepKind, string> = {
-  round: 'Model round', tool: 'Tool call', reply: 'Reply', prompt: 'Prompt', agent: 'Subagent start', agent_end: 'Subagent end',
-  compaction: 'Compaction', skill: 'Skill', context: 'Context', error: 'Failure', hook: 'Hook', lifecycle: 'Session', other: 'Event',
+  round: 'Model request', tool: 'Tool call', reply: 'Reply', prompt: 'Prompt', task: 'Subagent task', agent: 'Subagent start',
+  agent_end: 'Subagent end', compaction: 'Compaction', skill: 'Skill', context: 'Context', error: 'Error', hook: 'Hook',
+  lifecycle: 'Session event', other: 'Event',
 }
-export const stepGlyph = (step: Step) => stepGlyphs[step.kind]
+/** Every icon of the Flow tab and what it means, for the legend. */
+export const flowLegend: readonly (readonly [Glyph, string])[] = [
+  ['prompts', 'Prompt, or a subagent task'], ['bot', 'Model request, or the Assistant lane'], ['tools', 'Tool call, or a tool lane'],
+  ['agents', 'Subagent start, end or lane'], ['context', 'Compaction or context'], ['spark', 'Skill'], ['hook', 'Hook'],
+  ['warn', 'Error or failed'], ['clock', 'Waited, or a session event'], ['up', 'Payload out: bytes sent to the tool'],
+  ['dn', 'Payload in: bytes the tool returned'], ['keys', 'Approval asked of a person'], ['stop', 'Stop reason of a model request'],
+]
+export const stepGlyph = (step: Step) => step.failed && step.kind === 'agent_end' ? 'warn' : stepGlyphs[step.kind]
 export const stepColor = (step: Step): EventKind => step.failed ? 'error' : stepColors[step.kind]
 export const stepLabel = (step: Step) => step.n != null ? `#${step.n}` : '#–'
 export const stepSpan = (step: Step) => step.end > step.ts ? fmtMs((step.end - step.ts) * 1000) : ''
 export type StepRow = Extract<FlowRow, { type: 'step' }>
 export type GapRowData = Extract<FlowRow, { type: 'gap' }>
-export const stepOfRow = (row: FlowRow) => row.type === 'step' ? row.step : undefined
+export type SpanRowData = Extract<FlowRow, { type: 'span' }>
+export const stepOfRow = (row: FlowRow) => row.type === 'step' ? row : undefined
 
-/** Numbers of a step, each with its definition on hover. */
+/** An icon that names what a value is: its label is the accessible name and the hover text. */
+export function Sign(props: { glyph: Glyph; label: string; title?: string }) {
+  return <span class={styles.sign} role="img" aria-label={props.label} title={props.title ?? props.label}>
+    <Icon glyph={props.glyph} small /></span>
+}
+
+/** Numbers of a step, each with its definition on hover; an icon stands in for the word that names it. */
 export function Metrics(props: { items: readonly Metric[]; class?: string }) {
   return <span class={props.class ?? styles.metrics}><For each={props.items}>{metric =>
-    <span class={styles.metric} data-key={metric.key} data-tone={metric.tone} title={metric.title}>{metric.text}</span>
+    <span class={styles.metric} data-key={metric.key} data-tone={metric.tone} title={metric.title}>
+      <Show when={metric.icon}>{glyph => <Sign glyph={glyph()} label={metric.label ?? metric.key} title={metric.title} />}</Show>
+      {metric.text}
+    </span>
   }</For></span>
 }
 
 /** The model of a round, shown as the label of the edge from the assistant to its tools. */
-export function ModelLabel(props: { step: Step }) {
+export function ModelLabel(props: { step: Step; text?: string }) {
   return <Show when={props.step.model}>{model =>
     <span class={styles.modelLabel} data-changed={props.step.modelChanged ? 'true' : 'false'}
-      title={props.step.modelChanged ? 'Model of this request: it changed from the previous round of this agent.' : 'Model of this request.'}>
-      {model()}</span>
+      title={`Model of this request: ${model()}${props.step.modelChanged ? '. It changed from the previous round of this agent.' : ''}`}>
+      {props.text ?? model()}</span>
   }</Show>
+}
+
+/** The subagent a row belongs to, inside a session flow. */
+export function AgentTag(props: { agent: string }) {
+  return <span class={styles.agentTag} title={`Step of subagent ${props.agent}`}>
+    <Sign glyph="agents" label="Subagent" title={`Step of subagent ${props.agent}`} />{props.agent.slice(0, 8)}</span>
 }
 
 export function GapRow(props: { row: GapRowData }) {
   return <div class={styles.gap} title={definitions.wait}>
-    <Icon glyph="clock" small />
-    <span>waited <strong>{waitLabel(props.row.seconds)}</strong>{props.row.before === 'prompt' ? ' before the next prompt' : ' with no recorded step'}</span>
+    <Sign glyph="clock" label="Waited" title={definitions.wait} />
+    <span><strong>{waitLabel(props.row.seconds)}</strong>{props.row.before === 'prompt' ? ' before the next prompt' : ' with no recorded step'}</span>
   </div>
 }
+
+/** The summary row of a subagent span, with the button that collapses the span to this row. */
+export function SpanRow(props: { row: SpanRowData; toggle: (agent: string) => void }) {
+  const span = () => props.row.span
+  return <div class={styles.spanRow} data-outcome={span().outcome} data-collapsed={props.row.collapsed ? 'true' : 'false'}>
+    <button type="button" class={styles.spanToggle} aria-expanded={props.row.collapsed ? 'false' : 'true'}
+      aria-label={`${props.row.collapsed ? 'Expand' : 'Collapse'} subagent ${span().agent}`} title={props.row.collapsed ? 'Show the steps of this subagent' : 'Collapse the subagent to this row'}
+      onClick={() => props.toggle(span().agent)}><Icon glyph={props.row.collapsed ? 'chev' : 'down'} small /></button>
+    <Sign glyph={span().outcome === 'failed' ? 'warn' : 'agents'} label={`Subagent, ${span().outcome}`} />
+    <strong class={styles.spanTitle} title={span().description}>{span().description}</strong>
+    <Show when={span().model}><span class={styles.modelLabel} data-changed="false">{span().model}</span></Show>
+    <span class={styles.spanFacts}>{spanSummaryText(span())}</span>
+  </div>
+}
+const spanSummaryText = (span: SpanRowData['span']) => spanSummary(span)
 
 /** Move focus between step rows with the arrow keys, Home and End. */
 export function stepKeys(event: KeyboardEvent) {
@@ -155,7 +194,7 @@ export function StepPreview(props: { step: Step }) {
       <time>{clockTime(step().ts)}</time>
     </div>
     <p class={styles.hoverTitle}>{stepTitle(step())}</p>
-    <Show when={step().model}><span class={styles.hoverHint}>Model {step().model}{step().agent ? ` · agent ${step().agent}` : ''}</span></Show>
+    <Show when={step().model || step().agent}><span class={styles.hoverHint}>{[step().model && `Model ${step().model}`, step().agent && `subagent ${step().agent}`].filter(Boolean).join(' · ')}</span></Show>
     <Metrics items={stepMetrics(step())} />
     <For each={step().tools.slice(0, TOOL_LINES)}>{tool =>
       <span class={styles.hoverTool}><strong>{toolName(tool)}</strong> {clip(toolTarget(tool), 80)} <Metrics items={toolMetrics(tool)} /></span>
@@ -165,30 +204,35 @@ export function StepPreview(props: { step: Step }) {
   </>
 }
 
-/** The steps in time order, newest at the end: one row per step, with its numbers. */
+/** The steps in time order: one row per step, with its numbers; subagent steps inside their span. */
 export function StepList(props: {
   rows: readonly FlowRow[]; selected?: string; select: (id: string) => void; hover: Hover; compact: boolean
   reveal?: { id: string }; onStart: () => void; onRange: (first: number, last: number) => void; empty: string
+  initial: (rows: readonly FlowRow[]) => number | undefined; toggleSpan: (agent: string) => void
 }) {
   return <Show when={props.rows.length} fallback={<div class={styles.list}><p class={styles.empty}>{props.empty}</p></div>}>
     <VirtualList label="Flow steps" class={styles.list} rows={props.rows} identity={row => row.id} estimate={props.compact ? 40 : 76} end
-      reveal={props.reveal} onStart={props.onStart} onRange={props.onRange}>
-      {row => <Show when={stepOfRow(row())} fallback={<GapRow row={row() as GapRowData} />}>{step => {
+      reveal={props.reveal} onStart={props.onStart} onRange={props.onRange} initial={props.initial}>
+      {row => <Show when={stepOfRow(row())} fallback={row().type === 'gap' ? <GapRow row={row() as GapRowData} />
+        : <SpanRow row={row() as SpanRowData} toggle={props.toggleSpan} />}>{item => {
+        const step = () => item().step
         const tools = () => props.compact ? [] : step().tools.slice(0, TOOL_LINES)
         return <button type="button" class={styles.step} data-kind={stepColor(step())} data-density={props.compact ? 'compact' : 'comfortable'}
-          data-step-row aria-pressed={props.selected === step().id ? 'true' : 'false'} onKeyDown={stepKeys}
-          aria-label={`Step ${step().n ?? ''} at ${clockTime(step().ts)}: ${stepKindLabels[step().kind]}, ${stepTitle(step())}`}
+          data-span={item().span?.place} data-step-row aria-pressed={props.selected === step().id ? 'true' : 'false'} onKeyDown={stepKeys}
+          aria-label={`Step ${step().n ?? ''} at ${clockTime(step().ts)}: ${stepKindLabels[step().kind]}${item().span ? `, subagent ${item().span!.agent}` : ''}, ${stepTitle(step())}`}
           {...props.hover.bind(() => <StepPreview step={step()} />)} onClick={() => props.select(step().id)}>
           <span class={styles.stepGutter}><strong>{stepLabel(step())}</strong><time>{clockTime(step().ts)}</time></span>
-          <span class={styles.chip}><Icon glyph={stepGlyph(step())} small label={stepKindLabels[step().kind]} /></span>
+          <span class={styles.chip} title={stepKindLabels[step().kind]}><Icon glyph={stepGlyph(step())} small label={stepKindLabels[step().kind]} /></span>
           <span class={styles.stepMain}>
-            <span class={styles.stepTitle}><ModelLabel step={step()} />
+            <span class={styles.stepTitle}>
+              <Show when={item().span}>{span => <AgentTag agent={span().agent} />}</Show>
+              <ModelLabel step={step()} />
               <Show when={step().model && step().tools.length}><span class={styles.edge} aria-hidden="true">→</span></Show>
-              <strong>{clip(stepTitle(step()), 200)}</strong></span>
+              <strong title={stepTitle(step())}>{clip(stepTitle(step()), 200)}</strong></span>
             <Metrics items={stepMetrics(step())} />
             <For each={tools()}>{tool =>
               <span class={styles.toolLine} data-failed={failedEvent(tool) ? 'true' : 'false'}>
-                <strong>{toolName(tool)}</strong><span class={styles.target}>{toolTarget(tool)}</span>
+                <strong>{toolName(tool)}</strong><span class={styles.target} title={toolTarget(tool)}>{toolTarget(tool)}</span>
                 <Metrics items={toolMetrics(tool)} />
               </span>
             }</For>
@@ -244,11 +288,15 @@ function toolFacts(tool: PlacedEvent): Fact[] {
     ['Exit code', tool.exit_code == null ? undefined : String(tool.exit_code), definitions.exit],
     ['Approval', approvalOf(tool), definitions.approval],
     ['Result', tool.success === false ? 'Failed' : tool.success ? 'Succeeded' : undefined],
+    ['Started subagent', tool.spawned_agent_id || undefined, 'The subagent this call started.'],
   ]
 }
 
-/** The selected step: the model request, every tool call it issued with its input and result, and its reply. */
-export function StepInspector(props: { step: Step; close: () => void; evidence?: (event: PlacedEvent) => void }) {
+/**
+ * The selected step: the model request, every tool call it issued with its input and result, and its
+ * reply. `openAgent` selects the start of a subagent a tool call started.
+ */
+export function StepInspector(props: { step: Step; close: () => void; evidence?: (event: PlacedEvent) => void; openAgent?: (agent: string) => void }) {
   const step = () => props.step
   const sourced = (event: PlacedEvent) => !!props.evidence && !!(event.step_key || event.turn_id)
   return <section class={styles.inspector} aria-label="Step inspector" data-kind={stepColor(step())}>
@@ -264,6 +312,9 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
       ['Step time', stepSpan(step()), 'From the start of the step to its last result.'],
       ['Agent', step().agent || 'Main agent'],
       ['Turn', step().lead._turnIndex ? String(step().lead._turnIndex) : undefined],
+      ['Outcome', step().kind === 'agent_end' ? (step().lead.outcome || (step().lead.completed ? 'completed' : 'not reported')) : undefined,
+        'How the subagent ended, from its transcript. The store keeps no failure reason.'],
+      ['Started by', step().kind === 'agent' && step().lead.spawned_by_ts != null ? `tool call at ${clockTime(step().lead.spawned_by_ts!)}` : undefined],
     ]} />
     <Show when={step().call}>{request => <>
       <h4 class={styles.inspectorSection}>Model request</h4>
@@ -275,6 +326,10 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
         <details class={styles.toolDetail} open={step().tools.length === 1}>
           <summary><strong>{toolName(tool)}</strong> <span class={styles.target}>{toolTarget(tool)}</span></summary>
           <Facts items={toolFacts(tool)} />
+          <Show when={tool.spawned_agent_id && props.openAgent}>
+            <button class={styles.button} type="button" onClick={() => props.openAgent?.(tool.spawned_agent_id!)}>
+              <Icon glyph="agents" small />Go to subagent {tool.spawned_agent_id!.slice(0, 8)}</button>
+          </Show>
           <Show when={inputOf(tool)}>{value => <CodeView label={`${toolName(tool)} input`} text={value()} wrap />}</Show>
           <Show when={outputOf(tool)}>{value => <CodeView label={`${toolName(tool)} result`} text={value()} wrap />}</Show>
           <Show when={sourced(tool)}>
@@ -289,6 +344,7 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
         ['Tokens', eventTokens(step().lead) ? fmtN(eventTokens(step().lead)) : undefined],
         ['Duration', durationOf(step().lead) == null ? undefined : fmtMs(durationOf(step().lead))],
         ['Model', step().lead.model || undefined],
+        ['Text', step().lead.redacted ? `not retained${step().lead.prompt_length ? `, ${fmtN(Number(step().lead.prompt_length))} chars` : ''}` : undefined],
         ['Source', step().lead.source],
       ]} />
       <Show when={inputOf(step().lead)}>{value => <CodeView label="Step input" text={value()} wrap />}</Show>
@@ -300,4 +356,12 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
       <button class={styles.button} type="button" onClick={() => props.evidence?.(step().lead)}><Icon glyph="file" small />Open source evidence</button>
     </Show>
   </section>
+}
+
+/** Every icon of the Flow tab and what it means. */
+export function FlowLegend() {
+  return <details class={styles.legend}>
+    <summary>What the icons mean</summary>
+    <dl><For each={flowLegend}>{([glyph, meaning]) => <><dt><Icon glyph={glyph} small label={meaning} /></dt><dd>{meaning}</dd></>}</For></dl>
+  </details>
 }

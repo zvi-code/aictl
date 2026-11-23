@@ -6,13 +6,14 @@ import { PanelState } from '../../ui/PanelState'
 import { Segmented } from '../../ui/Segmented'
 import { Tooltip } from '../../ui/Tooltip'
 import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
-import { createHover, HoverCard, StepInspector, StepList, TurnScrubber } from '../FlowParts'
+import { createHover, FlowLegend, HoverCard, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { FLOW_PAGE, flowPages } from '../flowPages'
-import { definitions, lanesFor, rowsOf, stepsOf, totalsOf, type Totals } from '../flowSteps'
+import { definitions, lanesFor, layoutOf, openingRow, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
+import { clampWidth, emptyWidths, fitWidths, readWidths, resolveWidths, writeWidths, type WidthState } from '../flowWidths'
 import { agentPath, labelOf, openAgent, Resource, type Reference, type TabProps } from '../shared'
 import { kustoLink, saveFlowFilters } from '../kqlLink'
 import { watchedDetail } from '../liveAgent'
-import { SwimLanes } from '../SwimLanes'
+import { chSize, SwimLanes } from '../SwimLanes'
 import styles from '../flow.module.css'
 
 const categories = ['prompts', 'messages', 'models', 'tools', 'skills', 'agents', 'context', 'hooks', 'lifecycle']
@@ -100,10 +101,49 @@ export default function Flow(props: TabProps) {
     return flowModel(pages.events(), totals && { total_turns: totals.total_turns, omitted_events: pages.oldest() })
   })
   const steps = createMemo(() => stepsOf(model().events))
-  const rows = createMemo(() => rowsOf(steps()))
+  // In a subagent's own flow every step is the subagent's: no span to draw.
+  const scopeAgent = () => agentScope() ? steps()[0]?.agent ?? '' : ''
+  const [collapsedSpans, setCollapsedSpans] = createSignal<ReadonlySet<string>>(new Set())
+  const toggleSpan = (agent: string) => setCollapsedSpans(old => {
+    const next = new Set(old)
+    if (!next.delete(agent)) next.add(agent)
+    return next
+  })
+  const rows = createMemo(() => rowsOf(steps(), { collapsed: collapsedSpans(), scopeAgent: scopeAgent() }))
   const loaded = createMemo(() => totalsOf(steps()))
   const grouped = () => lanes() === 'grouped'
   const laneList = createMemo(() => lanesFor(steps(), grouped()))
+  const widthKey = () => `aictl-pref-flow-widths:${grouped() ? 'grouped' : 'individual'}`
+  const storage = () => { try { return localStorage } catch { return undefined } }
+  const [widthState, setWidthState] = createSignal<WidthState>(readWidths(storage(), untrack(widthKey)))
+  createEffect(widthKey, key => { setWidthState(readWidths(storage(), key)) })
+  const keepWidths = (next: WidthState) => { setWidthState(next); writeWidths(storage(), widthKey(), next) }
+  const columns = createMemo(() => resolveWidths(laneList(), widthState()))
+  const collapsedLanes = createMemo(() => new Set(widthState().collapsed))
+  const resize = (id: string, width: number) => {
+    const state = widthState()
+    keepWidths({ widths: { ...state.widths, [id]: clampWidth(id, width) }, collapsed: state.collapsed.filter(lane => lane !== id) })
+  }
+  const toggleLane = (id: string) => {
+    const state = widthState()
+    keepWidths({ ...state, collapsed: state.collapsed.includes(id) ? state.collapsed.filter(lane => lane !== id) : [...state.collapsed, id] })
+  }
+  let flowRoot!: HTMLDivElement
+  const [shown, setShown] = createSignal<readonly [number, number]>()
+  const fitToWidth = () => {
+    const region = flowRoot.querySelector<HTMLElement>('[role="region"][aria-label="Session streams"]')
+    if (!region) return
+    const [first, last] = shown() ?? [0, rows().length - 1]
+    const used = new Set<string>(['Assistant'])
+    for (const row of rows().slice(first, last + 1)) {
+      if (row.type !== 'step') continue
+      const layout = layoutOf(row.step, grouped())
+      for (const chip of layout.chips) used.add(chip.lane)
+      if (layout.edge) { used.add(layout.edge.from); used.add(layout.edge.to) }
+    }
+    keepWidths(fitWidths(laneList(), widthState(), Math.floor(region.clientWidth / chSize(region)) - 1, used))
+  }
+  const opening = (list: readonly FlowRow[]) => openingRow(list, selected())
   const compact = () => density() === 'compact'
   const marks = () => summary()?.turn_marks ?? []
   const picked = createMemo(() => {
@@ -168,6 +208,7 @@ export default function Flow(props: TabProps) {
   }
   const older = () => { if (pages.oldest() > 0 && !pages.loading() && !pages.problem()) void pages.loadOlder() }
   const range = (first: number, last: number) => {
+    setShown([first, last])
     const start = rows()[first], end = rows()[last]
     const at = (row: typeof start) => row.type === 'step' ? row.step.ts : undefined
     const from = start && at(start), to = end && at(end)
@@ -185,7 +226,13 @@ export default function Flow(props: TabProps) {
       <datalist id={`${id}-${name}`}><For each={list}>{value => <option value={value} />}</For></datalist>
     </label>
 
-  return <div class={styles.flow}>
+  const goToAgent = (agent: string) => {
+    if (collapsedSpans().has(agent)) toggleSpan(agent)
+    const start = steps().find(step => step.agent === agent && step.kind === 'agent')
+    if (start) { select(start.id); setReveal({ id: start.id }) }
+  }
+
+  return <div class={styles.flow} ref={flowRoot}>
     <header class={styles.header}>
       <div class={styles.title}>
         <h3>{agentScope() ? 'Subagent flow' : 'Session flow'}</h3>
@@ -302,13 +349,21 @@ export default function Flow(props: TabProps) {
         </Show>
         <div class={styles.toolbar}>
           <Segmented label="Flow diagram" value={mode()} onChange={setMode} options={[
-            { id: 'timeline', label: 'Timeline', glyph: 'events' }, { id: 'swimlane', label: 'Swim-lane', glyph: 'flow' }]} />
+            { id: 'timeline', label: 'Timeline', glyph: 'events', iconOnly: true }, { id: 'swimlane', label: 'Swim-lane', glyph: 'flow', iconOnly: true }]} />
           <Show when={mode() === 'swimlane'}>
             <Segmented label="Session streams" value={lanes()} onChange={setLanes} options={[
-              { id: 'individual', label: 'Individual lanes' }, { id: 'grouped', label: 'Grouped lanes' }]} />
+              { id: 'individual', label: 'Individual lanes: one lane per tool', glyph: 'tools', iconOnly: true },
+              { id: 'grouped', label: 'Grouped lanes: one lane for all tools', glyph: 'layout', iconOnly: true }]} />
+            <Tooltip label="Fit to width" text="Size the lanes so the whole flow fits the visible width" class={styles.iconButton}
+              onClick={fitToWidth}><Icon glyph="effect" small /></Tooltip>
+            <Tooltip label="Reset widths" text="Back to the default lane widths" class={styles.iconButton}
+              disabled={!Object.keys(widthState().widths).length && !widthState().collapsed.length}
+              onClick={() => keepWidths(emptyWidths())}><Icon glyph="refresh" small /></Tooltip>
           </Show>
           <Segmented label="Row density" value={density()} onChange={setDensity} options={[
-            { id: 'comfortable', label: 'Comfortable' }, { id: 'compact', label: 'Compact' }]} />
+            { id: 'comfortable', label: 'Comfortable rows', glyph: 'density', iconOnly: true },
+            { id: 'compact', label: 'Compact rows', glyph: 'menu', iconOnly: true }]} />
+          <FlowLegend />
           <span class={styles.count} aria-live="polite">{fmtN(Math.max(0, pages.matched() - pages.oldest()))} of {fmtN(pages.matched())} {filtered() ? 'matching ' : ''}events loaded</span>
           <div class={styles.paging}>
             <Show when={pages.oldest() > 0}>
@@ -329,13 +384,15 @@ export default function Flow(props: TabProps) {
         <div class={styles.body} data-inspecting={picked() ? 'true' : 'false'}>
           <Show when={mode() === 'swimlane' && rows().length} fallback={
             <StepList rows={rows()} selected={selected()} select={select} hover={hover} reveal={reveal()} compact={compact()}
+              initial={opening} toggleSpan={toggleSpan}
               onStart={older} onRange={range} empty={filtered() ? 'No events match these filters.' : 'No events reported for this flow.'} />
           }>
-            <SwimLanes rows={rows()} lanes={laneList()} grouped={grouped()} compact={compact()} selected={selected()} select={select}
-              hover={hover} reveal={reveal()} onStart={older} onRange={range} />
+            <SwimLanes rows={rows()} lanes={laneList()} columns={columns()} collapsed={collapsedLanes()} grouped={grouped()}
+              compact={compact()} selected={selected()} select={select} hover={hover} reveal={reveal()} onStart={older} onRange={range}
+              initial={opening} resize={resize} toggleLane={toggleLane} toggleSpan={toggleSpan} />
           </Show>
           <Show when={picked()}>{step =>
-            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} />
+            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} openAgent={goToAgent} />
           }</Show>
         </div>
       </>}</Resource>

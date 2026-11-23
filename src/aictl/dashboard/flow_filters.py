@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 _CATEGORY = {
     "user_message": "messages", "api_response": "messages", "api_call": "models", "error": "models",
-    "tool_use": "tools", "subagent": "agents", "subagent_end": "agents", "compaction": "context",
+    "tool_use": "tools", "subagent": "agents", "subagent_end": "agents", "task_prompt": "agents", "compaction": "context",
     "hook": "hooks", "session_start": "lifecycle", "session_end": "lifecycle",
     "session_command": "lifecycle", "context_update": "context", "skill_event": "skills",
 }

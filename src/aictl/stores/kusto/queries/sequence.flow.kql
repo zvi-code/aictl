@@ -85,7 +85,7 @@ union
     (steps | where source == 'user.message' and kind in ('message','agent_prompt')
         | join kind=leftouter step_text on ['project'], node_id, session_id, step_key
         | project row_type='native', ts, key=step_key, source_order, node_id, ['project'],
-                  values=pack_array(ts,kind,role,step_key,turn_id,text_status,retained)),
+                  values=pack_array(ts,kind,role,step_key,turn_id,text_status,retained,agent_id)),
     (calls | where ts >= since and ts < until
         | project row_type='call', ts, key, node_id, ['project'], values=pack_array(ts,agent_id,model,input_tokens,output_tokens,cache_read_tokens,
             cache_creation_tokens,cost_usd,duration_ms,ttft_ms,finish_reason,is_error,error_type,http_status,
@@ -107,7 +107,7 @@ union
         | order by ts asc, key asc | serialize ordinal=row_number()
         | where ts >= since
         | project row_type='compaction', ts, key, node_id, ['project'], values=pack_array(ordinal,ts,agent_id,trigger,before_tokens,after_tokens,duration_ms)),
-    (steps | where kind in ('session_command','context','skill')
+    (steps | where kind in ('session_command','context','skill','agent')
         | where not(kind == 'context' and source == 'session.compaction_complete' and phase == 'compaction_complete')
         | project row_type='step', ts, key=step_key, source_order, node_id, ['project'],
                   values=pack_array(ts,kind,name,phase,agent_id,turn_id,context_tokens,context_limit,before_tokens,after_tokens,estimated,source))

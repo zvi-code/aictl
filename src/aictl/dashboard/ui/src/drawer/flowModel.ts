@@ -83,7 +83,7 @@ export function describe(event: FlowEvent) {
 }
 
 export function inputOf(event: FlowEvent) {
-  if (event.type === 'user_message') return event.redacted ? undefined : event.message || event.preview
+  if (event.type === 'user_message' || event.type === 'task_prompt') return event.redacted ? undefined : event.message || event.preview
   return event.request_preview || event.params || event.input_preview || event.prompt || event.hook_input || event.target
 }
 

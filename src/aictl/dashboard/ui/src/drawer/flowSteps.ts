@@ -1,13 +1,15 @@
 import type { FlowEvent } from '../data/contract.gen'
 import { estTokensFromSize, fmtBytes, fmtMs, fmtN, fmtUsd, toolDisplayName } from '../design/format'
+import type { Glyph } from '../ui/glyphs'
 import { failedEvent, type PlacedEvent } from './flowModel'
 
 /**
- * Steps of a session flow: one model round with the tool calls it issued, or one prompt, subagent,
- * compaction, skill, hook or error. The server numbers the steps of the whole flow (`step`), so the
- * numbering holds across loaded windows; without that number the same rule runs on the loaded events.
+ * Steps of a session flow: one model round with the tool calls it issued, or one prompt, subagent task,
+ * subagent start or end, compaction, skill, hook or error. The server numbers the steps of the whole
+ * flow (`step`), so the numbering holds across loaded windows; without that number the same rule runs on
+ * the loaded events.
  */
-export type StepKind = 'round' | 'tool' | 'reply' | 'prompt' | 'agent' | 'agent_end' | 'compaction' | 'skill'
+export type StepKind = 'round' | 'tool' | 'reply' | 'prompt' | 'task' | 'agent' | 'agent_end' | 'compaction' | 'skill'
   | 'context' | 'error' | 'hook' | 'lifecycle' | 'other'
 
 export interface Step {
@@ -30,17 +32,39 @@ export interface Step {
   failed: boolean
 }
 
-export type FlowRow = { type: 'step'; id: string; step: Step } | { type: 'gap'; id: string; seconds: number; before: StepKind }
+/** A subagent's steps inside a session flow: from its start to its end. */
+export interface Span {
+  agent: string
+  start?: Step
+  end?: Step
+  steps: Step[]
+  /** What the subagent was asked: the first line of its task, else its type. */
+  description: string
+  model?: string
+  outcome: 'completed' | 'failed' | 'running' | 'not reported'
+  /** Milliseconds from start to end, when both are loaded or the end reports it. */
+  duration?: number
+  requests: number
+  tools: number
+  failures: number
+}
+
+export type FlowRow =
+  | { type: 'step'; id: string; step: Step; span?: { agent: string; place: 'start' | 'inside' | 'end' } }
+  | { type: 'gap'; id: string; seconds: number; before: StepKind }
+  | { type: 'span'; id: string; span: Span; collapsed: boolean }
 
 /** Labels for a name the source did not report: said as unknown, never made up. */
 const NO_TOOL = 'tool name not reported'
-const NO_AGENT = 'subagent name not reported'
+const NO_AGENT = 'subagent type not reported'
 
 /** A pause between two steps that is longer than this, in seconds, gets a marker of its own. */
 export const GAP_S = 30
+/** The longest first line of a prompt shown in a row; the side panel has the whole text. */
+export const PROMPT_LINE = 160
 
 const leadKinds: Record<string, StepKind> = {
-  api_call: 'round', tool_use: 'tool', api_response: 'reply', user_message: 'prompt', subagent: 'agent',
+  api_call: 'round', tool_use: 'tool', api_response: 'reply', user_message: 'prompt', task_prompt: 'task', subagent: 'agent',
   subagent_end: 'agent_end', compaction: 'compaction', skill_event: 'skill', context_update: 'context',
   error: 'error', hook: 'hook', session_start: 'lifecycle', session_end: 'lifecycle', session_command: 'lifecycle',
 }
@@ -75,19 +99,24 @@ export function stepsOf(events: readonly PlacedEvent[]): Step[] {
   const steps: Step[] = []
   const numbered = new Map<number, Step>()
   const open = new Map<string, Step>()
+  const starting = new Map<string, Step>()
   for (const event of events) {
     let step: Step | undefined
+    const agent = agentOf(event)
     if (event.step != null) {
       step = numbered.get(event.step)
       if (!step) { step = newStep(event, `step:${event.step}`); numbered.set(event.step, step); steps.push(step) }
     } else {
-      const agent = agentOf(event)
       if (joins.has(event.type)) step = open.get(agent)
+      // A subagent's configuration right after its start belongs to the start, as the server numbers it.
+      if (event.type === 'session_command') step = starting.get(agent)
       if (!step) {
         step = newStep(event, `step@${event.ts}:${event.type}:${agent}:${steps.length}`)
         steps.push(step)
+        starting.delete(agent)
+        if (event.type === 'subagent') starting.set(agent, step)
         if (event.type === 'api_call') open.set(agent, step)
-        else if (event.type === 'user_message' || event.type === 'compaction') open.delete(agent)
+        else if (event.type === 'user_message' || event.type === 'compaction' || event.type === 'subagent_end') open.delete(agent)
       }
     }
     add(step, event)
@@ -102,16 +131,96 @@ export function stepsOf(events: readonly PlacedEvent[]): Step[] {
   return steps
 }
 
-/** Steps with a marker before each step that started more than GAP_S after the previous one ended. */
-export function rowsOf(steps: readonly Step[]): FlowRow[] {
+/** The first line of a text, cut to `limit` characters with an ellipsis. */
+export function firstLine(text: string | null | undefined, limit = PROMPT_LINE) {
+  const line = (text ?? '').split(/\r?\n/).map(part => part.trim()).find(Boolean) ?? ''
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line
+}
+
+/** "Prompt, 116 chars, text not retained" when the text is gone; otherwise the first line of the text. */
+export function promptLine(event: FlowEvent, noun = 'Prompt') {
+  const text = event.redacted ? '' : event.message || event.preview || ''
+  if (text) return firstLine(text)
+  const length = event.prompt_length != null && Number(event.prompt_length) > 0 ? `, ${fmtN(Number(event.prompt_length))} chars` : ''
+  return `${noun}${length}, text not retained`
+}
+
+/** The subagent spans of a flow, by agent id. The agent the flow is scoped to has no span. */
+export function spansOf(steps: readonly Step[], scopeAgent = ''): Map<string, Span> {
+  const spans = new Map<string, Span>()
+  for (const step of steps) {
+    if (!step.agent || step.agent === scopeAgent) continue
+    let span = spans.get(step.agent)
+    if (!span) {
+      span = { agent: step.agent, steps: [], description: '', outcome: 'running', requests: 0, tools: 0, failures: 0 }
+      spans.set(step.agent, span)
+    }
+    span.steps.push(step)
+    if (step.kind === 'agent') span.start = step
+    if (step.kind === 'agent_end') span.end = step
+    span.requests += step.call ? 1 : 0
+    span.tools += step.tools.length
+    span.failures += step.kind === 'agent_end' ? 0 : step.events.filter(failedEvent).length
+  }
+  for (const span of spans.values()) {
+    const start = span.start?.lead, end = span.end?.lead
+    const task = span.steps.find(step => step.kind === 'task')?.lead
+    span.description = firstLine(start?.prompt || (task && !task.redacted ? task.message : '') || '', 80) || start?.to || end?.from || NO_AGENT
+    span.model = start?.model || span.steps.find(step => step.model)?.model
+    span.outcome = !end ? 'running' : end.outcome === 'failed' || end.is_error ? 'failed'
+      : end.outcome === 'completed' || (end.outcome == null && end.completed) ? 'completed' : 'not reported'
+    span.duration = end?.duration_ms ?? (span.start && span.end ? (span.end.ts - span.start.ts) * 1000 : undefined)
+  }
+  return spans
+}
+
+/** "subagent ran 18.8 s, 3 requests, 2 tool calls, result: completed" */
+export function spanSummary(span: Span) {
+  const ran = span.duration != null ? `ran ${fmtMs(span.duration)}` : span.outcome === 'running' ? 'still running or its end is not loaded' : 'ran for an unreported time'
+  return [`subagent ${ran}`, `${fmtN(span.requests)} ${span.requests === 1 ? 'request' : 'requests'}`,
+    `${fmtN(span.tools)} ${span.tools === 1 ? 'tool call' : 'tool calls'}`, `result: ${span.outcome}`].join(', ')
+}
+
+/**
+ * Steps with a marker before each step that started more than GAP_S after the previous one ended,
+ * and a summary row before each subagent span. A collapsed span shows its summary row only.
+ */
+export function rowsOf(steps: readonly Step[], options: { collapsed?: ReadonlySet<string>; scopeAgent?: string } = {}): FlowRow[] {
+  const spans = spansOf(steps, options.scopeAgent)
   const rows: FlowRow[] = []
+  const headed = new Set<string>()
   let end: number | undefined
   for (const step of steps) {
+    const span = step.agent ? spans.get(step.agent) : undefined
     if (end != null && step.ts - end > GAP_S) rows.push({ type: 'gap', id: `gap:${step.id}`, seconds: step.ts - end, before: step.kind })
-    rows.push({ type: 'step', id: step.id, step })
     end = Math.max(end ?? step.end, step.end)
+    if (!span) { rows.push({ type: 'step', id: step.id, step }); continue }
+    const collapsed = !!options.collapsed?.has(span.agent)
+    if (!headed.has(span.agent)) {
+      headed.add(span.agent)
+      rows.push({ type: 'span', id: `span:${span.agent}`, span, collapsed })
+    }
+    if (collapsed) continue
+    const place = step === span.start ? 'start' : step === span.end ? 'end' : 'inside'
+    rows.push({ type: 'step', id: step.id, step, span: { agent: span.agent, place } })
   }
   return rows
+}
+
+/**
+ * Where the flow opens: the deep-linked step when there is one, else the start of the latest turn
+ * (its prompt, or a subagent's task), else the newest row.
+ */
+export function openingRow(rows: readonly FlowRow[], selected?: string) {
+  if (selected) {
+    const index = rows.findIndex(row => row.id === selected)
+    if (index >= 0) return index
+  }
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index]
+    if (row.type === 'step' && !row.span && (row.step.kind === 'prompt' || row.step.kind === 'task')) return index
+  }
+  return rows.length ? rows.length - 1 : undefined
 }
 
 /** "2 m 55 s": a wait people read at a glance, to the second below an hour. */
@@ -155,8 +264,11 @@ export function totalsOf(steps: readonly Step[]): Totals {
   return totals
 }
 
-/** One number on a step: its short text, and a definition shown on hover. */
-export interface Metric { key: string; text: string; title: string; tone?: 'danger' | 'muted' }
+/**
+ * One number on a step: its value as text, and a definition shown on hover. `icon` and `label` say
+ * what the value is when an icon stands in for a word; the label is the icon's accessible name.
+ */
+export interface Metric { key: string; text: string; title: string; tone?: 'danger' | 'muted'; icon?: Glyph; label?: string }
 
 export const definitions = {
   request: 'The number of this model request among the requests of this flow, counted from the first.',
@@ -167,15 +279,15 @@ export const definitions = {
   duration: 'Time the model took to answer this request, as the source reports it.',
   ttft: 'Time to first token: from the request until the first token of the answer arrived.',
   cost: 'Cost of this request in US dollars, as priced by aictl from the token counts.',
-  stop: 'Why the model stopped: end of turn, tool use, length limit and so on, as the source reports it.',
+  stop: 'Stop reason: why the model stopped (end of turn, tool use, length limit and so on), as the source reports it.',
   thinking: 'Thinking the model reported for this request.',
   payloadOut: 'Payload out: size of the arguments the agent sent to the tool, in UTF-8 bytes.',
   payloadIn: 'Payload in: size of the result the tool returned to the agent, in UTF-8 bytes.',
   resultTokens: 'Estimated tokens of the tool result: its size in bytes divided by 4. An estimate, not a count.',
   toolDuration: 'Time from the tool call to its result.',
   exit: 'Exit code of the command, when the tool reports one.',
-  approval: 'Whether the call ran without asking (auto), after a person approved it, or was denied.',
-  wait: 'No step was recorded in this time: the agent waited for a person, a tool or the model.',
+  approval: 'Approval: whether the call ran without asking (auto), after a person approved it, or was denied.',
+  wait: 'Waited: no step was recorded in this time; the agent waited for a person, a tool or the model.',
 } as const
 
 const approvals: Record<string, string> = {
@@ -197,9 +309,9 @@ export function callMetrics(call: FlowEvent): Metric[] {
     call.duration_ms ? { key: 'duration', text: fmtMs(call.duration_ms), title: definitions.duration } : undefined,
     call.ttft_ms ? { key: 'ttft', text: `TTFT ${fmtMs(call.ttft_ms)}`, title: definitions.ttft } : undefined,
     call.cost_usd != null ? { key: 'cost', text: call.cost_usd < 0.01 ? '<$0.01' : fmtUsd(call.cost_usd), title: definitions.cost } : undefined,
-    call.finish_reason ? { key: 'stop', text: call.finish_reason, title: definitions.stop, tone: 'muted' } : undefined,
+    call.finish_reason ? { key: 'stop', text: call.finish_reason, title: definitions.stop, tone: 'muted', icon: 'stop', label: 'Stop reason' } : undefined,
     call.is_error ? { key: 'error', text: [call.error_type || 'failed', call.http_status ? `HTTP ${call.http_status}` : ''].filter(Boolean).join(' · '),
-      title: 'The request failed.', tone: 'danger' } : undefined,
+      title: 'The request failed.', tone: 'danger', icon: 'warn', label: 'Failed' } : undefined,
   ]
   return metrics.filter((metric): metric is Metric => !!metric)
 }
@@ -207,22 +319,31 @@ export function callMetrics(call: FlowEvent): Metric[] {
 /** Estimated tokens of a tool result, from the server's estimate or the result size. */
 export const resultTokens = (tool: FlowEvent) => tool.result_tokens_est ?? (tool.output_bytes != null ? estTokensFromSize(tool.output_bytes) : null)
 
+const payloadOut = (bytes: number, more = ''): Metric =>
+  ({ key: 'payloadOut', text: fmtBytes(bytes), title: definitions.payloadOut + more, icon: 'up', label: 'Payload out' })
+const payloadIn = (bytes: number, more = ''): Metric =>
+  ({ key: 'payloadIn', text: fmtBytes(bytes), title: definitions.payloadIn + more, icon: 'dn', label: 'Payload in' })
+
 export function toolMetrics(tool: FlowEvent): Metric[] {
   const tokens = resultTokens(tool)
   const approval = approvalOf(tool)
   const metrics: (Metric | undefined)[] = [
     tool.input_bytes == null && tool.output_bytes == null
       ? { key: 'payload', text: 'payload not reported', title: 'The source did not report the size of the arguments or of the result of this call.', tone: 'muted' } : undefined,
-    tool.input_bytes != null ? { key: 'payloadOut', text: `↑ ${fmtBytes(tool.input_bytes)}`, title: definitions.payloadOut } : undefined,
-    tool.output_bytes != null ? { key: 'payloadIn', text: `↓ ${fmtBytes(tool.output_bytes)}`, title: definitions.payloadIn } : undefined,
+    tool.input_bytes != null ? payloadOut(tool.input_bytes) : undefined,
+    tool.output_bytes != null ? payloadIn(tool.output_bytes) : undefined,
     tokens ? { key: 'resultTokens', text: `≈${fmtN(tokens)} tok est.`, title: definitions.resultTokens } : undefined,
     tool.duration_ms ? { key: 'duration', text: fmtMs(tool.duration_ms), title: definitions.toolDuration } : undefined,
     tool.exit_code != null ? { key: 'exit', text: `exit ${tool.exit_code}`, title: definitions.exit, tone: tool.exit_code ? 'danger' : undefined } : undefined,
-    tool.success === false ? { key: 'error', text: 'failed', title: 'The tool call returned an error.', tone: 'danger' } : undefined,
-    approval && approval !== 'auto' ? { key: 'approval', text: approval, title: definitions.approval, tone: approval === 'denied' ? 'danger' : undefined } : undefined,
+    tool.success === false ? { key: 'error', text: 'failed', title: 'The tool call returned an error.', tone: 'danger', icon: 'warn', label: 'Failed' } : undefined,
+    approval && approval !== 'auto' ? { key: 'approval', text: approval, title: definitions.approval, tone: approval === 'denied' ? 'danger' : undefined, icon: 'keys', label: 'Approval' } : undefined,
+    tool.spawned_agent_id ? { key: 'spawned', text: `subagent ${shortAgent(tool.spawned_agent_id)}`, icon: 'agents', label: 'Started a subagent',
+      title: `This call started subagent ${tool.spawned_agent_id}; select the step to open it.` } : undefined,
   ]
   return metrics.filter((metric): metric is Metric => !!metric)
 }
+
+export const shortAgent = (id: string) => id.slice(0, 8)
 
 /** The tool and what it worked on: a file path, a command or an MCP server and tool. */
 export function toolTarget(tool: FlowEvent) {
@@ -253,11 +374,12 @@ export function groupMetrics(calls: readonly FlowEvent[]): Metric[] {
   const metrics: (Metric | undefined)[] = [
     out == null && back == null ? { key: 'payload', text: 'payload not reported', tone: 'muted',
       title: 'The source did not report the size of the arguments or of the results of these calls.' } : undefined,
-    out != null ? { key: 'payloadOut', text: `↑ ${fmtBytes(out)}`, title: definitions.payloadOut + many } : undefined,
-    back != null ? { key: 'payloadIn', text: `↓ ${fmtBytes(back)}`, title: definitions.payloadIn + many } : undefined,
+    out != null ? payloadOut(out, many) : undefined,
+    back != null ? payloadIn(back, many) : undefined,
     tokens ? { key: 'resultTokens', text: `≈${fmtN(tokens)} tok est.`, title: definitions.resultTokens + many } : undefined,
     duration ? { key: 'duration', text: fmtMs(duration), title: definitions.toolDuration + many } : undefined,
-    failed ? { key: 'error', text: calls.length > 1 ? `${failed} of ${calls.length} failed` : 'failed', title: 'Tool calls that returned an error.', tone: 'danger' } : undefined,
+    failed ? { key: 'error', text: calls.length > 1 ? `${failed} of ${calls.length} failed` : 'failed', title: 'Tool calls that returned an error.',
+      tone: 'danger', icon: 'warn', label: 'Failed' } : undefined,
   ]
   return metrics.filter((metric): metric is Metric => !!metric)
 }
@@ -269,39 +391,29 @@ const LANE_MIN = 12, LANE_MAX = 30
 /** The lane of a tool call: one lane per tool, or one lane for all tools when grouped. */
 export const toolLane = (tool: FlowEvent, grouped: boolean) => grouped ? 'Tools' : `Tools · ${toolDisplayName(tool.to || tool.name || NO_TOOL)}`
 
-/** The lane a step's lead event goes to; the Assistant lane is where every step starts. */
-export function targetLane(step: Step, grouped: boolean) {
-  switch (step.kind) {
-    case 'prompt': return 'Assistant'
-    case 'agent': case 'agent_end': return 'Subagents'
-    case 'hook': return 'Hooks'
-    case 'tool': return toolLane(step.lead, grouped)
-    default: return step.tools[0] ? toolLane(step.tools[0], grouped) : 'Assistant'
-  }
-}
-
 /** Lanes for these steps, each as wide as the longest text it shows, between LANE_MIN and LANE_MAX characters. */
 export function lanesFor(steps: readonly Step[], grouped: boolean): Lane[] {
   const widths = new Map<string, number>([['User', LANE_MIN], ['Assistant', 16]])
   const fit = (lane: string, text: string) => widths.set(lane, Math.min(LANE_MAX, Math.max(widths.get(lane) ?? LANE_MIN, text.length + 6)))
   let user = false
   for (const step of steps) {
-    if (step.kind === 'prompt') user = true
+    if (step.kind === 'prompt') { user = true; fit('User', firstLine(promptLine(step.lead), LANE_MAX)) }
     for (const tool of step.tools) {
       const lane = toolLane(tool, grouped)
       fit(lane, lane.replace(/^Tools · /, ''))
       fit(lane, toolTarget(tool).slice(0, LANE_MAX))
     }
-    if (step.kind === 'agent' || step.kind === 'agent_end') fit('Subagents', step.lead.to || step.lead.from || NO_AGENT)
+    if (step.kind === 'agent' || step.kind === 'agent_end' || step.kind === 'task') fit('Subagents', NO_AGENT.slice(0, 14))
     if (step.kind === 'hook') fit('Hooks', step.lead.hook_name || 'hook name not reported')
   }
-  const order = (id: string) => id === 'User' ? 0 : id === 'Assistant' ? 1 : id.startsWith('Tools') ? 2 : id === 'Subagents' ? 3 : 4
+  // Subagents sit next to the assistant that starts them, before the tool lanes.
+  const order = (id: string) => id === 'User' ? 0 : id === 'Assistant' ? 1 : id === 'Subagents' ? 2 : id.startsWith('Tools') ? 3 : 4
   return [...widths].filter(([id]) => id !== 'User' || user)
     .sort((a, b) => order(a[0]) - order(b[0]))
-    .map(([id, width]) => ({ id, label: id, group: id.split(' · ', 1)[0], width }))
+    .map(([id, width]) => ({ id, label: id === 'Tools' || !id.startsWith('Tools · ') ? '' : id.slice('Tools · '.length), group: id.split(' · ', 1)[0], width }))
 }
 
-export interface Chip { lane: string; title: string; detail: string; metrics: Metric[]; failed: boolean; calls: number }
+export interface Chip { lane: string; title: string; detail: string; metrics: Metric[]; failed: boolean; calls: number; full?: string }
 export interface Layout {
   /** The edge of the step, from lane to lane; absent when the step stays in one lane. */
   edge?: { from: string; to: string; label?: string; dashed: boolean }
@@ -313,8 +425,8 @@ export interface Layout {
 /** Where a step sits in the lanes: its edge, the chips in each lane and the results that come back. */
 export function layoutOf(step: Step, grouped: boolean): Layout {
   const lead = step.lead
-  const chip = (lane: string, title: string, detail = '', metrics: Metric[] = []): Chip =>
-    ({ lane, title, detail, metrics, failed: step.failed, calls: 1 })
+  const chip = (lane: string, title: string, detail = '', metrics: Metric[] = [], full?: string): Chip =>
+    ({ lane, title, detail, metrics, failed: step.failed, calls: 1, full })
   if (step.tools.length) {
     const byLane = new Map<string, FlowEvent[]>()
     for (const tool of step.tools) byLane.set(toolLane(tool, grouped), [...byLane.get(toolLane(tool, grouped)) ?? [], tool])
@@ -332,15 +444,25 @@ export function layoutOf(step: Step, grouped: boolean): Layout {
     }
   }
   switch (step.kind) {
-    case 'prompt': return { edge: { from: 'User', to: 'Assistant', dashed: false }, chips: [chip('User', 'prompt')] }
+    case 'prompt': return { edge: { from: 'User', to: 'Assistant', dashed: false },
+      chips: [chip('User', promptLine(lead), '', [], lead.redacted ? undefined : lead.message || lead.preview || undefined)] }
+    case 'task': return { edge: { from: 'Assistant', to: 'Subagents', dashed: false },
+      chips: [chip('Subagents', promptLine(lead, 'Task'), '', [], lead.redacted ? undefined : lead.message || undefined)] }
     case 'agent': return { edge: { from: 'Assistant', to: 'Subagents', label: lead.model || undefined, dashed: false },
-      chips: [chip('Subagents', lead.to || NO_AGENT, 'started')] }
+      chips: [chip('Subagents', firstLine(lead.prompt, 80) || lead.to || NO_AGENT, 'started', [], lead.prompt || undefined)] }
     case 'agent_end': return { edge: { from: 'Subagents', to: 'Assistant', dashed: true },
-      chips: [chip('Subagents', lead.from || NO_AGENT, lead.completed === false ? 'stopped' : 'finished')] }
+      chips: [chip('Subagents', outcomeOf(lead), lead.duration_ms ? fmtMs(lead.duration_ms) : '')] }
     case 'hook': return { edge: { from: 'Assistant', to: 'Hooks', dashed: false }, chips: [chip('Hooks', lead.hook_name || 'hook name not reported')] }
     case 'round': return { chips: [chip('Assistant', step.call?.request_n != null ? `req ${step.call.request_n}` : 'request', step.reply ? 'reply' : 'answer')] }
     default: return { chips: [chip('Assistant', stepTitle(step))] }
   }
+}
+
+/** How a subagent ended: failed, completed, or not reported. */
+export function outcomeOf(end: FlowEvent) {
+  if (end.outcome === 'failed' || end.is_error) return 'failed'
+  if (end.outcome === 'completed' || (end.outcome == null && end.completed)) return 'completed'
+  return 'ended, outcome not reported'
 }
 
 /** One line for a step, for screen readers and the list view. */
@@ -354,14 +476,19 @@ export function stepTitle(step: Step) {
         : step.reply?.response_preview ? `Reply · ${step.reply.response_preview}` : 'Answer without tool calls'
     }
     case 'reply': return lead.response_preview ? `Reply · ${lead.response_preview}` : 'Reply'
-    case 'prompt': return lead.redacted ? 'Prompt · text not retained' : lead.preview || lead.message || 'Prompt'
-    case 'agent': return `Subagent started · ${lead.to || NO_AGENT}`
-    case 'agent_end': return `Subagent ${lead.completed === false ? 'stopped' : 'finished'} · ${lead.from || NO_AGENT}`
+    case 'prompt': return promptLine(lead)
+    case 'task': return `Task: ${promptLine(lead, 'task')}`
+    case 'agent': return `Subagent started: ${firstLine(lead.prompt, 80) || lead.to || NO_AGENT}${lead.model ? ` (${lead.model})` : ''}`
+    case 'agent_end': {
+      const outcome = outcomeOf(lead)
+      const took = lead.duration_ms != null ? `${outcome === 'failed' ? ' after' : ' in'} ${fmtMs(lead.duration_ms)}` : ''
+      return `Subagent ${outcome}${took}`
+    }
     case 'compaction': return `Context compacted${lead.before_tokens != null && lead.after_tokens != null ? ` · ${fmtN(lead.before_tokens)} → ${fmtN(lead.after_tokens)} tokens` : ''}`
     case 'skill': return `Skill · ${lead.name || 'Not reported'}`
     case 'error': return `Error · ${lead.error_type || lead.error_message || 'Not reported'}`
     case 'hook': return `Hook · ${lead.hook_name || 'Not reported'}`
-    default: return lead.name || lead.to || lead.type.replaceAll('_', ' ')
+    default: return [lead.type.replaceAll('_', ' '), lead.name, lead.phase].filter(Boolean).join(' · ')
   }
 }
 
@@ -370,8 +497,17 @@ export function stepMetrics(step: Step): Metric[] {
   const lead = step.lead
   if (step.call) return callMetrics(step.call)
   if (step.kind === 'tool') return toolMetrics(lead)
-  if (step.kind === 'prompt' && lead.prompt_length) return [{ key: 'length', text: `${fmtN(Number(lead.prompt_length))} chars`, title: 'Length of the prompt text.' }]
+  if ((step.kind === 'prompt' || step.kind === 'task') && lead.prompt_length && !lead.redacted) {
+    return [{ key: 'length', text: `${fmtN(Number(lead.prompt_length))} chars`, title: 'Length of the prompt text.' }]
+  }
   if (step.kind === 'agent_end' && lead.duration_ms) return [{ key: 'duration', text: fmtMs(lead.duration_ms), title: 'Time the subagent ran.' }]
   if (step.kind === 'compaction' && lead.duration_ms) return [{ key: 'duration', text: fmtMs(lead.duration_ms), title: 'Time the compaction took.' }]
   return []
+}
+
+/** The model family, for an edge label too narrow for the full name: "claude-opus-5-5" → "opus". */
+export function modelFamily(model: string) {
+  const parts = model.toLowerCase().split(/[-_/.:\s]+/).filter(Boolean)
+  const known = parts.find(part => /^(opus|sonnet|haiku|fable|gpt|o\d|gemini|grok|llama|mistral|codex|deepseek|qwen)$/.test(part))
+  return known ?? parts.find(part => /[a-z]/.test(part) && !/^(claude|models?|anthropic|openai|google)$/.test(part)) ?? model
 }

@@ -16,6 +16,8 @@ export function VirtualList<T>(props: {
   class?: string
   /** Shown above the rows inside the scroll area, so a sticky header scrolls sideways with them. */
   header?: JSX.Element
+  /** The row to open at, at the top of the view, when the list first has rows; the newest row when absent. */
+  initial?: (rows: readonly T[]) => number | undefined
 }) {
   const [element, setElement] = createSignal<HTMLDivElement>()
   const [version, bump] = createSignal(0)
@@ -59,7 +61,9 @@ export function VirtualList<T>(props: {
     if (!rows.length) started = false
     else if (props.end && !started && current.element) {
       started = true
-      virtual.scrollToIndex(rows.length - 1, { align: 'end' })
+      const index = props.initial?.(rows)
+      if (index == null) virtual.scrollToIndex(rows.length - 1, { align: 'end' })
+      else virtual.scrollToIndex(index, { align: 'start' })
     }
   })
   let revealed: { id: string } | undefined

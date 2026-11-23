@@ -3,7 +3,8 @@ import { Icon, type Glyph } from './Icon'
 import { moveFocus } from './keyboard'
 import styles from './Segmented.module.css'
 
-export type Choice = { id: string; label: string; disabled?: boolean; glyph?: Glyph }
+/** `iconOnly` shows the glyph alone; the label is then its accessible name and hover text. */
+export type Choice = { id: string; label: string; disabled?: boolean; glyph?: Glyph; iconOnly?: boolean }
 
 export function Segmented(props: {
   label: string
@@ -25,8 +26,9 @@ export function Segmented(props: {
     <For each={props.options} keyed={option => option.id}>{option =>
       <button type="button" class={props.value === option().id ? styles.selected : styles.option}
         role="radio" aria-checked={props.value === option().id ? 'true' : 'false'} tabindex={option().id === tabStop() ? 0 : -1}
+        aria-label={option().iconOnly && option().glyph ? option().label : undefined} title={option().iconOnly && option().glyph ? option().label : undefined}
         disabled={props.disabled || option().disabled} onClick={() => props.onChange(option().id)}>
-        <Show when={option().glyph}>{glyph => <Icon glyph={glyph()} small />}</Show>{option().label}
+        <Show when={option().glyph}>{glyph => <Icon glyph={glyph()} small />}</Show>{option().iconOnly && option().glyph ? '' : option().label}
       </button>
     }</For>
   </div>

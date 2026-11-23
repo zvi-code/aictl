@@ -118,9 +118,9 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
         onClick={() => ctx.copy(session() ?? props.entry.id)}><Icon glyph="copy" /></Tooltip>
     </>}
     metadata={<div class={styles.meta}>
-      <span title={evidence() ?? undefined}>{runtime()?.running && status() === 'unknown' ? 'Running · native activity unknown'
+      <span class={styles.statusWord} data-status={status()} title={evidence() ?? undefined}>{runtime()?.running && status() === 'unknown' ? 'Running · native activity unknown'
         : statusText(status(), runtime() ? undefined : agent()?.end_reason) ?? NA}</span>
-      <Show when={evidence()}>{words => <span>{words()}</span>}</Show>
+      <Show when={evidence()}>{words => <span class={styles.statusEvidence} title="Why the status is what it is">{words()}</span>}</Show>
       <Show when={started()}><span title={`Started ${stamp(started(), true)}`}>{fmtDur((ended() ?? Date.now() / 1000) - started()!)}</span></Show>
       <Show when={ended()}><span>Ended {stamp(ended(), true)}</span></Show>
       <Show when={agent()?.tool || runtime()?.tool}>{tool => <span>{ctx.board('tool_labels')?.[tool()] ?? tool()}</span>}</Show>
