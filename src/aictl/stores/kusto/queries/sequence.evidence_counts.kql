@@ -1,0 +1,8 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string, row_limit:long);
+session_steps
+| where session_id == requested_session and (all_nodes or node_id == requested_node)
+| summarize arg_max(_v, *) by ['project'], node_id, step_key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| summarize steps=count() by step_kind=['kind']
+| order by steps desc, step_kind asc
+| take row_limit

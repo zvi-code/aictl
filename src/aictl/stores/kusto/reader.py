@@ -237,6 +237,7 @@ _VIEWS = {
         f"{_TIME} requested_session keep_text text_floor evidence_filters search_terms context_group "
         "page_offset include_detail include_spans", "data",
     ),
+    "sequence.evidence_counts": ("all_nodes requested_node requested_session", "step_kind steps"),
     "sequence.otel": (f"{_TIME} requested_session after_row", "row_type values"),
     "sequence.context": (f"{_TIME} requested_session after_row", "row_type values"),
     "files.changes": (

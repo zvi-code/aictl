@@ -6,7 +6,6 @@ import { openAgent, Resource, Rows, Section, sessionPath, Stats, type Reference,
 import styles from '../drawer.module.css'
 
 const refs: readonly Reference['field'][] = ['turn_id', 'round_id', 'request_id', 'message_id', 'tool_call_id', 'span_id', 'trace_id']
-const kinds = ['message', 'turn', 'context', 'tool_call', 'tool_result', 'command', 'session_command', 'model_call', 'skill']
 const retained = (row: SessionEvidenceRow) => row.text_status === 'captured' || row.text_status === 'truncated'
 
 export function EvidenceBrowser(props: { tab: TabProps; contextGroup?: string; contextOnly?: boolean }) {
@@ -25,11 +24,20 @@ export function EvidenceBrowser(props: { tab: TabProps; contextGroup?: string; c
     })
   }
   const read = ctx.detail<DetailSessionEvidence>(createMemo(request))
+  // What the session holds, to count the steps and to offer only the kinds that occur in it.
+  const counted = () => !props.contextOnly && !props.contextGroup
+  const counts = ctx.detail<DetailSessionEvidence>(createMemo(() => counted() ? sessionPath(props.tab, '/api/session-evidence', { counts: 1 }) : undefined))
+  const total = () => counts()?.data?.total
+  const kinds = () => {
+    const present = counts()?.data?.kinds?.map(item => ({ kind: item.kind, steps: item.steps }))
+      ?? [...new Set((read()?.data?.rows ?? []).map(row => row.kind))].map(kind => ({ kind, steps: undefined as number | undefined }))
+    return kind() && !present.some(item => item.kind === kind()) ? [...present, { kind: kind(), steps: 0 }] : present
+  }
   const detail = ctx.detail<DetailSessionEvidence>(createMemo(() =>
     step() ? sessionPath(props.tab, '/api/session-evidence', { step_key: step(), offset: 0, limit: 100 }) : undefined))
   const link = (row: SessionEvidenceRow, field: Reference['field'], id: string) =>
     openAgent(props.tab, props.tab.entry.id, 'evidence', { flowRef: { field, id, traceId: field === 'span_id' ? row.trace_id ?? undefined : undefined } })
-  return <Section title={props.contextOnly ? 'Context measurements' : 'Source steps'}>
+  return <Section title={props.contextOnly ? 'Context measurements' : total() == null ? 'Source steps' : `Source steps · ${total()}`}>
     <Show when={props.tab.session()} fallback={<PanelState state="unavailable" message="A native session ID is not available from this source." />}>
       <Show when={step()} fallback={<>
         <form class={styles.bar} role="search" aria-label="Source steps filters" onSubmit={event => {
@@ -37,7 +45,7 @@ export function EvidenceBrowser(props: { tab: TabProps; contextGroup?: string; c
         }}>
           <label class={styles.field}>Search retained text<input type="search" value={draft()} onInput={event => setDraft(event.currentTarget.value)} /></label>
           <Show when={!props.contextOnly}><label class={styles.field}>Kind<select value={kind()} onChange={event => { setKind(event.currentTarget.value); setOffset(0) }}>
-            <option value="">All kinds</option><For each={kinds}>{value => <option value={value}>{value.replaceAll('_', ' ')}</option>}</For>
+            <option value="">All kinds</option><For each={kinds()}>{item => <option value={item.kind}>{item.kind.replaceAll('_', ' ')}{item.steps == null ? '' : ` · ${item.steps}`}</option>}</For>
           </select></label></Show>
           <button type="submit" class={styles.button}>Search</button>
         </form>
@@ -46,9 +54,9 @@ export function EvidenceBrowser(props: { tab: TabProps; contextGroup?: string; c
             columns={props.contextGroup ? [['ts', 'Time', 'time'], 'source', 'model', 'phase', 'kind', 'context_tokens',
               'before_tokens', 'after_tokens', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'reasoning_tokens'] :
               [['ts', 'Time', 'time'], 'kind', 'source', 'phase', ['text_preview', 'Preview'], 'text_status']}
-            empty="No matching source steps." action={{ label: row => `Inspect step ${row.step_key}`, run: row => setStep(row.step_key) }} />
+            empty={total() === 0 && !query() && !kind() ? 'Source steps are not imported for this session.' : 'No matching source steps.'} action={{ label: row => `Inspect step ${row.step_key}`, run: row => setStep(row.step_key) }} />
           <div class={styles.bar}>
-            <span class={styles.muted}>{data().rows.length ? `Rows ${data().offset + 1}–${data().offset + data().rows.length}` : '0 rows'}</span>
+            <span class={styles.muted}>{data().rows.length ? `Rows ${data().offset + 1}–${data().offset + data().rows.length}${total() != null && !query() && !kind() ? ` of ${total()}` : ''}` : '0 rows'}</span>
             <button type="button" class={styles.button} disabled={!offset()} onClick={() => setOffset(old => Math.max(0, old - data().limit))}>Newer</button>
             <button type="button" class={styles.button} disabled={!data().has_more} onClick={() => setOffset(old => old + data().limit)}>Older</button>
           </div>

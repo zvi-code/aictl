@@ -32,12 +32,21 @@ def _number(params: dict, key: str, default: int, low: int, high: int) -> int:
     return int(raw)
 
 
+def session_step_counts(history: HistoryScope, sid: str) -> dict:
+    """How many source steps the session has, in all and of each kind. 0 means none were imported."""
+    kinds = [{"kind": r["step_kind"], "steps": r["steps"]} for r in history.read("sequence.evidence_counts", sid=sid, limit=200)]
+    return {"session_id": sid, "rows": [], "has_more": False, "offset": 0, "limit": 0,
+            "total": sum(item["steps"] for item in kinds), "kinds": kinds}
+
+
 def session_evidence(db: Any, params: dict[str, list[str]], *, history: HistoryScope | None = None) -> dict:
     history = history or HistoryScope.local(db)
     reported = history.qualified or getattr(db, "_reported_history", False) is True
     sid = _param(params, "session_id", 4096 if reported else 384)
     if not sid:
         raise EvidenceInputError("session_id is required")
+    if _param(params, "counts") == "1":
+        return session_step_counts(history, sid)
     limit = _number(params, "limit", 100, 1, 100)
     offset = _number(params, "offset", 0, 0, 10000)
     filters = {k: v for k in _FILTERS if (v := _param(params, k))}

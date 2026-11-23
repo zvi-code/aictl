@@ -9,6 +9,12 @@
     "has_more": {"type": "boolean"},
     "offset": {"type": "integer"},
     "limit": {"type": "integer"},
+    "total": {"type": "integer"},
+    "kinds": {"type": "array", "items": {
+      "type": "object",
+      "properties": {"kind": {"type": "string"}, "steps": {"type": "integer"}},
+      "required": ["kind", "steps"]
+    }},
     "node_scope": {"$ref": "node-scope.schema.json"}
   },
   "required": ["session_id", "rows", "has_more", "offset", "limit"]

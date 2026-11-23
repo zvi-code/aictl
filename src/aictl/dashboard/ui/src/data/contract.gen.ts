@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: c6a5a292daffd495865ca7f40fe44e84e249a727f46cf97211fa8fa294556265
+// Schema digest: a9eb6544518fa2d74d36d4a94ed3411fcb875d79256fd4c204bad5cc58282324
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1721,6 +1721,11 @@ export type DetailSessionEvidence = {
   has_more: boolean;
   offset: number;
   limit: number;
+  total?: number;
+  kinds?: Array<{
+    kind: string;
+    steps: number;
+  }>;
   node_scope?: NodeScope;
 };
 

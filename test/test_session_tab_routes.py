@@ -107,3 +107,22 @@ def test_the_mcp_servers_a_session_used_come_from_its_stored_tool_calls_when_no_
     assert (servers["computer-use"]["call_count"], servers["computer-use"]["err_count"],
             servers["computer-use"]["total_duration_ms"]) == (5, 1, 500.0)
     assert body["total_calls"] == 6
+
+
+def test_a_session_says_how_many_source_steps_it_has_and_of_which_kinds():
+    from aictl.dashboard.projections.history import HistoryScope
+    from aictl.dashboard.session_evidence import session_evidence
+
+    reader = FakeReader(**{"sequence.evidence_counts": [{"step_kind": "message", "steps": 12}, {"step_kind": "round", "steps": 3}]})
+    body = session_evidence(None, {"session_id": [SID], "counts": ["1"]}, history=HistoryScope(reader, None))
+    assert body["total"] == 15 and body["kinds"] == [{"kind": "message", "steps": 12}, {"kind": "round", "steps": 3}]
+    assert body["rows"] == []
+    assert reader.asked[0][1]["requested_session"] == SID
+
+
+def test_a_session_without_imported_steps_has_a_total_of_zero():
+    from aictl.dashboard.projections.history import HistoryScope
+    from aictl.dashboard.session_evidence import session_evidence
+
+    body = session_evidence(None, {"session_id": [SID], "counts": ["1"]}, history=HistoryScope(FakeReader(), None))
+    assert body["total"] == 0 and body["kinds"] == []
