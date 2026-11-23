@@ -14,7 +14,6 @@ requests
 | summarize calls=count(), input_tokens=sum(input_tokens), output_tokens=sum(output_tokens),
             cache_read_tokens=sum(cache_read_tokens), cache_creation_tokens=sum(cache_creation_tokens),
             last_ts=max(ts), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd) by model
-// A call that reported neither a model nor any usage (an API error) is no model's usage.
 | where isnotempty(model) or input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens > 0
 | project model, calls, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
           last_ts, cost_usd=iff(priced == 0, real(null), sum_cost)
