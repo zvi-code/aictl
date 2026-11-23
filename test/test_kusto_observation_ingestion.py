@@ -536,7 +536,7 @@ def test_cursor_ingester_writes_session_and_message_facts_without_reading_histor
     assert CursorConversationsIngester(src_path, facts).poll() == 1
     session = written(facts.writer, "sessions")[-1]
     [message] = written(facts.writer, "cursor_session_messages")
-    assert session["session_id"] == message["session_id"] == "cursor:conv-1"
+    assert session["session_id"] == message["session_id"] == "conv-1"
     assert message["role"] == "user"
 
 

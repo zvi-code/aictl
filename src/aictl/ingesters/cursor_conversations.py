@@ -220,16 +220,12 @@ class CursorConversationsIngester:
         return True
 
     def _correlate(self, conversation_id: str, project_path: str, ts: float) -> str:
-        """Find a session to attach this message to, or provision one.
+        """The session of a message: the Cursor conversation it belongs to, by its id.
 
-        Match rule: same ``tool='cursor'``, same ``project_path``, and
-        ``started_at <= ts`` and (``ended_at`` is NULL or ``ts <= ended_at``).
-        The window is left open-ended on the future side because live
-        sessions have ``ended_at = NULL``.
+        Never another session of the same workspace that was open at the time: two chats can
+        be open in one workspace at once.
         """
-        return (self.store.sessions.active_session("cursor", project_path, ts)
-                or self.store.placeholder(f"cursor:{conversation_id}", "cursor", ts,
-                                          "cursor-ingester", project_path))
+        return self.store.conversation(conversation_id, "cursor", ts, "cursor-ingester", project_path)
 
 
 __all__ = ["CursorConversationsIngester", "POLL_INTERVAL_S"]

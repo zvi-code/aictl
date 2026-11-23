@@ -38,14 +38,14 @@ class MessageFacts:
     def record_data_quality(self, *args, **kwargs) -> None:
         self.quality.record_data_quality(*args, **kwargs)
 
-    def placeholder(self, session_id, tool, ts, source, project="") -> str:
+    def conversation(self, session_id, tool, ts, source, project="") -> str:
+        """Record that the source names a session *session_id* (its own id, never an invented one)
+        in *project*, and return the id. An empty id stays empty: the content is unattributed."""
         from ..records import SessionRow
 
-        self.sessions.session(SessionRow(session_id, tool, project_path=project, started_at=ts, source=source))
+        if session_id:
+            self.sessions.session(SessionRow(session_id, tool, project_path=project, started_at=ts, source=source))
         return session_id
-
-    def exact(self, session_id, tool) -> bool:
-        return self.sessions.session_tool(session_id) == tool
 
     def append(self, table, row, *, project="") -> None:
         row = dict(row, project=project, content=self.text(row["ts"], row["content"]))

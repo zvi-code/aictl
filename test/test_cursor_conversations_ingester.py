@@ -106,8 +106,8 @@ def test_poll_ingests_rows_and_creates_provisional_session(
 
     rows = written(store.writer, "cursor_session_messages")
     assert [(r["role"], r["content"]) for r in rows] == [("user", "hello"), ("assistant", "world")]
-    # Provisional session was created.
-    assert rows[0]["session_id"] == "cursor:conv-1"
+    # The conversation's own id, never an invented cursor:<id>.
+    assert rows[0]["session_id"] == "conv-1"
     [session] = written(store.writer, "sessions")
     assert (session["tool"], session["project_path"]) == ("cursor", "/proj/demo")
 
@@ -125,14 +125,13 @@ def test_second_poll_ingests_zero(tmp_path: Path, store: MessageFacts) -> None:
     assert len(written(store.writer, "cursor_session_messages")) == 1
 
 
-def test_correlation_matches_existing_session(tmp_path: Path) -> None:
+def test_a_message_stays_with_its_own_conversation_when_another_chat_is_open(tmp_path: Path) -> None:
     src = tmp_path / "conversations.db"
     _build_source_db(src)
     ts = time.time()
     _insert_message(src, "conv-2", "user", "hi", ts)
 
-    # Pre-seed a live Cursor session with the same project path; window
-    # is open on the future side (ended_at IS NULL).
+    # Another chat of the same workspace is open at the time: the message is not its.
     writer = MemoryWriter()
     session_state = StateFile(tmp_path / "sessions.json")
     sessions = SessionFacts(writer, state=session_state)
@@ -154,9 +153,9 @@ def test_correlation_matches_existing_session(tmp_path: Path) -> None:
     assert ingester.poll() == 1
     assert CursorConversationsIngester(src, message_facts).poll() == 0
     [message] = [row for _, table, rows in writer.operations if table == "cursor_session_messages" for row in rows]
-    assert message["session_id"] == "existing-cursor-session"
-    [session] = [row for _, table, rows in writer.operations if table == "sessions" for row in rows]
-    assert session["session_id"] == "existing-cursor-session"
+    assert message["session_id"] == "conv-2"
+    sessions_written = {row["session_id"] for _, table, rows in writer.operations if table == "sessions" for row in rows}
+    assert sessions_written == {"existing-cursor-session", "conv-2"}
 
 
 def test_poll_tolerates_locked_source(tmp_path: Path, store: MessageFacts) -> None:

@@ -117,9 +117,10 @@ def test_ingests_user_and_assistant_messages(tmp_path, our_db):
     assert rows[1]["content"] == "Hi there[thinking] pondering"
     assert rows[3]["content"] == "4"
     assert rows[0]["model"] == "gpt-4o-mini"
-    # Provisional session row was created.
-    sessions = written(our_db.writer, "sessions")
-    assert any(r["session_id"] == "vscode-chat:vs-sess-1" and r["tool"] == "copilot-vscode" for r in sessions)
+    # Stored under VS Code's own chat session id although no session row is known yet; no
+    # invented vscode-chat:<id> session is made.
+    assert {r["session_id"] for r in rows} == {"vs-sess-1"}
+    assert not written(our_db.writer, "sessions")
 
 
 def test_second_poll_unchanged_file_is_noop(tmp_path, our_db):

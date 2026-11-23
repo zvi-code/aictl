@@ -77,7 +77,7 @@ def test_external_message_cursors_and_local_attribution(history, tmp_path, monke
          "CREATE TABLE messages(id INTEGER PRIMARY KEY, conversation_id, role, content, created_at);"
          "CREATE TABLE conversations(id, workspace_path, created_at);"
          "INSERT INTO conversations VALUES('conv', 'demo', 0)",
-         (1, "conv", "user", "private", now), "cursor_session_messages", "cursor"),
+         (1, "conv", "user", "private", now), "cursor_session_messages", "conv"),
     ]:
         path = tmp_path / f"{kind}.db"
         with sqlite3.connect(path) as source:

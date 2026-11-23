@@ -336,21 +336,14 @@ class CopilotSessionStoreIngester:
         return True
 
     def _correlate(self, source_session_key: str, ts: float) -> str:
-        """Map a source session id to one of our session_ids.
+        """The session a stored message belongs to: the session id the store's row carries.
 
-        Strategy:
-        1. Exact match on ``sessions.session_id`` with ``tool='copilot-cli'``
-           — typical when OTel has already created the row.
-        2. Fall back to a provisional ``copilot:<source_session_key>``
-           session row. The same source key gives the same provisional ID.
-        3. If the source row has no session key at all, attach to a
-           synthetic ``copilot:unknown`` session so the content is not
-           lost.
+        It does not matter whether that session's row exists yet (the transcript reader writes
+        it): the content is stored under the session's real id and shows there once it does.
+        A row with no session id is stored with an empty one, unattributed; it is never put
+        under an invented id, nor gathered with other sessions' messages under a shared one.
         """
-        if source_session_key and self.store.exact(source_session_key, "copilot-cli"):
-            return source_session_key
-        return self.store.placeholder(f"copilot:{source_session_key or 'unknown'}",
-                                      "copilot-cli", ts, "copilot-session-store")
+        return source_session_key
 
 
 def _stringify(value: Any) -> str:

@@ -66,11 +66,10 @@ def test_ingests_all_messages_on_first_poll(tmp_path, our_db):
     assert inserted == 8
     rows = written(our_db.writer, "copilot_session_messages")
     assert len(rows) == 8
-    # Provisional sessions were created for both source ids.
-    sess_rows = written(our_db.writer, "sessions")
-    session_ids = {r["session_id"] for r in sess_rows if r["tool"] == "copilot-cli"}
-    assert "copilot:sess-A" in session_ids
-    assert "copilot:sess-B" in session_ids
+    # Each message is stored under the session id the store's row carries, before any session row
+    # exists: no invented copilot:<id> session, no row of our own for a session we have not read.
+    assert {r["session_id"] for r in rows} == {"sess-A", "sess-B"}
+    assert not written(our_db.writer, "sessions")
     # Cursor advanced.
     assert ingester.last_cursor.get("messages") == 8
 
@@ -94,10 +93,8 @@ def test_correlates_to_existing_session(tmp_path, our_db):
 
     rows = written(our_db.writer, "copilot_session_messages")
     ids = {r["session_id"] for r in rows}
-    # sess-A should have been correlated to the existing row verbatim.
-    assert "sess-A" in ids
-    # sess-B had no match, so a provisional row was made.
-    assert "copilot:sess-B" in ids
+    # Both sessions keep their real ids, whether or not their row exists yet.
+    assert ids == {"sess-A", "sess-B"}
 
 
 def test_second_poll_with_no_new_rows_inserts_zero(tmp_path, our_db):

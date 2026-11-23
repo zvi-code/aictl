@@ -522,15 +522,9 @@ class VSCodeChatLogsIngester:
         return True
 
     def _correlate(self, vscode_sid: str, ts: float) -> str:
-        """Map VS Code's chat sessionId to one of our ``sessions`` rows.
-
-        Strategy:
-        1. Exact match on ``sessions.session_id`` with ``tool='copilot-vscode'``.
-        2. Otherwise provision a placeholder with ID ``vscode-chat:<sessionId>``.
-        """
-        if self.store.exact(vscode_sid, "copilot-vscode"):
-            return vscode_sid
-        return self.store.placeholder(f"vscode-chat:{vscode_sid}", "copilot-vscode", ts, "vscode-chat-logs")
+        """The session of a chat's messages: VS Code's own chat ``sessionId`` (the chat file's name
+        when the file does not say), whether or not its session row exists yet."""
+        return vscode_sid
 
 
 # ─── helpers ──────────────────────────────────────────────────────
