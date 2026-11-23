@@ -180,3 +180,8 @@ def test_process_records_hold_the_masked_form():
     # A record built from an already masked value keeps the raw form for in-process readers.
     again = dataclasses.replace(live, pid=3)
     assert raw_args(again.cmdline)[2] == "K123456789"
+
+
+@pytest.mark.parametrize("flag", ["--no-auth", "--disable-auth", "--skip-token", "--without-password"])
+def test_a_switch_that_turns_a_secret_option_off_takes_no_value(flag):
+    assert list(mask_command_args(["srv", flag, "server.js"])) == ["srv", flag, "server.js"]

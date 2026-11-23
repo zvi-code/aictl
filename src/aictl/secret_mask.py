@@ -115,7 +115,7 @@ def mask_text(text: str | None) -> str:
 # A value that only names where the secret comes from: ${env:TOKEN}, $TOKEN, ${input:key}.
 _REFERENCE_RE = re.compile(r"^(?:[A-Za-z]+\s+)?(?:\$\{[^}]+\}|\$[A-Za-z_]\w*)$")
 _AUTH_SCHEME_RE = re.compile(r"^(basic|bearer|digest|token|negotiate)\s+\S", re.IGNORECASE)
-_SECRET_FLAG_RE = re.compile(r"^--?[a-z0-9_-]*(?:key|token|secret|password|passwd|credentials?|auth|cookie)$", re.I)
+_SECRET_FLAG_RE = re.compile(r"^(?!--?(?:no|disable|skip|without)-)--?[a-z0-9_-]*(?:key|token|secret|password|passwd|credentials?|auth|cookie)$", re.I)
 _ENV_FLAGS = {"-e", "--env"}
 _HEADER_FLAGS = {"--header", "--headers"}
 _SECRET_KEY_RE = re.compile(r"(?i)(?:key|token|secret|password|passwd|credential|cookie|auth)")
