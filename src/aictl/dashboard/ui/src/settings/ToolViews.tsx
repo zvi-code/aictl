@@ -6,7 +6,7 @@ import { Table } from '../ui/Table'
 import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
-  DASH, MISSING, agentInherits, basename, matches, pinWins, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
+  DASH, MISSING, agentInherits, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
   type Comparison, type Entry, type Environment, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
@@ -15,9 +15,9 @@ import styles from './Settings.module.css'
 
 const settingsFields: Field<Setting>[] = [
   { id: 'key', label: 'Setting', read: row => row.label },
-  { id: 'value', label: 'Configured value', read: row => typeof row.value === 'number' ? row.value : rowValue(row, true) },
-  { id: 'state', label: 'State', read: row => [row.locked && 'Locked', row.risky && 'Risky', row.unset && 'Unset',
-    row.undocumented && 'Undocumented'].filter(Boolean).join(' · ') || DASH },
+  { id: 'value', label: 'Value', read: row => typeof row.value === 'number' && !row.unset ? row.value : rowValue(row, true) },
+  { id: 'default', label: 'Documented default', read: row => row.default === undefined ? undefined : plainValue(row.default) },
+  { id: 'state', label: 'State', read: rowState },
   { id: 'scope', label: 'Scope', read: row => scopeLabel(row.scope) },
   { id: 'source', label: 'Set in', read: row => setIn(row) },
 ]

@@ -715,6 +715,7 @@ def _finish_rows(
             if row.pop("_done", False):
                 winner = row["chain"][row["wins"]] if row["chain"] else {"scope": row["scope"]}
                 row["locked"] = _locks(cfg, str(winner["scope"]), row["key"], catalog)
+                row.setdefault("state", "set-no-default")
                 continue
             lookup = row.pop("_lookup", row["key"])
             fallback = bool(row.pop("_fallback", False))
@@ -773,6 +774,7 @@ def _finish_rows(
             row["locked"] = _locks(cfg, str(chain[wins]["scope"]), file_key, catalog)
             is_set = row.pop("_set", None)
             row["set"] = scope != "default" if is_set is None else bool(is_set)
+            _set_state(row, entry)
             row.pop("_documented", None)
             # Documented only when the tool's catalog has an entry for the key; a key the catalog
             # does not know is "present, not in catalog". A detected fact is not a setting at all.
@@ -781,6 +783,41 @@ def _finish_rows(
                 # An unset knob has nothing behind it; the one default entry is implied by the row itself.
                 row["chain"] = []
                 row["wins"] = 0
+
+
+# Row state against the documented default:
+#   default         not set by any file: the tool uses its documented default
+#   not-set         not set, and the catalog documents no default
+#   set-default     set, to the documented default
+#   set-changed     set, to something other than the documented default
+#   set-no-default  set, and the catalog documents no default to compare with
+#   detected        a fact the installed tool reports (its version), not a setting
+#   app-state       state the tool writes for itself, not a setting a user made
+ROW_STATES = ("default", "not-set", "set-default", "set-changed", "set-no-default", "detected", "app-state")
+
+
+def _set_state(row: dict, entry: dict) -> None:
+    """Add ``default`` (when the catalog documents one) and ``state`` to a finished row."""
+    has_default = "default" in entry
+    if has_default:
+        row["default"] = _safe_value(entry["default"])
+    winner = row["chain"][row["wins"]]["scope"] if row["chain"] else row["scope"]
+    if winner in ("detected", "app-state"):
+        row["state"] = winner
+    elif not row["set"]:
+        row["state"] = "default" if has_default else "not-set"
+    elif not has_default:
+        row["state"] = "set-no-default"
+    else:
+        row["state"] = "set-default" if _same_value(row["value"], entry["default"]) else "set-changed"
+
+
+def _same_value(value: object, default: object) -> bool:
+    if isinstance(value, bool) or isinstance(default, bool):
+        return value is default
+    if isinstance(value, (list, tuple)) and isinstance(default, (list, tuple)):
+        return list(value) == list(default)
+    return value == default
 
 
 def _names_missing_key(texts: dict[str, str | None], source: str, key: str) -> bool:
@@ -2028,6 +2065,14 @@ def _claude_managed_layers() -> tuple[list[Layer], list[str], str]:
     return [layer for layer in layers if isinstance(layer[1], dict)], files, shown
 
 
+# (key in ~/.claude.json, row key): app state Claude Code keeps for itself.
+_CLAUDE_APP_STATE_KEYS = (
+    ("autoUpdates", "auto_update"),
+    ("installMethod", "installMethod"),
+    ("hasCompletedOnboarding", "hasCompletedOnboarding"),
+)
+
+
 def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConfig | None:
     cfg = ToolConfig(tool=tool)
 
@@ -2044,7 +2089,8 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
         # ``model`` is the documented settings key (/model saves here);
         # ANTHROPIC_MODEL in the environment overrides any file.
         cfg.model = str(_env().get("ANTHROPIC_MODEL") or settings.get("model") or "")
-        cfg.settings["effortLevel"] = settings.get("effortLevel", "default")
+        if "effortLevel" in settings:  # absent stays absent: the catalog row shows the default
+            cfg.settings["effortLevel"] = settings["effortLevel"]
         for k in ("env", "hooks"):
             if k in settings:
                 cfg.settings[k] = "configured"
@@ -2059,14 +2105,22 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
             }
 
     # Account config (.claude.json)
+    # ~/.claude.json is state Claude Code writes for itself, not a settings file: its keys are
+    # app state, and a key it does not hold is absent (never a made-up default).
     account = _read_json(account_path)
     if account:
         cfg.config_files.append(str(account_path))
-        for k in ("auto_update", "installMethod", "hasCompletedOnboarding"):
-            cfg.setting_sources[k] = str(account_path)
-        cfg.auto_update = bool(account.get("autoUpdates", True))
-        cfg.settings["installMethod"] = account.get("installMethod", "unknown")
-        cfg.settings["hasCompletedOnboarding"] = account.get("hasCompletedOnboarding", False)
+        for file_key, row_key in _CLAUDE_APP_STATE_KEYS:
+            if file_key not in account:
+                continue
+            value = account[file_key]
+            if row_key == "auto_update":
+                cfg.auto_update = bool(value)
+            else:
+                cfg.settings[row_key] = value
+            cfg.setting_sources[row_key] = str(account_path)
+            cfg.setting_values[row_key] = [("app-state", value, str(account_path), file_key)]
+            cfg.key_notes[row_key] = "App state that Claude Code writes in ~/.claude.json, not a setting."
 
     # Project settings
     proj_settings = _read_json(proj_path)
@@ -2178,7 +2232,8 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
             _agent_row(cfg, name, defined, [], _main_model_text(cfg.model, "the main conversation's model"), fallback)
         )
 
-    return _finish(cfg, bool(cfg.settings or cfg.mcp_servers or cfg.extensions or cfg.agent_rows))
+    present = cfg.settings or cfg.config_files or cfg.mcp_servers or cfg.extensions or cfg.agent_rows
+    return _finish(cfg, bool(present))
 
 
 def _parse_claude_desktop_config(root: Path | None = None, tool: str = "claude-desktop") -> ToolConfig | None:
@@ -2285,34 +2340,15 @@ def _parse_vscode_config(root: Path, tool: str = "vscode") -> ToolConfig | None:
     # Workspace overrides user
     vscode_settings: dict = {**user_settings, **ws_settings}
 
-    # Known VS Code defaults for all important chat.* settings.
-    # Shown when the user hasn't explicitly set the key — gives full visibility
-    # even on a default install.
-    _DEFAULTS: dict = {
-        "chat.agent.enabled": True,
-        "chat.agent.maxRequests": 50,
-        "chat.autopilot.enabled": True,
-        "chat.autoReply": False,
-        "chat.useHooks": True,
-        "chat.useClaudeHooks": False,
-        "chat.useCustomAgentHooks": False,
-        "chat.useClaudeMdFile": True,
-        "chat.useAgentsMdFile": True,
-        "chat.useNestedAgentsMdFiles": False,
-        "chat.includeApplyingInstructions": True,
-        "chat.tools.global.autoApprove": False,
-        "chat.tools.terminal.sandbox.enabled": False,
-        "chat.tools.terminal.enableAutoApprove": True,
-        "chat.tools.terminal.autoApproveWorkspaceNpmScripts": True,
-        "chat.mcp.access": "all",
-        "chat.mcp.autostart": "newAndOutdated",
-    }
+    # Defaults come from the settings catalog (one source of truth); a key the catalog
+    # gives no default for has no value until a file sets it.
+    defaults = {k: e["default"] for k, e in settings_catalog(tool).items() if "default" in e}
 
     def get(key: str):
-        """Return explicit setting if present, else known default, else None."""
+        """Return explicit setting if present, else the catalog's documented default, else None."""
         if key in vscode_settings:
             return vscode_settings[key]
-        return _DEFAULTS.get(key)
+        return defaults.get(key)
 
     for group_name, pairs in (
         (

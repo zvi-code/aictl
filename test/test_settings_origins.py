@@ -184,3 +184,75 @@ def test_made_up_copilot_rows_are_not_documented(homes, monkeypatch):
     rows = {r["key"]: r for r in _rows(_sections(cfg, homes["project"]))}
     assert rows["savedToolApprovals"]["documented"] is False
     assert rows["global_instructions"]["documented"] is False
+
+
+# ─── Defaults against set values ───────────────────────────────────
+
+
+def _catalog(tmp_path, monkeypatch, tool: str, entries: list[str]) -> None:
+    path = tmp_path / "catalog.yaml"
+    path.write_text("tools:\n  " + tool + ":\n    keys:\n" + "".join(f"      - {e}\n" for e in entries))
+    monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", path)
+
+
+def test_rows_carry_the_documented_default_and_their_state(homes, monkeypatch, tmp_path):
+    _catalog(
+        tmp_path,
+        monkeypatch,
+        "copilot-cli",
+        [
+            "{key: beep, label: Beep, section: other, type: boolean, default: true}",
+            "{key: banner, label: Banner, section: startup, type: enum, default: once}",
+            "{key: theme, label: Theme, section: other, type: enum, default: auto}",
+            "{key: logLevel, label: Log level, section: other, type: string}",
+        ],
+    )
+    (homes["copilot"] / "settings.json").write_text(
+        json.dumps({"banner": "once", "theme": "dark", "logLevel": "debug", "zzInvented": 1}, indent=2)
+    )
+    root = homes["project"]
+    root.mkdir()
+    cfg = tc._parse_copilot_home_config(root, tool="copilot-cli")
+    rows = {r["key"]: r for r in _rows(_sections(cfg, root))}
+    assert rows["beep"]["set"] is False and rows["beep"]["default"] is True and rows["beep"]["state"] == "default"
+    assert rows["banner"]["state"] == "set-default" and rows["banner"]["default"] == "once"
+    assert rows["theme"]["state"] == "set-changed" and rows["theme"]["default"] == "auto"
+    assert rows["logLevel"]["state"] == "set-no-default" and "default" not in rows["logLevel"]
+    assert rows["zzInvented"]["state"] == "set-no-default" and rows["zzInvented"]["documented"] is False
+    assert rows["version"]["state"] == "detected"
+    assert set(tc.ROW_STATES) >= {r["state"] for r in rows.values()}
+
+
+def test_claude_absent_keys_stay_absent_and_account_keys_are_app_state(homes):
+    (homes["claude"] / "settings.json").write_text(json.dumps({"model": "invented-model"}, indent=2))
+    (homes["home"] / ".claude.json").write_text(json.dumps({"installMethod": "native", "numStartups": 3}, indent=2))
+    root = homes["project"]
+    root.mkdir()
+    cfg = tc._parse_claude_code_config(root)
+    assert cfg is not None
+    assert "effortLevel" not in cfg.settings  # never an invented "default"
+    assert cfg.auto_update is None  # autoUpdates is not in the file
+    assert "hasCompletedOnboarding" not in cfg.settings
+    sections = _sections(cfg, root)
+    rows = {r["key"]: r for r in _rows(sections)}
+    assert "auto_update" not in rows
+    install = rows["installMethod"]
+    assert install["value"] == "native" and install["scope"] == "app-state" and install["state"] == "app-state"
+    assert install["source"] == str(homes["home"] / ".claude.json") and install["line"] == 2
+    assert_rows_name_files_holding_their_keys(sections)
+
+
+def test_vscode_chat_defaults_come_from_the_catalog(homes, monkeypatch, tmp_path):
+    _catalog(
+        tmp_path,
+        monkeypatch,
+        "vscode",
+        ["{key: chat.agent.maxRequests, label: Max requests, section: autonomy, type: number, default: 25}"],
+    )
+    user = tmp_path / "vscode-user"
+    user.mkdir()
+    (user / "settings.json").write_text("{}")
+    monkeypatch.setattr(tc, "vscode_user_dir", lambda: user)
+    cfg = tc._parse_vscode_config(homes["home"])
+    assert cfg.feature_groups["Agent"] == {"maxRequests": 25}  # the catalog's default, no code constant
+    assert "Safety" not in cfg.feature_groups  # no documented default, no file value: nothing invented

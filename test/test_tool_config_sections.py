@@ -36,6 +36,7 @@ ROW_KEYS = {
     "locked",
     "set",
     "documented",
+    "state",
 }
 
 
@@ -424,6 +425,7 @@ def test_model_row_first_then_configurable_models():
         "locked": False,
         "set": True,
         "documented": False,  # these tests run without the catalog: no entry, not documented
+        "state": "set-no-default",
     }
     plan = rows[1]
     assert plan["label"] == "Plan agent" and plan["source"] == "user"
@@ -492,7 +494,8 @@ def test_collect_tool_configs_fills_sections_for_every_tool(isolated_home, tmp_p
         for s in d["sections"]:
             assert s["rows"], c.tool
             for r in s["rows"]:
-                assert set(r) == (ROW_KEYS | {"agent"} if s["id"] == "agents" else ROW_KEYS), c.tool
+                keys = set(r) - {"default"}  # present only when the catalog documents a default
+                assert keys == (ROW_KEYS | {"agent"} if s["id"] == "agents" else ROW_KEYS), c.tool
     codex = next(c for c in configs if c.tool == "codex-cli")
     assert codex.config_files == [str(isolated_home["codex_global_dir"] / "config.toml")]
     assert codex.sections[0]["rows"][0]["value"] == "gpt-5"
@@ -618,7 +621,13 @@ def test_claude_code_project_overrides_user_chain(isolated_home, tmp_path):
     assert "setting_values" not in dumped and "project_root" not in dumped
 
 
-def test_vscode_workspace_overrides_user_chain(isolated_home, tmp_path):
+def test_vscode_workspace_overrides_user_chain(isolated_home, tmp_path, monkeypatch):
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        "tools:\n  vscode:\n    keys:\n"
+        "      - {key: chat.agent.maxRequests, label: Max requests, section: autonomy, type: number, default: 25}\n"
+    )
+    monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", catalog)
     user = isolated_home["vscode_user_dir"] / "settings.json"
     user.write_text('{\n  "chat.tools.global.autoApprove": false\n}\n')
     proj = tmp_path / "proj"
@@ -632,3 +641,5 @@ def test_vscode_workspace_overrides_user_chain(isolated_home, tmp_path):
     assert row["wins"] == 1 and row["line"] == 3
     default_row = next(r for r in _rows(configs["vscode"].sections) if r["key"] == "maxRequests")
     assert default_row["scope"] == "default" and default_row["set"] is False and default_row["chain"] == []
+    assert default_row["value"] == 25 and default_row["default"] == 25  # the catalog's default, not a code constant
+    assert default_row["state"] == "default"

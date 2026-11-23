@@ -56,6 +56,8 @@
                 "locked": {"type": "boolean"},
                 "danger": {"type": "boolean"},
                 "documented": {"type": "boolean"},
+                "default": {"type": ["object", "array", "string", "number", "boolean", "null"]},
+                "state": {"enum": ["default", "not-set", "set-default", "set-changed", "set-no-default", "detected", "app-state"]},
                 "chain": {
                   "type": "array",
                   "items": {

@@ -8,7 +8,7 @@ import { Stat } from '../ui/Stat'
 import { Table } from '../ui/Table'
 import {
   agentInherits, basename, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
-  purposeLabel, rowValue, samePath, scopeLabel, title, type ConfigFile, type Environment, type Finding, type Setting,
+  purposeLabel, rowState, rowValue, samePath, scopeLabel, title, type ConfigFile, type Environment, type Finding, type Setting,
 } from './model'
 import { permissionEdit } from './permissions'
 import { PermissionEditor } from './PermissionEditor'
@@ -86,12 +86,14 @@ function SettingDetail(props: { w: Workspace; row: Setting }) {
       <span>{scopeLabel(props.row.scope, scopes())}</span>
       <Show when={props.row.risky}><strong data-tone="danger">Risky</strong></Show>
       <Show when={locked()}><strong data-tone="warning">Locked policy</strong></Show>
-      <Show when={props.row.undocumented}><strong>Undocumented</strong></Show>
-      <Show when={props.row.unset}><strong>Unset</strong></Show>
+      <strong>{rowState(props.row)}</strong>
     </div>
-    <Show when={props.row.value && typeof props.row.value === 'object'} fallback={
-      <Stat label={props.row.unset ? 'Reported default' : 'Configured value'} value={rowValue(props.row)} />}>
-      <CodeView label="Configured value" text={JSON.stringify(props.row.value, null, 2)} language="JSON" wrap />
+    <Show when={!props.row.unset && props.row.value && typeof props.row.value === 'object'} fallback={
+      <Stat label={props.row.unset ? 'Not set' : 'Value'} value={rowValue(props.row)} />}>
+      <CodeView label="Value" text={JSON.stringify(props.row.value, null, 2)} language="JSON" wrap />
+    </Show>
+    <Show when={props.row.default !== undefined}>
+      <Stat label="Documented default" value={plainValue(props.row.default)} />
     </Show>
     <Show when={props.row.tip}><p>{props.row.tip}</p></Show>
     <section class={styles.stack} aria-label="Precedence">

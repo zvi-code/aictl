@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowValue, setIn, settingsParams,
+  isNonDefault, isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
 import { derivePermissions, listDiff, parseLines, permissionEdit } from '../src/settings/permissions'
@@ -27,6 +28,25 @@ const cfg: SettingsToolConfig = {
 }
 
 describe('settings contract projections', () => {
+  it('shows a documented default as a default and computes state against it', () => {
+    const rows: SettingsToolConfig = { tool: 'copilot-cli', sections: [{ id: 'other', rows: [
+      { key: 'beep', value: true, default: true, set: false, scope: 'default', state: 'default', documented: true },
+      { key: 'banner', value: 'once', default: 'once', set: true, scope: 'user', state: 'set-default', documented: true },
+      { key: 'theme', value: 'dark', default: 'auto', set: true, scope: 'user', state: 'set-changed', documented: true },
+      { key: 'zzInvented', value: 1, set: true, scope: 'user', state: 'set-no-default', documented: false },
+      { key: 'version', value: '1.2.3', set: true, scope: 'detected', source: 'detected', state: 'detected', documented: false },
+    ] }] }
+    const [entry] = toolEntries([rows])
+    const row = (key: string) => entry.rows.find(item => item.key === key)!
+    expect(rowValue(row('beep'))).toBe('Not set · default On')
+    expect(rowState(row('beep'))).toBe('Default (not set)')
+    expect(rowState(row('banner'))).toBe('Set, same as default')
+    expect(rowState(row('theme'))).toBe('Set, differs from default')
+    expect(rowState(row('zzInvented'))).toBe('Set (no documented default) · Present, not in catalog')
+    expect(rowState(row('version'))).toBe('Reported by the tool')
+    expect(entry.rows.filter(isNonDefault).map(item => item.key)).toEqual(['theme', 'zzInvented'])
+  })
+
   it('says where a value comes from: file and line, variable, derived origin or default', () => {
     expect(setIn({ source: '/home/u/.config/Code/User/settings.json', line: 731, scope: 'user' })).toBe('settings.json, line 731')
     expect(setIn({ source: 'env:COPILOT_MODEL', scope: 'env' })).toBe('Environment variable COPILOT_MODEL')

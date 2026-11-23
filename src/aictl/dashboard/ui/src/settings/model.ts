@@ -138,15 +138,38 @@ export function plainValue(value: unknown): string {
   return typeof value === 'number' ? String(value) : JSON.stringify(value) ?? MISSING
 }
 
+const STATE_LABELS: Record<string, string> = {
+  default: 'Default (not set)', 'not-set': 'Not set (no documented default)', 'set-default': 'Set, same as default',
+  'set-changed': 'Set, differs from default', 'set-no-default': 'Set (no documented default)',
+  detected: 'Reported by the tool', 'app-state': 'App state (not a setting)',
+}
+/** The row's state against its documented default, then its flags. */
+export function rowState(row: Setting) {
+  const state = row.state ? STATE_LABELS[row.state] : row.unset ? 'Not set' : ''
+  const notInCatalog = row.undocumented && !row.unset && !row.agent && row.state !== 'detected' && row.state !== 'app-state'
+  return [state, row.locked && 'Locked', row.risky && 'Risky', notInCatalog && 'Present, not in catalog']
+    .filter(Boolean).join(' · ') || DASH
+}
+/** Set to something the user chose: differs from the documented default, or no default to compare with. */
+export const isNonDefault = (row: Setting) => row.state
+  ? row.state === 'set-changed' || row.state === 'set-no-default'
+  : !row.unset && row.scope !== 'default' && !agentInherits(row)
+
 export function rowValue(row: Setting, compact = false) {
   const value = row.value
-  if (row.unset && value == null) return 'Unset'
-  if (agentInherits(row)) return 'Inherits session model'
-  if (compact && value && typeof value === 'object') {
-    const n = Object.keys(value).length
-    return `${n} ${Array.isArray(value) ? (n === 1 ? 'item' : 'items') : (n === 1 ? 'field' : 'fields')}`
+  if (row.unset) {
+    // A documented default must look like a default, never like a configured value.
+    const fallback = row.default !== undefined ? row.default : value
+    if (fallback == null) return 'Not set'
+    return `Not set · default ${compact && typeof fallback === 'object' ? summary(fallback) : plainValue(fallback)}`
   }
+  if (agentInherits(row)) return 'Inherits session model'
+  if (compact && value && typeof value === 'object') return summary(value)
   return plainValue(value)
+}
+function summary(value: object) {
+  const n = Object.keys(value).length
+  return `${n} ${Array.isArray(value) ? (n === 1 ? 'item' : 'items') : (n === 1 ? 'field' : 'fields')}`
 }
 
 export function matches(query: string, ...parts: unknown[]) {
@@ -156,7 +179,7 @@ export function matches(query: string, ...parts: unknown[]) {
 
 export function rowFilter(q: string, nonDefault: boolean, risky: boolean, unset: boolean) {
   return (row: Setting) => (unset || !row.unset) && (!risky || row.risky)
-    && (!nonDefault || (!row.unset && row.scope !== 'default' && !agentInherits(row)))
+    && (!nonDefault || isNonDefault(row))
     && matches(q, row.label, row.key, plainValue(row.value), row.source, row.agent?.name, row.agent?.model,
       row.agent?.tools?.join(' '), row.agent?.defined_in, row.agent?.pinned_in)
 }
