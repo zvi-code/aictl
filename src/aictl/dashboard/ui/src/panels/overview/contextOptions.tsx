@@ -26,7 +26,7 @@ export function workflowOptions({ ctx, def }: PanelProps) {
   }
   return { result, empty: () => def.empty, retry: context.retry,
     summary: workflowSummary, controls: <Choice label="Show workflow items" items={workflowTypes} value={type} change={setType} />,
-    description: <p class={css.note}>{ctx.scope() === 'local' ? 'Open a file to read its text.' : 'Recorded metadata only. File text is available on This node.'}</p>,
+    description: <p class={css.note}>{ctx.scope() === 'local' ? 'Open a file to read its text and its recorded edits.' : 'Open a file to see its recorded edits.'}</p>,
   } satisfies VisualRowOptions
 }
 

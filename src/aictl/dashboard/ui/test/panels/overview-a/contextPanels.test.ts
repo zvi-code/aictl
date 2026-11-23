@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { excludedSummary, loadLabel, loadSplit, openFile, truncationNote } from '../../../src/panels/overview/contextData'
 import { budgetNote, budgetSays } from '../../../src/panels/overview/contextOptions'
+import { overviewA } from '../../../src/panels/overview/a'
+import { rowAction } from '../../../src/panels/kinds/model'
+import type { PanelContext } from '../../../src/panels/types'
 
 const plain = (value: number) => String(value)
 
@@ -49,6 +52,19 @@ describe('Files each tool reads lists context and folds the rest into one line',
     expect(truncationNote([set('copilot-cli', 1200, true, 'win-a'), set('copilot-cli', 900, true, 'win-b'), set('codex', 5, false)], name))
       .toBe('Each tool lists its 400 largest context files; Copilot CLI (win-a) has 1,200, Copilot CLI (win-b) has 900.')
     expect(truncationNote([set('codex', 5, false)], name)).toBeUndefined()
+  })
+})
+
+describe('Workflows and prompt files tell rows apart and open in every scope', () => {
+  it('shows the repository as its own column and opens the file drawer in fleet scope', () => {
+    // Found on Windows: "create-chart" twice in a row, the Path column cut from the left, the rows not clickable.
+    const def = overviewA.find(panel => panel.id === 'workflows')!
+    expect(def.columns.map(column => column.path)).toEqual(['name', 'project', 'type', 'tool', 'tokens', 'mtime'])
+    const openDetail = vi.fn()
+    const ctx = { scope: () => 'fleet', openDetail } as unknown as PanelContext
+    const path = 'C:\\Users\\me\\src\\web\\.github\\prompts\\create-chart.prompt.md'
+    rowAction(def, ctx, { name: 'create-chart', project: 'web', path })!.run()
+    expect(openDetail).toHaveBeenCalledWith({ type: 'file', path, line: 1 })
   })
 })
 

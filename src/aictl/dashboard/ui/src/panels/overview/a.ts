@@ -154,9 +154,10 @@ export const overviewA: readonly PanelDef[] = [
   {
     id: 'workflows', title: 'Workflows and prompt files', kind: 'table', defaultSize: 'medium', requiredCapabilities: [],
     sources: [context('workflows')], rowIdentity: ['path'],
-    columns: [field('name', 'Name'), field('type', 'Type'), field('tool', 'Tool'), field('path', 'Path'),
-      field('size', 'Size', 'board.drawer.excerpt'), field('tokens', 'File tokens', 'board.context.file'), stamp('mtime', 'Changed')],
-    actions: [{ kind: 'detail', field: 'path', type: 'file', localOnly: true }], empty: 'No workflow or prompt files found.',
+    // Files of one name in several repositories differ by Project; the full path is the name's hint.
+    columns: [{ ...field('name', 'Name'), hint: 'path' }, field('project', 'Project'), field('type', 'Type'), field('tool', 'Tool'),
+      field('tokens', 'File tokens', 'board.context.file'), stamp('mtime', 'Changed')],
+    actions: [{ kind: 'detail', field: 'path', type: 'file' }], empty: 'No workflow or prompt files found.',
     load: () => loadRows(import('./contextOptions').then(m => m.workflowOptions)),
   },
   {
