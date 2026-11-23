@@ -129,6 +129,8 @@ _HAIKU_5_5_LONG = _anthropic(0.50, 2.50, 0.05, 0.625, 1.0)
 # Keep every model the transcripts actually report; older ids stay for history.
 MODEL_PRICING: dict[str, ModelPricing] = {
     # Anthropic ---------------------------------------------------- input out read 5m 1h
+    "claude-fable-5-2": _anthropic(8.0, 40.0, 0.20, 10.0, 16.0),
+    "claude-mythos-5-2": _anthropic(8.0, 40.0, 0.20, 10.0, 16.0),
     "claude-fable-5-1": _anthropic(10.0, 50.0, 0.25, 12.5, 20.0),
     "claude-mythos-5-1": _anthropic(10.0, 50.0, 0.25, 12.5, 20.0),
     "claude-fable-5": _anthropic(10.0, 50.0, 1.0, 12.5, 20.0),

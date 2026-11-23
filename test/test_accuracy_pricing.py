@@ -20,6 +20,7 @@ from aictl.data.model_pricing import (
 
 # (input, output, cache read, 5m/30m write, 1h/12h write) per MTok.
 PUBLISHED = {
+    "claude-fable-5-2": (8.0, 40.0, 0.20, 10.0, 16.0),
     "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5, 20.0),
     "claude-opus-5-5": (4.0, 20.0, 0.20, 5.0, 8.0),
     "claude-opus-5": (5.0, 25.0, 0.50, 6.25, 10.0),
@@ -35,6 +36,7 @@ PUBLISHED = {
 
 # Every model id seen in the 2026-11 transcripts, with what it must resolve to.
 SEEN_IN_TRANSCRIPTS = {
+    "claude-fable-5-2": "claude-fable-5-2",
     "claude-fable-5-1": "claude-fable-5-1",
     "claude-opus-5-5": "claude-opus-5-5",
     "claude-opus-5.5": "claude-opus-5-5",
