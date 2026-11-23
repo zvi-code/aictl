@@ -285,5 +285,5 @@ def test_a_node_of_layout_3_upgrades_without_a_migration_and_gains_the_table(mon
     status = ensure({**older, "context_lists": TABLES["context_lists"]})
     assert status.layout["verdict"] == L.UPGRADE
     rows = [r for r in fake.layout_rows if r["kind"] == "layout" and not r.get("step")]
-    assert (rows[-1]["version"], rows[-1]["compatible_since"], rows[-1]["detail"]) == (4, 3, "upgrade")
+    assert (rows[-1]["version"], rows[-1]["compatible_since"], rows[-1]["detail"]) == (L.LAYOUT_VERSION, 3, "upgrade")
     assert phys("context_lists") in fake.tables and [r for r in fake.layout_rows if r["kind"] == "migration"] == []

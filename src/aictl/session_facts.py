@@ -13,7 +13,8 @@ from typing import Any
 
 from . import context_lists
 from .ingesters.session_titles import clean_title, outranks
-from .records import STEP_TEXT_LIMIT, TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, newer_observation, strip_event_text
+from .memory_changes import BLOB_MAX_BYTES, blob_hash
+from .records import TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, newer_observation, strip_event_text
 from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
@@ -262,6 +263,10 @@ class SessionFacts:
         size = len(text.encode("utf-8", "replace"))
         if size <= self.large_payload_bytes:
             return text
+        # Two sessions can use the same key for their own value (their summary #1): the stored
+        # key names the session, so one never overwrites the other.
+        if session_id and session_id not in key:
+            key = f"{session_id}/{key}"
         period = self.retention["large_payload"]
         kept = f"{period // 24} days" if period % 24 == 0 and period > 48 else f"{period} hours"
         if self.allows_text(ts, "large_payload"):
@@ -272,6 +277,33 @@ class SessionFacts:
                 for n, chunk in enumerate(chunks)])
         return (f"{text[:TEXT_PREVIEW_CHARS]}\n[preview of {size} bytes; the full text is kept {kept} in "
                 f"text_payloads ({table}, {field}, {key}) and is no longer retained after that]")
+
+    def blobs(self, contents: Iterable[tuple[str, str, float]]) -> None:
+        """Store file or summary contents once per hash in file_blobs (the file_text class): (hash, text, ts)."""
+        rows = {digest: dict(project="", hash=digest, content=text, size_bytes=len(text.encode("utf-8", "replace")),
+                             created_at=ts)
+                for digest, text, ts in contents if digest and self.allows_text(ts, "file_text")}
+        if rows:
+            self.writer.upsert("file_blobs", list(rows.values()))
+
+    def _digest_text(self, row, project: str) -> dict:
+        """A digest's stored text. A large one keeps a preview here and its whole text in file_blobs.
+
+        A summary is the record of what a checkpoint kept, so its whole text is kept as long as file
+        contents (365 days by default), not as a 24-hour large payload. The blob is content-addressed,
+        so two sessions' summaries can never overwrite each other.
+        """
+        raw = row.text.encode("utf-8", "replace")
+        if len(raw) <= self.large_payload_bytes:
+            return dict(text=row.text, text_hash="", text_bytes=len(raw))
+        if len(raw) > BLOB_MAX_BYTES or not self.allows_text(row.ts, "file_text"):
+            return dict(text=self.spill("session_digests", f"{row.agent_id}/{row.kind}:{row.seq}", "text", row.text,
+                                        ts=row.ts, session_id=row.session_id, project=project),
+                        text_hash="", text_bytes=len(raw))
+        digest = blob_hash(raw)
+        self.blobs([(digest, row.text, row.ts)])
+        return dict(text=f"{row.text[:TEXT_PREVIEW_CHARS]}\n[preview of {len(raw)} bytes; the full text is kept in "
+                         f"file_blobs under text_hash {digest}]", text_hash=digest, text_bytes=len(raw))
 
     def hook_time(self, call_id: str, ts: float) -> float:
         """A hook without a source timestamp keeps its first receipt time on retry."""
@@ -609,8 +641,7 @@ class SessionFacts:
                 if attr == "digests":
                     if not self.allows_text(row.ts):
                         continue
-                    data["text"] = self.spill("session_digests", f"{row.kind}:{row.seq}", "text", row.text, ts=row.ts,
-                                              session_id=row.session_id, project=project)
+                    data.update(self._digest_text(row, project))
                 if attr == "thinking" and not self.allows_text(row.ts, "thinking"):
                     continue
                 if attr == "prompts":

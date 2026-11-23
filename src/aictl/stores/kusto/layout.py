@@ -32,14 +32,14 @@ from typing import Any
 
 from ..base import StoreConfigurationError
 
-LAYOUT_VERSION = 4
+LAYOUT_VERSION = 5
 COMPATIBLE_SINCE = 3
 # The first layout released as generally available. From then on a breaking change needs a migration.
 GA_LAYOUT_VERSION: int | None = None
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "d5fb3fda028661a6e22bb47d20b9f28cd2a40f75885907fb255fccafc6731ab1"
+FINGERPRINT = "f7b196414f20068497190bb347a09eaa7e2006a3dcfed53f17107fecac4aa06d"
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,16 @@ CHANGES: tuple[Change, ...] = (
         "announcement's ts and the sums of its items. Rows written before stay one row per item and are read "
         "as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item "
         "named list:<id> that has the list's total.",
+        breaks=False,
+    ),
+    Change(
+        5,
+        "session_digests: keyed by agent too (agent_id, \"\" for the main agent), so a subagent's compaction summary "
+        "and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or "
+        "TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under "
+        "text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could "
+        "overwrite each other); event_key links a summary to its context_events row, whose summary_kind and "
+        "summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen.",
         breaks=False,
     ),
 )

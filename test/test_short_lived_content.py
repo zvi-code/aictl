@@ -42,24 +42,35 @@ def _facts() -> Facts:
 class TestLargePayloads:
     def test_a_large_value_keeps_a_preview_and_its_full_text_goes_to_the_payload_table(self):
         facts = _facts()
-        big = "line of a long summary\n" * 20_000
-        facts.write(CallFacts(digests=[SessionDigestRow(SESSION, "task_summary", 1, NOW - 60, text=big),
-                                       SessionDigestRow(SESSION, "task_summary", 2, NOW - 60, text="small")]))
-        rows = {r["seq"]: r["text"] for r in table(facts, "session_digests")}
-        assert rows[2] == "small"
-        assert rows[1].startswith("line of a long summary") and len(rows[1]) < 5000
-        assert f"preview of {len(big)} bytes" in rows[1] and "kept 24 hours" in rows[1]
+        big = "line of a long step\n" * 20_000
+        step = SessionStepRow(step_key="k1", ts=NOW - 60, session_id=SESSION, kind="tool_result", text=big)
+        facts.write(CallFacts(steps=[step]))
+        stored = one(table(facts, "session_step_text"))["text"]
+        assert stored.startswith("line of a long step") and len(stored) < 5000
+        assert f"preview of {len(big)} bytes" in stored and "kept 24 hours" in stored
         chunks = sorted(table(facts, "text_payloads"), key=lambda r: r["chunk_no"])
-        assert {r["source_table"] for r in chunks} == {"session_digests"}
+        assert {r["source_table"] for r in chunks} == {"session_step_text"}
         assert len(chunks) == chunks[0]["chunk_count"] > 1
         assert "".join(r["text"] for r in chunks) == big and chunks[0]["total_bytes"] == len(big)
 
-    def test_large_step_text_is_moved_too(self):
+    def test_a_large_summary_keeps_a_preview_and_its_whole_text_as_long_as_file_text(self):
+        facts = _facts()
+        big = "line of a long summary\n" * 20_000
+        facts.write(CallFacts(digests=[SessionDigestRow(SESSION, "task_summary", 1, NOW - 60, text=big),
+                                       SessionDigestRow(SESSION, "task_summary", 2, NOW - 60, text="small")]))
+        rows = {r["seq"]: r for r in table(facts, "session_digests")}
+        assert rows[2]["text"] == "small"
+        assert rows[1]["text"].startswith("line of a long summary") and len(rows[1]["text"]) < 5000
+        assert f"preview of {len(big)} bytes" in rows[1]["text"]
+        assert one(table(facts, "file_blobs", hash=rows[1]["text_hash"]))["content"] == big
+        assert table(facts, "text_payloads") == []
+
+    def test_large_step_text_is_moved_under_its_session(self):
         facts = _facts()
         step = SessionStepRow(step_key="k1", ts=NOW - 60, session_id=SESSION, kind="tool_result", text="z" * 3000)
         facts.write(CallFacts(steps=[step]))
         assert "preview of 3000 bytes" in one(table(facts, "session_step_text"))["text"]
-        assert one(table(facts, "text_payloads"))["source_key"] == "k1"
+        assert one(table(facts, "text_payloads"))["source_key"] == f"{SESSION}/k1"
 
     def test_an_old_large_value_writes_its_preview_only(self):
         facts = _facts()

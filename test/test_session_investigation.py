@@ -497,7 +497,7 @@ class TestClaude:
     def test_digests_hold_the_readable_summaries(self, facts):
         kinds = {(r["kind"], r["seq"]): r for r in table(facts, "session_digests", session_id=SESSION)}
         assert kinds[("compact_summary", 1)]["text"] == "Summary of work so far"
-        assert "[completed] Explain the bug in detail" in kinds[("todo_list", 0)]["text"]
+        assert "[completed] Explain the bug in detail" in kinds[("todo_list", 1)]["text"]
         workflows = [r for (kind, _), r in kinds.items() if kind == "workflow_summary"]
         assert {r["title"] for r in workflows} == {"review wf_1", "review wf_2"}
 

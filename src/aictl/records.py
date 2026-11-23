@@ -564,6 +564,9 @@ class ContextEventRow:
     system_tokens: int | None = None
     conversation_tokens: int | None = None
     tool_tokens: int | None = None
+    # The digest (session_digests kind and seq, same session and agent) that holds this event's summary.
+    summary_kind: str = ""
+    summary_seq: int | None = None
 
 
 @dataclass(slots=True)
@@ -680,16 +683,22 @@ class SessionFileRow:
 
 @dataclass(slots=True)
 class SessionDigestRow:
-    """A readable "what happened" text the tool wrote about a session. Text: kept 14 days, only with text kept."""
+    """A readable "what happened" text the tool wrote about a session, one row per version. Only with text kept.
+
+    ``seq`` counts the versions of one kind per session and agent (1 = the first). A todo list
+    is a version per list the tool sent; ``task_change`` is one TaskCreate or TaskUpdate call.
+    """
 
     session_id: str
-    kind: str  # checkpoint | task_summary | compact_summary | todo_list | workflow_summary
+    kind: str  # checkpoint | task_summary | compact_summary | todo_list | task_change | workflow_summary
     seq: int
     ts: float
     title: str = ""
     text: str = ""
     tool: str = ""
     project_path: str = ""
+    agent_id: str = ""  # '' for the main agent
+    event_key: str = ""  # dedup_key of the context_events row this text summarises ('' when none)
 
 
 @dataclass(slots=True)

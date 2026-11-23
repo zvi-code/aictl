@@ -169,7 +169,7 @@ class KustoWriter:
                 value == "" and column != "project"
                 and (name, column) not in {("session_context_items", "agent_id"), ("session_context_items", "name"),
                                            ("data_quality_status", "source"), ("session_files", "agent_id"),
-                                           ("session_files", "tool_name")}
+                                           ("session_files", "tool_name"), ("session_digests", "agent_id")}
             ):
                 raise InvalidRowError(f"{name}: a deterministic key requires {column}")
         for column, value in row.items():

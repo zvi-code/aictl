@@ -443,7 +443,7 @@ class FactBuffer:
     def add_digest(self, row: fact_rows.SessionDigestRow) -> None:
         # A digest is text: only while the store keeps text.
         if row.text and self._in_window(row.ts) and _keep_text(self.store):
-            self.digests[(row.session_id, row.kind, row.seq)] = row
+            self.digests[(row.session_id, row.agent_id, row.kind, row.seq)] = row
             self._maybe_flush()
 
     def add_thinking(self, row: fact_rows.SessionThinkingRow) -> None:
@@ -650,6 +650,11 @@ class ClaudeFacts:
         self._turn_files: dict[tuple[str, str], set[int]] = {}
         self._last_turn: dict[str, int] = {}
         self._compact_seq: dict[str, int] = {}
+        # Versions of the todo list and task changes per agent's record, and each record's last
+        # compaction row, which the summary line after it links to.
+        self._todo_seq: dict[str, int] = {}
+        self._task_seq: dict[str, int] = {}
+        self._last_compaction: dict[str, fact_rows.ContextEventRow] = {}
         # Thinking per call, kept small (a month holds hundreds of thousands of calls): visible chars,
         # bit masks of the visible and the redacted block indexes, longest duration.
         self._thinking: dict[int, tuple[int, int, int, float]] = {}
@@ -659,7 +664,8 @@ class ClaudeFacts:
         self.buffer.forget_files(sid, agent_id)
         if self.buffer.book is not None:
             self.buffer.book.reset(sid, TRANSCRIPT_PART + agent_id)
-        self._compact_seq.pop(f"{sid}/{agent_id}", None)
+        for counter in (self._compact_seq, self._todo_seq, self._task_seq, self._last_compaction):
+            counter.pop(f"{sid}/{agent_id}", None)
 
     def _outcome(self, sid: str, agent_id: str, ts: float, cwd: str = "") -> dict | None:
         book = self.buffer.book
@@ -1004,20 +1010,20 @@ class ClaudeFacts:
         reset = context_items.Item(context_items.RESET, context_items.ALL)
         self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, reset, "claude-code", str(obj.get("cwd") or "")))
         # A resumed session replays the line with the same id, so the key leaves the session out.
-        self.buffer.add_context_event(
-            fact_rows.ContextEventRow(
-                dedup_key=fact_rows._dedup_key("claude-compact", str(obj.get("uuid") or f"{sid}{ts}")),
-                ts=ts,
-                session_id=sid,
-                agent_id=agent_id or (str(obj.get("agentId") or "") if obj.get("isSidechain") else ""),
-                tool="claude-code",
-                kind="compaction",
-                trigger=str(meta.get("trigger") or ""),
-                before_tokens=to_count(meta.get("preTokens")),
-                after_tokens=to_count(meta.get("postTokens")),
-                duration_ms=to_count(meta.get("durationMs")),
-            )
+        row = fact_rows.ContextEventRow(
+            dedup_key=fact_rows._dedup_key("claude-compact", str(obj.get("uuid") or f"{sid}{ts}")),
+            ts=ts,
+            session_id=sid,
+            agent_id=agent_id,
+            tool="claude-code",
+            kind="compaction",
+            trigger=str(meta.get("trigger") or ""),
+            before_tokens=to_count(meta.get("preTokens")),
+            after_tokens=to_count(meta.get("postTokens")),
+            duration_ms=to_count(meta.get("durationMs")),
         )
+        self._last_compaction[f"{sid}/{agent_id}"] = row
+        self.buffer.add_context_event(row)
 
     def _context_report(self, sid: str, obj: dict, ts: float, agent_id: str) -> None:
         """The output of ``/context``: Claude Code's own count of what fills the context."""
@@ -1118,27 +1124,48 @@ class ClaudeFacts:
         )
 
     def _compact_summary(self, sid: str, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
-        """The summary a compaction left in place of the conversation: a digest of the session so far."""
-        if agent_id:
-            return
+        """The summary a compaction left in place of the conversation: a digest of the session (or subagent) so far.
+
+        It follows its ``compact_boundary`` line in the same record, and the two link to each other."""
         key = f"{sid}/{agent_id}"
         seq = self._compact_seq[key] = self._compact_seq.get(key, 0) + 1
+        event = self._last_compaction.pop(key, None)
+        if event is not None:
+            event.summary_kind, event.summary_seq = "compact_summary", seq
+            self.buffer.add_context_event(event)
         self.buffer.add_digest(fact_rows.SessionDigestRow(
             session_id=sid, kind="compact_summary", seq=seq, ts=ts, text=digest_text(_text_of(msg.get("content"))),
-            tool="claude-code", project_path=cwd))
+            tool="claude-code", project_path=cwd, agent_id=agent_id, event_key=event.dedup_key if event else ""))
 
     def _todos(self, sid: str, args: dict, ts: float, agent_id: str, cwd: str) -> None:
-        """``TodoWrite`` sends the whole list each time: the last one is the session's list."""
+        """``TodoWrite`` sends the whole list each time: each list is a version. The main agent's last list
+        is the session's list in its outcome."""
         todos = args.get("todos")
-        if agent_id or not isinstance(todos, list):
+        if not isinstance(todos, list):
             return
         items = [t for t in todos if isinstance(t, dict)]
-        if (part := self._outcome(sid, "", ts, cwd)) is not None:
+        if not agent_id and (part := self._outcome(sid, "", ts, cwd)) is not None:
             part["todos_total"] = len(items)
             part["todos_completed"] = sum(1 for t in items if t.get("status") == "completed")
         listing = "\n".join(f"- [{t.get('status') or ''}] {t.get('content') or t.get('subject') or ''}" for t in items)
+        key = f"{sid}/{agent_id}"
+        seq = self._todo_seq[key] = self._todo_seq.get(key, 0) + 1
         self.buffer.add_digest(fact_rows.SessionDigestRow(
-            session_id=sid, kind="todo_list", seq=0, ts=ts, text=digest_text(listing), tool="claude-code", project_path=cwd))
+            session_id=sid, kind="todo_list", seq=seq, ts=ts, text=digest_text(listing), tool="claude-code",
+            project_path=cwd, agent_id=agent_id))
+
+    def _task_change(self, sid: str, name: str, args: dict, ts: float, agent_id: str, cwd: str) -> None:
+        """One ``TaskCreate`` or ``TaskUpdate`` call: a change to the task list, as the call states it.
+        The tool never sends the whole list, so no list is rebuilt from the changes."""
+        verb = "create" if name == "TaskCreate" else "update"
+        fields = [f"{k}: {args[k]}" for k in ("taskId", "subject", "status", "owner", "activeForm", "description")
+                  if isinstance(args.get(k), (str, int)) and not isinstance(args.get(k), bool) and args.get(k) != ""]
+        key = f"{sid}/{agent_id}"
+        seq = self._task_seq[key] = self._task_seq.get(key, 0) + 1
+        title = str(args.get("subject") or (f"#{args['taskId']}" if args.get("taskId") else ""))[:200]
+        self.buffer.add_digest(fact_rows.SessionDigestRow(
+            session_id=sid, kind="task_change", seq=seq, ts=ts, title=title,
+            text=digest_text("\n".join([verb, *fields])), tool="claude-code", project_path=cwd, agent_id=agent_id))
 
     def _note_skill_body(self, sid: str, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
         command = self._last_command.pop(sid, None)
@@ -1209,6 +1236,8 @@ class ClaudeFacts:
                 self._skill(tool_id, sid, args["skill"], "agent-invoked", ts, agent_id, cwd)
             elif name == "TodoWrite":
                 self._todos(sid, args, ts, agent_id, cwd)
+            elif name in ("TaskCreate", "TaskUpdate"):
+                self._task_change(sid, name, args, ts, agent_id, cwd)
 
     def _tool_results(self, sid: str, obj: dict, msg: dict, ts: float) -> None:
         content = msg.get("content")
@@ -1425,6 +1454,7 @@ class CopilotFacts:
         self._views: dict[str, str] = {}
         self._summaries = 0
         self._compaction_count = 0
+        self._todo_seq: dict[str, int] = {}
         # The request row of each recent call, by apiCallId: its message comes after its usage record
         # and adds the thinking counts. Values: (row, visible chars, visible blocks, redacted blocks).
         self._calls_by_api: dict[str, list] = {}
@@ -1627,12 +1657,17 @@ class CopilotFacts:
         if (part := self._outcome(ts)) is not None:
             part["compactions"] = part.get("compactions", 0) + 1
         number = data.get("checkpointNumber")
+        seq = number if type(number) is int else self._compaction_count
+        key = fact_rows._dedup_key("copilot-compact", self.sid, event_id or str(ts))
+        summary = digest_text(data.get("summaryContent"))
         self.buffer.add_digest(fact_rows.SessionDigestRow(
-            session_id=self.sid, kind="compact_summary", seq=number if type(number) is int else self._compaction_count,
-            ts=ts, text=digest_text(data.get("summaryContent")), tool="copilot-cli", project_path=self.cwd))
+            session_id=self.sid, kind="compact_summary", seq=seq, ts=ts, text=summary, tool="copilot-cli",
+            project_path=self.cwd, agent_id=agent_id, event_key=key))
         self.buffer.add_context_event(
             fact_rows.ContextEventRow(
-                dedup_key=fact_rows._dedup_key("copilot-compact", self.sid, event_id or str(ts)),
+                summary_kind="compact_summary" if summary else "",
+                summary_seq=seq if summary else None,
+                dedup_key=key,
                 ts=ts,
                 session_id=self.sid,
                 agent_id=agent_id,
@@ -1842,6 +1877,12 @@ class CopilotFacts:
         )
         self._running[call_id] = row
         self.buffer.add_tool(row)
+        if name == "update_todo" and isinstance(args.get("todos"), str):
+            # Copilot sends its whole list as Markdown each time: each list is a version.
+            seq = self._todo_seq[agent_id] = self._todo_seq.get(agent_id, 0) + 1
+            self.buffer.add_digest(fact_rows.SessionDigestRow(
+                session_id=self.sid, kind="todo_list", seq=seq, ts=ts, text=digest_text(args["todos"]),
+                tool="copilot-cli", project_path=self.cwd, agent_id=agent_id))
 
     def _tool_complete(self, data: dict, ts: float, agent_id: str) -> None:
         call_id = str(data.get("toolCallId") or "")

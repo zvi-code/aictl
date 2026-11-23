@@ -56,6 +56,13 @@ COLUMNS = ("permission_modes", "modes", "pr_refs", "commit_refs", *_SUM, *_LAST)
 TRANSCRIPT = "t:"  # a part read from a transcript, followed by the agent id ('' for the main agent)
 
 
+# The text sections of a Copilot checkpoint (besides its title), in the order the tool writes them.
+_CHECKPOINT_SECTIONS = {
+    "overview": "Overview", "history": "History", "work_done": "Work done", "technical_details": "Technical details",
+    "important_files": "Important files", "next_steps": "Next steps",
+}
+
+
 def digest_text(text: Any, limit: int = TEXT_VALUE_MAX) -> str:
     """Text as handed to the store: secrets redacted, bounded. The store moves a large value to text_payloads."""
     return _redact(text[:limit]) if isinstance(text, str) else ""
@@ -382,16 +389,15 @@ class MetadataReaders:
         if top <= last:
             return set()
         touched = set()
-        for _id, sid, number, title, overview, work_done, next_steps, created in conn.execute(
-            "SELECT id, session_id, checkpoint_number, title, overview, work_done, next_steps, created_at"
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)")}
+        # All the sections the tool writes; a store of an older Copilot may lack some of them.
+        names = [name for name in _CHECKPOINT_SECTIONS if name in columns]
+        for _id, sid, number, title, created, *bodies in conn.execute(
+            f"SELECT id, session_id, checkpoint_number, title, created_at, {', '.join(names) or 'NULL'}"  # noqa: S608
             " FROM checkpoints WHERE id > ? AND id <= ? ORDER BY id",
             (last, top),
         ):
-            sections = [
-                (head, body)
-                for head, body in (("Overview", overview), ("Work done", work_done), ("Next steps", next_steps))
-                if body
-            ]
+            sections = [(_CHECKPOINT_SECTIONS[name], body) for name, body in zip(names, bodies) if body]
             text = "\n\n".join(f"## {head}\n{body}" for head, body in sections)
             self.buffer.add_digest(
                 SessionDigestRow(

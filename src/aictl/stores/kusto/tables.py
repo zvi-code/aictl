@@ -363,6 +363,8 @@ _DEFINED = (
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),
+                ("summary_kind", "string"),
+                ("summary_seq", "long"),
             ),
             ("project", "node_id", "dedup_key"),
             "streaming",
@@ -616,7 +618,9 @@ _DEFINED = (
             ("project", "node_id", "session_id"),
             "streaming",
         ),
-        # The tool's own summaries of a session. Text: kept 14 days, written only while text is kept.
+        # The tool's own summaries of a session, one row per version (seq counts per session, agent
+        # and kind). Text: written only while text is kept. A text over [storage] large_payload_bytes
+        # keeps a preview here and its whole text in file_blobs under text_hash (the file_text class).
         "session_digests": Table(
             (
                 ("session_id", "string"),
@@ -629,8 +633,12 @@ _DEFINED = (
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),
+                ("agent_id", "string"),
+                ("text_hash", "string"),
+                ("text_bytes", "long"),
+                ("event_key", "string"),
             ),
-            ("project", "node_id", "session_id", "kind", "seq"),
+            ("project", "node_id", "session_id", "agent_id", "kind", "seq"),
             "streaming",
             retention_days=14,
         ),

@@ -16,7 +16,7 @@ whose meaning the writing code does not settle says "meaning not established".
 
 ## Layout version
 
-The current layout is `LAYOUT_VERSION = 4`; it reads nodes from
+The current layout is `LAYOUT_VERSION = 5`; it reads nodes from
 `COMPATIBLE_SINCE = 3`. A change to tables, columns, keys or the meaning of
 stored values bumps the layout and adds a line here:
 
@@ -26,6 +26,7 @@ stored values bumps the layout and adds a line here:
 | 2 | yes | `agents_by_session` | agents: keyed by (session_id, agent_id), with a tombstone, the folder, branch and worktree the agent ran in, and observed_at (the time completed and ended_at were observed; the latest observation wins). agents_text: keyed by session_id too. sessions: resumed_from, the session a resumed or forked session's file replays. Before, an agent id copied into a resumed session settled under whichever session was written last. |
 | 3 | yes | `node_tables` | Each node writes its own tables (requests__&lt;node key&gt;, ...); a stored function named like each table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*. |
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
+| 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. |
 
 ### The `schema_version` registry
 
@@ -674,27 +675,35 @@ The row is put together from parts, one per source; a source read again replaces
 
 ### session_digests
 
-The tools' own summaries of a session. Text.
+The tools' own summaries of a session, one row per version. Text.
 
-- Key: `project`, `node_id`, `session_id`, `kind`, `seq`
+- Key: `project`, `node_id`, `session_id`, `agent_id`, `kind`, `seq`
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `text` (default 365d)
 - Written by: `session_facts.py` (`write`), from `ingesters/session_outcomes.py` and `ingesters/call_facts.py`, only while text is kept
 
+Rows written before layout 5 have `agent_id` "" and no `text_hash`; a `todo_list` row of
+Claude Code with `seq` 0 is from then and holds the last list seen, not one version. A Copilot
+`todo_list` row with `seq` 0 is the session store's current list.
+
 | column | type | meaning |
 |---|---|---|
 | `session_id` | string | The session |
-| `kind` | string | `checkpoint`, `task_summary`, `compact_summary`, `todo_list` or `workflow_summary` |
-| `seq` | long | Order of the digest within its kind |
+| `kind` | string | `checkpoint` (Copilot: title, overview, history, work done, technical details, important files, next steps), `task_summary`, `compact_summary`, `todo_list` (one version per list the tool sent: Claude `TodoWrite`, Copilot `update_todo`), `task_change` (one Claude `TaskCreate` or `TaskUpdate` call, its fields as sent) or `workflow_summary` |
+| `seq` | long | Version of the digest within its session, agent and kind, from 1 |
 | `ts` | real | Time of the digest, epoch seconds, UTC |
 | `title` | string | Title of the digest, when it has one. KQL keyword: write `['title']` |
-| `text` | string | The summary, redacted; a value over `large_payload_bytes` is a preview, see `text_payloads` |
+| `text` | string | The summary, redacted. Over `large_payload_bytes` a preview; the whole text is in `file_blobs` under `text_hash` |
 | `tool` | string | Tool id |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
+| `agent_id` | string | Part of the key. The subagent whose record holds the digest; "" for the main agent |
+| `text_hash` | string | When `text` is a preview: the `file_blobs.hash` of the whole text (kept as long as the `file_text` class); "" when `text` is whole |
+| `text_bytes` | long | Size of the whole text in UTF-8 bytes |
+| `event_key` | string | The `context_events.dedup_key` of the compaction or checkpoint this text summarises; "" when none |
 
 ### session_prompts
 
@@ -1271,6 +1280,8 @@ Compactions and context splits as a tool's session file records them.
 | `project` | string | Part of the key. The row's `project_path` from the reader |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
+| `summary_kind` | string | The `session_digests.kind` of the summary this event left (same session and agent); "" when none |
+| `summary_seq` | long | The `session_digests.seq` of that summary; null when none |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
 
@@ -1825,14 +1836,14 @@ A file that is no longer found is deleted with a tombstone.
 
 ### file_blobs
 
-Content of tracked context files, by hash. Text.
+Content of tracked context files, memory versions and large session summaries, by hash. Text.
 
 - Key: `project`, `node_id`, `hash`
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `file_text` (default 365d)
-- Written by: `file_inventory.py` (`sync`), only while text is kept, for files up to 512 KiB that are not sensitive
+- Written by: `file_inventory.py` (`sync`), only while text is kept, for files up to 512 KiB that are not sensitive; `session_facts.py` (`blobs`), only while text is kept, for the whole text of a large `session_digests` row
 
 | column | type | meaning |
 |---|---|---|
