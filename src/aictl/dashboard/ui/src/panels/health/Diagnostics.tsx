@@ -1,52 +1,43 @@
 import { createMemo, For, Show } from 'solid-js'
 import type { PanelProps } from '../types'
-import { PanelState } from '../../ui/PanelState'
+import { stamp } from '../../design/format'
 import { useHealth } from './healthData'
-import { healthSources, healthStatus, ingesterState, MISSING, otelConfig } from './healthModel'
-import { Detail, HealthBody } from './HealthParts'
+import { healthSources, healthStatus, ingesterState, NA, otelConfig, REPORTING_WINDOW, sourceActivity } from './healthModel'
+import { Detail, HealthBody, Reasons } from './HealthParts'
 import { StatTiles } from './HealthVisuals'
 
 export default function Diagnostics(props: PanelProps) {
   const health = useHealth()
-  return <HealthBody ctx={props.ctx}>{data => {
-    const status = createMemo(() => healthStatus(data(), null, health.now()))
+  return <HealthBody ctx={props.ctx} def={props.def}>{data => {
+    const status = createMemo(() => healthStatus(data(), null, health.now(), health.window()))
     const sources = createMemo(() => healthSources(data()))
-    const issueList = (items: string[]) => <ul><For each={items}>{item => <li>{item}</li>}</For></ul>
+    const activity = createMemo(() => sourceActivity(sources(), health.now()))
+    const known = () => data().pipeline?.freshness != null
     return <>
       <StatTiles items={[
-        { label: 'Needs action', value: status().issues.length, tone: status().issues.length ? 'warning' : 'positive' },
-        { label: 'Pending', value: status().pending.length },
-        { label: 'Known limitations', value: status().limitations.length },
-        { label: 'Reporting tools', value: sources().length || (data().pipeline?.freshness ? 0 : undefined) },
+        { label: 'Reasons', value: status().reasons.length, tone: status().reasons.length ? 'warning' : 'positive', detail: status().label },
+        { label: 'Reporting tools', value: known() ? activity().reporting.length : undefined, detail: `sent data in the ${REPORTING_WINDOW}` },
+        { label: 'Installed, no data', value: known() ? activity().silent.length : undefined,
+          detail: activity().silent.map(row => row.label ?? row.tool).join(', ') || undefined },
       ]} />
-      <Show when={status().issues.length} fallback={
-        <Show when={!status().pending.length && !status().limitations.length}>
-          <PanelState state="empty" inline message="No current health issues reported." />
-        </Show>
-      }>
-        <Detail label={`Problems that need action (${status().issues.length})`} open>{issueList(status().issues)}</Detail>
-      </Show>
-      <Show when={status().pending.length}><Detail label={`Pending measurements (${status().pending.length})`}>
-        {issueList(status().pending)}
-      </Detail></Show>
-      <Show when={status().limitations.length}><Detail label={`Known limitations (${status().limitations.length})`}>
-        {issueList(status().limitations)}
-      </Detail></Show>
+      <Reasons reasons={status().reasons} />
       <Detail label="Sources">
-        <Show when={sources().length} fallback={<p>{data().pipeline?.freshness ? 'No source rows.' : MISSING}</p>}>
+        <Show when={sources().length} fallback={<p>{known() ? 'No source rows.' : NA}</p>}>
           <ul><For each={sources()} keyed={source => source.tool}>{source => <li>
             <strong>{source().label ?? source().tool}</strong> — {source().last_data_ts
-              ? health.now() - source().last_data_ts! > 3600 ? 'No recent activity' : 'Active' : MISSING}
+              ? `last data ${stamp(source().last_data_ts, true)}` : 'installed, no data'}
             <Show when={otelConfig(data().pipeline, source().tool, health.now())}>{config => <p>{config().detail}</p>}</Show>
             <Show when={source().last_error}>{error => <p>{error()}</p>}</Show>
           </li>}</For></ul>
         </Show>
       </Detail>
-      <Detail label="Collectors"><Show when={data().monitor?.collectors?.length} fallback={<p>{data().monitor?.collectors ? 'No collector reports.' : MISSING}</p>}>
-        <ul><For each={data().monitor?.collectors} keyed={row => row.name}>{row => <li>{row().name}: {row().status} {row().detail}</li>}</For></ul>
+      <Detail label="Collectors"><Show when={data().monitor?.collectors?.length} fallback={<p>{data().monitor?.collectors ? 'none reported' : NA}</p>}>
+        <ul><For each={data().monitor?.collectors} keyed={row => row.name}>{row =>
+          <li>{row().name}: {row().status}{row().detail ? ` — ${row().detail}` : ''}</li>}</For></ul>
       </Show></Detail>
-      <Detail label="Ingesters"><Show when={data().pipeline?.ingesters?.length} fallback={<p>{data().pipeline?.ingesters ? 'No ingester reports.' : MISSING}</p>}>
-        <ul><For each={data().pipeline?.ingesters} keyed={row => row.name}>{row => <li>{row().name}: {ingesterState(row()).status} {row().error}</li>}</For></ul>
+      <Detail label="Ingesters"><Show when={data().pipeline?.ingesters?.length} fallback={<p>{data().pipeline?.ingesters ? 'none reported' : NA}</p>}>
+        <ul><For each={data().pipeline?.ingesters} keyed={row => row.name}>{row =>
+          <li>{row().name}: {ingesterState(row()).status}{row().error ? ` — ${row().error}` : ''}</li>}</For></ul>
       </Show></Detail>
     </>
   }}</HealthBody>

@@ -7,7 +7,7 @@ import { Chart } from '../../ui/Chart'
 import { PanelState } from '../../ui/PanelState'
 import { Segmented } from '../../ui/Segmented'
 import { States } from '../kinds/States'
-import { field, HealthTable, time } from './HealthParts'
+import { Detail, field, HealthBox, HealthTable, time } from './HealthParts'
 import { StatTiles } from './HealthVisuals'
 import {
   axisTicks, axisUnit, bucketTimes, confirmedSeries, formatValue, lastIndex, METRICS, metricPlot, nodeIds, nodeSummaries, RANGES,
@@ -16,8 +16,11 @@ import {
 } from './trendModel'
 import {
   backendPlot, backendTotals, confirmedBackend, confirmedFlows, flowLossPlot, flowTotals, groupPlot, nodeFlowSummaries, nodeRowsPlot,
-  tablePlot, tableSummaries, WORK, type BackendView, type FlowsView,
+  otelPlot, tablePlot, tableSummaries, WORK, type BackendView, type FlowsView,
 } from './flowTrends'
+import {
+  droppedEvents, droppedRows, failedCommands, failedIngestion, failedRequests, receivingTables, restartCount, restartList, restartText,
+} from './windowFacts'
 import styles from './Health.module.css'
 
 const REFRESH_MS = 30_000
@@ -198,6 +201,8 @@ export default function Trends(props: PanelProps) {
       ...nodeIds(rows).length > 1 ? [{ id: 'flow-nodes', title: 'Rows by node', description: 'Rows per second each node sent (stacked)',
         unit: 'per_s' as const, stack: true, plot: nodeRowsPlot(rows, at) }] : [],
       ...METRICS.filter(item => item.section === 'flows').map(item => seriesCard(item, rows, at)),
+      { id: 'flow-otel', title: 'OpenTelemetry received', description: 'Raw OTel rows per second sent to Kusto, by export table (stacked)',
+        unit: 'per_s', stack: true, plot: otelPlot(value, at, present) },
       { id: 'flow-queue', title: 'Queue by table', description: 'Peak rows waiting in writer queues for each table (stacked)',
         unit: 'count', stack: true, plot: tablePlot(value, at, 'queue_depth', present) },
       { id: 'flow-loss', title: 'Failures and drops', description: 'Failed ingestion requests and dropped rows in each bucket',
@@ -234,6 +239,9 @@ export default function Trends(props: PanelProps) {
     return METRICS.filter(item => item.section === 'hosts').map(item => seriesCard(item, rows, at))
   })
   const totals = createMemo(() => windowTotals(series()?.rows ?? []))
+  const rangeText = () => `last ${RANGES.find(item => item.id === range())!.label}`
+  const windowOf = () => ({ label: rangeText(), series: series(), flows: flows(), backend: backend() })
+  const restarts = createMemo(() => restartList(series()?.rows, window().step))
   const summaries = createMemo(() => nodeSummaries(series()?.rows ?? []).map(row => ({
     ...row, host_mem_bytes: fromMiB(row.host_mem_mb), daemon_rss_bytes: fromMiB(row.daemon_rss_mb),
   })))
@@ -248,7 +256,7 @@ export default function Trends(props: PanelProps) {
   const grid = (cards: Accessor<readonly Card[]>) =>
     <CardGrid cards={cards()} index={index()} onHover={setPinned} />
 
-  return <div class={styles.flow}>
+  return <HealthBox def={props.def}><div class={styles.flow}>
     <div class={styles.trendControls}>
       <Segmented label="Health history range" options={RANGES.map(({ id, label }) => ({ id, label }))} value={range()} onChange={choose} />
       <Segmented label="Health history view" options={views} value={view()} onChange={setView} />
@@ -277,13 +285,13 @@ export default function Trends(props: PanelProps) {
       <States result={flowsResult} retry={() => flowsTrend.remote.retry()} reserveStaleSpace
         empty="No node sent rows to Kusto in this window.">
         <div class={styles.trendStats}><StatTiles items={[
-          { label: 'Rows sent', value: flowTotal()?.rows },
-          { label: 'Mean rate', value: formatValue(flowTotal()?.meanRowsPerS, 'per_s'), detail: 'rows per second' },
-          { label: 'Peak rate', value: formatValue(flowTotal()?.peakRowsPerS, 'per_s'), detail: 'busiest bucket' },
-          { label: 'Tables', value: flowTotal()?.tables, detail: 'received rows' },
-          { label: 'Sending nodes', value: flowTotal()?.nodes },
-          { label: 'Failed requests', value: flowTotal()?.failures, tone: warn(flowTotal()?.failures) },
-          { label: 'Rows dropped', value: flowTotal()?.dropped, tone: warn(flowTotal()?.dropped) },
+          { label: 'Rows sent', value: flowTotal()?.rows, detail: rangeText() },
+          { label: 'Mean rate', value: formatValue(flowTotal()?.meanRowsPerS, 'per_s'), detail: `rows per second, ${rangeText()}` },
+          { label: 'Peak rate', value: formatValue(flowTotal()?.peakRowsPerS, 'per_s'), detail: `busiest bucket, ${rangeText()}` },
+          { label: 'Tables receiving rows', value: receivingTables(windowOf()), detail: `logical tables, ${rangeText()}` },
+          { label: 'Sending nodes', value: flowTotal()?.nodes, detail: rangeText() },
+          { label: 'Failed ingestion requests', value: failedIngestion(windowOf()), tone: warn(failedIngestion(windowOf())), detail: rangeText() },
+          { label: 'Rows dropped', value: droppedRows(windowOf()), tone: warn(droppedRows(windowOf())), detail: `writer queues, ${rangeText()}` },
           { label: 'Rows waiting', value: flowTotal()?.queued, detail: 'at the last snapshot' },
         ]} /></div>
         <Show when={view() === 'chart'} fallback={
@@ -295,10 +303,7 @@ export default function Trends(props: PanelProps) {
           <HealthTable ctx={ctx} label="Sending nodes" fields={flowNodeFields} rows={flowNodes()} rowId={row => row.node_id}
             action={viewNode()} />
         </Show>
-        <p class={styles.note}>
-          Counts are the changes in each daemon's writer counters between snapshots of the same process.
-          <Show when={flows()?.truncated}> The flows are incomplete because the row limit was reached.</Show>
-        </p>
+        <Show when={flows()?.truncated}><p class={styles.note}>Incomplete: the row limit was reached.</p></Show>
       </States>
     </TrendSection>
 
@@ -306,12 +311,12 @@ export default function Trends(props: PanelProps) {
       <States result={backendResult} retry={() => backendTrend.remote.retry()}
         empty="The cluster recorded no commands for this database in this window.">
         <div class={styles.trendStats}><StatTiles items={[
-          { label: 'Cluster CPU time', value: backendTotal() ? fmtDur(backendTotal()!.cpu) : undefined },
+          { label: 'Cluster CPU time', value: backendTotal() ? fmtDur(backendTotal()!.cpu) : undefined, detail: rangeText() },
           { label: 'Mean cores', value: backendTotal() ? decimal.format(backendTotal()!.cores) : undefined, detail: 'CPU time ÷ window' },
           { label: 'aictl share', value: backendTotal()?.aictlShare == null ? undefined : `${Math.round(backendTotal()!.aictlShare!)}%`,
             detail: 'of cluster CPU time' },
-          { label: 'Commands', value: backendTotal()?.commands },
-          { label: 'Failed commands', value: backendTotal()?.failed, tone: warn(backendTotal()?.failed) },
+          { label: 'Commands', value: backendTotal()?.commands, detail: rangeText() },
+          { label: 'Failed commands', value: failedCommands(windowOf()), tone: warn(failedCommands(windowOf())), detail: `cluster record, ${rangeText()}` },
           { label: 'Busiest aictl view', value: backendTotal()?.top?.view,
             detail: backendTotal()?.top?.cpu_s != null ? `${fmtDur(backendTotal()!.top!.cpu_s!)} CPU` : undefined },
         ]} /></div>
@@ -327,20 +332,29 @@ export default function Trends(props: PanelProps) {
       <Show when={backend()}>{value => <>
         <HealthTable ctx={ctx} label="aictl views by cluster CPU" fields={viewFields} rows={backendViews()} rowId={row => row.view}
           empty="No aictl queries were recorded in this window." />
-        <p class={styles.note}>{value().measurement_scope} Database {value().database}.</p>
+        <p class={styles.note} title={value().measurement_scope}>Database {value().database}</p>
       </>}</Show>
     </TrendSection>
 
     <TrendSection id="hosts" title="Hosts and daemons">
       <States result={seriesResult} retry={() => seriesTrend.remote.retry()} empty="No health samples were recorded in this window.">
         <div class={styles.trendStats}><StatTiles items={[
-          { label: 'Reporting nodes', value: totals().nodes },
-          { label: 'Daemon restarts', value: totals().restarts, tone: warn(totals().restarts) },
-          { label: 'Failed requests', value: totals().failures, tone: warn(totals().failures) },
-          { label: 'Dropped rows and events', value: totals().dropped, tone: warn(totals().dropped) },
-          { label: 'Peak host CPU', value: formatValue(totals().hostCpuPeak, 'percent') },
-          { label: 'Peak read latency', value: formatValue(totals().readPeak, 'ms') },
+          { label: 'Reporting nodes', value: totals().nodes, detail: rangeText() },
+          { label: 'Daemon restarts', value: restartCount(windowOf()), tone: warn(restartCount(windowOf())),
+            detail: restarts()?.[0] ? `latest ${restartText(restarts()![0], false)}` : rangeText() },
+          { label: 'Failed store requests', value: failedRequests(windowOf())?.total, tone: warn(failedRequests(windowOf())?.total),
+            detail: `reads, writes, commands, ${rangeText()}` },
+          { label: 'Rows dropped', value: droppedRows(windowOf()), tone: warn(droppedRows(windowOf())), detail: `writer queues, ${rangeText()}` },
+          { label: 'Events dropped', value: droppedEvents(windowOf()), tone: warn(droppedEvents(windowOf())), detail: `sink and OTel, ${rangeText()}` },
+          { label: 'Peak host CPU', value: formatValue(totals().hostCpuPeak, 'percent'), detail: rangeText() },
+          { label: 'Peak read latency', value: formatValue(totals().readPeak, 'ms'), detail: rangeText() },
         ]} /></div>
+        <Show when={restarts()?.length}>
+          <Detail label={`Daemon restarts (${restarts()!.length} buckets)`}>
+            <ul><For each={restarts()} keyed={item => `${item.node_id}:${item.at}`}>{item =>
+              <li>{restartText(item(), fleet() || summaries().length > 1)}</li>}</For></ul>
+          </Detail>
+        </Show>
         <Show when={view() === 'chart'} fallback={
           <HealthTable ctx={ctx} label="Health history buckets" fields={fleet() ? bucketFields
             : bucketFields.filter(item => item.path !== 'node_id')} rows={hostBuckets()}
@@ -353,13 +367,11 @@ export default function Trends(props: PanelProps) {
       </States>
     </TrendSection>
 
-    <p class={styles.note}>
-      Bucket size {formatStep(window().step)}. Node charts come from saved node snapshots; rates are computed between snapshots of
-      the same daemon process, so a restart starts a new count.
-      <Show when={series()?.truncated}> The host history is incomplete because the row limit was reached.</Show>
+    <p class={styles.note} title="Node charts come from saved node snapshots; rates are computed between snapshots of the same daemon process, so a restart starts a new count.">
+      Bucket size {formatStep(window().step)}<Show when={series()?.truncated}>. Incomplete: the row limit was reached.</Show>
     </p>
     </Show>
-  </div>
+  </div></HealthBox>
 }
 
 function formatStep(seconds: number) {

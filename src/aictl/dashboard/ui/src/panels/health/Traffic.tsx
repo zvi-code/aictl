@@ -30,7 +30,7 @@ export function Membership(props: { ctx: PanelProps['ctx']; store: StoreView | n
 }
 
 export default function Traffic(props: PanelProps) {
-  return <HealthBody ctx={props.ctx} select={data => data.store}>{data => {
+  return <HealthBody ctx={props.ctx} def={props.def} select={data => data.store}>{data => {
     const store = () => data().store
     const grouped = createMemo(() => modeGroups(store()))
     const matrix = createMemo(() => {
@@ -55,9 +55,8 @@ export default function Traffic(props: PanelProps) {
         items={MODES.map(id => ({ id, label: modeName[id], value: perMinute(mode(store(), id)?.rows_per_s) }))} />
       <HealthTable ctx={props.ctx} label="Destination traffic by physical ingestion mode" rows={matrix()}
         fields={matrixColumns} rowId={row => row.id} empty="No table-group activity reported in this window." />
-      <Detail label="Batch and queue details">
-        <p>Client submissions are not confirmed queryable.</p>
-        <p>Pending rows count tracked receipts or local queues, not the DM service backlog. Upload sizes are client acknowledgements, not server-merged batches.</p>
+      <Detail label="Batch and queue details"
+        hint="Client submissions are not confirmed queryable. Pending rows count tracked receipts or local queues, not the DM service backlog. Upload sizes are client acknowledgements, not server-merged batches.">
         <HealthTable ctx={props.ctx} label="Ingestion mode uploads" rows={modes()} rowId={row => row.mode}
           fields={[field('mode', 'Mode'), ...rates, field('pending', 'Tracked pending rows'), field('pending_scope', 'Pending scope'),
             field('successful_requests', 'Acknowledged requests'), field('avg_rows', 'Average rows/upload'),
@@ -67,8 +66,7 @@ export default function Traffic(props: PanelProps) {
           fields={[...membership.slice(0, 2), ...rates, field('pending', 'Pending rows'), field('failed', 'Failures since start')]}
           rowId={row => rowId(row, 'mode', 'id')} empty="No table-group activity reported in this window." />
       </Detail>
-      <Detail label="Combined table-group totals">
-        <p>Totals across the modes reported for each table group. This table is not a substitute for per-mode measurements.</p>
+      <Detail label="Combined table-group totals" hint="Totals across the modes reported for each table group; not a substitute for the per-mode measurements.">
         <HealthTable ctx={props.ctx} label="Combined table-group totals" rows={store()?.traffic_groups} rowId={row => row.id}
           fields={[field('label', 'Group'), ...rates, field('requests', 'Requests'), field('rows', 'Rows'), field('bytes', 'Bytes', 'bytes'), field('measurement_scope', 'Scope')]} />
       </Detail>

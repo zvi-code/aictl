@@ -1,11 +1,10 @@
-import { createMemo, Show, untrack } from 'solid-js'
+import { createMemo, For, Show, untrack } from 'solid-js'
 import type { PanelProps } from '../types'
 import { PanelState } from '../../ui/PanelState'
 import { date, Detail, fact, Facts, field, HealthBody, HealthTable, time } from './HealthParts'
 import { useHealth } from './healthData'
 import { finite } from './healthModel'
-import { Meter } from '../../ui/Meter'
-import { HealthComparison, StatTiles, percentOf, totalOf } from './HealthVisuals'
+import { HealthMeter, HealthComparison, StatTiles, percentOf, totalOf } from './HealthVisuals'
 import styles from './Health.module.css'
 
 const resourceFields = [
@@ -26,7 +25,7 @@ const fromMiB = (value: unknown) => finite(value) ? value * 1048576 : undefined
 export default function Resources(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
   const health = useHealth()
-  return <HealthBody ctx={ctx} select={value => value.node_report ?? value.resources}>{data => {
+  return <HealthBody ctx={ctx} def={props.def} select={value => value.node_report ?? value.resources}>{data => {
     const cluster = () => data().resources?.cluster
     const rows = createMemo<(Record<string, unknown> & { node_id: string })[] | undefined>(() => {
       const report = data().node_report
@@ -64,8 +63,8 @@ export default function Resources(props: PanelProps) {
       ]} />
       <Show when={ctx.scope() === 'fleet'} fallback={
         <div class={styles.meters}>
-          <Meter label="Host CPU" value={number(one()?.cpu_percent)} />
-          <Meter label="Host memory in use" value={percentOf(one()?.memory_used_bytes, one()?.memory_total_bytes)} />
+          <HealthMeter label="Host CPU" value={number(one()?.cpu_percent)} />
+          <HealthMeter label="Host memory in use" value={percentOf(one()?.memory_used_bytes, one()?.memory_total_bytes)} />
         </div>
       }>
         <HealthComparison id="host-cpu" label="CPU by reporting host" unit="%"
@@ -73,10 +72,13 @@ export default function Resources(props: PanelProps) {
       </Show>
       <Show when={cluster()}>
         <div class={styles.meters}>
-          <Meter label="Shared cluster CPU" value={azureMetric('cpu_percent')} />
-          <Meter label="Shared hot cache in use" value={azureMetric('cache_percent')} />
-          <Meter label="Shared ingestion utilization" value={azureMetric('ingestion_percent')} />
+          <For each={[['Shared cluster CPU', 'cpu_percent'], ['Shared hot cache in use', 'cache_percent'],
+            ['Shared ingestion utilization', 'ingestion_percent']] as const} keyed={([, key]) => key}>{item =>
+            <Show when={azureMetric(item()[1]) !== undefined}><HealthMeter label={item()[0]} value={azureMetric(item()[1])} /></Show>}</For>
         </div>
+        <Show when={['cpu_percent', 'cache_percent', 'ingestion_percent'].every(key => azureMetric(key) === undefined)}>
+          <StatTiles items={[{ label: 'Shared cluster metrics', detail: 'no recent sample' }]} />
+        </Show>
       </Show>
       <HealthTable ctx={ctx} label="Reported node runtime" fields={resourceFields} rows={rows()} rowId={row => row.node_id}
         empty="No nodes reported host measurements."

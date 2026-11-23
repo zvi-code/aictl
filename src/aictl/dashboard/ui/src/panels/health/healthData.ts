@@ -3,6 +3,13 @@ import type { DetailNodes, HealthLocal, TableInventory } from '../../data/contra
 import type { PanelContext, Read } from '../types'
 import { STALE_AFTER_S, finite, type HealthView } from './healthModel'
 import { confirmedHealth, healthNodePath, needsSupplement, scopedHealth } from './scopedHealth'
+import { createBoxes } from '../../ui/Box'
+import { confirmedBackend, confirmedFlows, type BackendView, type FlowsView } from './flowTrends'
+import { confirmedSeries, seriesPath, seriesWindow, type SeriesView, type TrendView } from './trendModel'
+import type { HealthWindow } from './windowFacts'
+
+const WINDOW_S = 86400
+const WINDOW_LABEL = 'last 24 h'
 
 const localHealth = { topic: 'runtime.health', entity: 'local' } as const
 
@@ -100,11 +107,35 @@ export function healthData(ctx: PanelContext) {
     const stale = response?.status === 'refreshing' || response?.status === 'stale' || now() - value.generated_at > STALE_AFTER_S
     return { state: stale ? 'stale' : 'ready', value, message: response?.error ? String(response.error) : undefined }
   })
+  // The same 24 h windows as the default range of the trends, so the status and the charts count the same rows.
+  const range = createMemo(() => seriesWindow(now(), WINDOW_S))
+  const windowView = <T extends DetailNodes>(view: TrendView, confirm: (value: DetailNodes | undefined, scope: 'local' | 'node' | 'fleet', nodeId: string | null) => boolean) => {
+    const where = createMemo(() => seriesPath(ctx.scope(), ctx.nodeId(), range().since, range().until, view))
+    const resource = untrack(() => ctx.detail<DetailNodes>(where))
+    return Object.assign(createMemo(() => {
+      const value = resource()?.data
+      return confirm(value, ctx.scope(), ctx.nodeId()) ? value as T : undefined
+    }), { retry: resource.retry })
+  }
+  const seriesWindowRead = windowView<SeriesView>('series', confirmedSeries)
+  const flowsWindowRead = windowView<FlowsView>('flows', confirmedFlows)
+  const backendWindowRead = windowView<BackendView>('backend', confirmedBackend)
+  createEffect(() => true, () => {
+    const timer = setInterval(() => {
+      if (document.hidden) return
+      seriesWindowRead.retry(); flowsWindowRead.retry(); backendWindowRead.retry()
+    }, 30000)
+    return () => clearInterval(timer)
+  })
+  const window = createMemo<HealthWindow>(() => ({
+    label: WINDOW_LABEL, series: seriesWindowRead(), flows: flowsWindowRead(), backend: backendWindowRead(),
+  }))
+  const boxes = createBoxes('aictl-pref-health-boxes')
   const inventory = createMemo(() => {
     if (ctx.scope() !== 'local') return read().value?.store?.table_inventory
     const live = ctx.read({ topic: 'runtime.health', entity: 'table_inventory', path: 'inventory' })
     return (live.value as TableInventory | undefined) ?? read().value?.store?.table_inventory
   })
   const readInventory = () => inventoryRead(inventory(), read())
-  return { now, read, inventory, readInventory }
+  return { now, read, inventory, readInventory, window, boxes }
 }

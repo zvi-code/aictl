@@ -3,7 +3,7 @@ import { captureFrame, checkAxe, checkConsole, dist, expect, provideCatalog, pro
 import { startReplay } from '../replay/server.mjs';
 
 const now = 1795134732;
-const missing = 'Not available from this source';
+const missing = 'n/a';
 const quiet = fileURLToPath(new URL('../../../../../../test/recordings/quiet/', import.meta.url));
 const healthTest = test.extend({
   healthReplay: [async ({}, use) => {
@@ -77,15 +77,9 @@ healthTest('HLT-01 and HLT-06: show live health, actionable issues and source di
   await expect(highlights.getByText('Health updated')).toBeVisible();
   await expect(highlights.getByText('Degraded', { exact: true })).toBeVisible();
   const diagnostics = await panel(page, 'healthDiagnostics');
-  await expect(diagnostics.getByText('Needs action', { exact: true }).locator('..').locator('dd')).toHaveText(/^[1-9]\d*$/);
-  const problems = diagnostics.getByText(/Problems that need action/);
-  // Problems start open; the keyboard still folds and unfolds them.
-  const issue = diagnostics.getByText('health-replay: Fixture event 0');
-  await expect(issue).toBeVisible();
-  await problems.press('Enter');
-  await expect(issue).toBeHidden();
-  await problems.press('Space');
-  await expect(issue).toBeVisible();
+  await expect(diagnostics.getByText('Reasons', { exact: true }).locator('..').locator('dd').first()).toHaveText(/^[1-9]\d*$/);
+  // Every reason of the status is listed, not folded.
+  await expect(diagnostics.getByText('health-replay: Fixture event 0')).toBeVisible();
   await diagnostics.getByText('Collectors', { exact: true }).press('Enter');
   await expect(diagnostics.getByText('Collectors', { exact: true }).locator('..').locator('li').first()).toBeVisible();
   await diagnostics.getByText('Collectors', { exact: true }).press('Space');
@@ -148,7 +142,7 @@ healthTest('HLT-04 and HLT-05: inspect host rows and scroll the virtual inventor
   await showAll(page);
   const inventory = await panel(page, 'tableInventory');
   const table = inventory.getByRole('table', { name: 'Table inventory' });
-  await expect(inventory.getByText('Tables measured', { exact: true }).locator('..').locator('dd')).toHaveText('57');
+  await expect(inventory.getByText('Physical tables', { exact: true }).locator('..').locator('dd')).toHaveText('57');
   await expect(table).toHaveAttribute('aria-rowcount', '58');
   const last = table.locator('[data-row-id=\'["vscode_chat_messages"]\']');
   await expect(last).toHaveCount(0);
@@ -169,7 +163,6 @@ healthTest('HLT-07 and HLT-08: open collection counters and compare sources by t
   await collection.getByText('Collection details', { exact: true }).press('Space');
   await expect(collection.getByText('Live viewers')).toBeVisible();
   await expect(collection.getByText('OTel metrics received')).toBeVisible();
-  await expect(collection.getByText(/not proof that the data can be queried/)).toBeVisible();
   const sources = await panel(page, 'sources');
   const tools = sources.getByRole('table', { name: 'Data sources', exact: true });
   await expect(tools.locator('[data-row-id="copilot-cli"]')).toBeVisible();

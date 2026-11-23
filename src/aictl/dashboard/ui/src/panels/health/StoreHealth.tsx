@@ -1,11 +1,10 @@
 import { createMemo, For, Show, untrack } from 'solid-js'
 import type { PanelProps } from '../types'
 import { PanelState } from '../../ui/PanelState'
-import { entries, finite, measuredValue, measurementState, record, storeOperations, text } from './healthModel'
+import { entries, finite, measuredValue, measurementState, record, sinceStart, storeOperations, text } from './healthModel'
 import { writerReports, writerRows } from './scopedHealth'
 import { date, Detail, fact, Facts, field, HealthBody, HealthTable, rowId, time } from './HealthParts'
-import { Meter } from '../../ui/Meter'
-import { HealthComparison, StatTiles, percentOf, perMinute, totalOf } from './HealthVisuals'
+import { HealthMeter, HealthComparison, StatTiles, percentOf, perMinute, totalOf } from './HealthVisuals'
 import { Membership, mode } from './Traffic'
 import { StoreLinks } from './Highlights'
 import styles from './Health.module.css'
@@ -28,7 +27,7 @@ const writerFields = [
 
 export default function StoreHealth(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
-  return <HealthBody ctx={ctx} select={value => value.store}>{data => {
+  return <HealthBody ctx={ctx} def={props.def} select={value => value.store}>{data => {
     const store = () => data().store
     const capacity = () => store()?.ingestion_capacity
     const volume = () => store()?.volume
@@ -59,19 +58,19 @@ export default function StoreHealth(props: PanelProps) {
       <StatTiles items={[
         ...(ctx.scope() === 'fleet'
           ? [{ label: 'Daemons with query CPU', value: queryRows()?.filter(row => finite(row.total_cpu_s)).length }]
-          : [{ label: 'Kusto query CPU', value: queryCpu()?.total_cpu_s, unit: 's' }]),
-        { label: 'Read requests/min', value: perMinute(store()?.reads?.rate_per_s) },
-        { label: 'Writer queue depth', value: totalOf(tables()?.map(row => record(row)?.queue_depth)), unit: 'rows' },
-        { label: 'Writer rows dropped', value: totalOf(tables()?.map(row => record(row)?.rows_dropped)) },
-        { label: 'Stored rows', value: measuredValue(volume(), 'rows'), detail: stale(volume()) ? 'Stale' : undefined },
+          : [{ label: 'Kusto query CPU', value: queryCpu()?.total_cpu_s, unit: 's', detail: sinceStart(data()) }]),
+        { label: 'Read requests/min', value: perMinute(store()?.reads?.rate_per_s), detail: 'last 60 s' },
+        { label: 'Writer queue depth', value: totalOf(tables()?.map(row => record(row)?.queue_depth)), unit: 'rows', detail: 'waiting now' },
+        { label: 'Writer rows dropped', value: totalOf(tables()?.map(row => record(row)?.rows_dropped)), detail: sinceStart(data()) },
+        { label: 'Stored rows', value: measuredValue(volume(), 'rows'), detail: stale(volume()) ? 'Stale' : 'current logical rows' },
         { label: 'Cluster slots available', value: available(), detail: capacityStale() ? 'Stale' : undefined },
         { label: 'Cluster slots total', value: slots(), detail: capacityStale() ? 'Stale' : undefined },
       ]} />
       <div class={styles.meters}>
-        <Meter label="Cluster slots in use" value={slotFill()} stale={capacityStale()}
+        <HealthMeter label="Cluster slots in use" value={slotFill()} stale={capacityStale()}
           tone={capacityStale() || slotFill() === 100 ? 'warning' : 'neutral'} />
         <Show when={ctx.scope() !== 'fleet'}>
-          <Meter label="Failed share since client start" value={failedShare()} tone={(failedShare() ?? 0) > 0 ? 'warning' : 'positive'} />
+          <HealthMeter label="Failed share since client start" value={failedShare()} tone={(failedShare() ?? 0) > 0 ? 'warning' : 'positive'} />
         </Show>
       </div>
       <Show when={ctx.scope() === 'fleet'}>
@@ -98,8 +97,7 @@ export default function StoreHealth(props: PanelProps) {
           fact('3. Inline submissions', mode(store(), 'inline')?.rows_per_s, 'per_s'),
           fact('4. Queryable rows', measuredValue(volume(), 'rows')),
         ]} />
-        <h4>Client requests since daemon start</h4>
-        <p>Client counters reset when the daemon restarts. Rates cover up to 60 seconds.</p>
+        <h4 title="Client counters reset when the daemon restarts. Rates cover up to 60 seconds.">Client requests {sinceStart(data())}</h4>
         <Show when={requests().length} fallback={<PanelState state="unavailable" inline />}>
           <HealthTable ctx={ctx} label="Client requests since daemon start" rows={requests()} rowId={row => row.operation} fields={requestFields} />
           <Show when={requests().every(row => record(row)?.total === 0)}><PanelState state="empty" inline message="No measured requests." /></Show>
@@ -112,8 +110,7 @@ export default function StoreHealth(props: PanelProps) {
           fact('OTel bytes buffered', store()?.otel_sink?.pending_bytes, 'bytes'),
           fact('Tracked history receipts', store()?.queued_history_rows_unconfirmed),
         ]} />
-        <h4>Kusto query CPU per daemon</h4>
-        <p>Totals start when each daemon creates its query client. CPU includes only attempts for which Kusto reported it.</p>
+        <h4 title="Totals start when each daemon creates its query client. CPU includes only attempts for which Kusto reported it.">Kusto query CPU per daemon</h4>
         <HealthTable ctx={ctx} label="Kusto query CPU per daemon"
           fields={isLocal() ? queryCpuFields : [field('node_id', 'Node'), ...queryCpuFields]}
           rows={queryRows()}
@@ -131,8 +128,7 @@ export default function StoreHealth(props: PanelProps) {
           fact('Capacity status', measurementState(capacity())), date('Capacity measured', capacity()?.checked_at),
           fact('Capacity read error', capacity()?.last_error),
         ]} />
-        <h4>Database ingestion policy and client routing</h4>
-        <p>These are database policies, not table policies. Client overrides select the ingestion route.</p>
+        <h4 title="These are database policies, not table policies. Client overrides select the ingestion route.">Database ingestion policy and client routing</h4>
         <Facts ctx={ctx} items={[
           fact('Policy read status', policy()?.status), date('Policy checked', policy()?.checked_at),
           date('Policy last attempted', policy()?.attempted_at), fact('Policy read error', policy()?.last_error),
@@ -150,8 +146,7 @@ export default function StoreHealth(props: PanelProps) {
         <HealthTable ctx={ctx} label="Client table overrides" fields={[field('table', 'Table'), field('mode', 'Mode')]}
           rows={record(config()?.table_overrides) ? entries(config()?.table_overrides).map(([table, mode]) => ({ table, mode })) : undefined}
           rowId={row => row.table} empty="No table overrides." />
-        <h4>Writer counters by table</h4>
-        <p>Rows sent are not confirmed queryable. Queue and drop counters are per reporting writer.</p>
+        <h4 title="Rows sent are not confirmed queryable. Queue and drop counters are per reporting writer.">Writer counters by table</h4>
         <For each={writers()} keyed={writer => writer.node_id ?? ''}>{writer => <Facts ctx={ctx} items={[
           fact(writer().node_id ? `${writer().node_id} writer status` : 'Writer status', writer().status),
           fact('Writer warning', writer().warning),

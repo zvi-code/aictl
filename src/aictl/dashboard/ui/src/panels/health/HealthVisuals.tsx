@@ -2,7 +2,8 @@ import { createMemo, For, Show } from 'solid-js'
 import { BarPlot } from '../kinds/BarPlot'
 import { PanelState } from '../../ui/PanelState'
 import { Stat } from '../../ui/Stat'
-import { finite } from './healthModel'
+import { Meter } from '../../ui/Meter'
+import { finite, NA, NA_REASON } from './healthModel'
 import styles from './Health.module.css'
 
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 })
@@ -21,7 +22,10 @@ export function StatTiles(props: { items: readonly Metric[] }) {
       const current = item().value
       return typeof current === 'string' || finite(current) ? current : undefined
     }
-    return <Stat label={item().label} value={value()} unit={item().unit} tone={item().tone} detail={item().detail} />
+    // A value the source does not report reads "n/a"; the reason is in the hover text.
+    return <div class={styles.tile} title={value() === undefined ? `${item().label}: ${NA_REASON}` : item().detail}>
+      <Stat label={item().label} value={value() ?? NA} unit={value() === undefined ? undefined : item().unit} tone={item().tone} detail={item().detail} />
+    </div>
   }}</For></div>
 }
 
@@ -47,4 +51,12 @@ export function HealthComparison(props: { id: string; label: string; unit: strin
       </Show>
     </section>
   </Show>
+}
+
+/** A meter for a reported value; a value the source does not report reads "n/a" on one short line. */
+export function HealthMeter(props: Parameters<typeof Meter>[0]) {
+  const valid = () => props.value != null && Number.isFinite(props.value) && props.value >= 0
+  return <Show when={valid()} fallback={
+    <div class={styles.line} title={`${props.label}: ${NA_REASON}`}><span class={styles.note}>{props.label}</span> <strong>{NA}</strong></div>
+  }><Meter {...props} /></Show>
 }

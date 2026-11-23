@@ -1,10 +1,10 @@
 import { createMemo, For, Show } from 'solid-js'
+import { HiddenBoxes } from '../../ui/Box'
 import type { PanelProps } from '../types'
 import { finite, healthStatus, text } from './healthModel'
 import { healthNodePath } from './scopedHealth'
-import { date, Detail, fact, Facts, HealthBody } from './HealthParts'
-import { Meter } from '../../ui/Meter'
-import { StatTiles, percentOf, perMinute } from './HealthVisuals'
+import { date, Detail, fact, Facts, HealthBody, Reasons } from './HealthParts'
+import { HealthMeter, StatTiles, percentOf, perMinute } from './HealthVisuals'
 import { useHealth } from './healthData'
 import styles from './Health.module.css'
 
@@ -35,25 +35,29 @@ export function StoreLinks(props: { cluster: unknown; database: unknown }) {
 
 export default function Highlights(props: PanelProps) {
   const health = useHealth()
-  return <HealthBody ctx={props.ctx}>{data => {
-    const status = createMemo(() => healthStatus(data(), null, health.now()))
+  return <HealthBody ctx={props.ctx} def={props.def}>{data => {
+    const status = createMemo(() => healthStatus(data(), null, health.now(), health.window()))
     const store = () => data().store
     const report = () => data().node_report
+    const reasons = () => status().reasons
     return <>
+      <HiddenBoxes boxes={health.boxes} />
       <StatTiles items={[
-        { label: 'Health status', value: status().label, tone: status().issues.length ? 'warning' : 'neutral' },
-        { label: 'Actionable issues', value: status().issues.length, tone: status().issues.length ? 'warning' : 'positive' },
-        { label: 'Read requests/min', value: perMinute(store()?.reads?.rate_per_s) },
+        { label: 'Health status', value: status().label, tone: status().cls === 'good' ? 'positive' : 'warning' },
+        { label: 'Reasons', value: reasons().length, tone: reasons().length ? 'warning' : 'positive',
+          detail: reasons().length ? `${status().issues.length} need action · ${status().pending.length} pending · ${status().limitations.length} limited` : 'none' },
+        { label: 'Read requests/min', value: perMinute(store()?.reads?.rate_per_s), detail: 'last 60 s' },
         props.ctx.scope() === 'fleet'
           ? { label: 'Daemons with query CPU', value: data().queryCpuByNode?.filter(row => finite(row.total_cpu_s)).length }
           : { label: 'Kusto query CPU', unit: 's', detail: 'Since client start',
             value: report() ? data().queryCpuByNode?.[0]?.total_cpu_s : store()?.query_cpu?.total_cpu_s },
       ]} />
+      <Reasons reasons={reasons()} />
       <Facts ctx={props.ctx} items={[
         date('Health updated', data().generated_at || undefined),
       ]} />
       <Show when={report()}>{node => <>
-          <Meter label={`Client counters: ${node().contributors.length} of ${node().rows.length} nodes`}
+          <HealthMeter label={`Client counters: ${node().contributors.length} of ${node().rows.length} nodes`}
             value={percentOf(node().contributors.length, node().rows.length)} />
           <nav aria-label="Node measurements" class={styles.links}>
             <Show when={healthNodePath(props.ctx.scope(), props.ctx.nodeId())}><a href={healthNodePath(props.ctx.scope(), props.ctx.nodeId())}>Node measurements</a></Show>

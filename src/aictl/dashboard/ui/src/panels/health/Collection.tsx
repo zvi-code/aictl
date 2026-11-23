@@ -1,14 +1,13 @@
 import { Show, untrack } from 'solid-js'
 import type { PanelProps } from '../types'
 import { date, Detail, fact, Facts, field, HealthBody, HealthTable, rowId } from './HealthParts'
-import { measuredValue, writeWarning } from './healthModel'
-import { Meter } from '../../ui/Meter'
-import { StatTiles, percentOf } from './HealthVisuals'
+import { measuredValue, sinceStart, writeWarning } from './healthModel'
+import { HealthMeter, StatTiles, percentOf } from './HealthVisuals'
 import styles from './Health.module.css'
 
 export default function Collection(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
-  return <HealthBody ctx={ctx} select={data => data.pipeline}>{data => {
+  return <HealthBody ctx={ctx} def={props.def} select={data => data.pipeline}>{data => {
     const self = () => data().pipeline?.self
     const stream = () => data().pipeline?.stream
     const sink = () => data().pipeline?.sink
@@ -19,12 +18,12 @@ export default function Collection(props: PanelProps) {
     return <>
       <StatTiles items={[
         { label: 'Daemon uptime', value: self()?.uptime_s, unit: 's' },
-        { label: 'Live viewers', value: stream()?.connected_clients },
+        { label: 'Live viewers', value: stream()?.connected_clients, detail: 'connected now' },
         { label: 'Snapshot age', value: stream()?.snapshot_age_s, unit: 's' },
-        { label: 'Samples buffered', value: sink()?.buffered },
-        { label: 'Samples dropped', value: sink()?.dropped, tone: sink()?.dropped ? 'warning' : 'neutral' },
+        { label: 'Samples buffered', value: sink()?.buffered, detail: 'waiting now' },
+        { label: 'Samples dropped', value: sink()?.dropped, tone: sink()?.dropped ? 'warning' : 'neutral', detail: sinceStart(data()) },
       ]} />
-      <Meter label="Dropped share of samples" value={drops()} tone={(drops() ?? 0) > 0 ? 'warning' : 'neutral'} />
+      <HealthMeter label="Dropped share of samples" value={drops()} tone={(drops() ?? 0) > 0 ? 'warning' : 'neutral'} />
       <Show when={sink()?.flood || warning()}><p class={styles.warning}>
         {sink()?.flood ? 'Flood protection is dropping collector samples.' : warning()}
       </p></Show>
@@ -45,7 +44,6 @@ export default function Collection(props: PanelProps) {
           fact('OTel model errors', otel()?.api_errors_total, undefined, 'otel.receiver.api_errors_total'),
           fact('Rejected OTel payloads', otel()?.errors, undefined, 'otel.receiver.parse_errors'), fact('Skipped OTel items', otel()?.dropped),
         ]} />
-        <p>Submitted samples are not proof that the data can be queried.</p>
         <HealthTable ctx={ctx} label="Active history writes" rows={self()?.writes} rowId={row => rowId(row, 'name', 'started_at')}
           fields={[field('name', 'Write'), field('age_s', 'Elapsed', 'seconds')]} empty="No writes in progress." />
       </Detail>

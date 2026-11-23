@@ -17,13 +17,16 @@ const eventFields = [
 
 export default function Quality(props: PanelProps) {
   const ctx = untrack(() => props.ctx)
-  return <HealthBody ctx={ctx} select={data => data.pipeline}>{data => {
+  return <HealthBody ctx={ctx} def={props.def} select={data => data.pipeline}>{data => {
     const ingesters = createMemo(() => data().pipeline?.ingesters?.map(row => ({ ...row,
       activity: row.status ? ingesterState(row).status : undefined,
       last_ok: row.last_ok === null ? 'No successful poll yet' : row.last_ok,
+      // A poll that did not fail has no error to report; a failed poll without a message stays unreported.
+      error: row.error ?? (['ok', 'running', 'waiting', 'off'].includes(row.status ?? '') ? 'no error' : undefined),
     })))
     const events = createMemo(() => data().pipeline?.data_quality?.slice().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
-      .slice(0, 10).map(row => ({ ...row, context: qualityContext(row, data().pipeline?.ingesters ?? []) })))
+      .slice(0, 10).map(row => ({ ...row, context: qualityContext(row, data().pipeline?.ingesters ?? []) ?? '',
+        error: row.error ?? (row.severity === 'error' ? undefined : 'no error') })))
     return <>
       <StatTiles items={[
         { label: 'Reporting ingesters', value: ingesters()?.length },

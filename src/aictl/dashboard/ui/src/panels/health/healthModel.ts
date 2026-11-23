@@ -1,6 +1,7 @@
-import { ago, fmtAge } from '../../design/format'
+import { ago, fmtAge, stamp } from '../../design/format'
 import type { HealthLocal, HealthStore, MachineMonitor, MachinePipeline, QueryCpu } from '../../data/contract.gen'
 import type { NodeReport, WriterReport } from './scopedHealth'
+import { droppedRows, failedCommands, failedIngestion, failedRequests, type HealthWindow } from './windowFacts'
 
 type Write = NonNullable<MachinePipeline['self']>['writes'][number]
 type Ingester = MachinePipeline['ingesters'][number]
@@ -22,7 +23,14 @@ export type HealthView = {
 }
 
 export const MODES = ['queued', 'streaming', 'inline'] as const
-export const MISSING = 'Not available from this source'
+/**
+ * Three different answers, each with its own compact marker: `NA` when the source does not report a value,
+ * `NONE` when it measured and found nothing, `LOADING` while the read has not finished. A measured zero is "0".
+ */
+export const NA = 'n/a'
+export const NONE = 'none'
+export const LOADING = 'loading…'
+export const NA_REASON = 'Not reported by this source'
 export const STALE_AFTER_S = 60
 export const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
 export const record = (value: unknown): Record<string, unknown> | undefined =>
@@ -103,10 +111,57 @@ export function storeOperations(store?: StoreView | null) {
   ] as const
 }
 
-export function healthStatus(data?: HealthView | null, error?: unknown, nowS = Date.now() / 1000) {
+const count = new Intl.NumberFormat()
+const throttled = (text: unknown) => typeof text === 'string' && /\b429\b|throttl/i.test(text)
+
+/** When the daemon started, from its own start time or its uptime at the time of the response. */
+export function daemonStart(data?: Pick<HealthView, 'generated_at' | 'pipeline'> | null) {
+  const self = data?.pipeline?.self
+  if (finite(self?.started_at) && self.started_at > 0) return self.started_at
+  return finite(self?.uptime_s) && finite(data?.generated_at) ? data.generated_at - self.uptime_s : undefined
+}
+
+/** The window of the live counters, which restart with the daemon. */
+export function sinceStart(data?: Pick<HealthView, 'generated_at' | 'pipeline'> | null) {
+  const at = daemonStart(data)
+  return at === undefined ? 'since daemon start' : `since daemon start at ${stamp(at, true)}`
+}
+
+/** The files an ingester reports as waiting, newest quality record per component first. */
+export function backlog(pipe: HealthView['pipeline']) {
+  const seen = new Set<string>()
+  const rows = [...(pipe?.data_quality ?? [])].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0)).filter(row => {
+    const key = row.component ?? ''
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  return rows.flatMap(row => {
+    const byTool = Object.entries(row.files_waiting ?? {}).filter(([, n]) => finite(n) && n > 0)
+    const total = byTool.length ? byTool.reduce((sum, [, n]) => sum + n, 0) : finite(row.older_files_waiting) ? row.older_files_waiting : 0
+    return total > 0 ? [{ component: row.component || 'ingester', total, byTool }] : []
+  })
+}
+
+export type StatusReason = { level: 'critical' | 'warning' | 'pending' | 'limitation'; text: string }
+
+export function healthStatus(data?: HealthView | null, error?: unknown, nowS = Date.now() / 1000, window?: HealthWindow | null) {
   const severe: string[] = [], warnings: string[] = [], pending: string[] = [], limitations: string[] = []
-  if (!data) return error ? { label: 'Unavailable', cls: 'crit', issues: ['Could not read live health.'], pending, limitations }
-    : { label: 'Unknown', cls: 'warn', issues: [], pending: ['Waiting for live health.'], limitations }
+  const done = (label: string, cls: string): {
+    label: string; cls: string; issues: string[]; pending: string[]; limitations: string[]; reasons: StatusReason[]
+  } => {
+    const issues = [...new Set([...severe, ...warnings])]
+    return { label, cls, issues, pending, limitations, reasons: [
+      ...[...new Set(severe)].map(text => ({ level: 'critical' as const, text })),
+      ...warnings.filter(text => !severe.includes(text)).map(text => ({ level: 'warning' as const, text })),
+      ...pending.map(text => ({ level: 'pending' as const, text })), ...limitations.map(text => ({ level: 'limitation' as const, text })),
+    ] }
+  }
+  if (!data) {
+    if (error) severe.push('Could not read live health.')
+    else pending.push('Waiting for live health.')
+    return error ? done('Unavailable', 'crit') : done('Unknown', 'warn')
+  }
   const { pipeline: pipe, store, node_report: report } = data
   const collectors = data.monitor?.collectors ?? []
   const ingesters = pipe?.ingesters ?? []
@@ -160,6 +215,40 @@ export function healthStatus(data?: HealthView | null, error?: unknown, nowS = D
     if (config?.warning) add(`${tool}: ${config.detail}`)
   }
   if (pipe?.otel_receiver?.active === false) add('OTel receiver has no traffic in the last 5 min.')
+  // Live counters restart with the daemon, so each count says the window it covers.
+  const since = sinceStart(data)
+  for (const [label, operation] of storeOperations(store)) {
+    if (failures.some(([name]) => name === label)) continue
+    const failed = operation?.failed, total = operation?.total
+    if (finite(failed) && failed > 0) {
+      add(`${label}: ${count.format(failed)}${finite(total) ? ` of ${count.format(total)}` : ''} requests failed ${since}`
+        + (throttled(operation?.last_error) ? '; the cluster throttled requests (HTTP 429)' : ''))
+    } else if (throttled(operation?.last_error)) add(`${label}: the cluster throttled requests (HTTP 429), last error ${since}`)
+  }
+  if (throttled(store?.reader?.last_error) && !warnings.some(text => /throttled requests/.test(text))) {
+    add(`Reader: the cluster throttled requests (HTTP 429) ${since}`)
+  }
+  if (window) {
+    const label = window.label
+    const dropped = droppedRows(window), ingestion = failedIngestion(window), commands = failedCommands(window), requests = failedRequests(window)
+    if (finite(dropped) && dropped > 0) add(`${count.format(dropped)} rows dropped in the ${label}`)
+    if (finite(ingestion) && ingestion > 0) add(`${count.format(ingestion)} ingestion requests failed in the ${label}`)
+    if (requests && requests.total > 0) {
+      add(`${count.format(requests.total)} store requests failed in the ${label} (reads ${count.format(requests.reads ?? 0)}, `
+        + `writes ${count.format(requests.writes ?? 0)}, commands ${count.format(requests.commands ?? 0)})`)
+    }
+    if (finite(commands) && commands > 0) add(`${count.format(commands)} Kusto commands failed in the ${label}`)
+  }
+  for (const source of pipe?.freshness ?? []) {
+    if (source.errors || source.last_error) {
+      add(`${source.label || source.tool}: ${source.errors ? `${count.format(source.errors)} error${source.errors === 1 ? '' : 's'}` : 'error'}`
+        + (source.last_error ? ` — ${source.last_error}` : ''))
+    }
+  }
+  for (const waiting of backlog(pipe)) {
+    add(`${waiting.component}: ${count.format(waiting.total)} session files waiting`
+      + (waiting.byTool.length ? ` (${waiting.byTool.map(([tool, n]) => `${tool} ${count.format(n)}`).join(', ')})` : ''))
+  }
   for (const q of pipe?.data_quality ?? []) {
     if (q.severity !== 'warning' && q.severity !== 'error' || qualityContext(q, ingesters)) continue
     if (collectors.some(c => q.component === `collector:${c.name}` && q.status === c.status
@@ -172,8 +261,8 @@ export function healthStatus(data?: HealthView | null, error?: unknown, nowS = D
   if (!report && !collectors.length && !ingesters.some(i => i.status !== 'off') && pipe?.otel_receiver?.active == null)
     pending.push('No active collection health is reported.')
   const issues = [...new Set([...severe, ...warnings])]
-  return { label: severe.length ? 'Degraded' : issues.length ? 'Needs attention' : pending.length ? 'Not ready' : limitations.length ? 'Limited coverage' : 'OK',
-    cls: severe.length ? 'crit' : issues.length || pending.length || limitations.length ? 'warn' : 'good', issues, pending, limitations }
+  return done(severe.length ? 'Degraded' : issues.length ? 'Needs attention' : pending.length ? 'Not ready' : limitations.length ? 'Limited coverage' : 'OK',
+    severe.length ? 'crit' : issues.length || pending.length || limitations.length ? 'warn' : 'good')
 }
 
 export function healthSources(health: HealthView) {
@@ -193,4 +282,13 @@ export function healthSources(health: HealthView) {
       config_source: setup?.[tool]?.source, config_variable: setup?.[tool]?.variable,
     }
   })
+}
+
+export const REPORTING_WINDOW_S = 86400
+export const REPORTING_WINDOW = 'last 24 h'
+
+/** Tools that sent data in the window, and tools that are installed but sent none. The one count of reporting tools. */
+export function sourceActivity(sources: ReturnType<typeof healthSources>, nowS: number) {
+  const reporting = sources.filter(row => finite(row.last_data_ts) && nowS - row.last_data_ts <= REPORTING_WINDOW_S)
+  return { reporting, silent: sources.filter(row => !reporting.includes(row)) }
 }

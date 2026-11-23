@@ -65,9 +65,19 @@ export function groupPlot(entries: Iterable<Entry>, times: readonly number[], op
 
 type TableField = 'rows_per_s' | 'bytes_per_s' | 'queue_depth'
 type Present = (t: number) => boolean
+const subject: Record<TableField, string> = {
+  rows_per_s: 'tables that sent rows', bytes_per_s: 'tables that sent bytes', queue_depth: 'tables with rows waiting',
+}
 /** The flows view omits idle table buckets, so `present` says which buckets have node snapshots and count as zero. */
 export const tablePlot = (view: FlowsView, times: readonly number[], field: TableField, present?: Present) =>
-  groupPlot(view.tables.map(row => ({ group: row.table, t: row.t, value: row[field] })), times, { noun: 'tables', present })
+  groupPlot(view.tables.map(row => ({ group: row.table, t: row.t, value: row[field] })), times, { noun: subject[field], present })
+
+export const isOtelTable = (name: string) => name.toUpperCase().startsWith('OTEL')
+
+/** Raw OpenTelemetry rows sent to Kusto per second, by export table: the counters of the writers that ingest the exports. */
+export const otelPlot = (view: FlowsView, times: readonly number[], present?: Present) =>
+  groupPlot(view.tables.filter(row => isOtelTable(row.table)).map(row => ({ group: row.table, t: row.t, value: row.rows_per_s })),
+    times, { noun: 'OTel tables that received rows', present })
 
 /** Rows each node submitted per second, from the node snapshots in the series view. */
 export const nodeRowsPlot = (rows: readonly SeriesRow[], times: readonly number[]) => groupPlot(rows.map(row => {

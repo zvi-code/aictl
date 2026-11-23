@@ -1,6 +1,4 @@
 import type { PanelDef } from '../types'
-import { setupInventory } from './Inventory'
-import { setupSources, sourceColumns } from './sources'
 
 const live = (path?: string) => ({ topic: 'runtime.health', entity: 'local', path } as const)
 const inventorySource = { topic: 'runtime.health', entity: 'table_inventory', path: 'inventory.tables' } as const
@@ -20,24 +18,19 @@ export const healthPanels: readonly PanelDef[] = [
   // HLT-04: The host grid and shared metrics for each node.
   { ...common, id: 'hostResources', title: 'Host resources and node traffic', kind: 'custom',
     sources: [live('resources'), live('store'), live('generated_at')], columns: [], defaultSize: 'large', load: () => import('./Resources') },
-  // HLT-05
-  { ...common, id: 'tableInventory', title: 'Table inventory', kind: 'table', sources: [inventorySource],
-    columns: [
-      { path: 'name', label: 'Table' }, { path: 'rows', label: 'Extent rows' }, { path: 'extent_count', label: 'Extents' },
-      { path: 'extent_bytes', label: 'Extent size (bytes)' }, { path: 'compressed_bytes', label: 'Compressed size (bytes)' },
-      { path: 'original_bytes', label: 'Original size (bytes)' }, { path: 'hot_bytes', label: 'Hot size (bytes)' },
-    ],
-    rowIdentity: ['name'], defaultSize: 'large', empty: 'No table rows reported.', setup: setupInventory },
+  // HLT-05: Counts, a table search and a table whose empty columns are dropped.
+  { ...common, id: 'tableInventory', title: 'Table inventory', kind: 'custom', sources: [inventorySource], columns: [],
+    defaultSize: 'large', load: () => import('./Inventory') },
   // HLT-06: The source, issue, pending and limitation groups need separate disclosures.
   { ...common, id: 'healthDiagnostics', title: 'Collection health and issues', kind: 'custom', sources: [live()],
     columns: [], defaultSize: 'medium', load: () => import('./Diagnostics') },
   // HLT-07: Live stats and active writes need separate views in the same panel.
   { ...common, id: 'self', title: 'Collection and ingestion', kind: 'custom',
     sources: [live('pipeline'), live('store.volume')], columns: [], defaultSize: 'medium', load: () => import('./Collection') },
-  // HLT-08
-  { ...common, id: 'sources', title: 'Data sources', kind: 'table',
+  // HLT-08: Reporting and silent tools, and a table whose empty columns are dropped.
+  { ...common, id: 'sources', title: 'Data sources', kind: 'custom',
     sources: [live('monitor.per_tool'), live('pipeline.freshness'), live('pipeline.hooks'), live('pipeline.otel_receiver'), live('pipeline.otel_setup')],
-    columns: sourceColumns, rowIdentity: ['tool'], defaultSize: 'medium', empty: 'No source rows.', setup: setupSources },
+    columns: [], defaultSize: 'medium', load: () => import('./sources') },
   // HLT-09: The folder disclosure and collector grid use different contract rows.
   { ...common, id: 'collectors', title: 'Collectors', kind: 'custom', sources: [live('monitor.collectors'), live('monitor.roots')],
     columns: [], defaultSize: 'large', load: () => import('./Collectors') },
