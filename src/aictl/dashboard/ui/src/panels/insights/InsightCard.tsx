@@ -92,6 +92,8 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
         <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
       <p class={styles.finding} data-finding>{props.finding(body())}</p>
       {props.visual(body())}
+      <details class={styles.more} data-more>
+        <summary>Details: sessions ({body().sessions.length}), data table, KQL, how this is measured</summary>
       <details class={styles.disclosure} data-method>
         <summary>How this is measured</summary>
         <p class={styles.note}>{props.note}</p>
@@ -109,6 +111,7 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
           rowId={row => String(row.id)} />
       </details>
       <KqlDisclosure query={body().query} copy={ctx.copy} />
+      </details>
     </States>
   </Box>
 }

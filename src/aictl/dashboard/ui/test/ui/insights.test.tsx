@@ -176,7 +176,9 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
       // Each card leads with one figure and says what it is a figure of; the method is folded away.
       expect(box.querySelector('[data-hero] strong')?.textContent, id).toMatch(/\d/)
       expect(box.querySelector('[data-hero] span')?.textContent?.length, id).toBeGreaterThan(10)
-      expect(box.querySelector('details[data-method]:not([open])'), id).not.toBeNull()
+      // One closed line holds the sessions, the data table, the KQL and the method, each closed inside it.
+      expect(box.querySelectorAll(':scope details[data-more]:not([open])').length, id).toBe(1)
+      expect(box.querySelectorAll('details[data-more] > details:not([open])').length, id).toBe(4)
       expect(box.querySelector('[data-period]')?.textContent, id).toMatch(/^Period: .* · computed at /)
       expect(box.textContent, id).toContain('Show KQL (insights.x)')
       expect(box.querySelector('a[href^="https://c.kusto.windows.net/db?"]'), id).not.toBeNull()
