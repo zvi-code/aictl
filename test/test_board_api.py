@@ -962,7 +962,8 @@ class TestSections:
 
     def test_changes_and_project_rows(self, db):
         payload = _board(db)
-        assert payload["changes"]["totals"] == {"files": 1, "lines_added": 2, "lines_removed": 1, "edits": 1}
+        assert payload["changes"]["totals"] == {"files": 1, "lines_added": 2, "lines_removed": 1, "edits": 1,
+                                               "outside_projects": {"files": 0, "lines_added": None, "lines_removed": None}}
         alpha = next(p for p in payload["projects"] if p["project"] == "/p/alpha")
         assert (alpha["lines_added"], alpha["lines_removed"]) == (2, 1)
         assert (alpha["test_runs"], alpha["test_passed"]) == (2, 1)
@@ -1260,7 +1261,8 @@ class TestLiveProcessSessions:
         row = payload["agents"][1]
         assert row["title"] == "Codex CLI, no session data yet"
         assert "codex-cli" in [t["id"] for t in payload["options"]["tools"]]
-        assert row["status"] == "running"
+        # Processes with no stored line: their activity is unknown, said as such (session_status).
+        assert row["status"] == "unknown"
         assert row["placeholder"] is True
         assert row["pids"] == pids
         assert row["cpu_percent"] == 12.0

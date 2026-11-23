@@ -28,7 +28,16 @@
         "files": {"type": "integer"},
         "lines_added": {"type": ["integer", "null"]},
         "lines_removed": {"type": ["integer", "null"]},
-        "edits": {"type": "integer"}
+        "edits": {"type": "integer"},
+        "outside_projects": {
+          "type": "object",
+          "properties": {
+            "files": {"type": "integer"},
+            "lines_added": {"type": ["integer", "null"]},
+            "lines_removed": {"type": ["integer", "null"]}
+          },
+          "required": ["files", "lines_added", "lines_removed"]
+        }
       },
       "required": ["files", "lines_added", "lines_removed", "edits"]
     }

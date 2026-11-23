@@ -2124,6 +2124,23 @@ def _errors_section(board: _Board) -> tuple[list[dict], list[int], dict[str, int
     return rows[:MAX_LIST_ROWS], api_bucket, api_by_project
 
 
+def _under_folder(path: str, folder: str) -> bool:
+    key, root = project_key(path), project_key(folder)
+    return bool(root) and (key == root or key.startswith(root.rstrip("/") + "/"))
+
+
+def file_projects(paths: Iterable[str], projects: Iterable[str], *, resolve: bool = True) -> dict[str, str]:
+    """The project of each changed file: the innermost known project that holds its path.
+
+    A known project is a session's project resolved to its repository (an agent's worktree
+    belongs to the repository git's common directory names, see ``project_root``), so a file
+    in a worktree counts for its repository. A file outside every known project maps to ""
+    (shown as outside any project): the session that wrote it does not make it that session's.
+    """
+    roots = sorted({(project_root(p) if resolve else p) or p for p in projects if p}, key=len, reverse=True)
+    return {path: next((root for root in roots if _under_folder(path, root)), "") for path in paths}
+
+
 def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
     selected = board.narrowed and board.only_session is None
     fields = ("path", "project_path", "added", "removed", "edits", "sessions", "last_ts", "session_id")
@@ -2134,8 +2151,10 @@ def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
     by_project: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     added_any = removed_any = False
     added_total = removed_total = edits_total = 0
-    for path, project, added, removed, edits, sessions, last_ts, sid, *nodes in rows:
-        project = project or board.session_project.get(sid, "")
+    known = [*board.session_project.values(), *(row[1] for row in rows)]
+    owner = file_projects((row[0] for row in rows), known, resolve=not board.history.qualified)
+    for path, _written_from, added, removed, edits, sessions, last_ts, sid, *nodes in rows:
+        project = owner[path]
         files.append(
             {
                 "path": path,
@@ -2166,9 +2185,15 @@ def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
                 "lines_added": added_total if added_any else None,
                 "lines_removed": removed_total if removed_any else None,
                 "edits": edits_total,
+                # Files under no known project: the Projects rows plus these make the totals above.
+                "outside_projects": {
+                    "files": sum(1 for path in owner.values() if not path),
+                    "lines_added": by_project[""][0] if "" in by_project else None,
+                    "lines_removed": by_project[""][1] if "" in by_project else None,
+                },
             },
         },
-        {project: (a, r) for project, (a, r) in by_project.items()},
+        {project: (a, r) for project, (a, r) in by_project.items() if project},
     )
 
 

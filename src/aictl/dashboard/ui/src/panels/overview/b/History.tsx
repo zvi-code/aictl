@@ -6,6 +6,9 @@ import type { PanelDef, PanelProps } from '../../types'
 import { breakdown, field, metric, stamp } from '../b'
 import { Bars, FieldStats, fileName, measured, StatStrip, topRows, usable } from '../Summary'
 import { DataTable, displayField, entries, identity, Metrics, number, rowsFrom, styles, text, View } from './View'
+import { fmtN } from '../../../design/format'
+
+export const OUTSIDE_PROJECTS = 'Outside any project'
 
 export function ToolCalls(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
@@ -127,8 +130,11 @@ export function Changes(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const result = () => ctx.read(def.sources[0])
   const files = () => ctx.board('changes')?.files
-  const rows = createMemo(() => rowsFrom((files() ?? []).slice(0, 40), row => identity(row.node_id, row.record ?? row.path, row.project)))
+  // A file under no known project is said to be so; the board never guesses its project from the session.
+  const rows = createMemo(() => rowsFrom((files() ?? []).slice(0, 40).map(row => row.project ? row : { ...row, project: OUTSIDE_PROJECTS }),
+    row => identity(row.node_id, row.record ?? row.path, row.project)))
   const totals = () => at(result().value, 'totals')
+  const outside = () => at(totals(), 'outside_projects') as { files?: number; lines_added?: number | null; lines_removed?: number | null } | undefined
   const counts = createMemo(() => {
     const items = ['lines_added', 'lines_removed'].flatMap((id, i) => {
       const value = measured(at(totals(), id))
@@ -140,6 +146,11 @@ export function Changes(props: PanelProps) {
     <FieldStats label="Change summary" ctx={ctx} columns={[metric('files', 'board.change.file', 'Files'), ...def.columns.slice(2, 5)]}
       value={totals()} />
     <Bars label="Reported line changes" items={counts()} />
+    <Show when={outside()?.files}>{n => <p class={styles.note}>
+      {OUTSIDE_PROJECTS}: {fmtN(n())} files
+      {outside()?.lines_added != null ? `, +${fmtN(outside()!.lines_added!)}` : ''}
+      {outside()?.lines_removed != null ? ` −${fmtN(outside()!.lines_removed!)}` : ''}
+      {' '}(not in any row of Projects)</p>}</Show>
     <View result={result} retry={ctx.refresh} empty={def.empty}>
       <Show when={(files()?.length ?? 0) > 40}><p class={styles.note}>Showing the first 40 reported files.</p></Show>
       <Show when={rows().length} fallback={<p>{files() ? def.empty : 'Files are not available from this source.'}</p>}>

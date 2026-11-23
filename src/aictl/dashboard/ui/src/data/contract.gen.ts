@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 866aa140e9038f53d5173f5812392c2520ed08a34703a8b271b323e4cedfa7ff
+// Schema digest: 8a9f7fa04c3d1b13171d4e04c7565fe33e64ac066e6c3fdab0942bb51946c021
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -130,6 +130,11 @@ export type BoardChanges = {
     lines_added: number | null;
     lines_removed: number | null;
     edits: number;
+    outside_projects?: {
+      files: number;
+      lines_added: number | null;
+      lines_removed: number | null;
+    };
   };
 };
 
