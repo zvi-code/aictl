@@ -47,6 +47,15 @@ TERMINAL_DETAILS = {
 }
 
 
+# Routes whose contract gained required fields after the tapes of 2026-11-20 were captured.
+# A capture cannot hold a field that did not exist yet, so these taped bodies are not checked.
+# What the current code returns for them is checked against the same schemas where each names
+# its test, so the contract itself is not loosened:
+#   /api/board/sessions  test_session_finder.py (validate_detail on search_sessions output)
+#   /api/board/agent     check_history_projections below (session_details.agent_detail)
+CHANGED_SINCE_CAPTURE = {"/api/board/sessions", "/api/board/agent"}
+
+
 def _validate(validator, value, label):
     error = next(validator.iter_errors(value), None)
     if error is not None:
@@ -106,7 +115,7 @@ def _records(path):
 
 def test_recorded_rest_payloads():
     # Playwright serves the same quiet/busy tapes, plus the supplemental main tape.
-    seen = set()
+    seen, taped = set(), set()
     for tape in _tapes("rest"):
         for record in _records(tape):
             route = record["route"].partition("#")[0]
@@ -114,7 +123,10 @@ def test_recorded_rest_payloads():
             route = re.sub(r"^(/api/tool-config)/[^/]+$", r"\1/{tool}", route)
             if record.get("status") != 200 or "body" not in record:
                 continue
+            taped.add(route)
             label = f"{tape.relative_to(RECORDINGS)}: {record['route']}"
+            if route in CHANGED_SINCE_CAPTURE:
+                continue
             if route == "/api/board":
                 validate_board(record["body"], label)
             elif route in VALIDATORS["details"]:
@@ -132,7 +144,9 @@ def test_recorded_rest_payloads():
     no_capture = local_file_routes | {
         "/api/board/error", "/api/board/prompt", "/api/board/agent/kql", "/api/history/board",
     } | TERMINAL_DETAILS
-    assert (set(VALIDATORS["details"]) | {"/api/board"}) - seen <= no_capture
+    assert (set(VALIDATORS["details"]) | {"/api/board"}) - seen <= no_capture | CHANGED_SINCE_CAPTURE
+    # A route leaves the list when a new capture has it; an entry no tape holds is stale.
+    assert CHANGED_SINCE_CAPTURE <= taped
 
 
 def test_terminal_detail_contracts(tmp_path):
