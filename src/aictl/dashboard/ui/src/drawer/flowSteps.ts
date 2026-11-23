@@ -246,12 +246,20 @@ export interface Totals {
   wall: number
 }
 
+/**
+ * A failure as the server's summary counts it: a failed model request, a failed tool call, or an error event.
+ * The end of a subagent whose task call failed is the same failure, so it does not count again.
+ */
+export const countsAsFailure = (event: FlowEvent) => event.type === 'error'
+  || (event.type === 'api_call' && !!event.is_error)
+  || (event.type === 'tool_use' && (!!event.is_error || event.success === false))
+
 export function totalsOf(steps: readonly Step[]): Totals {
   const totals: Totals = { steps: steps.length, requests: 0, tools: 0, failures: 0, prompts: 0, input: 0, output: 0,
     cacheRead: 0, cacheWrite: 0, cost: 0, costCalls: 0, modelMs: 0, toolMs: 0, wall: 0 }
   for (const step of steps) {
     for (const event of step.events) {
-      if (failedEvent(event)) totals.failures++
+      if (countsAsFailure(event)) totals.failures++
       if (event.type === 'user_message') totals.prompts++
       if (event.type === 'tool_use') { totals.tools++; totals.toolMs += event.duration_ms ?? 0 }
       if (event.type !== 'api_call') continue

@@ -68,7 +68,9 @@ export const skillPhase = (phase?: string | null) => ({
 
 export function eventIdentity(event: FlowEvent) {
   return JSON.stringify([event.step_key, event.type, event.ts, event.source, event.phase, event.subtype,
-    event.agent_id, event.turn_id, event.tool_call_id, event.name ?? event.to, event.span_id])
+    event.agent_id, event.turn_id, event.tool_call_id, event.name ?? event.to, event.span_id,
+    // Parallel calls of one tool in the same instant differ by their arguments.
+    event.type === 'tool_use' ? event.target ?? event.params ?? event.input_preview : undefined])
 }
 
 export function describe(event: FlowEvent) {
