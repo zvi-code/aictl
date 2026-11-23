@@ -116,7 +116,7 @@ def test_env_catalog_per_tool(real_catalog):
             "COPILOT_OTEL_ENABLED",
             "OTEL_EXPORTER_OTLP_ENDPOINT",
         },
-        "copilot-desktop": {"COPILOT_MODEL", "GH_TOKEN"},
+        "copilot-desktop": set(),  # no documented variables: the app does not borrow the CLI's catalog
         "claude-code": {
             "ANTHROPIC_MODEL",
             "ANTHROPIC_API_KEY",

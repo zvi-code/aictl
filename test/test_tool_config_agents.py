@@ -502,8 +502,8 @@ def test_catalog_unset_rows_labels_and_danger(env):
     assert remote["label"] == "Remote export" and remote["documented"] is True
     assert rows["oddKey"]["documented"] is False
     desktop = _collect(env["proj"]).get("copilot-desktop")
-    if desktop:  # reads the same file, so the Copilot CLI catalog applies
-        assert _rows(desktop)["remoteExport"]["documented"] is True
+    if desktop:  # the app keeps its own settings (app_state); the CLI's settings.json is not its layer
+        assert "remoteExport" not in _rows(desktop)
 
 
 def test_catalog_missing_or_broken_is_empty(env):

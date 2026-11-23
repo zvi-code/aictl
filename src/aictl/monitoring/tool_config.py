@@ -950,7 +950,7 @@ def normalize_sections(cfg: ToolConfig, texts: dict[str, str | None] | None = No
         entries = cfg.setting_values.get(key) or []
         entry = catalog.get(_row_file_key(cfg, key, key, entries, len(entries) - 1)) or {}
         section = cfg.key_sections.get(key) or _catalog_section(entry) or _key_section(key)
-        if section == "telemetry" and otel:
+        if section == "telemetry" and otel and (key in telemetry_flat or re.search(r"otel|otlp", key, re.I)):
             continue  # shown by the telemetry rows above
         note = cfg.key_notes.get(key) or ("Workspace override" if key.startswith("ws:") else "")
         label = cfg.key_labels.get(key) or _table_label(key) or str(entry.get("label") or "")
@@ -1250,7 +1250,8 @@ def env_scope_fill(cfg: ToolConfig) -> None:
 # Tools whose rows include another tool's keys: a key missing from the tool's catalog is looked up there.
 _CATALOG_ALSO = {"copilot": "vscode"}
 # Tools that read another tool's settings file use that tool's catalog when they have none.
-_CATALOG_FALLBACK = {"copilot-desktop": "copilot-cli"}
+# The Copilot desktop app keeps its own settings (its app_state table), so it has no fallback.
+_CATALOG_FALLBACK: dict[str, str] = {}
 
 
 # An object with more keys than this is one map row instead of one row per key.
@@ -1459,9 +1460,13 @@ def _scope(sid: str, path: Path | str, exists: bool, note: str = "", label: str 
         "label": label or SCOPE_LABELS.get(sid, sid),
         "path": str(path),
         "exists": bool(exists),
-        "changeable": sid not in FIXED_SCOPES,
+        "changeable": sid not in FIXED_SCOPES and sid not in _TOOL_WRITTEN_SCOPES,
         "note": note,
     }
+
+
+# Layers the tool writes for itself: shown, never offered for editing.
+_TOOL_WRITTEN_SCOPES = frozenset({"app-state", "detected"})
 
 
 def _env_scope(tool: str, note: str = "") -> dict:
@@ -3876,6 +3881,138 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
     return _finish(cfg, present)
 
 
+# ─── Copilot desktop app ────────────────────────────────────────
+# The app keeps its own settings in the ``app_state`` table of ``data.db`` in the
+# Copilot home. Only the key and value columns of that table are read: the same
+# database holds ``settings`` and ``accounts`` tables with tokens, which are never
+# named. An authorizer refuses a read of any other table, as a second guard.
+APP_STATE_TABLE = "app_state"
+APP_STATE_SQL = "SELECT key, value FROM app_state"
+# app_state keys whose value identifies a person, an account or a machine: shown as hidden.
+_APP_STATE_HIDDEN_RE = re.compile(r"account|machine|tracking|salt|token|secret|auth|cookie|outbox|credential", re.I)
+_APP_STATE_SECTIONS = {
+    "copilot-selected-model": ("model", "Selected model"),
+    "copilot-reasoning-effort": ("model", "Reasoning effort"),
+    "copilot-context-tier": ("model", "Context tier"),
+    "copilot-auto-tier": ("model", "Auto tier"),
+    "recent-models": ("model", "Recent models"),
+    "permission-mode-default-on": ("autonomy", "Permission mode on by default"),
+    "remote-session-default": ("autonomy", "Remote session by default"),
+    "keep-awake-settings": ("startup", "Keep awake"),
+    "feature-flags": ("other", "Feature flags"),
+    "enabled-experiments": ("other", "Enabled experiments"),
+    "theme-settings-v2": ("other", "Theme"),
+}
+APP_STATE_MAX_CHARS = 4000
+
+
+def _app_state_authorizer(action: int, arg1: object, _arg2: object, _db: object, _trigger: object) -> int:
+    import sqlite3
+
+    if action == sqlite3.SQLITE_READ and arg1 != APP_STATE_TABLE:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def read_app_state(db: Path) -> dict[str, str] | None:
+    """Key -> value text of the Copilot app's ``app_state`` table; None when it cannot be read."""
+    _watch(db)
+    from ..ingesters._common import open_readonly
+
+    try:
+        conn = open_readonly(db, "copilot-app-state")
+    except Exception:  # noqa: BLE001 - an unreadable database hides nothing else
+        return None
+    if conn is None:
+        return None
+    try:
+        conn.set_authorizer(_app_state_authorizer)
+        rows = conn.execute(APP_STATE_SQL).fetchall()
+    except Exception:  # noqa: BLE001 - locked, corrupt or not the app's database
+        return None
+    finally:
+        conn.close()
+    return {str(k): (v.decode("utf-8", "replace") if isinstance(v, bytes) else str(v)) for k, v in rows}
+
+
+def _mask_leaves(value: object) -> object:
+    from ..secret_mask import mask_text
+
+    if isinstance(value, dict):
+        return {k: ("<hidden>" if _APP_STATE_HIDDEN_RE.search(str(k)) else _mask_leaves(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_leaves(v) for v in value]
+    return mask_text(value) if isinstance(value, str) else value
+
+
+def app_state_value(key: str, text: str) -> tuple[object, str]:
+    """(value to show, note) of one app_state entry: JSON parsed and masked, a large value summarised."""
+    if _APP_STATE_HIDDEN_RE.search(key):
+        return "<hidden>", "Identifies an account, a machine or a credential; not shown."
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value = text
+    value = _mask_leaves(value)
+    if isinstance(value, (dict, list)) and len(json.dumps(value)) > APP_STATE_MAX_CHARS:
+        n = len(value)
+        kind = ("item" if n == 1 else "items") if isinstance(value, list) else ("key" if n == 1 else "keys")
+        return f"{n} {kind}", "A large value: only its size is shown."
+    return value, ""
+
+
+def _parse_copilot_desktop_config(root: Path, tool: str = "copilot-desktop") -> ToolConfig | None:
+    """The GitHub Copilot desktop app: its own app_state settings, and the MCP servers it shares with the CLI.
+
+    The app keeps its settings in ``app_state`` of ``data.db`` in the Copilot home; those are its
+    own layer, labelled app state. Its docs (customize-github-copilot-app.md) say MCP servers and
+    skills configured for the Copilot CLI or a repository are available in the app, so the CLI's
+    MCP declarations are shown as shared. The docs do not say the app reads the CLI's
+    ``settings.json``, so those values are not shown as the app's.
+    """
+    home = copilot_global_dir()
+    db = home / "data.db"
+    cfg = ToolConfig(tool=tool)
+    state = read_app_state(db) if db.is_file() else None
+    if state is not None:
+        cfg.config_files.append(str(db))
+    for key, text in sorted((state or {}).items()):
+        value, note = app_state_value(key, text)
+        section, label = _APP_STATE_SECTIONS.get(key, ("other", ""))
+        cfg.settings[key] = value
+        cfg.setting_sources[key] = str(db)
+        cfg.setting_values[key] = [("app-state", value, str(db), key)]
+        cfg.key_sections[key] = section
+        if label:
+            cfg.key_labels[key] = label
+        cfg.key_notes[key] = note or "App state the Copilot app writes in data.db (app_state table)."
+        cfg.generic_keys.add(key)
+    if state:
+        cfg.model = ""  # the selected model is an app_state row, not a settings file value
+
+    # MCP servers the app shares with the CLI (documented), each marked as such.
+    from .settings_inventory import copilot_cli_mcp
+
+    settings_path = home / "settings.json"
+    layers = [("user", _read_json(settings_path) if settings_path.is_file() else None, str(settings_path))]
+    for server in copilot_cli_mcp(home, root, layers):
+        server["note"] = ("Shared with Copilot CLI (documented). " + server["note"]).strip()
+        cfg.mcp_inventory.append(server)
+    _adopt_mcp_inventory(cfg)
+
+    version = _copilot_desktop_version()
+    cfg.settings["version"] = version or "Not detected"
+    cfg.setting_sources["version"] = "detected"
+    cfg.key_labels["version"] = "Installed version"
+    cfg.key_notes["version"] = "Read from the installed app's metadata, not from a settings file."
+    cfg.scopes = [
+        _scope("app-state", db, state is not None, "The app's own settings, written by the app (app_state table)."),
+        _scope("user", home / "mcp-config.json", (home / "mcp-config.json").is_file(),
+               "MCP servers shared with Copilot CLI (documented).", label="Shared with Copilot CLI"),
+    ]
+    return _finish(cfg, db.is_file() or bool(version))
+
+
 # ─── Config parser registry (tool name → parser function) ────────
 _CONFIG_PARSER_REGISTRY: dict[str, Callable] = {
     "vscode": _parse_vscode_config,
@@ -3884,7 +4021,7 @@ _CONFIG_PARSER_REGISTRY: dict[str, Callable] = {
     "copilot": _parse_copilot_config,
     "copilot365": _parse_copilot365_config,
     "copilot-cli": _parse_copilot_home_config,
-    "copilot-desktop": _parse_copilot_home_config,
+    "copilot-desktop": _parse_copilot_desktop_config,
     "cursor": _parse_cursor_config,
     "codex-cli": _parse_codex_config,
     "windsurf": _parse_windsurf_config,
