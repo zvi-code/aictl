@@ -246,6 +246,10 @@ export interface Totals {
   wall: number
 }
 
+/** Turn 0 holds what happened before the first prompt (the session start): it is a bar to select, not a turn. */
+export const isPromptTurn = (mark: { turn: number }) => mark.turn > 0
+export const turnName = (mark: { turn: number }) => isPromptTurn(mark) ? `Turn ${mark.turn}` : 'Before the first prompt'
+
 /**
  * A failure as the server's summary counts it: a failed model request, a failed tool call, or an error event.
  * The end of a subagent whose task call failed is the same failure, so it does not count again.

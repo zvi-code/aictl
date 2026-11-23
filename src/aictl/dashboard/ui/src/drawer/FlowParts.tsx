@@ -7,7 +7,7 @@ import { Icon, type Glyph } from '../ui/Icon'
 import { moveFocus } from '../ui/keyboard'
 import { clockTime, durationOf, eventTokens, failedEvent, inputOf, outputOf, type EventKind, type PlacedEvent } from './flowModel'
 import {
-  approvalOf, callTitle, definitions, spanSummary, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, waitLabel,
+  approvalOf, callTitle, definitions, isPromptTurn, spanSummary, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, turnName, waitLabel,
   type FlowRow, type Metric, type Step, type StepKind,
 } from './flowSteps'
 import { clip } from './shared'
@@ -67,11 +67,13 @@ export function TurnScrubber(props: {
   const [focus, setFocus] = createSignal(0)
   const shown = (mark: TurnMark) => !!props.visible && mark.ts <= props.visible[1] && Math.max(mark.ts, mark.end_ts) >= props.visible[0]
   const count = (value: number, one: string, many: string) => `${fmtN(value)} ${value === 1 ? one : many}`
-  const label = (mark: TurnMark) => [`Turn ${mark.turn}`, count(mark.events, 'event', 'events'), count(mark.tokens, 'token', 'tokens'),
+  const label = (mark: TurnMark) => [turnName(mark), count(mark.events, 'event', 'events'), count(mark.tokens, 'token', 'tokens'),
     mark.tools ? count(mark.tools, 'tool use', 'tool uses') : '', mark.errors ? `${fmtN(mark.errors)} failed` : ''].filter(Boolean).join(' · ')
   return <section class={styles.scrubber} aria-label="Turn overview">
     <header>
-      <span title="One bar per turn: its width follows the events of the turn, its height the tokens"><strong>{fmtN(props.marks.length)} turns</strong></span>
+      <span title={`One bar per turn: its width follows the events of the turn, its height the tokens.${props.marks.some(mark => !isPromptTurn(mark))
+        ? ' The first bar holds what happened before the first prompt; it is not counted as a turn.' : ''}`}>
+        <strong>{count(props.marks.filter(isPromptTurn).length, 'turn', 'turns')}</strong></span>
       <span>{stamp(props.marks[0]?.ts, true)} – {stamp(props.marks.at(-1)?.end_ts, true)}</span>
     </header>
     <div class={styles.marks} role="group" aria-label="Turns" onKeyDown={event => {
@@ -85,7 +87,7 @@ export function TurnScrubber(props: {
           data-loaded={mark().offset + mark().events > props.loadedFrom ? 'true' : 'false'}
           data-visible={shown(mark()) ? 'true' : 'false'} data-errors={mark().errors ? 'true' : 'false'}
           {...props.hover.bind(() => <>
-            <div class={styles.hoverHead}><strong>Turn {mark().turn}</strong><time>{clockTime(mark().ts)}</time></div>
+            <div class={styles.hoverHead}><strong>{turnName(mark())}</strong><time>{clockTime(mark().ts)}</time></div>
             <Show when={mark().prompt}><p class={styles.hoverTitle}>{mark().prompt}</p></Show>
             <span class={styles.hoverHint}>{label(mark()).split(' · ').slice(1).join(' · ')}</span>
             <span class={styles.hoverHint}>Select to show this turn</span>
