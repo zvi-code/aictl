@@ -4,6 +4,7 @@ import { PanelState } from '../../ui/PanelState'
 import { agentPath, Resource, Section, Stats, type TabProps } from '../shared'
 import { kustoLink, lastFlowFilters } from '../kqlLink'
 import { watchedDetail } from '../liveAgent'
+import { TimeField } from '../kqlTime'
 import styles from '../drawer.module.css'
 
 const route = '/api/board/agent/kql'
@@ -87,7 +88,8 @@ function Builder(props: { tab: TabProps; flow?: DetailAgentFlow; catalog: Catalo
     session: props.flow?.session_id ?? props.tab.session() ?? '',
     reporting_node: props.flow?.node_id ?? ctx.nodeId() ?? props.tab.agent()?.node_id ?? '',
     model: '', tool: '', keyword: '',
-    since: String(applied?.since ?? ''), until: String(applied?.until ?? ''),
+    // The applied Flow window, else the session's own.
+    since: String(applied?.since ?? props.tab.agent()?.started_at ?? ''), until: String(applied?.until ?? props.tab.agent()?.ended_at ?? ''),
   })))
   const [request, setRequest] = createSignal<string>()
   const [consent, setConsent] = createSignal<string>()
@@ -162,9 +164,6 @@ function Builder(props: { tab: TabProps; flow?: DetailAgentFlow; catalog: Catalo
     <Section title="Query in Kusto">
       <Stats items={[{ label: 'Presets', value: props.catalog.presets.length },
         { label: 'Tables', value: props.catalog.tables.length }, { label: 'Fields', value: props.catalog.fields.length }]} />
-      <div class={styles.bar}><For each={props.catalog.presets}>{preset =>
-        <button type="button" class={styles.button} aria-pressed={preset.id === example() ? 'true' : 'false'} onClick={() => pick(preset.id)}>{preset.label}</button>
-      }</For></div>
       <form class={styles.stack} onSubmit={event => { event.preventDefault(); generate() }}>
         <div class={styles.bar}>
           <label class={styles.field}>Example<select value={example()} onChange={event => pick(event.currentTarget.value)}>
@@ -180,8 +179,8 @@ function Builder(props: { tab: TabProps; flow?: DetailAgentFlow; catalog: Catalo
           <Show when={selected()?.keyword}><label class={styles.field}>Words to find<input value={input().keyword} onInput={event => update('keyword', event.currentTarget.value)} /></label></Show>
         </div>
         <div class={styles.bar}>
-          <label class={styles.field}>Since (Unix seconds)<input type="number" step="any" min={0} value={input().since} onInput={event => update('since', event.currentTarget.value)} /></label>
-          <label class={styles.field}>Until (Unix seconds)<input type="number" step="any" min={0} value={input().until} onInput={event => update('until', event.currentTarget.value)} /></label>
+          <TimeField label="Since (UTC)" seconds={input().since} change={value => update('since', value)} />
+          <TimeField label="Until (UTC)" seconds={input().until} open="no end" change={value => update('until', value)} />
           <Show when={selected()?.all_sessions}><label><input type="checkbox" checked={authorized()} onChange={event => {
             const current = input()
             setConsent(event.currentTarget.checked ? windowKey(current) : undefined)

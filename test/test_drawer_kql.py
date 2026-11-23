@@ -94,3 +94,22 @@ def test_the_flow_link_keeps_rows_with_a_null_deleted_flag_and_reads_like_the_kq
     # The latest 500 steps, listed oldest first, as the KQL tab's Steps preset does.
     assert "top 500 by ts desc\n| order by ts asc, step_key asc" in query
     assert "top 500 by event_time" not in query
+
+
+@pytest.mark.parametrize("preset", ["steps", "requests", "tools", "failures", "context", "subagents", "sizes", "mcp"])
+def test_a_preset_reads_one_sessions_versions_not_the_nodes_whole_table(preset):
+    query = kql_templates({"reporting_node": "node-a", "session": "sid-1", "preset": preset, "since": "100"})["query"]
+    dedup = query.index("summarize arg_max(_v, *)")
+    assert query.index("session_id == sid") < dedup
+    # A filter on a column the tombstone does not carry stays after the reduction.
+    assert re.search(r"(ts|started_at) >= 100\.0", query).start() > dedup
+
+
+def test_the_requests_and_subagents_presets_show_what_the_tables_record():
+    options = {"reporting_node": "node-a", "session": "sid-1"}
+    requests = kql_templates({**options, "preset": "requests"})["query"]
+    assert "cache_read_tokens=" in requests and "cache_creation_tokens=" in requests
+    subagents = kql_templates({**options, "preset": "subagents"})["query"]
+    for column in ("description", "status", "resolved_model", "parent_agent_id"):
+        assert column in subagents
+    assert "ai_credits=CopilotNanoAiu / 1e9" in kql_templates({**options, "preset": "spans"})["query"]

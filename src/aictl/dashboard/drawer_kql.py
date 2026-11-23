@@ -9,17 +9,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ..data.model_pricing import canonical_model_id
+from ..stores.kusto.tables import TABLES
 
 _VERSION = "_v:datetime _deleted:bool"
 _SESSION = "session_id:string ts:real"
 _SCHEMA = {
     "session_steps": f"step_key:string {_SESSION} ['kind']:string phase:string name:string turn_id:string "
     f"agent_id:string context_tokens:long context_limit:long before_tokens:long after_tokens:long {_VERSION}",
-    "requests": f"rowid:long {_SESSION} model:string input_tokens:long output_tokens:long cost_usd:real {_VERSION}",
+    "requests": f"rowid:long {_SESSION} model:string input_tokens:long output_tokens:long cache_read_tokens:long "
+    f"cache_creation_tokens:long cost_usd:real {_VERSION}",
     "tool_invocations": f"rowid:long {_SESSION} tool_name:string is_error:long duration_ms:real {_VERSION}",
     "OTELTraces": "StartTime:datetime SessionId:string TraceID:string SpanID:string Model:string ToolName:string "
     "OperationName:string InputTokens:long OutputTokens:long",
-    "agents": f"agent_id:string session_id:string model:string started_at:real ended_at:real {_VERSION}",
+    "agents": f"agent_id:string session_id:string model:string started_at:real ended_at:real description:string "
+    f"status:string resolved_model:string parent_agent_id:string spawn_depth:long completed:bool {_VERSION}",
     "turn_request_links": f"request_key:string {_SESSION} agent_id:string turn_id:string root_session_id:string "
     f"root_turn_id:string basis:string {_VERSION}",
     "session_step_text": f"step_key:string session_id:string ['text']:string {_VERSION}",
@@ -54,11 +57,13 @@ _PRESETS = {
                      f"{_RECENT}\n| project {_TIME}, step_key, ['kind'], phase, name, agent_id, turn_id"),
     "nodes": _Preset("Fleet nodes", "Sessions by reporting node", "sessions", "Compare nodes in the selected window."),
     "requests": _Preset("Requests & USD", "Requests and tokens by model", "requests",
-                        "Requests, reported tokens and positive recorded USD. Missing and zero prices are unpriced.",
+                        "Requests, reported tokens (cache reads and writes apart) and positive recorded USD. Missing and zero prices are unpriced.",
                         """| extend priced=isnotnull(cost_usd) and isfinite(cost_usd) and cost_usd > 0
 | summarize request_count=count(),
     input_tokens=iff(countif(isnotnull(input_tokens))>0, sum(input_tokens), long(null)),
     output_tokens=iff(countif(isnotnull(output_tokens))>0, sum(output_tokens), long(null)),
+    cache_read_tokens=iff(countif(isnotnull(cache_read_tokens))>0, sum(cache_read_tokens), long(null)),
+    cache_creation_tokens=iff(countif(isnotnull(cache_creation_tokens))>0, sum(cache_creation_tokens), long(null)),
     recorded_usd=iff(countif(priced)>0, sumif(cost_usd, priced), real(null)),
     unpriced_requests=countif(not(priced)) by model
 | order by request_count desc""", model="model"),
@@ -74,8 +79,9 @@ _PRESETS = {
     ("model_change", "model", "clear", "reset", "new", "compact", "rewind"))
 ''' + _RECENT + f"\n| project {_TIME}, ['kind'], name, phase, agent_id, turn_id, context_tokens, context_limit, before_tokens, after_tokens"),
     "spans": _Preset("OTel spans", "OpenTelemetry spans", "OTELTraces", "Latest 500 identified spans on the selected node.",
-                     "| top 500 by StartTime desc\n| project StartTime, TraceID, SpanID, OperationName, Model, ToolName, InputTokens, OutputTokens",
-                     model="Model", tool="ToolName"),
+                     "| top 500 by StartTime desc\n| project StartTime, TraceID, SpanID, OperationName, Model, ToolName, InputTokens, OutputTokens, "
+                     "ai_credits=CopilotNanoAiu / 1e9",
+                     fields=f"{_SCHEMA['OTELTraces']} CopilotNanoAiu:long", model="Model", tool="ToolName"),
     "prompts": _Preset("User prompts", "User input prompts", "session_steps",
                        "Search retained user messages; Kusto returns a preview of up to 240 characters.", fields=_PROMPT, retained="user"),
     "assistant": _Preset("Assistant text", "Public assistant text and visible commentary", "session_steps",
@@ -94,9 +100,10 @@ _PRESETS = {
 | take 1
 | project session_id, agent_id, turn_id, duration_seconds, started=unixtime_seconds_todatetime(start_ts), ended=unixtime_seconds_todatetime(end_ts)""",
                        fields=f"{_SCHEMA['session_steps']} ['source']:string"),
-    "subagents": _Preset("Subagents", "All session subagents", "agents", "Recorded subagent IDs and times; no task text.",
+    "subagents": _Preset("Subagents", "All session subagents", "agents", "Recorded subagents: description, status, model and times; no task text.",
                          """| where isnotempty(agent_id) and agent_id != session_id
-| project session_id, agent_id, model, started=unixtime_seconds_todatetime(started_at), ended=unixtime_seconds_todatetime(ended_at)
+| project session_id, agent_id, description, status, model, resolved_model, parent_agent_id, spawn_depth, completed,
+    started=unixtime_seconds_todatetime(started_at), ended=unixtime_seconds_todatetime(ended_at)
 | order by started asc nulls last, agent_id asc""", model="model", key="agent_id", clock="started_at"),
     "sizes": _Preset("Response bytes", "Tool response sizes in bytes", "tool_invocations", "Percentiles use recorded nonnegative bytes.",
                      """| extend bytes=iff(output_bytes >= 0, output_bytes, long(null))
@@ -120,6 +127,13 @@ _PRESETS = {
     "costAll": _Preset("Turn cost (all)", "Highest recorded turn cost across sessions", "requests",
                        "Explicit opt-in for this node and time range. Missing bounds use a seven-day window.", cost="all"),
 }
+
+
+def _session_first(table: str) -> bool:
+    """Whether a view of *table* may filter on the session before it reduces versions: the table has no
+    tombstones, or its tombstones keep the session (in the key or the tombstone scope, tables.py)."""
+    stored = TABLES.get(table)
+    return stored is not None and (stored.tombstone is None or "session_id" in {*stored.key, *stored.tombstone_scope})
 
 
 def _literal(value: str) -> str:
@@ -280,7 +294,12 @@ def _query(preset: _Preset, params: _Params) -> str:
                   "\n| summarize arg_max(StartTime, *) by TraceID, SpanID")
     else:
         key = preset.key or ("step_key" if table == "session_steps" else "rowid")
-        query += f"\n| summarize arg_max(_v, *) by {key}\n| where not(coalesce(_deleted, false))\n| where isnotempty(sid) and session_id == sid"
+        # The session first, so the dedup reads this session's versions and not the node's whole table; only
+        # where a tombstone keeps the column. Any other filter must follow the dedup.
+        early = _session_first(table)
+        session = "\n| where isnotempty(sid) and session_id == sid"
+        query += (session if early else "") + f"\n| summarize arg_max(_v, *) by {key}\n| where not(coalesce(_deleted, false))"
+        query += "" if early else session
     query += params.time(preset.clock or ("StartTime" if table == "OTELTraces" else "ts"))
     if preset.model and params.model:
         query += f"\n| where {_canonical_model(preset.model)} == {_literal(canonical_model_id(params.model))}"

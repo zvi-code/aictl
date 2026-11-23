@@ -174,6 +174,15 @@ def test_the_check_sees_a_filter_before_dedup_and_ignores_one_after():
     assert {"requests.records.kql", "agents.resolve.kql", "tools.totals.kql", "files.changes.kql"} <= flagged
 
 
+def test_the_kql_tab_presets_reduce_versions_before_any_filter_on_a_column_a_tombstone_does_not_carry():
+    from aictl.dashboard.drawer_kql import kql_templates
+    options = {"reporting_node": "node-a", "session": "sid-1", "include_all_sessions": "1", "since": "1", "until": "9",
+               "model": "m", "tool": "t"}
+    for preset in kql_templates({})["presets"]:
+        query = kql_templates({**options, "preset": preset["id"]})["query"]
+        assert _violations(query) == [], preset["id"]
+
+
 class Sink:
     def __init__(self):
         self.lines: dict[str, list[dict]] = {}
