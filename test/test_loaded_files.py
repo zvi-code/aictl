@@ -271,7 +271,7 @@ class TestApi:
         project = "/work/proj"
         self._seed(db, project)
         instructions = f"{project}/.github/copilot-instructions.md"
-        db.insert("files", path=instructions, tool="copilot-cli", scope="project")
+        db.insert("files", path=instructions, tool="copilot-cli", category="instructions", scope="project")
         monkeypatch.setattr(
             "aictl.tree_walk.files_for_folder", lambda _: pytest.fail("The historical inventory was not used")
         )

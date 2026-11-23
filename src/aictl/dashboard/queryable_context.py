@@ -130,8 +130,14 @@ def sent_to_model(path: str, tool: str, category: str, scope: str, raw_meta: Any
     if isinstance(meta, dict) and meta.get("sent_to_llm"):
         return meta["sent_to_llm"] in _SENT_TO_MODEL
     normalized = path.replace("\\", "/").lower()
-    values = {spec.sent_to_llm for pattern, spec in _policy_index(True)[tool, category]
-              if (not scope or spec.scope == scope) and pattern.match(normalized)}
+    index = _policy_index(True)
+
+    def matching(rows) -> set[str]:
+        return {spec.sent_to_llm for pattern, spec in rows if (not scope or spec.scope == scope) and pattern.match(normalized)}
+
+    # The tool's own rows, else any tool's rows of the category (a project file serves several tools).
+    values = matching(index.get((tool, category), ())) or matching(
+        entry for (_tool, kind), rows in index.items() if kind == category for entry in rows)
     return bool(values) and values <= _SENT_TO_MODEL
 
 

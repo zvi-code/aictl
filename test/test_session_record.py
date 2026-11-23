@@ -216,7 +216,7 @@ class TestAgentDetailArtifacts:
 
     def test_the_detail_lists_the_files_that_can_affect_the_session(self, db, tmp_path, monkeypatch):
         project, _outside = _seed_detail(db, tmp_path)
-        db.insert("files", path=str(project / "AGENTS.md"), tool="copilot-cli", scope="project")
+        db.insert("files", path=str(project / "AGENTS.md"), tool="copilot-cli", category="instructions", scope="project")
         monkeypatch.setattr(
             "aictl.tree_walk.files_for_folder", lambda _: pytest.fail("The historical inventory was not used")
         )
