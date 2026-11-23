@@ -212,3 +212,13 @@ export function missingReason(row: TreeAgent, field: 'tokens' | 'cost' | 'tool_c
   return row.parent_id ? 'No usage rows yet: the subagent\'s transcript has not been imported'
     : 'No usage rows for this session in the selected time'
 }
+
+const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0
+
+/** A recorded session with no activity at all: no request, no tool call, no prompt, no tokens, not live. */
+export function noActivity(row: Readonly<Record<string, unknown>>, hasChildren: boolean) {
+  const msgs = (row.msgs ?? {}) as Readonly<Record<string, unknown>>
+  return row.queryable === true && !row.parent_id && !row.placeholder && !hasChildren && row.running !== true &&
+    !isLive(row.status) && count(msgs.assistant) + count(msgs.user) + count(row.tool_calls) + count(row.input) +
+    count(row.output) + count(row.cache_read) + count(row.cache_write) === 0
+}

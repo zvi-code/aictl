@@ -127,11 +127,17 @@ def _flag_evidence(process: ProcessInfo, ts: float) -> dict[str, dict]:
 
 
 def _with_session_file(state: dict, samples: list[dict]) -> dict:
-    """A tool's session file states the session's activity directly; it wins over a transcript guess."""
+    """A tool's session file states the session's activity directly; it wins over a transcript guess.
+
+    Each process of the family carries the state read at its own last event, so a process that
+    was sampled before the tool wrote ``status`` still says "unknown": the newest known state wins.
+    """
     sid = state.get("session_id")
-    for sample in samples:
-        reported = sample.get("native_state")
-        if sid and sample.get("native_session_id") == sid and reported:
+    known = [sample for sample in samples if sid and sample.get("native_session_id") == sid
+             and sample.get("native_state") not in (None, "", "unknown")]
+    for sample in sorted(known, key=lambda sample: sample.get("native_status_at") or 0.0, reverse=True)[:1]:
+        reported = sample["native_state"]
+        if reported:
             out = dict(state)
             out["status"] = "working" if reported == "running" else reported
             out["native_activity"] = "working" if reported == "running" else reported
@@ -140,6 +146,30 @@ def _with_session_file(state: dict, samples: list[dict]) -> dict:
             out["status_source"] = "session file"
             return out
     return state
+
+
+# What the native binder (monitoring/native_binding.NativeBinder) checks per tool, in plain words:
+# the reason a process of that tool is not linked to a session. A tool not listed here has no
+# per-process session source at all. test_live_sources keeps this in step with the binder.
+UNLINKED_REASONS = {
+    "claude-code": "no session file names this process (Claude Code writes sessions/<pid>.json per session process)",
+    "copilot-cli": "holds no single session lock (session-state/<id>/inuse.<pid>.lock) and its command line names no "
+                   "known session",
+    "codex-cli": "its command line names no known session; Codex CLI writes no per-process session file",
+}
+_NO_SOURCE = {
+    "copilot-desktop": "aictl links only Copilot CLI processes to a session; the desktop app holds many sessions and no "
+                       "per-process session lock",
+    "copilot-vscode": "aictl links only Copilot CLI processes to a session; VS Code holds many chat sessions and no "
+                      "per-process session lock",
+    "claude-desktop": "aictl has no per-process session source for the desktop app; its Claude Code sessions are "
+                      "linked through their own processes",
+}
+
+
+def unlinked_reason(tool: str) -> str:
+    """Why a process of *tool* is not linked to a session, from what the binder checked."""
+    return UNLINKED_REASONS.get(tool) or _NO_SOURCE.get(tool) or "aictl has no session source for this tool"
 
 
 def _runtime_evidence(processes: list[ProcessInfo], status: str, native: dict) -> str:
@@ -462,6 +492,9 @@ class LiveRuntimeSources:
             "started_at": min((p.created_at for p in processes if p.created_at is not None), default=None),
             "last_native_at": native.get("last_native_at"),
             "status_evidence": _runtime_evidence(processes, status, native),
+            # Set only when no evidence links these processes to a session: they are not a session.
+            "unlinked_reason": None if native.get("session_id") else unlinked_reason(
+                native.get("tool") or (self._tool(samples[0]) if samples else "")),
         }
 
     def _publish_loaded(self, sid: str, tool: str, evidence: dict[str, dict], *, native: bool) -> str:

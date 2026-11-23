@@ -20,6 +20,7 @@
     "started_at": {"type": ["number", "null"]},
     "last_native_at": {"type": ["number", "null"]},
     "status_evidence": {"type": ["string", "null"]},
+    "unlinked_reason": {"type": ["string", "null"], "description": "Set when no evidence links the processes to a session: why, in plain words. Such a record is not a session."},
     "title": {"type": ["string", "null"]},
     "parent_id": {"type": ["string", "null"]}
   },

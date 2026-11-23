@@ -384,7 +384,16 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "additionalProperties": {"type": ["object", "array", "string", "number", "boolean", "null"]}
+                "properties": {
+                  "agent_id": {"type": "string"},
+                  "address": {"type": "string", "description": "The agent's address: the session id for the main agent, <session>/<agent> for a subagent."},
+                  "calls": {"type": "integer"},
+                  "first": {"type": "integer"},
+                  "last": {"type": "integer"},
+                  "peak": {"type": "integer"}
+                },
+                "required": ["agent_id", "address", "calls", "first", "last", "peak"],
+                "additionalProperties": false
               }
             },
             "breakdown": {

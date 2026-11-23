@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 073ce41450783e162f3da0ff1139c1ec537576e3e40ccafee65ccefd099d2aed
+// Schema digest: 59ac1ffb39834c699dbbf2173a007dec8e7079da4ed3d177a3216e77b69a3a61
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -844,7 +844,14 @@ export type DetailAgent = {
     peak: number | null;
     drops: number | null;
     series: Array<number | null>;
-    by_agent: Array<Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null>>;
+    by_agent: Array<{
+      agent_id: string;
+      address: string;
+      calls: number;
+      first: number;
+      last: number;
+      peak: number;
+    }>;
     breakdown: Record<string, Record<string, unknown> | Array<unknown> | string | number | boolean | null> | null;
   } | null;
   otel?: {
@@ -3298,6 +3305,7 @@ export type TopicRuntimeAgent = {
   started_at: number | null;
   last_native_at: number | null;
   status_evidence?: string | null;
+  unlinked_reason?: string | null;
   title?: string | null;
   parent_id?: string | null;
 };

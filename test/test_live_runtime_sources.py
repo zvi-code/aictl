@@ -928,3 +928,38 @@ def test_collector_reuses_native_parent_snapshot_and_resets_reused_handle(tmp_pa
     assert reused["cpu_percent"] is None
     assert reused["replaced"] is True
     assert len(native_calls) == 2
+
+
+# ── Processes with no session, and a session file state that arrives after the first sample ──
+
+
+def test_newest_known_session_file_state_wins_over_a_stale_unknown_sample():
+    from aictl.monitoring.live_sources import _with_session_file
+
+    sid = "062629b0-4651-4769-a3d8-3d9a1ed0735f"
+    # The wrapper was sampled before Claude Code wrote "status"; its child carries the state read since.
+    samples = [{"native_session_id": sid, "native_state": "unknown", "native_status_at": None},
+               {"native_session_id": sid, "native_state": "idle", "native_status_at": 1_795_423_849.4}]
+    out = _with_session_file({"session_id": sid, "status": "unknown"}, samples)
+    assert (out["status"], out["status_source"]) == ("idle", "session file")
+    assert _with_session_file({"session_id": sid}, samples[:1]) == {"session_id": sid}
+
+
+def test_an_unlinked_process_says_why_and_a_linked_one_does_not(tmp_path):
+    from aictl.monitoring.live_sources import UNLINKED_REASONS, unlinked_reason
+    from aictl.monitoring.native_binding import NativeBinder
+
+    # The binder looks for per-process session evidence for exactly these tools.
+    assert set(UNLINKED_REASONS) == set(NativeBinder()._homes)
+    assert "sessions/<pid>.json" in unlinked_reason("claude-code")
+    assert unlinked_reason("openclaw") == "aictl has no session source for this tool"
+    assert "Copilot CLI" in unlinked_reason("copilot-desktop")
+
+    runtime = correlator(tmp_path)
+    producer = source(tmp_path)
+    producer.attach_runtime(SimpleNamespace(correlator=runtime))
+    runtime.on_process(process(tmp_path), 1, 1, 0, ts=100)
+    producer.flush_runtime()
+    agent = one(producer.hub, "runtime.agent")
+    assert agent["native_session_id"] is None and agent["unlinked_reason"] == unlinked_reason("copilot-cli")
+    producer.stop()

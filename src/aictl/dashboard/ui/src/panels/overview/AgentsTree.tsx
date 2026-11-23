@@ -79,7 +79,9 @@ export default function AgentsTree(props: PanelProps) {
     return moved
   })
   const toggle = (entry: TreeEntry<Row>) => setFolds(old => new Map(old).set(entry.row.id, !entry.expanded))
-  const open = (row: Row) => row.queryable === true && typeof row.agent_id === 'string' ? () => ctx.openAgent(row.agent_id as string, 'flow') : undefined
+  // A live session the tool's session file names opens too: the drawer reads its whole stored history.
+  const openable = (row: Row) => row.queryable === true || (row.runtime_present === true && typeof row.native_session_id === 'string' && !!row.native_session_id)
+  const open = (row: Row) => openable(row) && typeof row.agent_id === 'string' ? () => ctx.openAgent(row.agent_id as string, 'flow') : undefined
   let body!: HTMLTableSectionElement
   const focusRow = (id: string | undefined) => {
     if (id === undefined) return
@@ -111,17 +113,35 @@ export default function AgentsTree(props: PanelProps) {
     const subs = all.filter(row => row.parent_id && row.kind !== 'main')
     return { sessions: all.length - subs.length, subs: subs.length, running: subs.filter(row => isLive(row.status)).length }
   })
+  const unlinked = () => setup.unlinked()
+  const unlinkedGroups = createMemo(() => {
+    const labels = ctx.board('tool_labels')
+    const groups = new Map<string, ReturnType<typeof setup.unlinked>>()
+    for (const item of unlinked()) {
+      const label = item.tool ? labels?.[item.tool] ?? item.tool : 'Unknown tool'
+      groups.set(label, [...groups.get(label) ?? [], item])
+    }
+    return [...groups].sort(([a], [b]) => a.localeCompare(b))
+  })
   const recorded = () => num(ctx.board('scope')?.shown_agents)
   const listedHistory = () => rows().filter(row => row.queryable === true).length
   return <div class={css.panel}>
     {setup.controls}
     <p class={css.note}>
       {counts().sessions} sessions · {counts().subs} subagents ({counts().running} live) listed
+      <Show when={unlinked().length}> · {unlinked().length} unlinked processes (not sessions, listed below the table)</Show>
+      <Show when={setup.emptyCount() && !setup.showEmpty()}> · {setup.emptyCount()} with no activity (hidden)</Show>
       <Show when={recorded() !== undefined && recorded()! > listedHistory()}>
         {' '}· showing {listedHistory().toLocaleString()} of {recorded()!.toLocaleString()} recorded agents (the list holds 200 rows)
       </Show>
       . A session's numbers include its subagents.
     </p>
+    <Show when={setup.emptyCount()}>
+      <label class={css.note}>
+        <input type="checkbox" checked={setup.showEmpty()} onChange={event => setup.setShowEmpty(event.currentTarget.checked)} />
+        {' '}Show sessions with no activity ({setup.emptyCount()})
+      </label>
+    </Show>
     <details class={css.guide}>
       <summary>What the columns mean</summary>
       <dl><For each={columns}>{column => <><dt>{column.label}</dt><dd>{column.help}</dd></>}</For></dl>
@@ -144,8 +164,13 @@ export default function AgentsTree(props: PanelProps) {
               const group = () => row().kind === 'group'
               const model = () => text(row().model_alias) ?? (text(row().resolved_model) ? shortModel(row().resolved_model as string)
                 : text(row().primary_model) ? shortModel(row().primary_model as string) : undefined)
+              const plain = () => row().queryable === false || row().no_activity === true
               const secondary = () => sub() ? text(row().prompt_line)
-                : [subagentText(summary()), text(row().project)?.split(/[\\/]/).filter(Boolean).at(-1)].filter(Boolean).join(' · ')
+                : [subagentText(summary()), text(row().project)?.split(/[\\/]/).filter(Boolean).at(-1),
+                  plain() ? text(row().short) : undefined,
+                  row().no_activity === true && num(row().started_at) ? `started ${stamp(num(row().started_at)!, now())}` : undefined,
+                ].filter(Boolean).join(' · ')
+              const noHistory = () => text(row().no_history)
               const action = () => open(row())
               const dur = () => duration(row(), now())
               const last = () => num(row().last_activity_at)
@@ -217,6 +242,10 @@ export default function AgentsTree(props: PanelProps) {
                     </Show>
                   </Show>
                 </td>
+                <Show when={noHistory()}>{note =>
+                  <td data-col="last" colspan={5} class={css.secondary}>{note()}</td>
+                }</Show>
+                <Show when={!noHistory()}>
                 <td data-col="last" data-numeric="">
                   <Show when={!group()}>
                     <Show when={last()} fallback={<Missing why={lastMissing(row())} />}>
@@ -249,6 +278,7 @@ export default function AgentsTree(props: PanelProps) {
                     <Show when={num(row().cost_usd) !== undefined} fallback={<Missing why={missingReason(row(), 'cost')} />}>{fmtUsd(num(row().cost_usd))}</Show>
                   </Show>
                 </td>
+                </Show>
               </tr>
             }}</For>
           </tbody>
@@ -260,5 +290,24 @@ export default function AgentsTree(props: PanelProps) {
         </button>
       </Show>
     </States>
+    <Show when={unlinked().length}>
+      <details class={css.guide} data-section="unlinked">
+        <summary>Processes not linked to a session ({unlinked().length})</summary>
+        <p class={css.note}>No evidence the tool wrote links these processes to a session, so they are not listed as sessions.</p>
+        <For each={unlinkedGroups()}>{([label, items]) => <>
+          <h4>{label} ({items.length})</h4>
+          <ul>
+            <For each={items}>{item => <li data-unlinked={item.id}>
+              {item.pids.length === 1 ? 'pid' : 'pids'} {item.pids.slice(0, 6).join(', ')}{item.pids.length > 6 ? ` … (${item.pids.length})` : ''}
+              <Show when={item.started_at}>{at => <> · started {stamp(at(), now())}</>}</Show>
+              <Show when={item.project}>{project => <> · {project()}</>}</Show>
+              <Show when={item.cpu_percent !== undefined}> · CPU {item.cpu_percent!.toFixed(1)}%</Show>
+              <Show when={item.mem_mb !== undefined}> · {fmtN(Math.round(item.mem_mb!))} MB</Show>
+              <div class={css.secondary}>Not linked: {item.reason}</div>
+            </li>}</For>
+          </ul>
+        </>}</For>
+      </details>
+    </Show>
   </div>
 }

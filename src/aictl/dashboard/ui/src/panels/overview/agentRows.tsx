@@ -1,18 +1,22 @@
 import { createMemo, createSignal, Show } from 'solid-js'
 import type { BoardAgentRow, DetailNodes } from '../../data/contract.gen'
-import { overlayAgents, statusText } from '../../data/runtimeAgents'
+import { overlayAgents, statusText, unlinkedProcesses } from '../../data/runtimeAgents'
 import { at, detailPath, object } from '../data'
 import { keyedRows } from '../kinds/model'
 import type { KeyedRow, PanelProps, Read } from '../types'
 import { Choice } from './aControls'
+import { noActivity } from './agentTree'
 import { missing } from './aFields'
 import { knownSum, modelAllocation } from './overviewMath'
 import css from './overviewA.module.css'
+
+const folder = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).at(-1) : undefined
 
 const groupOptions = [['none', 'No groups'], ['project', 'Project'], ['tool', 'Tool'], ['model', 'Model']] as const
 type Group = typeof groupOptions[number][0]
 export function agentRows({ ctx, def }: PanelProps) {
   const [group, setGroup] = createSignal<Group>('none')
+  const [showEmpty, setShowEmpty] = createSignal(false)
   const history = createMemo(() => ctx.read(def.sources[0]))
   const runtime = createMemo(() => ctx.read(def.sources[1]))
   const remote = ctx.detail<Extract<DetailNodes, { view: 'runtime' }>>(() =>
@@ -35,7 +39,9 @@ export function agentRows({ ctx, def }: PanelProps) {
       const raw = data.native_session_id || data.session_id
       if (typeof raw !== 'string' || !raw) return []
       const id = JSON.stringify([host.node_id, raw])
-      return [{ id, data: { ...data, id, session_id: id, node_id: host.node_id,
+      // A node reports a process with no session as native_session_id null: it is not a session.
+      const unlinked = data.native_session_id ? undefined : 'no evidence links these processes to a session on that node'
+      return [{ id, data: { ...data, id, session_id: id, node_id: host.node_id, unlinked_reason: unlinked,
         title: typeof data.title === 'string' ? data.title : undefined } }]
     }))
   })
@@ -46,6 +52,7 @@ export function agentRows({ ctx, def }: PanelProps) {
       ['node_id', 'tool', 'status', 'native_activity', 'running', 'cpu_percent', 'mem_mb', 'started_at', 'status_evidence']
     return overlayAgents(records().filter(agent => !agent.placeholder), observed(), fields, ctx.filters(), ctx.tools())
   })
+  const unlinked = createMemo(() => unlinkedProcesses(records().filter(agent => !agent.placeholder), observed(), ctx.filters(), ctx.tools()))
   const keyed = createMemo(() => {
     const ids = new Map(records().map((row, i) => [row.id, history().rowKeys?.[i]]))
     const value = agents()
@@ -56,10 +63,11 @@ export function agentRows({ ctx, def }: PanelProps) {
   const rows = createMemo(() => {
     const byAgent = new Map(keyed().map(entry => [entry.row.id, entry]))
     const parents = new Set(keyed().flatMap(({ row }) => typeof row.parent_id === 'string' ? [row.parent_id] : []))
+    const hidden = new Set(showEmpty() ? [] : keyed().flatMap(({ row }) => noActivity(row, parents.has(String(row.id))) ? [row.id] : []))
     const groups = new Map<string, KeyedRow>()
     const groupBy = group()
     const labels = ctx.board('tool_labels')
-    return [...keyed().map(entry => {
+    return [...keyed().filter(entry => !hidden.has(entry.row.id)).map(entry => {
       const a = entry.row
       let parent = byAgent.get(a.parent_id)?.id
       if (parent === entry.id) parent = undefined
@@ -74,7 +82,11 @@ export function agentRows({ ctx, def }: PanelProps) {
       return { ...entry, parent, folded: typeof a.id === 'string' && parents.has(a.id) ? false : undefined, row: {
         ...a,
         // A subagent's name comes from its task (see subagents.py); its prompt is only secondary text.
-        title: a.title || a.id,
+        // A live session with no record yet is named by tool and folder; its id stays secondary text.
+        title: a.title || (a.queryable === false
+          ? [typeof a.tool === 'string' ? labels?.[a.tool] ?? a.tool : undefined, folder(a.project)].filter(Boolean).join(' · ') || a.short || a.id
+          : a.id),
+        no_activity: noActivity(a, parents.has(String(a.id))) || undefined,
         state: ctx.stopped(String(a.id)) ? 'stopped' : processOnly ? 'unknown' : a.status,
         status: ctx.stopped(String(a.id)) ? 'Stopped' : processOnly || a.status === 'unknown' ? 'Activity unknown'
           : statusText(a.status, a.end_reason),
@@ -98,10 +110,14 @@ export function agentRows({ ctx, def }: PanelProps) {
     }
     return { ...base, state: 'ready', value: agents() }
   }
+  const emptyCount = createMemo(() => {
+    const parents = new Set(keyed().flatMap(({ row }) => typeof row.parent_id === 'string' ? [row.parent_id] : []))
+    return keyed().filter(({ row }) => noActivity(row, parents.has(String(row.id)))).length
+  })
   const placeholders = createMemo(() => records().filter(agent => agent.placeholder).length)
   const runtimeOnly = createMemo(() => agents().filter(agent => !agent.queryable).length)
   return {
-    result, rows,
+    result, rows, unlinked, emptyCount, showEmpty, setShowEmpty,
     flowColumns: ['title', 'status', 'tool', 'messages', 'tool_calls', 'failures'],
     controls: <Choice label="Group agents by" items={groupOptions} value={group} change={setGroup} />,
     description: <p class={css.note}>

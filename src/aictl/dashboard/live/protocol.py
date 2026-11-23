@@ -28,6 +28,7 @@ AGENT_RUNTIME_FIELDS = (
     "started_at",
     "last_native_at",
     "status_evidence",
+    "unlinked_reason",
 )
 _OUTPUT_FIELDS = (
     "session_id",
