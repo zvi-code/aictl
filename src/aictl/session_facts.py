@@ -14,7 +14,7 @@ from typing import Any
 from .ingesters._common import project_key
 from .ingesters.session_titles import clean_title, outranks
 from .records import STEP_TEXT_LIMIT, SessionRow, _dedup_key, strip_event_text
-from .session_lifecycle import END_GRACE_S, END_OBSERVED
+from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
 from .stores.base import InvalidRowError
@@ -184,7 +184,9 @@ class SessionFacts:
         merged = dict(prior) if prior else incoming.copy()
         clock = entry.get("clock", 0)
         for name in ("tool", "pid", "project_path", "model", "git_branch", "git_commit", "source"):
-            if incoming[name] and (row.source != "otel" or not merged[name]):
+            # OTel and process evidence only fill what is empty; a process still sets the pid.
+            fills_only = row.source == "otel" or (row.source == PROCESS_SOURCE and name != "pid")
+            if incoming[name] and (not fills_only or not merged[name]):
                 merged[name] = incoming[name]
         SessionFacts._set_title(merged, incoming["title"], incoming["title_source"])
         starts = [ts for ts in (merged["started_at"], row.started_at) if ts > 0]

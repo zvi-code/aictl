@@ -14,13 +14,21 @@
   is done only while the process is unbound, at most every ``COPILOT_RETRY_S``; a found
   lock is then checked by its own path. A lock older than the process does not bind, and
   a process that holds several sessions binds to none.
-* ``--session-id <id>`` or ``--resume <id>`` on the command line names the session.
+* ``--session-id <id>`` or ``--resume <id>`` on the command line binds only when the value is a
+  session that exists: a Copilot session folder, a Claude Code transcript, a Codex rollout.
+  ``--resume`` also takes a session NAME (``copilot --resume=my-work``); a name never becomes
+  a session id. The lock file, checked first, then names the real session.
+
+The binder answers for one process. The correlator applies it to every process of a tool's
+process family (a wrapper and the native process it starts), so evidence on the child binds
+the parent's session too.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -32,7 +40,11 @@ from .session import ProcessInfo
 log = logging.getLogger(__name__)
 
 COPILOT_RETRY_S = 30.0
+# A command-line value that is not (yet) a known session is checked again after this long:
+# ``claude --session-id <new id>`` writes its transcript only after it starts.
+NAMED_RETRY_S = 30.0
 _ID_FLAGS = ("--session-id", "--resume", "resume")
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 # procStart has whole seconds; the process start time has a fraction, and the two clocks
 # are read at different moments.
@@ -196,21 +208,56 @@ def copilot_homes() -> list[Path]:
     return _homes("copilot")
 
 
+def codex_homes() -> list[Path]:
+    return _homes("codex")
+
+
+def _safe_name(value: str) -> bool:
+    return bool(value) and not any(part in value for part in ("/", "\\", "..", "*", "?", "[")) and len(value) <= 200
+
+
+def known_session_id(value: str, tool: str, homes: Iterable[Path]) -> bool:
+    """Whether *value* names an existing session of *tool*, not a session name or a typo."""
+    if not _safe_name(value):
+        return False
+    for home in homes:
+        home = Path(home)
+        try:
+            if tool == "copilot-cli":
+                if (home / "session-state" / value).is_dir():
+                    return True
+            elif tool == "claude-code":
+                if _UUID.match(value) and any((home / "projects").glob(f"*/{value}.jsonl")):
+                    return True
+            elif tool == "codex-cli":
+                if _UUID.match(value) and any((home / "sessions").glob(f"*/*/*/rollout-*{value}.jsonl")):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 class NativeBinder:
-    """The correlator's binder: ``(process, tool) -> binding`` or None."""
+    """The correlator's binder: ``(process, tool) -> binding`` or None.
+
+    The order is the strength of the evidence: Claude Code's session file, then Copilot's
+    lock file, then a command-line value that names an existing session.
+    """
 
     def __init__(
         self,
         claude: Callable[[], Iterable[Path]] = claude_homes,
         copilot: Callable[[], Iterable[Path]] = copilot_homes,
         clock: Callable[[], float] = time.monotonic,
+        codex: Callable[[], Iterable[Path]] = codex_homes,
     ) -> None:
-        self._claude = claude
-        self._copilot = copilot
+        self._homes = {"claude-code": claude, "copilot-cli": copilot, "codex-cli": codex}
         self._clock = clock
         self._lock = threading.Lock()
         # (pid, start) -> the lock file found for it, or the time the last search found none.
         self._copilot_locks: dict[tuple[int, float | None], tuple[str, Path] | float] = {}
+        # (tool, value) -> True once it named an existing session, else the time it did not.
+        self._named: dict[tuple[str, str], bool | float] = {}
 
     def __call__(self, process: ProcessInfo, tool: str) -> dict | None:
         try:
@@ -221,19 +268,35 @@ class NativeBinder:
 
     def _bind(self, process: ProcessInfo, tool: str) -> dict | None:
         if tool == "claude-code":
-            binding = binding_for(process, self._claude())
+            binding = binding_for(process, self._homes[tool]())
             if binding is not None:
                 return binding
-        named = command_line_session(process) if tool in ("claude-code", "codex-cli", "copilot-cli") else None
-        if named:
-            return _plain(named, "command line")
         if tool == "copilot-cli":
             # The VS Code and desktop apps hold many sessions over their life; only the CLI
             # process is one agent session.
             found = self._copilot_lock(process)
             if found is not None:
-                return _plain(found[0], "lock file")
+                return _plain(found[0], "lock file", process)
+        named = command_line_session(process) if tool in self._homes else None
+        if named and self._known(named, tool):
+            return _plain(named, "command line", process)
         return None
+
+    def _known(self, value: str, tool: str) -> bool:
+        key = (tool, value)
+        now = self._clock()
+        with self._lock:
+            known = self._named.get(key)
+        if known is True:
+            return True
+        if isinstance(known, float) and now - known < NAMED_RETRY_S:
+            return False
+        found = known_session_id(value, tool, self._homes[tool]())
+        with self._lock:
+            if len(self._named) > 4096:
+                self._named.clear()
+            self._named[key] = True if found else now
+        return found
 
     def _copilot_lock(self, process: ProcessInfo) -> tuple[str, Path] | None:
         key = (process.pid, process.created_at)
@@ -246,7 +309,7 @@ class NativeBinder:
             known = None
         if isinstance(known, float) and now - known < COPILOT_RETRY_S:
             return None
-        found = copilot_lock_session(process, self._copilot())
+        found = copilot_lock_session(process, self._homes["copilot-cli"]())
         with self._lock:
             if len(self._copilot_locks) > 4096:
                 self._copilot_locks.clear()
@@ -254,8 +317,8 @@ class NativeBinder:
         return found
 
 
-def _plain(session_id: str, source: str) -> dict:
-    return {"session_id": session_id, "started_at": None, "cwd": "", "status": "", "state": None,
+def _plain(session_id: str, source: str, process: ProcessInfo) -> dict:
+    return {"session_id": session_id, "started_at": None, "cwd": process.cwd or "", "status": "", "state": None,
             "status_at": None, "source": source}
 
 

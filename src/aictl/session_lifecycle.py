@@ -29,6 +29,10 @@ PROCESS_EXIT = "process_exit"  # the bound process was seen to exit
 SWITCHED = "switched"  # the bound process moved on to another session (Claude /clear)
 IDLE = "idle"  # no activity for the idle window and no bound process: inferred, not observed
 END_OBSERVED = frozenset({HOOK, TRANSCRIPT, PROCESS_EXIT, SWITCHED})
+
+# sessions.source of a row written from process evidence (a bound process family) before the
+# tool's own records arrived. It fills empty fields only; the transcript's source replaces it.
+PROCESS_SOURCE = "process"
 END_REASONS = (HOOK, TRANSCRIPT, PROCESS_EXIT, SWITCHED, IDLE)
 
 

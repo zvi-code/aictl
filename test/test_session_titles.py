@@ -459,6 +459,6 @@ def test_the_search_query_matches_the_stored_name_and_the_session_id_and_returns
 
     rows = KustoReader(SimpleNamespace(execute_query=execute), "db").read("sessions.search", {"search_text": "needle"}).rows
     assert seen["search_text"] == "needle" and "needle" not in seen["text"]
-    assert "title contains search_text" in seen["text"] and "session_id contains search_text" in seen["text"]
-    assert "'name',title,'name_source',title_source" in seen["text"]
+    assert "['title'] contains search_text" in seen["text"] and "session_id contains search_text" in seen["text"]
+    assert "'name',['title'],'name_source',title_source" in seen["text"]
     assert rows[0]["data"][0]["name"] == "Found by name"

@@ -1368,6 +1368,18 @@ class SnapshotPersistence:
             links = []
             retired = []
             facts = self._facts
+            # A family bound in this same batch never gets its monitor row written first.
+            bound_now = {e["detail"].get("session_id") for e in events
+                         if e.get("kind") == "session_bound" and isinstance(e.get("detail"), dict)}
+
+            def process_row(session_id: str, detail: dict, tool: str, ts: float, **extra) -> SessionRow:
+                """A row from process evidence: never an empty tool or a 1970 start."""
+                started = (float(detail.get("native_started_at") or 0.0)
+                           or float(detail.get("process_started_at") or 0.0) or ts)
+                return SessionRow(session_id, tool or "unknown", int(detail.get("pid", 0) or 0),
+                                  detail.get("cwd") or detail.get("project") or "", started_at=started,
+                                  source=session_lifecycle.PROCESS_SOURCE, **extra)
+
             for e in events:
                 kind = e.get("kind", "")
                 detail = e.get("detail", {})
@@ -1380,29 +1392,36 @@ class SnapshotPersistence:
                 native = detail.get("native_session_id") or ""
                 ev_pid = int(detail.get("pid", 0) or 0)
                 if native and kind in ("session_start", "session_bound", "session_alive"):
-                    # The process belongs to the tool's own session: link it there and keep
-                    # that row open; a monitor row for it would list the agent twice. Tool and
-                    # project stay the ones the tool reported, so the two cannot flap.
-                    row = SessionRow(native, facts.session_tool(native) or tool, ev_pid,
-                                     facts.project_for(native) or project,
-                                     started_at=float(detail.get("native_started_at") or 0.0))
-                    updates.append((row, ts, False))
+                    # The process family belongs to the tool's own session: link it there and
+                    # keep that row open; a monitor row for it would list the agent twice. The
+                    # row only fills fields the tool's own records have not set.
+                    updates.append((process_row(native, detail, tool, ts), ts, False))
                     if kind != "session_alive":
-                        links.append((native, ev_pid, tool, ts, "lead", project))
+                        pids = {ev_pid, int(detail.get("evidence_pid", 0) or 0)} - {0}
+                        links.extend((native, pid, tool, ts, "lead", project) for pid in sorted(pids))
                     if kind == "session_bound":
                         retired.append((sid, project))
                         previous = detail.get("previous_native_session_id") or ""
                         if previous and previous != native:
-                            updates.append((SessionRow(previous, ended_at=ts, end_reason=session_lifecycle.SWITCHED),
-                                            ts, True))
+                            before = dict(detail, native_started_at=detail.get("previous_native_started_at") or 0.0)
+                            updates.append((process_row(previous, before, tool, ts, ended_at=ts,
+                                                        end_reason=session_lifecycle.SWITCHED), ts, True))
                 elif kind == "session_start":
-                    row = SessionRow(sid, tool, ev_pid, project, started_at=ts, source="correlator")
+                    if sid in bound_now:
+                        continue
+                    row = SessionRow(sid, tool, ev_pid, project,
+                                     started_at=float(detail.get("process_started_at") or 0.0) or ts,
+                                     source="correlator")
                     updates.append((row, ts, False))
                     links.append((sid, ev_pid, tool, ts, "lead", project))
+                elif kind == "session_merged":
+                    # Another monitor session of the same process family holds these processes now.
+                    retired.append((sid, project))
                 elif kind == "session_end":
                     reason = detail.get("end_reason") or session_lifecycle.IDLE
                     if native:
-                        updates.append((SessionRow(native, ended_at=ts, end_reason=reason), ts, True))
+                        updates.append((process_row(native, detail, tool, ts, ended_at=ts, end_reason=reason),
+                                        ts, True))
                         continue
                     row = SessionRow(
                         sid, tool, project_path=project, started_at=ts, ended_at=ts, end_reason=reason,

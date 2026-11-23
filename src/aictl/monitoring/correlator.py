@@ -71,6 +71,8 @@ class SessionCorrelator:
         self.native: dict[str, dict] = {}
         self._alive_at: dict[str, float] = {}
         self._ended: set[str] = set()
+        # Monitor session id -> the pid of the family member whose evidence gave the binding.
+        self._binding_pid: dict[str, int] = {}
         self.workspace_sizes = workspace_sizes or {}
         self.sink = sink  # SampleSink for derived metric emission
         self.sessions: dict[str, SessionState] = {}
@@ -355,6 +357,7 @@ class SessionCorrelator:
             self._ended.discard(sid)
             self.native.pop(sid, None)
             self._alive_at.pop(sid, None)
+            self._binding_pid.pop(sid, None)
             for pid in session.pids:
                 self.pid_to_session.pop(pid, None)
 
@@ -527,8 +530,65 @@ class SessionCorrelator:
                 "pids": len(session.pids),
                 "input_tokens": session.exact_input_tokens,
                 "output_tokens": session.exact_output_tokens,
+                **self._process_facts(session, binding),
             },
         )
+
+    def _process_facts(self, session: SessionState, binding: dict | None) -> dict:
+        """What the processes say about a session, for a row written from them: never empty."""
+        root = self.pid_to_process.get(session.root_pid) if session.root_pid else None
+        started = session.root_created_at or (root.created_at if root else None) or session.started_at
+        cwd = (binding or {}).get("cwd") or (root.cwd if root else None) or ""
+        return {
+            "pid": session.root_pid or 0,
+            "process_started_at": float(started or 0.0),
+            "native_started_at": float((binding or {}).get("started_at") or 0.0),
+            "cwd": cwd,
+        }
+
+    def _tool_of(self, process: ProcessInfo) -> str | None:
+        return classify_process(process).tool
+
+    def _join_family(self, session: SessionState, process: ProcessInfo, ts: float) -> SessionState:
+        """One session per process family: a session whose root's parent belongs to a session of
+        the same tool is the same agent (a wrapper and the native process it started), so it
+        moves into that session. This happens when the child was seen before its parent."""
+        if process.pid != session.root_pid or process.ppid is None:
+            return session
+        parent = self._find_parent_session(process.ppid)
+        if (
+            parent is None
+            or parent is session
+            or parent.tool != session.tool
+            or parent.session_id in self._ended
+            or session.session_id in self._ended
+        ):
+            return session
+        child = session
+        for pid in {*child.pids, process.pid}:
+            self.pid_to_session[pid] = parent.session_id
+            parent.pids.add(pid)
+        parent.workspaces |= child.workspaces
+        parent.started_at = min(parent.started_at, child.started_at)
+        parent.last_seen_at = max(parent.last_seen_at, child.last_seen_at)
+        self.sessions.pop(child.session_id, None)
+        binding = self.native.pop(child.session_id, None)
+        holder = self._binding_pid.pop(child.session_id, None)
+        self._alive_at.pop(child.session_id, None)
+        self._emit_event(ts, child.tool, "session_merged", {
+            "session_id": child.session_id,
+            "into": parent.session_id,
+            "native_session_id": binding["session_id"] if binding else "",
+            "project": child.project,
+        })
+        if binding is not None and parent.session_id not in self.native:
+            self.native[parent.session_id] = binding
+            self._binding_pid[parent.session_id] = holder or process.pid
+            self._alive_at[parent.session_id] = ts
+            detail = self._binding_detail(parent, binding, self.pid_to_process.get(holder or 0, process))
+            detail["previous_native_session_id"] = ""
+            self._emit_event(ts, parent.tool, "session_bound", detail)
+        return parent
 
     def _lookup_native(self, process: ProcessInfo, tool: str) -> dict | None:
         if self.native_binder is None:
@@ -540,13 +600,24 @@ class SessionCorrelator:
             return None
 
     def _bind(self, session: SessionState, process: ProcessInfo, ts: float) -> None:
-        """Keep the root process's native session current; report a new or changed binding."""
-        binding = self._lookup_native(process, session.tool)
+        """Keep the family's native session current; report a new or changed binding.
+
+        Evidence on any process of the tool in the family binds the whole family. The process
+        that gave the binding keeps it while it lives, so a nested process of the same tool
+        cannot flip the session back and forth.
+        """
         sid = session.session_id
-        if binding is None or sid in self._ended:
-            return  # an unreadable file keeps the binding it had
+        if sid in self._ended or self._tool_of(process) != session.tool:
+            return  # helpers (shells, MCP servers) are not evidence
+        holder = self._binding_pid.get(sid)
         current = self.native.get(sid)
+        if current is not None and holder != process.pid and holder in session.pids:
+            return
+        binding = self._lookup_native(process, session.tool)
+        if binding is None:
+            return  # an unreadable file keeps the binding it had
         self.native[sid] = binding
+        self._binding_pid[sid] = process.pid
         if current is not None and current["session_id"] == binding["session_id"]:
             if ts - self._alive_at.get(sid, 0.0) >= ALIVE_EVERY_S:
                 self._alive_at[sid] = ts
@@ -555,16 +626,17 @@ class SessionCorrelator:
         self._alive_at[sid] = ts
         detail = self._binding_detail(session, binding, process)
         detail["previous_native_session_id"] = current["session_id"] if current else ""
+        if current is not None:
+            detail["previous_native_started_at"] = float(current.get("started_at") or 0.0)
         self._emit_event(ts, session.tool, "session_bound", detail)
 
-    @staticmethod
-    def _binding_detail(session: SessionState, binding: dict, process: ProcessInfo) -> dict:
+    def _binding_detail(self, session: SessionState, binding: dict, process: ProcessInfo) -> dict:
         return {
             "session_id": session.session_id,
             "native_session_id": binding["session_id"],
-            "native_started_at": binding.get("started_at") or 0.0,
-            "pid": process.pid,
             "project": session.project,
+            **self._process_facts(session, binding),
+            "evidence_pid": process.pid,
         }
 
     def drain_events(self) -> list[dict]:
@@ -589,10 +661,10 @@ class SessionCorrelator:
         session = self._resolve_session_for_process(process, ts)
         if session is None:
             return
-        if process.pid == session.root_pid:
-            self._bind(session, process, ts)
-
+        session = self._join_family(session, process, ts)
         session.pids.add(process.pid)
+        self._bind(session, process, ts)
+
         if process.cwd:
             workspace = self.workspace_for_cwd(process.cwd)
             if workspace:
@@ -706,8 +778,14 @@ class SessionCorrelator:
             binding = self._lookup_native(process, match.tool)
             if binding is not None:
                 self.native[session_id] = binding
+                self._binding_pid[session_id] = process.pid
                 self._alive_at[session_id] = ts
-                detail.update(native_session_id=binding["session_id"], native_started_at=binding.get("started_at") or 0.0)
+                detail["native_session_id"] = binding["session_id"]
+            detail.update(self._process_facts(session, binding), pid=process.pid)
+            if not detail["cwd"] and process.cwd:
+                detail["cwd"] = process.cwd
+            if not detail["process_started_at"]:
+                detail["process_started_at"] = float(process.created_at or ts)
             self._emit_event(ts, match.tool, "session_start", detail)
 
         self.pid_to_session[process.pid] = session_id
