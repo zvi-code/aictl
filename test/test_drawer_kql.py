@@ -1,6 +1,11 @@
+import re
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
 from aictl.dashboard.drawer_kql import kql_templates
+from aictl.dashboard.flow_filters import session_kql_url
 
 
 def test_catalog_presets_build_queries_for_their_declared_sources():
@@ -56,3 +61,36 @@ def test_the_model_filter_matches_every_spelling_of_the_model(preset):
 def test_the_model_filter_of_another_id_keeps_its_exact_spelling():
     query = kql_templates({"reporting_node": "node-a", "session": "sid-1", "preset": "requests", "model": "gpt-5.5"})["query"]
     assert '== "gpt-5.5"' in query
+
+
+# ── the session link of Flow, and the guard for the idioms every generated query shares ─────────
+
+_SETTINGS = SimpleNamespace(cluster="https://c.westeurope.kusto.windows.net", database="aictl", node_id="node-a")
+
+
+def _flow_link_query() -> str:
+    url = session_kql_url(_SETTINGS, "sid-1", 100.0, 200.0)
+    return parse_qs(urlsplit(url).query)["query"][0]
+
+
+def _generated_queries() -> dict[str, str]:
+    options = {"reporting_node": "node-a", "session": "sid-1", "include_all_sessions": "1"}
+    queries = {f"preset {item['id']}": kql_templates({**options, "preset": item["id"]})["query"]
+               for item in kql_templates({})["presets"]}
+    return {**queries, "flow link": _flow_link_query()}
+
+
+def test_no_generated_query_drops_rows_whose_deleted_flag_is_null():
+    """``_deleted`` is null on rows written before tombstones: ``not(_deleted)`` is null there and drops the row."""
+    for name, query in _generated_queries().items():
+        assert not re.search(r"not\(\s*_deleted\s*\)", query), f"{name} reads a bare not(_deleted)"
+
+
+def test_the_flow_link_keeps_rows_with_a_null_deleted_flag_and_reads_like_the_kql_tab():
+    query = _flow_link_query()
+    assert "not(coalesce(column_ifexists('_deleted', false), false))" in query
+    # Keyword columns are bracketed, so a reserved word cannot break the query.
+    assert "['kind']" in query and ", kind," not in query
+    # The latest 500 steps, listed oldest first, as the KQL tab's Steps preset does.
+    assert "top 500 by ts desc\n| order by ts asc, step_key asc" in query
+    assert "top 500 by event_time" not in query

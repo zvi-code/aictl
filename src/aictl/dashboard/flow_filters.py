@@ -83,9 +83,10 @@ def session_kql_url(settings, sid: str, since: float | None, until: float | None
         f"let sid = {json.dumps(sid)};\n"
         "// Recorded session steps (no prompt or command text). Times are UTC.\n"
         f"session_steps\n| where node_id == {json.dumps(settings.node_id)} and session_id == sid{bounds}\n"
-        "| summarize arg_max(_v, *) by step_key\n| where not(_deleted)\n"
-        "| project event_time=unixtime_seconds_todatetime(ts), node_id, kind, phase, name, agent_id, turn_id, round_id, "
-        "tool_call_id, trace_id, context_tokens, context_limit, input_tokens, output_tokens, source_order\n"
-        "| top 500 by event_time desc"
+        # `_deleted` is null on rows written before tombstones, so a bare not(_deleted) would drop them.
+        "| summarize arg_max(_v, *) by step_key\n| where not(coalesce(column_ifexists('_deleted', false), false))\n"
+        "| top 500 by ts desc\n| order by ts asc, step_key asc\n"
+        "| project event_time=unixtime_seconds_todatetime(ts), node_id, ['kind'], phase, name, agent_id, turn_id, round_id, "
+        "tool_call_id, trace_id, context_tokens, context_limit, input_tokens, output_tokens, source_order"
     )
     return f"https://{cluster.netloc}/{quote(settings.database, safe='')}?" + urlencode({"web": "1", "autorun": "false", "query": query})
