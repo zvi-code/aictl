@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from . import context_lists
+from .data.model_pricing import canonical_model_id
 from .ingesters.session_titles import clean_title, outranks
 from .memory_changes import ABSENT, BLOB_MAX_BYTES, PREVIOUS_VERSION, blob_hash, fill_write
 from .records import TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, newer_observation, strip_event_text
@@ -398,6 +399,8 @@ class SessionFacts:
                     row.model, str(row.input_tokens), str(row.output_tokens))
                 key = data["dedup_key"] or _dedup_key(row.session_id, *identity, data["source"])
                 data.update(dedup_key=key)
+                # One spelling per model whichever reader reports it (Copilot writes claude-opus-5.5).
+                data["model"] = canonical_model_id(data["model"])
                 if data["finish_reason"] == "error" and not data["is_error"]:
                     # The source reports the call as ended by an error (Copilot finishReason "error").
                     data.update(is_error=1, error_type=data["error_type"] or "error")
@@ -489,6 +492,8 @@ class SessionFacts:
                     continue
                 data = asdict(row)
                 task = data.pop("task")
+                data["model"] = canonical_model_id(data["model"])
+                data["resolved_model"] = canonical_model_id(data["resolved_model"])
                 key = (row.session_id, row.agent_id)
                 saved = staged.get(key)
                 prior = saved[0] if saved else self._agents.get(key)

@@ -48,3 +48,13 @@ def test_a_call_that_finished_with_an_error_is_stored_as_failed():
     rows = sorted(current(writer, "requests"), key=lambda r: r["ts"])
     assert [(r["finish_reason"], r["is_error"]) for r in rows] == [("error", 1), ("stop", 0)]
     assert rows[0]["error_type"] == "error"
+
+
+def test_a_model_is_stored_under_its_canonical_id():
+    writer = read([
+        usage(2, "api-1", "claude-opus-5.5", "stop"),
+        event("subagent.started", 3, {"toolCallId": "call-a", "agentName": "task", "agentType": "task",
+                                      "model": "claude-opus-5.5"}, agentId="agent-a"),
+    ])
+    assert [r["model"] for r in current(writer, "requests")] == ["claude-opus-5-5"]
+    assert [r["model"] for r in current(writer, "agents")] == ["claude-opus-5-5"]

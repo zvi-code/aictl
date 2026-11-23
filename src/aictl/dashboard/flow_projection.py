@@ -10,6 +10,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
+from ..data.model_pricing import canonical_model_id
 from ..stores import reader_feature
 from ..utils import estimate_tokens_from_size
 from .projection_utils import AGENT_SEPARATOR, _is_reported_history, _one_line, _resolve_agent, _usd, mask_secrets
@@ -601,6 +602,9 @@ def _session_flow_build(db: Any, conn: Any | None, sid: str, since: float, until
     source = ("store+" + legacy_source if legacy else "store") if store else (legacy_source if legacy else "store")
     merged = _merge_flow(store, legacy)
     for ev in merged:
+        if ev.get("model"):
+            # One spelling per model across the store and telemetry (Copilot writes claude-opus-5.5).
+            ev["model"] = canonical_model_id(ev["model"])
         if ev["type"] == "user_message" and (not keep or ev["ts"] < floor):
             ev.update(message="", preview="", redacted=True, text_status="expired" if keep else "withheld")
     return sid, merged, source
