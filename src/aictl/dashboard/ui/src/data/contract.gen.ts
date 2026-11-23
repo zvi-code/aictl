@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 1c4d1f36a87760ee83a05592a13302784f7afb3241187218cba3290e01441234
+// Schema digest: 2614fcd0758ffc90f55b62020104e977ea1f59a28fc150c242e6b217b753b96e
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1637,6 +1637,7 @@ export type DetailSessions = {
   rows: Array<{
     id: string;
     title: string;
+    title_source: string;
     project: string;
     tool: string;
     started_at: number | null;

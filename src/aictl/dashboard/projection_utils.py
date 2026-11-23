@@ -26,6 +26,8 @@ MAX_LIST_ROWS = 200
 
 
 TITLE_CHARS = 80
+# A stored session name is cut when it is stored, to this many characters.
+STORED_TITLE_CHARS = 120
 
 
 _EXTRA_SECRET_RE = re.compile(

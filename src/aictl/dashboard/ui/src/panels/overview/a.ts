@@ -56,7 +56,8 @@ export const overviewA: readonly PanelDef[] = [
     // Paging and debounced search need a request controller that a table does not provide.
     id: 'sessionsT', title: 'Find a session', kind: 'custom', defaultSize: 'large', requiredCapabilities: [],
     sources: [{ route: '/api/board/sessions' }, { field: 'tool_labels' }],
-    columns: [field('title', 'Title'), agentMetric('tool', 'Tool', 'tool'), agentMetric('project', 'Project', 'project'),
+    columns: [field('title', 'Title'), field('named_by', 'Named by'), field('short_id', 'Id'),
+      agentMetric('tool', 'Tool', 'tool'), agentMetric('project', 'Project', 'project'),
       field('model', 'Model'), stamp('started_at', 'Started'), stamp('ended_at', 'Ended'), agentMetric('duration', 'Duration', 'duration'),
       tokens('tokens', 'Tokens'), cost(), count('tool_calls', 'Tool calls', 'board.kpi.tool_calls'),
       count('prompts', 'Prompts', 'board.prompt.total'), count('artifacts', 'Artifacts'), count('commits', 'Commits')],

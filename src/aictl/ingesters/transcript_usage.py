@@ -63,6 +63,18 @@ from .call_facts import (
     list_price,
     read_claude_agent_role,
 )
+from .session_titles import (
+    CLAUDE_TITLE_TYPES,
+    USER,
+    CodexTitles,
+    CopilotTitles,
+    Title,
+    chat_title,
+    claude_title,
+    clean_title,
+    outranks,
+    read_claude_titles,
+)
 from .transcript_tail import records
 from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
 from .vscode_chat_logs import snapshot_events
@@ -98,7 +110,7 @@ PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
 
 
 # Record types consumed by ClaudeAccumulator + ClaudeFacts; all other Claude JSONL lines are skipped before json.loads.
-_CLAUDE_RECORD_TYPES = frozenset({b"assistant", b"user", b"api-request", b"system", b"attachment"})
+_CLAUDE_RECORD_TYPES = frozenset({b"assistant", b"user", b"api-request", b"system", b"attachment"}) | CLAUDE_TITLE_TYPES
 
 
 @functools.lru_cache(maxsize=4096)
@@ -152,6 +164,8 @@ class SessionUsage:
     project_path: str = ""
     git_branch: str = ""
     premium_requests: float = 0.0
+    title: str = ""
+    title_source: str = ""
     _nano_aiu: int = 0
     _cost: float = 0.0
     _priced_tokens: int = 0
@@ -165,6 +179,11 @@ class SessionUsage:
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
+
+    def set_title(self, text: str, source: str) -> None:
+        """Take a name by the rule: a higher source wins, the same source's latest text wins."""
+        if outranks(self.title, self.title_source, text, source):
+            self.title, self.title_source = text, source
 
     def touch(self, ts: float) -> None:
         if ts <= 0:
@@ -390,6 +409,9 @@ class ClaudeAccumulator:
     def feed(self, sid: str, obj: dict) -> None:
         kind = obj.get("type")
         if kind not in ("assistant", "user"):
+            named = claude_title(obj)
+            if named:
+                self.session(sid).set_title(*named)
             return
         s = self.session(sid)
         ts = coerce_ts(obj.get("timestamp"))
@@ -1130,6 +1152,11 @@ class TranscriptUsageIngester:
         self._offsets: dict[Path, int] = {}
         self._written: dict[str, tuple] = {}
         self._pending_sessions: dict[str, SessionUsage] = {}
+        # Names kept outside the transcripts (Copilot and Codex metadata files), and the
+        # readers that find them: one per tool home, each reading again only what changed.
+        self._external_titles: dict[str, Title] = {}
+        self._title_retry: set[str] = set()
+        self._title_readers: dict[tuple[str, Path], CopilotTitles | CodexTitles] = {}
         self._first_poll = True
         self._progress_saved = 0.0
         identity = [
@@ -1276,6 +1303,7 @@ class TranscriptUsageIngester:
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
         self._mark_desktop_sessions()
+        renamed = self._read_external_titles()
 
         def read(path: Path, allowed_types: frozenset[bytes] | None = None) -> Iterator[dict]:
             """Yield parsed lines after the file's offset, one at a time: holding
@@ -1364,8 +1392,7 @@ class TranscriptUsageIngester:
         debug_ids: set[str] = set()
         workspace_roots, empty_window_dirs = self._vscode_dirs()
         debug_files = [p for root in workspace_roots for p in root.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl")]
-        chat_files = [p for root in workspace_roots for p in root.glob("*/chatSessions/*.jsonl")]
-        chat_files += [p for folder in empty_window_dirs for p in folder.glob("*.jsonl")]
+        chat_files = self._chat_files(workspace_roots, empty_window_dirs)
         for path in self._changed(debug_files, cutoff, "copilot-vscode"):
             sid = path.parent.name
             debug_ids.add(sid)
@@ -1403,15 +1430,23 @@ class TranscriptUsageIngester:
             # The debug log has per-request numbers for such a session, so the
             # chat file only adds its prompts.
             has_debug_usage = sid in self._debug_logs.sessions
+            named = ""
             for obj in chat_lines(path):
                 chat_facts.feed(obj)
+                named = chat_title(obj) or named
                 if not has_debug_usage:
                     self._chat_logs.feed(sid, obj)
             if has_debug_usage:
+                debug_usage = self._debug_logs.sessions.get(sid)
+                if named and debug_usage is not None:
+                    debug_usage.set_title(named, USER)
+                    touched[sid] = debug_usage
                 self._check_fact_write()
                 continue
             usage = self._chat_logs.sessions.get(sid)
             if usage is not None:
+                if named:
+                    usage.set_title(named, USER)
                 usage.project_path = usage.project_path or _workspace_folder(path.parents[1])
                 usage.touch(path.stat().st_mtime)
                 touched[sid] = usage
@@ -1426,6 +1461,7 @@ class TranscriptUsageIngester:
         if self.facts.tool_calls is not None:
             self.facts.tool_calls.expire(now - PENDING_CONFIRM_MAX_AGE_S)
         self._persist(touched.values(), now, published)
+        self._send_titles(renamed | self._title_retry, published)
         written = len(published)
         self.last_poll_ts = now
         self.last_poll_inserted = written
@@ -1458,6 +1494,78 @@ class TranscriptUsageIngester:
             },
         )
         return written
+
+    @staticmethod
+    def _chat_files(workspace_roots: list[Path], empty_window_dirs: list[Path]) -> list[Path]:
+        files = [p for root in workspace_roots for p in root.glob("*/chatSessions/*.jsonl")]
+        return files + [p for folder in empty_window_dirs for p in folder.glob("*.jsonl")]
+
+    def _title_reader(self, kind: str, root: Path) -> CopilotTitles | CodexTitles:
+        key = (kind, root)
+        reader = self._title_readers.get(key)
+        if reader is None:
+            reader = self._title_readers[key] = (
+                CopilotTitles(root, root.parent / "session-store.db") if kind == "copilot" else CodexTitles(root.parent))
+        return reader
+
+    def _read_external_titles(self) -> set[str]:
+        """Names that Copilot and Codex keep outside their transcripts, new or changed since the last poll."""
+        changed: set[str] = set()
+        for kind, default in (("copilot", self.copilot_state), ("codex", self.codex_sessions)):
+            for root in self._roots(kind, default):
+                try:
+                    found = self._title_reader(kind, root).read()
+                except Exception:  # noqa: BLE001 - a names file must not stop the usage reader
+                    log.debug("transcript-usage: %s names unreadable under %s", kind, root, exc_info=True)
+                    continue
+                self._external_titles.update(found)
+                changed.update(found)
+        return changed
+
+    def _send_titles(self, sids: set[str], published: set[str]) -> None:
+        """Hand over the names of sessions whose row was not written in this poll.
+
+        A session written in this poll carries its name already. A session with no stored
+        row is tried again at the next poll.
+        """
+        send = getattr(self._fact_target, "titles", None)
+        sids = sids - published
+        if send is None or not sids:
+            self._title_retry = set()
+            return
+        self._title_retry = send({sid: self._external_titles[sid] for sid in sids})
+
+    def scan_titles(self) -> dict[str, Title]:
+        """Every session name on this machine, whatever the age of the file.
+
+        Reads the name lines of each Claude Code transcript and the metadata files of the
+        other tools, never a whole transcript into memory. Used once, for sessions stored
+        before names were uploaded.
+        """
+        found: dict[str, Title] = {}
+
+        def add(sid: str, title: Title) -> None:
+            if title[0] and outranks(*found.get(sid, ("", "")), *title):
+                found[sid] = title
+
+        for root in self._roots("claude", self.claude_projects):
+            for path in iter_claude_files(root):
+                if "subagents" not in path.parts:
+                    add(_claude_session_id(path), read_claude_titles(path))
+        for kind, default in (("copilot", self.copilot_state), ("codex", self.codex_sessions)):
+            for root in self._roots(kind, default):
+                for sid, title in self._title_reader(kind, root).read().items():
+                    add(sid, title)
+        from ..observe.sessions import _chat_file_fields
+
+        workspace_roots, empty_window_dirs = self._vscode_dirs()
+        for path in self._chat_files(workspace_roots, empty_window_dirs):
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            add(path.stem, (clean_title(_chat_file_fields(path, size).get("customTitle")), USER))
+        return found
 
     def _stored_through(self, path: Path) -> int:
         """The size up to which an earlier run stored this file's rows, or 0 when that is not sure.
@@ -1630,7 +1738,11 @@ class TranscriptUsageIngester:
             if not s.models and not s.turns:
                 continue  # nothing but metadata, e.g. a summary-only file
             row = s.to_row()
-            fingerprint = (row, s.git_branch)
+            title, title_source = s.title, s.title_source
+            external = self._external_titles.get(s.session_id)
+            if external and outranks(title, title_source, *external):
+                title, title_source = external
+            fingerprint = (row, s.git_branch, title, title_source)
             if self._written.get(s.session_id) == fingerprint:
                 continue
             if self._fact_target is None:
@@ -1656,6 +1768,8 @@ class TranscriptUsageIngester:
                     cost_usd=s.cost_usd or 0.0,
                     request_count=s.request_count,
                     tool_call_count=s.tool_calls,
+                    title=title,
+                    title_source=title_source,
                 )
             )
             self._written[s.session_id] = fingerprint

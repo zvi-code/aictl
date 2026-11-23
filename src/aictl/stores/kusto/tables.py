@@ -169,6 +169,8 @@ _DEFINED = (
                 ("request_count", "long"),
                 ("tool_call_count", "long"),
                 ("files_modified", "long"),
+                ("title", "string"),
+                ("title_source", "string"),
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),

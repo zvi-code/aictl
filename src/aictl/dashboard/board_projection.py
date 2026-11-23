@@ -30,6 +30,7 @@ from .history_scope import identity, identity_parts
 from .history_scope import label as node_label
 from .projection_utils import (
     MAX_LIST_ROWS,
+    STORED_TITLE_CHARS,
     TITLE_CHARS,
     _as_number,
     _basename,
@@ -1246,7 +1247,10 @@ class _Board:
         titles = {}
         for sid, agent in keys:
             text = firsts.get((sid, agent))
-            if text:
+            stored = (getattr(self, "meta", {}).get(sid) or {}).get("title") if agent == sid else ""
+            if stored:
+                titles[(sid, agent)] = _one_line(stored, STORED_TITLE_CHARS)
+            elif text:
                 titles[(sid, agent)] = _one_line(text, TITLE_CHARS)
             elif agent != sid:
                 role = (self.sub_rows.get(agent) or {}).get("task") or "Subagent"

@@ -23,12 +23,13 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+from ..ingesters.session_titles import best_title
 from ..platforms import IS_WINDOWS
 from ..records import _session_uuid
 from ..stores.base import StoreError
 from .board_filters import SPARK_POINTS, Filters
 from .board_projection import _Board, _fallback_rows, _store_facts
-from .projection_utils import MAX_DETAIL_ROWS, TITLE_CHARS, _basename, _label, _one_line, _short
+from .projection_utils import MAX_DETAIL_ROWS, STORED_TITLE_CHARS, TITLE_CHARS, _basename, _label, _one_line, _short
 from .projections.history import HistoryScope
 
 log = logging.getLogger(__name__)
@@ -432,7 +433,7 @@ def is_recorded_artifact(db: Any, path: str, *, history: HistoryScope | None = N
 
 # ─── Search over all sessions ─────────────────────────────────────
 
-_MATCH_ORDER = ("title", "project", "prompt", "artifact", "file", "commit")
+_MATCH_ORDER = ("title", "project", "prompt", "artifact", "file", "commit", "id")
 _RANK = {kind: i for i, kind in enumerate(_MATCH_ORDER)}
 
 
@@ -522,7 +523,8 @@ def _reader_search(db, history, q, tools, since, until, limit, offset, *, now=No
         if history.qualified:
             node, raw = history.split(sid)
             row.update(node_id=label(node), session_id=raw)
-        row["match"], row["match_text"] = _match_of(row["title"], [hits[s] for s in groups[key]], q) if q else ("", "")
+        ids = [base[s]["session_id"] for s in groups[key] if s in base]
+        row["match"], row["match_text"] = _match_of(row["title"], [hits[s] for s in groups[key]], q, ids) if q else ("", "")
         out.append(row)
     result = {"rows": out, "total": max(total, len(out))}
     if history.qualified:
@@ -535,9 +537,12 @@ def _representative(key: str, sids: list[str]) -> str:
     return key if key in sids else sids[0]
 
 
-def _match_of(title: str, found: list[tuple[int, str]], q: str) -> tuple[str, str]:
+def _match_of(title: str, found: list[tuple[int, str]], q: str, ids: list[str] = ()) -> tuple[str, str]:
     if q.lower() in title.lower():
         return "title", _excerpt(title, q)
+    for sid in ids:
+        if q.lower() in sid.lower():
+            return "id", sid
     if not found:
         return "", ""
     rank, text = min(found)
@@ -554,8 +559,13 @@ def _project_search_page(page, groups, base, first_prompt):
         head = base.get(rep) or known[0]
         project = head["project"] or next((k["project"] for k in known if k["project"]), "")
         texts = sorted(first_prompt[s] for s in sids if s in first_prompt)
-        if texts:
-            title = _one_line(texts[0][1], TITLE_CHARS)
+        # The name the tool or the user gave the session, then the first prompt, then the tool and folder.
+        name, name_source = best_title((k["name"], k["name_source"]) for k in known if k.get("name"))
+        title_source = ""
+        if name:
+            title, title_source = _one_line(name, STORED_TITLE_CHARS), name_source
+        elif texts:
+            title, title_source = _one_line(texts[0][1], TITLE_CHARS), "prompt"
         else:
             title = " · ".join(p for p in (_label(head["tool"]), _basename(project)) if p) or _short(rep)
         ended = [k["ended_at"] for k in known if k["ended_at"]]
@@ -563,6 +573,7 @@ def _project_search_page(page, groups, base, first_prompt):
             "id": rep,
             "tool": head["tool"],
             "title": title,
+            "title_source": title_source,
             "project": project,
             "started_at": min((k["started_at"] for k in known if k["started_at"]), default=None),
             "ended_at": max(ended) if ended and len(ended) == len(known) else None,

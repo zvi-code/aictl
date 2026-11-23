@@ -13,6 +13,7 @@
         "properties": {
           "id": {"type": "string"},
           "title": {"type": "string"},
+          "title_source": {"type": "string"},
           "project": {"type": "string"},
           "tool": {"type": "string"},
           "started_at": {"type": ["number", "null"]},
@@ -31,6 +32,7 @@
         "required": [
           "id",
           "title",
+          "title_source",
           "project",
           "tool",
           "started_at",

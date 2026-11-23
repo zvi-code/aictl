@@ -253,6 +253,10 @@ class SessionRow:
     request_count: int = 0
     tool_call_count: int = 0
     files_modified: int = 0
+    # The session's name, one line of at most 120 characters, and who gave it:
+    # "user" (named or renamed by the user), "tool" (made by the tool), "prompt" (from prompt text).
+    title: str = ""
+    title_source: str = ""
 
 
 @dataclass(slots=True)

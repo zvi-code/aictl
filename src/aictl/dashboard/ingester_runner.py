@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ingesters import context_items_backfill, loaded_files_backfill, tool_size_backfill
+from ..ingesters import context_items_backfill, loaded_files_backfill, session_titles, tool_size_backfill
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -225,12 +225,14 @@ def _backfill_transcripts(store, new_node: bool = False) -> None:
 
     They add rows that older versions did not write, to a store that those versions
     filled. A new node has no such rows: its reader writes them all, so each backfill
-    is recorded as done and no session file is read a second time.
+    is recorded as done and no session file is read a second time. The session names pass
+    reads only the name lines and metadata files, and renames after it come with the
+    normal polling.
     """
     if store.restart_dir is None:
         return
     backfills = ((tool_size_backfill, store.history_store.writer), (loaded_files_backfill, store.session_facts),
-                 (context_items_backfill, store.session_facts))
+                 (context_items_backfill, store.session_facts), (session_titles, store.session_facts))
 
     def state(module) -> StateFile:
         return StateFile(store.restart_dir / f"{module.__name__.rsplit('.', 1)[-1]}.json")

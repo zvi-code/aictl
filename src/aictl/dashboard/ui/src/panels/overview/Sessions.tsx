@@ -12,7 +12,12 @@ import css from './overviewA.module.css'
 const pageSize = 50
 const matchLabels: Record<string, string> = {
   title: 'Title', prompt: 'Prompt', artifact: 'Artifact', file: 'Written file', commit: 'Commit', project: 'Project',
+  id: 'Session id',
 }
+const namedBy: Record<string, string> = { user: 'You', tool: 'The tool', prompt: 'First prompt' }
+
+/** The first characters of a session id, enough to tell two sessions of one name apart. */
+export const shortId = (id: string) => id.length > 12 ? id.slice(0, 8) : id
 
 export default function Sessions(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
@@ -56,6 +61,8 @@ export default function Sessions(props: PanelProps) {
   ])
   const rows = createMemo(() => keyedRows({ state: 'ready', value: loaded().map(row => ({
     ...row, title: row.title || row.session_id || row.id,
+    named_by: namedBy[row.title_source ?? ''],
+    short_id: shortId(row.session_id || row.id),
     tool: ctx.board('tool_labels')?.[row.tool] ?? row.tool,
     duration: typeof row.ended_at === 'number' && typeof row.started_at === 'number' ? row.ended_at - row.started_at : undefined,
     matched: row.match && row.match_text != null ? `${matchLabels[row.match] ?? row.match}: ${row.match_text}` : undefined,

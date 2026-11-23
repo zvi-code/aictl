@@ -64,15 +64,31 @@ def capture_mode() -> str:
 
 
 def _workspace_yaml(session_dir: Path) -> dict[str, str]:
-    """Top-level scalar keys only; multi-line values are not needed here."""
+    """Top-level scalar keys only. A value that goes on under its key (``|``, ``>`` or an open quote) is joined."""
     out: dict[str, str] = {}
+    key, open_quote = "", ""
     try:
         with (session_dir / "workspace.yaml").open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if line[:1].isalpha() and ": " in line:
                     key, value = line.split(": ", 1)
-                    if key in ("client_name", "cwd", "git_root", "branch", "name"):
-                        out[key] = value.strip().strip("'\"")
+                    value = value.strip()
+                    if key not in ("client_name", "cwd", "git_root", "branch", "name", "user_named"):
+                        key = ""
+                    elif value[:1] in ("|", ">"):
+                        out[key], open_quote = "", ""
+                    elif value[:1] in ("'", '"') and (len(value) < 2 or value[-1] != value[0]):
+                        out[key], open_quote = value[1:], value[0]
+                    else:
+                        out[key] = value.strip("'\"").replace("''", "'") if value[:1] == "'" else value.strip("'\"")
+                        key = ""
+                elif key and line[:1] in (" ", "\t", "\n", "\r"):
+                    out[key] = f"{out[key]} {line.strip()}".strip()
+                    if open_quote and out[key].endswith(open_quote):
+                        out[key] = out[key][:-1].replace("''", "'") if open_quote == "'" else out[key][:-1]
+                        key, open_quote = "", ""
+                else:
+                    key, open_quote = "", ""
     except OSError:
         pass
     return out

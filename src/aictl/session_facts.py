@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from .ingesters._common import project_key
+from .ingesters.session_titles import clean_title, outranks
 from .records import STEP_TEXT_LIMIT, SessionRow, _dedup_key, strip_event_text
 from .state_file import StateFile
 from .stores import writer_or_discard
@@ -93,6 +94,7 @@ class SessionFacts:
                     continue
                 if sid == "aictl-verify":
                     continue
+                row = self._gated(row)
                 entry = staged.get(sid, self._sessions.get(sid, {}))
                 merged = self._merge_session(row, activity, terminal, entry)
                 if merged != entry:
@@ -113,15 +115,59 @@ class SessionFacts:
             if staged:
                 self._dirty = True
 
+    def _gated(self, row: SessionRow) -> SessionRow:
+        """A name made from prompt text is stored only while the store keeps text."""
+        if row.title_source == "prompt" and not self.keeps_text():
+            return replace(row, title="", title_source="")
+        return row
+
+    def titles(self, items: Iterable[tuple[str, tuple[str, str]]] | dict[str, tuple[str, str]]) -> set[str]:
+        """Give stored sessions a name. Returns the ids this node has no session row for.
+
+        A row is sent whole, so a session this node holds no row for is left alone: its
+        name arrives with its first row.
+        """
+        pairs = items.items() if isinstance(items, dict) else items
+        unknown: set[str] = set()
+        with self._lock:
+            staged = OrderedDict()
+            for sid, (text, source) in pairs:
+                entry = staged.get(sid, self._sessions.get(sid))
+                if not entry:
+                    unknown.add(sid)
+                    continue
+                if source == "prompt" and not self.keeps_text():
+                    continue
+                merged = dict(entry["row"])
+                if self._set_title(merged, clean_title(text), source):
+                    staged[sid] = {"row": merged, "clock": entry.get("clock", 0)}
+            if staged:
+                self.writer.upsert("sessions", [dict(e["row"], project=e["row"]["project_path"])
+                                                 for e in staged.values()])
+                for sid, entry in staged.items():
+                    self._remember(self._sessions, sid, entry)
+                self._dirty = True
+        return unknown
+
+    @staticmethod
+    def _set_title(row: dict, text: str, source: str) -> bool:
+        if not outranks(row.get("title", ""), row.get("title_source", ""), text, source):
+            return False
+        row["title"], row["title_source"] = text, source
+        return True
+
     @staticmethod
     def _merge_session(row: SessionRow, activity: float, terminal: bool, entry: dict) -> dict:
         incoming = asdict(row)
+        if row.source == "otel":
+            incoming["title"] = incoming["title_source"] = ""
         prior = entry.get("row")
         merged = dict(prior) if prior else incoming.copy()
         clock = entry.get("clock", 0)
         for name in ("tool", "pid", "project_path", "model", "git_branch", "git_commit", "source"):
             if incoming[name] and (row.source != "otel" or not merged[name]):
                 merged[name] = incoming[name]
+        SessionFacts._set_title(merged, incoming["title"], incoming["title_source"])
         starts = [ts for ts in (merged["started_at"], row.started_at) if ts > 0]
         merged["started_at"] = min(starts, default=0.0)
         for name in _COUNTERS:

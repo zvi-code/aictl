@@ -410,6 +410,23 @@ wrapped_calls
 | order by calls desc
 ```
 
+## Session names (`sessions.title`, `sessions.title_source`)
+
+The Kusto `sessions` table has two string columns for the name of a session, kept a year like the rest of the row.
+`title` is one line of at most 120 characters. `title_source` says who gave it:
+
+| `title_source` | Meaning | Read from |
+|----------------|---------|-----------|
+| `user` | The user named or renamed the session | Claude Code `custom-title` and `agent-name` lines; Copilot `workspace.yaml` `name` with `user_named: true`; VS Code chat `customTitle`; Codex `threads.name` and `session_index.jsonl` |
+| `tool` | The tool made the title or summary | Claude Code `ai-title` lines; Copilot `workspace.yaml` `name` with `user_named: false`, and `session-store.db` `sessions.summary`; Codex `threads.title` when it is not the first message |
+| `prompt` | Made from prompt text | Claude Code `last-prompt` lines; Codex `threads.title` when it is the first message |
+
+A name replaces the stored one when its source ranks higher (`user`, then `tool`, then `prompt`), or ranks the same and
+the text differs, so the latest name wins and a rename is picked up. An empty name never clears a stored one, and a
+row from `otel` carries none. Names with source `prompt` hold prompt text, so they are written only while the store keeps text.
+Sessions stored before these columns existed get their names once, from a pass that reads only the name lines and
+the metadata files (state file `session_titles.json`); a new node does not run it.
+
 ## Configuration
 
 ```toml
