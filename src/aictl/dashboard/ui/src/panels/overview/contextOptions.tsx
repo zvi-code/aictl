@@ -6,7 +6,8 @@ import type { KeyedRow, PanelProps, Read, Row } from '../types'
 import { Choice, Measures } from './aControls'
 import { cost, count, field, tokens } from './aFields'
 import { useContext } from './contextData'
-import { dailyValues, knownSum, type DailyMetric } from './overviewMath'
+import { dailyValues, knownSum, pricedCost, type DailyMetric } from './overviewMath'
+import { fmtN } from '../../design/format'
 import { workflowSummary } from './RowSummaries'
 import css from './overviewA.module.css'
 
@@ -75,6 +76,8 @@ export function dailyOptions(props: PanelProps) {
   const rows = createMemo(() => keyedRows(read(), ['date', 'model']))
   const total = (key: DailyMetric) => context.nodes()?.some(node => !node.daily || node.daily.incomplete || node.daily.available === false)
     ? undefined : knownSum(read().value?.map(row => row[key]) ?? [])
+  const priced = createMemo(() => context.nodes()?.some(node => !node.daily || node.daily.incomplete || node.daily.available === false)
+    ? { cost: undefined, unpriced: [] } : pricedCost(read().value ?? []))
   return {
     axis, read: result, retry: context.retry,
     columns: () => models().map(({ label }, i) => field(String(i), label,
@@ -84,7 +87,9 @@ export function dailyOptions(props: PanelProps) {
       <Measures ctx={ctx} items={[
         { field: tokens('tokens', 'Tokens'), value: total('tokens') },
         { field: count('requests', 'Calls'), value: total('requests') },
-        { field: cost(), value: total('cost_usd') },
+        { field: cost(), value: priced().cost, detail: priced().unpriced.length
+          ? `excludes ${priced().unpriced.map(item => `${item.model} (${fmtN(item.tokens)} tokens)`).join(', ')}: no list price`
+          : undefined },
       ]} /></>,
     table: () => <RowTable panel={props} label="Daily usage by model data" rows={rows()} />,
   }

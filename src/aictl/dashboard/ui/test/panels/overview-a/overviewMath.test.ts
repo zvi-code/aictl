@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ContextLocal } from '../../../src/data/contract.gen'
-import { dailyValues, knownSum, messageBuckets, modelAllocation, rankedSeries } from '../../../src/panels/overview/overviewMath'
+import { dailyValues, knownSum, messageBuckets, modelAllocation, pricedCost, rankedSeries } from '../../../src/panels/overview/overviewMath'
 
 describe('Overview usage projection', () => {
   it('aligns message counts to the returned starts without filling missing roles, gaps or tail samples', () => {
@@ -19,6 +19,14 @@ describe('Overview usage projection', () => {
     expect(modelAllocation({ ...usage, models: ['a'], input: null }, 'a').tokens).toBeUndefined()
     expect(knownSum([0, 0])).toBe(0)
     expect(knownSum([0, undefined])).toBeUndefined()
+  })
+
+  it('prices the daily total like the Cost panel and names the models it leaves out', () => {
+    // Found on real data: one unpriced model (claude-fable-5-2) made the whole seven-day cost N/A.
+    const rows = [{ model: 'opus', tokens: 10, cost_usd: 1.5 }, { model: 'fable', tokens: 70, cost_usd: null },
+      { model: 'fable', tokens: 1, cost_usd: null }, { model: null, tokens: 0, cost_usd: null }, { model: 'sonnet', tokens: 5, cost_usd: 0.25 }]
+    expect(pricedCost(rows)).toEqual({ cost: 1.75, unpriced: [{ model: 'fable', tokens: 71 }] })
+    expect(pricedCost([]).cost).toBeUndefined()
   })
 
   it('keeps an unknown node cost unknown in the daily series', () => {

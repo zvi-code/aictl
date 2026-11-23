@@ -101,6 +101,19 @@ export function knownSum(values: readonly unknown[]): number | undefined {
   return total
 }
 
+/** The cost of the rows that have a price, and the models left out of it with their tokens.
+ * A row with tokens and no cost is a model the price list (data/model_pricing.py) does not have,
+ * priced by the same path as the Cost panel: the total names what it leaves out, never says N/A. */
+export function pricedCost(rows: readonly { model?: string | null; tokens?: number | null; cost_usd?: number | null }[]) {
+  let cost: number | undefined
+  const unpriced = new Map<string, number>()
+  for (const row of rows) {
+    if (typeof row.cost_usd === 'number' && Number.isFinite(row.cost_usd)) cost = (cost ?? 0) + row.cost_usd
+    else if ((row.tokens ?? 0) > 0) unpriced.set(row.model || 'model not reported', (unpriced.get(row.model || 'model not reported') ?? 0) + row.tokens!)
+  }
+  return { cost, unpriced: [...unpriced].sort((a, b) => b[1] - a[1]).map(([model, tokens]) => ({ model, tokens })) }
+}
+
 export function modelAllocation(agent: Row, model: unknown) {
   if (!Array.isArray(agent.models) || agent.models.length !== 1 || agent.models[0] !== model) return {}
   const messages = agent.msgs as Row | undefined
