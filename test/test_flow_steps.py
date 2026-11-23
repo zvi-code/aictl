@@ -191,3 +191,9 @@ def test_a_subagent_task_prompt_is_the_first_step_of_its_span_and_its_model_chan
     # A task prompt is not a person's prompt: the session still counts one.
     assert body["summary"]["total_turns"] == 1
     assert [e["type"] for e in flow(RAN, rows=TURN)["turns"]][:3] == ["subagent", "session_command", "task_prompt"]
+
+
+def test_a_subagent_named_with_its_session_gets_its_own_events():
+    events = [{"type": "api_call", "agent_id": "a1"}, {"type": "api_call", "agent_id": "a2"}, {"type": "api_call", "agent_id": ""}]
+    assert flow_projection._agent_scope(events, f"{SID}/a1", SID) == [events[0]]
+    assert flow_projection._agent_scope(events, "a1", SID) == [events[0]]

@@ -12,7 +12,7 @@ from typing import Any
 
 from ..stores import reader_feature
 from ..utils import estimate_tokens_from_size
-from .projection_utils import _is_reported_history, _one_line, _resolve_agent, _usd, mask_secrets
+from .projection_utils import AGENT_SEPARATOR, _is_reported_history, _one_line, _resolve_agent, _usd, mask_secrets
 from .projections.history import (
     HistoryScope,
     capture_mode,
@@ -509,6 +509,8 @@ def _number_steps(events: list[dict]) -> int:
 
 def _agent_scope(events: list[dict], agent_raw: str, session_raw: str) -> list[dict] | None:
     """The events of one subagent, or None when the id names the main agent or no event carries it."""
+    # A subagent is named "<session>/<agent>"; its events carry the agent id alone.
+    agent_raw = agent_raw.rpartition(AGENT_SEPARATOR)[2]
     if not agent_raw or agent_raw == session_raw:
         return None
     own = [event for event in events if (event.get("agent_id") or "") == agent_raw]
