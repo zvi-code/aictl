@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardQuery, filtersToParams, parseFilters, windowOf } from '../src/data/filters';
+import { boardQuery, filtersToParams, modelReportedAs, parseFilters, windowOf } from '../src/data/filters';
 import type { DetailContextAudit, DetailEffectiveModels, DetailHooksStatus, DetailOtelStatus } from '../src/data/contract.gen';
 import { buildFindings, buildSettings, tailPath } from '../src/panels/overview/b/findings';
 import { errorLabel, fmtCredits, fmtDur, fmtLines, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, sparkPath, toolDisplayName, weekdayLabel } from '../src/design/format';
@@ -28,6 +28,14 @@ describe('filters in the URL', () => {
     expect(Object.fromEntries(q)).toEqual({ since: '1', until: '2', buckets: '3', tool: 'a,b', project: 'alpha', q: 'x' });
     expect(new URLSearchParams(boardQuery(f, [], { since: 1, until: 2 })).get('tool')).toBe('-');
     expect(new URLSearchParams(boardQuery(f, null, { since: 1, until: 2 })).has('tool')).toBe(false);
+  });
+  it('names the spellings a model was reported under, and nothing when there is one', () => {
+    const label = (id: string) => ({ 'claude-code': 'Claude Code', 'copilot-cli': 'Copilot CLI' }[id] ?? id);
+    expect(modelReportedAs({ id: 'claude-opus-5-5', reported_as: [
+      { id: 'claude-opus-5-5', tools: ['claude-code'] }, { id: 'claude-opus-5.5', tools: ['copilot-cli'] },
+    ] }, label)).toBe('Reported as claude-opus-5-5 by Claude Code; claude-opus-5.5 by Copilot CLI');
+    expect(modelReportedAs({ id: 'claude-opus-5', reported_as: [{ id: 'claude-opus-5', tools: ['claude-code'] }] }, label)).toBeUndefined();
+    expect(modelReportedAs({ id: 'gpt-5' }, label)).toBeUndefined();
   });
   it('rounds a preset window so repeat calls can match', () => {
     expect(windowOf({ id: '24h' }, 1000)).toEqual(windowOf({ id: '24h' }, 1001));

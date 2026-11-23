@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 59ac1ffb39834c699dbbf2173a007dec8e7079da4ed3d177a3216e77b69a3a61
+// Schema digest: f0ce35ef1922d2a2737b8facfe36103fc1025d1e18d2ccec932b68e31fbb3fed
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -79,6 +79,10 @@ export type BoardAttention = Array<{
 
 export type BoardByModel = Array<{
   model: string;
+  reported_as?: Array<{
+    id: string;
+    tools: Array<string>;
+  }>;
   agents: number;
   msgs: number;
   tokens: number;
@@ -262,6 +266,10 @@ export type BoardOptions = {
   models: Array<{
     id: string;
     agents: number;
+    reported_as?: Array<{
+      id: string;
+      tools: Array<string>;
+    }>;
   }>;
 };
 

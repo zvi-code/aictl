@@ -99,3 +99,15 @@ export function canClear(f: Filters, tools: Tools) {
   return !!(tools || f.project !== 'all' || f.model !== 'all' || f.status !== 'all' || f.sel || f.q);
 }
 export const clearedFilters = (f: Filters): Filters => ({ ...f, project: 'all', model: 'all', status: 'all', sel: null, q: '' });
+
+/** The hover of a Model menu entry: the spellings the tools stored under this canonical id,
+ * or undefined when every tool stored the id itself. */
+export function modelReportedAs(
+  row: { id: string; reported_as?: readonly { id: string; tools: readonly string[] }[] },
+  toolLabel: (id: string) => string,
+): string | undefined {
+  const spellings = row.reported_as ?? [];
+  if (!spellings.some(spelling => spelling.id !== row.id)) return undefined;
+  return 'Reported as ' + spellings.map(spelling =>
+    spelling.id + (spelling.tools.length ? ` by ${spelling.tools.map(toolLabel).join(', ')}` : '')).join('; ');
+}

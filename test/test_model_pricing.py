@@ -46,6 +46,43 @@ def test_date_suffix_and_dotted_versions_resolve():
     assert resolve_pricing("claude-sonnet-4.6")[0] == "claude-sonnet-4-6"
 
 
+SPELLINGS = [
+    # (reported, canonical id)
+    ("claude-opus-5-5", "claude-opus-5-5"),      # Claude Code
+    ("claude-opus-5.5", "claude-opus-5-5"),      # GitHub Copilot
+    ("Claude-Sonnet-4.6", "claude-sonnet-4-6"),
+    (" claude-haiku-4.5 ", "claude-haiku-4-5"),
+    # A different version, a dated snapshot, a context variant and a platform wrapping stay apart.
+    ("claude-opus-5", "claude-opus-5"),
+    ("claude-opus-5-5-20261001", "claude-opus-5-5-20261001"),
+    ("claude-opus-5-5[1m]", "claude-opus-5-5[1m]"),
+    ("claude-opus-5.5[1m]", "claude-opus-5-5[1m]"),
+    ("us.anthropic.claude-opus-5-5-v1:0", "us.anthropic.claude-opus-5-5-v1:0"),
+    ("claude-sonnet-5-preview", "claude-sonnet-5-preview"),
+    # Not a Claude id: unchanged, dots and case included.
+    ("gpt-5.5", "gpt-5.5"),
+    ("gemini-3.8-flash", "gemini-3.8-flash"),
+    ("Acme-Model.2", "Acme-Model.2"),
+    ("", ""),
+]
+
+
+@pytest.mark.parametrize(("reported", "canonical"), SPELLINGS)
+def test_canonical_model_id_merges_spellings_only(reported, canonical):
+    from aictl.data.model_pricing import canonical_model_id
+
+    assert canonical_model_id(reported) == canonical
+
+
+@pytest.mark.parametrize(("reported", "_canonical"), SPELLINGS)
+def test_canonical_id_prices_like_the_reported_id(reported, _canonical):
+    # Pricing is built on the canonical id, so two ids grouped as one model cannot have two prices.
+    from aictl.data.model_pricing import canonical_model_id
+
+    assert normalize_model_id(canonical_model_id(reported)) == normalize_model_id(reported)
+    assert resolve_pricing(canonical_model_id(reported)) == resolve_pricing(reported)
+
+
 def test_prefix_match_is_hyphen_bounded():
     # A longer non-version variant sharing a known prefix uses that prefix's rate...
     assert resolve_pricing("claude-sonnet-5-preview")[0] == "claude-sonnet-5"

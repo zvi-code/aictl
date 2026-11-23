@@ -7,6 +7,15 @@
     "type": "object",
     "properties": {
       "model": {"type": "string"},
+      "reported_as": {
+        "description": "The stored spellings of this canonical model id, each with the tools that reported it.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {"id": {"type": "string"}, "tools": {"type": "array", "items": {"type": "string"}}},
+          "required": ["id", "tools"]
+        }
+      },
       "agents": {"type": "integer"},
       "msgs": {"type": "integer"},
       "tokens": {"type": "integer"},

@@ -225,6 +225,27 @@ _PROVIDER_PREFIX = re.compile(r"^(?:openai|anthropic|google|models)/")
 
 
 @functools.lru_cache(maxsize=4096)
+def canonical_model_id(model: str | None) -> str:
+    """The one id a model is grouped, filtered and shown under, whichever tool reported it.
+
+    Only spellings of the same id merge: a Claude id in any letter case, or with a dot
+    instead of a dash in its version (Claude Code writes ``claude-opus-5-5``, GitHub
+    Copilot ``claude-opus-5.5``). A different version, a dated snapshot, a ``[1m]``
+    context variant, a platform wrapping such as Bedrock's and a ``-preview`` variant
+    stay their own ids, and an id that is not a Claude id is returned unchanged.
+
+    :func:`normalize_model_id` (the price key) starts from this id, so two ids grouped
+    as one model always have one price.
+    """
+    if not model:
+        return ""
+    m = model.strip().lower()
+    if not m.startswith("claude-"):
+        return model
+    return m.replace(".", "-")
+
+
+@functools.lru_cache(maxsize=4096)
 def normalize_model_id(model: str | None) -> str:
     """Canonical lower-case id with snapshot, context and platform wrapping removed.
 
@@ -238,9 +259,7 @@ def normalize_model_id(model: str | None) -> str:
     m = _BEDROCK_VERSION.sub("", m)
     m = _BRACKET_TAG.sub("", m)
     m = _DATE_SUFFIX.sub("", m)
-    if m.startswith("claude-"):
-        m = m.replace(".", "-")
-    return m
+    return canonical_model_id(m)
 
 
 @functools.lru_cache(maxsize=4096)

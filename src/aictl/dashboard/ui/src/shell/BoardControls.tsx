@@ -1,5 +1,5 @@
 import { createSignal, For, Show, untrack } from 'solid-js'
-import { RANGES, STATUSES, canClear } from '../data/filters'
+import { RANGES, STATUSES, canClear, modelReportedAs } from '../data/filters'
 import { toolsToParams } from '../data/urlState'
 import type { PanelContext } from '../panels/types'
 import { Dialog } from '../ui/Dialog'
@@ -23,6 +23,8 @@ export function BoardControls(props: {
     else next.delete(id)
     ctx.navigate(toolsToParams([...next]))
   }
+  // A model's menu entry is its canonical id; the hover names each spelling the tools stored.
+  const toolLabel = (id: string) => tools().find(tool => tool.id === id)?.label || id
   const date = (seconds: number | undefined) => {
     if (!seconds) return ''
     const time = new Date(seconds * 1000)
@@ -72,7 +74,7 @@ export function BoardControls(props: {
             <Show when={ctx.filters()[key] !== 'all' && !rows().some(row => row.id === ctx.filters()[key])}>
               <option value={ctx.filters()[key]}>{ctx.filters()[key]}</option>
             </Show>
-            <For each={rows()} keyed={row => row.id}>{row => <option value={row().id}>{row().id}</option>}</For>
+            <For each={rows()} keyed={row => row.id}>{row => <option value={row().id} title={modelReportedAs(row(), toolLabel)}>{row().id}</option>}</For>
           </select><Icon glyph="down" small /></label>
       }}</For>
       <label class={styles.filter} data-active={ctx.filters().status !== 'all' ? '' : undefined}><span>Status</span>

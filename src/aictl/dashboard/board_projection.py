@@ -22,7 +22,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .. import session_lifecycle
-from ..data.model_pricing import request_cost_usd, resolve_pricing
+from ..data.model_pricing import canonical_model_id, request_cost_usd, resolve_pricing
 from ..ingesters._common import project_key, project_root
 from ..tool_scope import is_unattributed, stored_ids_for
 from . import subagents
@@ -467,6 +467,8 @@ class _Cell:
     saved: float | None = None
     b: int = 0
     s: int = 0
+    # The model id as the tool reported and the store keeps it; ``model`` is its canonical id.
+    reported: str = ""
 
 
 @dataclass(slots=True)
@@ -634,6 +636,7 @@ class _Board:
         cells = [_Cell(*(row[k] for k in fields)) for row in rows]
         for c in cells:
             c.b, c.s = b_of[c.g], s_of[c.g]
+            c.reported, c.model = c.model, canonical_model_id(c.model)
         self.cells = cells
 
     def _load_fallback_cells(self) -> None:
@@ -651,7 +654,7 @@ class _Board:
                         _Cell(
                             row["session_id"],
                             "",
-                            model,
+                            canonical_model_id(model),
                             g,
                             row["tool"],
                             row["project_path"],
@@ -669,6 +672,7 @@ class _Board:
                             tools_fallback=row["tool_call_count"] if first and piece["last"] else 0,
                             b=self.b_of[g],
                             s=self.s_of[g],
+                            reported=model,
                         )
                     )
                     first = False
@@ -754,7 +758,7 @@ class _Board:
                 continue
             threshold = _long_threshold(c.model)
             if threshold:
-                tiered[c.model] = threshold
+                tiered[c.reported] = threshold
         if tiered:
             self._price_long_requests(tiered)
 
@@ -764,7 +768,8 @@ class _Board:
         rows = self._history_window("requests.long", grid=True, requested_models=sorted(tiered), min_tokens=min(tiered.values()))
         if not rows:
             return
-        cells = {(c.sid, c.aid, c.model, c.g): c for c in self.cells if not c.estimated and not c.stored_cost}
+        # The rows carry the stored model id, so the cells are found by the id they were read under.
+        cells = {(c.sid, c.aid, c.reported, c.g): c for c in self.cells if not c.estimated and not c.stored_cost}
         for row in rows:
             sid, aid, model, g, i, o, cr, cw, ts = (row[k] for k in fields)
             if i + cr + cw <= tiered[model]:
@@ -1112,6 +1117,7 @@ class _Board:
         # Facts for the option lists: the time range, before any filter.
         self.all_cells = self.cells
         selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
+        model = canonical_model_id(f.model)
 
         def tool_ok(tool: str) -> bool:
             return selected is None or tool in selected
@@ -1119,7 +1125,7 @@ class _Board:
         cells = [
             c
             for c in self.cells
-            if tool_ok(c.tool) and f.matches_project(c.project) and (not f.model or c.model == f.model)
+            if tool_ok(c.tool) and f.matches_project(c.project) and (not f.model or c.model == model)
         ]
         with_cells = {c.sid for c in cells}
         scope: set[str] = set()
@@ -1150,12 +1156,24 @@ class _Board:
         self.cells = [c for c in cells if c.sid in scope]
         self.visible_loops = [loop for loop in self.loops if loop["session_id"] in scope]
 
+    def model_spellings(self) -> list[str]:
+        """The stored model ids the Model filter stands for, or ``[""]`` with no filter.
+
+        The chosen id and every spelling of its canonical id in the time range. A view that
+        filters by one stored id is read once for each, so the filter matches every tool's
+        spelling of the model and the query of a model with one spelling stays the same.
+        """
+        if not self.f.model:
+            return [""]
+        model = canonical_model_id(self.f.model)
+        return sorted({self.f.model, *(c.reported for c in self.all_cells if c.model == model)})
+
     def _matching_q(self, scope: set[str]) -> set[str]:
         needle = self.f.q.lower()
         hits: set[str] = set()
         models: dict[str, set[str]] = defaultdict(set)
         for c in self.all_cells:
-            models[c.sid].add(c.model)
+            models[c.sid].update((c.model, c.reported))
         roles: dict[str, list[str]] = defaultdict(list)
         for (sid, agent), sub in self.sub_rows.items():
             roles[sid].extend([agent, sub.get("task") or ""])
@@ -1709,7 +1727,7 @@ def _credits_section(board: _Board) -> dict | None:
             span = _day_span(day, u["started_at"] or 0.0, u["last_activity_at"] or 0.0)
             if span is None or span[1] < f.since or span[0] > f.until:
                 continue
-            credits = (values.get("models", {}).get(f.model) or {}).get("billing_amount") if f.model else values.get("billing_amount")
+            credits = _model_credits(values.get("models") or {}, f.model) if f.model else values.get("billing_amount")
             if credits is None:
                 continue
             amount = (amount or 0.0) + credits
@@ -1723,6 +1741,14 @@ def _credits_section(board: _Board) -> dict | None:
         "by_tool": {t: round(v, 2) for t, v in sorted(by_tool.items())},
         "approximate": approximate,
     }
+
+
+def _model_credits(models: dict, model: str) -> float | None:
+    """Credits of one model in a day's split, over every spelling of its id."""
+    wanted = canonical_model_id(model)
+    amounts = [u.get("billing_amount") for m, u in models.items() if canonical_model_id(m) == wanted and isinstance(u, dict)]
+    known = [a for a in amounts if a is not None]
+    return sum(known) if known else None
 
 
 def _unpriced_section(board: _Board) -> dict:
@@ -1798,7 +1824,8 @@ def _latency(board: _Board) -> dict:
     """Keep the original percentile interpolation over grouped values."""
     timed = sum(c.timed for c in board.cells)
     timed_first = sum(c.timed_first for c in board.cells)
-    rows = board._history_series("requests.latency", requested_model=board.f.model or "")
+    rows = [row for model in board.model_spellings()
+            for row in board._history_series("requests.latency", requested_model=model)]
     by_model: dict[str, list[float]] = defaultdict(list)
     by_project: dict[str, list[float]] = defaultdict(list)
     by_bucket: list[list[float]] = [[] for _ in range(board.f.buckets)]
@@ -1814,7 +1841,7 @@ def _latency(board: _Board) -> dict:
         if durations:
             g = row["g"]
             replies.extend(durations)
-            by_model[row["model"]].extend(durations)
+            by_model[canonical_model_id(row["model"])].extend(durations)
             by_project[project_of.get(row["session_id"], "")].extend(durations)
             by_bucket[b_of[g]].extend(durations)
             by_spark[s_of[g]].extend(durations)
@@ -1889,12 +1916,17 @@ def _turns(board: _Board, skill_rows: list[tuple]) -> _Turns:
         triples.append((node or "", raw, ts, line[i] if i < len(line) else end_of))
     tokens: dict[tuple[str, float], int | None] = {}
     lengths: list[float] = []
-    if triples:
-        for row in board.history.read("requests.intervals", intervals=triples, requested_model=board.f.model or ""):
-            sid, ts, end = row["session_id"], row["start_ts"], row["end_ts"]
-            tokens[(sid, ts)] = row["tokens"]
-            if (sid, ts) in sampled and end is not None and end > ts:
-                lengths.append((end - ts) * 1000.0)
+    ends: dict[tuple[str, float], float] = {}
+    # One read per spelling of the chosen model: a turn's parts add up, and it ends at its last request.
+    for model in board.model_spellings() if triples else ():
+        for row in board.history.read("requests.intervals", intervals=triples, requested_model=model):
+            key, end = (row["session_id"], row["start_ts"]), row["end_ts"]
+            tokens[key] = row["tokens"] if key not in tokens else (tokens[key] or 0) + (row["tokens"] or 0)
+            if end is not None:
+                ends[key] = max(end, ends.get(key, end))
+    for (sid, ts), end in ends.items():
+        if (sid, ts) in sampled and end > ts:
+            lengths.append((end - ts) * 1000.0)
     lengths.sort()
     return _Turns(len(rows), lengths, None, tokens, starts)
 
@@ -2056,7 +2088,8 @@ def _errors_section(board: _Board) -> tuple[list[dict], list[int], dict[str, int
         row["last_ts"] = max(row["last_ts"], ts)
     api_bucket = [0] * board.f.buckets
     api_by_project: dict[str, int] = defaultdict(int)
-    for source in board._history_series("requests.error_series", requested_model=board.f.model or ""):
+    for source in (row for model in board.model_spellings()
+                   for row in board._history_series("requests.error_series", requested_model=model)):
         error_type, status, sid, g, n, ts = (
             source[k] for k in ("error_type", "http_status", "session_id", "g", "calls", "last_ts")
         )
@@ -2617,12 +2650,13 @@ def _previous(board: _Board) -> dict:
     since, until = f.since - span, f.since
     filtered_sessions = f.status != "all" or bool(f.q)
     folded = bool(f.project and PureWindowsPath(project_key(f.project)).drive)
-    window = board.history.read(
-        "board.previous", since=since, until=until, requested_model=f.model or "",
+    # One read per spelling of the chosen model; each read has the same counts row.
+    window = [row for model in board.model_spellings() for row in board.history.read(
+        "board.previous", since=since, until=until, requested_model=model,
         restrict_tools=f.tools is not None, requested_tools=list(stored_ids_for(f.tools)) if f.tools is not None else [],
         project_path_key=project_key(f.project) if folded else f.project or "", fold_project=folded,
         restrict_sessions=filtered_sessions, session_keys=board.history.keys(board.scope) if filtered_sessions else [],
-    )
+    )]
     calls = 0
     tokens = 0
     cost: float | None = None
@@ -2652,7 +2686,7 @@ def _previous(board: _Board) -> dict:
             continue
         for piece in _fallback_pieces(row, since, until - 1e-6):
             for model, usage in piece["models"].items():
-                if f.model and model != f.model:
+                if f.model and canonical_model_id(model) != canonical_model_id(f.model):
                     continue
                 seen = True
                 calls += usage["requests"]
@@ -2932,6 +2966,17 @@ def _tool_locations(tool: str) -> list[dict]:
     return [{"path": _display_folder(h.path), "found_by": h.found_by} for h in tool_homes.homes(family)]
 
 
+def _reported_as(cells: Iterable[_Cell]) -> dict[str, list[dict]]:
+    """Each canonical model id's stored spellings, with the tools that reported each one."""
+    spellings: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for c in cells:
+        spellings[c.model][c.reported or c.model].add(c.tool)
+    return {
+        model: [{"id": spelling, "tools": sorted(tools - {""})} for spelling, tools in sorted(seen.items())]
+        for model, seen in spellings.items()
+    }
+
+
 def _options(board: _Board) -> dict:
     """The filter menus, from the time range alone so a filter never hides its own choices."""
     tool_agents: dict[str, set[str]] = defaultdict(set)
@@ -2966,10 +3011,11 @@ def _options(board: _Board) -> dict:
         return [{"id": k, "agents": len(v)} for k, v in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
 
     tools = sorted(tool_agents.items(), key=lambda kv: (-tool_tokens.get(kv[0], 0), -len(kv[1]), kv[0]))
+    reported = _reported_as(board.all_cells)
     return {
         "tools": [{"id": k, "label": _label(k), "agents": len(v)} for k, v in tools],
         "projects": ordered(project_agents),
-        "models": ordered(model_agents),
+        "models": [m | {"reported_as": reported.get(m["id"], [])} for m in ordered(model_agents)],
     }
 
 
@@ -3156,9 +3202,11 @@ def compute_board(
         },
     }
 
+    reported = _reported_as(board.cells)
     by_model = [
         {
             "model": model,
+            "reported_as": reported.get(model, []),
             "agents": len(board.model_agents[model]),
             "msgs": usage.calls,
             "tokens": usage.tokens,
