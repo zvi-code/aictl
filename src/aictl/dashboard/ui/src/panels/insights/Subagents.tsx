@@ -1,7 +1,7 @@
 import { For, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { money, share, subagentFinding, toolLabel, type Label, type SubagentBody } from './insightsModel'
+import { subagentHero, money, share, subagentFinding, toolLabel, type Label, type SubagentBody } from './insightsModel'
 import styles from './Insights.module.css'
 
 /** Per tool: one bar split into the cost of the main agent and the cost of its subagents. */
@@ -34,6 +34,7 @@ export default function Subagents(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<SubagentBody> {...props} card="subagents" title="Spend in subagents" tab="team"
+    hero={subagentHero}
     finding={body => subagentFinding(body, label)}
     visual={body => <SplitBars body={body} label={label} />}
     note={'A subagent request has an agent id that is set and differs from its session id. Cost is list price, not a bill; ' +

@@ -1,7 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { BUCKET_LABELS, money, pauseFinding, scaled, share, toolLabel, type Label, type PauseBody } from './insightsModel'
+import { pauseHero, BUCKET_LABELS, money, pauseFinding, scaled, share, toolLabel, type Label, type PauseBody } from './insightsModel'
 import styles from './Insights.module.css'
 
 const W = 300, H = 172, TOP = 34, BOTTOM = 36, SIDE = 6
@@ -43,6 +43,7 @@ export default function PauseTax(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<PauseBody> {...props} card="pause" title="Pause tax" tab="flow"
+    hero={pauseHero}
     finding={body => pauseFinding(body, label)}
     visual={body => <div class={styles.flows}>
       <For each={body.tools}>{(tool, i) => <ToolChart tool={tool} index={i()} label={label} />}</For>

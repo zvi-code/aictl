@@ -1,7 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import {
+import { contextHero,
   CONTEXT_BUCKETS, CONTEXT_LABELS, contextFinding, count, money, share, SMALL_STEP_OUTPUT, tokens, toolLabel,
   type ContextBody, type ContextCell, type ContextTool, type Label,
 } from './insightsModel'
@@ -55,6 +55,7 @@ export default function ContextWeight(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<ContextBody> {...props} card="context" title="Context weight" tab="context"
+    hero={contextHero}
     finding={body => contextFinding(body, label)}
     visual={body => <Stacks body={body} label={label} />}
     note={'Context of a request: input + cache read + cache write tokens, everything the model read for it. A bucket ' +

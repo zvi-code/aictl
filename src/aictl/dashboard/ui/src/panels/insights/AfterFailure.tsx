@@ -1,7 +1,7 @@
 import { For, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import {
+import { failureHero,
   count, failureFinding, flowBands, OUTCOME_LABELS, OUTCOME_SHORT, OUTCOMES, type FailureBody, type FailureTool, toolLabel, type Label,
 } from './insightsModel'
 import styles from './Insights.module.css'
@@ -42,6 +42,7 @@ export default function AfterFailure(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<FailureBody> {...props} card="failures" title="After a failure" tab="errors"
+    hero={failureHero}
     finding={body => failureFinding(body, label)}
     visual={body => <div class={styles.flows}>
       <For each={body.tools.slice(0, SHOWN)}>{tool => <Flow tool={tool} label={label} />}</For>

@@ -7,13 +7,19 @@
   font: inherit; color: var(--color-text); background: var(--color-surface);
   border: var(--border-size) solid var(--color-border); border-radius: var(--radius-control); padding: var(--space-1) var(--space-3);
 }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr)); gap: var(--space-6); align-items: start; }
+/* Cards flow down columns, so a short card leaves no gap beside a tall one. At most three columns: a wider
+   screen gets wider cards, not a fourth column of thin ones. */
+.cards { columns: 3 34rem; column-gap: var(--space-6); }
+.cards > * { break-inside: avoid; margin-block-end: var(--space-6); }
 .card {
   display: grid; gap: var(--space-4); padding: var(--space-6); min-inline-size: 0;
   background: var(--color-surface); border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-md);
 }
 .card h2 { margin: 0; font-size: var(--text-lg); padding-inline-end: var(--space-8); }
 .meta { margin: 0; color: var(--color-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.hero { margin: 0; display: flex; align-items: baseline; gap: var(--space-4); }
+.hero strong { font-size: var(--text-3xl); font-weight: var(--weight-medium); line-height: 1; font-variant-numeric: tabular-nums; }
+.hero span { color: var(--color-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
 .finding { margin: 0; font-size: var(--text-md); font-weight: var(--weight-medium); line-height: var(--leading-normal); }
 .note { margin: 0; color: var(--color-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .disclosure { border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); min-inline-size: 0; }

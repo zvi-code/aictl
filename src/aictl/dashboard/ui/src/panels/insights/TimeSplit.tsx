@@ -1,7 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import {
+import { timeHero,
   hours, millis, programName, scaled, share, timeFinding, toolLabel, type Label, type TimeBody, type TimeTool,
 } from './insightsModel'
 import styles from './Insights.module.css'
@@ -57,6 +57,7 @@ export default function TimeSplit(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<TimeBody> {...props} card="time" title="Where the time goes" tab="tools"
+    hero={timeHero}
     finding={body => timeFinding(body, label)}
     visual={body => <>
       <ToolBars body={body} label={label} />

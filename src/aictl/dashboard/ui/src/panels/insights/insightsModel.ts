@@ -2,7 +2,7 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd, projectName } from '../../design/format'
+import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, projectName } from '../../design/format'
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 
@@ -264,4 +264,32 @@ export function flowBands(outcomes: Record<Outcome, number>, top: number, height
     right += size + gap
     return band
   })
+}
+
+/** The one figure a card leads with, and what it is a figure of; none when the source does not report its parts. */
+export type Hero = { value: string; label: string }
+const ratio = (part: Num, whole: Num) => part != null && whole != null && whole > 0 ? part / whole : null
+const hero = (value: Num, format: (value: number) => string, label: string): Hero | undefined =>
+  value == null ? undefined : { value: format(value), label }
+
+export const pauseHero = (body: PauseBody) => hero(ratio(body.summary.cost_usd, body.summary.baseline_usd), fmtTimes,
+  'the cost of requests that followed a pause of over 5 minutes, against the same requests with no pause')
+export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_bytes, body.summary.output_bytes), fmtTimes,
+  'how often a byte of a tool result was sent again with later requests (upper bound)')
+export const subagentHero = (body: SubagentBody) => hero(body.summary.subagent_share, fmtShare,
+  'of the cost was spent in subagents')
+export const failureHero = (body: FailureBody) => body.summary.failures
+  ? hero(body.summary.streaks, fmtNum, 'runs of 3 or more failed calls in a row') : undefined
+export const rereadHero = (body: RereadBody) => hero(body.summary.repeat_share, fmtShare,
+  'of file reads read a file the same agent had already read')
+export const timeHero = (body: TimeBody) => hero(
+  body.summary.model_ms == null || body.summary.tool_ms == null ? null
+    : ratio(body.summary.tool_ms, body.summary.model_ms + body.summary.tool_ms), fmtShare,
+  'of agent time went to its own tool calls, the rest to the model (summed durations)')
+export const contextHero = (body: ContextBody) => hero(body.summary.heavy_cost_share, fmtShare,
+  'of the cost is in requests that read a context of 200k tokens or more')
+export function orientationHero(body: OrientationBody) {
+  const most = body.projects.map(project => project.p50_requests).filter((value): value is number => value != null)
+  return most.length ? hero(Math.max(...most), fmtNum,
+    'requests before the first edit in the median session of the repository that takes longest to start in') : undefined
 }

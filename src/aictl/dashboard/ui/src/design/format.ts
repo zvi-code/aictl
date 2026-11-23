@@ -62,6 +62,8 @@ export const fmtHours = (ms: NumberValue) => {
 };
 /** A share from the API is a ratio from 0 to 1. */
 export const fmtShare = (v: NumberValue) => (isNil(v) ? NA : Math.round(v * 100) + '%');
+/** How many times one amount is of another: one decimal below ten, whole from ten up. */
+export const fmtTimes = (v: NumberValue) => (isNil(v) ? NA : (v >= 10 ? fmtN(Math.round(v)) : v.toFixed(1)) + '×');
 /** A percentage: one decimal, none when it is a whole number from 10 up. */
 export const fmtPct = (v: NumberValue) => {
   if (isNil(v)) return NA;

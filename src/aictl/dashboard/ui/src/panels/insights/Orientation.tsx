@@ -1,7 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { count, money, orientationFinding, scaled, toolLabel, type Label, type OrientationBody } from './insightsModel'
+import { orientationHero, count, money, orientationFinding, scaled, toolLabel, type Label, type OrientationBody } from './insightsModel'
 import styles from './Insights.module.css'
 
 /** One row per project: a bar for the median requests before the first edit, the median cost beside it. */
@@ -37,6 +37,7 @@ export default function Orientation(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<OrientationBody> {...props} card="orientation" title="Orientation cost by repository" tab="flow"
+    hero={orientationHero}
     finding={body => orientationFinding(body)}
     visual={body => <ProjectBars body={body} label={label} />}
     note={'Before the first edit: the requests of the main agent (agent id empty or equal to the session id) up to the ' +

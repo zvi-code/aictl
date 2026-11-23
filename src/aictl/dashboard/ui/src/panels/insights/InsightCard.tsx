@@ -9,7 +9,7 @@ import type { Field } from '../../ui/tableModel'
 import { detailPath, detailRead } from '../data'
 import { States } from '../kinds/States'
 import type { PanelContext, Read } from '../types'
-import { learnToolLabels, type CardId, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
+import { learnToolLabels, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
 import styles from './Insights.module.css'
 
 export type CardProps = { ctx: PanelContext; boxes: Boxes; since: number; until: number }
@@ -43,6 +43,7 @@ export function periodText(body: InsightBody) {
 export function InsightCard<T extends InsightBody>(props: CardProps & {
   card: CardId; title: string; tab: string
   finding: (body: T) => string
+  hero?: (body: T) => Hero | undefined
   visual: (body: T) => JSX.Element
   note: string
   table: { label: string; fields: Field<Record<string, unknown>>[]; rows: (body: T) => Record<string, unknown>[] }
@@ -87,9 +88,14 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
     controls={['fold', 'full', 'hide']} head={<h2 ref={element} data-insight={props.card}>{props.title}</h2>}>
     <States result={result} retry={read.retry}>
       <p class={styles.meta} data-period>{periodText(body())}</p>
+      <Show when={props.hero?.(body())}>{hero => <p class={styles.hero} data-hero>
+        <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
       <p class={styles.finding} data-finding>{props.finding(body())}</p>
       {props.visual(body())}
-      <p class={styles.note}>{props.note}</p>
+      <details class={styles.disclosure} data-method>
+        <summary>How this is measured</summary>
+        <p class={styles.note}>{props.note}</p>
+      </details>
       <details class={styles.disclosure} data-sessions>
         <summary>Open sessions ({body().sessions.length})</summary>
         <Show when={body().sessions.length} fallback={<p class={styles.note}>No session in this period.</p>}>
