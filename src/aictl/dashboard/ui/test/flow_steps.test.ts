@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { FlowEvent } from '../src/data/contract.gen'
 import { flowModel } from '../src/drawer/flowModel'
 import {
-  callMetrics, GAP_S, groupMetrics, lanesFor, layoutOf, rowsOf, stepsOf, toolMetrics, totalsOf, waitLabel,
+  BAR_PX, barLength, barScale, barsOf, callCount, callMetrics, callTitle, GAP_S, groupMetrics, hiddenCalls, lanesFor, layoutOf, rowsOf,
+  stepsOf, stepTitle, toolMetrics, totalsOf, waitLabel,
 } from '../src/drawer/flowSteps'
 
 const event = (type: string, ts: number, extra: Partial<FlowEvent> = {}): FlowEvent =>
@@ -104,12 +105,14 @@ describe('DRW-FL-04 · Step numbers and lanes', () => {
       event('tool_use', 1, { to: 'mcp__docs__search', target: 'q' }),
     ]))
     const layout = layoutOf(steps[1], false)
-    expect(layout.edge).toMatchObject({ from: 'Assistant', label: 'claude-opus-5-5', dashed: false })
-    expect(layout.chips.map(chip => [chip.lane, chip.title])).toEqual([['Assistant', 'req 1'], ['Tools · Bash', 'Bash'],
+    expect(layout.edge).toMatchObject({ from: 'Assistant', dashed: false })
+    expect(steps[1]).toMatchObject({ model: 'claude-opus-5-5', modelShown: true })
+    expect(layout.chips.map(chip => [chip.lane, chip.title])).toEqual([['Assistant', 'req 1'], ['Tools · Bash', 'ls'],
       ['Tools · Read', 'Read'], ['Tools · docs › search', 'docs › search']])
-    expect(layout.back?.metrics.map(metric => metric.key)).toEqual(['payloadIn', 'resultTokens'])
+    expect(layout.back?.map(metric => metric.key)).toEqual(['payloadIn', 'resultTokens'])
     expect(layoutOf(steps[1], true).chips.map(chip => [chip.lane, chip.title])).toEqual([['Assistant', 'req 1'],
-      ['Tools', 'Bash, Read, docs › search']])
+      ['Tools', 'ls'], ['Tools', 'Read'], ['Tools', 'docs › search']])
+    expect(layoutOf(steps[1], true).lines).toBe(3)
     expect(layoutOf(steps[0], false).edge).toMatchObject({ from: 'User', to: 'Assistant' })
     const lanes = lanesFor(steps, false)
     expect(lanes.map(lane => lane.id)).toEqual(['User', 'Assistant', 'Tools · Bash', 'Tools · Read', 'Tools · docs › search'])
@@ -121,8 +124,81 @@ describe('DRW-FL-04 · Step numbers and lanes', () => {
       event('subagent', 1, { to: 'Explore', agent_id: 'a1', model: 'claude-sonnet-5-5' }),
       event('subagent_end', 9, { from: 'Explore', agent_id: 'a1', duration_ms: 8000 }),
     ]))
-    expect(layoutOf(steps[0], false).edge).toMatchObject({ from: 'Assistant', to: 'Subagents', label: 'claude-sonnet-5-5' })
+    expect(layoutOf(steps[0], false).edge).toMatchObject({ from: 'Assistant', to: 'Subagents' })
     expect(layoutOf(steps[1], false).edge).toMatchObject({ from: 'Subagents', to: 'Assistant', dashed: true })
     expect(lanesFor(steps, true).map(lane => lane.id)).toEqual(['Assistant', 'Subagents'])
+  })
+})
+
+describe('DRW-FL-09 · Compact rows: one box per call, the program as title, bars for sizes', () => {
+  const round = (...tools: FlowEvent[]) => stepsOf(placed([event('api_call', 1, { model: 'gpt-6.2-astra', request_n: 7 }), ...tools]))[0]
+
+  it('shows each call of a round as its own box, one line each in a shared lane, titled by the program it ran', () => {
+    const step = round(
+      event('tool_use', 1, { to: 'powershell', target: "$ErrorActionPreference='Stop'; git status --short | Select-Object -First 5", output_bytes: 900 }),
+      event('tool_use', 1.1, { to: 'powershell', target: 'python -m pytest -q', input_bytes: 40, output_bytes: 120_000 }),
+      event('tool_use', 1.2, { to: 'Read', target: 'a.py' }),
+      event('tool_use', 1.3, { to: 'Bash', target: '$x.Dispose()' }),
+    )
+    const layout = layoutOf(step)
+    expect(layout.chips.map(chip => [chip.lane, chip.title, chip.line, chip.calls.length])).toEqual([
+      ['Assistant', 'req 7', 0, 0], ['Tools · powershell', 'git +1', 0, 1], ['Tools · powershell', 'pytest', 1, 1],
+      ['Tools · Read', 'Read', 0, 1], ['Tools · Bash', 'Bash', 0, 1]])
+    expect(layout.lines).toBe(2)
+    expect(layout.chips[1].full).toMatch(/^powershell ran git \+1\n/)
+    expect(callTitle(step.tools[3])).toBe('Bash')
+    expect(stepTitle(step)).toBe('git +1, pytest, Read, Bash')
+    expect(JSON.stringify(layout)).not.toContain('×')
+  })
+
+  it('groups repeated calls only when asked, and then says how many calls the box holds', () => {
+    const step = round(event('tool_use', 1, { to: 'Bash', target: 'git add -A', output_bytes: 10 }),
+      event('tool_use', 1.1, { to: 'Bash', target: 'git commit -m x', output_bytes: 30 }))
+    const grouped = layoutOf(step, { groupCalls: true })
+    expect(grouped.chips.slice(1).map(chip => [chip.title, chip.calls.length, chip.line])).toEqual([['Bash · 2 calls', 2, 0]])
+    expect(grouped.lines).toBe(1)
+    expect(grouped.chips[1].detail).toBe('git add -A ; git commit -m x')
+    expect(stepTitle(step)).toBe('git (2 calls)')
+    expect(callCount(1)).toBe('1 call')
+  })
+
+  it('puts the result size and tokens coming back at the end of the line, marked as estimates, and says when sizes are partial', () => {
+    const step = round(event('tool_use', 1, { to: 'Bash', target: 'ls', output_bytes: 4000 }), event('tool_use', 1, { to: 'Bash', target: 'pwd' }))
+    const back = layoutOf(step).back!
+    expect(back.map(metric => metric.text)).toEqual(['4 KB', '≈1.0 k tok est.'])
+    expect(back[0].title).toMatch(/Only 1 of 2 calls reported a result size/)
+  })
+
+  it('scales bars by the square root of the largest value in view, caps them, and keeps "not reported" apart from zero', () => {
+    const max = 120_000
+    const small = barLength(1_000, max)!, large = barLength(100_000, max)!
+    expect(large).toBeGreaterThan(small * 3)
+    expect(barLength(500_000, max)).toBe(BAR_PX)
+    expect(barLength(1, max)).toBe(2)
+    expect(barLength(0, max)).toBe(0)
+    expect(barLength(undefined, max)).toBeUndefined()
+    expect(barsOf([event('tool_use', 1, { to: 'Bash' })])).toEqual({ out: undefined, back: undefined, tokens: undefined, estimated: false, reported: false })
+    expect(barsOf([event('tool_use', 1, { to: 'Bash', input_bytes: 0, output_bytes: 0 })])).toMatchObject({ out: 0, back: 0, reported: true })
+    const steps = [round(event('tool_use', 1, { to: 'Read', output_bytes: 50_000, input_bytes: 10 }))]
+    expect(barScale(steps)).toEqual({ bytes: 50_000, tokens: 12_500 })
+    expect(barScale([])).toEqual({ bytes: 1024, tokens: 256 })
+  })
+
+  it('labels the model where it starts or changes, not on every round', () => {
+    const steps = stepsOf(placed([
+      event('api_call', 1, { model: 'gpt-6.2-astra' }), event('api_call', 2, { model: 'gpt-6.2-astra' }),
+      event('api_call', 3, { model: 'claude-opus-5-5' }), event('api_call', 4, { model: 'claude-opus-5-5' }),
+      event('api_call', 5, { model: 'claude-opus-5-5', agent_id: 'sub' }),
+    ]))
+    expect(steps.map(step => step.modelShown)).toEqual([true, false, true, false, true])
+  })
+
+  it('counts the calls a step made in hidden lanes so hiding a lane does not hide what happened', () => {
+    const layout = layoutOf(round(event('tool_use', 1, { to: 'Bash', target: 'ls' }), event('tool_use', 1, { to: 'Bash', target: 'pwd' }),
+      event('tool_use', 1, { to: 'Read', target: 'a' })))
+    expect(hiddenCalls(layout, new Set(['Tools · Bash']))).toEqual({ count: 2, lanes: ['Tools · Bash'] })
+    expect(hiddenCalls(layoutOf(round(event('tool_use', 1, { to: 'Bash', target: 'ls' }), event('tool_use', 1, { to: 'Bash', target: 'pwd' })),
+      { groupCalls: true }), new Set(['Tools · Bash'])).count).toBe(2)
+    expect(hiddenCalls(layout, new Set())).toEqual({ count: 0, lanes: [] })
   })
 })

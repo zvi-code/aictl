@@ -1,0 +1,33 @@
+/* A box that folds, expands, fills the screen or hides. Its controls take no room of their own. */
+.box { position: relative; min-inline-size: 0; }
+.box:focus { outline: none; }
+.box:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: calc(var(--focus-size) * -1); }
+.box[data-box-expanded="true"] { --box-fill: calc(100dvh - 12rem); }
+.box[data-box-full="true"] {
+  position: fixed; inset: 0; z-index: calc(var(--z-drawer) + 5); box-sizing: border-box; overflow: auto;
+  padding: var(--space-5); background: var(--color-page); --box-fill: calc(100dvh - 7rem);
+}
+.box:fullscreen { box-sizing: border-box; overflow: auto; padding: var(--space-5); background: var(--color-page); --box-fill: calc(100dvh - 7rem); }
+.box::backdrop { background: var(--color-page); }
+
+.controls {
+  display: inline-flex; align-items: center; flex: none; margin-inline-start: auto;
+  opacity: .45; transition: opacity var(--duration-fast) var(--ease-out);
+}
+.controls[data-corner] { position: absolute; inset-block-start: var(--space-2); inset-inline-end: var(--space-2); z-index: 4; }
+.box:hover > .controls, .box:hover .controls, .controls:focus-within, .box[data-box-full="true"] .controls { opacity: 1; }
+@media (hover: none) { .controls { opacity: 1; } }
+.control {
+  display: inline-grid; place-items: center; inline-size: var(--control-size-sm); block-size: var(--control-size-sm); padding: 0;
+  border: 0; border-radius: var(--radius-control); background: transparent; color: var(--color-muted); cursor: pointer;
+}
+.control:hover { background: var(--color-hover); color: var(--color-text); }
+.control[aria-pressed="true"] { color: var(--color-accent); }
+.control:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 0; }
+
+.foldedLine {
+  display: block; padding-inline-end: calc(var(--control-size-sm) * 4); color: var(--color-muted);
+  font-size: var(--text-sm); font-weight: var(--weight-medium);
+}
+.hidden { display: inline-flex; font-size: var(--text-sm); }
+.hidden button { min-block-size: var(--control-size-sm); padding-block: 0; font-size: var(--text-sm); color: var(--color-muted); }

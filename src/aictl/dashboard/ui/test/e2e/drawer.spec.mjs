@@ -159,9 +159,24 @@ test('DRW-FL-01/02 and DRW-EV-01: filter, page and inspect source evidence witho
   await expect.poll(() => flow.some(request => request.offset === '500' && request.limit === '500')).toBe(true);
   await drawer(page).getByRole('radio', { name: 'Swim-lane' }).click();
   const lanes = drawer(page).getByRole('region', { name: 'Session streams', exact: true });
-  await expect(lanes.getByText('Tools · Read', { exact: true })).toBeVisible();
+  await expect(lanes.getByRole('button', { name: 'Hide lane Read' })).toBeVisible();
+  // Hiding a lane removes its column and lifelines; the row still counts its call; the lane comes back from one control.
+  const guides = () => lanes.locator('[data-step-row]').first().locator('[data-lane-guide]').count();
+  const before = await guides();
+  await lanes.getByRole('button', { name: 'Hide lane Read' }).click();
+  await expect(lanes.getByRole('button', { name: 'Hide lane Read' })).toHaveCount(0);
+  expect(await guides()).toBe(before - 1);
+  await expect(lanes.getByRole('img', { name: '1 in hidden lanes' }).first()).toBeVisible();
+  await drawer(page).getByRole('button', { name: 'Hidden lanes (1)' }).click();
+  await page.getByRole('menuitem', { name: 'Show Read' }).click();
+  await expect(lanes.getByRole('button', { name: 'Hide lane Read' })).toBeVisible();
   await drawer(page).getByRole('radio', { name: 'Grouped lanes' }).click();
-  await expect(lanes.getByText('Tools', { exact: true })).toBeVisible();
+  await expect(lanes.getByRole('button', { name: 'Hide lane Tools' })).toBeVisible();
+  // The chart fills the screen and Escape returns it.
+  await drawer(page).getByRole('button', { name: 'Full screen: Flow chart' }).click();
+  await expect(drawer(page).getByRole('button', { name: 'Exit full screen: Flow chart' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(drawer(page).getByRole('button', { name: 'Full screen: Flow chart' })).toBeVisible();
   await lanes.getByRole('button', { name: /Read/ }).click();
   await expect(drawer(page).getByRole('heading', { name: /^Step #/ })).toBeVisible();
   await drawer(page).getByRole('button', { name: 'User prompts' }).click();

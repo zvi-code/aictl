@@ -5,8 +5,8 @@ import {
   layoutOf, modelFamily, openingRow, promptLine, rowsOf, spansOf, spanSummary, stepsOf, stepTitle, toolMetrics,
 } from '../src/drawer/flowSteps'
 import {
-  clampWidth, COLLAPSED, fitWidths, GUTTER, GUTTER_DEFAULT, GUTTER_MAX, LANE_MAX, LANE_MIN, readWidths, resolveWidths,
-  STEP_MIN, textFit, writeWidths,
+  arrangeLanes, clampWidth, COLLAPSED, fitWidths, GUTTER, GUTTER_DEFAULT, GUTTER_MAX, hideLane, LANE_MAX, LANE_MIN, laneGrid, moveLane, readWidths,
+  resolveWidths, STEP_MIN, textFit, writeWidths,
 } from '../src/drawer/flowWidths'
 
 const event = (type: string, ts: number, extra: Partial<FlowEvent> = {}): FlowEvent =>
@@ -141,6 +141,31 @@ describe('DRW-FL-07 · Lane widths', () => {
     const broken = { getItem: () => { throw new Error('blocked') }, setItem: () => { throw new Error('blocked') }, removeItem: () => undefined }
     expect(readWidths(broken, 'k')).toEqual({ widths: {}, collapsed: [] })
     expect(() => writeWidths(broken, 'k', { widths: { a: 5 }, collapsed: [] })).not.toThrow()
+  })
+
+  it('moves a lane, hides it with its column and lifeline, brings it back, and keeps the arrangement per browser', () => {
+    const empty = { widths: {}, collapsed: [] }
+    const ids = lanes.map(lane => lane.id)
+    const moved = moveLane(empty, ids, 'Tools · Read', 1)
+    expect(arrangeLanes(lanes, moved).shown.map(lane => lane.id)).toEqual(['User', 'Tools · Read', 'Assistant', 'Tools · Bash'])
+    // A lane seen for the first time keeps its default place among the moved ones.
+    const more = [...lanes.slice(0, 2), { id: 'Tools · Grep', width: 12 }, ...lanes.slice(2)]
+    expect(arrangeLanes(more, moved).shown.map(lane => lane.id)).toEqual(['User', 'Tools · Read', 'Tools · Grep', 'Assistant', 'Tools · Bash'])
+    const hidden = hideLane(moved, 'Tools · Bash')
+    const { shown, hidden: out } = arrangeLanes(lanes, hidden)
+    expect(out.map(lane => lane.id)).toEqual(['Tools · Bash'])
+    const grid = laneGrid(shown, resolveWidths(lanes, hidden))
+    expect(grid.guides).toEqual(['User', 'Tools · Read', 'Assistant'])
+    expect(grid.template).toBe(`${GUTTER_DEFAULT}ch 12ch 24ch 16ch minmax(${STEP_MIN}ch, 1fr)`)
+    expect(arrangeLanes(lanes, hideLane(hidden, 'Tools · Bash', false)).shown).toHaveLength(4)
+    const store = new Map<string, string>()
+    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) },
+      removeItem: (key: string) => { store.delete(key) } }
+    writeWidths(storage, 'k', hidden)
+    expect(readWidths(storage, 'k')).toEqual(hidden)
+    writeWidths(storage, 'k', { ...empty, hidden: ['User'] })
+    expect(readWidths(storage, 'k')).toEqual({ ...empty, hidden: ['User'] })
+    expect(moveLane(empty, ids, 'missing', 0)).toBe(empty)
   })
 
   it('keeps a text on one line, wraps it to a second, or clips it after two', () => {

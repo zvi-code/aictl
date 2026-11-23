@@ -7,7 +7,7 @@ import { Icon, type Glyph } from '../ui/Icon'
 import { moveFocus } from '../ui/keyboard'
 import { clockTime, durationOf, eventTokens, failedEvent, inputOf, outputOf, type EventKind, type PlacedEvent } from './flowModel'
 import {
-  approvalOf, definitions, spanSummary, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, waitLabel,
+  approvalOf, callTitle, definitions, spanSummary, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, waitLabel,
   type FlowRow, type Metric, type Step, type StepKind,
 } from './flowSteps'
 import { clip } from './shared'
@@ -71,7 +71,7 @@ export function TurnScrubber(props: {
     mark.tools ? count(mark.tools, 'tool use', 'tool uses') : '', mark.errors ? `${fmtN(mark.errors)} failed` : ''].filter(Boolean).join(' · ')
   return <section class={styles.scrubber} aria-label="Turn overview">
     <header>
-      <span><strong>{fmtN(props.marks.length)} turns</strong> · bar height shows turn tokens</span>
+      <span title="One bar per turn: its width follows the events of the turn, its height the tokens"><strong>{fmtN(props.marks.length)} turns</strong></span>
       <span>{stamp(props.marks[0]?.ts, true)} – {stamp(props.marks.at(-1)?.end_ts, true)}</span>
     </header>
     <div class={styles.marks} role="group" aria-label="Turns" onKeyDown={event => {
@@ -109,13 +109,6 @@ export const stepKindLabels: Record<StepKind, string> = {
   agent_end: 'Subagent end', compaction: 'Compaction', skill: 'Skill', context: 'Context', error: 'Error', hook: 'Hook',
   lifecycle: 'Session event', other: 'Event',
 }
-/** Every icon of the Flow tab and what it means, for the legend. */
-export const flowLegend: readonly (readonly [Glyph, string])[] = [
-  ['prompts', 'Prompt, or a subagent task'], ['bot', 'Model request, or the Assistant lane'], ['tools', 'Tool call, or a tool lane'],
-  ['agents', 'Subagent start, end or lane'], ['context', 'Compaction or context'], ['spark', 'Skill'], ['hook', 'Hook'],
-  ['warn', 'Error or failed'], ['clock', 'Waited, or a session event'], ['up', 'Payload out: bytes sent to the tool'],
-  ['dn', 'Payload in: bytes the tool returned'], ['keys', 'Approval asked of a person'], ['stop', 'Stop reason of a model request'],
-]
 export const stepGlyph = (step: Step) => step.failed && step.kind === 'agent_end' ? 'warn' : stepGlyphs[step.kind]
 export const stepColor = (step: Step): EventKind => step.failed ? 'error' : stepColors[step.kind]
 export const stepLabel = (step: Step) => step.n != null ? `#${step.n}` : '#–'
@@ -157,9 +150,10 @@ export function AgentTag(props: { agent: string }) {
 }
 
 export function GapRow(props: { row: GapRowData }) {
-  return <div class={styles.gap} title={definitions.wait}>
-    <Sign glyph="clock" label="Waited" title={definitions.wait} />
-    <span><strong>{waitLabel(props.row.seconds)}</strong>{props.row.before === 'prompt' ? ' before the next prompt' : ' with no recorded step'}</span>
+  const meaning = () => `${definitions.wait} ${props.row.before === 'prompt' ? 'The next step is a prompt.' : 'No step was recorded.'}`
+  return <div class={styles.gap} title={meaning()}>
+    <Sign glyph="clock" label={`Waited ${waitLabel(props.row.seconds)}`} title={meaning()} />
+    <strong>{waitLabel(props.row.seconds)}</strong>
   </div>
 }
 
@@ -197,7 +191,7 @@ export function StepPreview(props: { step: Step }) {
     <Show when={step().model || step().agent}><span class={styles.hoverHint}>{[step().model && `Model ${step().model}`, step().agent && `subagent ${step().agent}`].filter(Boolean).join(' · ')}</span></Show>
     <Metrics items={stepMetrics(step())} />
     <For each={step().tools.slice(0, TOOL_LINES)}>{tool =>
-      <span class={styles.hoverTool}><strong>{toolName(tool)}</strong> {clip(toolTarget(tool), 80)} <Metrics items={toolMetrics(tool)} /></span>
+      <span class={styles.hoverTool}><strong>{callTitle(tool)}</strong>{callTitle(tool) !== toolName(tool) ? ` (${toolName(tool)})` : ''} {clip(toolTarget(tool), 80)} <Metrics items={toolMetrics(tool)} /></span>
     }</For>
     <Show when={step().tools.length > TOOL_LINES}><span class={styles.hoverHint}>{TOOL_LINES} of {step().tools.length} tool calls shown</span></Show>
     <span class={styles.hoverHint}>Select to inspect</span>
@@ -226,18 +220,18 @@ export function StepList(props: {
           <span class={styles.stepMain}>
             <span class={styles.stepTitle}>
               <Show when={item().span}>{span => <AgentTag agent={span().agent} />}</Show>
-              <ModelLabel step={step()} />
-              <Show when={step().model && step().tools.length}><span class={styles.edge} aria-hidden="true">→</span></Show>
+              <Show when={step().modelShown}><ModelLabel step={step()} /></Show>
+              <Show when={step().modelShown && step().tools.length}><span class={styles.edge} aria-hidden="true">→</span></Show>
               <strong title={stepTitle(step())}>{clip(stepTitle(step()), 200)}</strong></span>
             <Metrics items={stepMetrics(step())} />
             <For each={tools()}>{tool =>
               <span class={styles.toolLine} data-failed={failedEvent(tool) ? 'true' : 'false'}>
-                <strong>{toolName(tool)}</strong><span class={styles.target} title={toolTarget(tool)}>{toolTarget(tool)}</span>
+                <strong title={toolName(tool)}>{callTitle(tool)}</strong><span class={styles.target} title={toolTarget(tool)}>{toolTarget(tool)}</span>
                 <Metrics items={toolMetrics(tool)} />
               </span>
             }</For>
             <Show when={!props.compact && step().tools.length > TOOL_LINES}>
-              <span class={styles.moreNote}>{TOOL_LINES} of {step().tools.length} tool calls shown · select the step for all</span>
+              <span class={styles.moreNote} title={`${TOOL_LINES} of ${step().tools.length} tool calls shown; select the step for all`}>+{step().tools.length - TOOL_LINES}</span>
             </Show>
           </span>
           <span class={styles.side} title="Step time: from the start of the step to its last result.">{stepSpan(step())}</span>
@@ -324,7 +318,7 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
       <h4 class={styles.inspectorSection}>Tool calls · {step().tools.length}</h4>
       <For each={step().tools.slice(0, TOOLS_SHOWN)}>{tool =>
         <details class={styles.toolDetail} open={step().tools.length === 1}>
-          <summary><strong>{toolName(tool)}</strong> <span class={styles.target}>{toolTarget(tool)}</span></summary>
+          <summary><strong>{callTitle(tool)}</strong>{callTitle(tool) !== toolName(tool) ? ` · ${toolName(tool)}` : ''} <span class={styles.target}>{toolTarget(tool)}</span></summary>
           <Facts items={toolFacts(tool)} />
           <Show when={tool.spawned_agent_id && props.openAgent}>
             <button class={styles.button} type="button" onClick={() => props.openAgent?.(tool.spawned_agent_id!)}>
@@ -356,12 +350,4 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
       <button class={styles.button} type="button" onClick={() => props.evidence?.(step().lead)}><Icon glyph="file" small />Open source evidence</button>
     </Show>
   </section>
-}
-
-/** Every icon of the Flow tab and what it means. */
-export function FlowLegend() {
-  return <details class={styles.legend}>
-    <summary>What the icons mean</summary>
-    <dl><For each={flowLegend}>{([glyph, meaning]) => <><dt><Icon glyph={glyph} small label={meaning} /></dt><dd>{meaning}</dd></>}</For></dl>
-  </details>
 }

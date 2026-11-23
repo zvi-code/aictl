@@ -62,6 +62,13 @@ export const glyphs = {
   reply: 'M13.5 3.5h-11v7h6l3 3v-3h2z',
   hook: 'M10.5 2.5V9a3 3 0 1 1-6 0V7.5M3 9l1.5-1.5L6 9',
   spark: 'M8 2v3M8 11v3M2 8h3M11 8h3M4 4l2 2M10 10l2 2M4 12l2-2M10 6l2-2',
+  fold: 'M4 10l4-4 4 4',
+  expand: 'M9.5 2.5h4v4M13.5 2.5L9.5 6.5M6.5 13.5h-4v-4M2.5 13.5l4-4',
+  shrink: 'M13.5 2.5l-4 4M9.5 3v3.5H13M2.5 13.5l4-4M3 9.5h3.5V13',
+  fullscreen: 'M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10',
+  windowed: 'M6 2.5V6H2.5M10 2.5V6h3.5M13.5 10H10v3.5M2.5 10H6v3.5',
+  eyeOff: 'M2 8s2.2-4 6-4c1 0 1.9.3 2.7.7M14 8s-2.2 4-6 4c-1 0-1.9-.3-2.7-.7M6.6 9.4a2 2 0 0 0 2.8-2.8M2.5 2.5l11 11',
+  bars: 'M2.5 5h7M2.5 8h11M2.5 11h4',
 } as const
 
 export type Glyph = keyof typeof glyphs
