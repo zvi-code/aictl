@@ -9,7 +9,12 @@
         "amount": {"type": ["number", "null"]},
         "by_tool": {"type": "object", "additionalProperties": {"type": "number"}},
         "approximate": {"type": "boolean"},
-        "unit": {"const": "ai_credits"}
+        "unit": {"const": "ai_credits"},
+        "usd": {"type": ["number", "null"]},
+        "usd_per_credit": {"type": "number"},
+        "list_usd": {"type": ["number", "null"]},
+        "list_unpriced_tokens": {"type": "integer"},
+        "cost_usd": {"type": ["number", "null"]}
       },
       "required": ["amount", "by_tool", "approximate", "unit"]
     },

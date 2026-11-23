@@ -1636,6 +1636,10 @@ def _fallback_models(row: dict) -> dict[str, dict]:
     return split or {row["model"] or "unknown": total}
 
 
+# GitHub's published rate: "1 AI credit = $0.01 USD" (docs.github.com, Copilot "Models and pricing").
+USD_PER_AI_CREDIT = 0.01
+
+
 def _credits_section(board: _Board) -> dict | None:
     """AI credits GitHub Copilot reports for the sessions in view, or None when none is in view.
 
@@ -1651,6 +1655,7 @@ def _credits_section(board: _Board) -> dict | None:
     by_tool: dict[str, float] = {}
     approximate = False
     seen = False
+    credited: set[str] = set()
     for row in board.history.read("usage.sessions", since=f.since, until=f.until):
         u = project_usage(row)
         if not u.get("billing_unit"):
@@ -1670,6 +1675,7 @@ def _credits_section(board: _Board) -> dict | None:
             if credits is None:
                 continue
             amount = (amount or 0.0) + credits
+            credited.add(u["session_id"])
             by_tool[u["tool"]] = by_tool.get(u["tool"], 0.0) + credits
             approximate = approximate or span[0] < f.since or span[1] > f.until
     if not seen:
@@ -1679,6 +1685,36 @@ def _credits_section(board: _Board) -> dict | None:
         "unit": "ai_credits",
         "by_tool": {t: round(v, 2) for t, v in sorted(by_tool.items())},
         "approximate": approximate,
+        **_credits_in_usd(board, amount, credited),
+    }
+
+
+def _credits_in_usd(board: _Board, amount: float | None, credited: set[str]) -> dict:
+    """The credits in US dollars at GitHub's published rate, beside the list price of the same sessions.
+
+    ``usd`` is what Copilot recorded for the usage; ``list_usd`` is the list-price
+    estimate of the same sessions' requests in the window, which leaves out
+    ``list_unpriced_tokens``; ``cost_usd`` is the board's cost with those
+    sessions at ``usd`` in place of their list price.
+    """
+    if amount is None:
+        return {"usd": None, "usd_per_credit": USD_PER_AI_CREDIT, "list_usd": None, "list_unpriced_tokens": 0, "cost_usd": None}
+    listed: float | None = None
+    unpriced = 0
+    for c in board.cells:
+        if c.sid not in credited:
+            continue
+        if c.cost is not None:
+            listed = (listed or 0.0) + c.cost
+        else:
+            unpriced += c.i + c.o + c.cr + c.cw
+    usd = amount * USD_PER_AI_CREDIT
+    return {
+        "usd": round(usd, 2),
+        "usd_per_credit": USD_PER_AI_CREDIT,
+        "list_usd": _usd(listed),
+        "list_unpriced_tokens": unpriced,
+        "cost_usd": _usd((board.total.cost or 0.0) - (listed or 0.0) + usd),
     }
 
 

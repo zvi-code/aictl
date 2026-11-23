@@ -7,6 +7,7 @@ import { Choice, Measures } from './aControls'
 import { cost, count, field, tokens } from './aFields'
 import { knownSum, rankedSeries } from './overviewMath'
 import { promptSummary } from './RowSummaries'
+import { copilotBilledText } from './copilotCost'
 import css from './overviewA.module.css'
 
 const splits = [['tool', 'Tool'], ['project', 'Project'], ['model', 'Model']] as const
@@ -32,7 +33,7 @@ export function costOptions({ ctx, def }: PanelProps) {
       { field: field('tokens', 'Unpriced tokens', 'board.unpriced'), value: unpriced()?.tokens,
         detail: unpriced()?.models?.map(model => model.model).filter(Boolean).join(', ') || undefined },
       { field: count('amount', 'Copilot credits', 'board.credits'), value: credits()?.amount,
-        detail: credits()?.approximate ? 'Whole days; not dollars' : credits() ? 'Not dollars' : undefined },
+        detail: copilotBilledText(credits()) ?? (credits()?.approximate ? 'Whole days' : undefined) },
     ]} /></>,
   }
 }

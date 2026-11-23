@@ -8,6 +8,7 @@ import { States } from '../kinds/States'
 import { monitoredReport } from './monitoredReport'
 import { runtimeSummary } from '../../data/runtimeAgents'
 import { runningDetail, unlinkedText } from './agentTree'
+import { billedCost, copilotBilledText } from './copilotCost'
 import styles from '../kinds/kinds.module.css'
 
 const metrics = [
@@ -62,6 +63,7 @@ export default function Kpis(props: PanelProps) {
             monitored() ? `${monitored()!.hosts} reporting ${monitored()!.hosts === 1 ? 'node' : 'nodes'}` : 'No fresh monitor report'} />
         <For each={metrics}>{([key, label, section, spark]) => {
         const detail = () => {
+          if (key === 'cost_usd' && copilotBilledText(ctx.board('credits'))) return copilotBilledText(ctx.board('credits'))
           if (key === 'running') return runningDetail(runtime(), data() as Parameters<typeof runningDetail>[1])
           if (key === 'failures') return format('fail_rate', data()?.fail_rate)
           if (key === 'p95_ms') return `p50: ${format('p50_ms', data()?.p50_ms) ?? 'Not available from this source'}`
@@ -72,7 +74,8 @@ export default function Kpis(props: PanelProps) {
           return null
         }
         return <a href={`#sec-${section}`} onClick={event => { event.preventDefault(); ctx.jump(section) }}>
-          <Stat label={label} value={format(key, (key === 'running' ? runtime()?.running : undefined) ?? data()?.[key])}
+          <Stat label={label} value={format(key, (key === 'running' ? runtime()?.running : undefined) ??
+            (key === 'cost_usd' ? billedCost(ctx.board('credits')) : undefined) ?? data()?.[key])}
             detail={<div class={styles.kpiDetail}>
               <span>{detail()}</span><Spark values={data()?.spark?.[spark] ?? []} />
             </div>} />

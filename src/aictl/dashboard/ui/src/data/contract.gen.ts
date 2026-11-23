@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: c9fee21baa66bd3e51b244bd07893ccf4eee072377f1354ae187e64f49187b54
+// Schema digest: 9c40d29387dc7ae19053c164796e4fa0a690e725c610bd1729ba57179f9ef662
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -184,6 +184,11 @@ export type BoardCredits = {
   by_tool: Record<string, number>;
   approximate: boolean;
   unit: "ai_credits";
+  usd?: number | null;
+  usd_per_credit?: number;
+  list_usd?: number | null;
+  list_unpriced_tokens?: number;
+  cost_usd?: number | null;
 } | null;
 
 export type BoardErrors = Array<{

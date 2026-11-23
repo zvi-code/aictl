@@ -257,8 +257,27 @@ class TestCredits:
             "unit": "ai_credits",
             "by_tool": {"copilot-cli": 1200.5, "copilot-desktop": 300.25},
             "approximate": False,
+            "usd": 15.01,
+            "usd_per_credit": 0.01,
+            "list_usd": None,
+            "list_unpriced_tokens": 20,  # the sessions' own tokens, of model "m", which has no list price
+            "cost_usd": 15.0075,
         }
         assert payload["kpis"]["cost_usd"] is None or payload["kpis"]["cost_usd"] != 1500.75
+
+    def test_the_cost_counts_copilot_at_what_it_billed_not_at_list_price(self, db):
+        # 1,277 credits at $0.01 are $12.77; the list price knows only the priced model of that session.
+        self.copilot(db, "cop", 1277.0)
+        ts = at(DAY2, 10.5)
+        for i, (sid, tool, model, tokens) in enumerate((("cop", "copilot-cli", "claude-sonnet-4-5", 1_000_000),
+                                                        ("cop", "copilot-cli", "no-such-model", 500),
+                                                        ("cc", "claude-code", "claude-sonnet-4-5", 1_000_000))):
+            db.insert("requests", ts=ts + i, session_id=sid, tool=tool, dedup_key=f"k{i}", model=model, input_tokens=tokens)
+        payload = board(db, at(DAY2, 0), at(DAY3, 0))
+        credits = payload["credits"]
+        assert payload["kpis"]["cost_usd"] == 6.0  # list price: $3 per million input tokens, twice
+        assert (credits["usd"], credits["list_usd"], credits["list_unpriced_tokens"]) == (12.77, 3.0, 500)
+        assert credits["cost_usd"] == 15.77  # Claude Code at list price, Copilot at what it billed
 
     def test_credits_follow_the_tool_filter(self, db):
         self.copilot(db, "a", 1200.5)
