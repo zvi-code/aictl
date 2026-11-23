@@ -39,7 +39,7 @@ describe('DRW-TL-01 · The Tool calls tab', () => {
     const rows = bodyRows(calls).map(cells)
     expect(rows.map(row => row.slice(0, 2))).toEqual([
       [expect.stringMatching(/:07$/), 'Main agent'], [expect.stringMatching(/:08$/), 'Explore: map the allocator'],
-      [expect.stringMatching(/:09$/), 'Not available from this source']])
+      [expect.stringMatching(/:09$/), 'n/aNot available from this source']])
     // The id of the agent is on hover.
     expect(bodyRows(calls)[1].querySelector('td[data-col="agent"]')?.getAttribute('title')).toBe('s/a1')
     dispose()
@@ -48,10 +48,10 @@ describe('DRW-TL-01 · The Tool calls tab', () => {
   it('shows durations as durations and sizes as sizes', () => {
     const { host, dispose } = mount(() => <Tools {...tab} />)
     const bash = bodyRows(section(host, 'Tool calls')).map(cells).find(row => row[0] === 'Bash')!
-    expect(bash.slice(0, 7)).toEqual(['Bash', 'built-in', '583', '13', '484 ms', '19.0 s', '345 KB'])
+    expect(bash.slice(0, 7)).toEqual(['Bash', 'built-in', '583', '13', '484 ms', '19 s', '345 KB'])
     expect(cells(bodyRows(host).find(row => row.textContent?.startsWith('mcp__db__query') && row.textContent.includes('db'))!)[1]).toBe('db')
     const individual = bodyRows(section(host, 'Individual calls')).map(cells)
-    expect(individual[1][4]).toBe('19.0 s')
+    expect(individual[1][4]).toBe('19 s')
     dispose()
   })
 

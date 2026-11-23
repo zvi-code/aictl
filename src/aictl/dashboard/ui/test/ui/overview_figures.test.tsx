@@ -17,7 +17,7 @@ describe('DRW-OV-01 · Figures with a unit are shown in it', () => {
     const { host, dispose } = mount(() => <Rows label="T" rows={rows} identity={['id']} columns={['id', 'cost_usd', 'wait_ms']} />)
     expect(Array.from(host.querySelectorAll('thead th')).map(th => th.textContent?.replace(/\s*↕$/, '').trim())).toEqual(['Id', 'Cost (USD)', 'Wait'])
     expect(bodyRows(host).map(cells)).toEqual([
-      ['a', '$0.20', '15.7 s'], ['b', '$0.70', '480 ms'], ['c', 'Not available from this source', 'Not available from this source']])
+      ['a', '$0.20', '15.7 s'], ['b', '$0.70', '480 ms'], ['c', 'n/aNot available from this source', 'n/aNot available from this source']])
     dispose()
   })
 })
