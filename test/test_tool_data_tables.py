@@ -26,7 +26,7 @@ PROC_COLUMNS = [
     "process_name", "ai_tool", "vendor", "host", "process_type", "runtime", "parent_process", "starts_at",
     "stops_at", "is_daemon", "auto_start", "listens_port", "outbound_targets", "memory_idle_mb",
     "memory_active_mb", "known_leak", "leak_pattern", "zombie_risk", "cleanup_command", "ps_grep_pattern",
-    "platform", "description",
+    "platform", "description", "match_scope",
 ]
 CATEGORIES = {
     "config", "runtime", "instructions", "memory", "credentials", "cache", "agent", "temp", "ignore",
@@ -175,3 +175,19 @@ def test_path_hints_for_desktop_apps():
     assert P.tool_hint_for_path("/Users/u/Library/Caches/github-copilot-sdk/cli/rt/copilot-runtime") == "copilot-desktop"
     assert P.tool_hint_for_path("/Users/u/Library/Application Support/Claude/git-worktrees.json") == "claude-desktop"
     assert P.tool_hint_for_path("/Users/u/notes/readme.md") is None
+
+
+@pytest.mark.parametrize("name", PROC_FILES)
+def test_generic_helper_rules_are_scoped_to_the_tool_tree(name):
+    """A rule whose pattern is only a generic program name must have match_scope "tree":
+    without it, the same program started by hand is reported as the tool."""
+    generic = re.compile(r"^(mcp-server-|mcp-remote|bash -l|vite|esbuild|webpack|next dev|playwright|npm exec|npx)$")
+    for r in _load(name):
+        assert r["match_scope"] in ("", "tree"), r["process_name"]
+        if r["ai_tool"] == "any":
+            continue
+        parts = [p for p in r["ps_grep_pattern"].split("|") if p]
+        if any(generic.match(p) for p in parts):
+            assert r["match_scope"] == "tree", (r["ai_tool"], r["process_name"])
+        if r["match_scope"] == "tree":
+            assert r["parent_process"] not in ("", "root"), (r["ai_tool"], r["process_name"])

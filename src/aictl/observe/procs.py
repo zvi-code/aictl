@@ -140,6 +140,7 @@ def snapshot() -> ProcTable | None:
         return None
     from ..monitoring.collectors.process import classify_process
     from ..monitoring.session import ProcessInfo
+    from ..tools import ORPHAN_TOOL, owner_tools
 
     own = os.getpid()
     rows: list[ProcRow] = []
@@ -163,4 +164,11 @@ def snapshot() -> ProcTable | None:
             ProcessInfo(pid=row.pid, ppid=row.ppid, name=row.name, exe=row.exe, cmdline=row.cmdline)
         ).tool
         rows.append(row)
+    # A generic helper (vite, npx, an MCP server) is a tool's process only under that tool.
+    owners = owner_tools({row.pid: row.ppid for row in rows}, {row.pid: row.tool for row in rows if row.tool and row.tool != ORPHAN_TOOL})
+    for row in rows:
+        if row.tool in (None, ORPHAN_TOOL) and (owner := owners.get(row.pid)):
+            row.tool = classify_process(
+                ProcessInfo(pid=row.pid, ppid=row.ppid, name=row.name, exe=row.exe, cmdline=row.cmdline, owner_tool=owner)
+            ).tool
     return ProcTable(rows)

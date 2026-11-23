@@ -92,21 +92,63 @@ CASES = [
      ["--type=renderer", "--enable-sandbox"], None),
     ("docker run with a sandbox flag", "/usr/local/bin/docker", ["run", "--rm", "--security-opt", "sandbox=on", "alpine"], None),
     ("openclaw docker sandbox", "/usr/local/bin/docker", ["run", "--name", "openclaw-sandbox-main", "openclaw/sandbox"], "openclaw"),
+    # Generic helper names started by hand, outside any tool's process tree, are not a tool
+    ("vite by hand", "/opt/homebrew/bin/node", [f"{HOME}/app/node_modules/.bin/vite", "--port", "5173"], None),
+    ("npx by hand", "/opt/homebrew/bin/node", ["/opt/homebrew/bin/npx", "create-next-app"], None),
+    ("login shell", "/bin/bash", ["-l"], None),
+    ("webpack by hand", "/opt/homebrew/bin/node", [f"{HOME}/app/node_modules/.bin/webpack", "--watch"], None),
+    ("esbuild by hand", f"{HOME}/app/node_modules/@esbuild/darwin-arm64/bin/esbuild", ["--service=0.25.0"], None),
+    ("next dev by hand", "/opt/homebrew/bin/node", [f"{HOME}/app/node_modules/.bin/next", "dev"], None),
+    ("playwright test by hand", "/opt/homebrew/bin/node", [f"{HOME}/app/node_modules/.bin/playwright", "test"], None),
+    ("mcp-remote by hand", "/opt/homebrew/bin/node", ["/opt/homebrew/bin/mcp-remote", "https://example.test/mcp"], None),
+    ("python mcp server by hand", "/usr/bin/python3", ["-m", "mcp-server-fetch"], None),
+    # A node MCP server with no tool above it is reported as an orphan, not as a tool
+    ("orphan node mcp server", "/opt/homebrew/bin/node", [f"{HOME}/.npm/_npx/abc/node_modules/.bin/mcp-server-filesystem"], "any"),
+]
+
+MCP_SERVER = ("/opt/homebrew/bin/node", [f"{HOME}/.npm/_npx/abc/node_modules/.bin/mcp-server-filesystem", HOME])
+VITE = ("/opt/homebrew/bin/node", [f"{HOME}/app/node_modules/.bin/vite"])
+# (label, exe, argv, tool of the nearest known ancestor, expected tool)
+TREE_CASES = [
+    ("mcp server under cursor", *MCP_SERVER, "cursor", "cursor"),
+    ("mcp server under claude code", *MCP_SERVER, "claude-code", "claude-code"),
+    ("mcp server under claude desktop", *MCP_SERVER, "claude-desktop", "claude-desktop"),
+    ("mcp server under copilot cli", *MCP_SERVER, "copilot-cli", "copilot-cli"),
+    ("mcp server under gemini", *MCP_SERVER, "gemini-cli", "gemini-cli"),
+    ("vite under claude code", *VITE, "claude-code", "claude-code"),
+    ("login shell under claude code", "/bin/bash", ["-l"], "claude-code", "claude-code"),
+    # A tool has no rule for this helper, so it is not labelled with another tool's rule
+    ("vite under cursor", *VITE, "cursor", None),
+    ("vite under codex", *VITE, "codex-cli", None),
+    # A process that names its tool keeps that tool under any owner
+    ("claude under vs code", f"{HOME}/.vscode/extensions/anthropic.claude-code-2.1.175-darwin-arm64/resources/native-binary/claude",
+     [], "copilot-vscode", "claude-code"),
 ]
 
 
-def _info(exe: str, argv: list[str]) -> ProcessInfo:
+def _info(exe: str, argv: list[str], owner: str | None = None) -> ProcessInfo:
     name = exe.rsplit("/", 1)[-1]
-    return ProcessInfo(pid=1, ppid=0, name=name, exe=exe, cmdline=tuple([exe, *argv]))
+    return ProcessInfo(pid=1, ppid=0, name=name, exe=exe, cmdline=tuple([exe, *argv]), owner_tool=owner)
 
 
-def _tools_py_match(exe: str, argv: list[str]) -> str | None:
-    """Mirror of tools._discover_processes_csv matching (first row wins, case-sensitive)."""
+def _tools_py_match(exe: str, argv: list[str], owner: str | None = None) -> str | None:
+    """Mirror of tools._discover_processes_csv matching (first row wins, case-sensitive):
+    rules that name the tool first, then the owner tool's rules for generic helper names."""
     args = " ".join([exe, *argv])
-    for spec in get_registry().process_specs():
-        if spec.ps_grep_pattern and (re.search(spec.ps_grep_pattern, exe) or re.search(spec.ps_grep_pattern, args)):
+    specs = [s for s in get_registry().process_specs() if s.ps_grep_pattern]
+    own = None
+    for spec in specs:
+        if spec.match_scope != "tree" and (re.search(spec.ps_grep_pattern, exe) or re.search(spec.ps_grep_pattern, args)):
+            own = spec.ai_tool
+            break
+    if own not in (None, "any"):
+        return own
+    for spec in specs:
+        if spec.match_scope == "tree" and spec.ai_tool == owner and (
+            re.search(spec.ps_grep_pattern, exe) or re.search(spec.ps_grep_pattern, args)
+        ):
             return spec.ai_tool
-    return None
+    return own
 
 
 @pytest.fixture(autouse=True)
@@ -122,3 +164,42 @@ def test_classify_process_uses_current_command_lines(label, exe, argv, expected)
 @pytest.mark.parametrize("label,exe,argv,expected", CASES, ids=[c[0] for c in CASES])
 def test_both_matchers_agree(label, exe, argv, expected):
     assert _tools_py_match(exe, argv) == expected
+
+
+@pytest.mark.parametrize("label,exe,argv,owner,expected", TREE_CASES, ids=[c[0] for c in TREE_CASES])
+def test_generic_helper_takes_the_tool_of_its_process_tree(label, exe, argv, owner, expected):
+    match = proc_mod.classify_process(_info(exe, argv, owner))
+    assert match.tool == expected
+    assert _tools_py_match(exe, argv, owner) == expected
+    if exe in (MCP_SERVER[0], "/bin/bash"):
+        # Found through its tool's tree: it never starts a tracked tree of its own.
+        assert not match.root_candidate
+
+
+def test_owner_tools_is_the_nearest_known_ancestor():
+    from aictl.tools import owner_tools
+
+    # 1 launchd, 10 Cursor, 11 terminal shell, 12 claude, 13 shell, 14 vite; 20 vite by hand
+    parents = {1: 0, 10: 1, 11: 10, 12: 11, 13: 12, 14: 13, 20: 1, 30: 31, 31: 30}
+    own = {10: "cursor", 12: "claude-code"}
+    assert owner_tools(parents, own) == {11: "cursor", 12: "cursor", 13: "claude-code", 14: "claude-code"}
+
+
+def test_discovery_reports_a_helper_only_under_its_tool(monkeypatch):
+    """tools._discover_processes_csv: the same vite is Claude Code's under claude and nothing by hand."""
+    import aictl.tools as tools_mod
+
+    rows = [
+        ("100", "0.0", "0", "claude", f"{HOME}/.local/share/claude/versions/2.1.299 claude"),
+        ("101", "0.0", "0", "node", f"node {HOME}/app/node_modules/.bin/vite"),
+        ("200", "0.0", "0", "node", f"node {HOME}/other/node_modules/.bin/vite"),
+        ("300", "0.0", "0", "Cursor", f"{APPS}/Cursor.app/Contents/MacOS/Cursor"),
+        ("301", "0.0", "0", "node", f"node {HOME}/.npm/_npx/abc/node_modules/.bin/mcp-server-filesystem"),
+    ]
+    monkeypatch.setattr(tools_mod, "_parse_ps_output", lambda: rows)
+    monkeypatch.setattr(tools_mod, "_process_parents", lambda: {100: 1, 101: 100, 200: 1, 300: 1, 301: 300})
+    monkeypatch.setattr(tools_mod, "_proc_stats", lambda pid, cpu, rss: (cpu, rss))
+    results: dict = {}
+    tools_mod._discover_processes_csv(get_registry(), results, None)
+    found = {p.pid: tool for tool, res in results.items() for p in res.processes}
+    assert found == {100: "claude-code", 101: "claude-code", 300: "cursor", 301: "cursor"}

@@ -26,6 +26,7 @@ from ... import tree_walk
 from ...data.schema import metric_name as M
 from ...fsutil import warn_once
 from ...platforms import IS_WINDOWS, path_key
+from ...tools import ORPHAN_TOOL, owner_tools
 from ..config import MonitorConfig
 from ..pace import PACE
 from ..repo_changes import FileChange, RepoChangeTracker
@@ -55,6 +56,9 @@ class MatchResult:
 # ─── CSV-driven classification ─────────────────────────────────
 
 _CSV_PATTERNS: list[tuple[re.Pattern, str]] | None = None
+# Rules for generic helper names (match_scope "tree"), per tool: they count only for a
+# process whose nearest known ancestor is that tool.
+_CSV_TREE_PATTERNS: dict[str, list[re.Pattern]] = {}
 _CSV_ANY_PATTERN: re.Pattern | None = None
 # True while the process registry cannot be loaded. Exposed via
 # classification_degraded() so the collector can surface the failure
@@ -71,7 +75,7 @@ def classification_degraded() -> bool:
 
 def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
     """Lazy-load compiled regex patterns from process CSV specs."""
-    global _CSV_PATTERNS, _CSV_ANY_PATTERN, _LOAD_FAILED, _LAST_LOAD_ERROR_TS
+    global _CSV_PATTERNS, _CSV_TREE_PATTERNS, _CSV_ANY_PATTERN, _LOAD_FAILED, _LAST_LOAD_ERROR_TS
     if _CSV_PATTERNS is not None:
         return _CSV_PATTERNS
     try:
@@ -84,6 +88,7 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
             specs.extend(_load_process_csv(_data_path("processes-unix.csv")))
         seen_patterns: set[tuple[str, str]] = set()
         exact_names: list[tuple[re.Pattern, str]] = []
+        tree: dict[str, list[re.Pattern]] = {}
         for spec in specs:
             if not spec.ps_grep_pattern:
                 continue
@@ -94,6 +99,9 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
                 seen_patterns.add((pat_str, spec.ai_tool))
                 try:
                     compiled = (re.compile(pat_str, re.IGNORECASE), spec.ai_tool)
+                    if spec.match_scope == "tree":
+                        tree.setdefault(spec.ai_tool, []).append(compiled[0])
+                        continue
                     if pat_str.startswith("^") and pat_str.endswith("$"):
                         exact_names.append(compiled)
                     else:
@@ -102,6 +110,7 @@ def _load_csv_patterns() -> list[tuple[re.Pattern, str]]:
                 except re.error:
                     continue
         patterns.extend(exact_names)
+        _CSV_TREE_PATTERNS = tree
         _CSV_PATTERNS = patterns
         try:
             _CSV_ANY_PATTERN = re.compile("|".join(raw_parts), re.IGNORECASE) if raw_parts else None
@@ -129,6 +138,10 @@ def classify_process(process: ProcessInfo) -> MatchResult:
 
     Uses CSV ps_grep_pattern patterns exclusively (priority from CSV
     row order).  Returns MatchResult(tool=None) if no pattern matches.
+
+    A rule that names the tool counts for any process. A rule for a generic helper name
+    (match_scope "tree": vite, npx, bash -l, mcp-server-) counts only when the process has
+    ``owner_tool`` set to that tool, so the same program started by hand is not a tool.
     """
     name = _normalize_name(process.name)
     cmdline = " ".join(part.lower() for part in process.cmdline)
@@ -136,13 +149,20 @@ def classify_process(process: ProcessInfo) -> MatchResult:
     combined = " ".join(part for part in (name, cmdline, exe) if part)
 
     patterns = _load_csv_patterns()
-    if _CSV_ANY_PATTERN is not None and not (_CSV_ANY_PATTERN.search(name) or _CSV_ANY_PATTERN.search(combined)):
-        return MatchResult(tool=None, root_candidate=False)
-    for pattern, tool_name in patterns:
-        if pattern.search(name) or pattern.search(combined):
-            return MatchResult(tool=tool_name, root_candidate=True)
+    own: MatchResult | None = None
+    if _CSV_ANY_PATTERN is None or _CSV_ANY_PATTERN.search(name) or _CSV_ANY_PATTERN.search(combined):
+        for pattern, tool_name in patterns:
+            if pattern.search(name) or pattern.search(combined):
+                own = MatchResult(tool=tool_name, root_candidate=True)
+                break
+    # The "any" rules are for a helper with no tool above it, so the owner's rule comes first.
+    if process.owner_tool and (own is None or own.tool == ORPHAN_TOOL):
+        for pattern in _CSV_TREE_PATTERNS.get(process.owner_tool, ()):
+            if pattern.search(name) or pattern.search(combined):
+                # Reached through its tool's process tree, so it does not start a tree itself.
+                return MatchResult(tool=process.owner_tool, root_candidate=False)
 
-    return MatchResult(tool=None, root_candidate=False)
+    return own or MatchResult(tool=None, root_candidate=False)
 
 
 # ─── Collector ─────────────────────────────────────────────────
@@ -169,6 +189,8 @@ class PsutilProcessCollector(BaseCollector):
         self._sticky_pids: set[int] = set()
         # Classification per (pid, name), kept like _identity: the regexes run once per process.
         self._classified: dict[tuple[int, str], MatchResult] = {}
+        # Tool of the nearest known ancestor per pid, from the last process table read.
+        self._owner_tool: dict[int, str] = {}
         # cwd per pid with the time it was read. A failed read is kept as None.
         self._cwd: dict[int, tuple[str | None, float]] = {}
         # Last classification-health state pushed via report_status, so
@@ -221,7 +243,9 @@ class PsutilProcessCollector(BaseCollector):
 
                 # Sink: full-resolution per-PID metrics (OTel conventions)
                 ptags = {"process.pid": str(pid), "process.name": proc.name}
-                match = self._classified.get((pid, proc.name)) or classify_process(proc)
+                cached = self._classified.get((pid, proc.name))
+                # The cached result is by the process's own name; a helper is known by its owner.
+                match = cached if cached is not None and cached.tool not in (None, ORPHAN_TOOL) else classify_process(proc)
                 if match.tool:
                     ptags["aictl.tool"] = match.tool
                 if cpu_pct is not None:
@@ -406,6 +430,7 @@ class PsutilProcessCollector(BaseCollector):
                     username=base["username"],
                     cwd=cwd,
                     created_at=self._births.get(pid),
+                    owner_tool=self._owner_tool.get(pid),
                 ),
                 "cpu_percent": cpu_percent,
                 "memory_rss": memory_rss,
@@ -439,6 +464,10 @@ class PsutilProcessCollector(BaseCollector):
             if match.root_candidate:
                 roots.add(pid)
         self._classified = {} if classification_degraded() else classified
+        self._owner_tool = owner_tools(
+            {pid: info["ppid"] for pid, info in all_processes.items()},
+            {pid: match.tool for (pid, _name), match in classified.items() if match.tool and match.tool != ORPHAN_TOOL},
+        )
         # Persist newly-found roots so they survive inconsistent classification
         self._sticky_pids.update(roots)
         # Prune sticky PIDs that no longer exist as live processes

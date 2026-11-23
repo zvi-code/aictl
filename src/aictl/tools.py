@@ -385,6 +385,9 @@ class ProcessSpec:
     ps_grep_pattern: str
     platform: str
     description: str
+    # "tree": a generic helper name (vite, npx, mcp-server-) that counts only for a
+    # descendant of a process of the same tool. "": the pattern names the tool itself.
+    match_scope: str = ""
 
 
 # ─── CSV loading ──────────────────────────────────────────────────
@@ -480,8 +483,42 @@ def _load_process_csv(path: Path) -> list[ProcessSpec]:
             ps_grep_pattern=row.get("ps_grep_pattern", ""),
             platform=row.get("platform", "all"),
             description=row.get("description", ""),
+            match_scope=(row.get("match_scope") or "").strip(),
         ),
     )
+
+
+# Tool name of the rules for a helper left without a tool above it (its parent has exited).
+ORPHAN_TOOL = "any"
+
+
+def owner_tools(parents: dict[int, int | None], own: dict[int, str]) -> dict[int, str]:
+    """Tool of the nearest ancestor that is a known tool, per process that has one.
+
+    *parents* maps pid to parent pid for every process, *own* maps pid to the tool a process
+    is by its own name. A process that is itself a tool still gets its ancestor's tool here.
+    """
+    owners: dict[int, str | None] = {}
+
+    def owner(pid: int) -> str | None:
+        chain: list[int] = []
+        found: str | None = None
+        current = parents.get(pid)
+        while current is not None and current not in chain and current != pid:
+            if current in owners:
+                found = own.get(current) or owners[current]
+                break
+            if current in own:
+                found = own[current]
+                break
+            chain.append(current)
+            current = parents.get(current)
+        owners[pid] = found
+        for passed in chain:
+            owners[passed] = found
+        return found
+
+    return {pid: tool for pid in parents if (tool := owner(pid))}
 
 
 def _filter_specs(specs: list, platform: str, tools: list[str] | None) -> list:
@@ -1202,6 +1239,25 @@ def _proc_stats(pid: int, cpu: str = "0.0", rss_kb: str = "0") -> tuple[str, str
         return cpu, rss_kb
 
 
+def _process_parents() -> dict[int, int | None]:
+    """Parent pid of every process; empty when the process table cannot be read."""
+    if IS_WINDOWS:
+        from .platforms import cached_windows_process_parents
+
+        try:
+            return dict(cached_windows_process_parents())
+        except OSError:
+            return {}
+    try:
+        import psutil
+    except ImportError:
+        return {}
+    parents: dict[int, int | None] = {}
+    for proc in psutil.process_iter(["pid", "ppid"]):
+        parents[int(proc.info["pid"])] = proc.info.get("ppid")
+    return parents
+
+
 def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
     """Return process rows as (pid, cpu, rss_kb, comm, args).
 
@@ -1310,46 +1366,68 @@ def _discover_processes_csv(
     rows = _parse_ps_output()
     matched_pids: set[int] = set()
 
+    # A rule that names the tool counts anywhere. A rule for a generic helper name
+    # (match_scope "tree") counts only under a process of the same tool.
+    candidates: list[tuple[int, str, str, str, str]] = []
+    matched: dict[int, ProcessSpec] = {}
     for pid_s, cpu, rss, comm, args in rows:
         basename = Path(comm).name
         if basename in _SKIP_COMMS or (IS_WINDOWS and basename.lower().removesuffix(".exe") in _SKIP_COMMS):
             continue
         pid = int(pid_s)
-        if pid in matched_pids:
+        if pid in matched:
             continue
-
+        candidates.append((pid, cpu, rss, comm, args))
         for spec, pattern in compiled:
-            if pattern.search(comm) or pattern.search(args):
-                cpu, rss = _proc_stats(pid, cpu, rss)
-                mem_mb_actual, mem_mb_str = _rss_to_mb(rss)
-
-                anomalies = _detect_anomalies(mem_mb_actual, pid, spec)
-
-                pi = ProcessInfo(
-                    pid=pid,
-                    name=_process_display_name(args),
-                    cmdline=args[:200],
-                    cpu_pct=cpu,
-                    mem_mb=mem_mb_str,
-                    tool=spec.ai_tool,
-                    process_type=spec.process_type,
-                    expected_mem_mb=spec.memory_active_mb,
-                    known_leak=spec.known_leak,
-                    zombie_risk=spec.zombie_risk,
-                    cleanup_cmd=spec.cleanup_command,
-                    anomalies=anomalies,
-                )
-
-                tool_name = spec.ai_tool
-                results.setdefault(
-                    tool_name,
-                    ToolResources(
-                        tool=tool_name,
-                        label=TOOL_LABELS.get(tool_name, tool_name),
-                    ),
-                ).processes.append(pi)
-                matched_pids.add(pid)
+            if spec.match_scope != "tree" and (pattern.search(comm) or pattern.search(args)):
+                matched[pid] = spec
                 break
+    if any(spec.match_scope == "tree" for spec, _ in compiled):
+        named = {pid: spec.ai_tool for pid, spec in matched.items() if spec.ai_tool != ORPHAN_TOOL}
+        owners = owner_tools(_process_parents(), named)
+        for pid, _cpu, _rss, comm, args in candidates:
+            owner = owners.get(pid)
+            # The "any" rules are for a helper with no tool above it, so the owner's rule comes first.
+            if pid in named or owner is None:
+                continue
+            for spec, pattern in compiled:
+                if spec.match_scope == "tree" and spec.ai_tool == owner and (pattern.search(comm) or pattern.search(args)):
+                    matched[pid] = spec
+                    break
+
+    for pid, cpu, rss, _comm, args in candidates:
+        spec = matched.get(pid)
+        if spec is None or pid in matched_pids:
+            continue
+        cpu, rss = _proc_stats(pid, cpu, rss)
+        mem_mb_actual, mem_mb_str = _rss_to_mb(rss)
+
+        anomalies = _detect_anomalies(mem_mb_actual, pid, spec)
+
+        pi = ProcessInfo(
+            pid=pid,
+            name=_process_display_name(args),
+            cmdline=args[:200],
+            cpu_pct=cpu,
+            mem_mb=mem_mb_str,
+            tool=spec.ai_tool,
+            process_type=spec.process_type,
+            expected_mem_mb=spec.memory_active_mb,
+            known_leak=spec.known_leak,
+            zombie_risk=spec.zombie_risk,
+            cleanup_cmd=spec.cleanup_command,
+            anomalies=anomalies,
+        )
+
+        tool_name = spec.ai_tool
+        results.setdefault(
+            tool_name,
+            ToolResources(
+                tool=tool_name,
+                label=TOOL_LABELS.get(tool_name, tool_name),
+            ),
+        ).processes.append(pi)
+        matched_pids.add(pid)
 
     # Also run MCP process matching (uses config data, not patterns).
     # Track globally to avoid same PID appearing under multiple tools.

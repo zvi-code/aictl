@@ -45,6 +45,9 @@ class ProcessInfo:
     username: str | None = None
     cwd: str | None = None
     created_at: float | None = None
+    # Tool of the nearest ancestor process that is a known tool, when the reader of the
+    # process table knows it. Rules with match_scope "tree" count only for that tool.
+    owner_tool: str | None = None
 
 
 def _derive_project(cwd: str | None) -> str:

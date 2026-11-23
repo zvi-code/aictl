@@ -79,7 +79,7 @@ def test_validate_required_fields_and_limits():
 
 
 def test_copilot365_data_rows_valid():
-    for name, ncols in (("paths-windows.csv", 18), ("paths-unix.csv", 18), ("processes-windows.csv", 22)):
+    for name, ncols in (("paths-windows.csv", 18), ("paths-unix.csv", 18), ("processes-windows.csv", 23)):
         with open(DATA / name, newline="") as fh:
             rows = [r for r in csv.reader(fh) if r]
         assert all(len(r) == ncols for r in rows), name
