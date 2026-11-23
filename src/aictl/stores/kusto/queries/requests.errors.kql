@@ -4,6 +4,8 @@ declare query_parameters(
     requested_error:string = '', restrict_error:bool = false, restrict_sessions:bool = false,
     session_keys:dynamic = dynamic([]), row_limit:long
 );
+// The requests table has a column requested_model, which hides a parameter of that name in its pipeline.
+let wanted_model = requested_model;
 requests
 | where all_nodes or node_id == requested_node
 | where isempty(requested_session) or session_id == requested_session
@@ -12,7 +14,7 @@ requests
 | where not(coalesce(column_ifexists('_deleted', false), false)) and is_error == 1
 | where (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
 | where isempty(requested_agent) or agent_id == requested_agent
-| where isempty(requested_model) or model == requested_model
+| where isempty(wanted_model) or model == wanted_model
 | where not(restrict_error) or error_type == requested_error
 | where not(restrict_sessions) or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
 | order by ts desc, node_id asc, id asc, fact_key asc

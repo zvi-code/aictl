@@ -17,8 +17,10 @@ import pytest
 from kusto_replay import NOW
 
 from aictl.dashboard import board_projection, runtime_health
+from aictl.dashboard.artifact_details import error_detail
 from aictl.dashboard.board_filters import Filters
 from aictl.dashboard.board_projection import compute_board
+from aictl.dashboard.session_record import SessionQuery, search_sessions
 from aictl.data.model_pricing import cost_usd
 
 DAY = 86400.0
@@ -137,3 +139,63 @@ def test_an_unknown_model_passes_through_unchanged(db):
     assert rows[UNKNOWN]["cost_usd"] is None
     assert [m["model"] for m in payload["unpriced"]["models"]] == [UNKNOWN]
     assert _sessions(_board(db, model=UNKNOWN)) == {"acme"}
+
+
+@pytest.mark.parametrize("chosen", [DASHED, DOTTED, DASHED.upper()])
+def test_the_error_drawer_lists_the_errors_of_every_spelling_and_of_no_other_model(db, chosen):
+    t = NOW - DAY
+    _request(db, t + 35, "cc", "claude-code", DASHED, is_error=1, error_type="rate_limit", http_status=429)
+    # The same session, another model: the model filter leaves this error out.
+    _request(db, t + 36, "cc", "claude-code", OLDER, is_error=1, error_type="rate_limit", http_status=429)
+    filters = Filters(since=NOW - 7 * DAY, until=NOW, model=chosen)
+    status, body = error_detail(db, "api:rate_limit:429", NOW, filters=filters)
+    assert status == 200
+    assert [(item["agent_id"], item["ts"]) for item in body["items"]] == [("cc", t + 35), ("cp", t + 30)]
+
+
+@pytest.mark.parametrize("view", ["requests.errors", "requests.intervals"])
+def test_a_model_parameter_filters_the_views_that_read_the_requests_table(db, view):
+    """The requests table has a column named requested_model; a parameter of that name must not be read as the column."""
+    from aictl.dashboard.projections.history import HistoryScope
+
+    t = NOW - DAY
+    _request(db, t + 35, "cc", "claude-code", DASHED, is_error=1, error_type="rate_limit", http_status=429)
+    _request(db, t + 36, "cc", "claude-code", OLDER, is_error=1, error_type="rate_limit", http_status=429)
+    history = HistoryScope.local(db)
+    extra = {"intervals": [["test-node", "cc", t, t + 100]]} if view == "requests.intervals" else {"since": NOW - 7 * DAY, "until": NOW}
+    only = history.read(view, requested_model=OLDER, **extra)
+    every = history.read(view, requested_model="", **extra)
+    if view == "requests.errors":
+        assert [row["ts"] for row in only] == [t + 36]
+        assert len(every) == 3
+    else:
+        assert [row["tokens"] for row in only] == [0]  # the request of that model carries no tokens
+        assert [row["tokens"] for row in every] == [1100]
+        assert [row["tokens"] for row in history.read(view, requested_model=DASHED, **extra)] == [1100]
+
+
+@pytest.mark.parametrize("chosen", [DASHED, DOTTED, DASHED.upper()])
+def test_the_session_finder_filters_by_the_model_whichever_spelling_a_session_used(db, chosen):
+    query = SessionQuery(since=NOW - 7 * DAY, until=NOW, model=chosen)
+    found = search_sessions(db, query=query, now=NOW)
+    assert {row["id"] for row in found["rows"]} == {"cc", "cp"}
+    assert found["total"] == 2
+    # The facets count the same sessions, and the model filter leaves the others.
+    assert found["facets"]["sessions"] == 2
+    assert found["without"]["model"] >= 4
+
+
+def test_the_session_finder_keeps_a_different_version_and_an_unknown_model_apart(db):
+    window = {"since": NOW - 7 * DAY, "until": NOW}
+    assert {r["id"] for r in search_sessions(db, query=SessionQuery(model=OLDER, **window), now=NOW)["rows"]} == {"old"}
+    assert {r["id"] for r in search_sessions(db, query=SessionQuery(model=UNKNOWN, **window), now=NOW)["rows"]} == {"acme"}
+    assert search_sessions(db, query=SessionQuery(model=UNKNOWN.lower(), **window), now=NOW)["rows"] == []
+
+
+def test_the_previous_period_counts_a_spelling_only_that_period_used(db):
+    """A third spelling that no request of the window used still belongs to the model."""
+    prev = NOW - 10 * DAY
+    db.insert("sessions", session_id="cc-only", tool="claude-code", project_path="/p/one", started_at=prev, ended_at=prev + 60)
+    _request(db, prev + 5, "cc-only", "claude-code", "Claude-Opus-5.5", i=300, o=30)
+    for chosen in (DASHED, DOTTED):
+        assert _board(db, model=chosen)["kpis"]["prev"]["tokens"] == 11 + 22 + 330

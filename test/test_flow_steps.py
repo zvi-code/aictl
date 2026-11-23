@@ -197,3 +197,18 @@ def test_a_subagent_named_with_its_session_gets_its_own_events():
     events = [{"type": "api_call", "agent_id": "a1"}, {"type": "api_call", "agent_id": "a2"}, {"type": "api_call", "agent_id": ""}]
     assert flow_projection._agent_scope(events, f"{SID}/a1", SID) == [events[0]]
     assert flow_projection._agent_scope(events, "a1", SID) == [events[0]]
+
+
+def test_the_models_of_a_flow_list_one_id_for_both_spellings_and_a_search_finds_either():
+    from aictl.dashboard.flow_filters import select_events
+
+    events = [
+        {"type": "api_call", "ts": 1.0, "model": "claude-opus-5.5", "agent_id": "a"},
+        {"type": "api_call", "ts": 2.0, "model": "claude-opus-5-5", "agent_id": "a"},
+        {"type": "api_call", "ts": 3.0, "model": "gpt-5.5", "agent_id": "a"},
+    ]
+    _, scope = select_events(events)
+    assert scope["models"] == ["claude-opus-5-5", "gpt-5.5"]
+    for term in ("claude-opus-5-5", "claude-opus-5.5", "CLAUDE-OPUS-5.5"):
+        assert [e["ts"] for e in select_events(events, q=term)[0]] == [1.0, 2.0]
+    assert [e["ts"] for e in select_events(events, q="gpt-5.5")[0]] == [3.0]

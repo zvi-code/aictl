@@ -90,6 +90,18 @@ it('never lists a process that no evidence links to a session as a session row',
   expect(unlinkedProcesses([{ id: 'openclaw:1:2' }], rows)).toEqual([]);
 });
 
+it('keeps a live agent that reports the selected model under another spelling of its id', () => {
+  const live = (models: string[]) => [{ id: 'copilot:1', data: { id: 'copilot:1', tool: 'copilot-cli', pids: [1], models,
+    unlinked_reason: 'aictl has no session source for this tool' } }];
+  // Copilot reports claude-opus-5.5, Claude Code claude-opus-5-5: the Model menu holds the one canonical id.
+  expect(unlinkedProcesses([], live(['claude-opus-5.5']), { model: 'claude-opus-5-5' }).map(p => p.id)).toEqual(['copilot:1']);
+  expect(unlinkedProcesses([], live(['claude-opus-5-5']), { model: 'claude-opus-5.5' }).map(p => p.id)).toEqual(['copilot:1']);
+  // A different version or model is still not that model.
+  expect(unlinkedProcesses([], live(['claude-opus-5']), { model: 'claude-opus-5-5' })).toEqual([]);
+  expect(unlinkedProcesses([], live(['gpt-5.5']), { model: 'claude-opus-5-5' })).toEqual([]);
+  expect(unlinkedProcesses([], live(['gpt-5.5']), { model: 'gpt-5.5' }).map(p => p.id)).toEqual(['copilot:1']);
+});
+
 it('hides sessions with no activity by default and counts them', () => {
   const empty = { id: 'p1', queryable: true, status: 'ended', msgs: { user: 0, assistant: 0, tool: null }, tool_calls: 0 };
   expect(noActivity(empty, false)).toBe(true);

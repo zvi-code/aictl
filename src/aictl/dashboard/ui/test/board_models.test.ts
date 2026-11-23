@@ -1,8 +1,23 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { boardQuery, filtersToParams, modelReportedAs, parseFilters, windowOf } from '../src/data/filters';
+import { boardQuery, canonicalModelId, filtersToParams, modelReportedAs, parseFilters, windowOf } from '../src/data/filters';
 import type { DetailContextAudit, DetailEffectiveModels, DetailHooksStatus, DetailOtelStatus } from '../src/data/contract.gen';
 import { buildFindings, buildSettings, tailPath } from '../src/panels/overview/b/findings';
 import { errorLabel, fmtCredits, fmtDur, fmtLines, fmtMs, fmtN, fmtRate, fmtShare, fmtUsd, sparkPath, toolDisplayName, weekdayLabel } from '../src/design/format';
+
+describe('canonicalModelId', () => {
+  // The cases of test/test_model_pricing.py: the Python canonical_model_id and this one are one rule.
+  const { cases } = JSON.parse(readFileSync(new URL('../../../../../test/model_id_cases.json', import.meta.url), 'utf8')) as
+    { cases: { reported: string; canonical: string }[] };
+  it('reads the shared cases', () => expect(cases.length).toBeGreaterThan(10));
+  it.each(cases.map(c => [c.reported, c.canonical]))('%j is %j', (reported, canonical) => {
+    expect(canonicalModelId(reported)).toBe(canonical);
+  });
+  it('has no id for nothing', () => {
+    expect(canonicalModelId(undefined)).toBe('');
+    expect(canonicalModelId(null)).toBe('');
+  });
+});
 
 describe('filters in the URL', () => {
   it('round trips every filter', () => {

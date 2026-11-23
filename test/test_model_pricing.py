@@ -7,6 +7,9 @@ Fable 5.1 by ~3x and over-reporting Sonnet 5 by 1.5x.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from aictl.data.model_pricing import (
@@ -46,24 +49,10 @@ def test_date_suffix_and_dotted_versions_resolve():
     assert resolve_pricing("claude-sonnet-4.6")[0] == "claude-sonnet-4-6"
 
 
+# The cases the UI test of canonicalModelId reads too: one rule in two languages.
 SPELLINGS = [
-    # (reported, canonical id)
-    ("claude-opus-5-5", "claude-opus-5-5"),      # Claude Code
-    ("claude-opus-5.5", "claude-opus-5-5"),      # GitHub Copilot
-    ("Claude-Sonnet-4.6", "claude-sonnet-4-6"),
-    (" claude-haiku-4.5 ", "claude-haiku-4-5"),
-    # A different version, a dated snapshot, a context variant and a platform wrapping stay apart.
-    ("claude-opus-5", "claude-opus-5"),
-    ("claude-opus-5-5-20261001", "claude-opus-5-5-20261001"),
-    ("claude-opus-5-5[1m]", "claude-opus-5-5[1m]"),
-    ("claude-opus-5.5[1m]", "claude-opus-5-5[1m]"),
-    ("us.anthropic.claude-opus-5-5-v1:0", "us.anthropic.claude-opus-5-5-v1:0"),
-    ("claude-sonnet-5-preview", "claude-sonnet-5-preview"),
-    # Not a Claude id: unchanged, dots and case included.
-    ("gpt-5.5", "gpt-5.5"),
-    ("gemini-3.8-flash", "gemini-3.8-flash"),
-    ("Acme-Model.2", "Acme-Model.2"),
-    ("", ""),
+    (case["reported"], case["canonical"])
+    for case in json.loads((Path(__file__).parent / "model_id_cases.json").read_text())["cases"]
 ]
 
 

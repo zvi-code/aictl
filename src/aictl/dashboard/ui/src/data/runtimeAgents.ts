@@ -1,6 +1,6 @@
 import { projectKey } from './projectKey';
 import { isStoredToolSelected } from './toolScope';
-import type { Filters } from './filters';
+import { canonicalModelId, type Filters } from './filters';
 
 type Values = Readonly<Record<string, unknown>>;
 type Entity = { id: string; data: Values };
@@ -23,7 +23,7 @@ export function statusText<T>(status: T, endReason: unknown): T | string {
 function matchesAgent(agent: Agent, filters: Partial<Filters>, tools: string[] | null) {
   if (!isStoredToolSelected(agent.tool, tools)) return false;
   if (filters?.project && filters.project !== 'all' && projectKey(filters.project) !== projectKey(agent.project)) return false;
-  if (filters?.model && filters.model !== 'all' && !agent.models?.includes(filters.model)) return false;
+  if (filters?.model && filters.model !== 'all' && !agent.models?.some(model => canonicalModelId(model) === canonicalModelId(filters.model))) return false;
   if (!matchesStatus(agent, filters?.status)) return false;
   const q = filters?.q?.toLowerCase();
   return !q || [agent.id, agent.title, agent.tool, agent.project].some(value => String(value || '').toLowerCase().includes(q));

@@ -40,3 +40,19 @@ def test_retained_text_and_cost_use_current_rows_and_exact_links():
 def test_rejects_invalid_or_unapproved_scope(options, error):
     with pytest.raises(ValueError, match=error):
         kql_templates({"preset": "steps", "reporting_node": "node-a", "session": "sid-1", **options})
+
+
+@pytest.mark.parametrize("preset", ["requests", "subagents", "spans"])
+def test_the_model_filter_matches_every_spelling_of_the_model(preset):
+    """Copilot stores claude-opus-5.5 and Claude Code claude-opus-5-5: one model, one filter."""
+    options = {"reporting_node": "node-a", "session": "sid-1", "preset": preset}
+    dotted = kql_templates({**options, "model": "claude-opus-5.5"})["query"]
+    dashed = kql_templates({**options, "model": "Claude-Opus-5-5"})["query"]
+    assert dotted == dashed
+    assert '"claude-opus-5-5"' in dotted and "claude-opus-5.5" not in dotted
+    assert "replace_string(" in dotted and 'startswith "claude-"' in dotted
+
+
+def test_the_model_filter_of_another_id_keeps_its_exact_spelling():
+    query = kql_templates({"reporting_node": "node-a", "session": "sid-1", "preset": "requests", "model": "gpt-5.5"})["query"]
+    assert '== "gpt-5.5"' in query

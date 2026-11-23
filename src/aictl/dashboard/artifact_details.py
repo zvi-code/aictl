@@ -216,12 +216,12 @@ def _history_titles(history: HistoryScope, pairs: set[tuple[str, str]], now: flo
     return board._titles(pairs)
 
 
-def _detail_scope(history: HistoryScope, filters: Filters | None, now: float) -> dict:
+def _detail_scope(history: HistoryScope, filters: Filters | None, now: float, board: _Board | None = None) -> dict:
     if filters is None:
         return {}
     params = {"since": filters.since, "until": filters.until}
     if filters.narrowed:
-        board = _Board(None, filters, now, history=history).load()
+        board = board or _Board(None, filters, now, history=history).load()
         params |= {"restrict_sessions": True, "session_keys": history.keys(board.scope)}
     return params
 
@@ -266,7 +266,8 @@ def error_detail(db: Any, key: str, now: float | None = None, *, filters: Filter
     parts = key.split(":", 2)
     if len(parts) < 3 or parts[0] not in ("tool", "api"):
         return 400, {"error": "Bad error key"}
-    params = _detail_scope(history, filters, now)
+    board = _Board(None, filters, now, history=history).load() if filters is not None and filters.narrowed else None
+    params = _detail_scope(history, filters, now, board)
     if parts[0] == "tool":
         for row in history.read("tools.detail", limit=5000, page=True, requested_tool_name=parts[1], query_mode="errors", **params):
             ts, summary, sid, aid = (row[k] for k in ("ts", "result_summary", "session_id", "agent_id"))
@@ -275,10 +276,14 @@ def error_detail(db: Any, key: str, now: float | None = None, *, filters: Filter
                 if len(found) >= MAX_DETAIL_ROWS:
                     break
     else:
-        if filters is not None and filters.model:
-            params["requested_model"] = filters.model
-        for row in history.read("requests.errors", limit=5000, page=True, restrict_error=True,
-                                requested_error="" if parts[1] == "error" else parts[1], **params):
+        # The chosen model stands for every spelling the tools stored of it: one read for each, newest first.
+        spellings = board.model_spellings() if board is not None and filters is not None and filters.model else [""]
+        rows = sorted((row for model in spellings
+                       for row in history.read("requests.errors", limit=5000, page=True, restrict_error=True,
+                                               requested_error="" if parts[1] == "error" else parts[1],
+                                               **params, **({"requested_model": model} if model else {}))),
+                      key=lambda row: -row["ts"])
+        for row in rows:
             ts, error_type, status, sid, aid = (row[k] for k in ("ts", "error_type", "http_status", "session_id", "agent_id"))
             if _api_error_key(error_type, status) == key:
                 found.append((ts, " ".join(str(p) for p in (error_type, status) if p), sid, aid))

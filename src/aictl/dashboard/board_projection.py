@@ -2650,13 +2650,14 @@ def _previous(board: _Board) -> dict:
     since, until = f.since - span, f.since
     filtered_sessions = f.status != "all" or bool(f.q)
     folded = bool(f.project and PureWindowsPath(project_key(f.project)).drive)
-    # One read per spelling of the chosen model; each read has the same counts row.
-    window = [row for model in board.model_spellings() for row in board.history.read(
-        "board.previous", since=since, until=until, requested_model=model,
+    # Every model of the period is read, and the chosen one is picked by its canonical id below: the
+    # spellings the previous period used may be none the current window used.
+    window = board.history.read(
+        "board.previous", since=since, until=until, requested_model="",
         restrict_tools=f.tools is not None, requested_tools=list(stored_ids_for(f.tools)) if f.tools is not None else [],
         project_path_key=project_key(f.project) if folded else f.project or "", fold_project=folded,
         restrict_sessions=filtered_sessions, session_keys=board.history.keys(board.scope) if filtered_sessions else [],
-    )]
+    )
     calls = 0
     tokens = 0
     cost: float | None = None
@@ -2668,6 +2669,8 @@ def _previous(board: _Board) -> dict:
             tool_calls, prompts = row["tool_calls"], row["prompts"]
             continue
         model, n, i, o, cr, cw, ts, stored = (row[k] for k in fields)
+        if f.model and canonical_model_id(model) != canonical_model_id(f.model):
+            continue
         seen = True
         calls += n
         tokens += i + o + cr + cw

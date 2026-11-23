@@ -15,6 +15,13 @@ let model_key = (m:string) {
     let c = replace_regex(replace_regex(b, @"\[[^\]]*\]$", ""), @"-\d{8}$", "");
     iff(c startswith "claude-", replace_string(c, ".", "-"), c)
 };
+// aictl.data.model_pricing.canonical_model_id: one model, whichever tool spelled its id (Claude Code
+// claude-opus-5-5, GitHub Copilot claude-opus-5.5). Any other id is unchanged.
+let canon = (m:string) {
+    let a = tolower(trim(@"\s+", m));
+    iff(a startswith "claude-", replace_string(a, ".", "-"), m)
+};
+let wanted_model = canon(requested_model);
 let stored = materialize(sessions
     | where (all_nodes or node_id == requested_node) and isnotempty(session_id)
     | summarize arg_max(_v, *) by ['project'],node_id,session_id
@@ -67,7 +74,7 @@ let req = materialize(requests
         by node_id,session_id,model
     | summarize r_calls=sum(calls), r_tokens=sum(tokens), r_stored=sum(stored), r_stored_n=sum(stored_n),
         r_cost=sum(list_cost) + sum(stored), r_priced=sum(stored_n) + sum(list_n), r_errors=sum(errors), r_last=max(last_ts),
-        r_models=make_set_if(model, isnotempty(model), 32),
+        r_models=make_set_if(model, isnotempty(model), 32), r_canon=make_set_if(canon(model), isnotempty(model), 32),
         r_list=make_bag_if(bag_pack(model, pack_array(li, lo, lcr, lcw)), isnotempty(model) and li + lo + lcr + lcw > 0)
         by node_id,session_id);
 let calls = materialize(tool_invocations
@@ -149,8 +156,8 @@ let found = materialize(candidates
             coalesce(u_last, 0.0)),
         live=session_id in (live_sessions) or logical_id in (live_sessions)
     | extend model=coalesce(model, u_model, tostring(models[0])),
-        model_hit=isempty(requested_model) or model == requested_model or u_model == requested_model
-            or set_has_element(models, requested_model),
+        model_hit=isempty(requested_model) or canon(model) == wanted_model or canon(u_model) == wanted_model
+            or set_has_element(iff(isnull(r_canon), dynamic([]), r_canon), wanted_model),
         end_key=coalesce(ended_at, 0.0), has_end=isnotnull(ended_at) and ended_at > 0);
 // The status rules of aictl.session_lifecycle.assess, on the folded session: a bound live process,
 // then an observed end not overtaken by activity, then activity inside the idle window.

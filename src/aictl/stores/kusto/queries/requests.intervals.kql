@@ -1,6 +1,8 @@
 declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', requested_model:string = '', intervals:dynamic, row_limit:long
 );
+// The requests table has a column requested_model, which hides a parameter of that name in its pipeline.
+let wanted_model = requested_model;
 let bounds = materialize(
     print bounds_row=intervals
     | mv-expand bounds_row
@@ -12,7 +14,7 @@ requests
 | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
 | summarize arg_max(_v, *) by ['project'], node_id, fact_key
 | where not(coalesce(column_ifexists('_deleted', false), false))
-| where isempty(requested_model) or model == requested_model
+| where isempty(wanted_model) or model == wanted_model
 | join kind=inner bounds on node_id, session_id
 | where ts >= start_ts and ts < next_ts
 | summarize end_ts=max(ts + duration_ms / 1000.0),

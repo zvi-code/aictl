@@ -6,6 +6,8 @@ import json
 import math
 from urllib.parse import quote, urlencode, urlsplit
 
+from ..data.model_pricing import canonical_model_id
+
 _CATEGORY = {
     "user_message": "messages", "api_response": "messages", "api_call": "models", "error": "models",
     "tool_use": "tools", "subagent": "agents", "subagent_end": "agents", "task_prompt": "agents", "compaction": "context",
@@ -41,7 +43,8 @@ def select_events(events, *, q="", category="", tool_name="", flow_agent="", fai
         if agent:
             agents.add(agent)
         if event.get("model"):
-            models.add(event["model"])
+            # One entry per model, whichever tool spelled its id; the events keep the stored spelling.
+            models.add(canonical_model_id(event["model"]))
         category_match = kind == "user_message" if category == "prompts" else not category or _CATEGORY.get(kind) == category
         if (not category_match or (tool_name and tool != tool_name) or (flow_agent and agent != flow_agent)
                 or (skill_name and (skill or "").casefold() != skill_name.casefold())
@@ -52,8 +55,11 @@ def select_events(events, *, q="", category="", tool_name="", flow_agent="", fai
             continue
         if terms:
             keys = ("message",) if category == "prompts" and allow_text else () if category == "prompts" else (*_META, *(_TEXT if allow_text else ()))
-            values = " ".join(str(event[k]) for k in keys if event.get(k) is not None).casefold()
-            if not all(term in values for term in terms):
+            values = " ".join(str(event[k]) for k in keys if event.get(k) is not None)
+            if "model" in keys and event.get("model"):
+                values += " " + canonical_model_id(event["model"])
+            values = values.casefold()
+            if not all(term in values or canonical_model_id(term) in values for term in terms):
                 continue
         visible.append(event)
     return visible, {"total": len(events), "matched": len(visible),

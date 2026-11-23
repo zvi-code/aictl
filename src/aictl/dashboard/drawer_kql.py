@@ -8,6 +8,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from ..data.model_pricing import canonical_model_id
+
 _VERSION = "_v:datetime _deleted:bool"
 _SESSION = "session_id:string ts:real"
 _SCHEMA = {
@@ -122,6 +124,12 @@ _PRESETS = {
 
 def _literal(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
+
+
+def _canonical_model(column: str) -> str:
+    """The KQL of ``canonical_model_id`` on *column*: tools spell one Claude model with a dash or a dot."""
+    lower = f'tolower(trim(@"\\s+", {column}))'
+    return f'iff({lower} startswith "claude-", replace_string({lower}, ".", "-"), {column})'
 
 
 def _source(table: str, fields: str, node: str | None = None) -> str:
@@ -274,9 +282,10 @@ def _query(preset: _Preset, params: _Params) -> str:
         key = preset.key or ("step_key" if table == "session_steps" else "rowid")
         query += f"\n| summarize arg_max(_v, *) by {key}\n| where not(coalesce(_deleted, false))\n| where isnotempty(sid) and session_id == sid"
     query += params.time(preset.clock or ("StartTime" if table == "OTELTraces" else "ts"))
-    for column, value in ((preset.model, params.model), (preset.tool, params.tool)):
-        if column and value:
-            query += f"\n| where {column} == {_literal(value)}"
+    if preset.model and params.model:
+        query += f"\n| where {_canonical_model(preset.model)} == {_literal(canonical_model_id(params.model))}"
+    if preset.tool and params.tool:
+        query += f"\n| where {preset.tool} == {_literal(params.tool)}"
     return f"let sid = {_literal(params.session)};\n" + (_retained(query, params, preset.retained) if preset.retained else f"{query}\n{preset.body}")
 
 

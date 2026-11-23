@@ -111,3 +111,14 @@ export function modelReportedAs(
   return 'Reported as ' + spellings.map(spelling =>
     spelling.id + (spelling.tools.length ? ` by ${spelling.tools.map(toolLabel).join(', ')}` : '')).join('; ');
 }
+
+/** The one id a model is grouped, filtered and shown under, whichever tool spelled it.
+ *
+ * The same rule as ``canonical_model_id`` in aictl/data/model_pricing.py (test/model_id_cases.json holds
+ * the cases both tests read): a Claude id in any letter case, or with a dot instead of a dash in its
+ * version, is one id; any other id is returned unchanged. */
+export function canonicalModelId(model: string | null | undefined): string {
+  if (!model) return '';
+  const id = model.trim().toLowerCase();
+  return id.startsWith('claude-') ? id.replaceAll('.', '-') : model;
+}

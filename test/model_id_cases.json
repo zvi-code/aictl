@@ -1,0 +1,19 @@
+{
+  "_comment": "Read by test/test_model_pricing.py (canonical_model_id) and src/aictl/dashboard/ui/test/board_models.test.ts (canonicalModelId): the two implementations are one rule.",
+  "cases": [
+    {"reported": "claude-opus-5-5", "canonical": "claude-opus-5-5"},
+    {"reported": "claude-opus-5.5", "canonical": "claude-opus-5-5"},
+    {"reported": "Claude-Sonnet-4.6", "canonical": "claude-sonnet-4-6"},
+    {"reported": " claude-haiku-4.5 ", "canonical": "claude-haiku-4-5"},
+    {"reported": "claude-opus-5", "canonical": "claude-opus-5"},
+    {"reported": "claude-opus-5-5-20261001", "canonical": "claude-opus-5-5-20261001"},
+    {"reported": "claude-opus-5-5[1m]", "canonical": "claude-opus-5-5[1m]"},
+    {"reported": "claude-opus-5.5[1m]", "canonical": "claude-opus-5-5[1m]"},
+    {"reported": "us.anthropic.claude-opus-5-5-v1:0", "canonical": "us.anthropic.claude-opus-5-5-v1:0"},
+    {"reported": "claude-sonnet-5-preview", "canonical": "claude-sonnet-5-preview"},
+    {"reported": "gpt-5.5", "canonical": "gpt-5.5"},
+    {"reported": "gemini-3.8-flash", "canonical": "gemini-3.8-flash"},
+    {"reported": "Acme-Model.2", "canonical": "Acme-Model.2"},
+    {"reported": "", "canonical": ""}
+  ]
+}
