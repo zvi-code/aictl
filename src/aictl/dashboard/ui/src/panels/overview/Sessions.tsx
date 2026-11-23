@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js'
 import type { DetailSessions } from '../../data/contract.gen'
 import { writeUrl } from '../../data/urlState'
+import { fmtN } from '../../design/format'
 import { detailPath, detailRead, scopeConfirmed } from '../data'
 import { keyedRows } from '../kinds/model'
 import { RowTable } from '../kinds/Rows'
@@ -135,7 +136,7 @@ export default function Sessions(props: PanelProps) {
           title={item().status ? `Show only sessions that are ${STATUS_LABELS[item().status as Exclude<FinderStatus, ''>].toLowerCase()}`
             : 'Show sessions of every status'}
           onClick={() => change({ status: state().status === item().status ? '' : item().status })}>
-          <strong>{counted(item().count)}</strong> {item().label}
+          <strong>{fmtN(item().count)}</strong> {item().label}
         </button>
       </>}</For>
     </div>

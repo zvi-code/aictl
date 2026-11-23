@@ -123,6 +123,8 @@ describe('row states', () => {
   it('lists the summary counts as status filters', () => {
     expect(summaryItems({ sessions: 9, running: 2, ended: 3, inferred: 1, importing: 1, not_imported: 2 }).map(item =>
       [item.status, item.count])).toEqual([['', 9], ['running', 2], ['importing', 1], ['not_imported', 2]])
-    expect(summaryItems(undefined)[0].count).toBeUndefined()
+    // Before the first answer no count chip is drawn, rather than "… sessions · … live now".
+    expect(summaryItems(undefined)).toEqual([])
+    expect(summaryItems({ sessions: 4 } as never).map(item => item.label)).toEqual(['sessions'])
   })
 })

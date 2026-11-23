@@ -235,12 +235,12 @@ export function rowState(row: Pick<FinderRow, 'status' | 'import_state' | 'impor
   return { status, label, history, opens, ...(opens ? {} : { reason: row.closed_reason ?? 'This session cannot be opened.' }) }
 }
 
-/** The counts above the list; each one is a status filter. */
-export function summaryItems(facets: FinderPage['facets'] | undefined): { status: FinderStatus; label: string; count?: number }[] {
-  return [
+/** The counts above the list; each one is a status filter. A count the answer does not carry yet is not drawn. */
+export function summaryItems(facets: FinderPage['facets'] | undefined): { status: FinderStatus; label: string; count: number }[] {
+  return ([
     { status: '', label: 'sessions', count: facets?.sessions },
     { status: 'running', label: 'live now', count: facets?.running },
     { status: 'importing', label: 'still importing', count: facets?.importing },
     { status: 'not_imported', label: 'not imported yet', count: facets?.not_imported },
-  ]
+  ] as { status: FinderStatus; label: string; count?: number }[]).flatMap(item => typeof item.count === 'number' ? [{ ...item, count: item.count }] : [])
 }
