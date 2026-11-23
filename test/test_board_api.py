@@ -1510,9 +1510,7 @@ class TestTestClassification:
             "uv run pytest",
             "pytest | tail -5",
             "$PY -m pytest test/ -q",
-            "for t in a b; do cargo test $t; done",
             'V=$(mktemp -d) && python -m pytest -q',
-            "if true; then npm test; fi",
             "python3 -m unittest discover -s test",
             "timeout 300 cargo test -p core",
             "gtimeout -k 5 1.5m pytest -q",
@@ -1540,6 +1538,16 @@ class TestTestClassification:
             "cat >> tools/tests/test_a.py <<'EOF'",
             "timeout 30 sleep 5",
             "grep unittest setup.py",
+            # The program a command runs first decides (drawer/shellCommand.ts programOf); found on real data,
+            # where these were listed as test runs.
+            "sed -i '' 's/a/b/' src/x.py && PYTHONPATH=src python -m pytest test/test_x.py -q",
+            "SP=/tmp/s; cat $SP/rerecord.txt; PYTHONPATH=src pytest -q",
+            "rm -rf /tmp/head && mkdir -p /tmp/head && pytest -q",
+            "python -m ruff check --fix test/x.py | tail -1 && (cd ui && npm test)",
+            "python3 - <<'EOF'\np='test/test_x.py'\nprint('pytest -q')\nEOF",
+            # A loop header or a condition is not a program name: the program is unknown, not guessed.
+            "for t in a b; do cargo test $t; done",
+            "if true; then npm test; fi",
         ],
     )
     def test_not_runner(self, command):

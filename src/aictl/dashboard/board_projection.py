@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import bisect
-import functools
 import json
 import logging
 import math
@@ -63,6 +62,7 @@ from .projections.history import (
     project_usage,
 )
 from .runtime_health import _self_section
+from .shell_program import is_test_run
 from .skill_inventory import _skill_file
 
 logger = logging.getLogger(__name__)
@@ -221,95 +221,16 @@ _COMMAND_TOOL_RE = re.compile(r"(?i)bash|shell|terminal|powershell|exec_?command
 _EDIT_TOOL_RE = re.compile(r"(?i)edit|write|patch|replace|create_?file|insert")
 
 
-_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-
-_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n]")
-
-
-_WRAPPERS = {"time", "sudo", "env", "command", "npx", "bunx", "exec", "nice", "do", "then", "else", "{"}
-
-
-_ASSIGN_FROM_COMMAND_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=\$\([^)]*\)")
-
-
 _PIPED_TO_FILTER_RE = re.compile(r"\|\s*(?:tail|head|grep|tee|sed|awk|cut|sort|uniq|wc|less|cat)\b")
 
 
-_RUNNER_WRAPPERS = {("uv", "run"), ("poetry", "run"), ("pipenv", "run"), ("pnpm", "exec"), ("yarn", "exec"), ("pdm", "run")}
-
-
-# unittest is only reached as python -m unittest.
-_TEST_ONE_WORD = {"pytest", "vitest", "jest", "tox", "ctest", "unittest"}
-
-
-# Wrappers that take a duration before the command: timeout 300 cargo test.
-_TIMEOUT_WRAPPERS = {"timeout", "gtimeout"}
-
-
-_DURATION_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
-
-
-_TEST_TWO_WORDS = {
-    ("npm", "test"),
-    ("pnpm", "test"),
-    ("yarn", "test"),
-    ("go", "test"),
-    ("cargo", "test"),
-    ("make", "test"),
-    ("dotnet", "test"),
-    ("mvn", "test"),
-    ("gradle", "test"),
-    ("gradlew", "test"),
-}
-
-
-@functools.lru_cache(maxsize=65536)
-def _program(word: str) -> str:
-    """A command word without its directory or a Windows launcher extension."""
-    name = re.split(r"[\\/]", word)[-1].lower()
-    return re.sub(r"\.(exe|cmd|bat)$", "", name)
-
-
-@functools.lru_cache(maxsize=65536)
 def is_test_command(target: str | None) -> bool:
-    """True when a segment of a shell command starts a known test runner.
+    """True when the program the command runs first is a test runner (shell_program.is_test_run).
 
-    ``grep pytest log`` and ``cat pytest.ini`` mention a runner without running it.
-    The answer is kept per command: the board asks about every call of a day on every
-    read, and this took two thirds of a read.
+    The board, the session detail and the UI read a command by the same rule (drawer/shellCommand.ts):
+    ``sed ... && pytest`` first runs sed; ``grep pytest log`` and ``cat pytest.ini`` run no runner.
     """
-    if not target:
-        return False
-    for segment in _SEGMENT_SPLIT_RE.split(_ASSIGN_FROM_COMMAND_RE.sub(" ", target)):
-        # A line continuation leaves a backslash on the last word of the line.
-        words = [w for w in (word.rstrip("\\") for word in segment.replace("(", " ").split()) if w]
-        while words and (_ENV_ASSIGN_RE.match(words[0]) or _program(words[0]) in _WRAPPERS or _program(words[0]) in _TIMEOUT_WRAPPERS):
-            if _program(words[0]) in _TIMEOUT_WRAPPERS:
-                words.pop(0)
-                while words and words[0].startswith("-"):
-                    # -k and -s take a value: timeout -k 5 1m cmd.
-                    takes_value = words[0] in ("-k", "-s", "--kill-after", "--signal")
-                    words.pop(0)
-                    if takes_value and words:
-                        words.pop(0)
-                if words and _DURATION_RE.match(words[0]):
-                    words.pop(0)
-                continue
-            words.pop(0)
-        if len(words) >= 2 and (_program(words[0]), words[1]) in _RUNNER_WRAPPERS:
-            words = words[2:]
-        # A variable that holds an interpreter: $PY -m pytest.
-        if len(words) >= 3 and (_program(words[0]).startswith("python") or words[0].startswith("$")) and words[1] == "-m":
-            words = words[2:]
-        if not words:
-            continue
-        first = _program(words[0])
-        if first in _TEST_ONE_WORD:
-            return True
-        if len(words) >= 2 and (first, words[1]) in _TEST_TWO_WORDS:
-            return True
-    return False
+    return is_test_run(target)
 
 
 def is_command_tool(name: str | None) -> bool:
