@@ -1,6 +1,7 @@
 import { createMemo } from 'solid-js'
 import type { DetailContext } from '../../data/contract.gen'
 import { at, detailPath, detailRead, scopeConfirmed } from '../data'
+import { fmtNum } from '../../design/format'
 import type { PanelContext, Read, Row } from '../types'
 
 type Split = { always: number; on_demand: number; conditional: number }
@@ -11,7 +12,29 @@ export function loadSplit(split: Split, format: (value: number) => string) {
   return parts.length ? parts.map(([key, label]) => `${format(split[key])} ${label}`).join(' · ') : 'no tokens'
 }
 
-export const loadLabel = (load: unknown) => loads.find(([key]) => key === load)?.[1]
+type Excluded = { kind: string; policy: 'no' | 'unknown'; files: number }
+/** The files tools keep that are not model context, as one line of counts by kind, largest first. */
+export function excludedSummary(sets: readonly { excluded?: readonly Excluded[] }[]) {
+  const kinds = new Map<string, number>()
+  for (const set of sets) for (const row of set.excluded ?? []) {
+    const key = row.policy === 'unknown' ? `${row.kind} (loading not known)` : row.kind
+    kinds.set(key, (kinds.get(key) ?? 0) + row.files)
+  }
+  const ranked = [...kinds].sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+  return { files: ranked.reduce((sum, [, files]) => sum + files, 0), kinds: ranked.map(([kind, files]) => ({ kind, files })) }
+}
+
+/** One line for the tools whose context list is cut to the largest files. */
+export function truncationNote(sets: readonly { tool: string; count: number; files: readonly unknown[]; truncated: boolean; node_id?: string }[],
+  name: (tool: string) => string) {
+  const cut = sets.filter(set => set.truncated)
+  if (!cut.length) return
+  const limit = Math.max(...cut.map(set => set.files.length))
+  return `Each tool lists its ${fmtNum(limit)} largest context files; ${cut.map(set =>
+    `${name(set.tool)}${set.node_id ? ` (${set.node_id})` : ''} has ${fmtNum(set.count)}`).join(', ')}.`
+}
+
+export const loadLabel =(load: unknown) => loads.find(([key]) => key === load)?.[1]
 
 /** A row that names a file opens the file's drawer; the drawer itself says what this scope can show. */
 export function openFile(ctx: Pick<PanelContext, 'openDetail'>, row: Row, path = 'path') {

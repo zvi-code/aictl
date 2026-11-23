@@ -28,13 +28,12 @@ const ram = history('mem')
 const timeChart = (description: string, stack = false) => ({ x: buckets, description, time: true, select: true, stack })
 
 export const overviewB: readonly PanelDef[] = [
-  // The inventory needs grouped rows, folding and a scope-aware file preview.
+  // The files each tool can load into the model, a summary and a folded count of the files that are not context.
   { ...base, id: 'inventory', title: 'Files each tool reads', kind: 'custom',
-    sources: [{ field: 'agents' }, { field: 'tool_labels' }], empty: 'No files found for these tools.',
-    columns: [field('name', 'File'), field('tool', 'Tool'), field('kind', 'Kind'), field('scope', 'Scope'),
-      metric('size', 'files.item.size', 'Size'), metric('tokens', 'files.item.tokens', 'Tokens'),
-      metric('sent_to_llm', 'files.item.sent_to_llm', 'Sent to model'), field('loaded_when', 'Loaded when'),
-      stamp('mtime', 'Changed'), field('session_count', 'Sessions'), field('editor', 'Last editor')],
+    sources: [{ field: 'tool_labels' }], empty: 'No tool reported a file it loads into the model.',
+    columns: [field('name', 'File'), field('tool', 'Tool'), field('kind', 'Kind'), field('project', 'Project'),
+      metric('tokens', 'files.item.tokens', 'Tokens'), field('load', 'Loaded'), field('loaded_when', 'Loaded when'),
+      stamp('mtime', 'Changed'), field('session_count', 'Live sessions')],
     load: () => import('./b/Context').then(m => ({ default: m.Inventory })) },
   // Lifetime totals need expandable per-tool model and error tables.
   { ...base, id: 'lifetime', title: 'Lifetime totals', kind: 'custom',

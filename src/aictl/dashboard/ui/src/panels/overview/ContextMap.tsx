@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { ContextLocal } from '../../data/contract.gen'
-import { fmtN } from '../../design/format'
+import { fmtNum } from '../../design/format'
 import { keyedRows, presentation } from '../kinds/model'
 import { RowTable } from '../kinds/Rows'
 import { States } from '../kinds/States'
@@ -31,7 +31,7 @@ export default function ContextMap(props: PanelProps) {
       <p class={css.note}>Estimated tokens in the files tools can load into the model, not observed session load. Bar length uses a log scale.</p>
       <For each={groups()} keyed={row => row.key}>{row =>
         <div class={css.group}>
-          <div>{row().key} · {format(row().tokens)} tokens · {row().files == null ? missing : fmtN(row().files)} files</div>
+          <div>{row().key} · {format(row().tokens)} tokens · {row().files == null ? missing : fmtNum(row().files)} files</div>
           <Show when={row().tokens !== null && maximum() > 0}>
             <div class={css.mapTrack} aria-hidden="true">
               <span class={css.mapBar} style={{ 'inline-size': `${logWidth(row().tokens!, maximum())}%` }}>

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { loadLabel, loadSplit, openFile } from '../../../src/panels/overview/contextData'
+import { excludedSummary, loadLabel, loadSplit, openFile, truncationNote } from '../../../src/panels/overview/contextData'
 import { budgetNote, budgetSays } from '../../../src/panels/overview/contextOptions'
 
 const plain = (value: number) => String(value)
@@ -26,6 +26,29 @@ describe('a file row opens the file drawer in every scope', () => {
     action.run()
     expect(openDetail).toHaveBeenCalledWith({ type: 'file', path: 'C:\\r\\web\\CLAUDE.md', line: 1 })
     expect(openFile({ openDetail }, { name: 'x' })).toBeUndefined()
+  })
+})
+
+describe('Files each tool reads lists context and folds the rest into one line', () => {
+  it('sums the files that are not context by kind over tools and nodes, largest first', () => {
+    // Found on Windows: 54,504 file records in folded groups named cache, credentials, database, hidden, logs, transcript.
+    const sets = [
+      { excluded: [{ kind: 'transcript', policy: 'no' as const, files: 40_000 }, { kind: 'hidden', policy: 'unknown' as const, files: 3 }] },
+      { excluded: [{ kind: 'transcript', policy: 'no' as const, files: 9_000 }, { kind: 'database', policy: 'no' as const, files: 2 }] },
+      {},
+    ]
+    expect(excludedSummary(sets)).toEqual({ files: 49_005, kinds: [
+      { kind: 'transcript', files: 49_000 }, { kind: 'hidden (loading not known)', files: 3 }, { kind: 'database', files: 2 }] })
+  })
+
+  it('says in one line which tools have more context files than are listed', () => {
+    // Found on Windows: "Copilot CLI (node) reports 11,011 files. The largest 400 are listed." nine times.
+    const set = (tool: string, count: number, truncated: boolean, node_id?: string) =>
+      ({ tool, count, truncated, node_id, files: Array.from({ length: truncated ? 400 : count }) })
+    const name = (tool: string) => ({ 'copilot-cli': 'Copilot CLI' })[tool] ?? tool
+    expect(truncationNote([set('copilot-cli', 1200, true, 'win-a'), set('copilot-cli', 900, true, 'win-b'), set('codex', 5, false)], name))
+      .toBe('Each tool lists its 400 largest context files; Copilot CLI (win-a) has 1,200, Copilot CLI (win-b) has 900.')
+    expect(truncationNote([set('codex', 5, false)], name)).toBeUndefined()
   })
 })
 

@@ -1,14 +1,13 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { ContextLocal, DetailContext } from '../../../data/contract.gen'
-import { createResourceCache } from '../../../data/resource'
-import { CodeView } from '../../../ui/CodeView'
-import { Segmented } from '../../../ui/Segmented'
+import { fmtNum } from '../../../design/format'
 import { isToolSelected } from '../../../data/toolScope'
 import { PanelState } from '../../../ui/PanelState'
 import type { PanelProps, Row } from '../../types'
-import { Bars, measured, StatStrip, usable } from '../Summary'
+import { StatStrip, usable } from '../Summary'
 import { field, metric } from '../b'
-import { DataTable, detailRead, identity, rowsFrom, scopedPath, scopeMatches, styles, text, toolName, useCached, View } from './View'
+import { excludedSummary, loadLabel, openFile, truncationNote } from '../contextData'
+import { DataTable, detailRead, displayField, identity, rowsFrom, scopedPath, scopeMatches, styles, toolName, View } from './View'
 
 function useContext(ctx: PanelProps['ctx'], field: 'files' | 'telemetry') {
   const resource = ctx.detail<DetailContext>(() => {
@@ -41,105 +40,41 @@ function useContext(ctx: PanelProps['ctx'], field: 'files' | 'telemetry') {
   return { bundles, result }
 }
 
-const previewCache = createResourceCache<string, string>({
-  load: async (path, signal, fetch) => {
-    const response = await fetch(path, { signal })
-    if (!response.ok) throw new Error(`Could not read the file (HTTP ${response.status}).`)
-    return response.text()
-  },
-})
-
-function Preview(props: { ctx: PanelProps['ctx']; row: Row; close: () => void }) {
-  const path = () => text(props.row.path)
-  const local = () => props.ctx.scope() === 'local'
-  const content = useCached(previewCache,
-    () => local() && path() ? `/api/file?${new URLSearchParams({ path: path()! })}` : undefined, () => props.ctx.revision())
-  return <section class={styles.stack} aria-label="File preview">
-    <p class={styles.previewPath}>{path()}</p>
-    <div class={styles.actions}>
-      <button type="button" onClick={() => {
-        const file = path()
-        if (file) props.ctx.openDetail({ type: 'file', path: file, record: text(props.row.record) })
-      }}>Open at source</button>
-      <button type="button" onClick={() => props.close()}>Close preview</button>
-    </div>
-    <Show when={local()} fallback={<PanelState state="unavailable" message="Local file contents are not available from this source." />}>
-      <View result={() => detailRead(content(), content()?.data, props.ctx.paused())} retry={props.ctx.refresh} reserveStaleSpace={false}>
-        <CodeView label="File contents" text={content()?.data ?? ''} wrap />
-      </View>
-    </Show>
-  </section>
-}
-
 export function Inventory(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const { bundles, result } = useContext(ctx, 'files')
-  const [group, setGroup] = createSignal('kind')
-  const [selected, setSelected] = createSignal<string>()
   const inventories = createMemo(() => (bundles() ?? []).flatMap(({ node, node_id }) => (node.files ?? [])
     .filter(tool => isToolSelected(tool.tool, ctx.tools())).map(tool => ({ ...tool, node_id }))))
-  const agents = createMemo(() => new Map((ctx.board('agents') ?? []).flatMap(agent =>
-    [agent.id, agent.session_id].flatMap(id => id ? [[id, agent.title] as const] : []))))
-  const rows = createMemo(() => rowsFrom(inventories().flatMap(tool => (tool.files ?? []).map(file => {
-    const editor = text(file.changed_by)
-    return { ...file, tool: file.tool ?? tool.tool, node_id: file.node_id ?? tool.node_id,
-      session_count: Array.isArray(file.sessions) ? file.sessions.length : undefined,
-      editor: editor && (agents().get(editor) ?? editor) } as Row
-  })), row => identity(row.node_id, row.tool, row.path)))
-  const groups = createMemo(() => {
-    const out = new Map<string, typeof rows extends () => infer L ? L : never>()
-    for (const entry of rows()) {
-      const value = text(entry.row[group()])
-      const name = value ? (group() === 'tool' ? toolName(ctx, value) : value) : 'Not available from this source'
-      const list = out.get(name)
-      if (list) list.push(entry)
-      else out.set(name, [entry])
-    }
-    return [...out.entries()].sort(([a], [b]) => a.localeCompare(b))
-  })
-  const active = createMemo(() => rows().find(entry => entry.id === selected())?.row)
-  const action = {
-    label: ({ row }: { row: Row }) => `Preview ${text(row.name) ?? row.path}`,
-    run: ({ id }: { id: string }) => setSelected(value => value === id ? undefined : id),
-  }
-  const counts = createMemo(() => {
-    if (!usable(result()) || !bundles()) return
-    const tools = new Map<string, number | undefined>()
-    for (const { tool, count } of inventories()) {
-      const previous = tools.has(tool) ? tools.get(tool) : 0
-      tools.set(tool, previous == null || measured(count) == null ? undefined : previous + count)
-    }
-    return [...tools]
-  })
-  const ranked = createMemo(() => counts()?.flatMap(([id, value]) => value == null ? [] : [{ id, label: toolName(ctx, id), value }])
-    .sort((a, b) => b.value - a.value || a.id.localeCompare(b.id)))
-  const total = createMemo(() => counts()?.reduce<number | undefined>((sum, [, count]) =>
-    sum == null || count == null ? undefined : sum + count, 0))
+  const categories = createMemo(() => (bundles() ?? []).flatMap(({ node }) => (node.categories ?? [])
+    .filter(tool => isToolSelected(tool.tool, ctx.tools()))))
+  const rows = createMemo(() => rowsFrom(inventories().flatMap(tool => (tool.files ?? []).map(file => ({
+    ...file, tool: toolName(ctx, String(file.tool ?? tool.tool)), node_id: file.node_id ?? tool.node_id, load: loadLabel(file.load),
+    session_count: Array.isArray(file.sessions) ? file.sessions.length : undefined,
+  } as Row))), row => identity(row.node_id, row.tool, row.path)))
+  const excluded = createMemo(() => excludedSummary(inventories()))
+  const tokens = (value: number | undefined) => value == null ? undefined : displayField(ctx, metric('tokens', 'files.item.tokens')).format(value)
+  const total = (key: 'tokens' | 'always') => usable(result()) && bundles()
+    ? categories().reduce((sum, tool) => sum + tool[key], 0) : undefined
   return <div class={styles.stack}>
-    <StatStrip label="File inventory summary" items={[
-      { label: 'Reported file records', value: total() },
-      { label: 'Listed file records', value: counts() ? rows().length : undefined },
+    <StatStrip label="Context file summary" items={[
+      { label: 'Files tools can load into the model', value: usable(result()) && bundles()
+        ? inventories().reduce((sum, tool) => sum + tool.count, 0) : undefined },
+      { label: 'Their estimated tokens', value: tokens(total('tokens')) },
+      { label: 'Loaded with every call', value: tokens(total('always')) },
     ]} />
-    <Bars label="Top tools by reported files" items={counts()?.length && !ranked()?.length ? undefined : ranked()} />
     <View result={() => result().state === 'ready' && !rows().length ? { state: 'empty' } : result()} retry={ctx.refresh} empty={def.empty}>
-    <Segmented label="Group files by" value={group()} onChange={setGroup} options={[
-      { id: 'kind', label: 'Kind' }, { id: 'tool', label: 'Tool' }, { id: 'none', label: 'No groups' },
-    ]} />
-    <Show when={ctx.scope() !== 'local'}><p class={styles.note}>Recorded file metadata. Local contents are not available.</p></Show>
-    <For each={inventories().filter(tool => tool.truncated)}>{tool =>
-      <p class={styles.note}>{toolName(ctx, tool.tool)}{tool.node_id ? ` (${tool.node_id})` : ''} reports {tool.count.toLocaleString()} files. The largest {tool.files.length.toLocaleString()} are listed.</p>}
-    </For>
-    <Show when={active()}>{row => <Preview ctx={ctx} row={row()} close={() => setSelected(undefined)} />}</Show>
-    <Show when={group() === 'none'} fallback={<For each={groups()} keyed={group => group[0]}>{group =>
-      <details>
-        <summary>{group()[0]} ({group()[1].length} files)</summary>
-        <Show when={(group()[1]).length}><DataTable ctx={ctx} label={`${def.title}: ${group()[0]}`}
-          columns={def.columns} rows={group()[1]} action={action} /></Show>
-      </details>}
-    </For>}>
-      <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} action={action} />
-    </Show>
+      <Show when={truncationNote(inventories(), tool => toolName(ctx, tool))}>{note => <p class={styles.note}>{note()}</p>}</Show>
+      <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} action={{
+        label: ({ row }) => openFile(ctx, row)?.label ?? '',
+        run: ({ row }) => openFile(ctx, row)?.run(),
+      }} />
     </View>
+    <Show when={excluded().files > 0}>
+      <details>
+        <summary>Not model context: {fmtNum(excluded().files)} files</summary>
+        <p class={styles.note}>{excluded().kinds.map(({ kind, files }) => `${kind} ${fmtNum(files)}`).join(' · ')}</p>
+      </details>
+    </Show>
   </div>
 }
 
