@@ -94,6 +94,10 @@ _VIEWS = {
         f"{_SCOPE} requested_session requested_agent since until",
         "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd",
     ),
+    "requests.loop_models": (
+        "all_nodes requested_node spans",
+        "span_index model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd",
+    ),
     "usage.sessions": (
         f"{_SCOPE} since until requested_session without_requests session_keys",
         "node_id session_id tool project_path model models_json daily_json input_tokens output_tokens cache_read_tokens "
@@ -144,6 +148,9 @@ _VIEWS = {
     "tools.activity_rows": (
         f"{_TIME} requested_session kind_filter session_keys after_row",
         f"{_BOARD_ID} ts tool_name target is_error exit_code duration_ms confirm confirm_wait_ms result_summary input_signature",
+    ),
+    "tools.confirm_counts": (
+        f"{_TIME} requested_session session_keys", "node_id session_id tool_name confirm calls wait_count waits",
     ),
     "board.previous": (
         f"{_TIME} requested_model project_path_key fold_project restrict_tools requested_tools restrict_sessions session_keys",
@@ -394,6 +401,15 @@ def _parameter(name: str, value: Any) -> str:
         isinstance(k, str) and isinstance(v, str) for k, v in value.items()
     ):
         return f"dynamic({json.dumps(dict(value))})"
+    if name == "spans":
+        if isinstance(value, (tuple, list)) and all(
+            isinstance(item, (tuple, list)) and len(item) == 5 and
+            all(isinstance(s, str) for s in item[:3]) and
+            all(type(t) in (float, int) and math.isfinite(t) for t in item[3:])
+            for item in value
+        ):
+            return f"dynamic({json.dumps(value)})"
+        raise ValueError("spans must contain a node, session, agent and two finite timestamps")
     if name == "intervals":
         if isinstance(value, (tuple, list)) and all(
             isinstance(item, (tuple, list)) and len(item) == 4 and

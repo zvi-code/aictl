@@ -900,6 +900,23 @@ class TestSections:
         assert by_tool["Bash"]["median_wait_s"] == 2.0
         assert by_tool["Edit"]["median_wait_s"] is None
 
+    def test_confirmations_are_counted_in_the_cluster_and_only_pending_calls_come_as_rows(self, db, monkeypatch):
+        """Found on real data: 170,661 calls with a confirmation value and their text were read only to count them."""
+        reader = db.history_store.reader
+        read = reader.read
+        seen = []
+
+        def logged(view, params):
+            seen.append((view, params.get("kind_filter")))
+            return read(view, params)
+
+        monkeypatch.setattr(reader, "read", logged)
+        c = _board(db)["confirms"]
+        assert ("tools.confirm_counts", None) in seen
+        assert ("tools.activity_rows", "pending") in seen
+        assert ("tools.activity_rows", "confirms") not in seen
+        assert [p["name"] for p in c["pending"]] == ["Write"]
+
     def test_confirmations_and_the_calls_without_one_add_up_to_the_tool_calls(self, db):
         """Found on real data: 5,996 auto + 12 blocked against 6,597 calls, with the gap unexplained."""
         payload = _board(db)
@@ -1509,6 +1526,27 @@ class TestLoopRule:
         loop = next(row for row in payload["loops"] if row["agent_id"] == "mix/m-1")
         assert loop["tokens"] == 42, "the subagent's model call inside the loop, not its main agent's"
         assert loop["status"] is not None and loop["status"] == _agent(payload, "mix/m-1")["status"]
+
+    def test_the_loop_rows_read_the_requests_of_every_loop_in_one_read(self, db, monkeypatch):
+        """Found on real data: 13 loops read their requests one after another, 26 s of a 104 s board."""
+        conn = db
+        ts = NOW - 3 * DAY
+        for k in range(3):
+            _call(conn, ts + k * 2, "mix", "claude-code", "/p/alpha", "Bash", "a", is_error=1, aid="m-1")
+        _request(conn, ts + 3, "mix", "claude-code", "/p/alpha", SONNET, i=40, o=2, aid="m-1")
+        _request(conn, NOW - 120 + 11, "looper", "claude-code", "/p/alpha", SONNET, i=7, o=1)
+        reader = db.history_store.reader
+        read = reader.read
+        seen = []
+
+        def logged(view, params):
+            seen.append(view)
+            return read(view, params)
+
+        monkeypatch.setattr(reader, "read", logged)
+        loops = {row["agent_id"]: row["tokens"] for row in _board(db)["loops"]}
+        assert loops["mix/m-1"] == 42 and loops["looper"] == 8
+        assert seen.count("requests.loop_models") == 1 and "requests.models" not in seen
 
     def test_ended_session_with_loop_at_end_does_not_loop(self, db):
         conn = db

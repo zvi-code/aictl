@@ -3,6 +3,12 @@ declare query_parameters(
     requested_session:string = '', kind_filter:string, session_keys:dynamic = dynamic([]), after_row:string='', row_limit:long
 );
 let cursor_row = parse_json(after_row);
+// Each kind returns only the text its reader uses: the result summary for failures, the input
+// signature for loops. The other kinds return those columns empty. The loop finder compares the
+// target and input of failing calls only, so loops return them for failing calls and leave them
+// empty for the others.
+let wants_summary = kind_filter == 'failures';
+let wants_input = kind_filter == 'loops';
 let raw_calls = () { tool_invocations
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
@@ -12,12 +18,27 @@ let eligible = (t:real, n:string, s:string, name:string, error:long, confirmatio
     and (isempty(requested_session) or s == requested_session)
     and (array_length(session_keys) == 0 or strcat(strlen(n), ':', n, s) in (session_keys))
     and case(kind_filter == 'confirms', isnotempty(confirmation),
+             kind_filter == 'pending', confirmation == 'pending',
              kind_filter == 'failures', error == 1 and not(name startswith_cs 'permission:'),
              kind_filter == 'loops', not(name startswith_cs 'permission:'),
              kind_filter == 'tests')
 };
+let retained = () { union isfuzzy=true
+    (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, input:string, result_summary:string, target:string, _deleted:bool)[]),
+    (tool_invocations_text | project ['project'], node_id, dedup_key, _v, input, result_summary, target,
+                                    _deleted=column_ifexists('_deleted', false))
+    | where all_nodes or node_id == requested_node
+};
+// A test run has a test-like target in some version, in the call or in its retained text.
+let text_tests = retained() | where kind_filter == 'tests' and (target contains 'test' or target contains 'jest' or target contains 'tox')
+    | distinct dedup_key;
 // Select possible keys, then apply the same filters to the winning versions.
-let keys = raw_calls() | where eligible(ts,node_id,session_id,tool_name,is_error,confirm) | distinct fact_key;
+let keys = raw_calls()
+    | where eligible(ts,node_id,session_id,tool_name,is_error,confirm)
+    | extend inline_target=column_ifexists('target', '')
+    | where kind_filter != 'tests' or inline_target contains 'test' or inline_target contains 'jest'
+        or inline_target contains 'tox' or fact_key in (text_tests)
+    | distinct fact_key;
 let calls = materialize(raw_calls()
     | where fact_key in (keys)
     | extend deleted=column_ifexists('_deleted', false), target=column_ifexists('target', '')
@@ -27,13 +48,8 @@ let calls = materialize(raw_calls()
     | where not(coalesce(deleted, false)) and eligible(ts,node_id,session_id,tool_name,is_error,confirm)
     | project-away deleted
 );
-let retained = () { union isfuzzy=true
-    (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, input:string, result_summary:string, target:string, _deleted:bool)[]),
-    (tool_invocations_text | project ['project'], node_id, dedup_key, _v, input, result_summary, target,
-                                    _deleted=column_ifexists('_deleted', false))
-    | where (all_nodes or node_id == requested_node) and dedup_key in (calls | project dedup_key)
-};
-let test_targets = retained()
+let call_text = () { retained() | where dedup_key in (calls | project dedup_key) };
+let test_targets = call_text()
     | where kind_filter == 'tests'
     | extend has_target=isnotempty(target), is_test=target contains 'test' or target contains 'jest' or target contains 'tox'
     | summarize arg_max(_v, _deleted, has_target, is_test) by ['project'], node_id, dedup_key
@@ -52,13 +68,19 @@ let page = materialize(calls
     | sort by ts asc,node_id asc,id asc nulls first,fact_key asc,['project'] asc
     | take row_limit
     | project-away has_target, is_test, inline_test, dedup_key);
+let text_keys = page
+    | where not(wants_input) or coalesce(is_error, 0) != 0 or (isnotnull(exit_code) and exit_code != 0)
+    | project fact_key;
 let inline_text = raw_calls()
-    | where fact_key in (page | project fact_key)
+    | where fact_key in (text_keys)
     | project ['project'], node_id, fact_key, _v, target=column_ifexists('target', ''),
-              result_summary=column_ifexists('result_summary', ''), input=column_ifexists('input', '')
+              result_summary=iff(wants_summary, column_ifexists('result_summary', ''), ''),
+              input=iff(wants_input, column_ifexists('input', ''), '')
     | summarize take_any(target, result_summary, input) by ['project'], node_id, fact_key, _v;
-let text_rows = retained()
-    | where dedup_key in (page | project fact_key)
+let text_rows = call_text()
+    | where dedup_key in (text_keys)
+    | project ['project'], node_id, dedup_key, _v, _deleted, target,
+              input=iff(wants_input, input, ''), result_summary=iff(wants_summary, result_summary, '')
     | summarize arg_max(_v, _deleted, input, result_summary, target) by ['project'], node_id, dedup_key
     | where not(coalesce(_deleted, false))
     | project ['project'], node_id, fact_key=dedup_key,

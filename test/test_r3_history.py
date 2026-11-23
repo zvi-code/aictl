@@ -109,6 +109,47 @@ def test_sequence_and_tool_pages_prune_keys_without_resurrecting_old_versions(ku
     assert not tools.truncated and [row["result_summary"] for row in tools.rows] == ["kept"]
 
 
+def test_confirmation_counts_take_each_call_once_by_its_winning_version(kusto_store):
+    seed = kusto_store.insert
+    reader = kusto_store.history_store.reader
+    for key, confirm, wait in (("a", "approved", 300.0), ("b", "approved", 100.0), ("c", "approved", 0.0),
+                               ("d", "denied", 50.0), ("e", "auto", 70.0), ("f", "pending", 20.0)):
+        seed("tool_invocations", dedup_key=key, ts=100, session_id="s", tool_name="Bash", confirm=confirm,
+             confirm_wait_ms=wait)
+    # A newer version decides: pending became denied; a call that moved out of the window and a deleted call drop out.
+    seed("tool_invocations", dedup_key="f", ts=100, session_id="s", tool_name="Bash", confirm="denied",
+         confirm_wait_ms=900.0, _v="2026-01-02")
+    seed("tool_invocations", dedup_key="moved", ts=100, session_id="s", tool_name="Bash", confirm="approved")
+    seed("tool_invocations", dedup_key="moved", ts=300, session_id="s", tool_name="Bash", confirm="approved",
+         _v="2026-01-02")
+    seed("tool_invocations", dedup_key="gone", ts=100, session_id="s", tool_name="Bash", confirm="approved")
+    seed("tool_invocations", dedup_key="gone", _deleted=True, _v="2026-01-02")
+    seed("tool_invocations", dedup_key="none", ts=100, session_id="s", tool_name="Bash")
+    rows = reader.read("tools.confirm_counts", {"since": 99.0, "until": 200.0}).rows
+    assert {row["confirm"]: (row["calls"], sorted(row["waits"]), row["wait_count"]) for row in rows} == {
+        "approved": (3, [100, 300], 2), "denied": (2, [50, 900], 2), "auto": (1, [], 0),
+    }
+
+
+def test_activity_rows_return_only_the_text_each_kind_uses(kusto_store):
+    """Found on real data: 300,000 rows with all their text were read for a 30-day board."""
+    seed = kusto_store.insert
+    reader = kusto_store.history_store.reader
+    seed("tool_invocations", dedup_key="ok", ts=100, session_id="s", tool_name="Bash", is_error=0, exit_code=0)
+    seed("tool_invocations", dedup_key="bad", ts=101, session_id="s", tool_name="Bash", is_error=1)
+    for key in ("ok", "bad"):
+        seed("tool_invocations_text", dedup_key=key, target=f"pytest {key}", input=f"in {key}", result_summary="out")
+    window = {"since": 99.0, "until": 200.0}
+    loops = {row["target"]: row["input_signature"] for row in reader.read("tools.activity_rows", window | {"kind_filter": "loops"}).rows}
+    # The loop finder compares the target and input of failing calls only.
+    assert loops.keys() == {"", "pytest bad"} and loops[""] == "" and loops["pytest bad"]
+    tests = reader.read("tools.activity_rows", window | {"kind_filter": "tests"}).rows
+    assert [(row["target"], row["result_summary"], row["input_signature"]) for row in tests] == [
+        ("pytest ok", "", ""), ("pytest bad", "", "")]
+    failures = reader.read("tools.activity_rows", window | {"kind_filter": "failures"}).rows
+    assert [(row["target"], row["result_summary"]) for row in failures] == [("pytest bad", "out")]
+
+
 def test_full_session_event_page_resolves_winners_before_selecting_text(kusto_store):
     seed = kusto_store.insert
     reader = kusto_store.history_store.reader

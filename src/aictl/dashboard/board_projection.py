@@ -450,7 +450,9 @@ class _Board:
         self.pid_cpu: dict[int, float] = {}
         self.pid_memory: dict[int, float] | None = None
         self.test_rows: list[tuple] = []
+        # Pending confirmations, one row per call; every confirmation value, counted per session.
         self.confirm_rows: list[tuple] = []
+        self.confirm_counts: list[tuple] = []
         self.loops: list[dict] = []
         self.status: dict[str, str] = {}
         self.sub_status: dict[tuple[str, str], str] = {}
@@ -523,7 +525,8 @@ class _Board:
             reads += [("tools.activity_rows", {"kind_filter": kind, "limit": ACTIVITY_PAGE_ROWS})
                       for kind in ("tests", "failures")]
         if confirms:
-            reads.append(("tools.activity_rows", {"kind_filter": "confirms", "limit": ACTIVITY_PAGE_ROWS}))
+            reads += [("tools.confirm_counts", {}),
+                      ("tools.activity_rows", {"kind_filter": "pending", "limit": ACTIVITY_PAGE_ROWS})]
         self._prefetch(reads)
         if activity:
             self._load_tests()
@@ -903,10 +906,15 @@ class _Board:
         self.test_rows = kept
 
     def _load_confirms(self) -> None:
+        """The confirmation values counted in the cluster, and the pending calls one by one with their target."""
+        self.confirm_counts = [
+            (row["session_id"], row["tool_name"], row["confirm"], row["calls"], exact_values(row, "waits", "wait_count"))
+            for row in self._history_window("tools.confirm_counts")
+        ]
         fields = "session_id agent_id tool_name target ts confirm confirm_wait_ms".split()
         self.confirm_rows = [
             tuple(row[k] for k in fields) for row in self._history_window(
-                "tools.activity_rows", kind_filter="confirms", limit=ACTIVITY_PAGE_ROWS)
+                "tools.activity_rows", kind_filter="pending", limit=ACTIVITY_PAGE_ROWS)
         ]
 
     def _load_failures(self) -> None:
@@ -1949,16 +1957,17 @@ def _confirms_section(board: _Board, calls_by_name: dict[str, int] | None = None
     all_waits: list[float] = []
     # Calls with any confirmation value, pending included, per tool.
     recorded: dict[str, int] = defaultdict(int)
-    for sid, _aid, name, _target, _ts, confirm, wait in board.confirm_rows:
+    for sid, name, confirm, calls, call_waits in board.confirm_counts:
         if sid not in board.scope:
             continue
-        counts[confirm] = counts.get(confirm, 0) + 1
-        recorded[name] += 1
+        counts[confirm] = counts.get(confirm, 0) + calls
+        recorded[name] += calls
         if confirm in by_tool[name]:
-            by_tool[name][confirm] += 1
-        if wait and wait > 0 and confirm in ("approved", "denied"):
-            waits[name].append(wait)
-            all_waits.append(wait)
+            by_tool[name][confirm] += calls
+        # The cluster returns the waits of approved and denied calls only, and only those above zero.
+        if call_waits:
+            waits[name].extend(call_waits)
+            all_waits.extend(call_waits)
     for group in (all_waits, *waits.values()):
         group.sort()
     reported = bool(by_tool) or bool(counts["pending"])
@@ -2177,20 +2186,37 @@ def _tests_section(board: _Board) -> tuple[list[dict], list[int], list[int], dic
     return out[:MAX_LIST_ROWS], passed, failed, by_project
 
 
+def _loop_models(board: _Board, loops: list[dict]) -> list[list[dict]]:
+    """The requests of each loop's span, per model, in one read for all the loops.
+
+    A read per loop reduced the versions of the whole requests table once per loop.
+    """
+    spans = []
+    for loop in loops:
+        sid, agent = loop["session_id"], loop["agent_id"]
+        node, raw_sid = board.history.split(sid)
+        # A subagent's loop is keyed by its address, "<session>/<agent>"; the store keeps the agent id.
+        raw_agent = board.history.split(agent)[1].rpartition(AGENT_SEPARATOR)[2] if agent != sid else ""
+        spans.append([node or "", raw_sid, raw_agent, float(loop["since_ts"]), float(loop["until_ts"])])
+    by_span: dict[int, list[dict]] = defaultdict(list)
+    if spans:
+        for row in board.history.read("requests.loop_models", spans=spans):
+            by_span[row["span_index"]].append(row)
+    return [by_span[i] for i in range(len(spans))]
+
+
 def _loop_rows(board: _Board) -> list[dict]:
     rows = []
-    keys = [(loop["session_id"], loop["agent_id"]) for loop in board.visible_loops[:MAX_LOOP_ROWS]]
+    loops = board.visible_loops[:MAX_LOOP_ROWS]
+    keys = [(loop["session_id"], loop["agent_id"]) for loop in loops]
     titles = board._titles(keys) if keys else {}
-    for loop in board.visible_loops[:MAX_LOOP_ROWS]:
+    models = _loop_models(board, loops)
+    fields = "model input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd".split()
+    for loop, loop_models in zip(loops, models, strict=True):
         sid, agent = loop["session_id"], loop["agent_id"]
         tokens = None
         cost = None
-        fields = "model input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd".split()
-        # A subagent's loop is keyed by its address, "<session>/<agent>"; the store keeps the agent id.
-        raw_agent = board.history.split(agent)[1].rpartition(AGENT_SEPARATOR)[2] if agent != sid else ""
-        for row in board.history.read(
-            "requests.models", sid=sid, since=loop["since_ts"], until=loop["until_ts"], requested_agent=raw_agent,
-        ):
+        for row in loop_models:
             model, i, o, cr, cw, ts, stored = (row[k] for k in fields)
             tokens = (tokens or 0) + i + o + cr + cw
             cell_cost = _cost_of(stored, model, i, o, cr, cw, ts)

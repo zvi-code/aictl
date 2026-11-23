@@ -1,0 +1,27 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    requested_session:string = '', session_keys:dynamic = dynamic([]), row_limit:long
+);
+// The calls with a confirmation value, counted per session, tool and value in the cluster.
+// The waits of approved and denied calls come back whole, so that percentiles stay exact.
+let raw_calls = () { tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+};
+let eligible = (t:real, n:string, s:string, confirmation:string) {
+    t between (since .. until) and isnotempty(s) and isnotempty(confirmation)
+    and (isempty(requested_session) or s == requested_session)
+    and (array_length(session_keys) == 0 or strcat(strlen(n), ':', n, s) in (session_keys))
+};
+// Select possible keys, then apply the same filters to the winning versions.
+let keys = raw_calls() | where eligible(ts,node_id,session_id,confirm) | distinct fact_key;
+raw_calls()
+| where fact_key in (keys)
+| extend deleted=column_ifexists('_deleted', false)
+| summarize arg_max(_v, deleted, ts, session_id, tool_name, confirm, confirm_wait_ms) by ['project'], node_id, fact_key
+| where not(coalesce(deleted, false)) and eligible(ts,node_id,session_id,confirm)
+| extend waited=confirm in ('approved', 'denied') and confirm_wait_ms > 0
+| summarize calls=count(), wait_count=countif(waited), waits=make_list_if(confirm_wait_ms, waited, 1000000)
+    by node_id, session_id, tool_name, confirm
+| order by node_id asc, session_id asc, tool_name asc, confirm asc
+| take row_limit
