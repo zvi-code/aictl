@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
 from test_board_facts import (
     COPILOT_SID,
     SESSION,
@@ -24,6 +25,12 @@ from test_session_investigation import Facts, copilot_session, ingester, one, ta
 
 from aictl.records import CallFacts, SessionDigestRow
 from aictl.stores.kusto.tables import TABLE_RETENTION_CLASS
+
+
+@pytest.fixture(autouse=True)
+def _own_claude_home(tmp_path, monkeypatch):
+    """Memory files these tests write stay in the test's folder, not in the home every test shares."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
 
 OTHER = "99999999-9999-4999-8999-999999999999"
 
