@@ -1,0 +1,70 @@
+{"type": "assistant", "uuid": "line-0", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "message": {"id": "msg-1", "role": "assistant", "model": "claude-sonnet-4-5", "content": [], "usage": {"input_tokens": 1, "output_tokens": 1}}}
+{"type": "user", "uuid": "line-1", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "message": {"role": "user", "content": "An invented prompt"}}
+{"type": "api-request-blob", "uuid": "line-3", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "api-request", "uuid": "line-4", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "queue-operation", "uuid": "line-5", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "last-prompt", "uuid": "line-6", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "atis-latch", "uuid": "line-7", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "custom-title", "uuid": "line-8", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "bridge-session", "uuid": "line-9", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "agent-name", "uuid": "line-10", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "mode", "uuid": "line-11", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "system", "uuid": "line-12", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "subtype": "informational"}
+{"type": "frame-link", "uuid": "line-13", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "ai-title", "uuid": "line-14", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "relocated", "uuid": "line-15", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "file-history-snapshot", "messageId": "line-1", "isSnapshotUpdate": false, "snapshot": {"messageId": "line-1", "timestamp": "2026-11-01T10:00:00.000Z", "trackedFileBackups": {}}}
+{"type": "pr-link", "uuid": "line-17", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "api-request-shape", "uuid": "line-18", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "file-history-delta", "messageId": "line-1", "snapshotMessageId": "line-1", "trackingPath": "/work/proj/a.txt", "timestamp": "2026-11-01T10:00:00.000Z", "backup": {"backupFileName": null, "version": 1, "backupTime": "2026-11-01T10:00:00.000Z", "realParentDir": "/work/proj"}}
+{"type": "artifact-autoreact-ledger", "uuid": "line-20", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "tools-used", "uuid": "line-21", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "cost-state", "uuid": "line-22", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "artifact-comment-monitor", "uuid": "line-23", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "permission-mode", "uuid": "line-24", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "worktree-state", "uuid": "line-25", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "agent-setting", "uuid": "line-26", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "session-owner", "uuid": "line-27", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj"}
+{"type": "attachment", "uuid": "att-0", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "total_tokens_reminder"}}
+{"type": "attachment", "uuid": "att-1", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "deferred_tools_record"}}
+{"type": "attachment", "uuid": "att-2", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "batching_reminder_sent"}}
+{"type": "attachment", "uuid": "att-3", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "queued_command"}}
+{"type": "attachment", "uuid": "att-4", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "deferred_tools_delta"}}
+{"type": "attachment", "uuid": "att-5", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "environment"}}
+{"type": "attachment", "uuid": "att-6", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "prompt_snapshot"}}
+{"type": "attachment", "uuid": "att-7", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "task_reminder"}}
+{"type": "attachment", "uuid": "att-8", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "silent_turn_reminder"}}
+{"type": "attachment", "uuid": "att-9", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "skill_listing"}}
+{"type": "attachment", "uuid": "att-10", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "mcp_instructions_delta"}}
+{"type": "attachment", "uuid": "att-11", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "date"}}
+{"type": "attachment", "uuid": "att-12", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "remote_session_change"}}
+{"type": "attachment", "uuid": "att-13", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "model"}}
+{"type": "attachment", "uuid": "att-14", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "session_context"}}
+{"type": "attachment", "uuid": "att-15", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "edited_text_file"}}
+{"type": "attachment", "uuid": "att-16", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "instructions"}}
+{"type": "attachment", "uuid": "att-17", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "agent_listing_delta"}}
+{"type": "attachment", "uuid": "att-18", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "credential_org"}}
+{"type": "attachment", "uuid": "att-19", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "auto_mode"}}
+{"type": "attachment", "uuid": "att-20", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "file"}}
+{"type": "attachment", "uuid": "att-21", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "compact_file_reference"}}
+{"type": "attachment", "uuid": "att-22", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "task_status"}}
+{"type": "attachment", "uuid": "att-23", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "hook_additional_context"}}
+{"type": "attachment", "uuid": "att-24", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "goal_status"}}
+{"type": "attachment", "uuid": "att-25", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "thinking_drop"}}
+{"type": "attachment", "uuid": "att-26", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "inlined_image_paths"}}
+{"type": "attachment", "uuid": "att-27", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "read_truncation_notice"}}
+{"type": "attachment", "uuid": "att-28", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "ultra_effort_enter"}}
+{"type": "attachment", "uuid": "att-29", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "invoked_skills"}}
+{"type": "attachment", "uuid": "att-30", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "command_permissions"}}
+{"type": "attachment", "uuid": "att-31", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "date_change"}}
+{"type": "attachment", "uuid": "att-32", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "hook_success"}}
+{"type": "attachment", "uuid": "att-33", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "nested_memory"}}
+{"type": "attachment", "uuid": "att-34", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "directory"}}
+{"type": "attachment", "uuid": "att-35", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "hook_system_message"}}
+{"type": "attachment", "uuid": "att-36", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "plan_mode"}}
+{"type": "attachment", "uuid": "att-37", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "critical_system_reminder"}}
+{"type": "attachment", "uuid": "att-38", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "dynamic_skill"}}
+{"type": "attachment", "uuid": "att-39", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "plan_mode_exit"}}
+{"type": "attachment", "uuid": "att-40", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "pdf_reference"}}
+{"type": "attachment", "uuid": "att-41", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "ultra_effort_exit"}}
+{"type": "attachment", "uuid": "att-42", "sessionId": "aaaaaaaa-0000-4000-8000-000000000001", "timestamp": "2026-11-01T10:00:00.000Z", "cwd": "/work/proj", "attachment": {"type": "structured_output"}}

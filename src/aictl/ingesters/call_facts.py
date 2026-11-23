@@ -628,6 +628,117 @@ _CLAUDE_READ_TOOLS = frozenset({"Read", "NotebookRead"})
 CLAUDE_SESSION_LINES = frozenset({"pr-link", "permission-mode", "mode", "cost-state"})
 # Claude Code's file checkpoints: the files backed up at a message, to rewind them to (``/rewind``).
 CLAUDE_CHECKPOINT_LINES = frozenset({"file-history-snapshot", "file-history-delta"})
+
+# ── What the readers deliberately leave out ──────────────────────────
+# Every line type and attachment type a tool writes is either read or on one of these lists with
+# the reason. test/test_source_markers.py fails on a type that is neither, so a new marker (a new
+# kind of memory save or checkpoint) cannot be dropped unnoticed: read it, or add it here and say why.
+CLAUDE_IGNORED_LINES = {
+    "api-request-blob": "the request body; its size is all the usage needs and it is skipped unread",
+    "api-request-shape": "the request's shape; skipped unread like the body",
+    "queue-operation": "a prompt queued while a turn runs; the prompt itself arrives as a user line",
+    "atis-latch": "a latch of the client's own state; no session fact",
+    "bridge-session": "the remote-control bridge's session id; no session fact",
+    "frame-link": "a link to a UI frame; no session fact",
+    "relocated": "the transcript moved; the file at the new place is read as its own",
+    "artifact-autoreact-ledger": "artifact page state of the client; no session fact",
+    "artifact-comment-monitor": "artifact comment watch state; no session fact",
+    "tools-used": "the names of tools used so far; each call is read from its tool_use block",
+    "worktree-state": "the worktree a session works in; an agent's worktree comes from its meta.json",
+    "agent-setting": "an agent setting of the client; not read yet",
+    "session-owner": "the client that owns the session; no session fact",
+}
+CLAUDE_READ_ATTACHMENTS = frozenset({
+    "instructions", "nested_memory",  # memory and instruction files loaded: loaded_files, context_items, recall
+    "skill_listing", "mcp_instructions_delta", "agent_listing_delta", "deferred_tools_delta",  # context_items
+    "invoked_skills",  # loaded_files
+    "edited_text_file",  # a memory or instruction file changed outside the session: file_write_events
+})
+CLAUDE_IGNORED_ATTACHMENTS = {
+    "total_tokens_reminder": "a reminder of the token total; usage is read from the calls",
+    "deferred_tools_record": "the full list of deferred tools; its deltas are read",
+    "batching_reminder_sent": "a reminder sent to the model; no fact",
+    "queued_command": "a queued prompt; it arrives as a user line",
+    "environment": "the environment block of the system prompt; no memory or checkpoint",
+    "prompt_snapshot": "a copy of a prompt; the prompt is read from its user line",
+    "task_reminder": "a reminder of open tasks; task changes are read from TaskCreate and TaskUpdate",
+    "task_status": "the task list's state; its changes are read from TaskCreate and TaskUpdate calls",
+    "silent_turn_reminder": "a reminder sent to the model; no fact",
+    "date": "the date given to the model",
+    "date_change": "the date changed during the session",
+    "remote_session_change": "a remote-control state change; no session fact",
+    "model": "the model in use; read from the calls",
+    "session_context": "a context block of the client; not memory",
+    "credential_org": "the account's organisation; never stored",
+    "auto_mode": "auto mode state; modes are read from mode lines",
+    "plan_mode": "plan mode notice; modes are read from mode lines",
+    "plan_mode_exit": "plan mode ended; modes are read from mode lines",
+    "file": "a file the user attached to a prompt; not a memory file",
+    "pdf_reference": "a PDF the user attached; not a memory file",
+    "directory": "a folder the user attached; not a memory file",
+    "inlined_image_paths": "image paths in a prompt; not a memory file",
+    "compact_file_reference": "a file named again after a compaction; the compaction is its own event",
+    "hook_additional_context": "text a hook added; hook runs are read from stop_hook_summary",
+    "hook_success": "a hook result; hook runs are read from stop_hook_summary",
+    "hook_system_message": "a hook's message; hook runs are read from stop_hook_summary",
+    "goal_status": "a goal's state in the client; not read yet",
+    "thinking_drop": "thinking left out of the context; thinking is read from the calls",
+    "read_truncation_notice": "a Read result was cut; the call is read from its tool_use block",
+    "ultra_effort_enter": "an effort mode began; effort is read from the calls",
+    "ultra_effort_exit": "an effort mode ended; effort is read from the calls",
+    "command_permissions": "permissions of a slash command; not read",
+    "critical_system_reminder": "a reminder sent to the model; no fact",
+    "dynamic_skill": "a skill made during the session; skill uses are read from the calls",
+    "structured_output": "a structured result of the client; not read",
+}
+# The Copilot CLI events.jsonl events CopilotFacts reads (with transcript_steps._SOURCES and the usage reader).
+COPILOT_READ_EVENTS = frozenset({
+    "session.start", "session.resume", "system.message", "subagent.selected", "session.model_change",
+    "assistant.message", "session.usage_record", "session.compaction_complete", "session.shutdown",
+    "session.error", "user.message", "session.mode_changed", "hook.end", "session.task_complete", "skill.invoked",
+    "subagent.started", "subagent.completed", "subagent.failed", "tool.execution_start", "tool.execution_complete",
+    "permission.requested", "permission.completed", "session.truncation", "session.snapshot_rewind",
+    "instruction.update", "session.tool_baseline",
+})
+COPILOT_IGNORED_EVENTS = {
+    "abort": "the user stopped a turn; the turn's calls show where it ended",
+    "assistant.fusion_phase_completed": "a phase of a fused reply; the reply is read from assistant.message",
+    "external_tool.requested": "a tool the client runs; the call is read from tool.execution_*",
+    "external_tool.completed": "a tool the client ran; the call is read from tool.execution_*",
+    "hook.start": "a hook began; its end (hook.end) is read",
+    "instruction.update_delivery": "an instruction update reached the model; the update is read from instruction.update",
+    "model.captured_assignment_context": "the model's assignment context; no memory or checkpoint",
+    "model.log": "the model client's log line",
+    "model.message": "a message as sent to the model; the conversation is read from user and assistant events",
+    "model.messages_snapshot": "a copy of the messages sent to the model; its text is in the user and assistant events",
+    "model.model_call_started": "a model call began; calls are read from session.usage_record",
+    "model.model_call_success": "a model call ended; calls are read from session.usage_record",
+    "model.response": "a model response; read from assistant.message",
+    "model.telemetry": "client telemetry",
+    "model.turn_started": "a model turn began; turns are read from user.message",
+    "model.turn_ended": "a model turn ended",
+    "session.autopilot_objective_changed": "an autopilot objective; not read yet",
+    "session.binary_asset": "a binary asset of the session; not text",
+    "session.context_changed": "the working folder or repository changed; read from start and resume",
+    "session.fusion_commit_started": "a fused reply's commit; not read",
+    "session.fusion_completed": "a fused reply ended; not read",
+    "session.fusion_resolved": "a fused reply resolved; not read",
+    "session.info": "an informational notice of the client",
+    "session.mode_notice_delivered": "a mode notice reached the model; modes are read from mode_changed",
+    "session.permissions_changed": "the permission set changed; decisions are read per call",
+    "session.remote_steerable_changed": "remote steering state; no session fact",
+    "session.schedule_created": "a scheduled run; not read yet",
+    "session.usage_checkpoint": "the session's billing totals so far (observe/copilot_events reads it for the live "
+                                "view); not a context checkpoint",
+    "session.warning": "a warning of the client",
+    "session.workspace_file_changed": "a file of the session's own workspace folder; the folder is listed in "
+                                      "session_artifacts",
+    "skill.context_delivered_ref": "a skill's text reached the model; the use is read from skill.invoked",
+    "skill.invoked_ref": "a reference to a skill use; the use is read from skill.invoked",
+    "subagent.configured": "a subagent's configuration; the agent is read from subagent.started",
+    "subagent.deselected": "a custom agent was deselected; selection is read from subagent.selected",
+    "system.notification": "a notice of the client",
+}
 AGENT_LABEL_MAX = 200
 
 
