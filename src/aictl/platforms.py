@@ -657,6 +657,9 @@ kusto_cluster = ""  # e.g. https://mycluster.westus.kusto.windows.net, or http:/
 kusto_database = "aictl"
 kusto_auth = "auto"  # auto (Azure CLI login; none for a local emulator) | azcli | device | managed-identity | none
 kusto_ingestion = "auto"  # auto: queued on a cluster with inline state tables; inline on the emulator | queued | streaming | inline
+# When the stored data has an older layout that a migration upgrades, run it at start
+# without asking. Off: the daemon stops and names the command (aictl db migrate).
+auto_migrate = false
 
 [storage.kusto_table_ingestion]
 # Optional per-table overrides of kusto_ingestion (queued | streaming | inline).
@@ -721,6 +724,7 @@ class AictlConfig:
     kusto_auth: str = "auto"
     kusto_ingestion: str = "auto"
     kusto_table_ingestion: dict[str, str] = field(default_factory=dict)
+    auto_migrate: bool = False
 
     # logging
     logging_enabled: bool = False
@@ -778,6 +782,7 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("kusto_database", "kusto_database", str),
         ("kusto_auth", "kusto_auth", str),
         ("kusto_ingestion", "kusto_ingestion", str),
+        ("auto_migrate", "auto_migrate", bool),
     ],
     "logging": [
         ("enabled", "logging_enabled", bool),
@@ -939,5 +944,6 @@ def show_config() -> str:
         f"  kusto_database  = {cfg.kusto_database}",
         f"  kusto_ingestion = {cfg.kusto_ingestion}",
         f"  kusto_table_ingestion = {cfg.kusto_table_ingestion}",
+        f"  auto_migrate    = {str(cfg.auto_migrate).lower()}",
     ]
     return "\n".join(lines)

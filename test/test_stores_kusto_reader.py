@@ -184,16 +184,20 @@ def test_schema_widens_tables_then_falls_back_when_streaming_policy_denied():
     def execute(database, text):
         assert database == "db"
         sent.append(text)
+        if text.startswith(".show tables details"):  # files exists and is empty: a new database
+            return response(("TableName", "TotalRowCount"), [("files", 0)])
         if text.startswith(".show"):
             return response(("TableName", "ColumnName", "ColumnType"), [("files", "path", "System.String")])
         if "streamingingestion enable" in text:
             raise RuntimeError("Not authorized")
         return response()
 
-    status = ensure_schema(SimpleNamespace(execute_mgmt=execute), "db", tables={"files": TABLES["files"]})
+    status = ensure_schema(SimpleNamespace(execute_mgmt=execute, execute_query=lambda *_: response()), "db",
+                           tables={"files": TABLES["files"]})
     assert not status.streaming_available and "Database Admin" in status.warning
     assert "['project']:string" in next(s for s in sent if s.startswith(".create-merge"))
-    assert sent[-1].endswith("policy retention softdelete = 30d")
+    assert sent[-2].endswith("policy retention softdelete = 30d")
+    assert sent[-1].startswith(".set-or-append ['schema_version'] <|")
     assert not any(s.startswith(".clear") for s in sent)
 
 
@@ -212,8 +216,8 @@ def test_schema_names_required_role_when_retention_is_denied():
 def test_open_store_applies_streaming_fallback_to_writer(monkeypatch):
     from aictl.stores.kusto import schema
 
-    def provision(_, database, *, modes):
-        assert database == SETTINGS.database
+    def provision(_, database, *, modes, node_id, cluster, migrate):
+        assert database == SETTINGS.database and node_id == SETTINGS.node_id and cluster == SETTINGS.cluster
         assert modes["files"] == modes["metrics"] == "streaming"
         assert modes["file_history"] == "queued"
         return SchemaStatus(False, "Database Admin permission missing")

@@ -34,7 +34,7 @@ from .monitoring.tool_config import collect_tool_configs
 from .monitoring.tool_telemetry import collect_tool_telemetry, scan_agent_teams
 from .session_evidence import SessionEvidence
 from .session_facts import SessionFacts
-from .state_file import StateFile, TextWatermark, restart_directory
+from .state_file import StateFile, TextWatermark, restart_directory, sync_data_epoch
 from .tool_calls import ToolCalls, call_key
 from .tools import (
     TOOL_LABELS,
@@ -739,9 +739,16 @@ class CollectionService:
         watermark = None
         if settings is not None and store_cfg.capture != "off":
             restart_dir = restart_directory(settings.cluster, settings.database, settings.node_id)
+            # The watermark reads its file on first use, after the data epoch check below.
             watermark = TextWatermark(StateFile(restart_dir / "text_trim.json"))
             self.history_store = stores.open_store("kusto", settings=settings, trim_before=watermark)
             _say(f"  history store: {settings.uri} (Kusto, {settings.auth_mode} auth)")
+            if layout := self.history_store.layout:
+                # Restart state of another data epoch (the database was reset) is discarded
+                # here, before any reader loads a checkpoint.
+                sync_data_epoch(restart_dir, layout.get("data_epoch"), kept_data=bool(layout.get("epoch_kept_data")))
+                _say(f"  data layout: {layout['version']} (stored {layout['stored_version']}, compatible since "
+                     f"{layout['compatible_since']}), data epoch {layout['data_epoch']}")
         else:
             self.history_store = stores.Store()
             _say("  history store: capture is off" if settings is not None else "  history store: no store configured")

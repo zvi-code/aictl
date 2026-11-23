@@ -167,6 +167,10 @@ def serve(
         _stop_daemon(pid_file, port)
         return
 
+    # Before anything starts: an incompatible stored layout is migrated or reset only on an
+    # explicit yes here, or by the command the message names.
+    _check_store_layout(cfg, interactive=not headless and sys.stdin is not None and sys.stdin.isatty())
+
     if daemon_mode:
         _start_daemon(
             root_dir,
@@ -187,29 +191,83 @@ def serve(
     own_pid_file = os.environ.pop(DAEMON_PID_ENV, "")
     if own_pid_file:
         Path(own_pid_file).write_text(str(os.getpid()), encoding="utf-8")
-    if headless:
-        from ..orchestrator import start_collector
+    from ..state_file import RestartStateError
+    from ..stores.kusto.layout import StoreLayoutError
 
-        start_collector(
-            root,
-            interval=interval,
-            include_live_monitor=include_live_monitor,
-            db_path=db_path,
-            receive_at=(host, port) if receiver else None,
-        )
-    else:
-        start_server(
-            root,
-            host=host,
-            port=port,
-            interval=interval,
-            open_browser=open_browser,
-            include_live_monitor=include_live_monitor,
-            db_path=db_path,
-        )
+    try:
+        if headless:
+            from ..orchestrator import start_collector
+
+            start_collector(
+                root,
+                interval=interval,
+                include_live_monitor=include_live_monitor,
+                db_path=db_path,
+                receive_at=(host, port) if receiver else None,
+            )
+        else:
+            start_server(
+                root,
+                host=host,
+                port=port,
+                interval=interval,
+                open_browser=open_browser,
+                include_live_monitor=include_live_monitor,
+                db_path=db_path,
+            )
+    except (StoreLayoutError, RestartStateError) as exc:
+        raise click.ClickException(str(exc)) from exc
     # Don't join live monitor workers after a clean shutdown. Startup failures
     # must propagate to the caller, not exit successfully from a finally block.
     os._exit(0)
+
+
+def _check_store_layout(cfg, *, interactive: bool, echo=click.echo, confirm=click.confirm) -> None:
+    """Stop before serving on a stored layout this aictl must not write to, or ask what to do.
+
+    Interactive (a terminal, not --headless): offer the migration when every incompatible
+    step has one, otherwise the reset, and continue after either. Not interactive, or the
+    answer is no: exit non-zero with the message and the command to run. Data written by a
+    newer aictl is never deleted from here.
+    """
+    settings = kusto_settings()
+    if settings is None or cfg.capture == "off":
+        return
+    from ..stores.base import StoreError
+    from ..stores.kusto import layout as L
+    from ..stores.kusto.client import KustoClientFactory
+    from ..stores.kusto.maintenance import migrate_store
+    from ..stores.kusto.schema import check_layout
+    from .admin import confirm_and_reset
+
+    try:
+        state = check_layout(KustoClientFactory.client(settings), settings.database)
+    except StoreError as exc:
+        logging.getLogger(__name__).debug("Layout check before start failed: %s", exc)
+        return  # opening the store reports it
+    verdict, stored = state.verdict, state.stored
+    if verdict in L.COMPATIBLE or verdict == L.MIGRATE and cfg.auto_migrate:
+        return
+    text = L.message(verdict, stored, cluster=settings.cluster, database=settings.database)
+    if not interactive or verdict == L.NEWER:
+        raise click.ClickException(text)
+    echo(text, err=True)
+    try:
+        if verdict == L.MIGRATE:
+            if confirm(f"Migrate the stored data in {settings.database} on {settings.cluster} to layout "
+                       f"{L.LAYOUT_VERSION} now (the history is kept)?", default=False, err=True):
+                migrate_store(settings, dry_run=False, echo=lambda line: echo(line, err=True))
+                return
+            target = L.target_options(settings.cluster, settings.database)
+            raise click.ClickException(f"Not migrated. Run: aictl db migrate --dry-run{target}, then "
+                                       f"aictl db migrate{target}")
+        if confirm_and_reset(settings, yes=False, echo=lambda line: echo(line, err=True),
+                             confirm=lambda text, **kw: confirm(text, err=True, **kw)):
+            return
+    except StoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    raise click.ClickException("Not reset. The stored data was left as it is. Run: aictl db reset"
+                               + L.target_options(settings.cluster, settings.database))
 
 
 def _env_port() -> int | None:

@@ -24,6 +24,8 @@ def test_schema_marks_only_a_fresh_report_layout(existing):
     def mgmt(command):
         if command.startswith(".show database schema"):
             return response(columns, [[existing, "unrelated", "string"]] if existing else [])
+        if command.startswith(".show tables details"):  # an existing table without rows: no layout check needed
+            return response([("TableName", "string"), ("TotalRowCount", "long")], [[existing, 0]])
         return response()
 
     client = FakeClient(on_mgmt=mgmt)

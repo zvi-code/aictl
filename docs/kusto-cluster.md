@@ -211,6 +211,55 @@ The daemon reads the tools' existing session files into the selected store. File
 
 The Windows dashboard also compares project paths without case or separator differences, uses completion revisions rather than coarse clock ticks to decide whether an answer is fresh, and shares one cached process-parent snapshot instead of scanning the process table for each PID. Session searches on Kusto read result rows directly; SQLite's JSON-packing optimization is not used for a remote connection.
 
+### Data layout version, compatibility and migrations
+
+The database records which **layout** its data has: the tables, columns, keys and the meaning of stored values. The definition lives in `src/aictl/stores/kusto/layout.py`:
+
+- `LAYOUT_VERSION`: the layout this aictl writes. It goes up with every change to tables, columns, keys or the meaning of stored values.
+- `COMPATIBLE_SINCE`: the oldest layout whose stored rows this aictl still reads and merges correctly.
+- `CHANGES`: one line per version with the reason, whether it breaks compatibility, and the name of the migration that upgrades older rows.
+- `GA_LAYOUT_VERSION`: the first generally available layout (not set yet).
+
+Data with no recorded version counts as layout 0. Layout 1 is the first recorded layout. It breaks compatibility with older data because request rows were stored more than once: the agent-team scan stored a second copy of each subagent call (`source == 'claude-code-jsonl'`), and a call reported by both OpenTelemetry and the transcript was stored under two keys. Every reader summed both copies.
+
+**Where it is stored.** Each start that writes writes a row to the `schema_version` table with a management command (`.set-or-append`), so it does not depend on queued ingestion. The row holds `version`, `compatible_since`, `aictl_version`, `data_epoch`, `written_at`, `kind` (`layout`, or `migration` for a migration step's result), `step` and `detail` (how the row came about: `new`, `reset`, `upgrade` or `migrate`; for a step, `done: N rows` or `failed: ...`). A node that is older than the stored layout but still compatible never writes a lower version. The `data_epoch` is a random id. aictl creates it when it first sets up a database and creates a new one when the database is reset. It identifies one generation of the data.
+
+**What happens at start.** aictl reads the layout before it creates or changes any table and before it writes anything:
+
+| Stored data | What aictl does |
+| --- | --- |
+| No aictl tables, or only empty ones | Creates the tables and records this layout with a new data epoch. |
+| Layout `COMPATIBLE_SINCE` or newer, and `compatible_since` of the stored row not above this aictl's `LAYOUT_VERSION` | Widens the tables. If the stored layout is older, records this one in the same epoch. |
+| Older and incompatible, and each breaking step has a migration | Stops and names `aictl db migrate`. An interactive `aictl daemon serve` asks to migrate. |
+| Older and incompatible, and a step has no migration | Stops and names `aictl db reset`, says that no migration exists for that step, and says what cannot be rebuilt. An interactive `aictl daemon serve` asks to delete and start again. |
+| Written by a newer aictl that this one cannot read | Stops and tells you to upgrade aictl on this node. It never offers to delete the data. |
+
+`aictl daemon serve` asks only when stdin is a terminal and `--headless` is not given. Its question is "Migrate the stored data in <database> on <cluster> to layout N now?", or, when no migration exists, "Delete the stored data in <database> on <cluster> and start again? [y/N]". Without a terminal, with `--headless`, or when the answer is no, it exits with a non-zero status, the message, and the command to run. Data is never deleted or migrated without an explicit yes, `--yes`, or `[storage] auto_migrate = true`. That setting allows only a migration at start, never a reset. A read-only open (`aictl db report`, catalog reads) reports an incompatible layout as a warning in its status and does not fail. The start banner and the store health (`Store.health()["layout"]`, which the dashboard health data carries as `store.layout`) show `version`, `compatible_since`, `data_epoch` and `stored_version`.
+
+**Commands.** Each command takes `--kusto-cluster` and `--kusto-database`, as `aictl daemon serve` does. Without them, it uses the configured store.
+
+- `aictl db layout` shows the stored version, its compatible-since, the data epoch and how it began, the aictl version that wrote it, this aictl's `LAYOUT_VERSION` and `COMPATIBLE_SINCE`, the verdict, and the changelog.
+- `aictl db migrate --dry-run` shows each pending step, the management commands it would run, and how many rows each one changes. It changes nothing. `aictl db migrate` (with `--yes` for scripts) widens the tables, runs the steps, records each step's result in `schema_version`, and then records this layout. Stop the other writers of the database first.
+- `aictl db reset` (with `--yes` for scripts) lists every aictl table in the database and its row count, then asks. It drops only the tables aictl owns: those in `tables.py` and `otel.py`, the `aictl_current_store_v1` marker, the `*_observations` companions and the old `aictl_information_schema`. Then it creates them again and records a **new** data epoch. Each node then reads its history again from the session files still on its disk. Data whose session files are gone, and data older than the retention period, cannot be rebuilt. When a migration exists, the command says so first. Dropping tables needs **Database Admin**.
+
+**Migrations.** A migration is a named step in `src/aictl/stores/kusto/migrations.py`. It is a list of statements. Each statement has a query that counts the rows it changes and a management command that changes them. A statement must be idempotent: run again after an interruption, it finds nothing left to change. A finished step is recorded and is not run again. An interrupted step is run again in the same data epoch. Rows are changed the way the writers change them: by a newer version of the row (a later `_v`) or by a tombstone (`_deleted = true`). `.set-or-append` matches columns by position, so every statement appends `T | take 0 | union (...)`, which puts the table's own columns first, matched by name and type.
+
+The first migration, `requests_single_copy`, does three things:
+
+1. It deletes (with a tombstone) the request rows with `source == 'claude-code-jsonl'`. No current writer stores requests with that source.
+2. It pairs each telemetry row (`source == 'otel'`) with a transcript row of the same node, session and four token counts, the n-th with the n-th in time order. This is the rule the writer now uses. Where the transcript row has no duration, time to first token, prompt id, pid or finish reason, the step copies them from the telemetry row.
+3. It deletes the paired telemetry rows.
+
+The migration cannot repair a call whose telemetry and transcript token counts differ: that call stays counted twice. Calls that only telemetry reported stay as they are.
+
+**Rules for a layout change.** A guard test (`test/test_store_layout.py`) stores a fingerprint of all table names, column names and types, keys and version columns in `layout.FINGERPRINT`. It fails when the definitions change and the fingerprint does not. Its message names the steps: bump `LAYOUT_VERSION`, decide on compatibility, then update `FINGERPRINT`.
+
+- Prefer **additive** changes: a new table or column that old rows simply lack, a new key alongside the old one, a reader that accepts both. An additive change bumps only `LAYOUT_VERSION` and adds a `CHANGES` line with `breaks=False`.
+- A change of meaning (a key change, a changed meaning of a value, or a removed writer whose rows remain) also sets `COMPATIBLE_SINCE = LAYOUT_VERSION`, marks its line `breaks=True`, and should name a migration. Without one, the only way forward for existing databases is a reset, and history whose session files are gone is lost.
+- Once `GA_LAYOUT_VERSION` is set, every breaking change after it **must** declare a migration. The guard test fails otherwise.
+
+**Restart state follows the data epoch.** Each node keeps restart state (import checkpoints, session merge state, one-time-pass markers) in its restart directory, and records the data epoch there in `data_epoch.json`. Every start that writes runs the check before any reader loads a checkpoint: the daemon, `aictl db trim-text`, `aictl catalog sync`, migrate and reset. The check compares the recorded epoch with the database's epoch. When they differ, because the database was reset by this node or another, the node removes its restart state, logs why, and reads its history again as a new node. Restart state with no recorded epoch was written before epochs were recorded. It is kept only when the database's epoch kept older data (the epoch began with a migration or upgrade). It is removed when the database was created or reset since. A file that cannot be removed, for example because another aictl process of the same node holds it open on Windows, is named in an error, and the start stops. Stop the other process and start again.
+
 ### Starting a persistent daemon on Windows
 
 Run from the folder you want to scan, or pass `--root`. The root can be a project or a folder that holds many projects, for example `C:\`. The daemon watches three kinds of folders: each git repository that the discovery scan finds under the root (scanned again every 30 seconds), the repository of each AI session's working folder (checked every 5 seconds), and the state folders of the AI tools (for example `~\.claude` and `~\.copilot`). Linked worktrees and submodules of a watched repository are watched as well. In a repository, the daemon reports only the files whose `git status` or content changes, plus AI tool files that git ignores (for example `.claude/settings.local.json`); it ignores build output and other files that git ignores. A commit, checkout, reset, merge or rebase is one `git_head` event, read from the `HEAD` reflog. The root itself is a project only when it is in a git work tree, so system files written under `C:\` are not reported as file activity of AI sessions. To update an existing installation, stop the daemon and follow the reinstall steps in [HOWTO.md](../HOWTO.md) before starting it again:

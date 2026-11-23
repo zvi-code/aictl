@@ -74,6 +74,58 @@ def restart_directory(cluster: str, database: str, node: str) -> Path:
     return config_dir() / call_key(cluster, ":", database, ":", node)
 
 
+EPOCH_FILE = "data_epoch.json"
+_checked: dict[Path, str] = {}
+_checked_lock = threading.Lock()
+
+
+class RestartStateError(RuntimeError):
+    """Restart state of an earlier data epoch could not be removed."""
+
+
+def sync_data_epoch(directory: Path, epoch: str | None, *, kept_data: bool) -> Path:
+    """Keep the restart state in *directory* only if it belongs to the database's data epoch.
+
+    The data epoch changes when the database is created or reset. Checkpoints, session merge
+    state and one-time-pass markers of another epoch describe rows that are gone: they are
+    removed, and this node reads its history again as a new node. State with no recorded
+    epoch predates the epoch record; it is kept only if the epoch kept older data
+    (*kept_data*: the database was migrated or upgraded, not created or reset since).
+    Checked once per process and directory; a different epoch later is checked again.
+    Returns *directory*.
+    """
+    if not epoch:
+        return directory
+    with _checked_lock:
+        if _checked.get(directory) == epoch:
+            return directory
+        marker = StateFile(directory / EPOCH_FILE)
+        recorded = marker.read().get("data_epoch")
+        files = [p for p in directory.iterdir() if p.is_file() and p.name != EPOCH_FILE] if directory.is_dir() else []
+        if recorded != epoch and files and (recorded or not kept_data):
+            reason = (f"belongs to data epoch {recorded}" if recorded
+                      else "has no recorded data epoch and the database was created or reset since")
+            failed = []
+            for path in files:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:  # a file another process holds open, on Windows
+                    failed.append(f"{path} ({exc.strerror or exc})")
+            if failed:
+                raise RestartStateError(
+                    f"Restart state in {directory} {reason}, but the database has data epoch {epoch}. "
+                    "These files could not be removed; stop every other aictl process of this node and "
+                    "start again:\n  " + "\n  ".join(failed))
+            log.warning("Restart state in %s %s; the database has data epoch %s. Removed %d files: "
+                        "this node reads its history again as a new node.", directory, reason, epoch, len(files))
+        if recorded != epoch:
+            marker.replace({"data_epoch": epoch})
+        _checked[directory] = epoch
+    return directory
+
+
 class TextWatermark:
     """Share the admin trim cutoff with a running collector."""
 

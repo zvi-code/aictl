@@ -168,11 +168,25 @@ def _supplement_replay(client, settings):
          for column, kind in (*TABLES[name].columns, *LEGACY_COLUMNS.get(name, ()))],
     )
     response(
-        "command", ".show tables details | project TableName, RetentionPolicy, StreamingIngestionPolicy",
-        [("TableName", "string"), ("RetentionPolicy", "dynamic"), ("StreamingIngestionPolicy", "dynamic")],
-        [[name, {"SoftDeletePeriod": f"{TABLES[name].retention_days}.00:00:00"}, {"IsEnabled": True}]
+        "command",
+        ".show tables details | project TableName, TotalRowCount, RetentionPolicy, StreamingIngestionPolicy",
+        [("TableName", "string"), ("TotalRowCount", "long"), ("RetentionPolicy", "dynamic"),
+         ("StreamingIngestionPolicy", "dynamic")],
+        [[name, 0, {"SoftDeletePeriod": f"{TABLES[name].retention_days}.00:00:00"}, {"IsEnabled": True}]
          for name in names if name in TABLES],
     )
+    # The stored layout: this build's, so the store opens without a migration or a reset.
+    from aictl.stores.kusto import layout
+    from aictl.stores.kusto.schema import LAYOUT_QUERY as STORED_LAYOUT_QUERY
+
+    response("query", STORED_LAYOUT_QUERY,
+             [(c, "string") for c in ("kind", "version", "compatible_since", "data_epoch", "aictl_version",
+                                      "written_at", "step", "detail")],
+             [["layout", layout.LAYOUT_VERSION, layout.COMPATIBLE_SINCE, "recorded-epoch", "0.test",
+               "2026-11-23T00:00:00Z", "", "new"]])
+    response("command", ".show tables details | project TableName, TotalRowCount",
+             [("TableName", "string"), ("TotalRowCount", "long")], [[name, 0] for name in names])
+    response("command", f".drop tables ({', '.join(quote(name) for name in sorted(names))}) ifexists")
     response("command", ".show tables details | project TableName, TotalExtents, TotalRowCount, TotalExtentSize",
              [("TableName", "string"), ("TotalExtents", "long"), ("TotalRowCount", "long"),
               ("TotalExtentSize", "long")], [["sessions", 0, 0, 0]])

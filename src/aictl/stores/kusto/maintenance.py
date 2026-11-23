@@ -3,7 +3,7 @@
 import math
 from datetime import datetime, timezone
 
-from ...state_file import StateFile, TextWatermark, restart_directory
+from ...state_file import StateFile, TextWatermark, restart_directory, sync_data_epoch
 from ..base import StoreError
 from .client import KustoClientFactory, Result, kql_literal, query_memory_error, quote, retrying
 from .tables import TABLES
@@ -79,7 +79,7 @@ def trim_text(settings, before: float, *, dry_run: bool) -> list[str]:
         raise ValueError("The trim cutoff must be finite")
     client = KustoClientFactory.client(settings)
     if not dry_run:
-        directory = restart_directory(settings.cluster, settings.database, settings.node_id)
+        directory = restart_state(settings, current_layout(client, settings.database))
         TextWatermark(StateFile(directory / "text_trim.json")).advance(before)
     node = kql_literal(settings.node_id, "string")
     instant = kql_literal(datetime.fromtimestamp(before, timezone.utc), "datetime")
@@ -98,15 +98,83 @@ def trim_text(settings, before: float, *, dry_run: bool) -> list[str]:
     return completed
 
 
-def reset_history(settings) -> int:
-    client = KustoClientFactory.client(settings)
-    response = client.execute_mgmt(settings.database, ".show tables | project TableName")
-    existing = {str(row[0]) for row in Result.from_response(response).rows}
-    tables = sorted(existing & TABLES.keys())
-    for table in tables:
-        client.execute_mgmt(settings.database, f".clear table {quote(table)} data")
+def current_layout(client, database):
+    """The stored layout, read without changing anything; None for a database without aictl data."""
+    from .schema import check_layout
+
+    return check_layout(client, database).stored
+
+
+def restart_state(settings, stored):
+    """This node's restart directory, after the data epoch check (state_file.sync_data_epoch)."""
     directory = restart_directory(settings.cluster, settings.database, settings.node_id)
-    if directory.is_dir():
-        for path in directory.glob("*.json"):
-            path.unlink()
-    return len(tables)
+    if stored is None:
+        return directory
+    return sync_data_epoch(directory, stored.data_epoch, kept_data=stored.epoch_kept_data)
+
+
+def reset_plan(settings) -> list[tuple[str, int | None]]:
+    """The tables a reset drops, with their row counts: aictl's own tables, no other."""
+    from .schema import management, owned_tables
+
+    command = management(KustoClientFactory.client(settings), settings.database)
+    response = command(".show tables details | project TableName, TotalRowCount", "Database Viewer",
+                       "Read table details")
+    owned = owned_tables()
+    return sorted((str(row["TableName"]), row.get("TotalRowCount"))
+                  for row in Result.from_response(response).dicts() if row.get("TableName") in owned)
+
+
+def reset_store(settings, tables: list[str] | None = None):
+    """Drop aictl's tables, create them again, and record a new data epoch.
+
+    Only tables aictl owns are dropped, and only those *tables* when given (the list the
+    user confirmed). This node's restart state follows the new epoch at once; other nodes
+    discard theirs when they next start.
+    """
+    from . import _configured_modes
+    from .schema import ensure_schema, management, owned_tables
+
+    client = KustoClientFactory.client(settings)
+    command = management(client, settings.database)
+    names = [name for name, _ in reset_plan(settings)] if tables is None else list(tables)
+    if unowned := set(names) - owned_tables():
+        raise StoreError(f"Refusing to drop tables aictl does not own: {', '.join(sorted(unowned))}")
+    if names:
+        command(f".drop tables ({', '.join(quote(name) for name in sorted(names))}) ifexists",
+                "Database Admin", "Drop aictl tables")
+    status = ensure_schema(client, settings.database, modes=_configured_modes(settings), node_id=settings.node_id,
+                           cluster=settings.cluster, origin="reset")
+    sync_data_epoch(restart_directory(settings.cluster, settings.database, settings.node_id), status.data_epoch,
+                    kept_data=False)
+    return status
+
+
+def migrate_store(settings, *, dry_run: bool, echo=print):
+    """Run, or with *dry_run* only count and print, the migrations from the stored layout to this one."""
+    from . import _configured_modes
+    from . import layout as L
+    from .migrations import run, runner
+    from .schema import check_layout, ensure_schema, management, querying
+
+    client = KustoClientFactory.client(settings)
+    state = check_layout(client, settings.database)
+    verdict, stored = state.verdict, state.stored
+    if verdict == L.NEWER:
+        raise L.LayoutNewerError(verdict, stored, cluster=settings.cluster, database=settings.database)
+    if verdict == L.RESET:
+        raise L.LayoutResetRequired(verdict, stored, cluster=settings.cluster, database=settings.database)
+    if verdict != L.MIGRATE:
+        echo(f"Nothing to migrate: the stored layout is {L.describe(stored)} and this aictl writes "
+             f"layout {L.LAYOUT_VERSION} ({verdict}).")
+        return verdict, []
+    if dry_run:
+        query, command = querying(client, settings.database), management(client, settings.database)
+        results = run(stored or L.UNVERSIONED, count=lambda text: query(text, "Count the rows a migration changes"),
+                      execute=lambda text: command(text, "", ""), record=lambda *_: None, dry_run=True, echo=echo)
+        return verdict, results
+    status = ensure_schema(client, settings.database, modes=_configured_modes(settings), node_id=settings.node_id,
+                           cluster=settings.cluster, migrate=runner(client, settings.database, echo))
+    sync_data_epoch(restart_directory(settings.cluster, settings.database, settings.node_id), status.data_epoch,
+                    kept_data=status.epoch_kept_data)
+    return verdict, status

@@ -79,6 +79,8 @@ class Store:
     reader: Reader | None = None
     writer: Writer | None = None
     otlp: Any = None
+    # The stored data layout as checked at open (stores/kusto/layout.py), when the store has one.
+    layout: dict[str, Any] | None = None
 
     def history_reader(self) -> Reader:
         return self.reader if self.reader is not None else _UNCONFIGURED_READER
@@ -86,10 +88,13 @@ class Store:
     def health(self) -> dict[str, Any]:
         if self.reader is None and self.writer is None:
             return {"status": "no store configured"}
-        return {
+        health = {
             "reader": self.reader.health() if self.reader is not None else None,
             "writer": self.writer.health() if self.writer is not None else None,
         }
+        if self.layout is not None:
+            health["layout"] = dict(self.layout)
+        return health
 
 
 def store_for(owner: Any) -> Store:

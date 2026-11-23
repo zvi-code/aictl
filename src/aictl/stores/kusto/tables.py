@@ -33,12 +33,21 @@ SESSION_HISTORY_TABLES = frozenset(
 # The key includes project and node. Callers supply source_key where the old table had no natural key.
 _DEFINED = (
     {
+        # The data layout (stores/kusto/layout.py), written by management command at start.
+        # kind "layout": a version row; kind "migration": the result of a migration step.
         "schema_version": Table(
             (
                 ("version", "long"),
                 ("project", "string"),
                 ("node_id", "string"),
                 ("_v", "datetime"),
+                ("compatible_since", "long"),
+                ("aictl_version", "string"),
+                ("data_epoch", "string"),
+                ("written_at", "datetime"),
+                ("kind", "string"),
+                ("step", "string"),
+                ("detail", "string"),
             ),
             ("project", "node_id", "version"),
             "streaming",

@@ -186,6 +186,7 @@ def test_admin_trim_is_node_scoped_and_dry_run_keeps_watermark(tmp_path, monkeyp
     settings = KustoSettings("https://example.invalid", database="test", node_id="this-node")
     monkeypatch.setattr(maintenance.KustoClientFactory, "client", lambda _: Client())
     monkeypatch.setattr(maintenance, "restart_directory", lambda *_: tmp_path)
+    monkeypatch.setattr(maintenance, "current_layout", lambda *_: None)  # a database without aictl data
     state = StateFile(tmp_path / "text_trim.json")
     cutoff = time.time()
     tables = maintenance.trim_text(settings, cutoff, dry_run=True)

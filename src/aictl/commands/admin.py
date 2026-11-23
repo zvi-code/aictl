@@ -280,21 +280,124 @@ def _report_values(result) -> None:
         click.echo(f"  {row['sessions']:>6,}  {row['value']}")
 
 
-@db.command()
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
-@click.pass_context
-def reset(ctx, yes):
-    """Clear aictl tables on the configured store. Stop all writers first."""
-    from ..stores.kusto.maintenance import reset_history
+def _store_options(command):
+    """--kusto-cluster and --kusto-database, as `aictl daemon serve` takes them, for one command."""
+    command = click.option("--kusto-database", default=None, help="The Kusto database (default: configured)")(command)
+    return click.option("--kusto-cluster", default=None, help="The Kusto cluster URL (default: configured)")(command)
 
-    settings = _admin_settings(ctx)
-    if not yes:
-        click.confirm(f"Clear aictl tables for ALL nodes in {settings.uri}?", abort=True)
+
+def _target_settings(ctx, kusto_cluster, kusto_database):
+    import os
+
+    from ..kusto import CLUSTER_ENV, DATABASE_ENV
+
+    if kusto_cluster:
+        os.environ[CLUSTER_ENV] = kusto_cluster
+    if kusto_database:
+        os.environ[DATABASE_ENV] = kusto_database
     try:
-        count = reset_history(settings)
-    except Exception as exc:
+        return _admin_settings(ctx)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
+@db.command()
+@_store_options
+@click.pass_context
+def layout(ctx, kusto_cluster, kusto_database):
+    """Show the stored data layout, this aictl's layout, the verdict and the changelog."""
+    from ..stores.kusto import layout as L
+    from ..stores.kusto.client import KustoClientFactory
+    from ..stores.kusto.schema import check_layout
+
+    settings = _target_settings(ctx, kusto_cluster, kusto_database)
+    try:
+        state = check_layout(KustoClientFactory.client(settings), settings.database)
+    except StoreError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"Cleared {count} aictl tables in {settings.uri}.")
+    stored, verdict = state.stored, state.verdict
+    click.echo(f"Database:            {settings.database} on {settings.cluster}")
+    click.echo(f"Stored layout:       {L.describe(L.UNVERSIONED if stored is None and state.has_data else stored)}")
+    if stored is not None:
+        click.echo(f"  compatible since:  {stored.compatible_since}")
+        click.echo(f"  data epoch:        {stored.data_epoch or '-'} (began by {stored.origin or '-'})")
+        click.echo(f"  written by aictl:  {stored.aictl_version or '-'} at {stored.written_at or '-'}")
+        if stored.migrations_done:
+            click.echo(f"  migrations done:   {', '.join(sorted(stored.migrations_done))}")
+    click.echo(f"This aictl:          layout {L.LAYOUT_VERSION}, reads layouts {L.COMPATIBLE_SINCE} to "
+               f"{L.LAYOUT_VERSION}")
+    click.echo(f"Verdict:             {verdict}")
+    if verdict not in L.COMPATIBLE:
+        click.echo("\n" + L.message(verdict, stored, cluster=settings.cluster, database=settings.database))
+    click.echo("\nChangelog:")
+    for line in L.changelog_lines():
+        click.echo(line)
+
+
+@db.command()
+@click.option("--dry-run", is_flag=True, help="Print each step's commands and the rows they change; change nothing")
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
+@_store_options
+@click.pass_context
+def migrate(ctx, dry_run, yes, kusto_cluster, kusto_database):
+    """Upgrade the stored data to this aictl's layout and keep the history. Stop all writers first."""
+    from ..stores.kusto import layout as L
+    from ..stores.kusto.maintenance import migrate_store
+
+    settings = _target_settings(ctx, kusto_cluster, kusto_database)
+    if not dry_run and not yes:
+        click.confirm(f"Migrate the stored data in {settings.database} on {settings.cluster} to layout "
+                      f"{L.LAYOUT_VERSION}? Stop the other aictl writers of this database first.", abort=True)
+    try:
+        verdict, _ = migrate_store(settings, dry_run=dry_run, echo=click.echo)
+    except (StoreError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if verdict == L.MIGRATE:
+        click.echo("Dry run: nothing was changed." if dry_run else
+                   f"Migrated {settings.database} on {settings.cluster} to layout {L.LAYOUT_VERSION}.")
+
+
+def confirm_and_reset(settings, *, yes: bool, echo=click.echo, confirm=click.confirm) -> bool:
+    """Print what a reset deletes, ask unless *yes*, reset. Returns False when the user says no."""
+    from ..stores.kusto.maintenance import reset_plan, reset_store
+
+    plan = reset_plan(settings)
+    echo(f"A reset deletes every aictl table in {settings.database} on {settings.cluster}, for ALL nodes:")
+    for name, rows in plan:
+        echo(f"  {name:40s} {'unknown' if rows is None else f'{rows:,}':>14s} rows")
+    echo("Tables aictl does not own are kept. Each node then reads its history again from the session files "
+         "still on its disk; data whose session files are gone, and data older than the retention period, "
+         "cannot be rebuilt.")
+    if not yes and not confirm(f"Delete the stored data in {settings.database} on {settings.cluster} and start "
+                               "again?", default=False):
+        return False
+    status = reset_store(settings, [name for name, _ in plan])
+    echo(f"Dropped {len(plan)} aictl tables and created them again; new data epoch {status.data_epoch}.")
+    return True
+
+
+@db.command()
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
+@_store_options
+@click.pass_context
+def reset(ctx, yes, kusto_cluster, kusto_database):
+    """Delete all stored aictl data (every node) and start again. Prefer `aictl db migrate` when it applies.
+
+    Stop all writers first.
+    """
+    from ..stores.kusto import layout as L
+    from ..stores.kusto.client import KustoClientFactory
+    from ..stores.kusto.schema import check_layout
+
+    settings = _target_settings(ctx, kusto_cluster, kusto_database)
+    try:
+        if check_layout(KustoClientFactory.client(settings), settings.database).verdict == L.MIGRATE:
+            click.echo("A migration upgrades this data and keeps the history: aictl db migrate --dry-run, then "
+                       "aictl db migrate. A reset deletes it.")
+        if not confirm_and_reset(settings, yes=yes):
+            raise click.exceptions.Exit(1)
+    except StoreError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # ─── config ──────────────────────────────────────────────────────────────────
@@ -835,11 +938,14 @@ def _read_catalog(settings, **filters):
 
 def _sync_catalog(settings) -> int:
     from ..collection_status import DatapointCatalog
-    from ..state_file import StateFile, restart_directory
+    from ..state_file import StateFile, restart_directory, sync_data_epoch
     from ..stores import open_store
 
-    directory = restart_directory(settings.cluster, settings.database, settings.node_id)
-    writer = open_store("kusto", settings=settings).writer
+    store = open_store("kusto", settings=settings)
+    writer = store.writer
+    layout = store.layout or {}
+    directory = sync_data_epoch(restart_directory(settings.cluster, settings.database, settings.node_id),
+                                layout.get("data_epoch"), kept_data=bool(layout.get("epoch_kept_data")))
     try:
         state = StateFile(directory / "datapoint_catalog.json")
         catalog = DatapointCatalog(writer, state)

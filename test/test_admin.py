@@ -239,31 +239,18 @@ class TestDbReset:
         assert result.exit_code != 0
         assert db_file.stat().st_size == 1024
 
-    def test_reset_needs_confirmation(self, runner):
-        from aictl.kusto import KustoSettings
+    # The confirmation, the table list and the scoping of `db reset` are in test_store_layout.py.
 
-        with patch("aictl.commands.admin.kusto_settings", return_value=KustoSettings("https://example.invalid")), \
-             patch("aictl.stores.kusto.maintenance.reset_history", return_value=2) as reset:
-            assert runner.invoke(db, ["reset"], input="n\n").exit_code != 0
-            reset.assert_not_called()
-            result = runner.invoke(db, ["reset", "--yes"])
-            assert result.exit_code == 0
-            assert "Cleared 2 aictl tables" in result.output
-            reset.assert_called_once()
-
-    def test_reset_and_trim_commands_are_scoped_to_native_tables(self, monkeypatch, tmp_path):
+    def test_trim_command_is_scoped_to_native_text_tables(self, monkeypatch, tmp_path):
         from test_kusto_connection import response
 
         from aictl.kusto import KustoSettings
         from aictl.stores.kusto import maintenance
 
         settings = KustoSettings("https://example.invalid", database="aictl_perf_test", node_id="host-a")
-        receive = MagicMock(return_value=response([("TableName", "string")], [["events"], ["unrelated"]]))
+        receive = MagicMock(return_value=response())
         monkeypatch.setattr(maintenance.KustoClientFactory, "client", lambda _: MagicMock(execute_mgmt=receive))
         monkeypatch.setattr(maintenance, "restart_directory", lambda *_: tmp_path)
-        assert maintenance.reset_history(settings) == 1
-        assert receive.call_args_list[-1].args == ("aictl_perf_test", ".clear table ['events'] data")
-        receive.reset_mock()
         done = maintenance.trim_text(settings, 1000, dry_run=True)
         assert "events_text" in done and "files_text" in done and "OTELLogs" not in done
         for call in receive.call_args_list:
