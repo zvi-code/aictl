@@ -46,7 +46,7 @@ describe('Failures and errors', () => {
   })
 
   it('shows no internal key column', () => {
-    expect(def('errors').columns.map(column => column.path)).toEqual(['source', 'reason', 'count', 'agents', 'last_ts'])
+    expect(def('errors').columns.map(column => column.path)).toEqual(['reason', 'source', 'count', 'agents', 'last_ts'])
   })
 })
 

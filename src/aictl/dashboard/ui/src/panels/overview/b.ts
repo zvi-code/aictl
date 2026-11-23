@@ -77,7 +77,7 @@ export const overviewB: readonly PanelDef[] = [
     empty: 'No confirmations in this time.', load: () => import('./b/History').then(m => ({ default: m.Confirmations })) },
   // Failure history needs a chart and a separate table of grouped error keys.
   { ...base, id: 'errors', title: 'Failures and errors', kind: 'chart', sources: [failures, { field: 'errors' }, buckets],
-    columns: [field('source', 'Tool or API'), field('reason', 'Error'),
+    columns: [field('reason', 'Error'), field('source', 'Tool or API'),
       metric('count', 'board.kpi.failures', 'Count'), field('agents', 'Agents'), stamp('last_ts', 'Last')],
     chart: timeChart('Tool failures and API errors per bucket.', true),
     empty: 'No failures in this time.', load: () => import('./b/History').then(m => ({ default: m.HistoryBreakdown })) },
