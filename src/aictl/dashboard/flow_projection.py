@@ -55,6 +55,16 @@ _FLOW_ORDER = {"session_start": 0, "user_message": 1, "subagent": 2, "task_promp
 _FLOW_MARKERS = frozenset({"session_start", "session_end"})
 
 
+# Events of the session, not of the turn they follow: a turn ends with its own last event, so the
+# time the session sat idle before a shutdown or a resume is not the turn's.
+_SESSION_LIFECYCLE = frozenset({*_FLOW_MARKERS, "session_resumed", "session_shutdown"})
+
+
+def _of_session(event: dict) -> bool:
+    return event["type"] in _SESSION_LIFECYCLE or (
+        event["type"] == "context_update" and event.get("source") == "session.shutdown")
+
+
 _EMPTY = (None, "", [], {})
 
 
@@ -205,6 +215,15 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
 
     events.extend(_subagent_events(rows("agent"), rows("lifecycle"), rows("step"), tool, inside, task_prompts, agent_tasks,
                                    keep_text=keep_text, text_floor=text_floor))
+
+    for ts, kind, aid, trigger, _took, _call, raw in rows("lifecycle"):
+        if kind == "config.session_resume":
+            events.append({"ts": ts, "type": "session_resumed", "tool": tool, "source": "session.resume"})
+        elif kind == "session_shutdown":
+            event = {"ts": ts, "type": "session_shutdown", "tool": tool, "source": "session.shutdown"}
+            if trigger:
+                event["shutdown_type"] = trigger
+            events.append(event)
 
     compactions = rows("compaction")
     numbered = compactions
@@ -497,7 +516,7 @@ def _aggregate_flow(events: list[dict]) -> tuple[int, int]:
             turn += 1
             if recount:
                 event.update(tokens=_zero_tokens(), api_calls=0, duration_ms=0, model="", end_ts=event["ts"])
-        elif current is not None and kind not in _FLOW_MARKERS:
+        elif current is not None and not _of_session(event):
             current["end_ts"] = max(current.get("end_ts") or current["ts"], event.get("end_ts") or event["ts"])
             if kind == "api_call" and recount:
                 tokens = current["tokens"]
@@ -553,6 +572,9 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
         "source": source,
         "event_count": len(events),
         "subagents": sum(1 for e in events if e["type"] == "subagent" and e.get("counted") is not False),
+        # The session's own shutdowns and resumes (Copilot CLI): a resumed session ran resumes + 1 times.
+        "shutdowns": count["session_shutdown"],
+        "resumes": count["session_resumed"],
         "hooks": count["hook"],
         "errors": count["error"] + sum(1 for e in api if e.get("is_error")) + sum(1 for e in events if e["type"] == "tool_use" and e.get("success") is False),
         "cumulative_tokens": cumulative,
@@ -718,7 +740,8 @@ def _turn_marks(events: list[dict]) -> list[dict]:
         mark = marks[-1]
         kind = event["type"]
         mark["events"] += 1
-        mark["end_ts"] = max(mark["end_ts"], event.get("end_ts") or event["ts"])
+        if not _of_session(event):
+            mark["end_ts"] = max(mark["end_ts"], event.get("end_ts") or event["ts"])
         mark["tokens"] = max(mark["tokens"], int(event.get("rt_tokens") or 0))
         mark["tools"] += kind == "tool_use"
         mark["subagents"] += kind == "subagent" and event.get("counted") is not False

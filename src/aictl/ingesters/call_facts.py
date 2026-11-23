@@ -758,6 +758,8 @@ _CONFIG_FIELDS = {
                                 "repositoryHost", "hostType"),
 }
 _CONTEXT_FIELDS = _CONFIG_FIELDS["session.context_changed"]
+# The fields of session.shutdown kept on its session_shutdown event, as reported.
+_SHUTDOWN_FIELDS = ("shutdownType", "currentModel", "sessionStartTime", "totalApiDurationMs", "totalPremiumRequests")
 CONFIG_VALUE_MAX = 300
 COPILOT_IGNORED_EVENTS = {
     "abort": "the user stopped a turn; the turn's calls show where it ended",
@@ -1882,6 +1884,9 @@ class CopilotFacts:
         elif kind == "session.shutdown":
             self._split(data, ts, agent_id, event_id)
             self._shutdown(data, ts)
+            self._event("session_shutdown", event_id or str(ts), ts, agent_id,
+                        trigger=str(data.get("shutdownType") or "")[:80],
+                        detail={k: _config_value(data[k]) for k in _SHUTDOWN_FIELDS if _config_value(data.get(k)) is not None})
         elif kind == "session.error":
             self._api_error(data, ts, agent_id, event_id)
         elif kind == "user.message":

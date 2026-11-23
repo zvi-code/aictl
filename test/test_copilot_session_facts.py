@@ -170,3 +170,19 @@ def test_a_reply_and_a_task_summary_are_kept_only_while_text_is_kept():
     withheld = read(events, keep_text=False)
     assert current(withheld, "session_step_text") == [] and current(withheld, "session_digests") == []
     assert {r["text_status"] for r in current(withheld, "session_steps") if r["role"] == "assistant"} == {"withheld"}
+
+
+def test_each_shutdown_and_resume_is_an_event_of_its_own():
+    events = [
+        event("session.start", 0, {"sessionId": "cp-session", "selectedModel": "gemini-4-argon"}),
+        event("session.shutdown", 100, {"shutdownType": "routine", "currentModel": "gemini-4-argon",
+                                        "totalPremiumRequests": 3, "codeChanges": {"filesModified": []}}),
+        event("session.resume", 130, {"selectedModel": "gemini-4-argon", "eventCount": 40}),
+        event("session.shutdown", 900, {"shutdownType": "routine"}),
+    ]
+    rows = current(read(events), "context_events")
+    shutdowns = sorted((r["ts"], r["trigger"]) for r in rows if r["kind"] == "session_shutdown")
+    assert [trigger for _ts, trigger in shutdowns] == ["routine", "routine"]
+    assert json.loads(next(r for r in rows if r["kind"] == "session_shutdown" and r["detail"])["detail"])[
+        "totalPremiumRequests"] == 3
+    assert sum(r["kind"] == "config.session_resume" for r in rows) == 1

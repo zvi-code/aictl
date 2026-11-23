@@ -170,3 +170,29 @@ def test_copilot_replies_and_the_task_summary_are_the_turns_reply_and_outcome():
     assert first["response"] == "The exporter sends to the local collector."
     assert first["outcome"] == "Checked the exporter settings."
     assert (second["response"], second["outcome"]) == ("", "")
+
+
+def step(ts, kind, name, phase, source, aid=""):
+    return {"row_type": "step", "values": [ts, kind, name, phase, aid, "", 1000, 100000, None, None, 0, source]}
+
+
+def test_a_turn_ends_with_its_own_last_event_not_at_the_next_resume():
+    rows = [
+        {"row_type": "session", "values": ["copilot-cli", "/p", T, None]},
+        native(T + 1, "user", "Check the exporter", "u1"),
+        call(T + 2), use(T + 41, name="task_complete", call="call-done"),
+        # The session then sat idle for three hours: its shutdown, the context it reported, its resume.
+        step(T + 10_900, "context", "snapshot", "shutdown", "session.shutdown"),
+        lifecycle(T + 10_900, "session_shutdown", "", "routine"),
+        lifecycle(T + 10_930, "config.session_resume", "", ""),
+        native(T + 10_940, "user", "And the endpoint?", "u2"),
+        call(T + 10_941),
+    ]
+    body = flow(rows)
+    first = next(e for e in body["turns"] if e["type"] == "user_message")
+    assert first["end_ts"] == T + 41 and first["wall_ms"] == 40_000
+    kinds = [(e["type"], e.get("shutdown_type")) for e in body["turns"] if e["type"].startswith("session_")]
+    assert ("session_shutdown", "routine") in kinds and ("session_resumed", None) in kinds
+    assert (body["summary"]["shutdowns"], body["summary"]["resumes"]) == (1, 1)
+    turn = transcript(rows)["turns"][0]
+    assert turn["wall_ms"] == 40_000

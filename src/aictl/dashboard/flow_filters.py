@@ -12,12 +12,13 @@ _CATEGORY = {
     "user_message": "messages", "api_response": "messages", "api_call": "models", "error": "models",
     "tool_use": "tools", "subagent": "agents", "subagent_end": "agents", "task_prompt": "agents", "compaction": "context",
     "hook": "hooks", "session_start": "lifecycle", "session_end": "lifecycle",
+    "session_resumed": "lifecycle", "session_shutdown": "lifecycle", "task_summary": "messages",
     "session_command": "lifecycle", "context_update": "context", "skill_event": "skills",
 }
 _META = ("type", "subtype", "agent_id", "agent_name", "model", "from", "to", "hook_name", "source", "name", "phase",
          "error_type", "finish_reason", "decision", "turn_id", "tool_call_id", "exit_code")
 _TEXT = ("message", "preview", "prompt", "response", "response_preview", "target", "params", "input_preview",
-         "request_preview", "result_summary", "result_preview", "error_message", "hook_input", "hook_output")
+         "request_preview", "result_summary", "result_preview", "error_message", "hook_input", "hook_output", "summary")
 
 
 def select_events(events, *, q="", category="", tool_name="", flow_agent="", failed=False, allow_text=True, skill_name="", skill_phase=""):
