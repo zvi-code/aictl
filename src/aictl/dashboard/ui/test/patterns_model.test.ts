@@ -23,6 +23,20 @@ describe('MCP servers panel rows', () => {
     expect(mcpRows(undefined)).toEqual([])
   })
 
+  it('lists the built-in tools directly when no MCP server was used', () => {
+    const body: McpBody = {
+      groups: [{ id: 'builtin', kind: 'builtin', server: '', label: 'Built-in tools', sessions: 1, sessions_at_least: false,
+        tool_count: 2, first_ts: 1, last_ts: 2, ...figures, tools: [
+          { name: 'powershell', sessions: 1, last_ts: 2, ...figures }, { name: 'view', sessions: null, last_ts: 2, ...figures }] }],
+      totals: { calls: 6, failures: 2, sessions: 1, total_ms: 60, tool_names: 2, tool_names_shown: 2 },
+      definitions: {}, query: null,
+    }
+    const rows = mcpRows(body)
+    expect(rows.map(row => [row.id, row.parent, row.folded])).toEqual([
+      ['builtin\u0000powershell', undefined, undefined], ['builtin\u0000view', undefined, undefined]])
+    expect(rows.map(row => [row.row.name, row.row.type, row.row.sessions_text])).toEqual([['powershell', 'tool', '1'], ['view', 'tool', undefined]])
+  })
+
   it('writes shares with a decimal only below ten percent', () => {
     expect([share(0.054), share(0.5), share(null)]).toEqual(['5.4%', '50%', undefined])
   })

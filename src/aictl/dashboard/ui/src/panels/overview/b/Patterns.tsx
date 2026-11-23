@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { fmtBytes, fmtMs, fmtN, stamp } from '../../../design/format'
 import { kustoLink } from '../../../drawer/kqlLink'
 import { CodeView } from '../../../ui/CodeView'
@@ -48,7 +48,13 @@ function useBoardDetail<T extends { node_scope?: { kind: string; node_id: string
     if (!value || ctx.scope() === 'local') return value
     return value.node_scope?.kind === ctx.scope() && (ctx.scope() !== 'node' || value.node_scope?.node_id === ctx.nodeId()) ? value : undefined
   }
-  return { read, data, noTools: () => ctx.tools()?.length === 0 }
+  // When this page last received a current answer, so a stale one says how old it is.
+  const [received, setReceived] = createSignal<number>()
+  createEffect(() => read()?.status === 'ready' && data() ? data() : undefined, value => {
+    if (value) setReceived(Date.now() / 1000)
+  })
+  const stamped = (value: Read): Read => value.state === 'stale' && received() ? { ...value, updatedAt: received() } : value
+  return { read, data, stamped, noTools: () => ctx.tools()?.length === 0 }
 }
 
 const mcpLabels: Record<string, string> = {
@@ -59,12 +65,12 @@ const mcpLabels: Record<string, string> = {
 
 export function McpServers(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
-  const { read, data, noTools } = useBoardDetail<McpBody>(ctx, '/api/board/mcp')
+  const { read, data, stamped, noTools } = useBoardDetail<McpBody>(ctx, '/api/board/mcp')
   const result = (): Read => {
     if (noTools()) return { state: 'empty', message: 'No tools are selected.' }
     if (read()?.data && !data()) return { state: 'error', message: 'The server did not confirm the requested node scope.' }
     const value = detailRead(read(), data()?.groups, ctx.paused(), { reading: 'MCP tool calls' })
-    return value.state === 'error' ? { ...value, message: `Could not load MCP usage: ${value.message ?? 'The request failed.'}` } : value
+    return value.state === 'error' ? { ...value, message: `Could not load MCP usage: ${value.message ?? 'The request failed.'}` } : stamped(value)
   }
   const rows = createMemo(() => mcpRows(data()))
   const number = (key: string, format: (value: number) => string = fmtN): Field<KeyedRow> => ({
@@ -83,11 +89,17 @@ export function McpServers(props: PanelProps) {
   ]
   const totals = () => data()?.totals
   const servers = () => data()?.groups.filter(group => group.kind === 'mcp').length ?? 0
+  const count = (value: number | null | undefined, one: string, many: string) =>
+    value == null ? undefined : `${fmtN(value)} ${value === 1 ? one : many}`
+  const summary = () => [
+    servers() ? count(servers(), 'MCP server', 'MCP servers') : 'No MCP server used',
+    count(totals()?.calls, 'tool call', 'tool calls'), count(totals()?.sessions, 'session', 'sessions'),
+    totals()?.total_ms != null ? `total tool time ${fmtMs(totals()!.total_ms!)}` : undefined,
+  ].filter(Boolean).join(' · ')
   return <States result={result} empty={def.empty} retry={read.retry} reserveStaleSpace>
     <div class={styles.strip}>
       <p class={styles.summary}>
-        {servers()} MCP servers · {fmtN(totals()?.calls ?? 0)} tool calls · {fmtN(totals()?.sessions ?? 0)} sessions · total tool
-        time {totals()?.total_ms != null ? fmtMs(totals()!.total_ms!) : 'not recorded'}
+        {summary()}
         <Show when={(totals()?.tool_names ?? 0) > (totals()?.tool_names_shown ?? 0)}>
           {' '}· showing the {totals()!.tool_names_shown} of {totals()!.tool_names} tool names with the most calls
         </Show>
@@ -95,21 +107,23 @@ export function McpServers(props: PanelProps) {
       <FoldTable label={def.title} fields={fields} rows={rows()} action={entry => entry.row.type === 'group'
         ? { label: `Open server ${String(entry.row.name)}`, run: () => ctx.openDetail({ type: 'mcp', name: entry.id }) }
         : { label: `Open tool ${String(entry.row.name)}`, run: () => ctx.openDetail({ type: 'tool', name: String(entry.row.name) }) }} />
-      <p class={styles.summary}>Expand a server for its tools. Tokens are an estimate: result bytes divided by 4.
-        Percentiles come from a log-scale histogram and are within 6 %.</p>
+      <p class={styles.summary}>{rows().some(entry => entry.folded) ? 'Expand a server for its tools. ' : ''}Tokens are an
+        estimate: result bytes divided by 4. Percentiles come from a log-scale histogram and are within 6 %.</p>
       <Definitions items={data()?.definitions} labels={mcpLabels} />
       <QueryDetails query={data()?.query} copy={ctx.copy} />
     </div>
   </States>
 }
 
-const convergenceFields = (): Field<ConvergenceRow>[] => {
+const convergenceFields = (open: (row: ConvergenceRow) => void): Field<ConvergenceRow>[] => {
   const n = (id: keyof ConvergenceRow, label: string, format: (value: number) => string = fmtN): Field<ConvergenceRow> => ({
     id, label, numeric: true, read: row => typeof row[id] === 'number' ? row[id] as number : undefined,
     format: value => typeof value === 'number' ? format(value) : String(value),
   })
   return [
-    { id: 'title', label: 'Session', read: row => row.title || row.session_id },
+    // The session cell opens the session, so no separate action column cuts its label.
+    { id: 'title', label: 'Session', read: row => row.title || row.session_id,
+      action: { label: row => `Open session ${row.title || row.session_id}`, run: open } },
     n('score', 'Score'),
     { id: 'evidence', label: 'Evidence (heuristic)', read: row => signalText(row) },
     n('requests', 'Requests'), n('top_repeat', 'Repeats of one call'), n('retries', 'Retries after errors'),
@@ -120,15 +134,21 @@ const convergenceFields = (): Field<ConvergenceRow>[] => {
   ]
 }
 
+/** The agent id the drawer opens: across nodes a session is named with its node, as the session finder names it. */
+export function agentKey(ctx: PanelContext, row: Pick<ConvergenceRow, 'session_id' | 'node_id'>) {
+  if (ctx.scope() === 'local' || !row.node_id || row.session_id.startsWith('[')) return row.session_id
+  return JSON.stringify([row.node_id, row.session_id])
+}
+
 export function Convergence(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
-  const { read, data, noTools } = useBoardDetail<ConvergenceBody>(ctx, '/api/board/convergence')
+  const { read, data, stamped, noTools } = useBoardDetail<ConvergenceBody>(ctx, '/api/board/convergence')
   const [only, setOnly] = createSignal<string>()
   const result = (): Read => {
     if (noTools()) return { state: 'empty', message: 'No tools are selected.' }
     if (read()?.data && !data()) return { state: 'error', message: 'The server did not confirm the requested node scope.' }
     const value = detailRead(read(), data()?.rows, ctx.paused(), { reading: 'session requests' })
-    return value.state === 'error' ? { ...value, message: `Could not load convergence: ${value.message ?? 'The request failed.'}` } : value
+    return value.state === 'error' ? { ...value, message: `Could not load convergence: ${value.message ?? 'The request failed.'}` } : stamped(value)
   }
   const rows = createMemo(() => (data()?.rows ?? []).filter(row => !only() || row.signals.some(signal => signal.id === only())))
   const counts = createMemo(() => {
@@ -151,8 +171,8 @@ export function Convergence(props: PanelProps) {
             {signal.label}: {counts().get(signal.id) ?? 0}
           </button>}</For>
       </div>
-      <Table label={def.title} fields={convergenceFields()} rows={rows()} rowId={row => `${row.node_id ?? ''}\u0000${row.session_id}`}
-        action={{ label: row => `Open session ${row.title || row.session_id}`, run: row => ctx.openAgent(row.session_id, 'convergence') }} />
+      <Table label={def.title} fields={convergenceFields(row => ctx.openAgent(agentKey(ctx, row), 'convergence'))} rows={rows()}
+        rowId={row => `${row.node_id ?? ''}\u0000${row.session_id}`} />
       <Definitions items={data()?.definitions} labels={labels()} title="How each signal is defined" />
       <QueryDetails query={data()?.query} copy={ctx.copy} />
     </div>

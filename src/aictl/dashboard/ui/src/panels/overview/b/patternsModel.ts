@@ -61,9 +61,17 @@ export function windowQuery(ctx: PanelContext) {
     ? { ...picked, buckets: 48 } : range ? { ...range, buckets: range.bucket_starts.length } : windowOf(ctx.filters().range, ctx.startedAt)))
 }
 
-/** Server groups as folded parents with their tools as children. */
+/**
+ * Server groups as folded parents with their tools as children. A lone group that is not an MCP server
+ * (only built-in tools) is not folded: its tools are the rows, since unfolding one row tells nothing.
+ */
 export function mcpRows(body: McpBody | undefined): KeyedRow[] {
   if (!body) return []
+  if (body.groups.length === 1 && body.groups[0].kind !== 'mcp') {
+    const [group] = body.groups
+    return group.tools.map(tool => ({ id: `${group.id}\u0000${tool.name}`,
+      row: { ...tool, type: 'tool', tools: undefined, sessions_text: tool.sessions == null ? undefined : String(tool.sessions) } }))
+  }
   return body.groups.flatMap(group => [
     { id: group.id, folded: true, row: { ...group, name: group.label, type: 'group', tools: group.tool_count,
       sessions_text: group.sessions == null ? undefined : `${group.sessions_at_least ? '≥ ' : ''}${group.sessions}` } },
