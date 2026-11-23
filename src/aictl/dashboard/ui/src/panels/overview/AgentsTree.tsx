@@ -7,7 +7,7 @@ import { States } from '../kinds/States'
 import type { KeyedRow, PanelProps } from '../types'
 import { agentRows } from './agentRows'
 import {
-  agentsCounts, agentsHeader, ago, buildTree, cellSpans, childrenOf, duration, durationMissing, elapsed, isLive, lastMissing, missingReason, nameHint, subagentText, summarize,
+  agentsCounts, agentsHeader, ago, buildTree, cellSpans, childrenOf, costBasisHint, costBasisText, duration, durationMissing, elapsed, isLive, lastMissing, missingReason, nameHint, subagentText, summarize,
   type TreeAgent, type TreeEntry,
 } from './agentTree'
 import css from './AgentsTree.module.css'
@@ -26,7 +26,7 @@ const columns: readonly Column[] = [
   { id: 'requests', label: 'Requests', help: 'Model calls recorded. A session counts its subagents too.', numeric: true },
   { id: 'tools', label: 'Tool calls', help: 'Tool calls recorded, and how many failed. A session counts its subagents too.', numeric: true },
   { id: 'tokens', label: 'Tokens in / out', help: 'In: input tokens, including cache reads and writes. Out: output tokens. A session counts its subagents too; hover for the split.', numeric: true },
-  { id: 'cost', label: 'Cost', help: 'List price of the recorded tokens, not a bill. A session counts its subagents too.', numeric: true },
+  { id: 'cost', label: 'Cost', help: 'Billed: what Copilot recorded for the session (AI credits at $0.01). Estimate: list price of the recorded tokens, not a bill. A session counts its subagents too.', numeric: true },
 ]
 const historyColumns: ReadonlySet<string> = new Set(['last', 'requests', 'tools', 'tokens', 'cost'])
 // The agent name carries the tree, so it stays first and visible.
@@ -279,7 +279,8 @@ export default function AgentsTree(props: PanelProps) {
                   </td>,
                   cost: () => <td data-col="cost" data-numeric="">
                     <Show when={!group()}>
-                      <Show when={num(row().cost_usd) !== undefined} fallback={<Missing why={missingReason(row(), 'cost')} />}>{fmtUsd(num(row().cost_usd))}</Show>
+                      <Show when={num(row().cost_usd) !== undefined} fallback={<Missing why={missingReason(row(), 'cost')} />}>{fmtUsd(num(row().cost_usd))}
+                        <Show when={costBasisText(row())}><div class={css.secondary} title={costBasisHint(row())}>{costBasisText(row())}</div></Show></Show>
                     </Show>
                   </td>,
               }

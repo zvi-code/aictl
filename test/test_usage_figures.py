@@ -286,6 +286,22 @@ class TestCredits:
         fleet_credits = compute_board(db, Filters(since=at(DAY2, 0), until=at(DAY3, 0)), None, at(DAY3, 0), history=fleet)["credits"]
         assert (fleet_credits["list_usd"], fleet_credits["cost_usd"]) == (3.0, 15.77)
 
+    def test_a_session_and_a_project_show_what_copilot_billed_and_say_so(self, db):
+        # The Agents and Projects tables showed list price for a Copilot session with recorded credits.
+        self.copilot(db, "cop", 1277.0)
+        ts = at(DAY2, 10.5)
+        for i, (sid, tool, project) in enumerate((("cop", "copilot-cli", "/p/a"), ("cc", "claude-code", "/p/a"),
+                                                  ("solo", "claude-code", "/p/b"))):
+            db.insert("requests", ts=ts + i, session_id=sid, tool=tool, dedup_key=f"k{i}", project_path=project,
+                      model="claude-sonnet-4-5", input_tokens=1_000_000)
+        payload = board(db, at(DAY2, 0), at(DAY3, 0))
+        rows = {a["id"]: a for a in payload["agents"] if a["parent_id"] is None}
+        assert (rows["cop"]["cost_usd"], rows["cop"]["cost_basis"], rows["cop"]["list_cost_usd"]) == (12.77, "billed", 3.0)
+        assert (rows["cc"]["cost_usd"], rows["cc"]["cost_basis"]) == (3.0, "estimate")
+        projects = {p["project"]: p for p in payload["projects"]}
+        assert (projects["/p/a"]["cost_usd"], projects["/p/a"]["cost_basis"]) == (15.77, "mixed")
+        assert (projects["/p/b"]["cost_usd"], projects["/p/b"]["cost_basis"]) == (3.0, "estimate")
+
     def test_credits_follow_the_tool_filter(self, db):
         self.copilot(db, "a", 1200.5)
         self.copilot(db, "b", 300.25, tool="copilot-desktop")

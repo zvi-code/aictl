@@ -13,6 +13,8 @@
       "tokens": {"type": "integer"},
       "cached_share": {"type": ["number", "null"]},
       "cost_usd": {"type": ["number", "null"]},
+      "cost_basis": {"type": ["string", "null"], "enum": ["billed", "estimate", "mixed", null]},
+      "list_cost_usd": {"type": ["number", "null"]},
       "tool_calls": {"type": ["integer", "null"]},
       "fail_rate": {"type": ["number", "null"]},
       "test_runs": {"type": ["integer", "null"]},

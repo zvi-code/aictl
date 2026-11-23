@@ -127,6 +127,8 @@ export const overviewA: readonly PanelDef[] = [
       field('project', 'Project'), count('agents', 'Agents', 'board.project.agents'), count('prompts', 'Prompts', 'board.project.prompts'),
       count('msgs', 'Messages', 'board.project.msgs'), field('tokens', 'Tokens', 'board.project.tokens'),
       field('cached_share', 'Cached share', 'board.project.cached'), field('cost_usd', 'Cost', 'board.project.cost'),
+      // billed (Copilot credits), estimate (list price) or mixed: what the project's sessions show.
+      field('cost_basis', 'Cost basis'),
       count('tool_calls', 'Tool calls', 'board.project.tool_calls'), field('fail_rate', 'Tool failure rate', 'board.project.tool_fail'),
       count('test_passed', 'Tests passed', 'board.project.tests'), count('test_runs', 'Test runs', 'board.project.tests'),
       count('lines_added', 'Lines added', 'board.project.lines'), count('lines_removed', 'Lines removed', 'board.project.lines'),

@@ -1159,6 +1159,7 @@ class _Board:
         # Tokens with no cost, by model and why: the model has no list price, or the source does not
         # report what a price needs.
         self.unpriced: dict[tuple[str, str], int] = {}
+        self._credits_memo: dict | None = None  # _session_credits, read once per board
         self.fallback_user: dict[str, int] = {}
         self.fallback_tools: dict[str, int] = {}
         self.fallback_tool_buckets = [0] * n
@@ -1297,6 +1298,8 @@ class _Board:
         asked, denied = self._agent_confirms(sid, None if root else agent)
         user = self._agent_user_msgs(sid, None if root else agent)
         tool = self.session_tool.get(sid, "")
+        # Copilot's credits are recorded per session: a main agent row (which counts its subagents) shows them.
+        billed = _billed_usd(self, sid) if root and tool.startswith("copilot") else None
         # No status was decided for this row: say so rather than call it ended.
         status = self.status.get(sid, "unknown") if root else self.sub_status.get((sid, agent), "unknown")
         meta = self.meta.get(sid) or {}
@@ -1338,9 +1341,9 @@ class _Board:
             "cache_read": usage.cache_read if usage else None,
             "cache_write": cache_write,
             "cached_share": usage.cached_share if usage else None,
-            "cost_usd": _usd(usage.cost) if usage else None,
-            # Set when calls of the row have no cost that can be known: the cost leaves them out.
-            "cost_reason": CACHE_NOT_REPORTED if usage and usage.unknown else None,
+            **_row_cost(usage, billed),
+            # Set when calls of the row have no cost that can be known and no billed amount stands for them.
+            "cost_reason": CACHE_NOT_REPORTED if usage and usage.unknown and billed is None else None,
             "tool_calls": calls,
             "failures": failures,
             "confirms_asked": asked,
@@ -1663,22 +1666,65 @@ def _fallback_models(row: dict) -> dict[str, dict]:
 USD_PER_AI_CREDIT = 0.01
 
 
-def _credits_section(board: _Board) -> dict | None:
-    """AI credits GitHub Copilot reports for the sessions in view, or None when none is in view.
+def _row_cost(usage: _Usage | None, billed: float | None) -> dict:
+    """A row's cost and what it is: ``billed`` (Copilot's credits for the session, at $0.01 each)
+    where recorded, else ``estimate`` (list price x tokens). ``list_cost_usd`` keeps the estimate."""
+    listed = _usd(usage.cost) if usage else None
+    if billed is not None:
+        return {"cost_usd": _usd(billed), "cost_basis": "billed", "list_cost_usd": listed}
+    return {"cost_usd": listed, "cost_basis": "estimate" if listed is not None else None, "list_cost_usd": listed}
 
-    Credits are stored per session and local day, as the tool reports them: not
-    dollars, and no list price is applied. A day counts when the session was active
-    on it inside the window; ``approximate`` is true when the window edge cuts
-    through such a day, which is counted whole. ``amount`` is None when a
-    session in view has no credits recorded.
-    """
+
+def _row_cost(usage: _Usage | None, billed: float | None) -> dict:
+    """A row's cost and what it is: ``billed`` (Copilot's credits for the session, at $0.01 each)
+    where recorded, else ``estimate`` (list price x tokens). ``list_cost_usd`` keeps the estimate."""
+    listed = _usd(usage.cost) if usage else None
+    if billed is not None:
+        return {"cost_usd": _usd(billed), "cost_basis": "billed", "list_cost_usd": listed}
+    return {"cost_usd": listed, "cost_basis": "estimate" if listed is not None else None, "list_cost_usd": listed}
+
+
+def _billed_by_project(board: _Board) -> dict[str, tuple[float, float]]:
+    """Per project: what Copilot billed for its sessions with credits, and the list-price estimate of
+    those sessions' calls, which the billed amount replaces."""
+    by_session = _session_credits(board)["by_session"]
+    if not by_session:
+        return {}
+    listed: dict[str, float] = defaultdict(float)
+    for c in board.cells:
+        if c.sid in by_session and c.cost is not None:
+            listed[c.project] += c.cost
+    billed: dict[str, float] = defaultdict(float)
+    for sid, credits in by_session.items():
+        billed[board.session_project.get(sid, "")] += credits * USD_PER_AI_CREDIT
+    return {project: (amount, listed.get(project, 0.0)) for project, amount in billed.items()}
+
+
+def _project_cost(usage: _Usage | None, billed: tuple[float, float] | None) -> dict:
+    """A project's cost as the sum of what its sessions show: billed where Copilot recorded credits,
+    the list-price estimate otherwise. ``cost_basis`` is billed, estimate or mixed."""
+    listed = usage.cost if usage else None
+    if billed is None:
+        return {"cost_usd": _usd(listed), "cost_basis": "estimate" if listed is not None else None,
+                "list_cost_usd": _usd(listed)}
+    amount, replaced = billed
+    rest = max((listed or 0.0) - replaced, 0.0)
+    return {"cost_usd": _usd(amount + rest), "cost_basis": "mixed" if rest >= 0.005 else "billed",
+            "list_cost_usd": _usd(listed)}
+
+
+def _session_credits(board: _Board) -> dict:
+    """AI credits per session in view, read once per board: ``by_session``, ``by_tool``,
+    ``approximate`` and ``seen`` (a session that bills in credits is in view)."""
+    cached = getattr(board, "_credits_memo", None)
+    if cached is not None:
+        return cached
     f = board.f
     selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
-    amount: float | None = None
+    by_session: dict[str, float] = {}
     by_tool: dict[str, float] = {}
     approximate = False
     seen = False
-    credited: set[str] = set()
     for row in board.history.read("usage.sessions", since=f.since, until=f.until):
         u = project_usage(row)
         if not u.get("billing_unit"):
@@ -1697,18 +1743,39 @@ def _credits_section(board: _Board) -> dict | None:
             credits = _model_credits(values.get("models") or {}, f.model) if f.model else values.get("billing_amount")
             if credits is None:
                 continue
-            amount = (amount or 0.0) + credits
-            credited.add(u["session_id"])
+            by_session[u["session_id"]] = by_session.get(u["session_id"], 0.0) + credits
             by_tool[u["tool"]] = by_tool.get(u["tool"], 0.0) + credits
             approximate = approximate or span[0] < f.since or span[1] > f.until
-    if not seen:
+    found = {"by_session": by_session, "by_tool": by_tool, "approximate": approximate, "seen": seen}
+    board._credits_memo = found
+    return found
+
+
+def _billed_usd(board: _Board, sid: str) -> float | None:
+    """What Copilot billed for a session in view (its credits x USD_PER_AI_CREDIT), or None when none is recorded."""
+    credits = _session_credits(board)["by_session"].get(sid)
+    return None if credits is None else credits * USD_PER_AI_CREDIT
+
+
+def _credits_section(board: _Board) -> dict | None:
+    """AI credits GitHub Copilot reports for the sessions in view, or None when none is in view.
+
+    Credits are stored per session and local day, as the tool reports them: not
+    dollars, and no list price is applied. A day counts when the session was active
+    on it inside the window; ``approximate`` is true when the window edge cuts
+    through such a day, which is counted whole. ``amount`` is None when a
+    session in view has no credits recorded.
+    """
+    found = _session_credits(board)
+    if not found["seen"]:
         return None
+    amount = sum(found["by_session"].values()) if found["by_session"] else None
     return {
         "amount": None if amount is None else round(amount, 2),
         "unit": "ai_credits",
-        "by_tool": {t: round(v, 2) for t, v in sorted(by_tool.items())},
-        "approximate": approximate,
-        **_credits_in_usd(board, amount, credited),
+        "by_tool": {t: round(v, 2) for t, v in sorted(found["by_tool"].items())},
+        "approximate": found["approximate"],
+        **_credits_in_usd(board, amount, set(found["by_session"])),
     }
 
 
@@ -3385,6 +3452,8 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
             key=lambda p: (-p["tokens"], -p["agents"], p["project"]),
         )
 
+    billed_by_project = _billed_by_project(board)
+
     def project_row(project: str, lines: tuple | None) -> dict:
         usage = board.by_project.get(project)
         calls = calls_by_project.get(project, 0)
@@ -3401,7 +3470,7 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
             "msgs": project_msgs,
             "tokens": usage.tokens if usage else 0,
             "cached_share": usage.cached_share if usage else None,
-            "cost_usd": _usd(usage.cost) if usage else None,
+            **_project_cost(usage, billed_by_project.get(project)),
             "tool_calls": calls if calls_known else None,
             "fail_rate": _ratio(fails, calls) if failures_kpi is not None else None,
             "test_runs": test_counts[0] if test_counts else (0 if calls_known else None),

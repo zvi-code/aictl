@@ -4,6 +4,7 @@ import { Meter } from '../../ui/Meter'
 import { OtelSections } from '../OtelSections'
 import { ContextCards, GitCard, InstructionsCard, OutputsCard } from '../OverviewCards'
 import { modelCalls, TOKENS_IO, TOKENS_WITH_CACHE, tokensInOut, tokensWithCache } from '../figures'
+import { costBasisHint } from '../../panels/overview/agentTree'
 import { median, runDelta } from '../overviewModel'
 import { sessionSpan, spanLabel } from '../sessionSpan'
 import { ResourceCharts } from '../ResourceCharts'
@@ -29,7 +30,9 @@ export default function Overview(props: TabProps) {
         <Stats items={[
           { label: TOKENS_IO, value: tokensInOut(agent()) },
           { label: TOKENS_WITH_CACHE, value: tokensWithCache(agent()) },
-          { label: 'Cost', value: agent()?.cost_usd == null ? undefined : fmtUsd(agent()?.cost_usd) },
+          { label: agent()?.cost_basis ? `Cost (${agent()!.cost_basis})` : 'Cost',
+            value: agent()?.cost_usd == null ? undefined : fmtUsd(agent()?.cost_usd),
+            detail: agent()?.cost_reason ? `Cost not known: ${agent()!.cost_reason}` : agent() ? costBasisHint(agent()!) : undefined },
           { label: 'Duration', value: spanLabel(span()), detail: 'First to last recorded activity' },
           { label: 'Messages', value: sum([agent()?.msgs?.user, agent()?.msgs?.assistant, agent()?.msgs?.tool]) },
           { label: 'Tool calls', value: agent()?.tool_calls }, { label: 'Failures', value: agent()?.failures },

@@ -1,5 +1,6 @@
 // The agents list as a tree: sessions with their subagents under them.
 // Pure functions only, so naming, order and the parent summary are tested without a DOM.
+import { fmtUsd } from '../../design/format'
 
 export type TreeAgent = {
   id: string
@@ -246,6 +247,19 @@ export function missingReason(row: TreeAgent, field: 'tokens' | 'cost' | 'tool_c
   if (field === 'tool_calls') return 'This tool does not report tool calls, or none were imported yet'
   return row.parent_id ? 'No usage rows yet: the subagent\'s transcript has not been imported'
     : 'No usage rows for this session in the selected time'
+}
+
+/** What a row's cost is: "billed" (Copilot's credits for the session) or "estimate" (list price). */
+export function costBasisText(row: TreeAgent): string | undefined {
+  return row.cost_basis === 'billed' || row.cost_basis === 'estimate' ? row.cost_basis : undefined
+}
+
+/** The hover text of a cost's basis, with the list-price estimate behind a billed cost. */
+export function costBasisHint(row: TreeAgent): string | undefined {
+  if (row.cost_basis === 'estimate') return 'List price x recorded tokens, not a bill'
+  if (row.cost_basis !== 'billed') return undefined
+  const listed = typeof row.list_cost_usd === 'number' ? ` List-price estimate: ${fmtUsd(row.list_cost_usd)}.` : ''
+  return `What Copilot billed for the session (AI credits at $0.01).${listed}`
 }
 
 const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0

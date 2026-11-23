@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: f54d7aaaa9f8fa6d1e2b7b94c2cf464bfb9e727cd118e4c99f49c94ac2cfbbbe
+// Schema digest: f1137d3ea287f803cbd23a39de2cf9b0263f6b24d552cd7c78798c6fadd4d6b1
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -21,6 +21,8 @@ export type BoardAgentRow = {
   cached_share: number | null;
   cost_usd: number | null;
   cost_reason?: string | null;
+  cost_basis?: ("billed" | "estimate" | null) & (string | null);
+  list_cost_usd?: number | null;
   tool_calls: number | null;
   failures: number | null;
   confirms_asked: number | null;
@@ -322,6 +324,8 @@ export type BoardProjects = Array<{
   tokens: number;
   cached_share: number | null;
   cost_usd: number | null;
+  cost_basis?: ("billed" | "estimate" | "mixed" | null) & (string | null);
+  list_cost_usd?: number | null;
   tool_calls: number | null;
   fail_rate: number | null;
   test_runs: number | null;
@@ -2443,6 +2447,8 @@ export type HistoryAgentRow = {
   cached_share: number | null;
   cost_usd: number | null;
   cost_reason?: string | null;
+  cost_basis?: ("billed" | "estimate" | null) & (string | null);
+  list_cost_usd?: number | null;
   tool_calls: number | null;
   failures: number | null;
   confirms_asked: number | null;

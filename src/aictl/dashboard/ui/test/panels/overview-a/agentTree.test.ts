@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ago, buildTree, duration, durationMissing, elapsed, lastMissing, missingReason, nameHint, subagentText, summarize, type TreeAgent,
+  ago, buildTree, costBasisHint, costBasisText, duration, durationMissing, elapsed, lastMissing, missingReason, nameHint, subagentText, summarize, type TreeAgent,
 } from '../../../src/panels/overview/agentTree'
 
 const T = 1_800_000_000
@@ -97,6 +97,14 @@ describe('row text', () => {
     // A VS Code session whose calls do not report the cached part of the prompt has no list price either way.
     expect(missingReason({ id: 'r', input: 5, cost_reason: 'VS Code does not report how much of the prompt was cached' }, 'cost'))
       .toBe('Cost not known: VS Code does not report how much of the prompt was cached')
+  })
+
+  it('labels a Copilot session cost as billed and a list-price cost as an estimate', () => {
+    expect(costBasisText({ id: 'c', cost_usd: 1.5, cost_basis: 'billed', list_cost_usd: 1.2 })).toBe('billed')
+    expect(costBasisHint({ id: 'c', cost_usd: 1.5, cost_basis: 'billed', list_cost_usd: 1.2 }))
+      .toBe('What Copilot billed for the session (AI credits at $0.01). List-price estimate: $1.20.')
+    expect(costBasisText({ id: 'e', cost_usd: 0.4, cost_basis: 'estimate' })).toBe('estimate')
+    expect(costBasisText({ id: 'n', cost_usd: null, cost_basis: null })).toBeUndefined()
     expect(lastMissing({ id: 'old' })).toBe('Not reported by this data source')
     expect(lastMissing({ id: 'new', last_activity_at: null })).toMatch(/No line or call recorded/)
     expect(durationMissing({ id: 'x' })).toBe('No start time recorded')
