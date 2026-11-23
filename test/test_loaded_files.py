@@ -11,9 +11,8 @@ from test_board_facts import NOW, claude_path, copilot_events, ev, iso, make_ing
 
 from aictl.dashboard import session_details
 from aictl.dashboard.session_details import _agent_record, _session_context_files
-from aictl.ingesters import loaded_files, loaded_files_backfill
+from aictl.ingesters import loaded_files
 from aictl.ingesters.loaded_files import claude_attachment, custom_agent_file, in_system_prompt, system_prompt_files
-from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.records import CallFacts, LoadedFileRow
 from aictl.session_facts import SessionFacts
 from aictl.stores.testing import MemoryWriter
@@ -183,67 +182,6 @@ def test_loaded_file_observations_keep_their_time_and_agent(db):
     db.write_call_facts(CallFacts(loaded_files=[first]))
     db.write_call_facts(CallFacts(loaded_files=[LoadedFileRow(session_id="s", path="/a/AGENTS.md", how="instructions", ts=300.0)]))
     assert [r["ts"] for r in db.writer.written("session_loaded_files")] == [row.ts, first.ts, 300.0]
-
-
-def _factory(root: Path):
-    def make(target):
-        return TranscriptUsageIngester(
-            target,
-            claude_projects=root / "claude" / "projects",
-            codex_sessions=root / "codex",
-            copilot_state=root / "copilot" / "session-state",
-            vscode_workspaces=root / "vscode" / "workspaceStorage",
-            backfill_days=loaded_files_backfill.ALL_DAYS,
-        )
-
-    return make
-
-
-class TestBackfill:
-    def test_old_sessions_get_their_rows_once_and_nothing_else(self, tmp_path):
-        from aictl.session_facts import SessionFacts
-        from aictl.state_file import StateFile
-        from aictl.stores.testing import MemoryWriter
-
-        # Older than the live reader's 30-day window.
-        old = {"type": "attachment", "timestamp": iso(90 * 86400), "sessionId": SESSION, "attachment": INSTRUCTIONS}
-        path = claude_path(tmp_path)
-        write_lines(path, [old])
-        stamp = NOW - 90 * 86400
-        import os
-
-        os.utime(path, (stamp, stamp))
-        writer = MemoryWriter()
-        target = SessionFacts(writer)
-        state = StateFile(tmp_path / "loaded.json")
-        assert loaded_files_backfill.run(target, state, _factory(tmp_path)) is True
-        [(op, table, rows)] = writer.operations
-        assert (op, table) == ("append", "session_loaded_files")
-        assert {r["path"] for r in rows} == {"/home/u/.claude/CLAUDE.md", "/work/proj/AGENTS.md"}
-        assert state.read().get(loaded_files_backfill.STATE_KEY)
-
-        def never(target):
-            raise AssertionError("the backfill ran twice")
-
-        assert loaded_files_backfill.run(target, state, never) is True
-
-    def test_a_write_that_keeps_failing_runs_again(self, tmp_path):
-        from aictl.session_facts import SessionFacts
-        from aictl.state_file import StateFile
-        from aictl.stores.base import StoreError
-        from aictl.stores.testing import MemoryWriter
-
-        write_lines(claude_path(tmp_path), [attachment(100, INSTRUCTIONS)])
-        writer = MemoryWriter()
-        target = SessionFacts(writer)
-        state = StateFile(tmp_path / "loaded.json")
-
-        def disconnected(table, rows):
-            raise StoreError("offline")
-
-        writer.append = disconnected
-        assert loaded_files_backfill.run(target, state, _factory(tmp_path)) is False
-        assert not state.read()
 
 
 # ── API ───────────────────────────────────────────────────────────────

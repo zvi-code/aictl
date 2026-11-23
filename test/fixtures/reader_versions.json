@@ -1,0 +1,30 @@
+{
+  "claude-transcript": {
+    "hash": "3571a85d6f04aa48",
+    "version": 1
+  },
+  "codex-rollout": {
+    "hash": "fef0a87db0ace2d5",
+    "version": 1
+  },
+  "copilot-events": {
+    "hash": "ba90a2edbdafa464",
+    "version": 1
+  },
+  "copilot-store": {
+    "hash": "a4e2ee7a58cd35cf",
+    "version": 1
+  },
+  "session-metadata": {
+    "hash": "236def42b9f08db0",
+    "version": 1
+  },
+  "vscode-chat-session": {
+    "hash": "7aecb939ff9bdb99",
+    "version": 1
+  },
+  "vscode-debug-log": {
+    "hash": "434417ff2c2b48ae",
+    "version": 1
+  }
+}

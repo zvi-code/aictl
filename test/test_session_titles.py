@@ -10,9 +10,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from aictl.dashboard.ingester_runner import _backfill_transcripts
 from aictl.dashboard.session_record import _match_of, _project_search_page
-from aictl.ingesters import session_titles
 from aictl.ingesters.session_titles import (
     CodexTitles,
     CopilotTitles,
@@ -342,16 +340,6 @@ class TestVSCodeChat:
                               {"kind": 1, "k": ["customTitle"], "v": "Chat renamed"}], facts)
         assert (_stored(facts, OTHER)["title"], _stored(facts, OTHER)["title_source"]) == ("Chat renamed", "user")
 
-    def test_the_one_time_scan_finds_the_name_in_a_chat_file(self, tmp_path):
-        ws = tmp_path / "workspaceStorage" / "hash"
-        _jsonl(ws / "chatSessions" / f"{OTHER}.jsonl",
-               [{"kind": 0, "v": {"sessionId": OTHER, "customTitle": "Chat name", "requests": []}}])
-        ing = TranscriptUsageIngester(None, claude_projects=tmp_path / "n1", codex_sessions=tmp_path / "n2",
-                                      copilot_state=tmp_path / "n3" / "session-state",
-                                      vscode_workspaces=tmp_path / "workspaceStorage")
-        assert ing.scan_titles() == {OTHER: ("Chat name", "user")}
-
-
 # ─── Names kept outside the transcripts, in the reader ────────────
 
 
@@ -377,42 +365,6 @@ class TestExternalNames:
             "id: tool-named\nname: Renamed\nuser_named: true\n", encoding="utf-8")
         ing.poll()
         assert (_stored(facts, "tool-named")["title"], _stored(facts, "tool-named")["title_source"]) == ("Renamed", "user")
-
-
-# ─── The one-time pass for sessions stored before ─────────────────
-
-
-class TestBackfill:
-    def _ingester(self, tmp_path, facts):
-        return lambda: TranscriptUsageIngester(None, claude_projects=tmp_path / "projects", codex_sessions=tmp_path / "n2",
-                                               copilot_state=tmp_path / "n3" / "session-state",
-                                               vscode_workspaces=tmp_path / "n4", fact_target=facts)
-
-    def test_stored_sessions_get_their_names_once_without_a_new_row_for_others(self, tmp_path):
-        facts = _facts()
-        facts.session(_row(input_tokens=3))
-        _jsonl(tmp_path / "projects" / "p" / f"{SID}.jsonl", [_assistant(), *CLAUDE_LINES])
-        _jsonl(tmp_path / "projects" / "p" / f"{OTHER}.jsonl", [_assistant(), CLAUDE_LINES[0]])
-        _jsonl(tmp_path / "projects" / "p" / SID / "subagents" / "agent-x.jsonl", [CLAUDE_LINES[0]])
-        state = StateFile(tmp_path / "session_titles.json")
-        assert session_titles.run(facts, state, self._ingester(tmp_path, facts)) is True
-        assert (_stored(facts)["title"], _stored(facts)["title_source"]) == ("My name for it (agent)", "user")
-        assert _stored(facts)["input_tokens"] == 3
-        assert not [r for r in facts.writer.written("sessions") if r["session_id"] == OTHER]
-        written = len(facts.writer.written("sessions"))
-
-        def refuse():
-            raise AssertionError("the pass ran twice")
-
-        assert session_titles.run(facts, state, refuse) is True
-        assert len(facts.writer.written("sessions")) == written
-        assert state.read()[session_titles.STATE_KEY] > 0
-
-    def test_a_new_node_records_the_pass_as_done_and_reads_no_file(self, tmp_path):
-        store = SimpleNamespace(restart_dir=tmp_path, history_store=SimpleNamespace(writer=None),
-                                session_facts=_facts())
-        _backfill_transcripts(store, new_node=True)
-        assert StateFile(tmp_path / "session_titles.json").read()[session_titles.STATE_KEY] > 0
 
 
 # ─── What the search returns and the board shows ──────────────────

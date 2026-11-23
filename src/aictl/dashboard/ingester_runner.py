@@ -17,13 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ingesters import (
-    agent_meta_backfill,
-    context_items_backfill,
-    loaded_files_backfill,
-    session_titles,
-    tool_size_backfill,
-)
+from ..ingesters import agent_meta_backfill
 from ..ingesters.copilot_session_store import (
     POLL_INTERVAL_S as COPILOT_POLL_INTERVAL_S,
 )
@@ -61,7 +55,7 @@ from ..state_file import StateFile, restart_directory
 
 log = logging.getLogger(__name__)
 
-# The tool size backfill starts after the first rounds of the readers: both read every transcript.
+# The subagent meta pass starts after the first rounds of the readers, which read the meta files they meet.
 BACKFILL_DELAY_S = 120.0
 
 
@@ -171,8 +165,6 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
 
     # ── Transcript usage: exact tokens for Claude Code, Codex, Copilot CLI ──
     checkpoint = StateFile(restart_dir / "transcript_usage.json")
-    # No saved read position: this node has stored nothing from session files yet.
-    new_node = not checkpoint.read()
     from ..platforms import load_config
 
     t_ing = TranscriptUsageIngester(None, defer_old=True, tool_calls=store.tool_calls,
@@ -218,44 +210,32 @@ def start_ingesters(store) -> dict[str, IngesterHandle]:
     a_thread.start()
     handles[a_handle.name] = a_handle
 
-    # ── One-time backfill of tool call sizes (v33) ──────────────
+    # ── Subagent meta files that came after their transcripts ──
     if t_enabled:
-        b_thread = threading.Thread(target=_backfill_transcripts, args=(store, new_node), daemon=True,
-                                    name="transcript-backfill")
+        b_thread = threading.Thread(target=_complete_agent_meta, args=(store,), daemon=True,
+                                    name="agent-meta-pass")
         b_thread.start()
     return handles
 
 
-def _backfill_transcripts(store, new_node: bool = False) -> None:
-    """Run the one-time transcript backfills.
+def _complete_agent_meta(store, delay_s: float = BACKFILL_DELAY_S) -> None:
+    """Give stored subagent rows the fields of meta files written after their transcripts were read.
 
-    They add rows that older versions did not write, to a store that those versions
-    filled. A new node has no such rows: its reader writes them all, so each backfill
-    is recorded as done and no session file is read a second time. The session names pass
-    reads only the name lines and metadata files, and renames after it come with the
-    normal polling. The subagent meta pass reads only the small meta files, and the stored rows of their
-    sessions; after its first pass, each start reads only the meta files changed since the last one.
+    Rows that an older reader did not write come from reading the session files again: a file
+    last read by a lower reader version is read again by the transcript reader itself
+    (transcript_usage.READER_VERSIONS). That replaced the one-time passes for tool call sizes,
+    loaded files, context items and session names. This pass is not such a re-read: a meta file
+    can appear after its transcript's last line, and the transcript is then not read again. It
+    reads the small meta files only, and runs at every start, on a new node too.
     """
     if store.restart_dir is None:
         return
-    backfills = ((tool_size_backfill, store.history_store.writer), (loaded_files_backfill, store.session_facts),
-                 (context_items_backfill, store.session_facts), (session_titles, store.session_facts),
-                 (agent_meta_backfill, store))
-
-    def state(module) -> StateFile:
-        return StateFile(store.restart_dir / f"{module.__name__.rsplit('.', 1)[-1]}.json")
-
-    if new_node:
-        for module, _ in backfills:
-            if not state(module).read().get(module.STATE_KEY):
-                state(module).replace({module.STATE_KEY: time.time()})
-        return
-    time.sleep(BACKFILL_DELAY_S)
-    for module, target in backfills:
-        try:
-            module.run(target, state(module))
-        except Exception:
-            log.exception("%s failed; it runs again on the next start", module.__name__)
+    if delay_s:
+        time.sleep(delay_s)
+    try:
+        agent_meta_backfill.run(store, StateFile(store.restart_dir / "agent_meta_backfill.json"))
+    except Exception:
+        log.exception("The subagent meta pass failed; it runs again on the next start")
 
 
 def _record_poll_failure(ingester, name: str, exc: Exception) -> None:

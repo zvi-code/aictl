@@ -325,21 +325,20 @@ def test_the_pass_reads_rows_it_can_write_whole():
     assert set(params.split()) == {"all_nodes", "requested_node", "session_keys"}
 
 
-def test_a_start_runs_the_pass_and_a_new_node_records_it_as_done(monkeypatch, tmp_path):
+def test_every_start_runs_the_pass_a_new_node_too_and_no_other_one_time_pass_is_left(monkeypatch, tmp_path):
+    # A new node ran nothing before: it recorded each pass as done. The meta pass now runs at
+    # every start; the other passes are reads again by the reader versions (transcript_usage).
     from aictl.dashboard import ingester_runner
     from aictl.ingesters import agent_meta_backfill
 
     store = SimpleNamespace(restart_dir=tmp_path, history_store=SimpleNamespace(writer=None), session_facts=Facts())
-    ingester_runner._backfill_transcripts(store, new_node=True)
-    assert StateFile(tmp_path / "agent_meta_backfill.json").read()[agent_meta_backfill.STATE_KEY] > 0
-
     ran = []
-    monkeypatch.setattr(agent_meta_backfill, "run", lambda target, state: ran.append(target))
-    for name in ("tool_size_backfill", "loaded_files_backfill", "context_items_backfill", "session_titles"):
-        monkeypatch.setattr(getattr(ingester_runner, name), "run", lambda *args, **kwargs: True)
-    monkeypatch.setattr(ingester_runner, "BACKFILL_DELAY_S", 0.0)
-    ingester_runner._backfill_transcripts(store, new_node=False)
-    assert ran == [store]
+    monkeypatch.setattr(agent_meta_backfill, "run", lambda target, state: ran.append((target, state.path.name)))
+    ingester_runner._complete_agent_meta(store, delay_s=0)
+    assert ran == [(store, "agent_meta_backfill.json")]
+    assert not hasattr(ingester_runner, "_backfill_transcripts")
+    for name in ("tool_size_backfill", "loaded_files_backfill", "context_items_backfill"):
+        assert not (Path(agent_meta_backfill.__file__).parent / f"{name}.py").exists(), name
 
 
 assert NOW  # the shared fixtures' clock

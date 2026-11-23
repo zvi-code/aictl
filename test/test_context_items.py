@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -22,9 +21,8 @@ from test_board_facts import (
 
 from aictl.context_lists import POINTER_PREFIX, is_pointer
 from aictl.dashboard import session_details
-from aictl.ingesters import context_items, context_items_backfill
+from aictl.ingesters import context_items
 from aictl.ingesters.context_items import Item, claude_attachment, copilot_system_prompt
-from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.records import CallFacts, ContextItemRow
 from aictl.session_facts import SessionFacts
 from aictl.stores.testing import MemoryWriter
@@ -579,48 +577,6 @@ def test_kinds_are_the_api_values():
 
 
 # ── Schema v36, project stores, backfill ─────────────────────────────
-
-
-def _factory(root: Path):
-    def make(target):
-        return TranscriptUsageIngester(
-            target,
-            claude_projects=root / "claude" / "projects",
-            codex_sessions=root / "codex",
-            copilot_state=root / "copilot" / "session-state",
-            vscode_workspaces=root / "vscode" / "workspaceStorage",
-            backfill_days=36500.0,
-        )
-
-    return make
-
-
-def test_the_backfill_writes_only_context_items_and_runs_once(tmp_path):
-    from aictl.session_facts import SessionFacts
-    from aictl.state_file import StateFile
-    from aictl.stores.testing import MemoryWriter
-
-    old = {"type": "attachment", "timestamp": iso(90 * 86400), "sessionId": SESSION, "attachment": instructions(40, 40)}
-    path = claude_path(tmp_path)
-    write_lines(path, [old])
-    stamp = NOW - 90 * 86400
-    os.utime(path, (stamp, stamp))
-    writer = MemoryWriter()
-    target = SessionFacts(writer)
-    state = StateFile(tmp_path / "context.json")
-    assert context_items_backfill.run(target, state, _factory(tmp_path)) is True
-    [(op, table, rows)] = writer.operations
-    assert (op, table) == ("append", "session_context_items")
-    assert {(r["kind"], r["name"]) for r in rows} == {
-        ("memory_file", "/home/u/.claude/CLAUDE.md"),
-        ("memory_file", "/work/proj/AGENTS.md"),
-    }
-    assert state.read().get(context_items_backfill.STATE_KEY)
-
-    def never(target):
-        raise AssertionError("the backfill ran twice")
-
-    assert context_items_backfill.run(target, state, never) is True
 
 
 # ── Claude Code /context report ───────────────────────────────────────

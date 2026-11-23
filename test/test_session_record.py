@@ -15,16 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 from kusto_replay import NOW
-from test_board_facts import c_assistant, c_tool_result, c_tool_use, claude_path, write_lines
 
 from aictl.dashboard import board_projection, session_record
 from aictl.dashboard.board_routes import handle_get
 from aictl.dashboard.session_details import agent_detail
 from aictl.dashboard.session_record import PullRequestFinder, is_recorded_artifact, is_text_file, search_sessions
-from aictl.ingesters import session_artifacts, tool_size_backfill
+from aictl.ingesters import session_artifacts
 from aictl.ingesters.session_artifacts import SessionArtifactIndexer, scan_folder
-from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.records import _dedup_key
 from aictl.session_evidence import SessionEvidence
 from aictl.session_facts import SessionFacts
 from aictl.stores.base import StoreError
@@ -546,78 +543,6 @@ class TestViewing:
         binary.write_bytes(b"\x00\x01\x02")
         assert not is_text_file(str(binary))
         assert not is_text_file(str(tmp_path / "missing.md"))
-
-
-# ─── One-time tool size backfill ──────────────────────────────────
-
-
-def _ingester_factory(root: Path):
-    def make(target, tool_calls):
-        return TranscriptUsageIngester(
-            target,
-            claude_projects=root / "claude" / "projects",
-            codex_sessions=root / "codex",
-            copilot_state=root / "copilot" / "session-state",
-            vscode_workspaces=root / "vscode" / "workspaceStorage",
-            backfill_days=tool_size_backfill.ALL_DAYS,
-            tool_calls=tool_calls,
-        )
-
-    return make
-
-
-class TestToolSizeBackfill:
-    def _seed(self, tmp_path) -> dict:
-        args = {"command": "ls -la"}
-        write_lines(
-            claude_path(tmp_path),
-            [
-                c_assistant("m1", "r1", 100, blocks=[c_tool_use("t1", "Bash", args), c_tool_use("t2", "Bash", {"command": "pwd"})]),
-                c_tool_result("t1", 90, content="hello"),
-                c_tool_result("t2", 80, content="there"),
-            ],
-        )
-        return args
-
-    def test_sizes_are_replayed_once_without_writing_call_rows(self, tmp_path):
-        from aictl.state_file import StateFile
-        from aictl.stores.testing import MemoryWriter
-
-        args = self._seed(tmp_path)
-        writer = MemoryWriter()
-        state = StateFile(tmp_path / "sizes.json")
-        # This test uses the transcript fixtures' fixed clock.
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr("time.time", lambda: NOW)
-            assert tool_size_backfill.run(writer, state, _ingester_factory(tmp_path))
-        assert {table for _, table, _ in writer.operations} == {"tool_invocation_sizes"}
-        sizes = {row["dedup_key"]: row for _, _, batch in writer.operations for row in batch}
-        assert len(sizes) == 2  # Evidence does not add a call, even if no base row exists.
-        row = sizes[_dedup_key("claude-tool", "t1")]
-        assert (row["input_bytes"], row["output_bytes"]) == (len(json.dumps(args).encode()), 5)
-        assert state.read()[tool_size_backfill.STATE_KEY] == NOW
-
-        def never(*args):
-            pytest.fail("The backfill ran twice")
-
-        assert tool_size_backfill.run(writer, state, never)
-
-    def test_failed_handoff_does_not_save_restart_marker(self, tmp_path, monkeypatch):
-        from aictl.state_file import StateFile
-        from aictl.stores.testing import MemoryWriter
-
-        self._seed(tmp_path)
-        writer = MemoryWriter()
-        state = StateFile(tmp_path / "sizes.json")
-        monkeypatch.setattr("time.time", lambda: NOW)
-
-        def fail(*args):
-            raise OSError("handoff failed")
-
-        monkeypatch.setattr(writer, "upsert", fail)
-        with pytest.raises(OSError, match="handoff failed"):
-            tool_size_backfill.run(writer, state, _ingester_factory(tmp_path))
-        assert state.read() == {}
 
 
 # ─── Schema v34 ───────────────────────────────────────────────────

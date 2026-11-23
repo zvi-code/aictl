@@ -75,9 +75,7 @@ from .session_titles import (
     Title,
     chat_title,
     claude_title,
-    clean_title,
     outranks,
-    read_claude_titles,
 )
 from .transcript_tail import records
 from .vscode_chat_logs import default_log_dir as vscode_chat_default_log_dir
@@ -111,6 +109,39 @@ ALL_DAYS = 36500
 IDLE_END_S = 900.0
 # A permission prompt older than this is shown as abandoned, not as waiting.
 PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
+
+
+# The version of each reader of session files, per kind of file. The saved read position of a file
+# records the version that last read it to its end. A file last read by a lower version is read
+# again from its start, all its rows stored again under the same keys, after the new and changed
+# files of its tool (see TranscriptUsageIngester._plan). Raise a kind's version when its reader, or
+# the store's handling of its rows, writes a row or a value it did not write before:
+# test/fixtures/reader_versions.json records a hash of each reader's record lists and handlers, and
+# test/test_reader_version_guard.py fails until the version changes with them.
+# Version 1: the first recorded version. A position saved before versions existed counts as 0,
+# so every file is read again once: an older aictl stored no prompt and no digest text older than
+# 14 days, and no session file was read again after its reader learnt more.
+READER_VERSIONS: dict[str, int] = {
+    "claude-transcript": 1,  # projects/**/<session>.jsonl and subagents: ClaudeAccumulator, ClaudeFacts
+    "codex-rollout": 1,  # sessions/**/rollout-*.jsonl[.zst]: CodexAccumulator
+    "copilot-events": 1,  # session-state/<id>/events.jsonl: CopilotAccumulator, CopilotFacts
+    "copilot-store": 1,  # session-store.db assistant_usage_events: CopilotStoreReader
+    "vscode-debug-log": 1,  # GitHub.copilot-chat/debug-logs/<id>/*.jsonl: VSCodeDebugLogAccumulator, VSCodeDebugFacts
+    "vscode-chat-session": 1,  # chatSessions/<id>.jsonl: VSCodeChatSessionAccumulator, VSCodeChatFacts
+    # Claude workflows/wf_*.json, Copilot session.db todos and session-store.db checkpoints:
+    # session_outcomes.MetadataReaders. Small files, read again at once, not paced.
+    "session-metadata": 1,
+}
+# The order in which the tools' backlogs share the bytes of a poll: Copilot CLI and the Copilot app
+# (one session folder), VS Code, Claude Code, then Codex.
+BACKLOG_PRIORITY = ("copilot-cli", "copilot-vscode", "claude-code", "codex-cli")
+
+
+def reader_kind(tool: str, path: Path) -> str:
+    """The kind of session file *path* of *tool* is, as READER_VERSIONS names it."""
+    if tool == "copilot-vscode":
+        return "vscode-debug-log" if "debug-logs" in path.parts else "vscode-chat-session"
+    return {"claude-code": "claude-transcript", "codex-cli": "codex-rollout", "copilot-cli": "copilot-events"}[tool]
 
 
 # Record types consumed by ClaudeAccumulator + ClaudeFacts; all other Claude JSONL lines are skipped before json.loads.
@@ -1305,10 +1336,14 @@ class TranscriptUsageIngester:
         self._saved_store: tuple[int, str] = (0, "")
         # Per file read to its end: a digest of its last bytes, to know the file again after a restart.
         self._tails: dict[Path, str] = {}
-        self._checkpoints = self._load_checkpoints()
-        self._read_complete: dict[Path, tuple[int, int]] = {}
-        self._deferred: set[Path] = set()
-        self._defer_budget = 0
+        # Per file read to its end: (mtime_ns, size, version of the reader that read it).
+        self._checkpoints: dict[Path, tuple[int, int, int]] = self._load_checkpoints()
+        self._read_complete: dict[Path, tuple[int, int, int]] = {}
+        # This poll's plan (see _plan): each file's stat and kind, and the backlog that waits:
+        # path -> (tool, size, mtime, read again for a newer reader).
+        self._stats: dict[Path, tuple[int, float, int]] = {}
+        self._kinds: dict[Path, str] = {}
+        self._waiting: dict[Path, tuple[str, int, float, bool]] = {}
         self._transcript_paths: dict[Path, str] = {}
         self._path_observers: tuple[Callable[[Path, str], None], ...] = ()
         self._path_lock = threading.RLock()
@@ -1335,19 +1370,31 @@ class TranscriptUsageIngester:
                 for observer in self._path_observers:
                     observer(path, tool)
 
-    def _load_checkpoints(self) -> dict[Path, tuple[int, int]]:
+    def _load_checkpoints(self) -> dict[Path, tuple[int, int, int]]:
         if self._checkpoint is None:
             return {}
         try:
             entry = self._checkpoint.read().get(self._checkpoint_key, {})
             saved = entry.get("files", {})
-            checkpoints = {Path(path): (int(mtime), int(size)) for path, (mtime, size) in saved.items()}
+            # A position saved before reader versions has no third value: version 0.
+            checkpoints = {Path(path): (int(sig[0]), int(sig[1]), int(sig[2]) if len(sig) > 2 else 0)
+                           for path, sig in saved.items()}
             self._resume_before = float(entry["ts"]) - RESTART_GRACE_S if entry else 0.0
             self._tails = {Path(path): str(tail) for path, tail in entry.get("tails", {}).items()}
             row_id, mark = entry.get("copilot_store", (0, ""))
-            self._store.stored = self._saved_store = (int(row_id), str(mark))
+            self._saved_store = (int(row_id), str(mark))
+            # Rows the store reader stored are skipped after a restart, unless a newer reader reads them.
+            current = int(entry.get("copilot_store_version", 0)) >= READER_VERSIONS["copilot-store"]
+            self._store.stored = self._saved_store if current else (0, "")
+            if not current:
+                self._saved_store = (-1, "")  # saved again, with the version, once the rows are stored
             self._book.load(entry.get("outcomes"))
-            self._metadata.load(entry.get("metadata"))
+            # The metadata files (Claude workflows, Copilot todos and store checkpoints) are read again
+            # when their reader is newer than the one that read them.
+            if int(entry.get("metadata_version", 0)) >= READER_VERSIONS["session-metadata"]:
+                self._metadata.load(entry.get("metadata"))
+            elif entry.get("metadata"):
+                self._metadata.dirty = True
             return checkpoints
         except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
             log.warning("transcript-usage: checkpoints unavailable; source files will be read again: %s", exc)
@@ -1363,11 +1410,14 @@ class TranscriptUsageIngester:
         self._checkpoints.update(self._read_complete)
         try:
             self._checkpoint.replace({self._checkpoint_key: {
-                "ts": ts, "files": {str(p): sig for p, sig in self._checkpoints.items()},
+                "ts": ts, "files": {str(p): list(sig) for p, sig in self._checkpoints.items()},
                 "copilot_store": list(position),
+                # Every row up to the position was read by this version, and stored (see CopilotStoreReader).
+                "copilot_store_version": READER_VERSIONS["copilot-store"],
                 "tails": {str(p): tail for p, tail in self._tails.items() if p in self._checkpoints},
                 "outcomes": self._book.dump(ts - self.backfill_days * 86400),
                 "metadata": self._metadata.dump(),
+                "metadata_version": READER_VERSIONS["session-metadata"],
             }})
             self._read_complete.clear()
             self._saved_store = position
@@ -1375,39 +1425,109 @@ class TranscriptUsageIngester:
         except OSError as exc:
             log.warning("transcript-usage: checkpoints not saved; the next poll will retry: %s", exc)
 
-    def _changed(self, paths: Iterable[Path], cutoff: float, tool: str = "") -> list[Path]:
-        found: list[tuple[float, Path]] = []
-        now = time.time()
-        for p in paths:
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            saved = self._checkpoints.get(p)
-            offset = self._offsets.get(p, saved[1] if saved else 0)
-            size = _current_size(p, st.st_size, st.st_mtime, offset, now)
-            if tool:
-                self._found[p] = (tool, st.st_mtime_ns, size)
-            if p not in self._offsets:
-                if saved == (st.st_mtime_ns, size) and st.st_mtime < self._resume_before:
+    def _version_current(self, path: Path) -> bool:
+        """True when the reader that last read *path* to its end is this reader's version."""
+        saved = self._checkpoints.get(path)
+        kind = self._kinds.get(path)
+        return saved is not None and (kind is None or saved[2] >= READER_VERSIONS[kind])
+
+    def _plan(self, files: dict[str, list[Path]], cutoff: float, now: float) -> None:
+        """Stat every session file and choose the backlog files this poll reads.
+
+        A file this process has not read waits in its tool's backlog when it is old (older than
+        RECENT_FIRST_S) and was never read, or was read to its end, unchanged since, by a lower
+        reader version. A poll reads up to DEFERRED_BYTES_PER_POLL of backlog (none in the first
+        poll, which reads the recent files), shared out between the tools with a backlog in the
+        order of BACKLOG_PRIORITY: each takes an equal part of what is left, so no tool waits for
+        another's backlog. Within a tool the never-read files come first, then the files to read
+        again, newest first. Without *defer_old* every file is read at once.
+        """
+        self._stats.clear()
+        self._waiting.clear()
+        backlog: dict[str, list[tuple[bool, float, int, Path]]] = {}
+        for tool, paths in files.items():
+            for p in paths:
+                try:
+                    st = p.stat()
+                except OSError:
                     continue
-                held = platforms.IS_WINDOWS and st.st_mtime < now - RECENT_FIRST_S and _held(p)
-                if st.st_mtime < cutoff and not held:
+                self._kinds[p] = reader_kind(tool, p)
+                saved = self._checkpoints.get(p)
+                offset = self._offsets.get(p, saved[1] if saved else 0)
+                size = _current_size(p, st.st_size, st.st_mtime, offset, now)
+                self._stats[p] = (st.st_mtime_ns, st.st_mtime, size)
+                if p in self._offsets or not self.defer_old:
+                    continue
+                unchanged = saved is not None and saved[:2] == (st.st_mtime_ns, size)
+                if unchanged and st.st_mtime < self._resume_before and self._version_current(p):
+                    continue
+                if st.st_mtime < cutoff or st.st_mtime >= now - RECENT_FIRST_S:
+                    continue
+                again = unchanged and not self._version_current(p)
+                if (saved is None or again) and not (platforms.IS_WINDOWS and _held(p)):
+                    backlog.setdefault(tool, []).append((again, -st.st_mtime, size, p))
+        remaining = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
+        tools = [t for t in (*BACKLOG_PRIORITY, *sorted(backlog.keys() - set(BACKLOG_PRIORITY))) if backlog.get(t)]
+        for i, tool in enumerate(tools):
+            # A Claude Code session's main file and its subagents' files are read in one poll: a
+            # subagent's lines name their turn by the prompt id that the main file numbers.
+            units: dict[object, list[tuple[bool, float, int, Path]]] = {}
+            for item in backlog[tool]:
+                units.setdefault(_claude_session_id(item[3]) if tool == "claude-code" else item[3], []).append(item)
+            share = remaining / (len(tools) - i)
+            used = 0
+            for unit in sorted(units.values(), key=lambda u: (min(x[0] for x in u), min(x[1] for x in u))):
+                if used < share:
+                    used += sum(x[2] for x in unit)
+                    continue
+                for again, neg_mtime, size, p in unit:
+                    self._waiting[p] = (tool, size, -neg_mtime, again)
+            remaining -= used
+
+    def backlog_status(self) -> dict[str, dict]:
+        """Per tool, what waits in the backlog: files and bytes, those of them to read again for a
+        newer reader, and the day of the oldest waiting file."""
+        status: dict[str, dict] = {}
+        for tool, size, mtime, again in self._waiting.values():
+            entry = status.setdefault(tool, {"files_waiting": 0, "bytes_waiting": 0, "reread_files_waiting": 0,
+                                             "reread_bytes_waiting": 0, "oldest_waiting": mtime})
+            entry["files_waiting"] += 1
+            entry["bytes_waiting"] += size
+            entry["reread_files_waiting"] += int(again)
+            entry["reread_bytes_waiting"] += size if again else 0
+            entry["oldest_waiting"] = min(entry["oldest_waiting"], mtime)
+        for entry in status.values():
+            entry["oldest_waiting"] = local_day(entry["oldest_waiting"])
+        return status
+
+    def _changed(self, paths: Iterable[Path], cutoff: float, tool: str = "") -> list[Path]:
+        """The files of *paths* to read in this poll, by the plan of :meth:`_plan`."""
+        found: list[tuple[float, Path]] = []
+        for p in paths:
+            stat = self._stats.get(p)
+            if stat is None:
+                continue
+            mtime_ns, mtime, size = stat
+            saved = self._checkpoints.get(p)
+            if tool:
+                self._found[p] = (tool, mtime_ns, size)
+            if p not in self._offsets:
+                if (saved is not None and saved[:2] == (mtime_ns, size) and mtime < self._resume_before
+                        and self._version_current(p)):
+                    continue
+                held = platforms.IS_WINDOWS and mtime < time.time() - RECENT_FIRST_S and _held(p)
+                if mtime < cutoff and not held:
                     self._outside_window.add(p)
                     continue
-                if self.defer_old and saved is None and st.st_mtime < now - RECENT_FIRST_S and not held:
-                    if self._defer_budget <= 0:
-                        self._deferred.add(p)
-                        continue
-                    self._defer_budget -= size
-                self._deferred.discard(p)
+                if p in self._waiting:
+                    continue
             if size < self._offsets.get(p, 0):
                 # Truncated or rewritten: its lines were already counted, so
                 # re-reading from 0 is the only way to see new ones, and the
                 # global request key keeps Claude's replay from double counting.
                 self._offsets[p] = 0
             if size > self._offsets.get(p, 0):
-                found.append((st.st_mtime, p))
+                found.append((mtime, p))
         # Oldest first: a streaming reply's lines are read in the order they were written.
         return [p for _, p in sorted(found, key=lambda x: x[0])]
 
@@ -1424,7 +1544,6 @@ class TranscriptUsageIngester:
         self.facts.cutoff = cutoff
         self._found.clear()
         self._outside_window.clear()
-        self._defer_budget = 0 if self._first_poll else DEFERRED_BYTES_PER_POLL
         # Publish only path identities before any replay or storage work. Native
         # output follows active append-only tails, never this history backlog.
         unclaimed: dict[str, list[Path]] = {}
@@ -1441,6 +1560,11 @@ class TranscriptUsageIngester:
             copilot_files += found
             unclaimed.setdefault("copilot-cli", []).extend(other)
         unclaimed = {tool: paths for tool, paths in unclaimed.items() if paths}
+        workspace_roots, empty_window_dirs = self._vscode_dirs()
+        debug_files = [p for root in workspace_roots for p in root.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl")]
+        chat_files = self._chat_files(workspace_roots, empty_window_dirs)
+        self._plan({"claude-code": claude_files, "codex-cli": codex_files, "copilot-cli": copilot_files,
+                    "copilot-vscode": debug_files + chat_files}, cutoff, now)
         self._note_transcript_paths(claude_files, "claude-code")
         # A compressed rollout is a finished session: nothing tails it, so only plain ones are announced.
         self._note_transcript_paths([p for p in codex_files if p.suffix != session_files.ZSTD], "codex-cli")
@@ -1459,6 +1583,7 @@ class TranscriptUsageIngester:
             # A file read again from its start after a restart: the lines up to the saved
             # size rebuild the totals, and their rows, stored by the earlier run, are not sent again.
             stored_through = self._stored_through(path) if path not in self._offsets else 0
+            self._note_reread(path)
             try:
                 with open(path, "rb") as fh:
                     fh.seek(offset)
@@ -1474,7 +1599,7 @@ class TranscriptUsageIngester:
                             break
                     st = os.fstat(fh.fileno())
                     if offset == st.st_size:
-                        self._read_complete[path] = (st.st_mtime_ns, offset)
+                        self._read_complete[path] = (st.st_mtime_ns, offset, self._reader_version(path))
                         self._tails[path] = _tail_digest(fh, offset)
             except OSError as exc:
                 errors += 1
@@ -1573,9 +1698,6 @@ class TranscriptUsageIngester:
         self._check_fact_write()
 
         debug_ids: set[str] = set()
-        workspace_roots, empty_window_dirs = self._vscode_dirs()
-        debug_files = [p for root in workspace_roots for p in root.glob("*/GitHub.copilot-chat/debug-logs/*/*.jsonl")]
-        chat_files = self._chat_files(workspace_roots, empty_window_dirs)
         for path in self._changed(debug_files, cutoff, "copilot-vscode"):
             sid = path.parent.name
             debug_ids.add(sid)
@@ -1594,9 +1716,16 @@ class TranscriptUsageIngester:
             """A chat file's snapshot one request at a time, then its patch lines."""
             nonlocal errors
             if self._offsets.get(path, 0) == 0:
+                stored_through = self._stored_through(path)
+                self._note_reread(path)
                 try:
                     end, events = snapshot_events(path)
-                    yield from events
+                    # The snapshot line, like any line, is not stored again when an earlier run stored it.
+                    self.facts.replaying = 0 < end <= stored_through
+                    try:
+                        yield from events
+                    finally:
+                        self.facts.replaying = False
                 except OSError as exc:
                     errors += 1
                     log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
@@ -1676,7 +1805,9 @@ class TranscriptUsageIngester:
                 **({"unreadable": {"codex-cli": len(unreadable), "reason": "; ".join(sorted(set(unreadable.values())))}}
                    if unreadable else {}),
                 **({"unclaimed_files": {tool: len(paths) for tool, paths in unclaimed.items()}} if unclaimed else {}),
-                "older_files_waiting": len(self._deferred),
+                # Files of the backlog not read yet: never read, or to read again for a newer reader.
+                "older_files_waiting": len(self._waiting),
+                "backlog": self.backlog_status(),
                 "pending_fact_rows": pending,
                 "session_files": dict(self.source_counts),
                 "history_days": 0 if self.backfill_days >= ALL_DAYS else self.backfill_days,
@@ -1723,38 +1854,6 @@ class TranscriptUsageIngester:
             self._title_retry = set()
             return
         self._title_retry = send({sid: self._external_titles[sid] for sid in sids})
-
-    def scan_titles(self) -> dict[str, Title]:
-        """Every session name on this machine, whatever the age of the file.
-
-        Reads the name lines of each Claude Code transcript and the metadata files of the
-        other tools, never a whole transcript into memory. Used once, for sessions stored
-        before names were uploaded.
-        """
-        found: dict[str, Title] = {}
-
-        def add(sid: str, title: Title) -> None:
-            if title[0] and outranks(*found.get(sid, ("", "")), *title):
-                found[sid] = title
-
-        for root in self._roots("claude", self.claude_projects):
-            for path in iter_claude_files(root):
-                if "subagents" not in path.parts:
-                    add(_claude_session_id(path), read_claude_titles(path))
-        for kind, default in (("copilot", self.copilot_state), ("codex", self.codex_sessions)):
-            for root in self._roots(kind, default):
-                for sid, title in self._title_reader(kind, root).read().items():
-                    add(sid, title)
-        from ..observe.sessions import _chat_file_fields
-
-        workspace_roots, empty_window_dirs = self._vscode_dirs()
-        for path in self._chat_files(workspace_roots, empty_window_dirs):
-            try:
-                size = path.stat().st_size
-            except OSError:
-                continue
-            add(path.stem, (clean_title(_chat_file_fields(path, size).get("customTitle")), USER))
-        return found
 
     def _codex_rollouts(self) -> tuple[list[Path], list[Path]]:
         """The Codex rollouts to read, and the session-like files no rule covers.
@@ -1833,16 +1932,30 @@ class TranscriptUsageIngester:
                 stream.close()
         self._bad_zst.pop(path, None)
         self._offsets[path] = st.st_size
-        self._read_complete[path] = sig
+        self._read_complete[path] = (*sig, self._reader_version(path))
+
+    def _note_reread(self, path: Path) -> None:
+        """A file read again for a newer reader: its session's outcome row is written again too,
+        though the parts it is made of may come out as they were."""
+        if path in self._offsets or path not in self._checkpoints or self._version_current(path):
+            return
+        tool = self._found.get(path, ("",))[0]
+        if tool:
+            self._book._written.pop(self._source_session(tool, path), None)
+
+    def _reader_version(self, path: Path) -> int:
+        kind = self._kinds.get(path)
+        return READER_VERSIONS[kind] if kind else 0
 
     def _stored_through(self, path: Path) -> int:
         """The size up to which an earlier run stored this file's rows, or 0 when that is not sure.
 
         The saved size counts only if the file still ends, at that size, with the bytes it
-        ended with then: a file that was written again is stored from its first line.
+        ended with then: a file that was written again is stored from its first line. So is a
+        file that a lower reader version read: what it stored is not all this reader stores.
         """
         saved, tail = self._checkpoints.get(path), self._tails.get(path)
-        if saved is None or not tail:
+        if saved is None or not tail or not self._version_current(path):
             return 0
         try:
             with open(path, "rb") as fh:
@@ -1924,7 +2037,7 @@ class TranscriptUsageIngester:
         rows: list[dict] = []
         for path, (tool, mtime_ns, size) in self._found.items():
             offset = self._offsets.get(path, 0)
-            if self._checkpoints.get(path) == (mtime_ns, size):
+            if (self._checkpoints.get(path) or ())[:2] == (mtime_ns, size):
                 status, done = "complete", size
             elif path in self._outside_window:
                 status, done = "outside_window", 0

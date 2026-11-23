@@ -7,9 +7,8 @@ made the title or summary. ``prompt``: derived from prompt text. A name of a hig
 replaces a lower one; the same source replaces its own name when the text differs, so the
 latest name wins and a rename is picked up. An empty name never clears a stored one.
 
-``run`` is the one-time pass that gives the sessions stored before names were uploaded
-their names. It reads only the title lines and metadata files, never a whole transcript
-into memory.
+Sessions stored before names were uploaded get their names when their files are read again
+(the reader versions of ``transcript_usage``).
 """
 
 from __future__ import annotations
@@ -18,19 +17,15 @@ import json
 import logging
 import os
 import re
-import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from ..observe.copilot_events import clean
-from ..state_file import StateFile
 from ._common import open_readonly
 
 log = logging.getLogger(__name__)
 
-STATE_KEY = "session_titles_backfilled_at"
-ALL_DAYS = 36500.0
 TITLE_MAX = 120
 USER, TOOL, PROMPT = "user", "tool", "prompt"
 _RANK = {PROMPT: 1, TOOL: 2, USER: 3}
@@ -259,26 +254,3 @@ class CodexTitles:
         except OSError:
             pass
         return names
-
-
-def run(facts: Any, state: StateFile, ingester_factory: Callable[[], Any] | None = None) -> bool:
-    """Give the sessions stored before names were uploaded their names, once.
-
-    Only sessions the store already holds are changed: the rest get their names when their
-    files are read. Returns True when it is done (now or before).
-    """
-    if state.read().get(STATE_KEY):
-        return True
-    if ingester_factory is None:
-        from .transcript_usage import TranscriptUsageIngester
-
-        def ingester_factory() -> Any:
-            return TranscriptUsageIngester(None, backfill_days=ALL_DAYS, fact_target=facts)
-
-    started = time.monotonic()
-    titles = ingester_factory().scan_titles()
-    unknown = facts.titles(titles)
-    state.replace({STATE_KEY: time.time()})
-    log.info("Session names: %d found, %d for sessions not stored, in %.0f s",
-             len(titles), len(unknown), time.monotonic() - started)
-    return True

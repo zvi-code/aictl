@@ -1012,7 +1012,7 @@ class TestRereads:
         ingester = make_ingester(db, tmp_path, defer_old=True)
         ingester.poll()
         assert count(db, "requests") == 0
-        assert path in ingester._deferred
+        assert path in ingester._waiting
         ingester.poll()
         assert count(db, "requests") == 1
 
@@ -1027,7 +1027,7 @@ class TestRereads:
         restarted.poll()
         restarted.poll()
         assert count(db, "requests") == 1
-        assert not restarted._deferred
+        assert not restarted._waiting
 
     def test_a_completed_old_file_is_skipped_but_an_unseen_source_is_not(self, transcript_writer, tmp_path, monkeypatch):
         from aictl.ingesters import transcript_usage
