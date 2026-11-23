@@ -14,6 +14,8 @@ export function VirtualList<T>(props: {
   /** A row to scroll into view; pass a new object to scroll to the same row again. */
   reveal?: { id: string }
   class?: string
+  /** Shown above the rows inside the scroll area, so a sticky header scrolls sideways with them. */
+  header?: JSX.Element
 }) {
   const [element, setElement] = createSignal<HTMLDivElement>()
   const [version, bump] = createSignal(0)
@@ -75,6 +77,7 @@ export function VirtualList<T>(props: {
   })
   const total = createMemo(() => { version(); return virtual.getTotalSize() })
   return <div ref={setElement} class={props.class ?? styles.scroll} role="region" aria-label={`${props.label} scroll area`} tabindex={0}>
+    {props.header}
     <div role="list" aria-label={props.label} class={styles.virtual} style={{ height: `${total()}px` }}>
       <For each={items()} keyed={item => item.key}>{item =>
         <div ref={node => { queueMicrotask(() => { if (node.isConnected) virtual.measureElement(node) }) }}

@@ -102,7 +102,8 @@ class SessionRoutes:
         """The session flow of a board agent, from the store with hook and OTel events merged in.
 
         GET /api/board/agent/flow?id=<agent id>&since=<unix ts>&until=<unix ts>&limit=<events>&offset=<n>
-        A subagent id gives the whole session of its main agent. ``limit`` is how many events to
+        A subagent id gives that subagent's own steps; ``whole=1`` gives the whole session of its
+        main agent. ``limit`` is how many events to
         return: the newest, or those from position ``offset`` (0 is the oldest matching event).
         The summary counts them all.
         """
@@ -126,9 +127,12 @@ class SessionRoutes:
             failed = self._qs_get("failed", "0")
             if failed not in ("0", "1"):
                 raise ValueError("failed must be 0 or 1")
+            whole = self._qs_get("whole", "0")
+            if whole not in ("0", "1"):
+                raise ValueError("whole must be 0 or 1")
             status, payload = agent_flow(
                 self._db, agent_id, since, until, limit=limit, offset=offset, failed=failed == "1",
-                history=history,
+                history=history, whole=whole == "1",
                 **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
             )
         except ValueError as exc:

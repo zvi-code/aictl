@@ -11,6 +11,17 @@
     "node_id": {"type": ["string", "null"]},
     "session_kql_url": {"type": ["string", "null"]},
     "node_scope": {"$ref": "node-scope.schema.json"},
+    "flow_scope": {
+      "type": "object",
+      "description": "What the flow lists: one subagent's own steps (agent) or the whole session (session).",
+      "properties": {
+        "kind": {"type": "string", "enum": ["agent", "session"]},
+        "agent_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "subagent": {"type": "boolean"}
+      },
+      "required": ["kind", "agent_id", "session_id", "subagent"]
+    },
     "scope": {
       "type": "object",
       "properties": {

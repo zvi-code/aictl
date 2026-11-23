@@ -66,7 +66,17 @@
     "tool_call_id": {"type": ["string", "null"]},
     "span_id": {"type": ["string", "null"]},
     "trace_id": {"type": ["string", "null"]},
-    "wall_ms": {"type": ["number", "null"]}
+    "wall_ms": {"type": ["number", "null"]},
+    "step": {"type": "integer", "description": "Step number in the flow scope: a model round with its tool calls and reply, or one other event."},
+    "request_n": {"type": "integer", "description": "Number of this model request in the flow scope, from 1."},
+    "http_status": {"type": ["integer", "null"]},
+    "request_bytes": {"type": ["integer", "null"], "description": "Size of the model request body in bytes, when the source reports it."},
+    "thinking_chars": {"type": ["integer", "null"]},
+    "reasoning_tokens": {"type": ["integer", "null"]},
+    "input_bytes": {"type": ["integer", "null"], "description": "UTF-8 size of the arguments sent to the tool."},
+    "output_bytes": {"type": ["integer", "null"], "description": "UTF-8 size of the result returned by the tool."},
+    "result_tokens_est": {"type": ["integer", "null"], "description": "Estimated tokens of the tool result from its size (bytes / 4); an estimate, not a count."},
+    "confirm_wait_ms": {"type": ["number", "null"]}
   },
   "required": ["type", "ts", "source", "rt_tokens", "cum_tokens"]
 }

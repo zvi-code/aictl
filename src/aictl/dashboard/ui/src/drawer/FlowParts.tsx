@@ -1,39 +1,18 @@
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import type { TurnMark } from '../data/contract.gen'
-import { fmtMs, fmtN, stamp } from '../design/format'
+import { fmtBytes, fmtMs, fmtN, fmtUsd, stamp } from '../design/format'
 import { CodeView } from '../ui/CodeView'
 import { Icon, type Glyph } from '../ui/Icon'
 import { moveFocus } from '../ui/keyboard'
+import { clockTime, durationOf, eventTokens, failedEvent, inputOf, outputOf, type EventKind, type PlacedEvent } from './flowModel'
 import {
-  clockTime, describe, durationOf, eventIdentity, eventTokens, failedEvent, inputOf, kindLabels, kindOf, outputOf,
-  type EventKind, type PlacedEvent,
-} from './flowModel'
+  approvalOf, definitions, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, waitLabel,
+  type FlowRow, type Metric, type Step, type StepKind,
+} from './flowSteps'
 import { clip } from './shared'
 import { VirtualList } from './VirtualList'
 import styles from './flow.module.css'
-
-export const kindGlyphs: Record<EventKind, Glyph> = {
-  prompt: 'prompts', model: 'bot', reply: 'reply', tool: 'tools', agent: 'agents', hook: 'hook', skill: 'spark',
-  context: 'context', error: 'warn', other: 'dots',
-}
-
-/** Where the event goes, as "from → to", without the generic assistant hop. */
-export function routeOf(event: PlacedEvent) {
-  return event._from === event._to ? event._from : `${event._from} → ${event._to}`
-}
-
-function details(event: PlacedEvent) {
-  const tokens = eventTokens(event)
-  const duration = durationOf(event)
-  return [
-    event._turnIndex ? `Turn ${event._turnIndex}` : undefined,
-    event.model || undefined,
-    tokens ? `${fmtN(tokens)} tokens` : undefined,
-    duration ? fmtMs(duration) : undefined,
-    failedEvent(event) && event.type !== 'error' ? 'Failed' : undefined,
-  ].filter(Boolean) as string[]
-}
 
 type HoverState = { source: HTMLElement; content: () => JSX.Element }
 export type Hover = ReturnType<typeof createHover>
@@ -74,24 +53,6 @@ export function HoverCard(props: { hover: Hover }) {
   return <div ref={card} popover="manual" aria-hidden="true" class={styles.hover}>
     {props.hover.current()?.content()}
   </div>
-}
-
-export function EventPreview(props: { event: PlacedEvent }) {
-  const kind = () => kindOf(props.event)
-  const input = () => inputOf(props.event)
-  const output = () => outputOf(props.event)
-  return <>
-    <div class={styles.hoverHead} data-kind={kind()}>
-      <span class={styles.kindLabel}><Icon glyph={kindGlyphs[kind()]} small />{kindLabels[kind()]}</span>
-      <span class={styles.hoverHint}>{routeOf(props.event)}</span>
-      <time>{clockTime(props.event.ts)}</time>
-    </div>
-    <p class={styles.hoverTitle}>{describe(props.event)}</p>
-    <Show when={details(props.event).length}><span class={styles.hoverHint}>{details(props.event).join(' · ')}</span></Show>
-    <Show when={input()}>{value => <pre class={styles.hoverText}>{clip(value(), 420)}</pre>}</Show>
-    <Show when={output()}>{value => <pre class={styles.hoverText}>{clip(value(), 420)}</pre>}</Show>
-    <span class={styles.hoverHint}>Select to inspect</span>
-  </>
 }
 
 /**
@@ -135,84 +96,208 @@ export function TurnScrubber(props: {
   </section>
 }
 
-/** The events in time order, newest at the end, with a heading where each turn starts. */
-export function EventList(props: {
-  events: readonly PlacedEvent[]; selected?: string; select: (id: string) => void; hover: Hover
+const stepGlyphs: Record<StepKind, Glyph> = {
+  round: 'bot', tool: 'tools', reply: 'reply', prompt: 'prompts', agent: 'agents', agent_end: 'agents',
+  compaction: 'context', skill: 'spark', context: 'context', error: 'warn', hook: 'hook', lifecycle: 'clock', other: 'dots',
+}
+const stepColors: Record<StepKind, EventKind> = {
+  round: 'model', tool: 'tool', reply: 'reply', prompt: 'prompt', agent: 'agent', agent_end: 'agent', compaction: 'context',
+  skill: 'skill', context: 'context', error: 'error', hook: 'hook', lifecycle: 'other', other: 'other',
+}
+export const stepKindLabels: Record<StepKind, string> = {
+  round: 'Model round', tool: 'Tool call', reply: 'Reply', prompt: 'Prompt', agent: 'Subagent start', agent_end: 'Subagent end',
+  compaction: 'Compaction', skill: 'Skill', context: 'Context', error: 'Failure', hook: 'Hook', lifecycle: 'Session', other: 'Event',
+}
+export const stepGlyph = (step: Step) => stepGlyphs[step.kind]
+export const stepColor = (step: Step): EventKind => step.failed ? 'error' : stepColors[step.kind]
+export const stepLabel = (step: Step) => step.n != null ? `#${step.n}` : '#–'
+export const stepSpan = (step: Step) => step.end > step.ts ? fmtMs((step.end - step.ts) * 1000) : ''
+export type StepRow = Extract<FlowRow, { type: 'step' }>
+export type GapRowData = Extract<FlowRow, { type: 'gap' }>
+export const stepOfRow = (row: FlowRow) => row.type === 'step' ? row.step : undefined
+
+/** Numbers of a step, each with its definition on hover. */
+export function Metrics(props: { items: readonly Metric[]; class?: string }) {
+  return <span class={props.class ?? styles.metrics}><For each={props.items}>{metric =>
+    <span class={styles.metric} data-key={metric.key} data-tone={metric.tone} title={metric.title}>{metric.text}</span>
+  }</For></span>
+}
+
+/** The model of a round, shown as the label of the edge from the assistant to its tools. */
+export function ModelLabel(props: { step: Step }) {
+  return <Show when={props.step.model}>{model =>
+    <span class={styles.modelLabel} data-changed={props.step.modelChanged ? 'true' : 'false'}
+      title={props.step.modelChanged ? 'Model of this request: it changed from the previous round of this agent.' : 'Model of this request.'}>
+      {model()}</span>
+  }</Show>
+}
+
+export function GapRow(props: { row: GapRowData }) {
+  return <div class={styles.gap} title={definitions.wait}>
+    <Icon glyph="clock" small />
+    <span>waited <strong>{waitLabel(props.row.seconds)}</strong>{props.row.before === 'prompt' ? ' before the next prompt' : ' with no recorded step'}</span>
+  </div>
+}
+
+/** Move focus between step rows with the arrow keys, Home and End. */
+export function stepKeys(event: KeyboardEvent) {
+  const list = (event.currentTarget as HTMLElement).closest('[role="list"]')
+  if (list) moveFocus(event, Array.from(list.querySelectorAll<HTMLElement>('[data-step-row]')), 'ArrowUp', 'ArrowDown')
+}
+
+const TOOL_LINES = 5
+
+export function StepPreview(props: { step: Step }) {
+  const step = () => props.step
+  return <>
+    <div class={styles.hoverHead} data-kind={stepColor(step())}>
+      <span class={styles.kindLabel}><Icon glyph={stepGlyph(step())} small />{stepLabel(step())} · {stepKindLabels[step().kind]}</span>
+      <time>{clockTime(step().ts)}</time>
+    </div>
+    <p class={styles.hoverTitle}>{stepTitle(step())}</p>
+    <Show when={step().model}><span class={styles.hoverHint}>Model {step().model}{step().agent ? ` · agent ${step().agent}` : ''}</span></Show>
+    <Metrics items={stepMetrics(step())} />
+    <For each={step().tools.slice(0, TOOL_LINES)}>{tool =>
+      <span class={styles.hoverTool}><strong>{toolName(tool)}</strong> {clip(toolTarget(tool), 80)} <Metrics items={toolMetrics(tool)} /></span>
+    }</For>
+    <Show when={step().tools.length > TOOL_LINES}><span class={styles.hoverHint}>{TOOL_LINES} of {step().tools.length} tool calls shown</span></Show>
+    <span class={styles.hoverHint}>Select to inspect</span>
+  </>
+}
+
+/** The steps in time order, newest at the end: one row per step, with its numbers. */
+export function StepList(props: {
+  rows: readonly FlowRow[]; selected?: string; select: (id: string) => void; hover: Hover; compact: boolean
   reveal?: { id: string }; onStart: () => void; onRange: (first: number, last: number) => void; empty: string
 }) {
-  return <Show when={props.events.length} fallback={<div class={styles.list}><p class={styles.empty}>{props.empty}</p></div>}>
-    <VirtualList label="Flow events" class={styles.list} rows={props.events} identity={eventIdentity} estimate={44} end
+  return <Show when={props.rows.length} fallback={<div class={styles.list}><p class={styles.empty}>{props.empty}</p></div>}>
+    <VirtualList label="Flow steps" class={styles.list} rows={props.rows} identity={row => row.id} estimate={props.compact ? 40 : 76} end
       reveal={props.reveal} onStart={props.onStart} onRange={props.onRange}>
-      {(event, index) => {
-        const kind = () => kindOf(event())
-        const id = () => eventIdentity(event())
-        const starts = () => index() === 0 || props.events[index() - 1]?._turnIndex !== event()._turnIndex
-        const side = () => {
-          const tokens = eventTokens(event()), duration = durationOf(event())
-          return [tokens ? `${fmtN(tokens)} tokens` : '', duration ? fmtMs(duration) : ''].filter(Boolean)
-        }
-        const sub = () => [routeOf(event()), event().model, failedEvent(event()) && event().type !== 'error' ? 'Failed' : '']
-          .filter(Boolean).join(' · ')
-        return <>
-          <Show when={starts() && event()._turnIndex > 0}>
-            <div class={styles.rule} data-first={index() === 0 ? 'true' : 'false'}>
-              <strong>Turn {event()._turnIndex}</strong>
-              <Show when={event().type === 'user_message'}><span>{stamp(event().ts, true)}</span></Show>
-            </div>
-          </Show>
-          <button type="button" class={styles.event} data-kind={kind()} aria-pressed={props.selected === id() ? 'true' : 'false'}
-            {...props.hover.bind(() => <EventPreview event={event()} />)} onClick={() => props.select(id())}>
-            <time class={styles.time} datetime={new Date(event().ts * 1000).toISOString()}>{clockTime(event().ts)}</time>
-            <span class={styles.chip}><Icon glyph={kindGlyphs[kind()]} small label={kindLabels[kind()]} /></span>
-            <span class={styles.main}>
-              <strong>{clip(describe(event()), 200)}</strong>
-              <span>{sub()}</span>
-            </span>
-            <span class={styles.side}><For each={side()}>{value => <span>{value}</span>}</For></span>
-          </button>
-        </>
-      }}
+      {row => <Show when={stepOfRow(row())} fallback={<GapRow row={row() as GapRowData} />}>{step => {
+        const tools = () => props.compact ? [] : step().tools.slice(0, TOOL_LINES)
+        return <button type="button" class={styles.step} data-kind={stepColor(step())} data-density={props.compact ? 'compact' : 'comfortable'}
+          data-step-row aria-pressed={props.selected === step().id ? 'true' : 'false'} onKeyDown={stepKeys}
+          aria-label={`Step ${step().n ?? ''} at ${clockTime(step().ts)}: ${stepKindLabels[step().kind]}, ${stepTitle(step())}`}
+          {...props.hover.bind(() => <StepPreview step={step()} />)} onClick={() => props.select(step().id)}>
+          <span class={styles.stepGutter}><strong>{stepLabel(step())}</strong><time>{clockTime(step().ts)}</time></span>
+          <span class={styles.chip}><Icon glyph={stepGlyph(step())} small label={stepKindLabels[step().kind]} /></span>
+          <span class={styles.stepMain}>
+            <span class={styles.stepTitle}><ModelLabel step={step()} />
+              <Show when={step().model && step().tools.length}><span class={styles.edge} aria-hidden="true">→</span></Show>
+              <strong>{clip(stepTitle(step()), 200)}</strong></span>
+            <Metrics items={stepMetrics(step())} />
+            <For each={tools()}>{tool =>
+              <span class={styles.toolLine} data-failed={failedEvent(tool) ? 'true' : 'false'}>
+                <strong>{toolName(tool)}</strong><span class={styles.target}>{toolTarget(tool)}</span>
+                <Metrics items={toolMetrics(tool)} />
+              </span>
+            }</For>
+            <Show when={!props.compact && step().tools.length > TOOL_LINES}>
+              <span class={styles.moreNote}>{TOOL_LINES} of {step().tools.length} tool calls shown · select the step for all</span>
+            </Show>
+          </span>
+          <span class={styles.side} title="Step time: from the start of the step to its last result.">{stepSpan(step())}</span>
+        </button>
+      }}</Show>}
     </VirtualList>
   </Show>
 }
 
-export function Inspector(props: { event: PlacedEvent; close: () => void; evidence?: () => void }) {
-  const kind = () => kindOf(props.event)
-  const facts = createMemo(() => {
-    const event = props.event
-    const tokens = event.tokens
-    return [
-      ['Time', stamp(event.ts, true)],
-      ['Duration', durationOf(event) == null ? undefined : fmtMs(durationOf(event))],
-      ['Turn', event._turnIndex ? String(event._turnIndex) : undefined],
-      ['Stream', routeOf(event)],
-      ['Model', event.model],
-      ['Input tokens', tokens?.input == null ? undefined : fmtN(tokens.input)],
-      ['Output tokens', tokens?.output == null ? undefined : fmtN(tokens.output)],
-      ['Cache read', tokens?.cache_read ? fmtN(tokens.cache_read) : undefined],
-      ['Turn tokens', event.rt_tokens == null ? undefined : fmtN(event.rt_tokens)],
-      ['First token', event.ttft_ms == null ? undefined : fmtMs(event.ttft_ms)],
-      ['Result', event.success === false || event.is_error ? 'Failed' : event.success ? 'Succeeded' : undefined],
-      ['Exit code', event.exit_code == null ? undefined : String(event.exit_code)],
-      ['Agent', event.agent_name || event.agent_id],
-      ['Source', event.source],
-    ].filter((fact): fact is [string, string] => fact[1] != null && fact[1] !== '')
-  })
-  return <section class={styles.inspector} aria-label="Event inspector" data-kind={kind()}>
+type Fact = readonly [label: string, value: string | undefined, definition?: string]
+
+function Facts(props: { items: readonly Fact[] }) {
+  const shown = () => props.items.filter(fact => fact[1] != null && fact[1] !== '')
+  return <dl class={styles.facts}><For each={shown()}>{fact => <><dt title={fact[2]}>{fact[0]}</dt><dd>{fact[1]}</dd></>}</For></dl>
+}
+
+const TOOLS_SHOWN = 12
+
+function requestFacts(request: PlacedEvent): Fact[] {
+  const tokens = request.tokens
+  const count = (value: number | null | undefined) => value == null ? undefined : fmtN(value)
+  return [
+    ['Model', request.model || undefined],
+    ['Request', request.request_n != null ? `#${request.request_n}` : undefined, definitions.request],
+    ['Input tokens', count(tokens?.input), definitions.input],
+    ['Output tokens', count(tokens?.output), definitions.output],
+    ['Cache read', count(tokens?.cache_read), definitions.cacheRead],
+    ['Cache write', count(tokens?.cache_creation), definitions.cacheWrite],
+    ['Thinking', request.reasoning_tokens ? `${fmtN(request.reasoning_tokens)} tokens`
+      : request.thinking_chars ? `${fmtN(request.thinking_chars)} characters` : undefined, definitions.thinking],
+    ['Request size', request.request_bytes ? fmtBytes(request.request_bytes) : undefined, 'Size of the request body the agent sent to the model.'],
+    ['Duration', request.duration_ms ? fmtMs(request.duration_ms) : undefined, definitions.duration],
+    ['First token', request.ttft_ms ? fmtMs(request.ttft_ms) : undefined, definitions.ttft],
+    ['Cost', request.cost_usd != null ? fmtUsd(request.cost_usd) : undefined, definitions.cost],
+    ['Stop reason', request.finish_reason || undefined, definitions.stop],
+    ['Result', request.is_error ? ['Failed', request.error_type, request.http_status ? `HTTP ${request.http_status}` : ''].filter(Boolean).join(' · ') : 'Succeeded'],
+    ['Tokens so far', count(request.cum_tokens), 'Input and output tokens of this flow up to and including this request.'],
+    ['Source', request.source],
+  ]
+}
+
+function toolFacts(tool: PlacedEvent): Fact[] {
+  return [
+    ['Payload out', tool.input_bytes == null ? undefined : fmtBytes(tool.input_bytes), definitions.payloadOut],
+    ['Payload in', tool.output_bytes == null ? undefined : fmtBytes(tool.output_bytes), definitions.payloadIn],
+    ['Result tokens (est.)', tool.result_tokens_est == null ? undefined : fmtN(tool.result_tokens_est), definitions.resultTokens],
+    ['Duration', tool.duration_ms ? fmtMs(tool.duration_ms) : undefined, definitions.toolDuration],
+    ['Exit code', tool.exit_code == null ? undefined : String(tool.exit_code), definitions.exit],
+    ['Approval', approvalOf(tool), definitions.approval],
+    ['Result', tool.success === false ? 'Failed' : tool.success ? 'Succeeded' : undefined],
+  ]
+}
+
+/** The selected step: the model request, every tool call it issued with its input and result, and its reply. */
+export function StepInspector(props: { step: Step; close: () => void; evidence?: (event: PlacedEvent) => void }) {
+  const step = () => props.step
+  const sourced = (event: PlacedEvent) => !!props.evidence && !!(event.step_key || event.turn_id)
+  return <section class={styles.inspector} aria-label="Step inspector" data-kind={stepColor(step())}>
     <div class={styles.inspectorHead}>
-      <h3>Event inspector</h3>
-      <span class={styles.kindLabel}><Icon glyph={kindGlyphs[kind()]} small />{kindLabels[kind()]}</span>
-      <button type="button" class={styles.iconButton} aria-label="Close event inspector" onClick={() => props.close()}>
+      <h3>Step {stepLabel(step())}</h3>
+      <span class={styles.kindLabel}><Icon glyph={stepGlyph(step())} small />{stepKindLabels[step().kind]}</span>
+      <button type="button" class={styles.iconButton} aria-label="Close step inspector" onClick={() => props.close()}>
         <Icon glyph="close" small /></button>
     </div>
-    <p class={styles.summary}>{describe(props.event)}</p>
-    <dl class={styles.facts}><For each={facts()}>{fact => <><dt>{fact[0]}</dt><dd>{fact[1]}</dd></>}</For></dl>
-    <Show when={inputOf(props.event)}>{value => <CodeView label="Event input" text={value()} wrap />}</Show>
-    <Show when={outputOf(props.event)}>{value => <CodeView label="Event output" text={value()} wrap />}</Show>
-    <Show when={props.evidence}>
-      <button class={styles.button} type="button" onClick={() => props.evidence?.()}><Icon glyph="file" small />Open source evidence</button>
+    <p class={styles.summary}>{stepTitle(step())}</p>
+    <Facts items={[
+      ['Time', stamp(step().ts, true)],
+      ['Step time', stepSpan(step()), 'From the start of the step to its last result.'],
+      ['Agent', step().agent || 'Main agent'],
+      ['Turn', step().lead._turnIndex ? String(step().lead._turnIndex) : undefined],
+    ]} />
+    <Show when={step().call}>{request => <>
+      <h4 class={styles.inspectorSection}>Model request</h4>
+      <Facts items={requestFacts(request())} />
+    </>}</Show>
+    <Show when={step().tools.length}>
+      <h4 class={styles.inspectorSection}>Tool calls · {step().tools.length}</h4>
+      <For each={step().tools.slice(0, TOOLS_SHOWN)}>{tool =>
+        <details class={styles.toolDetail} open={step().tools.length === 1}>
+          <summary><strong>{toolName(tool)}</strong> <span class={styles.target}>{toolTarget(tool)}</span></summary>
+          <Facts items={toolFacts(tool)} />
+          <Show when={inputOf(tool)}>{value => <CodeView label={`${toolName(tool)} input`} text={value()} wrap />}</Show>
+          <Show when={outputOf(tool)}>{value => <CodeView label={`${toolName(tool)} result`} text={value()} wrap />}</Show>
+          <Show when={sourced(tool)}>
+            <button class={styles.button} type="button" onClick={() => props.evidence?.(tool)}><Icon glyph="file" small />Open source evidence</button>
+          </Show>
+        </details>
+      }</For>
+      <Show when={step().tools.length > TOOLS_SHOWN}><p class={styles.moreNote}>{TOOLS_SHOWN} of {step().tools.length} tool calls shown</p></Show>
+    </Show>
+    <Show when={!step().call && !step().tools.length}>
+      <Facts items={[
+        ['Tokens', eventTokens(step().lead) ? fmtN(eventTokens(step().lead)) : undefined],
+        ['Duration', durationOf(step().lead) == null ? undefined : fmtMs(durationOf(step().lead))],
+        ['Model', step().lead.model || undefined],
+        ['Source', step().lead.source],
+      ]} />
+      <Show when={inputOf(step().lead)}>{value => <CodeView label="Step input" text={value()} wrap />}</Show>
+      <Show when={outputOf(step().lead)}>{value => <CodeView label="Step output" text={value()} wrap />}</Show>
+    </Show>
+    <Show when={step().reply && outputOf(step().reply!)}>{value => <>
+      <h4 class={styles.inspectorSection}>Reply</h4><CodeView label="Reply" text={value()} wrap /></>}</Show>
+    <Show when={sourced(step().lead)}>
+      <button class={styles.button} type="button" onClick={() => props.evidence?.(step().lead)}><Icon glyph="file" small />Open source evidence</button>
     </Show>
   </section>
 }
-
-

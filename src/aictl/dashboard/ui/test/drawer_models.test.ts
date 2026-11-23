@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { FlowEvent, TranscriptTurn } from '../src/data/contract.gen'
 import { reloadMissingChunk } from '../src/drawer/chunkRecovery'
-import { eventIdentity, flowBounds, flowModel, lanesOf } from '../src/drawer/flowModel'
+import { eventIdentity, flowBounds, flowModel } from '../src/drawer/flowModel'
 import { sessionProcesses, treeOrder } from '../src/drawer/hierarchy'
 import { kustoLink } from '../src/drawer/kqlLink'
 import { drawerStack } from '../src/drawer/navigation'
@@ -27,9 +27,6 @@ describe('DRW-FL-01/02 · Flow placement, scope and identity', () => {
     ], { total_turns: 4, omitted_events: 8 })
     expect(model.turnGroups).toEqual([3, 4])
     expect(model.events[0]).toMatchObject({ redacted: false, message: 'Retained text', tokens: { input: 180 } })
-    expect(model.events[3]).toMatchObject({ _from: 'Subagents · Review', _to: 'Assistant' })
-    expect(lanesOf(model.events, false)).toEqual(expect.arrayContaining(['Tools · Read', 'Tools · Grep']))
-    expect(lanesOf(model.events, true)).toEqual(expect.arrayContaining(['Tools', 'Subagents']))
     expect(new Set(model.events.map(eventIdentity)).size).toBe(5)
   })
 

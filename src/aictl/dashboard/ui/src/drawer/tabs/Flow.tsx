@@ -1,13 +1,14 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, lazy, Loading, Show, untrack } from 'solid-js'
-import type { TurnMark } from '../../data/contract.gen'
-import { fmtMs, fmtN } from '../../design/format'
+import type { FlowSummary, TurnMark } from '../../data/contract.gen'
+import { fmtDur, fmtMs, fmtN, fmtUsd } from '../../design/format'
 import { Icon } from '../../ui/Icon'
 import { PanelState } from '../../ui/PanelState'
 import { Segmented } from '../../ui/Segmented'
 import { Tooltip } from '../../ui/Tooltip'
-import { eventIdentity, flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
-import { createHover, EventList, HoverCard, Inspector, TurnScrubber } from '../FlowParts'
+import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
+import { createHover, HoverCard, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { FLOW_PAGE, flowPages } from '../flowPages'
+import { definitions, lanesFor, rowsOf, stepsOf, totalsOf, type Totals } from '../flowSteps'
 import { agentPath, labelOf, openAgent, Resource, type Reference, type TabProps } from '../shared'
 import { kustoLink, saveFlowFilters } from '../kqlLink'
 import { watchedDetail } from '../liveAgent'
@@ -24,12 +25,49 @@ type Filter = typeof empty
 type Applied = Parameters<typeof agentPath>[2]
 
 function pref(key: string, initial: string) {
-  const [value, set] = createSignal(localStorage.getItem(key) || initial)
-  return [value, (next: string) => { set(next); localStorage.setItem(key, next) }] as const
+  const read = () => { try { return localStorage.getItem(key) } catch { return null } }
+  const [value, set] = createSignal(read() || initial)
+  return [value, (next: string) => { set(next); try { localStorage.setItem(key, next) } catch { /* not kept */ } }] as const
 }
 
 const matches = (event: PlacedEvent, reference: Reference) =>
   event[reference.field] === reference.id && (!reference.traceId || event.trace_id === reference.traceId)
+
+type Figure = { label: string; value: string; title: string; tone?: 'danger' }
+
+/** The numbers of the whole flow scope, from the server's summary of every event in it. */
+function scopeFigures(summary: FlowSummary, agentScope: boolean): Figure[] {
+  const calls = summary.total_api_calls
+  const priced = summary.priced_calls ?? 0
+  return [
+    { label: 'Steps', value: fmtN(summary.total_steps), title: 'Model rounds with their tool calls, plus prompts, subagents, compactions, skills and errors, in this flow.' },
+    { label: 'Requests', value: fmtN(calls), title: 'Model requests in this flow.' },
+    { label: 'Tool calls', value: fmtN(summary.total_tool_uses), title: 'Tool calls in this flow.' },
+    { label: 'Failures', value: fmtN(summary.errors), title: 'Failed model requests, failed tool calls and errors in this flow.', tone: summary.errors ? 'danger' : undefined },
+    agentScope
+      ? { label: 'Task', value: summary.total_turns ? fmtN(summary.total_turns) : 'none recorded', title: 'The task the main agent gave this subagent: its prompt.' }
+      : { label: 'Prompts', value: summary.total_turns || !calls ? fmtN(summary.total_turns) : 'none recorded',
+        title: summary.total_turns || !calls ? 'Prompts a person gave the agent in this flow.'
+          : 'This flow has model requests but no recorded prompt: the prompt rows are not in the store for this range.' },
+    { label: 'Tokens in', value: fmtN(summary.total_input_tokens), title: definitions.input },
+    { label: 'Tokens out', value: fmtN(summary.total_output_tokens), title: definitions.output },
+    { label: 'Cache read', value: fmtN(summary.total_cache_tokens), title: definitions.cacheRead },
+    ...summary.total_cache_creation_tokens != null ? [{ label: 'Cache write', value: fmtN(summary.total_cache_creation_tokens), title: definitions.cacheWrite }] : [],
+    ...summary.total_cost_usd != null ? [{ label: 'Cost', value: fmtUsd(summary.total_cost_usd),
+      title: `${definitions.cost} Summed over ${fmtN(priced)} of ${fmtN(calls)} requests that have a price.` }] : [],
+    { label: 'Wall time', value: fmtDur(summary.duration_s), title: 'Time from the first event of this flow to the end of its last one.' },
+  ]
+}
+
+/** The same numbers for the steps loaded in the browser. */
+function loadedFigures(totals: Totals) {
+  return [
+    `${fmtN(totals.requests)} requests`, `${fmtN(totals.tools)} tool calls`,
+    totals.failures ? `${fmtN(totals.failures)} failed` : '',
+    `in ${fmtN(totals.input)} · out ${fmtN(totals.output)}`, totals.cacheRead ? `cache r ${fmtN(totals.cacheRead)}` : '',
+    totals.costCalls ? fmtUsd(totals.cost) : '', `wall ${fmtDur(totals.wall)}`,
+  ].filter(Boolean).join(' · ')
+}
 
 export default function Flow(props: TabProps) {
   const initial = () => props.entry.initialPrompts ? 'prompts' : props.entry.initialSkills ? 'skills' : ''
@@ -43,6 +81,7 @@ export default function Flow(props: TabProps) {
   const [missing, setMissing] = createSignal(false)
   const [mode, setMode] = pref('aictl-pref-flow-mode', 'timeline')
   const [lanes, setLanes] = pref('aictl-pref-flow-lanes', 'individual')
+  const [density, setDensity] = pref('aictl-pref-flow-density', 'comfortable')
   const [wholeEnd, rememberEnd] = createSignal<number>()
   const [evidence, setEvidence] = createSignal(false)
   const [usedEvidence, useEvidence] = createSignal(false)
@@ -54,15 +93,22 @@ export default function Flow(props: TabProps) {
   const hover = createHover()
   const scope = () => read()?.data?.scope
   const summary = () => read()?.data?.summary
+  const flowScope = () => read()?.data?.flow_scope
+  const agentScope = () => flowScope()?.kind === 'agent'
   const model = createMemo(() => {
     const totals = summary()
     return flowModel(pages.events(), totals && { total_turns: totals.total_turns, omitted_events: pages.oldest() })
   })
-  const events = () => model().events
+  const steps = createMemo(() => stepsOf(model().events))
+  const rows = createMemo(() => rowsOf(steps()))
+  const loaded = createMemo(() => totalsOf(steps()))
+  const grouped = () => lanes() === 'grouped'
+  const laneList = createMemo(() => lanesFor(steps(), grouped()))
+  const compact = () => density() === 'compact'
   const marks = () => summary()?.turn_marks ?? []
   const picked = createMemo(() => {
     const id = selected()
-    return id ? events().find(event => eventIdentity(event) === id) : undefined
+    return id ? steps().find(step => step.id === id) : undefined
   })
   const bound = () => wholeEnd() ?? props.agent()?.ended_at
   createEffect(() => ({ scope: scope(), applied: applied() }), current => {
@@ -72,12 +118,12 @@ export default function Flow(props: TabProps) {
 
   const show = (event?: PlacedEvent) => {
     if (!event) return
-    const id = eventIdentity(event)
-    select(id); setReveal({ id })
+    const step = steps().find(item => item.events.includes(event))
+    if (step) { select(step.id); setReveal({ id: step.id }) }
   }
-  // A reference from another tab selects its event, reading older windows until the event is loaded.
+  // A reference from another tab selects its step, reading older windows until the event is loaded.
   let found: Reference | undefined
-  createEffect(() => ({ reference: props.entry.flowRef, events: events(), oldest: pages.oldest(),
+  createEffect(() => ({ reference: props.entry.flowRef, events: model().events, oldest: pages.oldest(),
     failed: pages.problem(), ready: read()?.data != null }), current => {
     const reference = current.reference
     if (!reference || !current.ready || found === reference) return
@@ -90,7 +136,9 @@ export default function Flow(props: TabProps) {
   const update = <K extends keyof Filter>(key: K, value: Filter[K]) => {
     setDraft(old => ({ ...old, [key]: value })); setProblem('')
   }
-  const apply = (value: Applied) => { setApplied(value); select(undefined); setVisible(undefined); setProblem('') }
+  const apply = (value: Applied) => {
+    setApplied({ ...value, whole: applied()?.whole }); select(undefined); setVisible(undefined); setProblem('')
+  }
   const preset = (name: string) => {
     const category = name === applied()?.category || name === 'failed' ? '' : name
     const failed = name === 'failed' && applied()?.failed !== '1'
@@ -107,23 +155,27 @@ export default function Flow(props: TabProps) {
       tool_name: skills ? undefined : value.tool_name.trim(), skill_name: skills ? value.skill_name.trim() : undefined,
       skill_phase: skills ? value.skill_phase : undefined, failed: !skills && value.failed ? '1' : undefined })
   }
-  const reset = () => { setDraft(empty); apply({}) }
+  const reset = () => { setDraft(empty); setApplied({ whole: applied()?.whole }); select(undefined); setVisible(undefined) }
+  const toggleWhole = () => { setApplied(old => ({ ...old, whole: old?.whole ? undefined : '1' })); select(undefined); setVisible(undefined) }
 
   const pick = async (mark: TurnMark) => {
     for (let attempt = 0; attempt < 4 && mark.offset < pages.oldest() && !pages.problem(); attempt++) {
       await pages.loadOlder(mark.offset)
     }
-    show(events().find(event => event.type === 'user_message' && Math.abs(event.ts - mark.ts) < 1e-3)
-      ?? events().find(event => event.ts >= mark.ts))
+    const events = model().events
+    show(events.find(event => event.type === 'user_message' && Math.abs(event.ts - mark.ts) < 1e-3)
+      ?? events.find(event => event.ts >= mark.ts))
   }
   const older = () => { if (pages.oldest() > 0 && !pages.loading() && !pages.problem()) void pages.loadOlder() }
   const range = (first: number, last: number) => {
-    const start = events()[first], end = events()[last]
-    if (start && end) setVisible([start.ts, end.ts])
+    const start = rows()[first], end = rows()[last]
+    const at = (row: typeof start) => row.type === 'step' ? row.step.ts : undefined
+    const from = start && at(start), to = end && at(end)
+    if (from != null && to != null) setVisible([from, to])
   }
   const openSource = (event: PlacedEvent) => openAgent(props, props.entry.id, 'evidence', { flowRef: event.step_key ?
     { field: 'step_key', id: event.step_key } : { field: 'turn_id', id: event.turn_id! } })
-  const status = () => props.agent()?.ended_at != null ? ['ended', 'Session ended']
+  const status = () => props.agent()?.ended_at != null ? ['ended', agentScope() ? 'Subagent ended' : 'Session ended']
     : read.streaming() ? ['live', 'Live'] : ['paused', filtered() ? 'Filtered, not live' : 'Not live']
 
   const id = createUniqueId()
@@ -136,22 +188,11 @@ export default function Flow(props: TabProps) {
   return <div class={styles.flow}>
     <header class={styles.header}>
       <div class={styles.title}>
-        <h3>Session flow</h3>
+        <h3>{agentScope() ? 'Subagent flow' : 'Session flow'}</h3>
         <Show when={read()?.data}>
           <span class={styles.live} data-state={status()[0]}>{status()[1]}</span>
         </Show>
       </div>
-      <Show when={read()?.data}>{data =>
-        <dl class={styles.figures}>
-          <div><dt>{filtered() ? 'Matching events' : 'Events'}</dt><dd>{fmtN(pages.matched())}</dd></div>
-          <Show when={filtered()}><div><dt>All events</dt><dd>{fmtN(data().scope?.total)}</dd></div></Show>
-          <div><dt>Turns</dt><dd>{fmtN(data().summary?.total_turns)}</dd></div>
-          <div><dt>Tokens</dt><dd>{fmtN(data().summary?.cumulative_tokens ?? data().summary?.total_tokens)}</dd></div>
-          <div><dt>Tool uses</dt><dd>{fmtN(data().summary?.total_tool_uses)}</dd></div>
-          <div><dt>Failures</dt><dd data-tone={data().summary?.errors ? 'danger' : undefined}>{fmtN(data().summary?.errors)}</dd></div>
-          <Show when={data().summary?.ttft_ms != null}><div><dt>First token</dt><dd>{fmtMs(data().summary.ttft_ms!)}</dd></div></Show>
-        </dl>
-      }</Show>
       <div class={styles.actions}>
         <Show when={kustoLink(read()?.data?.session_kql_url)}>{href =>
           <a class={styles.button} href={href()} target="_blank" rel="noopener noreferrer"><Icon glyph="external" small />Open session in Kusto</a>
@@ -164,6 +205,36 @@ export default function Flow(props: TabProps) {
           <Icon glyph={evidence() ? 'flow' : 'sources'} small />{evidence() ? 'Show Flow' : 'Source steps'}</button>
       </div>
     </header>
+
+    <Show when={flowScope()?.subagent}>
+      <p class={styles.scopeNote} role="status">
+        <Icon glyph="agents" small />
+        <span>{agentScope() ? "This subagent's own steps. The numbers below count only them."
+          : applied()?.whole ? 'The whole session of the main agent, every agent included.'
+            : 'No steps are recorded for this subagent, so the whole session is shown.'}</span>
+        <Show when={agentScope() || applied()?.whole}>
+          <button type="button" class={styles.button} onClick={toggleWhole}>
+            {applied()?.whole ? 'Show this subagent only' : 'Show the whole session'}</button>
+        </Show>
+      </p>
+    </Show>
+
+    <Show when={summary()}>{totals =>
+      <div class={styles.strip}>
+        <dl class={styles.figures} aria-label={agentScope() ? 'Subagent totals' : 'Session totals'}>
+          <For each={scopeFigures(totals(), agentScope())}>{figure =>
+            <div title={figure.title}><dt>{figure.label}</dt><dd data-tone={figure.tone}>{figure.value}</dd></div>
+          }</For>
+          <Show when={totals().ttft_ms != null}>
+            <div title={`${definitions.ttft} Median over ${fmtN(totals().ttft_calls)} requests.`}><dt>First token</dt><dd>{fmtMs(totals().ttft_ms)}</dd></div>
+          </Show>
+        </dl>
+        <p class={styles.loaded} title="The same numbers for the steps loaded below. Load older steps to widen the range.">
+          <strong>Loaded {fmtN(steps().length)}{!filtered() && totals().total_steps != null ? ` of ${fmtN(totals().total_steps)}` : ''} steps</strong>
+          <span>{loadedFigures(loaded())}</span>
+        </p>
+      </div>
+    }</Show>
 
     <Show when={usedEvidence()}>
       <div hidden={!evidence()}><Loading fallback={<PanelState state="loading" />}><SourceSteps {...props} /></Loading></div>
@@ -185,7 +256,7 @@ export default function Flow(props: TabProps) {
           <button type="submit" class={styles.primary}>Apply filters</button>
           <button type="button" class={styles.toggle} aria-expanded={more() ? 'true' : 'false'} aria-controls={`${id}-more`}
             onClick={() => setMore(value => !value)}><Icon glyph="filter" small />More filters</button>
-          <Show when={filtered()}>
+          <Show when={Object.entries(applied() ?? {}).some(([key, value]) => key !== 'whole' && value)}>
             <button type="button" class={styles.button} onClick={reset}><Icon glyph="close" small />Reset filters</button>
           </Show>
         </div>
@@ -236,17 +307,19 @@ export default function Flow(props: TabProps) {
             <Segmented label="Session streams" value={lanes()} onChange={setLanes} options={[
               { id: 'individual', label: 'Individual lanes' }, { id: 'grouped', label: 'Grouped lanes' }]} />
           </Show>
-          <span class={styles.count} aria-live="polite">Showing {fmtN(Math.max(0, pages.matched() - pages.oldest()))} of {fmtN(pages.matched())} events</span>
+          <Segmented label="Row density" value={density()} onChange={setDensity} options={[
+            { id: 'comfortable', label: 'Comfortable' }, { id: 'compact', label: 'Compact' }]} />
+          <span class={styles.count} aria-live="polite">{fmtN(Math.max(0, pages.matched() - pages.oldest()))} of {fmtN(pages.matched())} {filtered() ? 'matching ' : ''}events loaded</span>
           <div class={styles.paging}>
             <Show when={pages.oldest() > 0}>
               <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder()}>
-                <Icon glyph="up" small />{`Load older events (${fmtN(pages.oldest())} not loaded)`}</button>
-              <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder(0)}>Load all events</button>
+                <Icon glyph="up" small />{`Load older (${fmtN(pages.oldest())} events not loaded)`}</button>
+              <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder(0)}>Load all</button>
             </Show>
-            <Tooltip label="Jump to newest" text="Scroll to the newest event" class={styles.iconButton}
-              disabled={!events().length} onClick={() => {
-                const last = events().at(-1)
-                if (last) setReveal({ id: eventIdentity(last) })
+            <Tooltip label="Jump to newest" text="Scroll to the newest step" class={styles.iconButton}
+              disabled={!rows().length} onClick={() => {
+                const last = rows().at(-1)
+                if (last) setReveal({ id: last.id })
               }}><Icon glyph="last" small /></Tooltip>
           </div>
         </div>
@@ -254,16 +327,15 @@ export default function Flow(props: TabProps) {
         <Show when={pages.problem()}><p class={styles.problem} role="alert">Could not load older events: {pages.problem()}</p></Show>
         <Show when={missing()}><p class={styles.notice} role="status">No event matches this reference.</p></Show>
         <div class={styles.body} data-inspecting={picked() ? 'true' : 'false'}>
-          <Show when={mode() === 'swimlane' && events().length} fallback={
-            <EventList events={events()} selected={selected()} select={select} hover={hover} reveal={reveal()}
-              onStart={older} onRange={range} empty={filtered() ? 'No events match these filters.' : 'No events reported for this session.'} />
+          <Show when={mode() === 'swimlane' && rows().length} fallback={
+            <StepList rows={rows()} selected={selected()} select={select} hover={hover} reveal={reveal()} compact={compact()}
+              onStart={older} onRange={range} empty={filtered() ? 'No events match these filters.' : 'No events reported for this flow.'} />
           }>
-            <SwimLanes events={events()} grouped={lanes() === 'grouped'} selected={selected()} select={select} hover={hover}
-              reveal={reveal()} onStart={older} onRange={range} />
+            <SwimLanes rows={rows()} lanes={laneList()} grouped={grouped()} compact={compact()} selected={selected()} select={select}
+              hover={hover} reveal={reveal()} onStart={older} onRange={range} />
           </Show>
-          <Show when={picked()}>{event =>
-            <Inspector event={event()} close={() => select(undefined)}
-              evidence={event().step_key || event().turn_id ? () => openSource(event()) : undefined} />
+          <Show when={picked()}>{step =>
+            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} />
           }</Show>
         </div>
       </>}</Resource>

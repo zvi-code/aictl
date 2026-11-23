@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..stores import reader_feature
+from ..utils import estimate_tokens_from_size
 from .projection_utils import _is_reported_history, _one_line, _resolve_agent, _usd, mask_secrets
 from .projections.history import (
     HistoryScope,
@@ -139,19 +140,24 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
             message["prompt_length"] = len(text)
         events.append(message)
 
-    for ts, aid, model, i, o, cr, cw, cost, duration, ttft, finish, is_error, error_type, status in rows("call"):
+    for row in rows("call"):
+        ts, aid, model, i, o, cr, cw, cost, duration, ttft, finish, is_error, error_type, status = row[:14]
+        # Columns added after the first fourteen: read only when the view returns them.
+        request_bytes, thinking_chars, reasoning_tokens = (*row[14:17], None, None, None)[:3]
         call = {
             "ts": ts,
             "type": "api_call",
             "from": tool,
             "to": "api",
             "model": model or "",
-            "tokens": {"input": i or 0, "output": o or 0, "cache_read": cr or 0, "cache_creation": cw or 0},
-            "duration_ms": duration or 0,
+            # A count the source did not report stays None: the page says unknown, never 0.
+            "tokens": {"input": i, "output": o, "cache_read": cr, "cache_creation": cw},
+            "duration_ms": duration,
             "is_error": bool(is_error),
             "source": "store",
         }
-        for key, value in (("ttft_ms", ttft), ("cost_usd", _usd(cost) if cost else None), ("finish_reason", finish), ("agent_id", aid)):
+        for key, value in (("ttft_ms", ttft), ("cost_usd", _usd(cost) if cost else None), ("finish_reason", finish), ("agent_id", aid),
+                           ("request_bytes", request_bytes), ("thinking_chars", thinking_chars), ("reasoning_tokens", reasoning_tokens)):
             if value not in _EMPTY and value != 0:
                 call[key] = value
         if is_error:
@@ -160,8 +166,10 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
                 call["http_status"] = status
         events.append(call)
 
-    for ts, aid, name, target, raw_input, result, duration, is_error, exit_code, confirm in rows("use"):
-        use = {"ts": ts, "type": "tool_use", "from": tool, "to": name or "tool", "success": not is_error, "duration_ms": duration or 0, "source": "store"}
+    for row in rows("use"):
+        ts, aid, name, target, raw_input, result, duration, is_error, exit_code, confirm = row[:10]
+        input_bytes, output_bytes, confirm_wait = (*row[10:13], None, None, None)[:3]
+        use = {"ts": ts, "type": "tool_use", "from": tool, "to": name or "", "success": not is_error, "duration_ms": duration, "source": "store"}
         if target:
             use["target"] = _one_line(target, FLOW_TARGET_CHARS)
         try:
@@ -174,9 +182,15 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
             use["input_preview"] = _input_preview(masked)
         if result:
             use["result_summary"] = mask_secrets(result)
-        for key, value in (("exit_code", exit_code), ("confirm", confirm), ("agent_id", aid)):
+        for key, value in (("exit_code", exit_code), ("confirm", confirm), ("agent_id", aid),
+                           ("input_bytes", input_bytes), ("output_bytes", output_bytes)):
             if value not in _EMPTY:
                 use[key] = value
+        if output_bytes is not None:
+            # An estimate from the result's size, never a count: the field name says so.
+            use["result_tokens_est"] = estimate_tokens_from_size(int(output_bytes))
+        if confirm_wait:
+            use["confirm_wait_ms"] = confirm_wait
         events.append(use)
 
     for aid, task, model, started, ended, completed in rows("agent"):
@@ -199,7 +213,7 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
     for n, ts, aid, trigger, before, after, took in numbered:
         if not inside(ts):
             continue
-        compaction = {"ts": ts, "type": "compaction", "compaction_count": n, "duration_ms": took or 0, "source": "store"}
+        compaction = {"ts": ts, "type": "compaction", "compaction_count": n, "duration_ms": took, "source": "store"}
         if took:
             compaction["end_ts"] = ts + took / 1000
         for key, value in (("trigger", trigger), ("before_tokens", before), ("after_tokens", after), ("agent_id", aid)):
@@ -353,6 +367,8 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
     total_input = sum(int((e.get("tokens") or {}).get("input") or 0) for e in token_rows)
     total_output = sum(int((e.get("tokens") or {}).get("output") or 0) for e in token_rows)
     total_cache = sum(int((e.get("tokens") or {}).get("cache_read") or 0) for e in token_rows)
+    total_cache_write = sum(int((e.get("tokens") or {}).get("cache_creation") or 0) for e in token_rows)
+    costs = [float(e["cost_usd"]) for e in api if e.get("cost_usd") is not None]
     calls = len(api) or sum(e.get("api_calls") or 0 for e in prompts)
     ttfts = sorted(float(e["ttft_ms"]) for e in api if (e.get("ttft_ms") or 0) > 0)
     count: dict[str, int] = defaultdict(int)
@@ -367,6 +383,9 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
         "total_input_tokens": total_input,
         "total_output_tokens": total_output,
         "total_cache_tokens": total_cache,
+        "total_cache_creation_tokens": total_cache_write,
+        "total_cost_usd": round(sum(costs), 6) if costs else None,
+        "priced_calls": len(costs),
         "total_tokens": total_input + total_output,
         "avg_tokens_per_call": round((total_input + total_output) / calls) if calls else 0,
         "compactions": count["compaction"],
@@ -381,6 +400,47 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
         "ttft_ms": _median(ttfts),
         "ttft_calls": len(ttfts),
     }
+
+
+# A tool call or a reply joins the open model round of its agent; these events close it.
+_STEP_JOINS = frozenset({"tool_use", "api_response"})
+_STEP_CLOSES = frozenset({"user_message", "compaction", "subagent_end"})
+
+
+def _number_steps(events: list[dict]) -> int:
+    """Number the steps of a flow in place and return how many there are.
+
+    A step is one model round with the tool calls and the reply that follow it from the same
+    agent, or one other event: a prompt, a subagent start or end, a compaction, a skill, a hook
+    or an error. Each event gets ``step`` (1 is the first step) and each model call
+    ``request_n`` (1 is the first request). Numbering runs over the whole flow before filters
+    and paging, so a step keeps its number in every window.
+    """
+    open_round: dict[str, int] = {}
+    step = request = 0
+    for event in events:
+        kind = event["type"]
+        agent = event.get("agent_id") or ""
+        if kind in _STEP_JOINS and agent in open_round:
+            event["step"] = open_round[agent]
+            continue
+        step += 1
+        event["step"] = step
+        if kind == "api_call":
+            request += 1
+            event["request_n"] = request
+            open_round[agent] = step
+        elif kind in _STEP_CLOSES:
+            open_round.pop(agent, None)
+    return step
+
+
+def _agent_scope(events: list[dict], agent_raw: str, session_raw: str) -> list[dict] | None:
+    """The events of one subagent, or None when the id names the main agent or no event carries it."""
+    if not agent_raw or agent_raw == session_raw:
+        return None
+    own = [event for event in events if (event.get("agent_id") or "") == agent_raw]
+    return own or None
 
 
 FLOW_MEMO_S = 120.0
@@ -508,6 +568,7 @@ def agent_flow(
     skill_name: str = "", skill_phase: str = "",
     offset: int | None = None,
     history: HistoryScope | None = None,
+    whole: bool = False,
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
@@ -518,6 +579,10 @@ def agent_flow(
     events, or the events from position ``offset`` (0 is the oldest matching event). A window
     with an offset reads the flow kept for the previous window, so all windows of one flow
     count the same events.
+
+    A subagent id gives the steps of that subagent alone (``flow_scope.kind`` "agent"), so the
+    summary counts what the subagent did; ``whole`` gives the whole session of its main agent.
+    Events carry ``step`` and model calls ``request_n``, numbered over the scope before filters.
     """
     now = time.time() if now is None else now
     history = history or HistoryScope.local(db)
@@ -532,6 +597,7 @@ def agent_flow(
         if not events and not _session_flow(db, sid, lo, hi, legacy_flow, history, open_end=until is None):
             return 404, {"error": "No such agent"}
         summary = {"skill_evidence": True, "event_count": len(events)}
+        flow_scope = {"kind": "session", "agent_id": agent_id, "session_id": sid, "subagent": False}
     else:
         found = _session_flow(db, agent_id, lo, hi, legacy_flow, history, open_end=until is None,
                               reuse=offset is not None)
@@ -539,8 +605,18 @@ def agent_flow(
             return 404, {"error": "No such agent"}
         sid, records, source = found
         events = [dict(e) for e in records]  # aggregation annotates events; don't mutate another reader's cached flow
+        agent_raw, session_raw = history.split(agent_id)[1], history.split(sid)[1]
+        own = None if whole else _agent_scope(events, agent_raw, session_raw)
+        flow_scope = {"kind": "agent" if own is not None else "session", "agent_id": agent_id, "session_id": sid,
+                      "subagent": bool(agent_raw and agent_raw != session_raw)}
+        if own is not None:
+            events = own
         cumulative, largest = _aggregate_flow(events)
         summary = _flow_summary(events, source, cumulative, largest)
+        summary["total_steps"] = _number_steps(events)
+        if own is not None:
+            # A subagent's prompt is the task its main agent gave it.
+            summary["total_turns"] = sum(1 for e in events if e["type"] == "subagent")
     keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
     capture = capture_mode(db, default="full")
     matches, scope = select_events(events, q=q, category=category, tool_name=tool_name, flow_agent=flow_agent,
@@ -553,7 +629,8 @@ def agent_flow(
     summary["omitted_events"] = start
     summary["turn_marks"] = _turn_marks(matches)
     settings = reader_feature(HistoryScope.local(db).reader, "connection_info")
-    return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "capture_mode": capture,
+    return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "flow_scope": flow_scope,
+                 "capture_mode": capture,
                  "node_id": settings.node_id if settings else None,
                  "session_kql_url": session_kql_url(settings, sid, since, until)}
 

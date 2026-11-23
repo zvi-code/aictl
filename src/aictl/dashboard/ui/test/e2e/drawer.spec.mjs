@@ -155,7 +155,7 @@ test('DRW-FL-01/02 and DRW-EV-01: filter, page and inspect source evidence witho
   });
   await page.goto(agentUrl(snapshotReplay, id, 'flow'));
   await expect(drawer(page).getByRole('heading', { name: 'Session flow' })).toBeVisible();
-  await drawer(page).getByRole('button', { name: /Load older events/ }).click();
+  await drawer(page).getByRole('button', { name: /Load older/ }).click();
   await expect.poll(() => flow.some(request => request.offset === '500' && request.limit === '500')).toBe(true);
   await drawer(page).getByRole('radio', { name: 'Swim-lane' }).click();
   const lanes = drawer(page).getByRole('region', { name: 'Session streams', exact: true });
@@ -163,7 +163,7 @@ test('DRW-FL-01/02 and DRW-EV-01: filter, page and inspect source evidence witho
   await drawer(page).getByRole('radio', { name: 'Grouped lanes' }).click();
   await expect(lanes.getByText('Tools', { exact: true })).toBeVisible();
   await lanes.getByRole('button', { name: /Read/ }).click();
-  await expect(drawer(page).getByRole('heading', { name: 'Event inspector' })).toBeVisible();
+  await expect(drawer(page).getByRole('heading', { name: /^Step #/ })).toBeVisible();
   await drawer(page).getByRole('button', { name: 'User prompts' }).click();
   await drawer(page).getByRole('searchbox', { name: 'Search prompt text' }).fill('retained');
   await drawer(page).getByRole('button', { name: 'Apply filters' }).click();

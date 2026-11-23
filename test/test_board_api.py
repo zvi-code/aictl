@@ -3413,12 +3413,15 @@ class TestAgentFlow:
         assert flow["summary"]["source"] == "store+hooks"
         assert flow["summary"]["total_turns"] == 3 and flow["summary"]["total_tool_uses"] == 2
 
-    def test_a_subagent_id_gives_the_session_of_its_main_agent(self, db):
+    def test_a_subagent_id_gives_its_own_steps_and_whole_gives_the_session(self, db):
         _seed_flow(db, NOW - DAY)
         _, main = flow_projection.agent_flow(db, "flow-s", now=NOW)
         status, sub = flow_projection.agent_flow(db, "sub-f", now=NOW)
-        assert status == 200 and sub["session_id"] == "flow-s"
-        assert sub["turns"] == main["turns"]
+        assert status == 200 and sub["session_id"] == "flow-s" and sub["flow_scope"]["kind"] == "agent"
+        assert {e.get("agent_id") for e in sub["turns"]} == {"sub-f"}
+        assert sub["summary"]["total_api_calls"] == 1 and sub["summary"]["total_turns"] == 1
+        _, whole = flow_projection.agent_flow(db, "sub-f", now=NOW, whole=True)
+        assert whole["turns"] == main["turns"]
 
     def test_the_range_and_the_event_limit(self, db, monkeypatch):
         t = NOW - DAY
@@ -3525,9 +3528,10 @@ class TestAgentTranscript:
     def test_the_routes_answer_this_machine_only(self, server, db, monkeypatch):
         monkeypatch.setattr(flow_projection, "text_floor", lambda _owner, _now: 0.0)
         _seed_flow(db, NOW - DAY)
-        status, body, _ = _http(f"{server}/api/board/agent/flow?id=sub-f")
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=sub-f&whole=1")
         assert status == 200, body
         assert json.loads(body)["summary"]["total_turns"] == 2
+        assert _http(f"{server}/api/board/agent/flow?id=sub-f&whole=yes")[0] == 400
         status, body, _ = _http(f"{server}/api/board/agent/transcript?id=flow-s")
         assert status == 200 and json.loads(body)["reply_note"] == "The reply text is not kept"
         assert json.loads(body)["turns"][0]["actions"] == []

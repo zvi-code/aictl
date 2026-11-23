@@ -1,19 +1,8 @@
 import type { FlowEvent, FlowSummary } from '../data/contract.gen'
 import { fmtMs, fmtN } from '../design/format'
 
-const routes: Record<string, (event: FlowEvent) => [string, string]> = {
-  user_message: () => ['User', 'Assistant'],
-  api_call: () => ['Assistant', 'Model'],
-  api_response: () => ['Model', 'Assistant'],
-  error: () => ['Model', 'Assistant'],
-  tool_use: event => ['Assistant', `Tools · ${event.to || 'Unknown'}`],
-  subagent: event => ['Assistant', `Subagents · ${event.to || 'Unknown'}`],
-  subagent_end: event => [`Subagents · ${event.from || 'Unknown'}`, 'Assistant'],
-  hook: () => ['Assistant', 'Hooks'],
-}
-
 const tokens = (event: FlowEvent) => (event.tokens?.input ?? 0) + (event.tokens?.output ?? 0)
-export type PlacedEvent = FlowEvent & { _turnIndex: number; _from: string; _to: string }
+export type PlacedEvent = FlowEvent & { _turnIndex: number }
 
 export type EventKind = 'prompt' | 'model' | 'reply' | 'tool' | 'agent' | 'hook' | 'skill' | 'context' | 'error' | 'other'
 const kinds: Record<string, EventKind> = {
@@ -68,8 +57,7 @@ export function flowModel(raw: readonly FlowEvent[], summary?: Pick<FlowSummary,
   if (!turn && merged[0]?.type !== 'user_message' && (summary?.omitted_events ?? 0) > 0) turn = 1
   const events: PlacedEvent[] = merged.map(event => {
     if (event.type === 'user_message') turn++
-    const [from, to] = routes[event.type]?.(event) ?? ['Session', 'Session']
-    return { ...event, _turnIndex: event.turn_index ?? turn, _from: from, _to: to }
+    return { ...event, _turnIndex: event.turn_index ?? turn }
   })
   return { events, turnGroups: [...new Set(events.map(event => event._turnIndex))].filter(index => index > 0) }
 }
@@ -82,12 +70,6 @@ export function eventIdentity(event: FlowEvent) {
   return JSON.stringify([event.step_key, event.type, event.ts, event.source, event.phase, event.subtype,
     event.agent_id, event.turn_id, event.tool_call_id, event.name ?? event.to, event.span_id])
 }
-
-export function lanesOf(events: readonly PlacedEvent[], grouped: boolean) {
-  return [...new Set(events.flatMap(event => [laneOf(event._from, grouped), laneOf(event._to, grouped)]))]
-}
-
-export const laneOf = (lane: string, grouped: boolean) => grouped ? lane.split(' · ', 1)[0] : lane
 
 export function describe(event: FlowEvent) {
   switch (event.type) {

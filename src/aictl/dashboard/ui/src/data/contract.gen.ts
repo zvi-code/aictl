@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 3dacace1ba9559a8c9937324d173a4d86cb5fdb98d646992d18c75a707d40bd5
+// Schema digest: 6725d580f658f661b28db271651214db3df7ce52e281e6ae94a92306ed8ce1a0
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -635,6 +635,12 @@ export type DetailAgentFlow = {
   node_id: string | null;
   session_kql_url: string | null;
   node_scope?: NodeScope;
+  flow_scope?: {
+    kind: ("agent" | "session") & (string);
+    agent_id: string;
+    session_id: string;
+    subagent: boolean;
+  };
   scope: {
     start: number | null;
     end: number | null;
@@ -1958,12 +1964,26 @@ export type FlowEvent = {
   span_id?: string | null;
   trace_id?: string | null;
   wall_ms?: number | null;
+  step?: number;
+  request_n?: number;
+  http_status?: number | null;
+  request_bytes?: number | null;
+  thinking_chars?: number | null;
+  reasoning_tokens?: number | null;
+  input_bytes?: number | null;
+  output_bytes?: number | null;
+  result_tokens_est?: number | null;
+  confirm_wait_ms?: number | null;
 };
 
 export type FlowSummary = {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cache_tokens: number;
+  total_cache_creation_tokens?: number;
+  total_cost_usd?: number | null;
+  priced_calls?: number;
+  total_steps?: number;
   total_tokens: number;
   avg_tokens_per_call: number | null;
   duration_s: number;
