@@ -23,6 +23,8 @@ _LIMIT = 20_000
 log = logging.getLogger(__name__)
 _COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
              "cost_usd", "request_count", "tool_call_count", "files_modified")
+# What a telemetry report of a model call knows and its transcript line may not.
+_TELEMETRY_ONLY = ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason", "request_id", "response_id")
 _FAMILIES = {
     "prompts": "session_prompts", "skills": "skill_uses", "context_events": "context_events",
     "loaded_files": "session_loaded_files", "context_items": "session_context_items",
@@ -308,8 +310,8 @@ class SessionFacts:
                             staged.pop(reported["dedup_key"], None)
                             self._requests.pop(reported["dedup_key"], None)
                             self._remember(self._call_counts, reported["dedup_key"], "paired")
-                            for name in ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason"):
-                                data[name] = data[name] or reported[name]
+                            for name in _TELEMETRY_ONLY:
+                                data[name] = data[name] or reported.get(name)
                             self._remember(self._call_counts, key, "paired")
                         elif counts:
                             self._wait(self._transcript_calls, counts, key)
@@ -326,20 +328,20 @@ class SessionFacts:
                         read = staged.get(key, self._requests.get(key))
                         if read:
                             merged = dict(read)
-                            for name in ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason"):
+                            for name in _TELEMETRY_ONLY:
                                 merged[name] = merged[name] or data[name]
                             if merged != read:
                                 staged[key] = merged
                         continue
                     self._wait(self._otel_calls, counts, {
-                        name: data[name] for name in (
-                            "dedup_key", "project_path", "duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason")})
+                        name: data[name] for name in ("dedup_key", "project_path", *_TELEMETRY_ONLY)})
                     self._dirty = True
                 if prior and transcript:
                     for name in ("tool_tokens", "max_prompt_tokens", "request_bytes", "available_tools"):
                         if data[name] is None:
                             data[name] = prior[name]
-                    for name in ("project_path", "agent_id", "finish_reason", "duration_ms", "ttft_ms"):
+                    for name in ("project_path", "agent_id", "finish_reason", "duration_ms", "ttft_ms",
+                                 "request_id", "response_id"):
                         data[name] = data[name] or prior[name]
                     if data["model"] in ("", "unknown"):
                         data["model"] = prior["model"]

@@ -49,6 +49,14 @@ def s(v):
     return {"stringValue": v}
 
 
+def promoted(table, **values):
+    """The promoted columns of *table* (those after node_id): null unless given."""
+    names = TABLES_BY_NAME[table].column_names
+    out = dict.fromkeys(names[names.index("node_id") + 1:])
+    assert set(values) <= set(out), set(values) - set(out)
+    return {**out, **values}
+
+
 def kv(key, value):
     return {"key": key, "value": value}
 
@@ -190,6 +198,7 @@ def test_log_exact_row_from_both_shapes():
         "MachineId": "box1",
         "node_id": HOST,
         "RowKey": otel._row_key("codex-cli", T1_TEXT, T0_TEXT, TRACE, SPAN, "codex.api_request", "hello", attrs),
+        **promoted("OTELLogs"),
     }
     assert row == expected
     assert list(row) == list(TABLES_BY_NAME["OTELLogs"].column_names)
@@ -376,6 +385,7 @@ def test_trace_exact_rows_from_both_shapes():
         "InputTokens": None, "OutputTokens": None,
         "CacheReadInputTokens": None, "CacheWriteInputTokens": None, "ReasoningOutputTokens": None,
         "ReportedSkillNames": "", "ReportedMcpServers": "", "ReportedContext": {"skills": [], "mcp_servers": []}, "node_id": HOST,
+        **promoted("OTELTraces", ConversationId="conv-9"),
     }
     assert child == {
         "TraceID": TRACE,
@@ -403,6 +413,7 @@ def test_trace_exact_rows_from_both_shapes():
         "InputTokens": None, "OutputTokens": None,
         "CacheReadInputTokens": None, "CacheWriteInputTokens": None, "ReasoningOutputTokens": None,
         "ReportedSkillNames": "", "ReportedMcpServers": "", "ReportedContext": {"skills": [], "mcp_servers": []}, "node_id": HOST,
+        **promoted("OTELTraces"),
     }
     assert list(child) == list(TABLES_BY_NAME["OTELTraces"].column_names)
     assert json.loads(json_line(child))["Events"][0]["EventAttributes"] == {"n": 1}
@@ -508,6 +519,7 @@ def _mrow(name, mtype, value, desc="d", attrs=None, temporality="", monotonic=No
         "MachineId": "hid",
         "node_id": HOST,
         "RowKey": otel._row_key(name, mtype, T1_TEXT, T0_TEXT, attrs, RES_M),
+        **promoted("OTELMetrics"),
     }
 
 
@@ -987,3 +999,242 @@ def test_create_commands_begin_with_the_collector_columns():
         assert "rowid" not in cmd and "_v:" not in cmd and "_deleted" not in cmd
     for table in TABLES_BY_NAME.values():
         assert all(c.doc for c in table.columns)
+
+
+# ── Promoted attribute columns ────────────────────────────────────────
+# Attribute names follow docs/tools-analysis-docs/ai-tools-observability.md (Claude Code)
+# and test/fixtures/otel/copilot_cli_synthetic_session.jsonl (Copilot CLI).
+
+SECRET = "rm -rf /secret/project && echo hunter2"
+
+
+def _claude_logs(*records):
+    """A Claude Code logs export: each record is (event name, [KeyValue, ...])."""
+    resource = {"attributes": [kv("service.name", s("claude-code")), kv("service.version", s("2.1.3")),
+                               kv("host.name", s("box1"))]}
+    log_records = [
+        {"timeUnixNano": str(T1 + i), "body": s(f"claude_code.{name}"),
+         "attributes": [kv("event.name", s(name)), kv("session.id", s("sess-1")), *attrs]}
+        for i, (name, attrs) in enumerate(records)
+    ]
+    return {"resourceLogs": [{"resource": resource,
+                              "scopeLogs": [{"scope": {"name": "com.anthropic.claude_code"}, "logRecords": log_records}]}]}
+
+
+def _promoted_of(row, table):
+    names = TABLES_BY_NAME[table].column_names
+    return {k: row[k] for k in names[names.index("node_id") + 1:]}
+
+
+def test_claude_api_request_columns_are_typed_and_string_numbers_parse():
+    body = _claude_logs(("api_request", [
+        kv("model", s("claude-opus-4-6")), kv("input_tokens", s("1200")), kv("output_tokens", {"intValue": "345"}),
+        kv("cache_read_tokens", s("9000")), kv("cache_creation_tokens", {"intValue": 120}),
+        kv("cost_usd", s("0.0123")), kv("duration_ms", {"doubleValue": 1234.6}), kv("speed", s("fast")),
+        kv("prompt.id", s("p-1")), kv("event.sequence", s("7")), kv("request_id", s("req_01")),
+        kv("app.version", s("2.1.4")), kv("terminal.type", s("vscode")), kv("organization.id", s("org-1")),
+        kv("user.account_uuid", s("acct-1")), kv("user.email", s("a@example.com")),
+    ]))
+    out = both(convert_logs, body, logs_service.ExportLogsServiceRequest)
+    [row] = out.rows["OTELLogs"]
+    assert _promoted_of(row, "OTELLogs") == promoted(
+        "OTELLogs", EventSequence=7, PromptId="p-1", InputTokens=1200, OutputTokens=345,
+        CacheReadInputTokens=9000, CacheWriteInputTokens=120, CostUsd=0.0123, DurationMs=1235,
+        Speed="fast", RequestId="req_01", AppVersion="2.1.4", TerminalType="vscode",
+        OrganizationId="org-1", UserAccountUuid="acct-1",
+    )
+    assert type(row["InputTokens"]) is int and type(row["CostUsd"]) is float
+    assert "a@example.com" not in json.dumps(_promoted_of(row, "OTELLogs"))
+    assert row["LogsAttributes"]["input_tokens"] == "1200", "the bag keeps the value as sent"
+    assert out.stats["bad_values"] == 0
+
+
+def test_app_version_falls_back_to_the_resource_service_version():
+    [row] = convert_logs(_claude_logs(("user_prompt", [])), received_ns=RECV, host=HOST).rows["OTELLogs"]
+    assert row["AppVersion"] == "2.1.3"
+
+
+def test_claude_api_error_and_retry_columns():
+    body = _claude_logs(("api_error", [
+        kv("error", s("Request rate limited")), kv("status_code", s("429")), kv("attempt", {"intValue": "3"}),
+        kv("duration_ms", s("80")),
+    ]))
+    [row] = convert_logs(body, received_ns=RECV, host=HOST).rows["OTELLogs"]
+    assert (row["Error"], row["StatusCode"], row["Attempt"], row["DurationMs"]) == ("Request rate limited", 429, 3, 80)
+    assert row["Success"] is None and row["CostUsd"] is None
+
+
+def test_claude_tool_result_mcp_server_from_parameters_and_from_the_tool_name():
+    params = json.dumps({"mcp_server_name": "github", "mcp_tool_name": "create_issue", "body": SECRET})
+    body = _claude_logs(
+        ("tool_result", [kv("tool_name", s("mcp_tool")), kv("success", s("false")), kv("duration_ms", s("15")),
+                         kv("decision_type", s("accept")), kv("decision_source", s("config")),
+                         kv("tool_result_size_bytes", s("2048")), kv("tool_parameters", s(params))]),
+        ("tool_result", [kv("tool_name", s("mcp__kusto__query")), kv("success", {"boolValue": True})]),
+        ("tool_result", [kv("tool_name", s("Skill")), kv("tool_parameters", s('{"skill_name": "pdf"}'))]),
+        ("tool_result", [kv("tool_name", s("Bash")), kv("tool_parameters", s('{"skill_name": "not a name!"}'))]),
+    )
+    explicit, derived, skill, bash = convert_logs(body, received_ns=RECV, host=HOST).rows["OTELLogs"]
+    assert (explicit["McpServer"], explicit["McpToolName"], explicit["Success"]) == ("github", "create_issue", False)
+    assert (explicit["Decision"], explicit["DecisionSource"], explicit["ToolResultBytes"]) == ("accept", "config", 2048)
+    assert explicit["ToolInputChars"] == len(params)
+    assert (derived["ToolName"], derived["McpServer"], derived["McpToolName"], derived["Success"]) == (
+        "mcp__kusto__query", "kusto", "query", True)
+    assert (skill["SkillName"], skill["McpServer"]) == ("pdf", None)
+    assert bash["SkillName"] is None
+    for keep_text in (True, False):
+        rows = convert_logs(body, received_ns=RECV, host=HOST, keep_text=keep_text).rows["OTELLogs"]
+        assert rows[0]["McpServer"] == "github" and rows[0]["ToolInputChars"] == len(params)
+
+
+def test_mcp_tool_parts():
+    assert otel.mcp_tool_parts("mcp__plugin_x_y__do__it") == ("plugin_x_y", "do__it")
+    for name in ("mcp__", "mcp__srv", "mcp__srv__", "Bash", None, 3):
+        assert otel.mcp_tool_parts(name) == (None, None)
+
+
+def test_tool_decision_source_comes_from_source_only_beside_a_decision():
+    body = _claude_logs(
+        ("tool_decision", [kv("tool_name", s("Edit")), kv("decision", s("reject")), kv("source", s("user_reject"))]),
+        ("user_prompt", [kv("prompt_length", s("42")), kv("source", s("cli"))]),
+    )
+    decision, prompt = convert_logs(body, received_ns=RECV, host=HOST).rows["OTELLogs"]
+    assert (decision["Decision"], decision["DecisionSource"], decision["ToolName"]) == ("reject", "user_reject", "Edit")
+    assert (prompt["PromptLength"], prompt["DecisionSource"]) == (42, None)
+
+
+def test_unreadable_and_nonfinite_values_are_null_and_counted_once():
+    body = _claude_logs(("api_request", [
+        kv("input_tokens", s("lots")), kv("cost_usd", {"doubleValue": "NaN"}), kv("output_tokens", {"boolValue": True}),
+        kv("duration_ms", s("inf")), kv("success", s("maybe")), kv("event.sequence", {"doubleValue": 1e30}),
+    ]))
+    out = convert_logs(body, received_ns=RECV, host=HOST)
+    [row] = out.rows["OTELLogs"]
+    columns = ("InputTokens", "CostUsd", "OutputTokens", "DurationMs", "Success", "EventSequence")
+    assert [row[c] for c in columns] == [None] * 6
+    # lots, True, maybe and 1e30 (out of range) are bad; NaN was counted in the bag, inf here.
+    assert out.stats["bad_values"] == 4
+    assert out.stats["nonfinite_values"] == 2
+
+
+def test_error_text_follows_the_capture_mode():
+    body = _claude_logs(("api_error", [kv("error", s("E" * 2000))]), ("api_error", [kv("error", s("short"))]))
+    full = convert_logs(body, received_ns=RECV, host=HOST).rows["OTELLogs"]
+    assert full[0]["Error"] == "E" * otel.TEXT_COLUMN_CHARS and full[1]["Error"] == "short"
+    meta = convert_logs(body, received_ns=RECV, host=HOST, keep_text=False).rows["OTELLogs"]
+    assert meta[0]["Error"] is None and meta[1]["Error"] == "short"
+
+
+def test_text_off_leaves_no_text_in_promoted_columns():
+    body = _claude_logs(
+        ("tool_result", [kv("tool_name", s("Bash")), kv("tool_parameters", s(json.dumps({"command": SECRET}))),
+                         kv("tool_input", s(SECRET)), kv("error", s(SECRET + "x" * 300))]),
+        ("user_prompt", [kv("prompt", s(SECRET)), kv("prompt_length", {"intValue": len(SECRET)})]),
+    )
+    rows = convert_logs(body, received_ns=RECV, host=HOST, keep_text=False).rows["OTELLogs"]
+    for row in rows:
+        assert "hunter2" not in json_line(row)
+    assert rows[0]["ToolInputChars"] == len(json.dumps({"command": SECRET}))
+    assert rows[1]["PromptLength"] == len(SECRET)
+
+
+def test_a_retried_export_gives_the_same_row_key_and_columns():
+    body = _claude_logs(("api_request", [kv("input_tokens", s("5")), kv("request_id", s("req_9"))]))
+    first = convert_logs(body, received_ns=RECV, host=HOST).rows["OTELLogs"][0]
+    again = convert_logs(copy.deepcopy(body), received_ns=RECV + 10**9, host=HOST).rows["OTELLogs"][0]
+    assert first["RowKey"] == again["RowKey"] and first["RequestId"] == "req_9"
+    assert _promoted_of(first, "OTELLogs") == _promoted_of(again, "OTELLogs")
+
+
+def _copilot_spans():
+    """Spans shaped like test/fixtures/otel/copilot_cli_synthetic_session.jsonl."""
+    resource = {"attributes": [kv("service.name", s("github-copilot")), kv("service.version", s("1.0.108-1"))]}
+    chat = [
+        kv("gen_ai.provider.name", s("github")), kv("gen_ai.conversation.id", s("conv-1")),
+        kv("gen_ai.operation.name", s("chat")), kv("gen_ai.request.model", s("example-model")),
+        kv("gen_ai.response.model", s("example-model")),
+        kv("gen_ai.response.finish_reasons", {"arrayValue": {"values": [s("tool_calls")]}}),
+        kv("gen_ai.usage.input_tokens", {"intValue": "10000"}), kv("gen_ai.usage.output_tokens", {"intValue": "50"}),
+        kv("gen_ai.response.id", s("example-response-2")),
+        kv("gen_ai.request.previous_response.id", s("example-response-1")),
+        kv("github.copilot.service_request_id", s("svc-req-2")), kv("github.copilot.cost", {"doubleValue": 1.0}),
+        kv("github.copilot.nano_aiu", {"intValue": "2000000000"}),
+        kv("github.copilot.server_duration", {"doubleValue": 3000.0}),
+        kv("github.copilot.turn_id", s("1")), kv("github.copilot.initiator", s("agent")),
+        kv("github.copilot.interaction_id", s("inter-1")),
+        kv("gen_ai.response.time_to_first_chunk", {"doubleValue": 1.5}),
+    ]
+    tool = [
+        kv("gen_ai.conversation.id", s("conv-1")), kv("gen_ai.operation.name", s("execute_tool")),
+        kv("gen_ai.tool.name", s("mcp__github__list_issues")), kv("gen_ai.tool.call.id", s("call-1")),
+        kv("gen_ai.tool.type", s("function")), kv("process.exit.code", {"intValue": "0"}),
+        kv("gen_ai.tool.call.arguments", s(json.dumps({"q": SECRET}))),
+    ]
+    agent = [
+        kv("gen_ai.conversation.id", s("conv-1")), kv("gen_ai.operation.name", s("invoke_agent")),
+        kv("github.copilot.agent.type", s("builtin")), kv("github.copilot.turn_count", {"intValue": "2"}),
+        kv("github.copilot.context.custom_agent_names", s('["example-agent"]')),
+    ]
+    spans = [
+        {"traceId": TRACE, "spanId": f"{i + 1:016x}", "name": name, "kind": 3,
+         "startTimeUnixNano": str(T0 + i), "endTimeUnixNano": str(T1 + i), "attributes": attrs}
+        for i, (name, attrs) in enumerate((("chat example-model", chat), ("execute_tool", tool), ("invoke_agent", agent)))
+    ]
+    return {"resourceSpans": [{"resource": resource,
+                               "scopeSpans": [{"scope": {"name": "github.copilot"}, "spans": spans}]}]}
+
+
+def test_copilot_cli_span_columns():
+    out = both(convert_traces, _copilot_spans(), trace_service.ExportTraceServiceRequest)
+    chat, tool, agent = out.rows["OTELTraces"]
+    assert _promoted_of(chat, "OTELTraces") == promoted(
+        "OTELTraces", ResponseId="example-response-2", RequestId="svc-req-2", PreviousResponseId="example-response-1",
+        ConversationId="conv-1", InteractionId="inter-1", Initiator="agent", ProviderName="github",
+        ResponseModel="example-model", FinishReasons="tool_calls", CopilotCost=1.0, CopilotNanoAiu=2_000_000_000,
+        ServerDurationMs=3000.0, TimeToFirstChunkMs=1500.0, AppVersion="1.0.108-1",
+    )
+    assert (tool["McpServer"], tool["McpToolName"], tool["ToolType"], tool["ProcessExitCode"]) == (
+        "github", "list_issues", "function", 0)
+    assert tool["ToolInputChars"] == len(json.dumps({"q": SECRET}))
+    assert (agent["AgentType"], agent["TurnCount"], agent["ReportedCustomAgentNames"]) == ("builtin", 2, "example-agent")
+    assert list(chat) == list(TABLES_BY_NAME["OTELTraces"].column_names)
+    off = convert_traces(_copilot_spans(), received_ns=RECV, host=HOST, keep_text=False).rows["OTELTraces"][1]
+    assert off["ToolInputChars"] == len(json.dumps({"q": SECRET}))
+    assert "hunter2" not in json.dumps(_promoted_of(off, "OTELTraces"))
+
+
+def test_metric_dimension_columns():
+    def sum_metric(name, *attrs):
+        point = {"timeUnixNano": str(T1), "asInt": "1", "attributes": [kv("session.id", s("sess")), *attrs]}
+        return {"name": name, "sum": {"aggregationTemporality": 1, "isMonotonic": True, "dataPoints": [point]}}
+
+    body = _metric_body(
+        sum_metric("claude_code.token.usage", kv("type", s("cacheRead")), kv("model", s("opus"))),
+        sum_metric("claude_code.lines_of_code.count", kv("type", s("added"))),
+        sum_metric("claude_code.code_edit_tool.decision", kv("tool_name", s("Edit")), kv("decision", s("accept")),
+                   kv("source", s("config")), kv("language", s("Python"))),
+        sum_metric("copilot_chat.tool.call.count", kv("gen_ai.tool.name", s("mcp__kusto__query"))),
+        {"name": "gen_ai.client.token.usage", "histogram": {"aggregationTemporality": 1, "dataPoints": [
+            {"timeUnixNano": str(T1), "count": "2", "sum": 30.0, "explicitBounds": [10.0], "bucketCounts": ["1", "1"],
+             "attributes": [kv("gen_ai.token.type", s("input")), kv("gen_ai.operation.name", s("chat"))]}]}},
+    )
+    out = both(convert_metrics, body, metrics_service.ExportMetricsServiceRequest)
+    rows = out.rows["OTELMetrics"]
+    tokens, loc, decision, calls = rows[:4]
+    assert (tokens["Type"], tokens["TokenType"]) == ("cacheRead", "cacheRead")
+    assert (loc["Type"], loc["TokenType"]) == ("added", None)
+    assert (decision["ToolName"], decision["Decision"], decision["DecisionSource"], decision["Language"]) == (
+        "Edit", "accept", "config", "Python")
+    assert (calls["ToolName"], calls["McpServer"]) == ("mcp__kusto__query", "kusto")
+    histogram = rows[4:]
+    assert len(histogram) == 4 and {(r["TokenType"], r["OperationName"]) for r in histogram} == {("input", "chat")}
+    assert out.stats["bad_values"] == 0
+
+
+def test_the_native_otel_tables_match_the_converter_columns():
+    from aictl.stores.kusto.tables import TABLES as NATIVE
+
+    for table in TABLES_BY_NAME.values():
+        native = [name for name, _ in NATIVE[table.name].columns if name not in ("project", "_v")]
+        assert native == list(table.column_names)
+        assert dict(NATIVE[table.name].columns).items() >= {c.name: c.kusto_type for c in table.columns}.items()

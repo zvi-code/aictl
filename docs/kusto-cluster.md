@@ -498,9 +498,9 @@ With a cluster configured, everything a tool exports to the daemon's OTLP endpoi
 
 | Table | One row per | Columns aictl adds after the collector's |
 | --- | --- | --- |
-| `OTELLogs` | log record | `EventName`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
-| `OTELMetrics` | data point (a histogram is `_sum`, `_count`, `_bucket`, `_min`, `_max` rows) | `StartTime`, `Temporality`, `Monotonic`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey` |
-| `OTELTraces` | span | `DurationMs`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey`, `TurnId`, `OperationName`, `AgentName`, `ToolName`, `ToolCallId`, `InputTokens`, `OutputTokens` |
+| `OTELLogs` | log record | `EventName`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey`; then the event's attributes, typed: `EventSequence`, `PromptId`, tokens, `CostUsd`, `DurationMs`, `ToolName`, `ToolCallId`, `McpServer`, `McpToolName`, `SkillName`, `Success`, `Error`, `StatusCode`, `Attempt`, `Decision`, `DecisionSource`, agent ids, `RequestId`, `ResponseId`, sizes, `AppVersion` and more |
+| `OTELMetrics` | data point (a histogram is `_sum`, `_count`, `_bucket`, `_min`, `_max` rows) | `StartTime`, `Temporality`, `Monotonic`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey`; then the point's dimensions: `Type`, `TokenType`, `OperationName`, `ToolName`, `McpServer`, `Decision`, `DecisionSource`, `Language`, `AgentName`, `AppVersion` and more |
+| `OTELTraces` | span | `DurationMs`, `SessionId`, `Tool`, `Model`, `MachineId`, `RowKey`, `TurnId`, `OperationName`, `AgentName`, `ToolName`, `ToolCallId`, `InputTokens`, `OutputTokens`; then `ResponseId`, `RequestId`, `ConversationId`, `FinishReasons`, `ErrorType`, `McpServer`, `SkillName`, agent ids, Copilot's cost, AI units, server time and time to first chunk, and more |
 | `OTELPayloads` | chunk of a large text | aictl's own table |
 
 New spans expose the reported turn, operation, agent, tool and token usage as physical
@@ -609,6 +609,79 @@ OTELTraces
 | summarize take_any(*) by node_id, RowKey
 | summarize spans = count(), p95_ms = percentile(DurationMs, 95) by node_id, SpanName, Tool
 ```
+
+**Typed columns.** The columns after `node_id` (listed with their source attributes in `.show table OTELLogs schema as json` and in [kusto-schema.md](kusto-schema.md#opentelemetry)) are copied from the attribute bag, so most questions need no `LogsAttributes[...]`. They are null when the tool does not send the attribute. `McpServer` is the attribute when a tool sends one, else the `<server>` of a tool named `mcp__<server>__<tool>`. Each query below keeps one copy of a repeated row first.
+
+Tokens and cost by model, per session (Claude Code `api_request` events; Copilot reports usage on spans):
+
+```kusto
+OTELLogs
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
+| where EventName in ("api_request", "claude_code.api_request")
+| summarize calls = count(), input = sum(InputTokens), output = sum(OutputTokens),
+    cache_read = sum(CacheReadInputTokens), cache_write = sum(CacheWriteInputTokens), cost_usd = sum(CostUsd)
+    by SessionId, Model
+| order by cost_usd desc
+```
+
+Tool calls and failure rate by MCP server:
+
+```kusto
+OTELLogs
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
+| where EventName in ("tool_result", "claude_code.tool_result") and isnotempty(McpServer)
+| summarize calls = count(), failed = countif(Success == false), total_ms = sum(DurationMs),
+    result_bytes = sum(ToolResultBytes) by McpServer, McpToolName
+| extend failure_rate = round(1.0 * failed / calls, 3)
+| order by calls desc
+```
+
+Slowest tools, from log events and from spans together:
+
+```kusto
+union
+    (OTELLogs | where isnotempty(RowKey) | summarize take_any(*) by node_id, RowKey
+        | where isnotempty(ToolName) and isnotnull(DurationMs) | project Tool, ToolName, DurationMs),
+    (OTELTraces | where isnotempty(RowKey) | summarize take_any(*) by node_id, RowKey
+        | where OperationName == "execute_tool" | project Tool, ToolName, DurationMs)
+| summarize calls = count(), p50_ms = percentile(DurationMs, 50), p95_ms = percentile(DurationMs, 95),
+    max_ms = max(DurationMs) by Tool, ToolName
+| top 20 by p95_ms
+```
+
+Retries and API errors per session:
+
+```kusto
+OTELLogs
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
+| where EventName in ("api_error", "claude_code.api_error")
+| summarize errors = count(), max_attempt = max(Attempt), statuses = make_set(StatusCode),
+    first_error = take_any(Error) by SessionId, Model
+| order by errors desc
+```
+
+Tool permission decisions by source (`tool_decision` events, and the `code_edit_tool.decision` metric):
+
+```kusto
+OTELLogs
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
+| where isnotempty(Decision)
+| summarize count() by EventName, ToolName, Decision, DecisionSource
+```
+
+```kusto
+OTELMetrics
+| where isnotempty(RowKey)
+| summarize take_any(*) by node_id, RowKey
+| where MetricName == "claude_code.token.usage" or (MetricName startswith "gen_ai.client.token.usage" and MetricName endswith "_sum")
+| summarize tokens = sum(MetricValue) by Tool, Model, TokenType
+```
+
+A Copilot call can be matched to its transcript by `ResponseId` (span attribute `gen_ai.response.id`) or `RequestId` (`github.copilot.service_request_id`); a Claude Code call by `RequestId` when the event sends `request_id`.
 
 ## What to expect
 

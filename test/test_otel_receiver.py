@@ -997,6 +997,49 @@ def test_extract_requests_uses_shared_alias_table():
     assert (req.input_tokens, req.output_tokens, req.cache_read_tokens) == (120, 30, 7)
 
 
+# ── Call identifiers ──────────────────────────────────────────────
+
+
+def test_extract_requests_exposes_the_calls_request_and_response_ids():
+    """The provider's ids let a telemetry call be matched to the transcript's message."""
+    body = _make_otlp_logs("api_request", attrs={
+        "model": "claude-opus-4-6", "input_tokens": "10", "request_id": "req_01",
+        "message_id": "msg_01", "cost_usd": "not a number",
+    })
+    first = OtelReceiver().extract_requests(OtelReceiver().parse_logs(body))
+    again = OtelReceiver().extract_requests(OtelReceiver().parse_logs(json.loads(json.dumps(body))))
+    assert [(r.request_id, r.response_id, r.cost_usd) for r in first] == [("req_01", "msg_01", 0.0)]
+    assert [(r.request_id, r.response_id, r.source_ts, r.dedup_key) for r in again] == [
+        (r.request_id, r.response_id, r.source_ts, r.dedup_key) for r in first]
+
+
+def test_extract_requests_reads_the_gen_ai_response_id_and_ignores_non_ids():
+    ev = EventRow(ts=1.0, tool="copilot-vscode", kind="otel:gen_ai.client.inference.operation.details",
+                  detail={"gen_ai.response.id": "resp-7", "github.copilot.service_request_id": "svc-1",
+                          "request_id": "x" * 300}, session_id="s1")
+    (req,) = OtelReceiver.extract_requests([ev])
+    assert (req.request_id, req.response_id) == ("svc-1", "resp-7")
+    (bare,) = OtelReceiver.extract_requests([EventRow(ts=1.0, tool="t", kind="otel:api_request", detail={})])
+    assert (bare.request_id, bare.response_id) == ("", "")
+
+
+def test_map_and_bytes_attributes_are_kept_and_an_unknown_value_is_counted():
+    receiver = OtelReceiver()
+    attrs = [
+        {"key": "usage", "value": {"kvlistValue": {"values": [
+            {"key": "input_tokens", "value": {"intValue": "5"}},
+            {"key": "nested", "value": {"arrayValue": {"values": [{"kvlistValue": {"values": [
+                {"key": "k", "value": {"stringValue": "v"}}]}}]}}},
+        ]}}},
+        {"key": "raw", "value": {"bytesValue": "AAEC"}},
+        {"key": "empty", "value": {}},
+    ]
+    assert _parse_attributes(attrs, receiver.stats) == {
+        "usage": {"input_tokens": 5, "nested": [{"k": "v"}]}, "raw": "AAEC",
+    }
+    assert receiver.stats.dropped == 1
+
+
 # ── Content-Encoding: gzip ────────────────────────────────────────
 
 

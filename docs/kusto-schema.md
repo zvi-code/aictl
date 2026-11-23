@@ -211,7 +211,7 @@ Key: node_id, agent_id. Scope: was per project in SQLite. 14 columns.
 
 ### `requests`
 
-Key: node_id, rowid; unique: (dedup_key). Scope: was per project in SQLite. 26 columns.
+Key: node_id, rowid; unique: (dedup_key). Scope: was per project in SQLite. 28 columns.
 
 | Column | Kusto type | SQLite type | Default | Not null |
 |---|---|---|---|---|
@@ -241,6 +241,8 @@ Key: node_id, rowid; unique: (dedup_key). Scope: was per project in SQLite. 26 c
 | max_prompt_tokens | long | INTEGER |  |  |
 | request_bytes | long | INTEGER |  |  |
 | available_tools | long | INTEGER |  |  |
+| request_id | string | native only | '' |  |
+| response_id | string | native only | '' |  |
 | _v | datetime | system | | |
 | _deleted | bool | system | | |
 | node_id | string | system | | |
@@ -1442,6 +1444,8 @@ Key: node_id, observation_id. Scope: machine-wide. 24 columns.
 
 These append-only tables are created or widened when the daemon receives an OTLP export. `node_id` identifies the receiving daemon; `MachineId` identifies the source resource when available. Neither the native collector columns nor existing attribute bags are replaced.
 
+The columns after `node_id` copy attributes an investigation reads often out of the attribute bag, typed: numbers sent as text are parsed, and a value that cannot be read, or is not finite, is null and counted in the converter's `bad_values` or `nonfinite_values`. A column is null when none of its attributes is sent. The bag keeps every attribute as sent. With `capture = "metadata"` a column holds only what the bag keeps under the same rule (names, numbers, lengths, strings of at most 256 characters); `ToolInputChars` keeps the length of tool input that the bag drops, and `McpServer`, `McpToolName` and `SkillName` keep the names Claude Code's `tool_parameters` give, when they have the form of a name. An attribute name marked (*) was not found in a recording or document in this repository; it is the tool's documented name as remembered and may not be sent.
+
 ### `OTELLogs`
 
 OpenTelemetry log records
@@ -1464,6 +1468,44 @@ OpenTelemetry log records
 | MachineId | string | aictl: resource host.id, else host.name, else the receiving host |
 | RowKey | string | aictl: SHA-256 of the row identity; equal for a retried export |
 | node_id | string | aictl: reporting daemon node, independent of the OTLP resource host |
+| EventSequence | long | aictl: attribute event.sequence, the order of events in a session |
+| PromptId | string | aictl: attribute prompt.id, shared by the events of one user prompt |
+| ConversationId | string | aictl: attribute gen_ai.conversation.id, else conversation.id(*) (Codex) |
+| InputTokens | long | aictl: input_tokens, gen_ai.usage.input_tokens or input_token_count(*) |
+| OutputTokens | long | aictl: output_tokens, gen_ai.usage.output_tokens or output_token_count(*) |
+| CacheReadInputTokens | long | aictl: cache_read_tokens, cache_read_input_tokens, gen_ai.usage.cache_read.input_tokens or cached_token_count(*) |
+| CacheWriteInputTokens | long | aictl: cache_creation_tokens, cache_creation_input_tokens or gen_ai.usage.cache_write.input_tokens |
+| ReasoningOutputTokens | long | aictl: gen_ai.usage.reasoning.output_tokens or reasoning_token_count(*) |
+| CostUsd | real | aictl: attribute cost_usd (Claude Code api_request) |
+| DurationMs | long | aictl: attribute duration_ms, rounded to whole milliseconds |
+| TimeToFirstTokenMs | real | aictl: attribute ttft_ms(*) or time_to_first_token_ms(*) |
+| ToolName | string | aictl: attribute tool_name, else gen_ai.tool.name |
+| ToolCallId | string | aictl: tool_use_id(*), tool_call_id, call_id(*) (Codex) or gen_ai.tool.call.id |
+| McpServer | string | aictl: MCP server: attribute mcp_server_name, mcp.server.name(*) or mcp_server(*), else mcp_server_name in tool_parameters (Claude Code with OTEL_LOG_TOOL_DETAILS(*)), else <server> of a tool name mcp__<server>__<tool> |
+| McpToolName | string | aictl: MCP tool: attribute mcp_tool_name(*), else mcp_tool_name in tool_parameters(*), else <tool> of a tool name mcp__<server>__<tool> |
+| SkillName | string | aictl: skill: attribute skill_name(*) or skill.name(*), else skill_name in tool_parameters (Claude Code Skill tool with OTEL_LOG_TOOL_DETAILS(*)) |
+| Success | bool | aictl: attribute success; "true" and "false" strings are read |
+| Error | string | aictl: attribute error, error.message(*) or error_message, cut at 1024 characters; with capture metadata only what the bag keeps (at most 256 characters) |
+| ErrorType | string | aictl: attribute error.type or error_type |
+| StatusCode | long | aictl: attribute status_code (Claude Code api_error) or http.response.status_code(*) |
+| Attempt | long | aictl: attribute attempt, the retry number of an API call |
+| Decision | string | aictl: attribute decision (tool_decision), else decision_type (tool_result) |
+| DecisionSource | string | aictl: attribute decision_source, else attribute source when the record carries a decision (Claude Code tool_decision, code_edit_tool.decision) |
+| AgentId | string | aictl: agent_id(*), agent.id(*) or gen_ai.agent.id(*) |
+| AgentName | string | aictl: agent_name or gen_ai.agent.name |
+| AgentType | string | aictl: agent_type, agent.type(*) or github.copilot.agent.type |
+| ParentAgentId | string | aictl: parent_agent_id(*) or gen_ai.agent.parent_id(*) |
+| RequestId | string | aictl: request_id(*), requestId or github.copilot.service_request_id: the provider's request id |
+| ResponseId | string | aictl: gen_ai.response.id, response_id(*), message_id or message.id(*): the provider's response or message id, which a transcript names too |
+| FinishReason | string | aictl: gen_ai.response.finish_reasons joined with commas, else finish_reason or stop_reason(*) |
+| PromptLength | long | aictl: attribute prompt_length (user_prompt), in characters |
+| ToolInputChars | long | aictl: characters of tool_parameters, tool_input(*), arguments(*) or gen_ai.tool.call.arguments(*); kept with capture metadata |
+| ToolResultBytes | long | aictl: attribute tool_result_size_bytes (tool_result) |
+| Speed | string | aictl: attribute speed (Claude Code api_request: fast or normal) |
+| AppVersion | string | aictl: attribute app.version, else resource service.version |
+| TerminalType | string | aictl: attribute terminal.type (Claude Code, Codex) |
+| OrganizationId | string | aictl: attribute organization.id (Claude Code), as already kept in the bag |
+| UserAccountUuid | string | aictl: attribute user.account_uuid (Claude Code), as already kept in the bag |
 
 ### `OTELMetrics`
 
@@ -1489,6 +1531,22 @@ OpenTelemetry metric data points
 | MachineId | string | aictl: resource host.id, else host.name, else the receiving host |
 | RowKey | string | aictl: SHA-256 of the row identity; equal for a retried export |
 | node_id | string | aictl: reporting daemon node, independent of the OTLP resource host |
+| Type | string | aictl: attribute type: token type, lines added or removed, active time user or cli (Claude Code) |
+| TokenType | string | aictl: gen_ai.token.type, else attribute type of a metric whose name has token |
+| OperationName | string | aictl: attribute gen_ai.operation.name |
+| ProviderName | string | aictl: attribute gen_ai.provider.name |
+| ToolName | string | aictl: attribute tool_name, else gen_ai.tool.name |
+| McpServer | string | aictl: MCP server: attribute mcp_server_name(*), else <server> of a ToolName mcp__<server>__<tool> |
+| Decision | string | aictl: attribute decision (code_edit_tool.decision) |
+| DecisionSource | string | aictl: attribute decision_source, else attribute source when the record carries a decision (Claude Code tool_decision, code_edit_tool.decision) |
+| Language | string | aictl: attribute language (code_edit_tool.decision) |
+| AgentName | string | aictl: gen_ai.agent.name or agent_name(*) |
+| Success | bool | aictl: attribute success(*) |
+| ErrorType | string | aictl: attribute error.type(*) |
+| AppVersion | string | aictl: attribute app.version, else resource service.version |
+| TerminalType | string | aictl: attribute terminal.type (Claude Code, Codex) |
+| OrganizationId | string | aictl: attribute organization.id (Claude Code), as already kept in the bag |
+| UserAccountUuid | string | aictl: attribute user.account_uuid (Claude Code), as already kept in the bag |
 
 ### `OTELTraces`
 
@@ -1529,6 +1587,34 @@ OpenTelemetry spans
 | ReportedMcpServers | string | aictl: newline-separated names from github.copilot.context.mcp_server_names |
 | ReportedContext | dynamic | aictl: normalized arrays of reported skill and MCP server names |
 | node_id | string | aictl: reporting daemon node, independent of the OTLP resource host |
+| ResponseId | string | aictl: span attribute gen_ai.response.id |
+| RequestId | string | aictl: github.copilot.service_request_id, else request_id(*) |
+| PreviousResponseId | string | aictl: span attribute gen_ai.request.previous_response.id |
+| ConversationId | string | aictl: span attribute gen_ai.conversation.id |
+| InteractionId | string | aictl: span attribute github.copilot.interaction_id |
+| Initiator | string | aictl: github.copilot.initiator: user or agent |
+| ProviderName | string | aictl: gen_ai.provider.name, else gen_ai.system(*) |
+| ResponseModel | string | aictl: span attribute gen_ai.response.model |
+| FinishReasons | string | aictl: gen_ai.response.finish_reasons joined with commas |
+| ErrorType | string | aictl: span attribute error.type(*) |
+| HttpStatusCode | long | aictl: span attribute http.response.status_code(*) |
+| ToolType | string | aictl: span attribute gen_ai.tool.type |
+| ToolInputChars | long | aictl: characters of gen_ai.tool.call.arguments(*); kept with capture metadata |
+| ToolResultChars | long | aictl: characters of gen_ai.tool.call.result(*); kept with capture metadata |
+| McpServer | string | aictl: MCP server: span attribute mcp_server_name(*) or mcp.server.name(*), else <server> of a ToolName mcp__<server>__<tool> |
+| McpToolName | string | aictl: MCP tool: span attribute mcp_tool_name(*), else <tool> of a ToolName mcp__<server>__<tool> |
+| SkillName | string | aictl: span attribute skill_name(*) or skill.name(*) |
+| AgentId | string | aictl: span attribute gen_ai.agent.id(*) |
+| ParentAgentId | string | aictl: gen_ai.agent.parent_id(*) or parent_agent_id(*) |
+| AgentType | string | aictl: span attribute github.copilot.agent.type |
+| CopilotCost | real | aictl: github.copilot.cost, premium request units |
+| CopilotNanoAiu | long | aictl: github.copilot.nano_aiu, AI units times 1e9 |
+| ServerDurationMs | real | aictl: github.copilot.server_duration, milliseconds the service spent |
+| TimeToFirstChunkMs | real | aictl: gen_ai.response.time_to_first_chunk (seconds) in milliseconds |
+| TurnCount | long | aictl: span attribute github.copilot.turn_count |
+| ProcessExitCode | long | aictl: span attribute process.exit.code (execute_tool) |
+| AppVersion | string | aictl: attribute app.version, else resource service.version |
+| ReportedCustomAgentNames | string | aictl: newline-separated names from github.copilot.context.custom_agent_names; null when not sent |
 
 ### `OTELPayloads`
 

@@ -90,6 +90,12 @@ API_ERROR_EVENTS = frozenset(
     }
 )
 
+# Attributes that name an API call, first one sent wins. The request id is the provider's
+# (Claude Code request_id, Copilot github.copilot.service_request_id); the response id is
+# the response or message id a transcript names too (gen_ai.response.id, message_id).
+REQUEST_ID_KEYS = ("request_id", "requestId", "github.copilot.service_request_id")
+RESPONSE_ID_KEYS = ("gen_ai.response.id", "response_id", "message_id", "message.id")
+
 # OTLP AggregationTemporality enum: 1 = DELTA, 2 = CUMULATIVE. JSON encodes
 # it either as the int or the enum name depending on the exporter.
 _CUMULATIVE_TEMPORALITY = frozenset({2, "2", "AGGREGATION_TEMPORALITY_CUMULATIVE"})
@@ -537,13 +543,15 @@ class OtelReceiver:
                     output_tokens=usage.output,
                     cache_read_tokens=usage.cache_read,
                     cache_creation_tokens=usage.cache_write,
-                    cost_usd=float(d.get("cost_usd", 0) or 0),
-                    duration_ms=float(d.get("duration_ms", 0) or 0),
+                    cost_usd=_num(d.get("cost_usd", 0) or 0),
+                    duration_ms=_num(d.get("duration_ms", 0) or 0),
                     finish_reason=_coerce_str(d.get("gen_ai.response.finish_reasons", "")),
                     is_error=1 if d.get("error") or d.get("is_error") else 0,
                     source="otel",
                     prompt_id=d.get("prompt.id", ""),
                     dedup_key=getattr(e, "source_event_id", "") if not source_ts else "",
+                    request_id=_call_id(d, REQUEST_ID_KEYS),
+                    response_id=_call_id(d, RESPONSE_ID_KEYS),
                 )
             )
         return requests
@@ -840,6 +848,13 @@ def _parse_otel_attributes(attrs: list[dict], stats: OtelStats | None = None) ->
             arr = v["arrayValue"]
             values = arr.get("values", []) if isinstance(arr, dict) else []
             result[key] = [_extract_any_otel_value(x) for x in values if isinstance(x, dict)]
+        elif "kvlistValue" in v:
+            kvlist = v["kvlistValue"]
+            result[key] = _parse_otel_attributes(kvlist.get("values", []) if isinstance(kvlist, dict) else [], stats)
+        elif "bytesValue" in v:
+            result[key] = v["bytesValue"]
+        elif stats is not None:
+            stats.dropped += 1
     return result
 
 
@@ -947,11 +962,28 @@ def _promote_pid(attrs: dict, resource_attrs: dict | None = None) -> None:
 
 
 def _extract_any_otel_value(value: dict):
-    """Extract a single OTLP AnyValue."""
-    for vtype in ("stringValue", "intValue", "doubleValue", "boolValue"):
+    """Extract a single OTLP AnyValue; a map is a dict, an array a list."""
+    for vtype in ("stringValue", "intValue", "doubleValue", "boolValue", "bytesValue"):
         if vtype in value:
             return value[vtype]
+    if isinstance(value.get("kvlistValue"), dict):
+        return _parse_otel_attributes(value["kvlistValue"].get("values", []))
+    values = value["arrayValue"].get("values") if isinstance(value.get("arrayValue"), dict) else None
+    if isinstance(values, list):
+        return [_extract_any_otel_value(x) for x in values if isinstance(x, dict)]
     return None
+
+
+def _call_id(d: dict, keys: tuple[str, ...]) -> str:
+    """The first of *keys* in *d* that holds an id: a string or integer of at most 256 characters."""
+    for key in keys:
+        val = d.get(key)
+        if isinstance(val, bool) or not isinstance(val, (str, int)):
+            continue
+        text = str(val).strip()
+        if text and len(text) <= 256:
+            return text
+    return ""
 
 
 def _coerce_str(val) -> str:

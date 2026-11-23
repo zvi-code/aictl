@@ -11,6 +11,10 @@ can write to one database and the same queries read both:
 - The columns after them are aictl's: the session, tool, model and machine a row
   belongs to, and a ``RowKey`` that is the same when an export is retried. A collector
   leaves them null.
+- The columns after ``node_id`` are attributes copied out of the bag, typed (tokens,
+  cost, durations, tool, MCP server, skill, decision, errors, retries, agent and call
+  ids, dimensions of a metric point), so KQL needs no ``tostring(LogsAttributes[...])``.
+  The bag keeps every attribute; a column is null when its attributes are not sent.
 - Two kinds of metric rows are aictl's own, since the collector's exporter writes
   neither: ``<name>_min`` and ``<name>_max`` for a histogram that reports them, and
   the rows of an ``ExponentialHistogram``, which the exporter skips. An exponential
@@ -30,6 +34,9 @@ With ``keep_text=False`` (``capture = "metadata"``) no text is stored: attribute
 through the store's rule (``records.strip_event_text``), which drops prompts, messages,
 tool input and output and any string over 256 characters and keeps their length; a
 log's body is emptied and its length kept; nothing is written to ``OTELPayloads``.
+Promoted columns are read from the bags after this rule, so they hold no text the
+bags do not; lengths of the dropped tool input are kept, and so are the MCP server,
+MCP tool and skill names a tool's parameters give, when they have the form of a name.
 
 The input is the request as a dict: OTLP/JSON parsed with ``json.loads``, or a
 protobuf message through ``google.protobuf.json_format.MessageToDict``. Both give the
@@ -141,6 +148,358 @@ def context_names(value: Any) -> list[str]:
         return []
     return list(dict.fromkeys(n for n in value[:256] if isinstance(n, str) and re.fullmatch(r"[\w][\w.:-]{0,127}", n)))
 
+
+# ── Promoted attributes ───────────────────────────────────────────────
+#
+# Attributes an investigation reads often are copied from the attribute bag into typed
+# columns. The bag keeps every key; a column is null when no key of it is sent. A key
+# marked (*) in a column's doc was not found in a recording or doc in this repository:
+# its name is from the tool's public telemetry documentation as remembered.
+
+
+@dataclass(frozen=True)
+class _Field:
+    """A column copied from attributes: the first of *keys* that is sent and readable wins.
+
+    *kind* is ``id`` (a name or id of at most 256 characters), ``text`` (cut at
+    ``TEXT_COLUMN_CHARS``), ``list`` (an array joined with commas), ``long``, ``real``,
+    ``bool``, ``chars`` (the length of a text value) or ``seconds_ms`` (seconds as
+    milliseconds). A key ``resource:<k>`` reads resource attribute ``<k>``.
+    """
+
+    column: str
+    kind: str
+    keys: tuple[str, ...]
+    doc: str
+
+    @property
+    def kusto_type(self) -> str:
+        return {"long": "long", "chars": "long", "real": "real", "seconds_ms": "real", "bool": "bool"}.get(
+            self.kind, "string"
+        )
+
+
+TEXT_COLUMN_CHARS = 1024
+"""The most characters of an error text kept in a promoted column."""
+_NAME_RE = re.compile(r"[\w][\w.:@/+-]{0,127}")
+_TOKEN_IN = ("input_tokens", "gen_ai.usage.input_tokens", "input_token_count")
+_TOKEN_OUT = ("output_tokens", "gen_ai.usage.output_tokens", "output_token_count")
+_TOKEN_CACHE_READ = (
+    "cache_read_tokens", "cache_read_input_tokens", "gen_ai.usage.cache_read.input_tokens",
+    "gen_ai.usage.cache_read_input_tokens", "cached_token_count",
+)
+_TOKEN_CACHE_WRITE = (
+    "cache_creation_tokens", "cache_creation_input_tokens", "gen_ai.usage.cache_write.input_tokens",
+    "gen_ai.usage.cache_creation_input_tokens",
+)
+_TOOL_NAME = ("tool_name", "gen_ai.tool.name")
+_APP_VERSION = _Field("AppVersion", "id", ("app.version", "resource:service.version"),
+                      "aictl: attribute app.version, else resource service.version")
+_TERMINAL = _Field("TerminalType", "id", ("terminal.type",), "aictl: attribute terminal.type (Claude Code, Codex)")
+_ORG = _Field("OrganizationId", "id", ("organization.id",),
+              "aictl: attribute organization.id (Claude Code), as already kept in the bag")
+_ACCOUNT = _Field("UserAccountUuid", "id", ("user.account_uuid",),
+                  "aictl: attribute user.account_uuid (Claude Code), as already kept in the bag")
+_MCP_DOC = (
+    "aictl: MCP server: attribute mcp_server_name, mcp.server.name(*) or mcp_server(*), else mcp_server_name in "
+    "tool_parameters (Claude Code with OTEL_LOG_TOOL_DETAILS(*)), else <server> of a tool name mcp__<server>__<tool>"
+)
+_MCP_TOOL_DOC = (
+    "aictl: MCP tool: attribute mcp_tool_name(*), else mcp_tool_name in tool_parameters(*), "
+    "else <tool> of a tool name mcp__<server>__<tool>"
+)
+_SKILL_DOC = (
+    "aictl: skill: attribute skill_name(*) or skill.name(*), else skill_name in tool_parameters "
+    "(Claude Code Skill tool with OTEL_LOG_TOOL_DETAILS(*))"
+)
+_DECISION_SOURCE_DOC = (
+    "aictl: attribute decision_source, else attribute source when the record carries a decision "
+    "(Claude Code tool_decision, code_edit_tool.decision)"
+)
+
+_LOG_FIELDS: tuple[_Field, ...] = (
+    _Field("EventSequence", "long", ("event.sequence",), "aictl: attribute event.sequence, the order of events in a session"),
+    _Field("PromptId", "id", ("prompt.id",), "aictl: attribute prompt.id, shared by the events of one user prompt"),
+    _Field("ConversationId", "id", ("gen_ai.conversation.id", "conversation.id"),
+           "aictl: attribute gen_ai.conversation.id, else conversation.id(*) (Codex)"),
+    _Field("InputTokens", "long", _TOKEN_IN, "aictl: input_tokens, gen_ai.usage.input_tokens or input_token_count(*)"),
+    _Field("OutputTokens", "long", _TOKEN_OUT, "aictl: output_tokens, gen_ai.usage.output_tokens or output_token_count(*)"),
+    _Field("CacheReadInputTokens", "long", _TOKEN_CACHE_READ,
+           "aictl: cache_read_tokens, cache_read_input_tokens, gen_ai.usage.cache_read.input_tokens or cached_token_count(*)"),
+    _Field("CacheWriteInputTokens", "long", _TOKEN_CACHE_WRITE,
+           "aictl: cache_creation_tokens, cache_creation_input_tokens or gen_ai.usage.cache_write.input_tokens"),
+    _Field("ReasoningOutputTokens", "long", ("gen_ai.usage.reasoning.output_tokens", "reasoning_token_count"),
+           "aictl: gen_ai.usage.reasoning.output_tokens or reasoning_token_count(*)"),
+    _Field("CostUsd", "real", ("cost_usd",), "aictl: attribute cost_usd (Claude Code api_request)"),
+    _Field("DurationMs", "long", ("duration_ms",), "aictl: attribute duration_ms, rounded to whole milliseconds"),
+    _Field("TimeToFirstTokenMs", "real", ("ttft_ms", "time_to_first_token_ms"),
+           "aictl: attribute ttft_ms(*) or time_to_first_token_ms(*)"),
+    _Field("ToolName", "id", _TOOL_NAME, "aictl: attribute tool_name, else gen_ai.tool.name"),
+    _Field("ToolCallId", "id", ("tool_use_id", "tool_call_id", "call_id", "gen_ai.tool.call.id"),
+           "aictl: tool_use_id(*), tool_call_id, call_id(*) (Codex) or gen_ai.tool.call.id"),
+    _Field("McpServer", "id", ("mcp_server_name", "mcp.server.name", "mcp_server"), _MCP_DOC),
+    _Field("McpToolName", "id", ("mcp_tool_name",), _MCP_TOOL_DOC),
+    _Field("SkillName", "id", ("skill_name", "skill.name"), _SKILL_DOC),
+    _Field("Success", "bool", ("success",), "aictl: attribute success; \"true\" and \"false\" strings are read"),
+    _Field("Error", "text", ("error", "error.message", "error_message"),
+           f"aictl: attribute error, error.message(*) or error_message, cut at {TEXT_COLUMN_CHARS} characters; "
+           "with capture metadata only what the bag keeps (at most 256 characters)"),
+    _Field("ErrorType", "id", ("error.type", "error_type"), "aictl: attribute error.type or error_type"),
+    _Field("StatusCode", "long", ("status_code", "http.response.status_code"),
+           "aictl: attribute status_code (Claude Code api_error) or http.response.status_code(*)"),
+    _Field("Attempt", "long", ("attempt",), "aictl: attribute attempt, the retry number of an API call"),
+    _Field("Decision", "id", ("decision", "decision_type"),
+           "aictl: attribute decision (tool_decision), else decision_type (tool_result)"),
+    _Field("DecisionSource", "id", ("decision_source",), _DECISION_SOURCE_DOC),
+    _Field("AgentId", "id", ("agent_id", "agent.id", "gen_ai.agent.id"), "aictl: agent_id(*), agent.id(*) or gen_ai.agent.id(*)"),
+    _Field("AgentName", "id", ("agent_name", "gen_ai.agent.name"), "aictl: agent_name or gen_ai.agent.name"),
+    _Field("AgentType", "id", ("agent_type", "agent.type", "github.copilot.agent.type"),
+           "aictl: agent_type, agent.type(*) or github.copilot.agent.type"),
+    _Field("ParentAgentId", "id", ("parent_agent_id", "gen_ai.agent.parent_id"),
+           "aictl: parent_agent_id(*) or gen_ai.agent.parent_id(*)"),
+    _Field("RequestId", "id", ("request_id", "requestId", "github.copilot.service_request_id"),
+           "aictl: request_id(*), requestId or github.copilot.service_request_id: the provider's request id"),
+    _Field("ResponseId", "id", ("gen_ai.response.id", "response_id", "message_id", "message.id"),
+           "aictl: gen_ai.response.id, response_id(*), message_id or message.id(*): the provider's response or "
+           "message id, which a transcript names too"),
+    _Field("FinishReason", "list", ("gen_ai.response.finish_reasons", "finish_reason", "stop_reason"),
+           "aictl: gen_ai.response.finish_reasons joined with commas, else finish_reason or stop_reason(*)"),
+    _Field("PromptLength", "long", ("prompt_length",), "aictl: attribute prompt_length (user_prompt), in characters"),
+    _Field("ToolInputChars", "chars", ("tool_parameters", "tool_input", "arguments", "gen_ai.tool.call.arguments"),
+           "aictl: characters of tool_parameters, tool_input(*), arguments(*) or gen_ai.tool.call.arguments(*); "
+           "kept with capture metadata"),
+    _Field("ToolResultBytes", "long", ("tool_result_size_bytes",), "aictl: attribute tool_result_size_bytes (tool_result)"),
+    _Field("Speed", "id", ("speed",), "aictl: attribute speed (Claude Code api_request: fast or normal)"),
+    _APP_VERSION,
+    _TERMINAL,
+    _ORG,
+    _ACCOUNT,
+)
+
+_TRACE_FIELDS: tuple[_Field, ...] = (
+    _Field("ResponseId", "id", ("gen_ai.response.id",), "aictl: span attribute gen_ai.response.id"),
+    _Field("RequestId", "id", ("github.copilot.service_request_id", "request_id"),
+           "aictl: github.copilot.service_request_id, else request_id(*)"),
+    _Field("PreviousResponseId", "id", ("gen_ai.request.previous_response.id",),
+           "aictl: span attribute gen_ai.request.previous_response.id"),
+    _Field("ConversationId", "id", ("gen_ai.conversation.id",), "aictl: span attribute gen_ai.conversation.id"),
+    _Field("InteractionId", "id", ("github.copilot.interaction_id",), "aictl: span attribute github.copilot.interaction_id"),
+    _Field("Initiator", "id", ("github.copilot.initiator",), "aictl: github.copilot.initiator: user or agent"),
+    _Field("ProviderName", "id", ("gen_ai.provider.name", "gen_ai.system"),
+           "aictl: gen_ai.provider.name, else gen_ai.system(*)"),
+    _Field("ResponseModel", "id", ("gen_ai.response.model",), "aictl: span attribute gen_ai.response.model"),
+    _Field("FinishReasons", "list", ("gen_ai.response.finish_reasons",),
+           "aictl: gen_ai.response.finish_reasons joined with commas"),
+    _Field("ErrorType", "id", ("error.type",), "aictl: span attribute error.type(*)"),
+    _Field("HttpStatusCode", "long", ("http.response.status_code",), "aictl: span attribute http.response.status_code(*)"),
+    _Field("ToolType", "id", ("gen_ai.tool.type",), "aictl: span attribute gen_ai.tool.type"),
+    _Field("ToolInputChars", "chars", ("gen_ai.tool.call.arguments",),
+           "aictl: characters of gen_ai.tool.call.arguments(*); kept with capture metadata"),
+    _Field("ToolResultChars", "chars", ("gen_ai.tool.call.result",),
+           "aictl: characters of gen_ai.tool.call.result(*); kept with capture metadata"),
+    _Field("McpServer", "id", ("mcp_server_name", "mcp.server.name"),
+           "aictl: MCP server: span attribute mcp_server_name(*) or mcp.server.name(*), "
+           "else <server> of a ToolName mcp__<server>__<tool>"),
+    _Field("McpToolName", "id", ("mcp_tool_name",),
+           "aictl: MCP tool: span attribute mcp_tool_name(*), else <tool> of a ToolName mcp__<server>__<tool>"),
+    _Field("SkillName", "id", ("skill_name", "skill.name"), "aictl: span attribute skill_name(*) or skill.name(*)"),
+    _Field("AgentId", "id", ("gen_ai.agent.id",), "aictl: span attribute gen_ai.agent.id(*)"),
+    _Field("ParentAgentId", "id", ("gen_ai.agent.parent_id", "parent_agent_id"),
+           "aictl: gen_ai.agent.parent_id(*) or parent_agent_id(*)"),
+    _Field("AgentType", "id", ("github.copilot.agent.type",), "aictl: span attribute github.copilot.agent.type"),
+    _Field("CopilotCost", "real", ("github.copilot.cost",), "aictl: github.copilot.cost, premium request units"),
+    _Field("CopilotNanoAiu", "long", ("github.copilot.nano_aiu",), "aictl: github.copilot.nano_aiu, AI units times 1e9"),
+    _Field("ServerDurationMs", "real", ("github.copilot.server_duration",),
+           "aictl: github.copilot.server_duration, milliseconds the service spent"),
+    _Field("TimeToFirstChunkMs", "seconds_ms", ("gen_ai.response.time_to_first_chunk",),
+           "aictl: gen_ai.response.time_to_first_chunk (seconds) in milliseconds"),
+    _Field("TurnCount", "long", ("github.copilot.turn_count",), "aictl: span attribute github.copilot.turn_count"),
+    _Field("ProcessExitCode", "long", ("process.exit.code",), "aictl: span attribute process.exit.code (execute_tool)"),
+    _APP_VERSION,
+)
+
+_METRIC_FIELDS: tuple[_Field, ...] = (
+    _Field("Type", "id", ("type",),
+           "aictl: attribute type: token type, lines added or removed, active time user or cli (Claude Code)"),
+    _Field("TokenType", "id", ("gen_ai.token.type",),
+           "aictl: gen_ai.token.type, else attribute type of a metric whose name has token"),
+    _Field("OperationName", "id", ("gen_ai.operation.name",), "aictl: attribute gen_ai.operation.name"),
+    _Field("ProviderName", "id", ("gen_ai.provider.name",), "aictl: attribute gen_ai.provider.name"),
+    _Field("ToolName", "id", _TOOL_NAME, "aictl: attribute tool_name, else gen_ai.tool.name"),
+    _Field("McpServer", "id", ("mcp_server_name",),
+           "aictl: MCP server: attribute mcp_server_name(*), else <server> of a ToolName mcp__<server>__<tool>"),
+    _Field("Decision", "id", ("decision",), "aictl: attribute decision (code_edit_tool.decision)"),
+    _Field("DecisionSource", "id", ("decision_source",), _DECISION_SOURCE_DOC),
+    _Field("Language", "id", ("language",), "aictl: attribute language (code_edit_tool.decision)"),
+    _Field("AgentName", "id", ("gen_ai.agent.name", "agent_name"), "aictl: gen_ai.agent.name or agent_name(*)"),
+    _Field("Success", "bool", ("success",), "aictl: attribute success(*)"),
+    _Field("ErrorType", "id", ("error.type",), "aictl: attribute error.type(*)"),
+    _APP_VERSION,
+    _TERMINAL,
+    _ORG,
+    _ACCOUNT,
+)
+
+
+def _field_columns(fields: tuple[_Field, ...]) -> tuple[tuple[str, str, str], ...]:
+    return tuple((f.column, f.kusto_type, f.doc) for f in fields)
+
+
+_NONFINITE_TEXT = frozenset(("NaN", "Infinity", "-Infinity"))
+_TRUE = frozenset(("true", "1", "yes"))
+_FALSE = frozenset(("false", "0", "no"))
+
+
+def _number(v: Any, stats: dict[str, int]) -> float | int | None:
+    """A number sent as a number or as text; None, counted, when unreadable or not finite.
+
+    The text ``NaN``, ``Infinity`` and ``-Infinity`` is what ``_any`` makes of a non-finite
+    double, which it has counted already, so it is null here without a second count.
+    """
+    if isinstance(v, bool):
+        stats["bad_values"] += 1
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        text = v.strip()
+        if text in _NONFINITE_TEXT:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            v = float(text)
+        except ValueError:
+            stats["bad_values"] += 1
+            return None
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            stats["nonfinite_values"] += 1
+            return None
+        return v
+    stats["bad_values"] += 1
+    return None
+
+
+def _read(kind: str, v: Any, stats: dict[str, int]) -> Any:
+    """*v* as a value of a column of *kind*; None when it is not one."""
+    if kind == "id":
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            return None
+        text = str(v)
+        # A long or structured value is not an identifier; it is not cut into a different one.
+        return text if len(text) <= _EVENT_TEXT_MAX_CHARS else None
+    if kind == "text":
+        return v[:TEXT_COLUMN_CHARS] if isinstance(v, str) else None
+    if kind == "list":
+        if isinstance(v, list):
+            parts = [str(x) for x in v if isinstance(x, (str, int)) and not isinstance(x, bool)]
+            text = ",".join(parts)
+        elif isinstance(v, str):
+            text = v
+        else:
+            return None
+        return text if 0 < len(text) <= _EVENT_TEXT_MAX_CHARS else None
+    if kind == "chars":
+        if isinstance(v, str):
+            return len(v)
+        if _is_ref(v):
+            return None
+        return len(_canonical_text(v)) if isinstance(v, (dict, list)) else None
+    if kind == "bool":
+        if isinstance(v, bool):
+            return v
+        text = str(v).strip().lower() if isinstance(v, (str, int)) else ""
+        if text in _TRUE:
+            return True
+        if text in _FALSE:
+            return False
+        stats["bad_values"] += 1
+        return None
+    n = _number(v, stats)
+    if n is None:
+        return None
+    if kind == "real":
+        return float(n)
+    if kind == "seconds_ms":
+        return float(n) * 1000.0
+    n = int(round(n))
+    if -(2**63) <= n < 2**63:
+        return n
+    stats["bad_values"] += 1
+    return None
+
+
+def _promote(fields: tuple[_Field, ...], bag: dict, resource: dict, stats: dict[str, int]) -> dict[str, Any]:
+    """The value of each field's column from *bag* (and *resource*); None when no key gives one."""
+    out: dict[str, Any] = {}
+    for f in fields:
+        value = None
+        for key in f.keys:
+            source, name = (resource, key[9:]) if key.startswith("resource:") else (bag, key)
+            v = source.get(name)
+            if v is None and f.kind == "chars" and type(source.get(f"{name}_chars")) is int:
+                # With capture metadata the store's rule left only the length.
+                value = source[f"{name}_chars"]
+                break
+            if v is None or v == "":
+                continue
+            value = _read(f.kind, v, stats)
+            if value is not None:
+                break
+        out[f.column] = value
+    return out
+
+
+def mcp_tool_parts(tool_name: Any) -> tuple[str | None, str | None]:
+    """``(server, tool)`` of a tool named ``mcp__<server>__<tool>``, else ``(None, None)``."""
+    if isinstance(tool_name, str) and tool_name.startswith("mcp__"):
+        server, sep, tool = tool_name[5:].partition("__")
+        if server and sep and tool:
+            return server, tool
+    return None, None
+
+
+def _parameter_names(raw: dict) -> dict[str, str]:
+    """``mcp_server_name``, ``mcp_tool_name`` and ``skill_name`` named in a tool's parameters.
+
+    Claude Code puts them in ``tool_parameters``, a JSON string, when tool details are
+    on. Only these names are read, and only when they look like names, so no tool
+    input reaches a column when text is not kept.
+    """
+    params = raw.get("tool_parameters")
+    if isinstance(params, str) and params.startswith("{") and len(params) <= SPILL_BYTES:
+        try:
+            params = json.loads(params)
+        except ValueError:
+            return {}
+    if not isinstance(params, dict):
+        return {}
+    return {
+        k: v for k in ("mcp_server_name", "mcp_tool_name", "skill_name")
+        if isinstance(v := params.get(k), str) and _NAME_RE.fullmatch(v)
+    }
+
+
+def _call_columns(values: dict[str, Any], raw: dict) -> None:
+    """Fill MCP server, MCP tool and skill from tool parameters or an ``mcp__`` tool name."""
+    names = _parameter_names(raw) if any(c in values for c in ("McpServer", "SkillName")) else {}
+    server, tool = mcp_tool_parts(values.get("ToolName") or raw.get("tool_name") or raw.get("gen_ai.tool.name"))
+    if "McpServer" in values and values["McpServer"] is None:
+        values["McpServer"] = names.get("mcp_server_name") or server
+    if "McpToolName" in values and values["McpToolName"] is None:
+        values["McpToolName"] = names.get("mcp_tool_name") or tool
+    if "SkillName" in values and values["SkillName"] is None:
+        values["SkillName"] = names.get("skill_name")
+
+
+def _decision_source(values: dict[str, Any], bag: dict) -> None:
+    if "DecisionSource" in values and values["DecisionSource"] is None and bag.get("decision") not in (None, ""):
+        values["DecisionSource"] = _read("id", bag.get("source"), {})
+
+
 TABLES: tuple[Table, ...] = (
     Table(
         LOGS,
@@ -159,6 +518,7 @@ TABLES: tuple[Table, ...] = (
             *_AICTL_MODEL,
             *_AICTL_TAIL,
             _NODE_COLUMN,
+            *_field_columns(_LOG_FIELDS),
         ),
         9,
         "OpenTelemetry log records",
@@ -182,6 +542,7 @@ TABLES: tuple[Table, ...] = (
             *_AICTL_MODEL,
             *_AICTL_TAIL,
             _NODE_COLUMN,
+            *_field_columns(_METRIC_FIELDS),
         ),
         9,
         "OpenTelemetry metric data points",
@@ -211,6 +572,9 @@ TABLES: tuple[Table, ...] = (
             *((name, "string", f"aictl: newline-separated names from {key}") for name, key in _SPAN_INPUT_NAMES.items()),
             ("ReportedContext", "dynamic", "aictl: normalized arrays of reported skill and MCP server names"),
             _NODE_COLUMN,
+            *_field_columns(_TRACE_FIELDS),
+            ("ReportedCustomAgentNames", "string",
+             "aictl: newline-separated names from github.copilot.context.custom_agent_names; null when not sent"),
         ),
         13,
         "OpenTelemetry spans",
@@ -958,6 +1322,12 @@ def _log_row(rec: dict, resource: dict, scope: dict, tool: str, machine: str, re
             row["Body"] = ""
             attrs["aictl.body_chars"] = len(body)
         _drop_text(row, ("LogsAttributes", "ResourceAttributes"), {})
+    # From the bags as stored, before large values are spilled: a column holds no text the bag does not.
+    bag = {k: v for k, v in row["LogsAttributes"].items() if k not in scope}
+    values = _promote(_LOG_FIELDS, bag, row["ResourceAttributes"], stats)
+    _call_columns(values, raw_attrs)
+    _decision_source(values, bag)
+    row.update(values)
     _make_safe(row, ("LogsAttributes", "ResourceAttributes"), {}, sp, src)
     return row
 
@@ -1059,6 +1429,11 @@ def _span_row(span: dict, resource: dict, scope: dict, tool: str, machine: str, 
         row[column] = "\n".join(names)
     row["ReportedContext"] = {"skills": inventories["ReportedSkillNames"], "mcp_servers": inventories["ReportedMcpServers"]}
     row["node_id"] = sp.node_id
+    values = _promote(_TRACE_FIELDS, attrs, row["ResourceAttributes"], stats)
+    _call_columns(values, raw_attrs)
+    row.update(values)
+    custom_agents = context_names(attrs.get("github.copilot.context.custom_agent_names"))
+    row["ReportedCustomAgentNames"] = "\n".join(custom_agents) if custom_agents else None
     _make_safe(row, bags, lists, sp, src)
     return row
 
@@ -1146,6 +1521,13 @@ def _metric_rows(metric: dict, mtype: str, data: dict, dp: dict, scope: dict, ct
     else:
         _summary(name, desc, dp, add, stats)
 
+    # One data point's columns, the same on each of its rows, read as its rows' bags are stored.
+    bag, res = (dp_attrs, resource) if sp.keep_text else (_no_text(dp_attrs), _no_text(resource))
+    values = _promote(_METRIC_FIELDS, bag, res, stats)
+    if values["TokenType"] is None and "token" in name.lower():
+        values["TokenType"] = values["Type"]
+    _call_columns(values, dp_attrs)
+    _decision_source(values, bag)
     rows = []
     for row_name, row_desc, value, attrs in pending:
         if not math.isfinite(value):
@@ -1174,6 +1556,7 @@ def _metric_rows(metric: dict, mtype: str, data: dict, dp: dict, scope: dict, ct
         src = _Source(METRICS, row["RowKey"], ts, session, tool, machine)
         if not sp.keep_text:
             _drop_text(row, ("MetricAttributes", "ResourceAttributes"), {})
+        row.update(values)
         _make_safe(row, ("MetricAttributes", "ResourceAttributes"), {}, sp, src)
         rows.append(row)
     return rows

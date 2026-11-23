@@ -303,6 +303,11 @@ class RequestRow:
     max_prompt_tokens: int | None = None
     request_bytes: int | None = None
     available_tools: int | None = None
+    # The provider's ids of the call when the source names them (OTel api_request or chat
+    # span): request_id as the API's request id, response_id as its response or message id,
+    # which a transcript names too. "" when not sent.
+    request_id: str = ""
+    response_id: str = ""
 
 
 @dataclass(slots=True)
@@ -738,6 +743,8 @@ _EVENT_TEXT_KEYS = frozenset(
         "gen_ai.completion",
         "gen_ai.input.messages",
         "gen_ai.output.messages",
+        "gen_ai.tool.call.arguments",
+        "gen_ai.tool.call.result",
         "response",
         "completion",
         "content",
