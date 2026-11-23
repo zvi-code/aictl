@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { flatRange, isolatedIndices, tickLabels } from '../src/ui/chartData'
+import { categoryLabels, flatRange, isolatedIndices, tickLabels } from '../src/ui/chartData'
+
+describe('CHART-AXIS · category labels', () => {
+  it('names each tick and shortens a name to fit its slot', () => {
+    expect(categoryLabels(['sessions', 'events'], [1, 2], 200, 7)).toEqual(['sessions', 'events'])
+    expect(categoryLabels(['ingest_batches', 'events'], [1, 2], 70, 7)).toEqual(['ingest_ba…', 'events'])
+    expect(categoryLabels(['abc'], [1], 5, 7)).toEqual(['a…'])
+  })
+
+  it('leaves a tick between categories blank', () => {
+    expect(categoryLabels(['a', 'b'], [1, 1.5, 2], 100, 7)).toEqual(['a', '', 'b'])
+  })
+})
 
 describe('CHART-AXIS · a flat or single-point series', () => {
   it('gets a range around zero, not a sliver around the value', () => {

@@ -19,18 +19,19 @@ function boxHeight(el: HTMLElement): number {
   return Math.max(px(el.style.minHeight), flow, row)
 }
 
-type Seen = { sizes: { width: number; height: number }[]; root: HTMLElement }
+type Axis = { splits?: (u: unknown) => number[]; values?: (u: unknown, splits: number[]) => string[] }
+type Seen = { sizes: { width: number; height: number }[]; root: HTMLElement; axes: Axis[]; data: unknown }
 const plots: Seen[] = []
 class FakePlot {
   series: unknown[]
   seen: Seen
-  constructor(opts: { width: number; height: number; series: unknown[] }, _data: unknown, host: HTMLElement) {
+  constructor(opts: { width: number; height: number; series: unknown[]; axes: Axis[] }, data: unknown, host: HTMLElement) {
     this.series = opts.series
     const root = document.createElement('div')
     root.className = 'uplot'
     root.style.height = `${opts.height}px`
     host.append(root)
-    this.seen = { sizes: [{ width: opts.width, height: opts.height }], root }
+    this.seen = { sizes: [{ width: opts.width, height: opts.height }], root, axes: opts.axes, data }
     plots.push(this.seen)
   }
   setSize(size: { width: number; height: number }) {
@@ -89,6 +90,23 @@ describe('CHART-SIZE · a chart never sizes its container', () => {
     for (let i = 0; i < 4; i++) cycle()
     expect(plots).toHaveLength(1)
     expect(plots[0].sizes.at(-1)!.height).toBe(300)
+    dispose()
+  })
+})
+
+describe('CHART-CATEGORY · a category chart names its ticks', () => {
+  it('labels one tick per category with its name', async () => {
+    const names = ['sessions', 'events', 'spans']
+    const { host, dispose } = mount(() => <Chart label="Rows" description="Rows" series={[{ label: 'rows' }]} xAxis="number"
+      categories={names} points={names.map((_, i) => ({ x: i + 1, values: [i] }))} />)
+    host.querySelector<HTMLElement>('figure')!.style.height = '300px'
+    await settle()
+    for (let i = 0; i < 3; i++) cycle()
+    const x = plots[0].axes[0]
+    const chart = { data: plots[0].data, bbox: { width: 600 * devicePixelRatio } }
+    const splits = x.splits!(chart)
+    expect(splits).toEqual([1, 2, 3])
+    expect(x.values!(chart, splits)).toEqual(names)
     dispose()
   })
 })

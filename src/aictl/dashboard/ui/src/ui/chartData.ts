@@ -29,6 +29,17 @@ export function isolatedIndices(values: readonly (number | null | undefined)[]):
   return values.flatMap((_, i) => has(i) && !has(i - 1) && !has(i + 1) ? [i] : [])
 }
 
+// The x values of a category chart are 1, 2, 3 ...; a tick between two of them has no name.
+// A name that does not fit its slot is cut and ends in an ellipsis (the full name is the hover title).
+export function categoryLabels(names: readonly string[], xs: readonly number[], slotPx: number, charPx: number): string[] {
+  const fit = Math.max(2, Math.floor(slotPx / charPx))
+  return xs.map(x => {
+    const name = Number.isInteger(x) ? names[x - 1] : undefined
+    if (name == null) return ''
+    return name.length <= fit ? name : `${name.slice(0, fit - 1)}…`
+  })
+}
+
 const compact = (digits: number) => new Intl.NumberFormat(undefined, { notation: 'compact', maximumSignificantDigits: digits })
 const fixed = (digits: number) => new Intl.NumberFormat(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })
 
