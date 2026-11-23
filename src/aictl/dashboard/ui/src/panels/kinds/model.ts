@@ -1,11 +1,6 @@
 import { at, object } from '../data'
 import type { FieldRef, KeyedRow, NodeScope, PanelContext, PanelDef, Read, Row } from '../types'
-import { fmtBytes, fmtDur } from '../../design/format'
-
-const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 })
-const currency = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 })
-const oneDigit = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 })
-const threeDigits = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 })
+import { fmtBps, fmtBytes, fmtDur, fmtMoney, fmtNum, fmtPct } from '../../design/format'
 
 export const scalar = (value: unknown) =>
   typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ? value : undefined
@@ -19,12 +14,13 @@ export function presentation(ctx: PanelContext, field: FieldRef) {
     if (metadata?.format === 'datetime' || unit === 'epoch_s' || (!metadata?.format && field.format === 'timestamp')) {
       return new Date(value * 1000).toLocaleString()
     }
-    if (unit === 'ratio' || metadata?.format === 'percent') return percent.format(value)
-    if (unit === 'usd') return currency.format(value)
-    if (unit === 'percent') return `${oneDigit.format(value)}%`
+    if (unit === 'ratio' || metadata?.format === 'percent') return fmtPct(value * 100)
+    if (unit === 'usd') return fmtMoney(value)
+    if (unit === 'percent') return fmtPct(value)
     if (unit === 'bytes') return fmtBytes(value)
-    if (unit === 'seconds') return value < 1 ? `${oneDigit.format(value * 1000)} ms` : fmtDur(value)
-    return threeDigits.format(value)
+    if (unit === 'rate_bps') return fmtBps(value)
+    if (unit === 'seconds') return fmtDur(value)
+    return fmtNum(value)
   }
   return { label: field.label ?? metadata?.label ?? field.path.split('.').at(-1)!.replaceAll('_', ' '), unit, format }
 }

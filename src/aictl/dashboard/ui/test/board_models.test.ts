@@ -168,7 +168,8 @@ describe('numbers people can read', () => {
     expect(fmtCredits(5423.85)).toBe('5,423.85');
     expect(fmtMs(87.6 * 60000)).toBe('1 h 28 min');
     expect(fmtMs(5189.6 * 60000)).toBe('3 d 14 h');
-    expect(fmtMs(59.9 * 60000)).toBe('59.9 min');
+    expect(fmtMs(59.9 * 60000)).toBe('1 h');
+    expect(fmtMs(59.4 * 60000)).toBe('59 min');
     expect(fmtDur(26 * 3600)).toBe('1 d 2 h');
     expect(fmtDur(3 * 86400)).toBe('3 d');
     expect(weekdayLabel(new Date(2026, 10, 7, 12).getTime() / 1000)).toBe('Sat Nov 7');

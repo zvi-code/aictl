@@ -23,57 +23,80 @@ export const fmtUsd = (n: NumberValue) => {
 };
 /** Copilot AI credits: the tool's own unit, never dollars. */
 export const fmtCredits = (n: NumberValue) => (isNil(n) ? NA : n >= 10000 ? fmtN(n) : n.toLocaleString('en-US', { maximumFractionDigits: 2 }));
-/** A time in milliseconds: ms, then seconds, minutes, and hours or days past an hour. */
+/** A time in milliseconds: whole ms below a second, then seconds, minutes, hours and days. */
 export const fmtMs = (n: NumberValue) => {
   if (isNil(n)) return NA;
-  if (n >= 3600000) return fmtDur(n / 1000);
-  if (n >= 60000) return (n / 60000).toFixed(1) + ' min';
-  if (n >= 1000) return (n / 1000).toFixed(1) + ' s';
-  return Math.round(n) + ' ms';
+  if (n < 999.5) return Math.round(n) + ' ms';
+  return fmtDur(n / 1000);
 };
-/** Duration given in seconds. */
+/**
+ * Duration given in seconds. Each unit is rounded before it is shown, so a value that
+ * rounds up to its limit shows in the next unit: 59.6 s is "1 min", 59.6 min is "1 h".
+ */
 export const fmtDur = (s: NumberValue) => {
   if (isNil(s)) return NA;
-  const m = s / 60;
-  if (m >= 10080) return Math.round(m / 1440) + ' d';
-  if (m >= 1440) {
-    const d = Math.floor(m / 1440);
-    const h = Math.round((m - d * 1440) / 60);
-    return h ? d + ' d ' + h + ' h' : d + ' d';
+  s = Math.max(0, s);
+  if (s < 0.9995) return Math.round(s * 1000) + ' ms';
+  if (s < 59.95) return Number(s.toFixed(1)) + ' s';
+  if (s < 600) {
+    const total = Math.round(s);
+    return total % 60 ? Math.floor(total / 60) + ' min ' + (total % 60) + ' s' : total / 60 + ' min';
   }
-  if (m >= 60) return Math.floor(m / 60) + ' h ' + Math.round(m % 60) + ' min';
-  if (m >= 1) return Math.round(m) + ' min';
-  return '<1 min';
+  const minutes = Math.round(s / 60);
+  if (minutes < 60) return minutes + ' min';
+  if (minutes < 1440) return minutes % 60 ? Math.floor(minutes / 60) + ' h ' + (minutes % 60) + ' min' : minutes / 60 + ' h';
+  const hours = Math.round(s / 3600);
+  const days = Math.floor(hours / 24);
+  if (days >= 7) return Math.round(s / 86400) + ' d';
+  return hours % 24 ? days + ' d ' + (hours % 24) + ' h' : days + ' d';
 };
 /** A share from the API is a ratio from 0 to 1. */
 export const fmtShare = (v: NumberValue) => (isNil(v) ? NA : Math.round(v * 100) + '%');
-/** A rate from the API is a ratio. One decimal, except at the ends. */
-export const fmtRate = (v: NumberValue) => {
+/** A percentage: one decimal, none when it is a whole number from 10 up. */
+export const fmtPct = (v: NumberValue) => {
   if (isNil(v)) return NA;
-  return (v * 100).toFixed(v >= 0.995 || v === 0 ? 0 : 1) + '%';
+  if (v === 0) return '0%';
+  const tenth = Math.round(v * 10) / 10;
+  return (Math.abs(tenth) >= 10 && Number.isInteger(tenth) ? String(tenth) : tenth.toFixed(1)) + '%';
 };
+/** A rate from the API is a ratio. */
+export const fmtRate = (v: NumberValue) => (isNil(v) ? NA : fmtPct(v * 100));
 export const fmtCpu = (v: NumberValue) => {
   if (isNil(v)) return NA;
   return (v < 10 && v > 0 ? v.toFixed(1) : Math.round(v)) + '%';
 };
-export const fmtMem = (mb: NumberValue) => {
-  if (isNil(mb)) return NA;
-  return mb >= 1000 ? (mb / 1000).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
-};
+export const fmtMem = (mb: NumberValue) => (isNil(mb) ? NA : fmtBytes(mb * 1e6));
 // The one estimate of tokens from text, as aictl.utils.estimate_tokens on the server: UTF-8 bytes / 4, rounded up.
 const BYTES_PER_TOKEN = 4;
 export const estTokensFromSize = (n: NumberValue) => (n == null ? null : n > 0 ? Math.ceil(n / BYTES_PER_TOKEN) : 0);
 export const estTokens = (text: unknown) => (text == null ? null : estTokensFromSize(new TextEncoder().encode(String(text)).length));
 
+/** A size with three significant digits. */
 export const fmtBytes = (b: NumberValue) => {
   if (isNil(b)) return NA;
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
-  if (b >= 1e6) return Math.round(b / 1e6) + ' MB';
-  if (b >= 1e3) return Math.round(b / 1e3) + ' KB';
-  return Math.round(b) + ' B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = Math.abs(b);
+  let unit = 0;
+  while (unit < units.length - 1 && (unit === 0 ? Math.round(value) : Number(value.toPrecision(3))) >= 1000) {
+    value /= 1000;
+    unit++;
+  }
+  return (b < 0 ? '-' : '') + (unit === 0 ? Math.round(value) : Number(value.toPrecision(3))) + ' ' + units[unit];
 };
-/** An age in seconds: "40 s" below 90 s, else as a duration. */
-export const fmtAge = (s: NumberValue) => (isNil(s) ? NA : s < 90 ? Math.round(s) + ' s' : fmtDur(s));
+/** Money: two decimals, four below one cent. */
+export const fmtMoney = (n: NumberValue) => {
+  if (isNil(n)) return NA;
+  const digits = n !== 0 && Math.abs(n) < 0.01 ? 4 : 2;
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+/** A plain number: whole from 1,000 up, else three significant digits. */
+export const fmtNum = (n: NumberValue) => {
+  if (isNil(n)) return NA;
+  if (Math.abs(n) >= 1000 || Number.isInteger(n)) return Math.round(n).toLocaleString('en-US');
+  return String(Number(n.toPrecision(3)));
+};
+/** An age in seconds, as a duration. */
+export const fmtAge = (s: NumberValue) => (isNil(s) ? NA : fmtDur(s));
 /** Bytes per second. */
 export const fmtBps = (b: NumberValue) => (isNil(b) ? NA : fmtBytes(b) + '/s');
 export const fmtLines = (add: NumberValue, del: NumberValue) => {
@@ -112,8 +135,9 @@ export const ago = (ts: NumberValue, now = Date.now() / 1000) => {
   if (isNil(ts)) return 'Never';
   const s = Math.max(0, now - ts);
   if (s < 90) return Math.round(s) + ' s ago';
-  if (s < 5400) return Math.round(s / 60) + ' min ago';
-  if (s < 129600) return Math.round(s / 3600) + ' h ago';
+  if (s < 3570) return Math.round(s / 60) + ' min ago';
+  const hours = Math.round(s / 3600);
+  if (hours < 24) return hours + ' h ago';
   return Math.round(s / 86400) + ' d ago';
 };
 export const baseName = (p: unknown) => String(p || '').split(/[\\/]/).pop();
