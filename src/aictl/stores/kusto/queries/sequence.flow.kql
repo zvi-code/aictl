@@ -53,17 +53,18 @@ let message_rows = union
         | project ['project'], node_id, ts, role, content, model='', key=strcat('cursor:',key));
 let agent_rows = materialize(agents
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
-    | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(column_ifexists('_deleted',false)) and agent_id != requested_session
     | where (started_at >= since and started_at < until) or (ended_at >= since and ended_at < until));
 let tasks = union isfuzzy=true
-    (datatable(['project']:string,node_id:string,agent_id:string,_v:datetime,ts:real,task:string,_deleted:bool)[]),
-    (agents_text | project ['project'], node_id, agent_id, _v, ts, task, _deleted=column_ifexists('_deleted',false))
-    | where keep_text and (all_nodes or node_id == requested_node)
+    (datatable(['project']:string,node_id:string,session_id:string,agent_id:string,_v:datetime,ts:real,task:string,_deleted:bool)[]),
+    (agents_text | project ['project'], node_id, session_id=column_ifexists('session_id',''), agent_id, _v, ts, task,
+        _deleted=column_ifexists('_deleted',false))
+    | where keep_text and (all_nodes or node_id == requested_node) and session_id == requested_session
     | where agent_id in (agent_rows | project agent_id)
-    | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(_deleted) and ts >= text_floor
-    | project ['project'], node_id, agent_id, retained_task=task;
+    | project ['project'], node_id, session_id, agent_id, retained_task=task;
 let known_events = events
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key)
@@ -96,7 +97,7 @@ union
             iff(keep_text and ts >= text_floor,coalesce(retained_input,column_ifexists('input','')),''),
             iff(keep_text and ts >= text_floor,coalesce(retained_result,column_ifexists('result_summary','')),''),
             duration_ms,is_error,exit_code,confirm,input_bytes,output_bytes,confirm_wait_ms)),
-    (agent_rows | join kind=leftouter tasks on ['project'], node_id, agent_id
+    (agent_rows | join kind=leftouter tasks on ['project'], node_id, session_id, agent_id
         | project row_type='agent', ts=started_at, key=agent_id, node_id, ['project'],
                   values=pack_array(agent_id,iff(keep_text,coalesce(retained_task,column_ifexists('task','')),''),model,started_at,ended_at,completed)),
     (context_events | where session_id == requested_session and (all_nodes or node_id == requested_node)

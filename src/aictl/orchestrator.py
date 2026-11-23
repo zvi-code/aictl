@@ -1107,7 +1107,6 @@ class SnapshotPersistence:
         self._next_health_sample = 0.0
         # Unchanged data is not written again (see _changed_telemetry, persist).
         self._telemetry_last: dict[tuple[str, str], tuple[tuple, float]] = {}
-        self._team_signatures: dict[str, tuple] = {}
         self._facts = session_facts or SessionFacts(writer)
         self._quality = quality or CollectionStatus(writer)
         self._catalog = catalog or DatapointCatalog(writer)
@@ -1140,9 +1139,10 @@ class SnapshotPersistence:
                 )
                 # Also write to sessions table for session_start/end events
                 self._persist_session_events(snap.events, snap.timestamp)
-            # Persist agent teams (agents + per-turn requests)
-            if snap.agent_teams:
-                self._persist_agent_teams(snap.agent_teams, snap.timestamp)
+            # The agent-team scan (snap.agent_teams) is for the live view only. The transcript
+            # reader stores sessions and agents from evidence in each line: the scan named a
+            # session by its folder (wrong for a resumed session's copied subagents) and took
+            # the session's folder from a subagent's, which can be another worktree.
 
             # All metric emission now happens at collection time
             # (collectors + DiscoveryCollector + collect() enrichment).
@@ -1277,95 +1277,6 @@ class SnapshotPersistence:
                 )
             except Exception:
                 log.debug("file-sync: failed to record data-quality signal", exc_info=True)
-
-    def _persist_agent_teams(self, agent_teams: list[dict], snapshot_ts: float) -> None:
-        """Write agent team data to the sessions and agents tables.
-
-        Requests are not written here: the transcript reader stores each model
-        call once, by message id. A second copy under other keys was counted
-        twice by every reader and written again at every start.
-        """
-        if not agent_teams:
-            return
-        try:
-            from .monitoring.tool_telemetry import _parse_iso_ts
-            from .records import AgentRow, SessionRow
-
-            # Written once after the loop: a statement per session and per agent was
-            # a request each on a Kusto store, several hundred on a first refresh.
-            session_rows: list[SessionRow] = []
-            agent_rows: list[AgentRow] = []
-            for team in agent_teams:
-                session_id = team.get("session_id", "")
-                # A team writes dozens of rows with one commit each: 22 MB/s of
-                # WAL when repeated every refresh. Skip it while nothing changed.
-                signature = tuple(
-                    sorted(
-                        (
-                            str(a.get("agent_id", "")),
-                            a.get("input_tokens", 0),
-                            a.get("output_tokens", 0),
-                            len(a.get("turns", [])),
-                            str(a.get("ended_at", "")),
-                        )
-                        for a in team.get("agents", [])
-                    )
-                )
-                if session_id and self._team_signatures.get(session_id) == signature:
-                    continue
-                self._team_signatures[session_id] = signature
-                # Upsert a session row for this UUID session with aggregated token totals
-                # Each session file records the folder the agent ran in.
-                team_folder = next(
-                    (a.get("cwd") for a in team.get("agents", []) if a.get("cwd") and not a.get("is_sidechain")), ""
-                ) or next((a.get("cwd") for a in team.get("agents", []) if a.get("cwd")), "")
-                if session_id:
-                    agents = team.get("agents", [])
-                    # Source timestamps only — the agents' own started_at,
-                    # falling back to their turns' embedded timestamps.
-                    # Stamping snapshot_ts here made every backfilled
-                    # session look like it started when the daemon did,
-                    # colliding with the correlator's live PID rows.
-                    ts_vals = [_parse_iso_ts(a.get("started_at", "")) for a in agents]
-                    ts_vals += [t.get("source_ts", 0.0) or 0.0 for a in agents for t in a.get("turns", [])]
-                    ts_vals = [t for t in ts_vals if t > 0]
-                    session_started = min(ts_vals) if ts_vals else snapshot_ts
-                    session_rows.append(
-                        SessionRow(
-                            session_id=session_id,
-                            tool="claude-code",
-                            started_at=session_started,
-                            source="claude-code-jsonl",
-                            project_path=team_folder,
-                            input_tokens=team.get("total_input_tokens", 0),
-                            output_tokens=team.get("total_output_tokens", 0),
-                        )
-                    )
-                for agent in team.get("agents", []):
-                    agent_id = agent.get("agent_id", "")
-                    if not agent_id:
-                        continue
-                    agent_rows.append(
-                        AgentRow(
-                            agent_id=agent_id,
-                            session_id=session_id,
-                            tool="claude-code",
-                            task=agent.get("task", ""),
-                            model=agent.get("model", ""),
-                            is_sidechain=1 if agent.get("is_sidechain") else 0,
-                            started_at=_parse_iso_ts(agent.get("started_at", "")),
-                            ended_at=_parse_iso_ts(agent.get("ended_at", "")) or None,
-                            completed=1 if agent.get("completed") else 0,
-                            input_tokens=agent.get("input_tokens", 0),
-                            output_tokens=agent.get("output_tokens", 0),
-                            cache_read_tokens=agent.get("cache_read_tokens", 0),
-                            cache_creation_tokens=agent.get("cache_creation_tokens", 0),
-                        )
-                    )
-            self._facts.sessions((row, 0.0, False) for row in session_rows)
-            self._facts.agents(agent_rows)
-        except Exception as exc:
-            log.warning("Agent team persistence failed: %s", exc)
 
     def _persist_session_events(self, events: list[dict], fallback_ts: float) -> None:
         """Write session_start/session_end events to the sessions table."""

@@ -40,7 +40,7 @@ union hint.concurrency=1
         | where not(coalesce(deleted, false)) | distinct tool | extend fact_names=dynamic(['skills'])),
     (agents | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
-        | summarize arg_max(_v, deleted, tool, is_sidechain) by ['project'], node_id, agent_id
+        | summarize arg_max(_v, deleted, tool, is_sidechain) by ['project'], node_id, session_id, agent_id
         | where not(coalesce(deleted, false)) and is_sidechain == 1
         | distinct tool | extend fact_names=dynamic(['subagents'])),
     (sessions | where all_nodes or node_id == requested_node

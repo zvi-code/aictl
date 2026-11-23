@@ -29,7 +29,7 @@ from ..data.model_pricing import cost_usd as usd_cost_of
 from ..data.provenance import COPILOT_COST_REASON
 from ..data.schema import load_telemetry_sources
 from ..fsutil import safe_glob, safe_iterdir
-from ..ingesters._common import SQLITE_UNAVAILABLE, open_readonly
+from ..ingesters._common import SQLITE_UNAVAILABLE, claude_line_finishes, open_readonly
 from ..platforms import (
     IS_WINDOWS,
     claude_global_dir,
@@ -237,7 +237,7 @@ def _parse_agent_lines(first: dict, first_line: str, rest: Iterator[str]) -> dic
 
     tools = set()
     tool_use_count = 0
-    last_type = ""
+    finished = False
     turns: list[dict] = []
     for line in lines:
         messages += 1
@@ -249,7 +249,10 @@ def _parse_agent_lines(first: dict, first_line: str, rest: Iterator[str]) -> dic
             continue
 
         msg_type = obj.get("type", "")
-        last_type = msg_type
+        # Finished only after a final reply: an assistant line that calls a tool still runs.
+        finishes = claude_line_finishes(obj)
+        if finishes is not None:
+            finished = finishes
         line_ts = obj.get("timestamp", "")
         result["ended_at"] = line_ts or result["ended_at"]
         msg = obj.get("message", {})
@@ -306,7 +309,7 @@ def _parse_agent_lines(first: dict, first_line: str, rest: Iterator[str]) -> dic
 
     result["tools_used"] = sorted(tools)
     result["tool_use_count"] = tool_use_count
-    result["completed"] = last_type == "assistant"
+    result["completed"] = finished
     result["turns"] = turns
     result["messages"] = messages
     return result

@@ -35,7 +35,7 @@ from ..stores.base import StoreError
 from ..tool_targets import AGENT, FILE, describe_call, redact_secrets, split_mcp
 from ..utils import estimate_tokens_from_size
 from . import context_items, loaded_files
-from ._common import coerce_ts, decode_file_uri
+from ._common import claude_line_finishes, coerce_ts, decode_file_uri
 from .session_outcomes import TRANSCRIPT as TRANSCRIPT_PART
 from .session_outcomes import _add_unique, digest_text, file_key
 from .transcript_steps import CopilotSteps, redact_step_text
@@ -276,7 +276,8 @@ class FactBuffer:
         self.tools: dict[str, fact_rows.ToolInvocationRow] = {}
         self.prompts: dict[str, fact_rows.SessionPromptRow] = {}
         self.skills: dict[str, fact_rows.SkillUseRow] = {}
-        self.agents: dict[str, fact_rows.AgentRow] = {}
+        # By (session, agent id): an agent id is unique only within its session.
+        self.agents: dict[tuple[str, str], fact_rows.AgentRow] = {}
         self.file_writes: dict[str, fact_rows.FileWriteRow] = {}
         self.context_events: dict[str, fact_rows.ContextEventRow] = {}
         self.steps: dict[str, fact_rows.SessionStepRow] = {}
@@ -333,17 +334,21 @@ class FactBuffer:
 
     def add_agent(self, row: fact_rows.AgentRow) -> None:
         if self._in_window(row.started_at or row.ended_at or 0.0):
-            prior = self.agents.get(row.agent_id)
+            key = (row.session_id, row.agent_id)
+            prior = self.agents.get(key)
             if prior is not None:
                 row.task = row.task or prior.task
                 row.model = row.model or prior.model
-                for name in ("description", "parent_agent_id", "parent_tool_use_id", "resolved_model", "status"):
+                for name in ("description", "parent_agent_id", "parent_tool_use_id", "resolved_model", "status",
+                             "cwd", "git_branch", "worktree_path"):
                     setattr(row, name, getattr(row, name) or getattr(prior, name))
                 row.spawn_depth = row.spawn_depth if row.spawn_depth is not None else prior.spawn_depth
-                row.started_at = row.started_at or prior.started_at
-                row.ended_at = row.ended_at if row.ended_at is not None else prior.ended_at
-                row.completed = max(row.completed, prior.completed)
-            self.agents[row.agent_id] = row
+                row.started_at = min(t for t in (row.started_at, prior.started_at) if t) if (
+                    row.started_at or prior.started_at) else 0.0
+                # Finished or not is what the latest observation says: a resumed agent runs again.
+                if not fact_rows.newer_observation(row.observed_at, prior.observed_at):
+                    row.completed, row.ended_at, row.observed_at = prior.completed, prior.ended_at, prior.observed_at
+            self.agents[key] = row
             self._maybe_flush()
 
     def add_file_write(self, row: fact_rows.FileWriteRow) -> None:
@@ -620,8 +625,9 @@ def resolve_command_file(name: str, cwd: str, home: Path | None = None) -> tuple
 class ClaudeFacts:
     """Reads Claude Code session lines across all files of a poll.
 
-    Keys are global, because a resumed or forked session replays earlier lines:
-    a call stays on the session and agent that first reported it.
+    Every line comes with the session that wrote it: the reader drops a resumed or forked
+    session's copies of earlier lines (``transcript_usage.claude_line_session``). Call keys
+    still span files, because a streaming reply is written as several lines.
     """
 
     def __init__(self, buffer: FactBuffer) -> None:
@@ -636,7 +642,8 @@ class ClaudeFacts:
         self._last_command: dict[str, tuple[str, str]] = {}
         self._message_last_block: dict[int, float] = {}
         self._pending: dict[str, tuple[fact_rows.ToolInvocationRow, str, dict]] = {}
-        self._open_agents: dict[str, fact_rows.AgentRow] = {}
+        # By (session, agent id): an agent id is unique only within its session.
+        self._open_agents: dict[tuple[str, str], fact_rows.AgentRow] = {}
         # Turns: the prompt id each agent's record is in now, and the turns by (session, prompt id).
         self._prompt_of: dict[str, str] = {}
         self._turns: dict[tuple[str, str], fact_rows.SessionTurnRow] = {}
@@ -767,26 +774,39 @@ class ClaudeFacts:
             self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, item, "claude-code", str(obj.get("cwd") or "")))
 
     def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict, meta: dict | None = None) -> None:
-        row = self._open_agents.get(agent_id)
+        """A line of a subagent. Its parent, depth, spawning tool call and worktree come from the
+        ``meta.json`` the tool wrote beside the file; its folder and branch from its own lines."""
+        row = self._open_agents.get((sid, agent_id))
         if row is None:
             meta = meta or {}
             row = fact_rows.AgentRow(
                 agent_id=agent_id, session_id=sid, tool="claude-code", task=role, is_sidechain=1, started_at=ts,
                 description=agent_label(meta.get("description")), spawn_depth=to_count(meta.get("spawnDepth")),
-                parent_tool_use_id=str(meta.get("toolUseId") or "")[:120])
-            self._open_agents[agent_id] = row
-        row.ended_at = ts or row.ended_at
+                parent_agent_id=str(meta.get("parentAgentId") or "")[:120],
+                parent_tool_use_id=str(meta.get("toolUseId") or "")[:120],
+                worktree_path=str(meta.get("worktreePath") or "")[:1000])
+            self._open_agents[(sid, agent_id)] = row
+        # Finished only after a final reply; any later line means it works again.
+        finishes = claude_line_finishes(obj)
+        if finishes is not None and ts >= row.observed_at:
+            row.observed_at = ts or row.observed_at
+            row.completed = 1 if finishes else 0
+            row.ended_at = ts if finishes else None
+        if obj.get("cwd") and not row.cwd:
+            row.cwd = str(obj["cwd"])[:1000]
+        if obj.get("gitBranch"):
+            row.git_branch = str(obj["gitBranch"])[:200]
         msg = obj.get("message")
         if isinstance(msg, dict) and msg.get("model") and is_billable_model(str(msg["model"])):
             row.model = str(msg["model"])
 
     def close_idle_agents(self, before: float) -> None:
-        """A subagent's end is the last line of its file, once that file has gone quiet."""
-        for agent_id, row in list(self._open_agents.items()):
-            if row.ended_at and row.ended_at < before:
-                row.completed = 1
+        """Let go of subagents whose file has gone quiet. Quiet is not finished: a row says
+        completed only after the agent's final reply (or its caller's result says so)."""
+        for key, row in list(self._open_agents.items()):
+            if row.observed_at and row.observed_at < before:
                 self.buffer.add_agent(row)
-                del self._open_agents[agent_id]
+                del self._open_agents[key]
 
     def drop_abandoned_calls(self, before: float) -> None:
         """A tool call with no result after a long time was cancelled: its arguments, kept
@@ -797,9 +817,9 @@ class ClaudeFacts:
                 self._tool_message.pop(tool_id, None)
 
     def flush_open_agents(self) -> None:
-        """Running subagents are written with no end, so they read as still going."""
+        """Subagents still in memory are written as their latest line left them."""
         for row in self._open_agents.values():
-            self.buffer.add_agent(replace(row, ended_at=None, completed=0))
+            self.buffer.add_agent(replace(row))
 
     def _request(self, sid: str, obj: dict, msg: dict, ts: float, agent_id: str, cwd: str) -> None:
         if obj.get("isApiErrorMessage"):
@@ -1225,18 +1245,24 @@ class ClaudeFacts:
                 self.buffer.touch_file(row.session_id, row.agent_id, absolute_path(row.target_id, cwd), "read",
                                        row.tool_name, row.ts, row.tool, cwd)
             elif row.target_kind == AGENT:
-                self._agent_result(row, args, obj.get("toolUseResult"))
+                self._agent_result(row, args, obj.get("toolUseResult"), ts)
 
-    def _agent_result(self, row: fact_rows.ToolInvocationRow, args: dict, result: Any) -> None:
-        """The Agent tool's result names the subagent it started: its id, model and state."""
+    def _agent_result(self, row: fact_rows.ToolInvocationRow, args: dict, result: Any, ts: float) -> None:
+        """The Agent tool's result names the subagent it started: its id, model and state.
+
+        A result with status ``completed`` is the caller's word that the subagent finished;
+        ``async_launched`` says only that it started, so it reports no completion."""
         if not isinstance(result, dict) or not result.get("agentId"):
             return
+        status = str(result.get("status") or "")[:40]
+        done = status == "completed"
         self.buffer.add_agent(fact_rows.AgentRow(
             agent_id=str(result["agentId"]), session_id=row.session_id, tool="claude-code",
             task=str(result.get("agentType") or args.get("subagent_type") or "")[:120], is_sidechain=1,
             description=agent_label(args.get("description") or result.get("description")),
             parent_agent_id=row.agent_id, parent_tool_use_id=row.source_event_id,
-            resolved_model=str(result.get("resolvedModel") or "")[:120], status=str(result.get("status") or "")[:40]))
+            resolved_model=str(result.get("resolvedModel") or "")[:120], status=status,
+            completed=1 if done else 0, ended_at=ts if done and ts else None, observed_at=ts if done else 0.0))
 
     def _file_edit(self, row: fact_rows.ToolInvocationRow, cwd: str, args: dict, result: Any) -> None:
         path = str(args.get("file_path") or args.get("notebook_path") or "")
@@ -1718,6 +1744,7 @@ class CopilotFacts:
                     parent_tool_use_id=call_id[:120],
                     resolved_model=str(data.get("model") or "")[:120],
                     status="running",
+                    observed_at=ts,
                 )
             )
 
@@ -1734,6 +1761,7 @@ class CopilotFacts:
                     is_sidechain=1,
                     ended_at=ts,
                     completed=1,
+                    observed_at=ts,
                     status="failed" if obj.get("type") == "subagent.failed" else "completed",
                 )
             )

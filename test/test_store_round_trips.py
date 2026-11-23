@@ -6,7 +6,6 @@ These tests keep the number of calls per batch independent of the number of rows
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
 
 from aictl.file_inventory import FileInventory
 from aictl.orchestrator import SnapshotPersistence
@@ -69,29 +68,6 @@ def test_session_and_request_facts_are_batched():
     assert written_rows(writer) == {"sessions": 30, "agents": 30, "session_processes": 30, "requests": 500}
 
 
-def teams(n: int, tag: str, started_at: str) -> list[dict]:
-    return [
-        {
-            "session_id": f"{tag}-team{t}",
-            "total_input_tokens": 10,
-            "total_output_tokens": 5,
-            "agents": [
-                {
-                    "agent_id": f"{tag}-t{t}-a{a}",
-                    "task": "role",
-                    "model": "m",
-                    "cwd": "/repo",
-                    "started_at": started_at,
-                    "input_tokens": 3,
-                    "turns": [{"source_ts": 1000.0 + a, "model": "m", "input_tokens": 1, "output_tokens": 1}],
-                }
-                for a in range(4)
-            ],
-        }
-        for t in range(n)
-    ]
-
-
 def writer_calls(writer):
     return Counter(table for _, table, _ in writer.operations)
 
@@ -101,20 +77,6 @@ def written_rows(writer):
     for _, table, batch in writer.operations:
         counts[table] += len(batch)
     return counts
-
-
-def test_persisting_agent_teams_costs_the_same_for_one_team_and_for_twenty():
-    writer = MemoryWriter()
-    facts = SessionFacts(writer, keeps_text=lambda: True)
-    persistence = SnapshotPersistence(None, writer, session_facts=facts)
-    now = datetime.now(timezone.utc)
-    persistence._persist_agent_teams(teams(1, "a", now.isoformat()), now.timestamp())
-    few = writer_calls(writer)
-    assert written_rows(writer) == {"agents": 4, "agents_text": 4, "sessions": 1}
-    writer.operations.clear()
-    persistence._persist_agent_teams(teams(20, "b", now.isoformat()), now.timestamp())
-    assert written_rows(writer) == {"agents": 80, "agents_text": 80, "sessions": 20}
-    assert writer_calls(writer) == few
 
 
 def test_persisting_session_starts_costs_the_same_for_two_and_for_forty():

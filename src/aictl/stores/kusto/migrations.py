@@ -152,7 +152,81 @@ def _requests_single_copy() -> list[Statement]:
     ]
 
 
+# ── agents_by_session (layout 2) ────────────────────────────────────
+
+_LIVE = "| extend _deleted=column_ifexists('_deleted', bool(null)) | where not(coalesce(_deleted, false))"
+# The session each agent id showed under before layout 2: the newest version by the old key.
+_SHOWN = (
+    f"let shown = ['agents'] {_LIVE}"
+    " | summarize arg_max(_v, session_id) by ['project'], node_id, agent_id"
+    " | where isnotempty(session_id) | project ['project'], node_id, agent_id, shown_session=session_id;"
+)
+# Under the new key, older versions of an agent written under another session would show again.
+_RESURFACED = (
+    "['agents'] | extend _deleted=column_ifexists('_deleted', bool(null))"
+    " | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id"
+    " | where not(coalesce(_deleted, false))"
+    " | lookup kind=inner shown on ['project'], node_id, agent_id"
+    " | where session_id != shown_session | project-away shown_session"
+)
+_UNSCOPED_TEXT = (
+    "let scoped = ['agents_text'] | extend session_id=column_ifexists('session_id', '')"
+    " | where isnotempty(session_id) | distinct ['project'], node_id, agent_id;"
+)
+_TEXT_TO_SCOPE = (
+    "['agents_text'] | extend session_id=column_ifexists('session_id', '')"
+    " | summarize arg_max(_v, *) by ['project'], node_id, agent_id, session_id | where isempty(session_id)"
+    " | join kind=leftanti scoped on ['project'], node_id, agent_id"
+    " | lookup kind=inner shown on ['project'], node_id, agent_id"
+)
+_LIVE_SESSIONS = (
+    "let live_sessions = ['sessions'] | summarize arg_max(_v, *) by ['project'], node_id, session_id"
+    " | where not(coalesce(_deleted, false));"
+)
+# A row only the agent-team scan wrote (it took a subagent's folder as the session's), where the
+# same session also has a row from evidence of its own transcript or process under another project.
+_SCAN_SESSION_COPIES = (
+    "live_sessions | where source == 'claude-code-jsonl'"
+    " | join kind=leftsemi (live_sessions | where source != 'claude-code-jsonl' | distinct node_id, session_id)"
+    " on node_id, session_id"
+)
+
+
+def _agents_by_session() -> list[Statement]:
+    return [
+        Statement(
+            "Give each agent task text the session of its agent (the text rows had only the agent id)",
+            f"{_SHOWN} {_UNSCOPED_TEXT} {_TEXT_TO_SCOPE} | count",
+            append("agents_text", f"{_TEXT_TO_SCOPE} | extend session_id=shown_session, _v=now()"
+                                  " | project-away shown_session", f"{_SHOWN} {_UNSCOPED_TEXT} "),
+        ),
+        Statement(
+            "Agents are now keyed by session and agent id: delete the older versions of an agent written "
+            "under another session, so each agent shows under the session it showed under before",
+            f"{_SHOWN} {_RESURFACED} | count",
+            append("agents", f"{_RESURFACED} | extend _deleted=true, _v=now()", f"{_SHOWN} "),
+        ),
+        Statement(
+            "Delete the session rows the agent-team scan wrote under a subagent's folder, where the session "
+            "has its own row under another project",
+            f"{_LIVE_SESSIONS} {_SCAN_SESSION_COPIES} | count",
+            append("sessions", f"{_SCAN_SESSION_COPIES} | extend _deleted=true, _v=now()", f"{_LIVE_SESSIONS} "),
+        ),
+    ]
+
+
 MIGRATIONS: dict[str, Migration] = {
+    "agents_by_session": Migration(
+        "agents_by_session",
+        "Key agents by session and agent id",
+        _agents_by_session,
+        cannot_repair=(
+            "An agent, request or tool call that an older aictl put under the wrong session (a resumed "
+            "session's copy read before the original) stays there: re-import those sessions with "
+            "'aictl db reimport-sessions --resumed'. A session whose only row the agent-team scan wrote "
+            "keeps that row's folder until its transcript is read again."
+        ),
+    ),
     "requests_single_copy": Migration(
         "requests_single_copy",
         "Keep one request row per model call",

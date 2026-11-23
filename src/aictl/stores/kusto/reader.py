@@ -79,7 +79,7 @@ _VIEWS = {
     ),
     "sessions.first_activity": (f"{_SCOPE} requested_session", "first_ts"),
     "sessions.first_activities": ("all_nodes requested_node session_keys", "node_id session_id first_ts"),
-    "agents.resolve": (f"{_SCOPE} requested_agent", "node_id session_id agent_id priority"),
+    "agents.resolve": (f"{_SCOPE} requested_agent requested_session", "node_id session_id agent_id priority"),
     "events.page": (_EVENT, "ts tool kind detail session_id pid seq"),
     "events.count": (_EVENT, "count"),
     "events.lm_usage": (f"{_SCOPE} requested_session raw_session", "ts tool kind detail session_id pid seq"),

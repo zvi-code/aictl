@@ -135,18 +135,41 @@ def _display_folder(folder: Path) -> str:
     return "~" + text[len(home):].replace("\\", "/") if text == home or text.startswith(home + os.sep) else text
 
 
+AGENT_SEPARATOR = "/"  # an agent addressed with its session: "<session id>/<agent id>"
+
+
+def agent_address(session_id: str, agent_id: str) -> str:
+    """How a route or a deep link (``?agent=``) names a subagent: with its session, since an agent
+    id is unique only within its session (a resumed session copies its subagents)."""
+    return f"{session_id}{AGENT_SEPARATOR}{agent_id}" if agent_id and agent_id != session_id else session_id
+
+
 def _resolve_agent(history: HistoryScope, agent_id: str) -> tuple[str, str]:
-    """(session id, agent key) of a board agent id."""
+    """(session id, agent key) of a board agent, named ``<session>/<agent>`` or by its id alone.
+
+    An id alone is resolved only when exactly one session holds it; more than one is an
+    ambiguity error that lists the candidates, never the earliest or the latest of them.
+    """
     node, raw = history.split(agent_id)
+    session, _, bare = raw.rpartition(AGENT_SEPARATOR)
+    bare = bare or raw
     result = history.require_reader().read("agents.resolve", {
-        **node_scope(node), "requested_agent": raw, "limit": 2 if history.qualified else 1,
+        **node_scope(node), "requested_agent": bare, "requested_session": session, "limit": 20,
     })
+    def qualify(value: str) -> str:
+        return identity(node or "", value) if history.qualified else value
+
+    key = qualify(bare)
     if not result.rows:
-        return agent_id, agent_id
-    if history.qualified and len(result.rows) > 1 and result.rows[0]["priority"] != 0:
-        raise ScopeError("Agent identity is ambiguous within the selected node", 409, "ambiguous_identity")
-    sid = result.rows[0]["session_id"]
-    return (identity(node or "", sid) if history.qualified else sid), agent_id
+        # The main agent is named by its session id; a named session keeps its name.
+        return qualify(session) if session else agent_id, key
+    best = min(row["priority"] for row in result.rows)
+    owners = sorted({(row.get("node_id", ""), row["session_id"]) for row in result.rows if row["priority"] == best})
+    if len({sid for _, sid in owners}) > 1 or (history.qualified and len(owners) > 1):
+        listed = ", ".join(agent_address(sid, bare) for _, sid in owners)
+        raise ScopeError(f"Agent {bare} is in more than one session; name it with its session: {listed}",
+                         409, "ambiguous_identity")
+    return qualify(owners[0][1]), key
 
 
 def _json_list(value: Any) -> list[str]:

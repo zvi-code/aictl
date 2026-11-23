@@ -105,7 +105,9 @@ def read_claude_titles(path: Path) -> Title:
                     obj = json.loads(line)
                 except ValueError:
                     continue
-                found = claude_title(obj) if isinstance(obj, dict) else None
+                if not isinstance(obj, dict) or obj.get("sessionId") not in (None, "", path.stem):
+                    continue  # a resumed session's copy of the earlier session's name
+                found = claude_title(obj)
                 if found and outranks(*best, *found):
                     best = found
     except OSError as exc:

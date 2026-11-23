@@ -500,9 +500,36 @@ change for the board places that need a "no longer retained" wording).
 |--------|------|-------------|
 | `description` | string | The short task label the calling agent gave (at most 200 characters, one line). A label, stored like a name in every capture mode; the prompt stays in `agents_text` |
 | `spawn_depth` | long | Claude Code `meta.json` `spawnDepth` |
-| `parent_agent_id` | string | The agent that started it; "" for the main agent |
-| `parent_tool_use_id` | string | The tool call that started it |
+| `parent_agent_id` | string | The agent that started it; "" for the main agent. Claude Code `meta.json` `parentAgentId`, or the agent whose Agent call's result names it |
+| `parent_tool_use_id` | string | The tool call that started it: Claude Code `meta.json` `toolUseId`, the `source_event_id` of a `tool_invocations` row of the same session and of the parent agent |
 | `resolved_model`, `status` | string | The model it ran on; `async_launched`, `running`, `completed`, `failed` |
+| `cwd`, `git_branch` | string | The folder and branch the agent's own lines carry (a subagent can run in another worktree, on another branch). The session's `project_path` and `git_branch` come from the main transcript only |
+| `worktree_path` | string | Claude Code `meta.json` `worktreePath` |
+| `completed`, `ended_at`, `observed_at` | long, real, real | 1 and the end time only after evidence that the agent finished: a final reply (an assistant line with stop reason `end_turn` or `stop_sequence` and no tool call), the caller's Agent result with status `completed`, or Copilot `subagent.completed` / `subagent.failed`. A quiet file is not finished. `observed_at` is the time of the observation these come from; rows merge by it, so a resumed agent goes back to not completed |
+| `_deleted` | bool | Tombstone |
+
+Key (layout 2): `project`, `node_id`, `session_id`, `agent_id`. An agent id is unique only within its session: a
+resumed or forked Claude Code session copies its `subagents/` folder, agent ids included. `agents_text` has
+`session_id` too and the same key. Address an agent as `<session id>/<agent id>` (routes, `?agent=` links,
+`agents.resolve`); an id alone resolves only when one session holds it, and is otherwise an ambiguity error.
+
+### Resumed and forked sessions (`sessions.resumed_from`)
+
+A resumed or forked Claude Code session gets a new file that first replays the earlier session's lines, each still
+carrying the earlier session's `sessionId`, and a copy of its `subagents/` folder (without `meta.json`). A line
+belongs to the session named by its own `sessionId` (the file's name only when the line has none), so the copies
+add nothing to the new session and change nothing of the earlier one, whatever the read order. The new session's
+row records the earlier one in `resumed_from`. A copied subagent file whose lines are all the earlier session's
+removes the `agents` row an older aictl stored for it under the new session.
+
+`aictl db reimport-sessions --resumed` (daemon stopped) clears the saved read positions of every resumed session
+found and of the session each one replays, so the next start reads only those files again; name sessions as
+arguments to read other ones again.
+
+Messages (`copilot_session_messages`, `vscode_chat_messages`, `cursor_session_messages`) are stored under the
+session id their source carries (the Copilot session id, VS Code's chat `sessionId`, the Cursor conversation id),
+whether or not the session's row exists yet; a message with no session id has an empty one. No id is invented and
+no message is attached to another session of the same workspace.
 
 ### `session_turns` (year-long) — one row per Claude Code turn
 

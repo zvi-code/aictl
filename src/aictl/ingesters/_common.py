@@ -172,3 +172,26 @@ def coerce_ts(raw: Any) -> float:
         except ValueError:
             return 0.0
     return 0.0
+
+
+# Stop reasons that end a Claude reply: the model is done and calls no tool.
+_CLAUDE_FINAL_STOPS = frozenset({"end_turn", "stop_sequence"})
+
+
+def claude_line_finishes(obj: dict) -> bool | None:
+    """Whether a Claude Code agent is finished after this line of its transcript.
+
+    True for a final reply: an assistant line with a terminal stop reason and no tool call.
+    False for any other assistant or user line: the agent is still working, or works again.
+    None for a line that says nothing about it (titles, attachments, system lines).
+    """
+    kind = obj.get("type")
+    if kind not in ("assistant", "user"):
+        return None
+    if kind == "user":
+        return False
+    msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+    content = msg.get("content") if isinstance(msg.get("content"), list) else []
+    if any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content):
+        return False
+    return msg.get("stop_reason") in _CLAUDE_FINAL_STOPS

@@ -24,12 +24,12 @@ from typing import Any
 
 from ..base import StoreConfigurationError
 
-LAYOUT_VERSION = 1
-COMPATIBLE_SINCE = 1
+LAYOUT_VERSION = 2
+COMPATIBLE_SINCE = 2
 # The first layout released as generally available. From then on a breaking change needs a migration.
 GA_LAYOUT_VERSION: int | None = None
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "920473823ee47cb1d92317d8e030f1ce16e9729493ca7d21151bb83f49824fe6"
+FINGERPRINT = "44c62b9a7ee2482582d41150ecd9705749748736184fef1f3d3e233b0d417fba"
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,16 @@ CHANGES: tuple[Change, ...] = (
         "transcript was stored under two keys; every reader summed both copies.",
         breaks=True,
         migration="requests_single_copy",
+    ),
+    Change(
+        2,
+        "agents: keyed by (session_id, agent_id), with a tombstone, the folder, branch and worktree the "
+        "agent ran in, and observed_at (the time completed and ended_at were observed; the latest "
+        "observation wins). agents_text: keyed by session_id too. sessions: resumed_from, the session a "
+        "resumed or forked session's file replays. Before, an agent id copied into a resumed session "
+        "settled under whichever session was written last.",
+        breaks=True,
+        migration="agents_by_session",
     ),
 )
 

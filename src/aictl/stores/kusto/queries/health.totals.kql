@@ -72,7 +72,7 @@ union hint.concurrency=1
         | summarize rows=count() | extend table='processes'),
     (agents | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
-        | summarize arg_max(_v, deleted) by node_id, ['project'], agent_id
+        | summarize arg_max(_v, deleted) by node_id, ['project'], session_id, agent_id
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='agents'),
     (tool_stats | where all_nodes or node_id == requested_node

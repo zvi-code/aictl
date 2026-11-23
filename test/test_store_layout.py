@@ -200,8 +200,10 @@ def test_migration_runs_after_widening_and_records_each_step_then_the_layout():
     assert all("<| " in c and "['requests'] | take 0 | union (" in c for c in appends)
     first_append = fake.commands.index(appends[0])
     assert all(i < first_append for i, c in enumerate(fake.commands) if c.startswith(".create-merge"))
-    step, layout_row = fake.layout_rows
+    step, agents_step, layout_row = fake.layout_rows
     assert (step["kind"], step["step"], step["detail"]) == ("migration", "requests_single_copy", "done: 12 rows")
+    # The fake counts by text: the scan's session rows (source claude-code-jsonl) match too.
+    assert (agents_step["step"], agents_step["detail"]) == ("agents_by_session", "done: 7 rows")
     assert (layout_row["kind"], layout_row["detail"]) == ("layout", "migrate")
     assert step["data_epoch"] == layout_row["data_epoch"] == status.data_epoch
     assert status.epoch_kept_data and status.layout["verdict"] == L.MIGRATE
@@ -211,7 +213,7 @@ def test_migration_skips_statements_with_nothing_to_change():
     fake = with_data()
     ensure(fake, migrate=migrations.runner(fake, "db"))
     assert not [c for c in fake.commands if c.startswith(".set-or-append ['requests']")]
-    assert fake.layout_rows[0]["detail"] == "done: 0 rows"
+    assert [row["detail"] for row in fake.layout_rows[:2]] == ["done: 0 rows", "done: 0 rows"]
 
 
 def test_an_interrupted_migration_is_recorded_and_resumes_in_the_same_epoch():
@@ -237,8 +239,9 @@ def test_an_interrupted_migration_is_recorded_and_resumes_in_the_same_epoch():
 
 def test_a_step_recorded_done_is_not_run_again():
     stored = L.StoredLayout(0, 0, "e", migrations_done=frozenset({"requests_single_copy"}))
-    assert migrations.pending(stored) == []
-    assert [m.name for _, m in migrations.pending(L.UNVERSIONED)] == ["requests_single_copy"]
+    assert [m.name for _, m in migrations.pending(stored)] == ["agents_by_session"]
+    assert [m.name for _, m in migrations.pending(L.UNVERSIONED)] == ["requests_single_copy", "agents_by_session"]
+    assert migrations.pending(L.StoredLayout(1, 1, "e")) == [(L.CHANGES[1], migrations.MIGRATIONS["agents_by_session"])]
 
 
 def test_dry_run_prints_commands_and_counts_and_changes_nothing(monkeypatch):
@@ -248,17 +251,20 @@ def test_dry_run_prints_commands_and_counts_and_changes_nothing(monkeypatch):
     lines = []
     verdict, results = maintenance.migrate_store(SETTINGS, dry_run=True, echo=lines.append)
     assert verdict == L.MIGRATE and fake.changes == []
-    [step] = results
+    step, agents_step = results
     assert step.status == "planned" and [s.rows for s in step.statements] == [4, 0, 0]
+    assert agents_step.status == "planned" and [s.rows for s in agents_step.statements] == [0, 0, 4]
     text = "\n".join(lines)
     assert "4 rows" in text and ".set-or-append ['requests'] <|" in text
 
 
 def test_every_migration_statement_appends_by_column_name():
+    tables = {"requests_single_copy": ["requests"] * 3,
+              "agents_by_session": ["agents_text", "agents", "sessions"]}
     for migration in migrations.MIGRATIONS.values():
-        for statement in migration.plan():
-            assert statement.command.startswith(".set-or-append ['requests'] <| ")
-            assert "['requests'] | take 0 | union (" in statement.command
+        for statement, table in zip(migration.plan(), tables[migration.name], strict=True):
+            assert statement.command.startswith(f".set-or-append ['{table}'] <| ")
+            assert f"['{table}'] | take 0 | union (" in statement.command
             assert statement.count_query.endswith("| count")
 
 

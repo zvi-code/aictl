@@ -358,6 +358,45 @@ def migrate(ctx, dry_run, yes, kusto_cluster, kusto_database):
                    f"Migrated {settings.database} on {settings.cluster} to layout {L.LAYOUT_VERSION}.")
 
 
+@db.command("reimport-sessions")
+@click.argument("session_ids", nargs=-1)
+@click.option("--resumed", is_flag=True,
+              help="Every resumed or forked Claude Code session found, and the session each one replays")
+@click.option("--dry-run", is_flag=True, help="List the files; change nothing")
+@click.pass_context
+def reimport_sessions(ctx, session_ids, resumed, dry_run):
+    """Read the given sessions' files again at the next start, and store their rows again.
+
+    Only the read positions of these files are cleared: nothing stored is deleted, and every other
+    file stays as read. Use it for sessions that an older aictl attributed wrongly, such as a
+    resumed session's copy of the session it was resumed from. Stop the daemon first.
+    """
+    from .. import platforms, tool_homes
+    from ..ingesters.transcript_usage import claude_session_files, forget_read_positions, resumed_claude_sessions
+    from ..state_file import StateFile, restart_directory
+
+    settings = _admin_settings(ctx)
+    roots = [platforms.claude_projects_dir(), *tool_homes.session_dirs("claude")]
+    roots = [r for i, r in enumerate(roots) if r.is_dir() and r not in roots[:i]]
+    wanted = set(session_ids)
+    if resumed:
+        for copy, origin in resumed_claude_sessions(roots).items():
+            click.echo(f"{copy} replays {origin}")
+            wanted |= {copy, origin}
+    if not wanted:
+        raise click.UsageError("Name the sessions to read again, or pass --resumed")
+    files = claude_session_files(roots, wanted)
+    click.echo(f"{len(files)} file(s) of {len(wanted)} session(s)")
+    if dry_run:
+        for path in files:
+            click.echo(f"  {path}")
+        return
+    checkpoint = StateFile(restart_directory(settings.cluster, settings.database, settings.node_id)
+                           / "transcript_usage.json")
+    removed = forget_read_positions(checkpoint, files)
+    click.echo(f"Cleared {removed} saved read position(s); the next start reads these files again.")
+
+
 def confirm_and_reset(settings, *, yes: bool, echo=click.echo, confirm=click.confirm) -> bool:
     """Print what a reset deletes, ask unless *yes*, reset. Returns False when the user says no."""
     from ..stores.kusto.maintenance import reset_plan, reset_store

@@ -168,6 +168,9 @@ class SessionUsage:
     recorded_end_at: float = 0.0
     project_path: str = ""
     git_branch: str = ""
+    # The session whose lines this session's file copies at its start: a resumed or forked
+    # Claude Code session replays the earlier session's lines, each still carrying that id.
+    resumed_from: str = ""
     premium_requests: float = 0.0
     title: str = ""
     title_source: str = ""
@@ -397,7 +400,9 @@ def _i(v: Any) -> int:
 class ClaudeAccumulator:
     """Folds Claude Code JSONL lines into :class:`SessionUsage` objects.
 
-    Shared across all files of a poll so a replayed message counts once.
+    Each line is counted under the session that wrote it (see :func:`claude_line_session`);
+    the reader drops the copied lines of a resumed or forked session before they come here.
+    The request keys still span files: a streaming reply is written as several lines.
     """
 
     def __init__(self, tool: str = "claude-code") -> None:
@@ -411,19 +416,21 @@ class ClaudeAccumulator:
     def session(self, sid: str) -> SessionUsage:
         return self.sessions.setdefault(sid, SessionUsage(session_id=sid, tool=self.tool))
 
-    def feed(self, sid: str, obj: dict) -> None:
+    def feed(self, sid: str, obj: dict, *, main: bool = True) -> None:
+        """Add one line of *sid*. *main* is False for a subagent's file: a subagent may run in
+        another folder or worktree, on another branch, and that is the agent's, not the session's."""
         kind = obj.get("type")
         if kind not in ("assistant", "user"):
-            named = claude_title(obj)
+            named = claude_title(obj) if main else None
             if named:
                 self.session(sid).set_title(*named)
             return
         s = self.session(sid)
         ts = coerce_ts(obj.get("timestamp"))
         s.touch(ts)
-        if not s.project_path and obj.get("cwd"):
+        if main and not s.project_path and obj.get("cwd"):
             s.project_path = project_root(str(obj["cwd"]))
-        if obj.get("gitBranch"):
+        if main and obj.get("gitBranch"):
             s.git_branch = str(obj["gitBranch"])
         msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
         if kind == "user":
@@ -500,15 +507,85 @@ class ClaudeAccumulator:
 
 
 def _claude_session_id(path: Path) -> str:
-    """``…/<session>/subagents/agent-x.jsonl`` belongs to ``<session>``."""
+    """The session whose file this is: ``…/<session>/subagents/agent-x.jsonl`` belongs to ``<session>``."""
     parts = path.parts
     if "subagents" in parts:
         return parts[parts.index("subagents") - 1]
     return path.stem
 
 
+def claude_line_session(obj: dict, file_sid: str) -> str:
+    """The session a Claude Code line belongs to: the ``sessionId`` the line carries, else its file's.
+
+    A resumed or forked session starts a new file (and copies the ``subagents/`` folder) that
+    replays the earlier session's lines with the earlier session's id. Such a line is a copy:
+    the earlier session's own file holds the original.
+    """
+    sid = obj.get("sessionId")
+    return sid if isinstance(sid, str) and sid else file_sid
+
+
 def iter_claude_files(projects_dir: Path) -> Iterable[Path]:
     return projects_dir.glob("**/*.jsonl")
+
+
+def claude_resume_origin(path: Path, scan_lines: int = 5000) -> str:
+    """The session a Claude Code main file replays at its start (resume or fork), or ''.
+
+    The copied lines keep the earlier session's ``sessionId``; the file is named for the new one.
+    """
+    try:
+        with open(path, "rb") as fh:
+            for _, line in zip(range(scan_lines), fh):
+                if b'"sessionId"' not in line:
+                    continue
+                try:
+                    sid = json.loads(line).get("sessionId")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(sid, str) and sid and sid != path.stem:
+                    return sid
+                if sid == path.stem:
+                    return ""
+    except OSError:
+        return ""
+    return ""
+
+
+def claude_session_files(projects_dirs: Iterable[Path], session_ids: set[str]) -> list[Path]:
+    """Every Claude Code file of *session_ids*: main files and their subagents, in any project folder."""
+    return [p for root in projects_dirs for p in iter_claude_files(root)
+            if _claude_session_id(p) in session_ids]
+
+
+def resumed_claude_sessions(projects_dirs: Iterable[Path]) -> dict[str, str]:
+    """{session: the session it replays} for every resumed or forked Claude Code session found."""
+    found = {}
+    for root in projects_dirs:
+        for path in root.glob("*/*.jsonl"):
+            if origin := claude_resume_origin(path):
+                found[path.stem] = origin
+    return found
+
+
+def forget_read_positions(checkpoint: StateFile, paths: Iterable[Path]) -> int:
+    """Remove *paths* from the transcript reader's saved read positions, so that the next start reads
+    them again from their first line and stores their rows again. Returns the positions removed.
+    Run it while the daemon is stopped: a running reader saves its own positions over these."""
+    wanted = {str(p) for p in paths}
+    saved = checkpoint.read()
+    removed = 0
+    for key, entry in saved.items():
+        if not key.startswith("transcript_usage:") or not isinstance(entry, dict):
+            continue
+        files = entry.get("files", {})
+        for path in wanted & files.keys():
+            del files[path]
+            entry.get("tails", {}).pop(path, None)
+            removed += 1
+    if removed:
+        checkpoint.replace(saved)
+    return removed
 
 
 def _parents_first(paths: list[Path]) -> list[Path]:
@@ -733,7 +810,7 @@ class CopilotStoreReader:
         self.facts = facts
         self._occurrence: dict[tuple[str, tuple[int, int, int, int]], int] = {}
         self._cwd: dict[str, str] = {}
-        self._agents_seen: set[str] = set()
+        self._agents_seen: set[tuple[str, str]] = set()  # (session, agent id)
         self.store_path = copilot_home / "session-store.db"
         self.data_path = copilot_home / "data.db"
         self.sessions: dict[str, SessionUsage] = {}
@@ -825,7 +902,7 @@ class CopilotStoreReader:
         if not store:
             # Stored by an earlier run. The occurrence count above keeps later keys the same.
             if agent_id:
-                self._agents_seen.add(agent_id)
+                self._agents_seen.add((sid, str(agent_id)))
             return
         raw, out, read, write = tokens
         billable = max(0, raw - read - write)
@@ -852,8 +929,8 @@ class CopilotStoreReader:
                 thinking_tokens=int(reasoning) if isinstance(reasoning, int) else None,
             )
         )
-        if agent_id and agent_id not in self._agents_seen:
-            self._agents_seen.add(agent_id)
+        if agent_id and (sid, str(agent_id)) not in self._agents_seen:
+            self._agents_seen.add((sid, str(agent_id)))
             self.facts.add_agent(
                 AgentRow(
                     agent_id=str(agent_id),
@@ -1304,7 +1381,7 @@ class TranscriptUsageIngester:
                 self._offsets[p] = 0
             if size > self._offsets.get(p, 0):
                 found.append((st.st_mtime, p))
-        # Oldest first, so a replayed message stays on the session that made it.
+        # Oldest first: a streaming reply's lines are read in the order they were written.
         return [p for _, p in sorted(found, key=lambda x: x[0])]
 
     def poll(self) -> int:
@@ -1369,12 +1446,30 @@ class TranscriptUsageIngester:
         for path in _parents_first(self._changed(claude_files, cutoff, "claude-code")):
             sid = _claude_session_id(path)
             agent_id, meta = self._claude_agent(path)
+            main = not agent_id
             role = str(meta.get("agentType") or "")[:120]
-            if not self._offsets.get(path):
+            whole = not self._offsets.get(path)
+            if whole:
                 self._claude_facts.begin_file(sid, agent_id)
+            own = copied = False
             for obj in read(path, _CLAUDE_RECORD_TYPES):
-                self._claude.feed(sid, obj)
+                owner = claude_line_session(obj, sid)
+                if owner != sid:
+                    # A copy of another session's line (resume or fork): its facts come from that
+                    # session's own file. The copy only says where this session came from.
+                    copied = True
+                    if main:
+                        self._claude.session(sid).resumed_from = owner
+                    continue
+                own = True
+                self._claude.feed(sid, obj, main=main)
                 self._claude_facts.feed(sid, obj, agent_id=agent_id, role=role, meta=meta)
+            if whole and copied and not own and agent_id:
+                # A subagent file copied into a resumed session: the agent is the earlier session's.
+                # An older aictl stored it under this session too; that row goes.
+                forget = getattr(self._fact_target, "forget_agents", None)
+                if forget is not None:
+                    forget([(sid, agent_id)])
             if sid in self._claude.sessions:
                 touched[sid] = self._claude.sessions[sid]
             self._check_fact_write()
@@ -1794,7 +1889,7 @@ class TranscriptUsageIngester:
             external = self._external_titles.get(s.session_id)
             if external and outranks(title, title_source, *external):
                 title, title_source = external
-            fingerprint = (row, s.git_branch, title, title_source)
+            fingerprint = (row, s.git_branch, title, title_source, s.resumed_from)
             if self._written.get(s.session_id) == fingerprint:
                 continue
             if self._fact_target is None:
@@ -1827,6 +1922,7 @@ class TranscriptUsageIngester:
                     tool_call_count=s.tool_calls,
                     title=title,
                     title_source=title_source,
+                    resumed_from=s.resumed_from,
                 )
             )
             self._written[s.session_id] = fingerprint

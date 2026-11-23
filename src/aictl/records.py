@@ -261,6 +261,9 @@ class SessionRow:
     # "user" (named or renamed by the user), "tool" (made by the tool), "prompt" (from prompt text).
     title: str = ""
     title_source: str = ""
+    # The session this one was resumed or forked from, as the tool recorded it: a Claude Code
+    # resume starts a new file that replays the earlier session's lines with that session's id.
+    resumed_from: str = ""
 
 
 @dataclass(slots=True)
@@ -501,7 +504,8 @@ class ProcessRow:
 
 @dataclass(slots=True)
 class AgentRow:
-    """One agent record."""
+    """One agent record. An agent is identified by (session_id, agent_id): a resumed session's
+    copy of a subagent carries the same agent id under another session."""
 
     agent_id: str
     session_id: str = ""
@@ -524,6 +528,19 @@ class AgentRow:
     parent_tool_use_id: str = ""
     resolved_model: str = ""
     status: str = ""
+    # Where the agent ran, which can differ from its session's folder and branch (a worktree).
+    cwd: str = ""
+    git_branch: str = ""
+    worktree_path: str = ""
+    # The time of the observation that ``completed`` and ``ended_at`` come from (the agent's
+    # latest line, or the event or tool result that reported its state); 0 when the row
+    # carries no such observation. Rows merge by it: the latest observation wins.
+    observed_at: float = 0.0
+
+
+def newer_observation(observed_at: float | None, prior_observed_at: float | None) -> bool:
+    """Whether an agent row's completion state replaces the prior row's: it was observed, and not earlier."""
+    return bool(observed_at) and observed_at >= (prior_observed_at or 0.0)
 
 
 @dataclass(slots=True)

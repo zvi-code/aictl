@@ -11,9 +11,8 @@ from collections.abc import Iterable
 from dataclasses import asdict, replace
 from typing import Any
 
-from .ingesters._common import project_key
 from .ingesters.session_titles import clean_title, outranks
-from .records import STEP_TEXT_LIMIT, TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, strip_event_text
+from .records import STEP_TEXT_LIMIT, TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, newer_observation, strip_event_text
 from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
@@ -192,10 +191,10 @@ class SessionFacts:
         prior = entry.get("row")
         merged = dict(prior) if prior else incoming.copy()
         clock = entry.get("clock", 0)
-        for name in ("tool", "pid", "project_path", "model", "git_branch", "git_commit", "source"):
+        for name in ("tool", "pid", "project_path", "model", "git_branch", "git_commit", "source", "resumed_from"):
             # OTel and process evidence only fill what is empty; a process still sets the pid.
             fills_only = row.source == "otel" or (row.source == PROCESS_SOURCE and name != "pid")
-            if incoming[name] and (not fills_only or not merged[name]):
+            if incoming[name] and (not fills_only or not merged.get(name)):
                 merged[name] = incoming[name]
         SessionFacts._set_title(merged, incoming["title"], incoming["title_source"])
         starts = [ts for ts in (merged["started_at"], row.started_at) if ts > 0]
@@ -236,20 +235,6 @@ class SessionFacts:
     def project_for(self, session_id: str) -> str:
         with self._lock:
             return self._sessions.get(session_id, {}).get("row", {}).get("project_path", "")
-
-    def active_session(self, tool: str, project: str, ts: float) -> str:
-        project = project_key(project)
-        if not project:
-            return ""
-        with self._lock:
-            return max(
-                ((row["started_at"], sid) for sid, entry in self._sessions.items()
-                 if (row := entry["row"])["tool"] == tool
-                 and not row["source"].endswith("-ingester")
-                 and row["started_at"] <= ts <= (row["ended_at"] or float("inf"))
-                 and project_key(row["project_path"]) == project),
-                default=(0, ""),
-            )[1]
 
     def text_floor(self, cls: str = "text") -> float:
         """The oldest time whose text of retention class *cls* (text, prompt, thinking) is still kept."""
@@ -428,37 +413,59 @@ class SessionFacts:
                 self._dirty = True
 
     def agents(self, rows) -> None:
+        """Merge agent rows by (session, agent id): an agent id is unique only within its session
+        (a resumed Claude Code session copies its subagents' files, ids included)."""
         with self._lock:
             staged = OrderedDict()
             text = []
             for row in rows:
+                if not row.session_id or not row.agent_id:
+                    log.debug("An agent row without a session or agent id is not stored")
+                    continue
                 data = asdict(row)
                 task = data.pop("task")
-                agent_id = row.agent_id
-                saved = staged.get(agent_id)
-                prior = saved[0] if saved else self._agents.get(agent_id)
+                key = (row.session_id, row.agent_id)
+                saved = staged.get(key)
+                prior = saved[0] if saved else self._agents.get(key)
                 if prior:
                     data = {k: v or prior[k] for k, v in data.items()}
                     data["started_at"] = min(t for t in (data["started_at"], prior["started_at"]) if t) if (
                         data["started_at"] or prior["started_at"]) else 0
-                    data["completed"] = max(data["completed"], prior["completed"])
-                    if row.ended_at and prior["ended_at"]:
-                        data["ended_at"] = max(row.ended_at, prior["ended_at"])
+                    # Finished or not is what the latest observation says (a resumed agent runs
+                    # again), never the maximum of all rows.
+                    if newer_observation(row.observed_at, prior.get("observed_at")):
+                        data["completed"], data["ended_at"] = row.completed, row.ended_at
+                    else:
+                        for name in ("completed", "ended_at", "observed_at"):
+                            data[name] = prior.get(name)
                 project = self._sessions.get(row.session_id, {}).get("row", {}).get("project_path", "")
                 if data != prior:
-                    staged[agent_id] = (data, project)
-                    staged.move_to_end(agent_id)
+                    staged[key] = (data, project)
+                    staged.move_to_end(key)
                 ts = row.started_at or row.ended_at or time.time()
                 if task and self.allows_text(ts):
-                    task = self.spill("agents_text", agent_id, "task", task, ts=ts, session_id=row.session_id,
-                                      project=project)
-                    text.append(dict(agent_id=agent_id, task=task, project=project, ts=ts))
+                    task = self.spill("agents_text", f"{row.session_id}/{row.agent_id}", "task", task, ts=ts,
+                                      session_id=row.session_id, project=project)
+                    text.append(dict(session_id=row.session_id, agent_id=row.agent_id, task=task, project=project,
+                                     ts=ts))
             if staged:
                 self.writer.upsert("agents", [dict(data, project=project) for data, project in staged.values()])
-                for agent_id, (data, _) in staged.items():
-                    self._remember(self._agents, agent_id, data)
+                for key, (data, _) in staged.items():
+                    self._remember(self._agents, key, data)
             if text:
                 self.writer.append("agents_text", text)
+
+    def forget_agents(self, keys: Iterable[tuple[str, str]]) -> None:
+        """Delete the agent rows of (session, agent id) pairs the evidence says do not exist, such as
+        a resumed session's copy of an earlier session's subagent. Rows are stored under the project
+        of their session's row."""
+        with self._lock:
+            gone = []
+            for sid, agent_id in keys:
+                self._agents.pop((sid, agent_id), None)
+                gone.append(dict(project=self.project_for(sid), session_id=sid, agent_id=agent_id))
+            if gone:
+                self.writer.delete("agents", gone)
 
     def attribution(self, session_ids: list[str], tool: str) -> None:
         if session_ids:

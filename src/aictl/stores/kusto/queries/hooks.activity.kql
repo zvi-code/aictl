@@ -54,7 +54,7 @@ union
         | project row_type='recent', ts, tool, kind, agent_id, agent_type, event_key),
     (agents | where not(counts_only) and (all_nodes or node_id == requested_node)
         | extend deleted=column_ifexists('_deleted', false)
-        | summarize arg_max(_v, deleted, is_sidechain, started_at, ended_at, tool) by node_id, ['project'], agent_id
+        | summarize arg_max(_v, deleted, is_sidechain, started_at, ended_at, tool) by node_id, ['project'], session_id, agent_id
         | where not(coalesce(deleted, false)) and is_sidechain == 1
             and (started_at between (since .. until) or ended_at between (since .. until))
         | summarize starts=countif(started_at between (since .. until)), stops=countif(ended_at between (since .. until))

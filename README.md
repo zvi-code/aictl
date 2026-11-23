@@ -693,6 +693,7 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl db stats` | Show current logical counts, time range, and separate physical extent metadata |
 | `aictl db schema` | Print the Kusto table keys, columns, retention, and ingestion modes |
 | `aictl db trim-text` | Soft-delete records from text tables for this node |
+| `aictl db reimport-sessions --resumed` | Read again, at the next start, only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |
 | `aictl db reset` | Clear the aictl tables in the configured Kusto database |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
