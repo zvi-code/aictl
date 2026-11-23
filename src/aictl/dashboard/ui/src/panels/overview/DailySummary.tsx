@@ -1,4 +1,5 @@
 import { createMemo, For, Show } from 'solid-js'
+import { dayLabel, stamp } from '../../design/format'
 import { BarPlot } from '../kinds/BarPlot'
 import { at } from '../data'
 import type { KeyedRow } from '../types'
@@ -7,8 +8,6 @@ import styles from './Summary.module.css'
 
 const day = 86400
 const days = 7
-const date = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
-const percentRange = [0, 100] as const
 
 export type Buckets = { since: number; until: number; bucket_s: number; bucket_starts: readonly number[] }
 
@@ -26,6 +25,14 @@ export function rangeBins(rows: readonly KeyedRow[], path: string, range: Bucket
     total++
   }
   return { bins: starts.map((x, i) => ({ x, count: counts[i] })), total }
+}
+
+/** The plotted bars: the count in each bucket, padded by one empty step at each end. A count reads as
+ *  "how many", where a share of the listed rows read as nothing (tiny bars on a 0-100% axis). */
+export function countPoints(bins: readonly { x: number; count: number }[], step: number) {
+  if (!bins.some(bin => bin.count > 0)) return []
+  return [{ x: bins[0].x - step, values: [null] }, ...bins.map(({ x, count }) => ({ x, values: [count] })),
+    { x: bins.at(-1)!.x + step, values: [null] }]
 }
 
 export default function DailySummary(props: { label: string; rows?: readonly KeyedRow[]; path: string; range?: Buckets }) {
@@ -51,26 +58,16 @@ export default function DailySummary(props: { label: string; rows?: readonly Key
     }) : []
     return { bins, total }
   })
-  const points = createMemo(() => {
-    const { bins: rows, total } = histogram()
-    const step = props.range?.bucket_starts.length ? props.range.bucket_s : day
-    if (!total) return []
-    // Pad the plot at each end without adding a count.
-    return rows.length ? [
-      { x: rows[0].x - step, values: [null] },
-      ...rows.map(({ x, count }) => ({ x, values: [100 * count / total] })),
-      { x: rows.at(-1)!.x + step, values: [null] },
-    ] : []
-  })
+  const points = createMemo(() => countPoints(histogram().bins, props.range?.bucket_starts.length ? props.range.bucket_s : day))
   return <div class={styles.timeline}>
     <Show when={points().length} fallback={<span class={styles.caption}>
       {props.rows?.length === 0 ? 'No dated records' : 'Dates are not available from this source'}
     </span>}>
-      <BarPlot label={props.label} description={props.range?.bucket_starts.length ? 'Per bucket of the selected time' : 'Up to 7 UTC days, ending at the latest dated row'}
-        points={points()} seriesLabel="Share of dated rows" xAxis="time" unit="%" yRange={percentRange} stack />
+      <BarPlot label={props.label} description={props.range?.bucket_starts.length ? 'Count per bucket of the selected time' : 'Count per UTC day, up to 7 days ending at the latest dated row'}
+        points={points()} seriesLabel="Count" xAxis="time" />
       <ul class={styles.accessibleValues} aria-label={`${props.label}, ${props.range?.bucket_starts.length ? "counts per bucket" : "daily counts"}`}>
         <For each={histogram().bins} keyed={row => row.x}>{row =>
-          <li>{props.range?.bucket_starts.length ? new Date(row().x * 1000).toLocaleString() : date.format(row().x * 1000)}: {row().count}</li>
+          <li>{props.range?.bucket_starts.length ? stamp(row().x, true) : dayLabel(row().x)}: {row().count}</li>
         }</For>
       </ul>
     </Show>
