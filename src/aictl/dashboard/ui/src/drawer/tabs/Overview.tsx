@@ -4,6 +4,7 @@ import { Meter } from '../../ui/Meter'
 import { OtelSections } from '../OtelSections'
 import { ContextCards, GitCard, InstructionsCard, OutputsCard } from '../OverviewCards'
 import { median, runDelta } from '../overviewModel'
+import { sessionSpan, spanLabel } from '../sessionSpan'
 import { ResourceCharts } from '../ResourceCharts'
 import { openAgent, Resource, Rows, Section, Series, Stats, type TabProps } from '../shared'
 import styles from '../drawer.module.css'
@@ -17,8 +18,9 @@ export default function Overview(props: TabProps) {
     const agent = () => data().agent
     const context = () => data().context
     const live = props.runtime
-    const start = () => agent()?.started_at
-    const end = () => live()?.running ? Date.now() / 1000 : agent()?.ended_at ?? (data().turns.at(-1)?.ts ?? start())
+    const span = () => sessionSpan(agent())
+    const start = () => span().start
+    const end = () => live()?.running ? Date.now() / 1000 : span().end ?? (data().turns.at(-1)?.ts ?? start())
     const prior = () => data().runs?.filter(run => !run.current) ?? []
     const current = () => data().runs?.find(run => run.current)
     return <>
@@ -26,7 +28,7 @@ export default function Overview(props: TabProps) {
         <Stats items={[
           { label: 'Tokens', value: sum([agent()?.input, agent()?.output, agent()?.cache_read, agent()?.cache_write]) },
           { label: 'Cost', value: agent()?.cost_usd == null ? undefined : fmtUsd(agent()?.cost_usd) },
-          { label: 'Duration', value: agent()?.started_at == null ? undefined : fmtDur((agent()?.ended_at ?? Date.now() / 1000) - agent()!.started_at!) },
+          { label: 'Duration', value: spanLabel(span()), detail: 'First to last recorded activity' },
           { label: 'Messages', value: sum([agent()?.msgs?.user, agent()?.msgs?.assistant, agent()?.msgs?.tool]) },
           { label: 'Tool calls', value: agent()?.tool_calls }, { label: 'Failures', value: agent()?.failures },
           { label: 'Model calls', value: context()?.calls },
@@ -62,8 +64,8 @@ export default function Overview(props: TabProps) {
           { label: 'CPU', value: live()?.cpu_percent ?? data().process?.cpu_percent, unit: '%' },
           { label: 'Memory', value: live()?.mem_mb ?? data().process?.mem_mb, unit: 'MB' },
           { label: 'Processes', value: (live()?.pids ?? data().process?.pids)?.length },
-          { label: 'Started', value: start() == null ? undefined : stamp(start(), true) },
-          { label: 'Ended', value: !live()?.running && agent()?.ended_at != null ? stamp(agent()?.ended_at, true) : undefined },
+          { label: 'First activity', value: span().start == null ? undefined : stamp(span().start, true) },
+          { label: 'Last activity', value: span().end == null ? undefined : stamp(span().end, true) },
         ]} />
         <div class={styles.bar}><For each={[
           ['procs', 'Processes'], ['evidence', 'Execution evidence'], ['context', 'Context'], ['tools', 'Tool calls'],

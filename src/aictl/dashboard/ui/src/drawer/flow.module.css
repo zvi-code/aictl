@@ -28,8 +28,8 @@
   content: ''; inline-size: var(--space-3); block-size: var(--space-3); border-radius: var(--radius-pill);
   background: currentColor; animation: pulse 2s var(--ease-out) infinite;
 }
-.live[data-state="paused"] { background: var(--color-hover); color: var(--color-muted); }
-.live[data-state="paused"]::before { animation: none; }
+.live[data-state="paused"], .live[data-state="ended"] { background: var(--color-hover); color: var(--color-muted); }
+.live[data-state="paused"]::before, .live[data-state="ended"]::before { animation: none; }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .live::before { animation: none; } }
 

@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, lazy, Loading, Show, untrack, type Component } from 'solid-js'
 import type { BoardAgentRow, DetailAgent, TopicConfigurationLoaded, TopicRuntimeAgent } from '../data/contract.gen'
-import { fmtDur, isLive, projectName, stamp } from '../design/format'
+import { isLive, projectName, stamp } from '../design/format'
 import { statusText } from '../data/runtimeAgents'
 import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Drawer } from '../ui/Drawer'
@@ -9,6 +9,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { PanelState } from '../ui/PanelState'
 import { agentView, watchedDetail } from './liveAgent'
 import { SessionTabs } from './SessionTabs'
+import { sessionSpan, spanLabel } from './sessionSpan'
 import { path, NA, type AgentEntry, type TabProps } from './shared'
 import styles from './drawer.module.css'
 
@@ -71,14 +72,18 @@ export function evidenceSessionId(agent?: BoardAgentRow, runtime?: TopicRuntimeA
 
 function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
   const ctx = untrack(() => props.shell.ctx)
+  const endpoint = createMemo(() => path(ctx, '/api/board/agent', { id: props.entry.id }))
   const detail = watchedDetail(ctx, 'detail', createMemo(() => props.entry.id),
-    createMemo(() => agentView(props.entry.tab) === 'detail'
-      ? path(ctx, '/api/board/agent', { id: props.entry.id }) : undefined),
+    createMemo(() => agentView(props.entry.tab) === 'detail' ? endpoint() : undefined),
     createMemo(() => agentView(props.entry.tab) === 'detail'))
-  const agent = createMemo(() => detail()?.data?.agent ?? ctx.board('agents')?.find(row => row.id === props.entry.id))
+  // Flow, Transcript, Timeline and KQL read their own routes. The header and the tab counts come from the
+  // agent detail, so it is read for them too, once, when the tab does not already watch it.
+  const header = ctx.detail<DetailAgent>(createMemo(() => agentView(props.entry.tab) === 'detail' ? undefined : endpoint()))
+  const known = () => detail()?.data ?? header()?.data
+  const agent = createMemo(() => known()?.agent ?? ctx.board('agents')?.find(row => row.id === props.entry.id))
   const [counts, rememberCounts] = createSignal<ReturnType<typeof detailCounts>>({})
   // Keep the last known counts for this drawer when the watch switches to Flow or Transcript.
-  createEffect(() => detail()?.data, data => { if (data) rememberCounts(detailCounts(data)) })
+  createEffect(known, data => { if (data) rememberCounts(detailCounts(data)) })
   const storedId = () => agent()?.native_id ?? props.entry.id
   const runtime = createMemo(() => {
     if (ctx.scope() !== 'local' || agent()?.parent_id) return
@@ -99,8 +104,8 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
   })
   const status = () => ctx.stopped(props.entry.id) ? 'stopped' : runtime()?.status ?? agent()?.status
   const evidence = () => ctx.stopped(props.entry.id) ? undefined : runtime()?.status_evidence ?? agent()?.status_evidence
-  const started = () => runtime()?.started_at ?? agent()?.started_at
-  const ended = () => runtime()?.running ? undefined : agent()?.ended_at
+  // The span is the session's own first and last recorded activity: the runtime process starts again at every resume.
+  const span = createMemo(() => sessionSpan(agent()))
   const name = () => agent()?.parent_id ? `${agent()?.role || agent()?.title} (subagent)` : agent()?.title || runtime()?.title || props.entry.id
   const options = items.map(([id, label, Tab]) => ({
     id, label, glyph: glyphs[id], groupStart: id === 'changes' || id === 'events',
@@ -125,8 +130,9 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
       <span class={styles.statusWord} data-status={status()} title={evidence() ?? undefined}>{runtime()?.running && status() === 'unknown' ? 'Running · native activity unknown'
         : statusText(status(), runtime() ? undefined : agent()?.end_reason) ?? NA}</span>
       <Show when={evidence()}>{words => <span class={styles.statusEvidence} title="Why the status is what it is">{words()}</span>}</Show>
-      <Show when={started()}><span title={`Started ${stamp(started(), true)}`}>{fmtDur((ended() ?? Date.now() / 1000) - started()!)}</span></Show>
-      <Show when={ended()}><span>Ended {stamp(ended(), true)}</span></Show>
+      <span title="From the first to the last activity the session recorded">
+        {span().start != null ? stamp(span().start, true) : 'start not recorded'} → {span().end != null ? stamp(span().end, true) : 'end not recorded'} · {spanLabel(span())}
+      </span>
       <Show when={agent()?.tool || runtime()?.tool}>{tool => <span>{ctx.board('tool_labels')?.[tool()] ?? tool()}</span>}</Show>
       <Show when={agent()?.project || runtime()?.project}>{project => <span title={project()}>{projectName(project())}</span>}</Show>
       <Show when={agent()?.models?.length}><span>{agent()?.models.join(', ')}</span></Show>
@@ -134,7 +140,7 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
     </div>}>
     <Show when={loaded()}>{evidence =>
       <details class={styles.section}>
-        <summary>Effective runtime settings · {evidence().evidence.length} observations</summary>
+        <summary>Effective runtime settings · {evidence().evidence.length} {evidence().evidence.length === 1 ? 'observation' : 'observations'}</summary>
         <Show when={evidence().effective_known} fallback={<p>{NA}</p>}>
           <dl><For each={evidence().evidence}>{item => <>
             <dt>{item.key} · {item.source}</dt>

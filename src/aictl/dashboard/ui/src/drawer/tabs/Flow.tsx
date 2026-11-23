@@ -17,6 +17,7 @@ import {
 import { agentPath, labelOf, openAgent, Resource, type Reference, type TabProps } from '../shared'
 import { kustoLink, saveFlowFilters } from '../kqlLink'
 import { watchedDetail } from '../liveAgent'
+import { flowStatus } from '../sessionSpan'
 import { chSize, SwimLanes } from '../SwimLanes'
 import styles from '../flow.module.css'
 
@@ -159,7 +160,7 @@ export default function Flow(props: TabProps) {
     const id = selected()
     return id ? steps().find(step => step.id === id) : undefined
   })
-  const bound = () => wholeEnd() ?? props.agent()?.ended_at
+  const bound = () => wholeEnd() ?? props.agent()?.last_activity_at
   createEffect(() => ({ scope: scope(), applied: applied() }), current => {
     if (current.scope?.end != null && current.applied?.since == null && current.applied?.until == null &&
         current.applied?.category !== 'skills') rememberEnd(current.scope.end)
@@ -225,8 +226,9 @@ export default function Flow(props: TabProps) {
   }
   const openSource = (event: PlacedEvent) => openAgent(props, props.entry.id, 'evidence', { flowRef: event.step_key ?
     { field: 'step_key', id: event.step_key } : { field: 'turn_id', id: event.turn_id! } })
-  const status = () => props.agent()?.ended_at != null ? ['ended', agentScope() ? 'Subagent ended' : 'Session ended']
-    : read.streaming() ? ['live', 'Live'] : ['paused', filtered() ? 'Filtered, not live' : 'Not live']
+  // The recorded status of the session, not the stream: an ended session stays ended while its stream is open.
+  const status = () => flowStatus(props.runtime()?.status ?? props.agent()?.status,
+    { streaming: read.streaming(), filtered: filtered(), subagent: agentScope() })
 
   const id = createUniqueId()
   const choices = (name: 'tool_name' | 'flow_agent' | 'skill_name', label: string, list?: readonly string[]) =>
@@ -246,7 +248,7 @@ export default function Flow(props: TabProps) {
       <div class={styles.title}>
         <h3>{agentScope() ? 'Subagent flow' : 'Session flow'}</h3>
         <Show when={read()?.data}>
-          <span class={styles.live} data-state={status()[0]}>{status()[1]}</span>
+          <span class={styles.live} data-state={status().state}>{status().label}</span>
         </Show>
       </div>
       <div class={styles.actions}>
