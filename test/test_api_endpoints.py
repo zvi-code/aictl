@@ -1248,7 +1248,7 @@ class TestSettingsFilesAPI:
         files = {f["path"]: f for f in _get_json(f"{url}/api/settings/files")["files"]}
         missing = files[str(p["missing"])]
         assert missing["exists"] is False
-        assert missing["bytes"] == 0 and missing["mtime"] == 0
+        assert missing["bytes"] is None and missing["mtime"] is None  # unknown, never 0
         assert missing["tools"] == ["codex-cli"] and missing["settings"] == 1
 
     def test_monitor_folders_are_dir_entries(self, settings_files_server):

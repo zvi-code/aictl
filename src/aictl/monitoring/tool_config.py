@@ -1678,7 +1678,9 @@ def _agent_row(
         "model_policy": policy or _text_of(pin_values.get("modelPolicy")),
         "effort": effort,
         "context_tier": context_tier,
-        "tools": _tool_list(fields.get("tools")),
+        # No tools field means every tool (Copilot CLI and Claude Code agent files); a pin alone says nothing.
+        "tools": _tool_list(fields.get("tools")) if "tools" in fields else None,
+        "tools_all": bool(defined) and "tools" not in fields,
         "target": _text_of(fields.get("target")),
         "defined_in": defined["path"] if defined else "",
         "defined_line": defined["line"] if defined else 0,
@@ -3793,6 +3795,19 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
         ("project-local", raw["project-local"], local_path),
     ]
     pins = _settings_pins(pin_layers, texts)
+    # The pins themselves are a setting too: shown with their names, never as unset.
+    for scope_id, data, path in pin_layers:
+        sub = data.get("subagents") if isinstance(data, dict) else None
+        agents = sub.get("agents") if isinstance(sub, dict) else None
+        if isinstance(agents, dict):
+            entry = (scope_id, _scrub(agents), str(path), "subagents.agents")
+            cfg.setting_values.setdefault("subagents.agents", []).append(entry)
+    if pin_entries := cfg.setting_values.get("subagents.agents"):
+        cfg.settings["subagents.agents"] = pin_entries[-1][1]
+        cfg.setting_sources["subagents.agents"] = pin_entries[-1][2]
+        cfg.key_sections["subagents.agents"] = "autonomy"
+        cfg.key_labels["subagents.agents"] = "Subagent pins"
+        cfg.key_notes["subagents.agents"] = f"{len(pin_entries[-1][1])} agents pinned; each is a row in Agents."
     defs = _agent_files(
         [
             (home / "agents", "user", ("*.agent.md",)),

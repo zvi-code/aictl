@@ -194,9 +194,10 @@ def settings_files(
                 "scope": scope,
                 "kind": "other" if e["is_dir"] else _file_kind(path, str(audit.get("kind") or "")),
                 "tools": sorted(e["tools"]),
-                "settings": e["settings"],
-                "bytes": 0 if e["is_dir"] else size,
-                "mtime": mtime,
+                # A folder or an absent file has no size and holds no settings rows: unknown, never 0.
+                "settings": None if e["is_dir"] else e["settings"],
+                "bytes": size if exists and not e["is_dir"] else None,
+                "mtime": mtime if exists else None,
                 "git_state": git_state,
                 "loading": str(audit.get("loading") or ""),
                 "exists": exists,

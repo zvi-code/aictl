@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 9d0b05fff85332df229362cd6849b0649e1ec227eb76cb67df373d777ab1ca58
+// Schema digest: 3958ff858d77b7d92b3f554d09d80ae1f6d5f977edc68a80d734abd1396ab663
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2871,7 +2871,8 @@ export type SettingsToolConfig = {
         effort?: string;
         context_tier?: string;
         target?: string;
-        tools?: Array<string>;
+        tools?: Array<string> | null;
+        tools_all?: boolean;
         defined_in?: string;
         defined_line?: number;
         pinned_in?: string;

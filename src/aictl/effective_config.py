@@ -1020,19 +1020,58 @@ def _setting_files(tool: str, project: Path, env: dict[str, str]) -> list[tuple[
 SETTING_TOOLS = ("copilot-cli", "copilot-desktop", "copilot-vscode", "claude-code", "gemini-cli")
 
 
+# Objects never shown value by value at any depth: their values can hold credentials or commands.
+_OPAQUE_KEYS = frozenset({"env", "headers", "http_headers", "env_http_headers", "mcpServers", "mcp_servers", "hooks"})
+_IDENT_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NESTED_MAX_KEYS = 12
+
+
+def _setting_leaves(data: dict, prefix: str = "") -> list[tuple[str, object]]:
+    """Settings as dotted keys: a small object of identifier keys is split, anything else is one value."""
+    out: list[tuple[str, object]] = []
+    for k, v in data.items():
+        key = f"{prefix}{k}"
+        if _SECRET_KEY_RE.search(str(k)):
+            out.append((key, "<hidden>"))
+        elif isinstance(v, dict) and k in _OPAQUE_KEYS:
+            out.append((key, f"{len(v)} {'key' if len(v) == 1 else 'keys'} (values not shown)"))
+        elif isinstance(v, dict) and v and len(v) <= _NESTED_MAX_KEYS and all(_IDENT_KEY_RE.match(str(n)) for n in v):
+            out.extend(_setting_leaves(v, key + "."))
+        else:
+            out.append((key, v))
+    return out
+
+
+def _shown_value(value: object) -> str:
+    """One line for a value: a scalar as written, a list or map summarised with its size; secrets redacted."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        items = ", ".join(_redact(str(v)) if not isinstance(v, (dict, list)) else "{…}" for v in value)
+        return _redact(f"{len(value)} {'item' if len(value) == 1 else 'items'}" + (f": {items}" if items else ""))[:120]
+    if isinstance(value, dict):
+        names = ", ".join(str(k) for k in value if not _SECRET_KEY_RE.search(str(k)))
+        return _redact(f"{len(value)} {'key' if len(value) == 1 else 'keys'}" + (f": {names}" if names else ""))[:120]
+    return _redact(str(value))[:120]
+
+
 def settings_table(tool: str, project: Path, env: dict[str, str]) -> list[dict]:
-    """Scalar settings, each with its value, source, scope and what it overrode. Secret-like values are hidden."""
+    """Every setting, nested ones as dotted keys, each with its value, source, scope and what it overrode.
+
+    Lists and maps are summarised with their size (never shown as absent); secret-like values are hidden.
+    """
     rows: dict[str, dict] = {}
     for scope, path, confirmed in _setting_files(tool, project, env):
         if not path.is_file():
             continue
         inside = _in_project(str(path), project)
-        for key, value in _read_json(path).items():
+        data = _read_json(path)
+        for key, value in _setting_leaves(data if isinstance(data, dict) else {}):
             if tool == "copilot-vscode" and not re.match(r"chat|inlineChat|github\.copilot|mcp", key):
                 continue
-            if isinstance(value, (dict, list)) or value is None:
-                continue
-            shown = "<hidden>" if _SECRET_KEY_RE.search(key) else _redact(str(value))[:120]
+            shown = value if value == "<hidden>" and _SECRET_KEY_RE.search(key) else _shown_value(value)
             if key in rows:
                 rows[key]["overrode"].append({"value": shown, "scope": scope, "path": str(path)})
             else:

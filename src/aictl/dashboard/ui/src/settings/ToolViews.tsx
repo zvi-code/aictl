@@ -6,7 +6,7 @@ import { Table } from '../ui/Table'
 import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
-  DASH, MISSING, agentInherits, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
+  DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
   type Comparison, type Entry, type Environment, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
@@ -27,7 +27,7 @@ const agentFields: Field<Setting>[] = [
   { id: 'model', label: 'Model', read: row => rowValue(row) },
   { id: 'policy', label: 'Model decision', read: row => agentInherits(row) ? 'Inherited'
     : pinWins(row) ? 'Pinned' : row.agent?.model_policy === 'required' ? 'Required' : row.agent?.model },
-  { id: 'tools', label: 'Available tools', read: row => row.agent?.tools?.length },
+  { id: 'tools', label: 'Available tools', read: agentTools },
   { id: 'scope', label: 'Scope', read: row => scopeLabel(row.agent?.scope_defined || row.scope) },
   { id: 'source', label: 'Definition', read: row => basename(row.agent?.defined_in) || undefined },
 ]
@@ -37,7 +37,7 @@ const envFields: Field<Environment>[] = [
   { id: 'origin', label: 'Origin', read: row => [
     row.in_process === true ? 'Process' : '', ...(row.persisted ?? []).map(item => item.origin),
   ].filter(Boolean).join(' · ') || undefined },
-  { id: 'drives', label: 'Driven settings', read: row => row.drives?.length },
+  { id: 'drives', label: 'Driven settings', read: row => row.drives == null ? undefined : row.drives.length || 'None' },
 ]
 export function environmentValue(env: Environment) {
   if (env.masked !== false) return env.masked ? 'Masked' : env.set === false ? 'Unset' : undefined

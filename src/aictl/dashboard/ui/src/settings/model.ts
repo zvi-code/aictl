@@ -126,6 +126,9 @@ export function settingsSummary(entries: readonly Entry[]) {
     agents: rows.filter(row => row.agent).length }
 }
 
+/** An agent's tools: a count, "All tools" when the definition has no tools field, or unknown. */
+export const agentTools = (row: Setting) => row.agent?.tools ? row.agent.tools.length
+  : row.agent?.tools_all ? 'All tools (no tools field)' : undefined
 export const agentInherits = (row: Setting) => row.agent?.inherits === true || row.value === 'inherits'
 export function pinWins(row: Setting) {
   return !agentInherits(row) && samePath(row.chain[row.wins]?.source ?? row.source, row.agent?.pinned_in)
@@ -169,6 +172,7 @@ export function rowValue(row: Setting, compact = false) {
 }
 function summary(value: object) {
   const n = Object.keys(value).length
+  if (!n) return Array.isArray(value) ? 'empty list' : 'empty map'
   return `${n} ${Array.isArray(value) ? (n === 1 ? 'item' : 'items') : (n === 1 ? 'field' : 'fields')}`
 }
 

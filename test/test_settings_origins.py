@@ -256,3 +256,79 @@ def test_vscode_chat_defaults_come_from_the_catalog(homes, monkeypatch, tmp_path
     cfg = tc._parse_vscode_config(homes["home"])
     assert cfg.feature_groups["Agent"] == {"maxRequests": 25}  # the catalog's default, no code constant
     assert "Safety" not in cfg.feature_groups  # no documented default, no file value: nothing invented
+
+
+# ─── Nested maps and lists, and unknown never shown as 0 ───────────
+
+
+def test_subagent_pins_are_a_set_setting_not_unset(homes, monkeypatch, tmp_path):
+    _catalog(
+        tmp_path,
+        monkeypatch,
+        "copilot-cli",
+        ["{key: subagents.agents, label: Subagents, section: autonomy, type: map, default: {}}"],
+    )
+    pins = {"alpha": {"model": "m-1"}, "beta": {"model": "m-2", "effortLevel": "high"}}
+    (homes["copilot"] / "settings.json").write_text(json.dumps({"subagents": {"agents": pins}}, indent=2))
+    root = homes["project"]
+    root.mkdir()
+    cfg = tc._parse_copilot_home_config(root, tool="copilot-cli")
+    sections = _sections(cfg, root)
+    rows = [r for r in _rows(sections) if r["key"] == "subagents.agents"]
+    assert len(rows) == 1 and rows[0]["set"] is True
+    assert sorted(rows[0]["value"]) == ["alpha", "beta"] and rows[0]["line"] == 3
+    assert {r["key"] for r in _rows(sections) if r.get("kind") == "agent"} >= {"agent/alpha", "agent/beta"}
+
+
+def test_agent_without_tools_field_means_all_tools_not_zero(homes):
+    agents = homes["copilot"] / "agents"
+    agents.mkdir()
+    (agents / "open.agent.md").write_text("---\nname: open\ndescription: no tools field\n---\nbody\n")
+    (agents / "narrow.agent.md").write_text("---\nname: narrow\ntools: [read]\n---\nbody\n")
+    (homes["copilot"] / "settings.json").write_text("{}")
+    root = homes["project"]
+    root.mkdir()
+    cfg = tc._parse_copilot_home_config(root, tool="copilot-cli")
+    by = {r["agent"]["name"]: r["agent"] for r in cfg.agent_rows}
+    assert by["open"]["tools"] is None and by["open"]["tools_all"] is True
+    assert by["narrow"]["tools"] == ["read"] and by["narrow"]["tools_all"] is False
+
+
+def test_settings_table_reads_nested_maps_and_lists(tmp_path):
+    from aictl.effective_config import settings_table
+
+    home = tmp_path / "copilot-home"
+    home.mkdir()
+    (home / "settings.json").write_text(
+        json.dumps(
+            {
+                "subagents": {"agents": {"a": {"model": "m"}, "b": {"model": "n"}}, "maxDepth": 2},
+                "disabledSkills": ["one", "two"],
+                "enabledMcpServers": [],
+                "hooks": {"preToolUse": [{"command": "echo fake-secret-value"}]},
+                "nothing": None,
+            }
+        )
+    )
+    rows = {r["setting"]: r for r in settings_table("copilot-cli", tmp_path / "repo", {"COPILOT_HOME": str(home)})}
+    assert rows["subagents.maxDepth"]["value"] == "2"
+    assert rows["subagents.agents.a.model"]["value"] == "m"  # nested maps are read key by key
+    assert rows["disabledSkills"]["value"] == "2 items: one, two"
+    assert rows["enabledMcpServers"]["value"] == "0 items"  # set to an empty list, which is not absent
+    assert rows["hooks"]["value"] == "1 key (values not shown)"
+    assert rows["nothing"]["value"] == "null"
+    assert "fake-secret-value" not in json.dumps(rows)
+
+
+def test_folders_and_absent_files_have_unknown_size_not_zero(tmp_path):
+    from aictl.dashboard.settings_routes import settings_files
+
+    folder = tmp_path / "watched"
+    folder.mkdir()
+    present = tmp_path / "settings.json"
+    present.write_text("{}")
+    cfg = {"tool": "copilot-cli", "config_files": [str(present), str(tmp_path / "gone.json")], "sections": []}
+    files = {f["name"]: f for f in settings_files(tmp_path, [cfg], [], [str(folder)])["files"]}
+    assert files["watched"]["bytes"] is None and files["watched"]["settings"] is None
+    assert files["gone.json"]["bytes"] is None and files["gone.json"]["exists"] is False
+    assert files["settings.json"]["bytes"] == 2 and files["settings.json"]["settings"] == 0

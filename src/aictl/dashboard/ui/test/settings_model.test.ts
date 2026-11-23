@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  isNonDefault, isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  agentTools, isNonDefault, isRecent, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
   settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
@@ -45,6 +45,23 @@ describe('settings contract projections', () => {
     expect(rowState(row('zzInvented'))).toBe('Set (no documented default) · Present, not in catalog')
     expect(rowState(row('version'))).toBe('Reported by the tool')
     expect(entry.rows.filter(isNonDefault).map(item => item.key)).toEqual(['theme', 'zzInvented'])
+  })
+
+  it('never renders an unknown or absent list as 0', () => {
+    const config: SettingsToolConfig = { tool: 'copilot-cli', sections: [
+      { id: 'mcp', rows: [{ key: 'enabledMcpServers', value: [], default: [], set: false, scope: 'default', state: 'default' }] },
+      { id: 'agents', rows: [
+        { key: 'agent/open', value: 'inherits', set: true, agent: { name: 'open', tools: null, tools_all: true } },
+        { key: 'agent/pinned', value: 'm', set: true, agent: { name: 'pinned', tools: null, tools_all: false } },
+        { key: 'agent/narrow', value: 'm', set: true, agent: { name: 'narrow', tools: ['read'], tools_all: false } },
+      ] },
+    ] }
+    const [entry] = toolEntries([config])
+    const row = (key: string) => entry.rows.find(item => item.key === key)!
+    expect(rowValue(row('enabledMcpServers'), true)).toBe('Not set · default empty list')
+    expect(agentTools(row('agent/open'))).toBe('All tools (no tools field)')
+    expect(agentTools(row('agent/pinned'))).toBeUndefined()
+    expect(agentTools(row('agent/narrow'))).toBe(1)
   })
 
   it('says where a value comes from: file and line, variable, derived origin or default', () => {

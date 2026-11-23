@@ -59,8 +59,8 @@ const fileFields: Field<FileTreeItem>[] = [
   { id: 'purpose', label: 'Purpose', read: row => row.file ? purposeLabel(row.file.kind) : 'Group', sortable: false },
   { id: 'scope', label: 'Scope', read: row => row.file ? scopeLabel(row.file.scope) : '—', sortable: false },
   { id: 'git', label: 'Git', read: row => row.file ? row.file.git_state : '—', sortable: false },
-  { id: 'bytes', label: 'Bytes', read: row => row.file ? row.file.bytes : '—', sortable: false },
-  { id: 'count', label: 'Items', read: row => row.count ?? row.file?.settings, sortable: false },
+  { id: 'bytes', label: 'Bytes', read: row => row.file ? row.file.bytes ?? undefined : '—', sortable: false },
+  { id: 'count', label: 'Items', read: row => row.count ?? row.file?.settings ?? undefined, sortable: false },
 ]
 
 export function FilesView(props: { w: Workspace }) {

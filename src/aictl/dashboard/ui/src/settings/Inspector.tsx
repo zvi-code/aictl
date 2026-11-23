@@ -7,7 +7,7 @@ import { PanelState } from '../ui/PanelState'
 import { Stat } from '../ui/Stat'
 import { Table } from '../ui/Table'
 import {
-  agentInherits, basename, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
+  agentInherits, agentTools, basename, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
   purposeLabel, rowState, rowValue, samePath, scopeLabel, title, type ConfigFile, type Environment, type Finding, type Setting,
 } from './model'
 import { permissionEdit } from './permissions'
@@ -139,7 +139,7 @@ function AgentDetail(props: { w: Workspace; row: Setting }) {
     <header><h2>{agent().name || props.row.label}</h2><p>{agent().description}</p></header>
     <div class={styles.metrics}>
       <Stat label="Effective model" value={rowValue(props.row)} />
-      <Stat label="Available tools" value={agent().tools?.length} />
+      <Stat label="Available tools" value={agentTools(props.row)} />
     </div>
     <section class={styles.stack} aria-label="Model decision">
       <h3>Model decision</h3>
@@ -158,7 +158,8 @@ function AgentDetail(props: { w: Workspace; row: Setting }) {
       </dl>
       <Show when={props.row.note}><p>{props.row.note}</p></Show>
     </section>
-    <Show when={agent().tools} fallback={<PanelState inline state="unavailable" message="Tool list not available from this source." />}>{tools =>
+    <Show when={agent().tools} fallback={<PanelState inline state="unavailable" message={agent().tools_all
+      ? 'The definition has no tools field, so the agent can use every tool.' : 'Tool list not available from this source.'} />}>{tools =>
       <Disclosure label={`Tools (${tools().length})`} children={() =>
         <Table label="Agent tools" rows={[...new Set(tools())].map(name => ({ name }))}
           rowId={row => row.name} fields={[{ id: 'tool', label: 'Tool', read: row => row.name }]} />} />}

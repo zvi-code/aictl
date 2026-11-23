@@ -21,6 +21,7 @@ AGENT_FIELDS = {
     "effort",
     "context_tier",
     "tools",
+    "tools_all",
     "target",
     "defined_in",
     "defined_line",
