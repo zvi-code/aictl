@@ -2,7 +2,8 @@ import { createEffect, createMemo, createSignal, For, Show, untrack, type Access
 import type { JSX } from '@solidjs/web'
 import { defaultRangeExtractor, elementScroll, observeElementOffset, observeElementRect, Virtualizer } from '@tanstack/virtual-core'
 import type { SortingState } from '@tanstack/table-core'
-import { actionName, createTableModel, formatValue, makeColumns, updateTableModel, type Field, type RowIdentity } from './tableModel'
+import { actionName, createTableModel, formatValue, isMissing, makeColumns, updateTableModel, type Field, type RowIdentity } from './tableModel'
+import { NA } from '../design/format'
 import { createColumnLayout, tableKey, type LegacyKeys } from './columnState'
 import { columnStyles, createColumnControls } from './ColumnControls'
 import { PanelState } from './PanelState'
@@ -116,16 +117,19 @@ function Cells<T extends object>(props: SortedTableProps<T> & { row: T }) {
     <For each={props.columns.fields()} keyed={field => field.id}>{(field, index) => {
       const value = createMemo(() => field().read(props.row))
       const display = () => formatValue(field(), value())
+      // A missing value shows a short marker in every table; its reason is the hover text and the accessible name.
+      const missing = () => isMissing(value())
       const short = () => {
         const raw = value()
+        if (missing()) return NA
         if (!props.pageSize) return
-        if (raw == null) return 'N/A'
         if (typeof raw === 'number') return field().compact?.(raw)
       }
       const text = <Show when={short()} fallback={<Show when={field().clip && !props.pageSize} fallback={display()}>
         <span class={styles.clipStart} title={display()}><span dir="ltr">{display()}</span></span>
       </Show>}>{compact => <>
-        <span title={display()} class={value() == null ? styles.missing : undefined} aria-hidden="true">{compact()}</span>
+        <span title={display()} class={missing() ? styles.missing : undefined} data-missing={missing() ? '' : undefined}
+          aria-hidden="true">{compact()}</span>
         <span class={styles.visuallyHidden}>{display()}</span>
       </>}</Show>
       // A narrowed column cuts its text; the full value shows on hover.

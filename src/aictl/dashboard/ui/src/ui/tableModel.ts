@@ -26,6 +26,11 @@ export type Field<T> = {
 const collator = new Intl.Collator(undefined, { numeric: true })
 export const missingField = 'Not available from this source'
 
+/** A value the source did not report, including a field that reads the reason text in place of a value. */
+export function isMissing(value: unknown) {
+  return value == null || value === missingField
+}
+
 export function formatField<T>(field: Field<T>, row: T) {
   return formatValue(field, field.read(row))
 }
