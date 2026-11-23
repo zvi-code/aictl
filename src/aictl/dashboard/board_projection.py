@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import Future
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -2668,106 +2668,6 @@ def _resource_series(board: _Board) -> tuple[dict, dict]:
     return {t: cpu[t] for t in order}, {t: mem[t] for t in order}
 
 
-def _data_since(board: _Board) -> float | None:
-    """When the nodes of this scope all collect: the latest of their first stored snapshots.
-
-    Rows from before a node's first snapshot come from files it read later, which may still be
-    importing, so a period before this time is not known to be complete. None when no node of
-    the scope has a snapshot."""
-    seen = [row["first_seen"] for row in board.history.read("nodes.first_seen", limit=1000) if row["first_seen"] is not None]
-    return max(seen) if seen else None
-
-
-def _previous(board: _Board) -> dict:
-    """The window before this one, its usage under the same filters, and whether the store
-    covers that whole window. The board compares with it only when it is covered."""
-    f = board.f
-    since, until = f.since - (f.until - f.since), f.since
-    usage, data_since = _gather(board.conn, [lambda: _previous_usage(board), lambda: _data_since(board)])
-    covered = data_since is not None and data_since <= since
-    return {**usage, "since": since, "until": until, "data_since": data_since, "covered": covered}
-
-
-def _previous_usage(board: _Board) -> dict:
-    """The same filters over the window before this one. Null when it holds no data."""
-    f = board.f
-    if board.history.qualified:
-        hi = f.since - 1e-6
-        prior = replace(f, since=f.since - (f.until - f.since), until=hi)
-        previous = _Board(board.conn, prior, board.now, None, facts=board.facts,
-                          history=board.history).load(counts_only=True)
-        calls = sum(agg.n for (sid, _), agg in previous.tool_agg.items() if sid in previous.scope)
-        calls += sum(previous.fallback_tools.values())
-        prompts = sum(previous.fallback_user.values())
-        prompts += sum(n for (sid, aid), n in previous.prompt_agg.items() if sid == aid and sid in previous.scope)
-        if not (previous.total.calls or calls or prompts):
-            return {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
-        return {"messages": previous.total.calls + calls + prompts, "tokens": previous.total.tokens,
-                "cost_usd": _usd(previous.total.cost), "tool_calls": calls}
-    span = f.until - f.since
-    since, until = f.since - span, f.since
-    filtered_sessions = f.status != "all" or bool(f.q)
-    folded = bool(f.project and PureWindowsPath(project_key(f.project)).drive)
-    # Every model of the period is read, and the chosen one is picked by its canonical id below: the
-    # spellings the previous period used may be none the current window used.
-    window = board.history.read(
-        "board.previous", since=since, until=until, requested_model="",
-        restrict_tools=f.tools is not None, requested_tools=list(stored_ids_for(f.tools)) if f.tools is not None else [],
-        project_path_key=project_key(f.project) if folded else f.project or "", fold_project=folded,
-        restrict_sessions=filtered_sessions, session_keys=board.history.keys(board.scope) if filtered_sessions else [],
-    )
-    calls = 0
-    tokens = 0
-    cost: float | None = None
-    seen = False
-    tool_calls = prompts = 0
-    fields = "model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd".split()
-    for row in window:
-        if row["row_type"] == "counts":
-            tool_calls, prompts = row["tool_calls"], row["prompts"]
-            continue
-        model, n, i, o, cr, cw, ts, stored = (row[k] for k in fields)
-        if f.model and canonical_model_id(model) != canonical_model_id(f.model):
-            continue
-        seen = True
-        calls += n
-        tokens += i + o + cr + cw
-        value = _cost_of(stored, model, i, o, cr, cw, ts)
-        if value is not None:
-            cost = (cost or 0.0) + value
-    selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
-    tool_fallback = 0
-    user_fallback = 0
-    for row in _fallback_rows(board.history, since, until - 1e-6):
-        if selected is not None and row["tool"] not in selected:
-            continue
-        if not f.matches_project(row["project_path"]):
-            continue
-        if (f.status != "all" or f.q) and row["session_id"] not in board.scope:
-            continue
-        for piece in _fallback_pieces(row, since, until - 1e-6):
-            for model, usage in piece["models"].items():
-                if f.model and canonical_model_id(model) != canonical_model_id(f.model):
-                    continue
-                seen = True
-                calls += usage["requests"]
-                tokens += usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_write"]
-                value, _ = _list_cost(model, usage["input"], usage["output"], usage["cache_read"], usage["cache_write"], piece["ts"])
-                if value is not None:
-                    cost = (cost or 0.0) + value
-            if piece["last"]:
-                tool_fallback += row["tool_call_count"]
-                user_fallback += row["turn_count"]
-    if not (seen or tool_calls or prompts):
-        return {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
-    return {
-        "messages": calls + tool_calls + prompts + tool_fallback + user_fallback,
-        "tokens": tokens,
-        "cost_usd": _usd(cost),
-        "tool_calls": tool_calls + tool_fallback,
-    }
-
-
 _COVERAGE_TOOLS = ("copilot-cli", "copilot-vscode", "copilot-desktop", "copilot365", "claude-code", "codex-cli")
 
 
@@ -2941,12 +2841,11 @@ class _StagedReads:
             return _FAILED
 
 
-# The board fields that need each optional section; "kpis.prev" is one key of the kpis field.
+# The board fields that need each optional section.
 _LATE_FIELDS = {
     "skills_and_turns": ("latency", "prompts", "skills"),
     "changes": ("projects", "changes"),
     "loops": ("attention", "loops"),
-    "previous": ("kpis.prev",),
 }
 LATE_FIELDS = tuple(sorted({field for fields in _LATE_FIELDS.values() for field in fields}))
 
@@ -3220,7 +3119,6 @@ def compute_board(
         "skills_and_turns": skills_and_turns,
         "changes": lambda: _changes_section(board),
         "loops": lambda: _loop_rows(board),
-        "previous": lambda: _previous(board),
     }
     calls = early if charts_only else [*early, board.agents, *late.values()]
     with _StagedReads(conn, calls) as reads:
@@ -3249,8 +3147,7 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
                    tests_section: tuple, resources: tuple, charts_only: bool) -> tuple[dict, Any]:
     """The board fields that need no late section, and the function that completes the board from the late ones.
 
-    ``kpis`` holds every key but ``prev``, which comes from a late section. For the charts alone,
-    the chart fields and no function.
+    For the charts alone, the chart fields and no function.
     """
     f = board.f
     tool_calls_bucket = tool_section["calls_bucket"]
@@ -3578,10 +3475,6 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
             if value is _LATE:
                 if name in late:
                     whole[name] = late[name]
-            elif name == "kpis" and results["previous"] is not _FAILED:
-                spark = value["spark"]
-                whole[name] = {**{k: v for k, v in value.items() if k != "spark"}, "prev": results["previous"],
-                               "spark": spark}
             else:
                 whole[name] = value
         return whole

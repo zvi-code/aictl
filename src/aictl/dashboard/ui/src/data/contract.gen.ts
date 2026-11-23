@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 782fbd8a1d2f2f14589c50b503dbfeeabbb364c2bb95fedf242445f44fd149ef
+// Schema digest: d13002a637e3a028b42a9bfd242960ad036c425643d8786598a3140d6d54fcba
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -211,16 +211,6 @@ export type BoardKpis = {
   p50_ms: number | null;
   p95_ms: number | null;
   loops: number;
-  prev?: {
-    messages: number | null;
-    tokens: number | null;
-    cost_usd: number | null;
-    tool_calls: number | null;
-    since?: number;
-    until?: number;
-    data_since?: number | null;
-    covered?: boolean;
-  };
   spark: {
     running: Array<number>;
     messages: Array<number>;
@@ -2466,12 +2456,6 @@ export type HistoryKpis = {
   p50_ms: number | null;
   p95_ms: number | null;
   loops: number;
-  prev: {
-    messages: number | null;
-    tokens: number | null;
-    cost_usd: number | null;
-    tool_calls: number | null;
-  };
   spark: {
     running: Array<number>;
     messages: Array<number>;

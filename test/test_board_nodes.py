@@ -681,26 +681,27 @@ def test_incomplete_scoped_board_is_read_again_after_its_short_lifetime(history,
 
     clock = [1000.0]
     monkeypatch.setattr(history_board, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0]))
-    real = board_projection._previous
+    real = board_projection._loop_rows
     failing = [True]
+    reason = "Kusto view board.loops failed: timeout"
 
-    def previous(*args):
+    def loops(*args):
         if failing[0]:
-            raise StoreError("Kusto view board.previous failed: timeout")
+            raise StoreError(reason)
         return real(*args)
 
-    monkeypatch.setattr(board_projection, "_previous", previous)
+    monkeypatch.setattr(board_projection, "_loop_rows", loops)
     query = "scope=fleet&since=1000&until=2000&buckets=2"
     _, first = _serve_board(kusto_store, query)
-    assert first["field_errors"] == {"kpis.prev": "Kusto view board.previous failed: timeout"}
-    assert "prev" not in first["kpis"]
+    assert first["field_errors"] == {"attention": reason, "loops": reason}
+    assert "loops" not in first
     failing[0] = False
     clock[0] += history_board._INCOMPLETE_TTL_S - 1
     assert _serve_board(kusto_store, query)[1] == first
     # Past its short lifetime the incomplete answer is not served, even while a new read runs.
     clock[0] += 2
     _, second = _serve_board(kusto_store, query)
-    assert "field_errors" not in second and "prev" in second["kpis"]
+    assert "field_errors" not in second and "loops" in second
     # A complete answer keeps the route's usual lifetime.
     failing[0] = True
     clock[0] += 30

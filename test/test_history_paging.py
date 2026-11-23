@@ -260,8 +260,6 @@ BOUNDED = {
     "analytics.tools": "one row per tool name (and per tool name and CLI tool) and a hidden count",
     "board.activity_facts": "the distinct (tool, fact) pairs",
     "board.agents": "one row per agent of the board's sessions",
-    "board.previous": "one row per model and one row of counts",
-    "nodes.first_seen": "one row per node",
     "board.search_hits": "one row per session of the board",
     "board.sessions": "one row per requested session",
     "board.sources": "one row per (tool, source)",

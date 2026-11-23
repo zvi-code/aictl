@@ -333,42 +333,11 @@ class TestTotals:
             assert sum(m["tokens"] for m in payload["by_model"]) == payload["kpis"]["tokens"], kw
             assert sum(p["tokens"] for p in payload["projects"]) == payload["kpis"]["tokens"], kw
 
-    def test_previous_window(self, db):
+    def test_the_kpis_carry_no_comparison_with_a_period_before(self, db):
+        """The tiles once said "-71% vs before"; the owner removed it, and no read of the window before remains."""
         k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]
-        # The window before holds the session two days ago only.
-        assert k["prev"]["tokens"] == 3015
-        assert k["prev"]["tool_calls"] == 5
-        assert k["prev"]["messages"] == 4 + 2 + 5
-        assert k["prev"]["cost_usd"] == pytest.approx(cost_usd(SONNET, 300, 150, 2400, 150) + cost_usd(HAIKU, 10, 5), abs=1e-5)
-
-    def test_previous_window_empty_is_null(self, db):
-        k = _board(db)["kpis"]
-        usage = {key: k["prev"][key] for key in ("messages", "tokens", "cost_usd", "tool_calls")}
-        assert usage == {"messages": None, "tokens": None, "cost_usd": None, "tool_calls": None}
-
-    def test_previous_window_is_compared_only_when_the_store_covers_it(self, db):
-        # The previous window of a 1.5-day range starts 3 days ago. With no snapshot, nothing says
-        # the store holds that whole window: it is not compared.
-        k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]["prev"]
-        assert (k["since"], k["until"]) == (NOW - 3 * DAY, NOW - 1.5 * DAY)
-        assert (k["data_since"], k["covered"]) == (None, False)
-        assert k["tokens"] == 3015  # the usage is still read
-        # The node began to collect 2 days ago: in the previous window, so it is not covered.
-        db.insert("system_snapshots", ts=NOW - 2 * DAY)
-        k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]["prev"]
-        assert (k["data_since"], k["covered"]) == (NOW - 2 * DAY, False)
-
-    def test_previous_window_is_covered_from_the_last_node_to_begin(self, db):
-        db.insert("system_snapshots", ts=NOW - 10 * DAY)
-        db.insert("system_snapshots", ts=NOW - 5 * DAY, node_id="other-node")
-        k = compute_board(db, _filters(since=NOW - 1.5 * DAY), None, NOW)["kpis"]["prev"]
-        assert (k["data_since"], k["covered"]) == (NOW - 10 * DAY, True)
-        # Over all nodes, the store covers a time once the last of them collects.
-        from aictl.dashboard.board_projection import _data_since
-        from aictl.dashboard.projections.history import HistoryScope
-
-        every_node = HistoryScope(db.history_store.reader, None, qualified=True)
-        assert _data_since(SimpleNamespace(history=every_node)) == NOW - 5 * DAY
+        assert "prev" not in k
+        assert not any(field.startswith("kpis") for field in board_projection.LATE_FIELDS)
 
     def test_range(self, db):
         rng = compute_board(db, _filters(buckets=7), None, NOW)["range"]
@@ -573,15 +542,6 @@ class TestFilters:
         options = [p for p in payload["options"]["projects"] if _common.project_key(p["id"]) == "c:/review/repo"]
         assert len(options) == 1 and options[0]["agents"] == 3
 
-    def test_windows_project_filter_also_applies_to_previous_window(self, db):
-        conn = db
-        _request(conn, NOW - 2 * DAY, "windows-old", "copilot-cli", r"c:\review\repo", GPT, i=12)
-        _prompt(conn, NOW - 2 * DAY, "windows-old", "copilot-cli", "C:/Review/Repo", text="Earlier")
-
-        payload = compute_board(db, _filters(since=NOW - 1.5 * DAY, project=r"C:\Review\Repo"), None, NOW)
-        assert payload["kpis"]["prev"]["tokens"] == 12
-        assert payload["kpis"]["prev"]["messages"] == 2
-
     def test_model_filters_rows_inside_a_session(self, db):
         payload = _board(db, model=HAIKU)
         assert self._ids(payload) == {"done"}
@@ -685,7 +645,7 @@ class TestStagedBoard:
     def test_the_early_fields_come_before_the_late_sections_and_the_whole_board_is_unchanged(self, db, monkeypatch):
         whole = _board(db)
         release = threading.Event()
-        finished = [self._hold(monkeypatch, name, release) for name in ("_previous", "_loop_rows", "_changes_section")]
+        finished = [self._hold(monkeypatch, name, release) for name in ("_loop_rows", "_changes_section")]
         partials = []
 
         def on_partial(fields, pending):
@@ -695,20 +655,17 @@ class TestStagedBoard:
         staged = compute_board(db, _filters(), None, NOW, on_partial=on_partial)
         assert staged == whole
         [(fields, pending, done)] = partials
-        assert done == [[], [], []]
+        assert done == [[], []]
         assert pending == list(board_projection.LATE_FIELDS)
         late = {_late(path) for path in pending if "." not in path}
         # Every early field is final; a late one is absent, never an empty placeholder.
         assert set(fields) == set(whole) - late
-        assert {name: value for name, value in fields.items() if name != "kpis"} == {
-            name: value for name, value in whole.items() if name in fields and name != "kpis"}
-        assert fields["kpis"] == {key: value for key, value in whole["kpis"].items() if key != "prev"}
+        assert fields == {name: value for name, value in whole.items() if name in fields}
 
     @pytest.mark.parametrize(("section", "fields"), [
         ("_changes_section", {"changes", "projects"}),
         ("_loop_rows", {"loops", "attention"}),
         ("_skill_rows", {"skills", "prompts", "latency"}),
-        ("_previous", {"kpis.prev"}),
     ])
     def test_a_failed_optional_section_leaves_only_its_fields_out(self, db, monkeypatch, section, fields):
         from aictl.stores.base import StoreError
@@ -722,14 +679,8 @@ class TestStagedBoard:
         field_errors = {}
         payload = compute_board(db, _filters(), None, NOW, field_errors=field_errors)
         assert field_errors == dict.fromkeys(fields, "Kusto view board.section failed: timeout")
-        top = {path for path in fields if "." not in path}
-        assert set(payload) == set(whole) - top
-        assert {k: v for k, v in payload.items() if k != "kpis"} == {
-            k: v for k, v in whole.items() if k not in top and k != "kpis"}
-        if "kpis.prev" in fields:
-            assert payload["kpis"] == {k: v for k, v in whole["kpis"].items() if k != "prev"}
-        else:
-            assert payload["kpis"] == whole["kpis"]
+        assert set(payload) == set(whole) - fields
+        assert payload == {k: v for k, v in whole.items() if k not in fields}
         # Without a place for the reasons, the failure fails the board as before.
         with pytest.raises(StoreError, match="timeout"):
             compute_board(db, _filters(), None, NOW)

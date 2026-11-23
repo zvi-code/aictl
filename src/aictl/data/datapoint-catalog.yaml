@@ -589,20 +589,6 @@ board.kpi.messages:
   section: Summary tiles
   dynamic_source: false
 
-board.kpi.prev:
-  explanation: >
-    The same totals over the window before this one, for the change shown
-    under each tile.
-  source: >
-    board_api._previous: the filters re-applied to [since - span, since);
-    null when that window holds no data.
-  source_type: deduced
-  unit: count
-  update_freq: on-collect
-  tab: Usage and cost
-  section: Summary tiles
-  dynamic_source: false
-
 board.kpi.tokens:
   explanation: >
     Input, output, cache read and cache write tokens of all model calls in

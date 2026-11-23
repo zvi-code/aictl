@@ -66,7 +66,6 @@ _VIEWS = {
         "key label tab section explanation source_static source_type unit update_freq otel_metric dynamic_source source_dynamic query calc updated_at",
     ),
     "nodes.inventory": ("all_nodes requested_node", "node_id captured_at"),
-    "nodes.first_seen": ("all_nodes requested_node", "node_id first_seen"),
     "nodes.sessions": (
         f"{_SCOPE} since until node_limit session_limit",
         f"row_type node_id {_SESSION} sessions requests",
@@ -151,10 +150,6 @@ _VIEWS = {
     ),
     "tools.confirm_counts": (
         f"{_TIME} requested_session session_keys", "node_id session_id tool_name confirm calls wait_count waits",
-    ),
-    "board.previous": (
-        f"{_TIME} requested_model project_path_key fold_project restrict_tools requested_tools restrict_sessions session_keys",
-        "row_type model calls input_tokens output_tokens cache_read_tokens cache_creation_tokens last_ts cost_usd tool_calls prompts",
     ),
     "prompts.page": (
         f"{_TIME} session_keys preview after_row", f"{_BOARD_ID} id ts project_path text prompt_file",

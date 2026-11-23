@@ -192,7 +192,6 @@ class TestFallbackByDay:
         one_day = board(db, at(DAY2, 0), at(DAY3, 0), buckets=2)
         assert sum(one_day["series"]["tokens"]["input"]) == 200
         assert one_day["kpis"]["tokens"] == 200
-        assert one_day["kpis"]["prev"]["tokens"] == 100  # the day before is the previous window
 
     def test_days_that_do_not_add_up_to_the_total_fall_back_to_the_whole_session(self, kusto_store):
         db = kusto_store

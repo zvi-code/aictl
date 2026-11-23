@@ -52,7 +52,7 @@ afterEach(() => { board.dispose(); board.ctx.client.stop() })
 
 const firstPart = () => liveBootstrap([
   liveField('kpis', kpis), liveField('generated_at', 1000),
-  status(1, { ready: false, pending: true, refresh_pending: true, pending_fields: ['loops', 'changes', 'kpis.prev'] }),
+  status(1, { ready: false, pending: true, refresh_pending: true, pending_fields: ['loops', 'changes'] }),
 ])
 
 describe('BOARD-STAGED-01 · a first load shows each field when it is read', () => {
@@ -62,8 +62,7 @@ describe('BOARD-STAGED-01 · a first load shows each field when it is read', () 
     expect(ctx.read({ field: 'kpis' })).toMatchObject({ state: 'ready', value: kpis })
     expect(ctx.read({ field: 'kpis', path: 'tokens' })).toMatchObject({ state: 'ready', value: 345_000 })
     expect(ctx.read({ field: 'loops' }).state).toBe('loading')
-    expect(ctx.read({ field: 'kpis', path: 'prev' }).state).toBe('loading')
-    expect(ctx.read({ field: 'kpis', path: 'prev.tokens' }).state).toBe('loading')
+    expect(ctx.read({ field: 'changes' }).state).toBe('loading')
   })
 
   it('names the reason of a field the server could not read and shows the others', () => {
@@ -71,11 +70,10 @@ describe('BOARD-STAGED-01 · a first load shows each field when it is read', () 
     board.send('change', liveEnvelope(2, { upserts: [
       liveField('loops', [], '', 2, { collection: true }),
       status(2, { ready: true, pending: false, refresh_pending: false,
-        field_errors: { changes: 'Kusto view board.changes failed: timeout', 'kpis.prev': 'Kusto view board.previous failed: timeout' } }),
+        field_errors: { changes: 'Kusto view board.changes failed: timeout' } }),
     ] }))
     const { ctx } = board
     expect(ctx.read({ field: 'changes' })).toEqual({ state: 'error', message: 'Kusto view board.changes failed: timeout' })
-    expect(ctx.read({ field: 'kpis', path: 'prev' })).toEqual({ state: 'error', message: 'Kusto view board.previous failed: timeout' })
     expect(ctx.read({ field: 'kpis' }).state).toBe('ready')
     expect(ctx.read({ field: 'loops' }).state).toBe('empty')
   })
@@ -102,36 +100,23 @@ describe('BOARD-STAGED-01 · a first load shows each field when it is read', () 
   })
 })
 
-describe('BOARD-STAGED-02 · KPI tiles before the period before is read', () => {
+describe('BOARD-STAGED-02 · KPI tiles show their own detail, never a comparison with a period before', () => {
   const def = overviewA.find(panel => panel.id === 'kpis')!
 
-  it('shows the tile values at once and says the comparison is still being read, never a number for it', () => {
+  it('shows the tile values and their detail lines at once, with no "vs before" or loading text', () => {
     board.send('bootstrap', firstPart())
     const { host, dispose } = mount(() => <Kpis ctx={board.ctx} def={def} params={{}} />)
     const text = host.textContent!
     expect(text).toContain('345')
-    expect(text).toContain('reading the period before…')
-    expect(text).not.toMatch(/vs before/)
-    dispose()
-  })
-
-  it('says the period before was not read, with the reason on hover', () => {
-    board.send('bootstrap', firstPart())
-    board.send('change', liveEnvelope(2, { upserts: [
-      status(2, { ready: true, pending: false, field_errors: { 'kpis.prev': 'Kusto view board.previous failed: timeout' } }),
-    ] }))
-    const { host, dispose } = mount(() => <Kpis ctx={board.ctx} def={def} params={{}} />)
-    const said = Array.from(host.querySelectorAll('span[title]')).filter(span => span.textContent === 'period before not read')
-    expect(said).toHaveLength(4)
-    expect(said[0].getAttribute('title')).toBe('Kusto view board.previous failed: timeout')
+    expect(text).toMatch(/p50: \S/)
+    expect(text).not.toMatch(/vs before|period before|collected since/)
     dispose()
   })
 })
 
 describe('BOARD-STAGED-03 · a fleet board names the fields the server could not read', () => {
   const def = overviewA.find(panel => panel.id === 'kpis')!
-  const reasons = { changes: 'Kusto view board.changes failed: timeout', projects: 'Kusto view board.changes failed: timeout',
-    'kpis.prev': 'Kusto view board.previous failed: timeout' }
+  const reasons = { changes: 'Kusto view board.changes failed: timeout', projects: 'Kusto view board.changes failed: timeout' }
 
   function fleetBoard() {
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async path => {
@@ -158,14 +143,11 @@ describe('BOARD-STAGED-03 · a fleet board names the fields the server could not
       await vi.waitFor(() => expect(fleet.ctx.read({ field: 'kpis' }).state).toBe('ready'))
       expect(fleet.ctx.read({ field: 'changes' })).toEqual({ state: 'error', message: reasons.changes })
       expect(fleet.ctx.read({ field: 'projects' })).toEqual({ state: 'error', message: reasons.projects })
-      expect(fleet.ctx.read({ field: 'kpis', path: 'prev' })).toEqual({ state: 'error', message: reasons['kpis.prev'] })
       expect(fleet.ctx.read({ field: 'kpis', path: 'tokens' })).toMatchObject({ state: 'ready', value: 345_000 })
       expect(fleet.ctx.read({ field: 'loops' }).state).toBe('empty')
       const { host, dispose } = mount(() => <Kpis ctx={fleet.ctx} def={def} params={{}} />)
       expect(host.textContent).toContain('345')
-      const said = Array.from(host.querySelectorAll('span[title]')).filter(span => span.textContent === 'period before not read')
-      expect(said).toHaveLength(4)
-      expect(said[0].getAttribute('title')).toBe(reasons['kpis.prev'])
+      expect(host.textContent).not.toMatch(/vs before|period before|collected since/)
       dispose()
     } finally { fleet.dispose() }
   })

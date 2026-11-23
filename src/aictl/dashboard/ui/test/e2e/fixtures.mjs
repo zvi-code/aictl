@@ -68,7 +68,7 @@ export async function provideCatalog(page) {
 
 const manyNodes = ['alpha', 'beta', 'gamma', ...Array.from({ length: 9 }, (_, i) => `node-${String(i + 4).padStart(2, '0')}`)];
 const flowTables = ['Events', 'ToolCalls', 'Sessions', 'Metrics', 'Logs', 'Files', 'Spans', 'Prompts'];
-const backendViews = ['aictl.live.keys', 'aictl.tools.activity_rows', 'aictl.board.previous', 'aictl.sequence.event_log',
+const backendViews = ['aictl.live.keys', 'aictl.tools.activity_rows', 'aictl.board.sessions', 'aictl.sequence.event_log',
   'aictl.usage.sessions', 'aictl.health.series'];
 
 // The recorded tapes predate the health series, flows and backend views. Answer them with contract-shaped

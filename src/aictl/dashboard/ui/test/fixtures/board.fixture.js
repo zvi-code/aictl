@@ -23,7 +23,7 @@ export function boardFixture(overrides = {}) {
     scope: { shown_agents: 4, all_agents: 4 },
     kpis: {
       running: 2, subagents_running: 1, messages: 684, tokens: 2_540_000, cached_share: 0.8, cost_usd: 4, tool_calls: 389, failures: 62, fail_rate: 0.123,
-      p50_ms: 1900, p95_ms: 4100, loops: 1, prev: { messages: 468, tokens: 1_690_000, cost_usd: 2.55, tool_calls: 265, since: NOW - 48 * H, until: NOW - 24 * H, data_since: NOW - 30 * 24 * H, covered: true },
+      p50_ms: 1900, p95_ms: 4100, loops: 1,
       spark: { running: spark(1), messages: spark(2), tokens: spark(3), cached: spark(4), cost: spark(5), tool_calls: spark(6), failures: spark(1), p95: [1, null, 3, 4, null, 2, 1, 3, 4, 2, 1, 3], loops: spark(1) },
     },
     attention: [

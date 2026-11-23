@@ -100,10 +100,9 @@ def test_filtering_by_the_model_returns_the_requests_of_both_tools(db, chosen):
     payload = _board(db, model=chosen)
     assert _sessions(payload) == {"cc", "cp"}
     assert payload["kpis"]["tokens"] == 1100 + 2200
-    # Latency, API errors and the previous period are read per model too.
+    # Latency and API errors are read per model too.
     assert payload["kpis"]["p95_ms"] == 3000
     assert sum(e["count"] for e in payload["errors"] if e["kind"] == "API") == 1
-    assert payload["kpis"]["prev"]["tokens"] == 11 + 22
 
 
 def test_tokens_and_cost_by_model_have_one_row_with_the_summed_totals(db):
@@ -190,12 +189,3 @@ def test_the_session_finder_keeps_a_different_version_and_an_unknown_model_apart
     assert {r["id"] for r in search_sessions(db, query=SessionQuery(model=OLDER, **window), now=NOW)["rows"]} == {"old"}
     assert {r["id"] for r in search_sessions(db, query=SessionQuery(model=UNKNOWN, **window), now=NOW)["rows"]} == {"acme"}
     assert search_sessions(db, query=SessionQuery(model=UNKNOWN.lower(), **window), now=NOW)["rows"] == []
-
-
-def test_the_previous_period_counts_a_spelling_only_that_period_used(db):
-    """A third spelling that no request of the window used still belongs to the model."""
-    prev = NOW - 10 * DAY
-    db.insert("sessions", session_id="cc-only", tool="claude-code", project_path="/p/one", started_at=prev, ended_at=prev + 60)
-    _request(db, prev + 5, "cc-only", "claude-code", "Claude-Opus-5.5", i=300, o=30)
-    for chosen in (DASHED, DOTTED):
-        assert _board(db, model=chosen)["kpis"]["prev"]["tokens"] == 11 + 22 + 330
