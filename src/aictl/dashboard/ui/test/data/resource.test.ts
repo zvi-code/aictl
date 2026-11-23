@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { createResourceCache } from '../../src/data/resource'
+import { createResourceCache, IDLE_KEYS } from '../../src/data/resource'
 import { liveEntity } from '../fixtures/live.fixture'
 import { storeHarness } from './harness'
 
@@ -16,7 +16,7 @@ function fetchHarness() {
   return { requests, pending, load }
 }
 
-it('deduplicates readers by key and aborts only on the last release', async () => {
+it('deduplicates readers by key and keeps a released read for the next reader of its key', async () => {
   const { requests, pending, load } = fetchHarness()
   const cache = createResourceCache({ load, fetch: requests })
   const one = cache.acquire('/detail/a')
@@ -27,19 +27,45 @@ it('deduplicates readers by key and aborts only on the last release', async () =
   one.refetch()
   one.release()
   one.release()
-  expect(pending[0].signal?.aborted).toBe(false)
   two.release()
-  expect(pending[0].signal?.aborted).toBe(true)
-  expect(pending[1].signal?.aborted).toBe(false)
+  expect(pending[0].signal?.aborted).toBe(false)
   const next = cache.acquire('/detail/a')
-  expect(requests).toHaveBeenCalledTimes(3)
-  pending[0].resolve(new Response('obsolete'))
-  pending[2].resolve(new Response('current'))
+  expect(requests).toHaveBeenCalledTimes(2)
+  pending[0].resolve(new Response('current'))
   await vi.waitFor(() => expect(next.state).toMatchObject({ status: 'ready', data: 'current' }))
-  expect(two.state.data).toBeUndefined()
   expect(other.state.status).toBe('loading')
   next.release()
   other.release()
+})
+
+// A panel unmounts when it scrolls far away. A read of 40 s was aborted each time and started over
+// on the way back, so a user who scrolled past "MCP servers and tools" saw "Loading…" for minutes.
+it('RES-IDLE-10 · a panel that scrolls away and back joins its read in flight', async () => {
+  const { requests, pending, load } = fetchHarness()
+  const cache = createResourceCache({ load, fetch: requests })
+  for (let pass = 0; pass < 3; pass++) cache.acquire('/api/board/mcp').release()
+  const back = cache.acquire('/api/board/mcp')
+  expect(requests).toHaveBeenCalledTimes(1)
+  expect(pending[0].signal?.aborted).toBe(false)
+  pending[0].resolve(new Response('servers'))
+  await vi.waitFor(() => expect(back.state).toMatchObject({ status: 'ready', data: 'servers' }))
+  // Away and back once more: the last answer shows while it is read again.
+  back.release()
+  const again = cache.acquire('/api/board/mcp')
+  expect(again.state).toMatchObject({ status: 'refreshing', data: 'servers' })
+  pending[1].resolve(new Response('servers 2'))
+  await vi.waitFor(() => expect(again.state).toMatchObject({ status: 'ready', data: 'servers 2' }))
+  again.release()
+})
+
+it('RES-IDLE-11 · keeps only a few released keys and aborts the oldest read beyond them', () => {
+  const { requests, pending, load } = fetchHarness()
+  const cache = createResourceCache({ load, fetch: requests })
+  for (let i = 0; i <= IDLE_KEYS; i++) cache.acquire(`/detail/${i}`).release()
+  expect(pending.map(entry => entry.signal?.aborted)).toEqual([true, ...Array(IDLE_KEYS).fill(false)])
+  cache.acquire('/detail/0').release()
+  expect(requests).toHaveBeenCalledTimes(IDLE_KEYS + 2)
+  expect(pending[1].signal?.aborted).toBe(true)
 })
 
 it('refetches once on related applied changes, not on unrelated or rejected changes', async () => {
@@ -76,11 +102,13 @@ it('refetches once on related applied changes, not on unrelated or rejected chan
   two.release()
   h.change(7, [liveEntity('runtime.agent', 'a', {}, 7)])
   h.tick()
-  expect(pending[2].signal?.aborted).toBe(true)
+  // A released key reads nothing more on its own.
+  pending[2].resolve(new Response('released'))
+  await new Promise(resolve => setImmediate(resolve))
   expect(requests).toHaveBeenCalledTimes(3)
 })
 
-it('merges invalidations during an in-flight read into one follow-up and drops it on release', async () => {
+it('merges invalidations during an in-flight read into one follow-up and makes none after release', async () => {
   const { requests, pending, load } = fetchHarness()
   const h = storeHarness()
   h.bootstrap()
@@ -103,7 +131,10 @@ it('merges invalidations during an in-flight read into one follow-up and drops i
   pending[1].resolve(new Response('obsolete'))
   await new Promise(resolve => setImmediate(resolve))
   expect(requests).toHaveBeenCalledTimes(2)
-  expect(pending[1].signal?.aborted).toBe(true)
+  // The next reader reads again: the answer it finds was invalidated while it was read.
+  const next = cache.acquire('/detail/a')
+  expect(requests).toHaveBeenCalledTimes(3)
+  next.release()
 })
 
 it('distinguishes an initial error from a failed refresh with usable same-key data', async () => {

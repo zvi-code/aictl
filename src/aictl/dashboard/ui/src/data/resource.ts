@@ -25,6 +25,10 @@ interface ResourceOptions<Key extends string, Value> {
   }
 }
 
+/** Released keys kept, with their read in flight or their last answer. Few, so released reads
+ * cannot take the browser's few connections to the server from the reads on screen. */
+export const IDLE_KEYS = 4
+
 export function createResourceCache<Key extends string, Value>({
   load, fetch = (input, init) => globalThis.fetch(input, init), live,
 }: ResourceOptions<Key, Value>) {
@@ -72,6 +76,22 @@ export function createResourceCache<Key extends string, Value>({
     }
   }
 
+  // Keys no panel reads now, oldest first. A panel that scrolls away and back within these keys
+  // joins its read still in flight, or shows its last answer while it reads again, instead of
+  // aborting a slow read and starting it over each time it comes into view.
+  const idle = new Set<Key>()
+
+  function drop(key: Key) {
+    const entry = entries.get(key)
+    idle.delete(key)
+    entries.delete(key)
+    entry?.request?.abort()
+    if (entries.size === 0) {
+      unsubscribe?.()
+      unsubscribe = undefined
+    }
+  }
+
   return {
     // Release the handle when its panel hides, unmounts, or changes key.
     acquire(key: Key) {
@@ -81,6 +101,7 @@ export function createResourceCache<Key extends string, Value>({
         entry = { state, setState, consumers: 0, hasData: false, invalidated: false }
         entries.set(key, entry)
       }
+      idle.delete(key)
       const mine = entry
       mine.consumers++
       unsubscribe ??= live?.store.subscribeApplied(onApplied)
@@ -93,12 +114,8 @@ export function createResourceCache<Key extends string, Value>({
           if (released) return
           released = true
           if (--mine.consumers !== 0) return
-          entries.delete(key)
-          if (entries.size === 0) {
-            unsubscribe?.()
-            unsubscribe = undefined
-          }
-          mine.request?.abort()
+          idle.add(key)
+          while (idle.size > IDLE_KEYS) drop(idle.values().next().value!)
         },
       }
     },
