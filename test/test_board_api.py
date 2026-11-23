@@ -1012,9 +1012,25 @@ class TestSections:
         rows = _board(db)["memory_files"]
         assert [r["path"] for r in rows] == ["/p/alpha/CLAUDE.md", "/p/alpha/other.md"]
         assert rows[0]["tokens"] == 120
-        assert rows[0]["read_by"] == "claude-code"
+        assert rows[0]["declared_for"] == "claude-code"
         assert rows[0]["changed_by"] == "claude-code"
         assert rows[0]["lines_added"] == 1
+
+    def test_a_memory_file_says_when_it_was_scanned_modified_and_loaded_and_for_which_project(self, db):
+        """Found on real data: 'When' was the scan time (431 rows shared 4 times), every row said 'Read by
+        claude-code' although no session loaded it, and 29 rows were named MEMORY.md with no project."""
+        conn = db
+        for project in ("-p-alpha", "-p-beta"):
+            _insert(conn, "files", path=f"/h/.claude/projects/{project}/memory/MEMORY.md", tool="claude-code",
+                    category="memory", scope="project", last_changed=NOW - 50, mtime=NOW - 5 * DAY)
+        _insert(conn, "session_loaded_files", session_id="done", tool="claude-code", how="nested_memory",
+                path="/h/.claude/projects/-p-alpha/memory/MEMORY.md", ts=NOW - 3600)
+        rows = {r["path"]: r for r in _board(db)["memory_files"]}
+        alpha, beta = rows["/h/.claude/projects/-p-alpha/memory/MEMORY.md"], rows["/h/.claude/projects/-p-beta/memory/MEMORY.md"]
+        assert (alpha["project"], beta["project"]) == ("-p-alpha", "-p-beta")
+        assert (alpha["scanned_ts"], alpha["modified_ts"], alpha["changed_ts"]) == (NOW - 50, NOW - 5 * DAY, None)
+        assert (alpha["loaded_sessions"], alpha["loaded_by"], alpha["loaded_ts"]) == (1, ["claude-code"], NOW - 3600)
+        assert (beta["declared_for"], beta["loaded_sessions"], beta["loaded_by"]) == ("claude-code", 0, None)
 
     def test_memory_file_list_does_not_depend_on_when_aictl_scanned_a_file(self, db):
         """The rows carry their category; a file scanned long ago is still a file that exists."""

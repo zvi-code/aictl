@@ -7,7 +7,13 @@
     "type": "object",
     "properties": {
       "path": {"type": "string"},
-      "read_by": {"type": "string"},
+      "declared_for": {"type": ["string", "null"]},
+      "project": {"type": "string"},
+      "loaded_sessions": {"type": "integer"},
+      "loaded_by": {"type": ["array", "null"], "items": {"type": "string"}},
+      "loaded_ts": {"type": ["number", "null"]},
+      "modified_ts": {"type": ["number", "null"]},
+      "scanned_ts": {"type": ["number", "null"]},
       "category": {"type": "string"},
       "scope": {"type": "string"},
       "tokens": {"type": ["integer", "null"]},
@@ -19,7 +25,7 @@
     },
     "required": [
       "path",
-      "read_by",
+      "declared_for",
       "scope",
       "tokens",
       "lines_added",

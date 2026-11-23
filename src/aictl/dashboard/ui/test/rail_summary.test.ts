@@ -5,7 +5,7 @@ import type { BoardFields } from '../src/data/contract.gen'
 type Files = BoardFields['memory_files']
 
 const row = (path: string, category?: string) =>
-  ({ path, category, read_by: 'claude-code', scope: 'project', tokens: 1, lines_added: null, lines_removed: null, changed_by: null, changed_ts: null })
+  ({ path, category, declared_for: 'claude-code', scope: 'project', tokens: 1, lines_added: null, lines_removed: null, changed_by: null, changed_ts: null })
 const summary = (files: Files | undefined) =>
   sectionSummary('context', ((field: string) => (field === 'memory_files' ? files : undefined)) as never)
 

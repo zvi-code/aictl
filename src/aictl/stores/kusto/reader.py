@@ -253,6 +253,7 @@ _VIEWS = {
         f"{_TIME} session_keys counts_only after_row", "row_type node_id session_id values",
     ),
     "files.recorded": (f"{_TIME} requested_paths", "found"),
+    "files.loaded": (f"{_TIME} requested_paths", "node_id path sessions tools last_ts"),
     "files.detail": (
         f"{_TIME} requested_path keep_text edit_limit",
         "row_type node_id ts session_id detail source_event_id input content found_blob",

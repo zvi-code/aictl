@@ -106,9 +106,11 @@ export const overviewB: readonly PanelDef[] = [
   // The file table needs file drawer actions and a join to resolve editor names.
   { ...base, id: 'memfiles', title: 'Memory and instruction files', kind: 'custom',
     sources: [{ field: 'memory_files' }, { field: 'agents' }],
-    columns: [field('path', 'File'), field('read_by', 'Read by'), field('scope', 'Where'), token('tokens', 'Tokens each call'),
+    columns: [field('path', 'File'), field('project', 'Project'), field('declared_for', 'Declared for'),
+      field('loaded_text', 'Loaded by'), field('scope', 'Where'), token('tokens', 'Tokens each call'),
       metric('lines_added', 'board.project.lines', 'Added'), metric('lines_removed', 'board.project.lines', 'Removed'),
-      field('editor', 'Changed by'), stamp('changed_ts', 'When')],
+      field('editor', 'Changed by'), stamp('changed_ts', 'Changed by a session'), stamp('modified_ts', 'File modified'),
+      stamp('scanned_ts', 'Last scanned')],
     empty: 'No instruction or memory files found.', load: () => import('./b/History').then(m => ({ default: m.MemoryFiles })) },
   // CPU needs dynamic tool series, cross-tool totals and live whole-machine core bars.
   { ...base, id: 'cpu', title: 'CPU', kind: 'custom', sources: [history('cpu'), buckets, processes, machine],

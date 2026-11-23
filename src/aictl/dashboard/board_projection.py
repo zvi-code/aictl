@@ -2510,7 +2510,7 @@ def _memory_files(board: _Board) -> list[dict]:
     not cut at one page.
     """
     selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
-    fields = ("path", "tool", "scope", "tokens", "last_changed", "category")
+    fields = ("path", "tool", "scope", "tokens", "last_changed", "category", "mtime")
     folded = bool(board.f.project and PureWindowsPath(project_key(board.f.project)).drive)
     rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
             for r in board.history.read("files.inventory", inventory_mode="memory",
@@ -2526,25 +2526,58 @@ def _memory_files(board: _Board) -> list[dict]:
                                               requested_paths=paths)]
     for path, added, removed, tool, ts, *nodes in write_rows:
         writes[identity(nodes[0], path) if nodes else path] = (added, removed, tool, ts)
+    # A file counts as read only when a session's own record shows it loaded it (session_loaded_files).
+    loaded: dict[str, tuple] = {}
+    for r in board.history.read("files.loaded", since=board.f.since, until=board.f.until, requested_paths=paths):
+        loaded[identity(r["node_id"], r["path"]) if board.history.qualified else r["path"]] = (
+            int(r["sessions"] or 0), sorted(r["tools"] or []), r["last_ts"])
+    projects = file_projects(paths, board.session_project.values(), resolve=not board.history.qualified)
     out = []
-    for path, tool, scope, tokens, last_changed, category, *nodes in rows:
+    for path, tool, scope, tokens, last_changed, category, mtime, *nodes in rows:
         key = identity(nodes[0], path) if nodes else path
         added, removed, changed_by, changed_ts = writes.get(key, (None, None, None, None))
+        sessions, loaded_by, loaded_ts = loaded.get(key, (0, [], None))
         out.append(
             {
                 "path": path,
+                "project": _memory_project(path, scope, projects.get(path, "")),
                 "category": category,
                 **({"id": key, "node_id": node_label(nodes[0])} if nodes else {}),
-                "read_by": tool or None,
+                # The tool whose loading rules name the file, not evidence that a session read it.
+                "declared_for": tool or None,
+                "loaded_sessions": sessions,
+                "loaded_by": loaded_by or None,
+                "loaded_ts": loaded_ts,
                 "scope": scope,
                 "tokens": tokens,
                 "lines_added": None if added is None else int(added),
                 "lines_removed": None if removed is None else int(removed),
                 "changed_by": changed_by,
-                "changed_ts": changed_ts or last_changed or None,
+                # A session's write in the time range; the file's own modified time; when aictl last scanned it.
+                "changed_ts": changed_ts,
+                "modified_ts": mtime or None,
+                "scanned_ts": last_changed or None,
             }
         )
     return out
+
+
+_CLAUDE_PROJECT_STORE = re.compile(r"[/\\]\.claude[/\\]projects[/\\]([^/\\]+)[/\\]")
+
+
+def _memory_project(path: str, scope: str, project: str) -> str:
+    """Which project a memory file is for, so same-named files (MEMORY.md) tell apart.
+
+    Claude Code keeps a project's memory under ~/.claude/projects/<folder>/ and names the folder
+    after the project's path; that folder name is shown as stored. Else the known project that
+    holds the file, else "(global)" for a file of the global scope.
+    """
+    found = _CLAUDE_PROJECT_STORE.search(path or "")
+    if found:
+        return found.group(1)
+    if project:
+        return project
+    return "(global)" if scope == "global" else ""
 
 
 def _processes(board: _Board) -> list[dict]:

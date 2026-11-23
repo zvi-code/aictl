@@ -166,9 +166,13 @@ export function MemoryFiles(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const result = () => ctx.read(def.sources[0])
   const agents = createMemo(() => new Map((ctx.board('agents') ?? []).map(agent => [agent.id, agent.title])))
-  const rows = createMemo(() => entries(result(), ['path', 'read_by']).map(entry => {
+  const rows = createMemo(() => entries(result(), ['path', 'declared_for']).map(entry => {
     const id = text(entry.row.changed_by)
-    return { ...entry, row: { ...entry.row, editor: id ? agents().get(id) ?? id : undefined } }
+    // Read only when a session's own record shows the load; else the file is only declared for a tool.
+    const sessions = number(entry.row.loaded_sessions)
+    const tools = Array.isArray(entry.row.loaded_by) ? entry.row.loaded_by.join(', ') : ''
+    return { ...entry, row: { ...entry.row, editor: id ? agents().get(id) ?? id : undefined,
+      loaded_text: sessions ? `${sessions} ${sessions === 1 ? 'session' : 'sessions'}${tools ? ` (${tools})` : ''}` : 'no load recorded' } }
   }))
   const reported = () => usable(result()) && Array.isArray(result().value) ? rows() : undefined
   const ranked = createMemo(() => topRows(reported(), 'tokens', ({ row }) => fileName(row.path)))

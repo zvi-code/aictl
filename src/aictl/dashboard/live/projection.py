@@ -32,7 +32,7 @@ _ROW_KEYS = {
     "latency": ("what",),
     "loops": ("agent_id", "pattern", "since_ts"),
     "tests": ("project", "command"),
-    "memory_files": ("path", "read_by"),
+    "memory_files": ("path", "declared_for"),
     "sources": ("tool",),
 }
 
