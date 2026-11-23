@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -630,7 +631,7 @@ def test_command_writes_the_page_and_reports_failures(monkeypatch, tmp_path):
 
 # ---- emulator ----
 
-EMULATOR = KustoSettings("http://localhost:8080", "aictl", streaming=False)
+ADMIN = KustoSettings("http://localhost:8080", "NetDefaultDB", auth="none", node_id="setup")
 
 
 def _emulator_up() -> bool:
@@ -646,8 +647,26 @@ def _emulator_up() -> bool:
 emulator = pytest.mark.skipif(not _emulator_up(), reason="Kusto emulator not running on localhost:8080")
 
 
+@pytest.fixture
+def EMULATOR():  # noqa: N802 - kept uppercase: it is the settings the tests below name
+    """Settings for a throwaway volatile emulator database, dropped afterwards.
+
+    The queries run against literals only, but a query needs an existing database; the emulator
+    starts with none besides NetDefaultDB, so each test makes its own.
+    """
+    from aictl.stores.kusto.client import KustoClientFactory
+
+    name = f"aictl_report_{uuid.uuid4().hex[:8]}"
+    admin = KustoClientFactory.client(ADMIN)
+    admin.execute_mgmt("NetDefaultDB", f".create database {name} volatile")
+    try:
+        yield KustoSettings("http://localhost:8080", name, streaming=False)
+    finally:
+        admin.execute_mgmt("NetDefaultDB", f".drop database {name} ifexists")
+
+
 @emulator
-def test_emulator_node_scoping_with_overlapping_ids():
+def test_emulator_node_scoping_with_overlapping_ids(EMULATOR):
     """Run the actual filters and discovery against literals only; no table reads or writes."""
     from aictl.stores.kusto.client import KustoClientFactory
 
@@ -683,7 +702,7 @@ let tool_invocations = events | where not(req);
 
 
 @emulator
-def test_emulator_runs_the_command_end_to_end(monkeypatch, tmp_path):
+def test_emulator_runs_the_command_end_to_end(monkeypatch, tmp_path, EMULATOR):
     """Run the report CLI and execute its queries against synthetic rows, without writes.
 
     Result on the emulator image used here: every section runs except the ones that need an operator
@@ -723,7 +742,7 @@ let tool_invocations = examples
     res = CliRunner().invoke(main, ["db", "report", "--out", str(out)])
     assert res.exit_code == 0, res.output
     html = out.read_text(encoding="utf-8")
-    assert "localhost:8080" in html and '"database":"aictl"' in html
+    assert "localhost:8080" in html and f'"database":"{EMULATOR.database}"' in html
     data = json.loads(re.search(r"const REPORT=(\{.*?\});\n", html, re.S).group(1))
     sections = {s["name"]: s for s in data["sections"]}
     assert sections.keys() == {s.name for s in SECTIONS}

@@ -378,7 +378,7 @@ def copilot_session_dir() -> Path:
     home = _env_dir("COPILOT_HOME")
     if home:
         return home / "session-state"
-    return Path.home() / ".copilot" / "session-state"
+    return _app_dir(".copilot/session-state", dot=".copilot/session-state", win_env="USERPROFILE")
 
 
 def copilot_global_dir() -> Path:
@@ -388,7 +388,7 @@ def copilot_global_dir() -> Path:
     ``%USERPROFILE%/.copilot`` (NOT ``%APPDATA%/GitHub Copilot``).  ``COPILOT_HOME``
     overrides the location.
     """
-    return _env_dir("COPILOT_HOME") or (Path.home() / ".copilot")
+    return _env_dir("COPILOT_HOME") or _app_dir(".copilot", dot=".copilot", win_env="USERPROFILE")
 
 
 # ── VS Code ──────────────────────────────────────────────────────
