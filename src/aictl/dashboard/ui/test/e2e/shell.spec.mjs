@@ -12,7 +12,7 @@ test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overvi
   for (const section of board.tree) {
     await expect(page.locator(`#sec-${section.id} h2`)).toHaveText(section.title);
   }
-  await expect(page.locator('#p-kpis')).toContainText('Monitored sessions');
+  await expect(page.locator('#p-kpis')).toContainText('Sessions live now');
   await expect(page.locator('#p-kpis')).toContainText('18,065');
   await expect(page.locator('#p-kpis')).toContainText('93.8%');
   await expect(page.locator('#p-kpis')).toBeInViewport();

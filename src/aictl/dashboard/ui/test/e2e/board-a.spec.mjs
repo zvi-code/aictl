@@ -178,7 +178,7 @@ for (const [width, theme] of [[1440, 'light'], [1440, 'dark'], [768, 'light']]) 
     await agentsFrame(page);
     const activity = page.locator('#p-agentActivity');
     await expect(activity.getByText('Final bucket partial', { exact: false })).toBeVisible();
-    await expect(activity).toContainText('78 recorded agents · 52 sessions');
+    await expect(activity).toContainText('78 agents · 52 sessions with activity in the selected time');
     await expect(activity).toContainText(/Nov 13.*Nov 20/s);
     const ranking = activity.getByRole('region', { name: 'Tokens by model' });
     const meters = ranking.getByRole('meter');
@@ -244,7 +244,7 @@ test('BRD-03: partial history keeps a reported zero model without inventing time
     await expect(activity.getByText('Message counts by time are not available from this source.')).toBeVisible();
     await expect(activity.locator('canvas, time')).toHaveCount(0);
     await expect(activity.getByText('Last updated: unknown')).toBeVisible();
-    await expect(activity).toContainText('N/A recorded agents · N/A sessions');
+    await expect(activity).toContainText('N/A agents · N/A sessions with activity in the selected time');
     const rank = activity.getByRole('region', { name: 'Tokens by model' });
     await expect(rank.getByText('0', { exact: true })).toBeVisible();
     await expect(activity.getByRole('region', { name: 'Tool call outcomes' })).toContainText(unavailable);

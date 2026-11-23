@@ -84,8 +84,9 @@ export default function AgentActivity(props: PanelProps) {
   }>
     <div class={styles.activity}>
       <div class={styles.context}>
-        <span><strong>{metric(population(), 'shown_agents')?.toLocaleString() ?? 'N/A'}</strong> recorded agents
-          {' · '}<strong>{metric(population(), 'shown_sessions')?.toLocaleString() ?? 'N/A'}</strong> sessions
+        <span><strong>{metric(population(), 'shown_agents')?.toLocaleString() ?? 'N/A'}</strong> agents
+          {' · '}<strong>{metric(population(), 'shown_sessions')?.toLocaleString() ?? 'N/A'}</strong> sessions with activity in the selected time</span>
+          <span>
           <Show when={period()}>{label => <span class={styles.period}>{label()}</span>}</Show></span>
         <Show when={history().state === 'stale'}>
           <PanelState state="stale" inline message="Recorded history is stale." updatedAt={history().updatedAt} />

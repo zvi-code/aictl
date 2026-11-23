@@ -143,12 +143,18 @@ export function subagentText(summary: Summary) {
 export function agentsCounts(rows: readonly TreeAgent[]) {
   const all = rows.filter(row => row.kind !== 'group')
   const subs = all.filter(row => row.parent_id && row.kind !== 'main')
-  return { sessions: all.length - subs.length, subs: subs.length, running: subs.filter(row => isActive(row.status)).length }
+  // A live session with no line in the selected time is listed, but is not a session of that time.
+  const liveOnly = all.filter(row => !subs.includes(row) && typeof row.no_history === 'string' && !!row.no_history).length
+  return { sessions: all.length - subs.length, recorded: all.length - subs.length - liveOnly, liveOnly,
+    subs: subs.length, running: subs.filter(row => isActive(row.status)).length }
 }
 
-/** The Agents panel's header line before its notes. */
+/** The Agents panel's header line before its notes: each count says what it counts and over which time.
+ * "with activity in the selected time" is the count the Recorded agent activity panel and the role table show. */
 export function agentsHeader(counts: ReturnType<typeof agentsCounts>, unlinked: number) {
-  return `${counts.sessions} sessions · ${counts.subs} subagents (${counts.running} running) listed` +
+  return `${counts.recorded} ${counts.recorded === 1 ? 'session' : 'sessions'} with activity in the selected time` +
+    (counts.liveOnly ? ` · ${counts.liveOnly} more live now with none in it` : '') +
+    ` · ${counts.subs} subagents (${counts.running} running)` +
     (unlinked ? ` · ${unlinkedText(unlinked)}, listed below the table` : '')
 }
 

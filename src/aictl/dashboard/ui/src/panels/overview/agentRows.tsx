@@ -145,11 +145,31 @@ export function modelRows({ ctx, def }: PanelProps) {
           agent_id: id, node_id: agent.node_id, agents: 1, ...modelAllocation(agent, entry.row.model),
         } }]
       })
-    return [{ ...entry, folded: children.length ? true : undefined }, ...children]
+    // An agent whose calls name no model is listed as such, never as a row with an empty name.
+    const row = typeof entry.row.model === 'string' && entry.row.model ? entry.row
+      : { ...entry.row, model: MODEL_NOT_REPORTED, model_reported: false }
+    return [{ ...entry, row, folded: children.length ? true : undefined }, ...children]
   }))
+  const coverage = createMemo(() => modelCoverage(ctx.board('agents') ?? [], models().map(entry => entry.row)))
   return { result, rows, flowColumns: ['model', 'agents', 'tokens', 'cost_usd'], description: <p class={css.note}>
-    Unfold a model to see listed agents. Usage for agents with more than one model is not available from this source.
+    {coverage().text}
   </p> }
+}
+
+export const MODEL_NOT_REPORTED = 'Model not reported'
+
+/** How many listed agents the model rows cover, and why the rest are not in them. */
+export function modelCoverage(agents: readonly { id: string; models?: readonly string[] | null }[],
+  rows: readonly Record<string, unknown>[]) {
+  const covered = new Set(rows.flatMap(row => Array.isArray(row.agent_ids) ? row.agent_ids as string[] : []))
+  const listed = agents.length
+  const inRows = agents.filter(agent => covered.has(agent.id)).length
+  const none = agents.filter(agent => !covered.has(agent.id) && !agent.models?.length).length
+  const several = listed - inRows - none
+  const parts = [`${inRows} of ${listed} listed agents are in a model row`]
+  if (none) parts.push(`${none} recorded no model usage in the selected time`)
+  if (several) parts.push(`${several} used more than one model: their usage per model is not reported`)
+  return { listed, inRows, none, several, text: parts.join(' · ') }
 }
 
 export const roleRows = ({ ctx, def }: PanelProps) => ({

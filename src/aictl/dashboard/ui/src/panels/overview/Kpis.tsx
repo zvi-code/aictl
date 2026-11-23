@@ -56,11 +56,11 @@ export default function Kpis(props: PanelProps) {
   }
   return <>
     <Show when={history().state === 'loading' || history().state === 'error' || history().state === 'unavailable'}>
-      <Stat label="Monitored sessions" value={monitored()?.count} detail="Independent of the selected history range." />
+      <Stat label="Sessions live now" value={monitored()?.count} detail="Independent of the selected history range." />
     </Show>
     <States result={history} retry={ctx.refresh} reserveStaleSpace>
       <div class={`${styles.stats} ${styles.kpiStats}`}>
-        <Stat label="Monitored sessions" value={monitored()?.count}
+        <Stat label="Sessions live now" value={monitored()?.count}
           detail={ctx.scope() === 'local' ? [ctx.paused() ? 'Last received runtime data' : 'Live runtime, independent of filters',
             runtime()?.unlinked ? unlinkedText(runtime()!.unlinked) : ''].filter(Boolean).join(' · ') :
             monitored() ? `${monitored()!.hosts} reporting ${monitored()!.hosts === 1 ? 'node' : 'nodes'}` : 'No fresh monitor report'} />

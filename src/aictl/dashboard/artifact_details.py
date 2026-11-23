@@ -207,6 +207,8 @@ def _history_titles(history: HistoryScope, pairs: set[tuple[str, str]], now: flo
     for row in history.read("board.sessions", session_keys=keys):
         board.session_tool[row["session_id"]] = row["tool"]
         board.session_project[row["session_id"]] = row["project_path"]
+        # The stored title names the session here as it does in the Agents tree.
+        board.meta[row["session_id"]] = row
     if any(sid != aid for sid, aid in pairs):
         for row in history.read("board.agents", session_keys=keys):
             if row.get("row_kind") == "spawn":

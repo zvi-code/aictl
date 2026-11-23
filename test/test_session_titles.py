@@ -392,6 +392,25 @@ class TestSearchPage:
         row = self._page(_hit())
         assert row["title"].endswith("proj") and row["title_source"] == ""
 
+    def test_every_detail_names_a_session_by_the_title_the_agents_tree_shows(self):
+        """Convergence, MCP, memory and file details name a session through _history_titles: the
+        stored title wins over the first prompt there as it does in the Agents tree."""
+        from aictl.dashboard.artifact_details import _history_titles
+
+        class History:
+            def keys(self, ids):
+                return sorted(ids)
+
+            def read(self, view, **_params):
+                if view == "board.sessions":
+                    return [{"session_id": SID, "tool": "claude-code", "project_path": "/work/proj",
+                             "title": "Stored name", "title_source": "user"}]
+                if view == "prompts.titles":
+                    return [{"session_id": SID, "agent_id": SID, "text": "first prompt words"}]
+                return []
+
+        assert _history_titles(History(), {(SID, SID)}, 1_800_000_000.0) == {(SID, SID): "Stored name"}
+
     def test_a_hit_in_the_session_id_is_reported_as_the_id(self):
         assert _match_of("Some title", [(6, SID)], SID[:8].upper(), [SID]) == ("id", SID)
         assert _match_of("Find Me", [], "find", [SID]) == ("title", "Find Me")

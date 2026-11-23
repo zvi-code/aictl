@@ -70,6 +70,8 @@ export function rowAction(def: PanelDef, ctx: PanelContext, row: Row) {
         }
       } }
     }
+    // A value the source did not report ("Model not reported") is a label, not a value to filter by.
+    if (row[`${action.field}_reported`] === false) continue
     return { label: action.label, run: () => ctx.navigate({ [action.filter]: ctx.filters()[action.filter] === id ? null : id }) }
   }
 }

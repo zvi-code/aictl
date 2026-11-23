@@ -74,9 +74,21 @@ describe('Overview and Agents panel agree', () => {
     expect(unlinked.length).toBe(overview.unlinked)
     expect(panel.running).toBe(kpis.subagents_running)
     expect(agentsHeader(panel, unlinked.length)).toBe(
-      '3 sessions · 3 subagents (1 running) listed · 3 unlinked processes (not sessions), listed below the table')
+      '3 sessions with activity in the selected time · 3 subagents (1 running) · 3 unlinked processes (not sessions), listed below the table')
     // The Overview names them with the same words and the same number.
     expect(agentsHeader(panel, unlinked.length)).toContain(unlinkedText(overview.unlinked))
     expect(runningDetail(overview, kpis)).toMatch(new RegExp(`^${panel.running} subagent running`))
+  })
+
+  it('counts a live session with no line in the selected time apart from the sessions of that time', () => {
+    const rows: TreeAgent[] = [
+      { id: 'a', kind: 'main' }, { id: 'a/1', parent_id: 'a', kind: 'subagent', status: 'running' },
+      { id: 'b', kind: 'main', no_history: 'No activity recorded in the selected time' },
+    ]
+    const counts = agentsCounts(rows)
+    // The Recorded agent activity panel counts 1 session in the time: the header says 1, not 2.
+    expect([counts.recorded, counts.liveOnly, counts.sessions]).toEqual([1, 1, 2])
+    expect(agentsHeader(counts, 0)).toBe(
+      '1 session with activity in the selected time · 1 more live now with none in it · 1 subagents (1 running)')
   })
 })
