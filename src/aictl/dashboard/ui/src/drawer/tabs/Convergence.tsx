@@ -3,6 +3,7 @@ import { fmtN } from '../../design/format'
 import { Definitions, QueryDetails } from '../../panels/overview/b/Patterns'
 import { binsOf, requestRange, scaled, type SessionConvergence, type StripCell } from '../../panels/overview/b/patternsModel'
 import { PanelState } from '../../ui/PanelState'
+import { singleMarks, repeatFigures } from '../convergenceModel'
 import { TOKENS_WITH_CACHE } from '../figures'
 import { Resource, Rows, Section, sessionPath, Stats, type TabProps } from '../shared'
 import styles from '../../panels/overview/b/patterns.module.css'
@@ -29,6 +30,9 @@ function Strip(props: { data: SessionConvergence }) {
       text: `${cluster.calls} identical calls (${cluster.label}) in ${requestRange(cluster.first, cluster.last)}` })
     for (const run of props.data.retry_runs) out.push({ css: styles.retryMark, bins: binsOf(cells(), run.first, run.last), y: 3.4,
       text: `${run.retries} retries after errors in ${requestRange(run.first, run.last)}` })
+    const covered = (kind: 'repeat' | 'retry') => new Set(out.filter(mark => mark.css === (kind === 'repeat' ? styles.repeatMark : styles.retryMark)).flatMap(mark => mark.bins))
+    for (const mark of singleMarks(cells(), { repeat: covered('repeat'), retry: covered('retry') }))
+      out.push({ css: mark.kind === 'repeat' ? styles.repeatMark : styles.retryMark, bins: [mark.bin], y: mark.kind === 'repeat' ? 0 : 3.4, text: mark.text })
     for (const rn of props.data.compactions) out.push({ css: styles.compactMark, bins: binsOf(cells(), rn, rn), y: 6.8,
       text: `Context compacted at request ${rn}` })
     return out
@@ -52,19 +56,16 @@ function Strip(props: { data: SessionConvergence }) {
           <rect class={mark.css} x={bin} width={1} y={mark.y} height={3}><title>{mark.text}</title></rect>}</For>}</For>
       </svg>
     </div>
-    <p class={styles.legend}>
-      <span><span class={`${styles.swatch} ${styles.repeatMark}`} />Repeated identical calls</span>
-      <span><span class={`${styles.swatch} ${styles.retryMark}`} />Retries after errors</span>
-      <span><span class={`${styles.swatch} ${styles.compactMark}`} />Compaction</span>
-      <span>Hover a bar for its values.</span>
-    </p>
   </div>
 }
 
 export default function Convergence(props: TabProps) {
   const ctx = untrack(() => props.shell.ctx)
+  const listed = (shown: number, total: number) => shown < total ? `${shown} of ${total} shown` : String(total)
   const read = ctx.detail<SessionConvergence>(createMemo(() => sessionPath(props, '/api/board/session/convergence')))
-  return <Resource read={read} unavailable="This agent has no recorded session to check.">{data => <>
+  return <Resource read={read} unavailable="This agent has no recorded session to check.">{data => {
+    const figures = () => repeatFigures(data())
+    return <>
     <Section title="Convergence">
       <p class={styles.verdict} role="status">{data().verdict}</p>
       <Show when={data().signals.length}>
@@ -74,7 +75,7 @@ export default function Convergence(props: TabProps) {
       <Stats items={[
         { label: 'Requests', value: data().requests, detail: data().truncated ? 'Cut at 20,000 rows.' : undefined },
         { label: TOKENS_WITH_CACHE, value: data().summary.tokens },
-        { label: 'Repeated calls', value: data().summary.repeats }, { label: 'Retries after errors', value: data().summary.retries },
+        { label: 'Repeated calls', ...figures().repeats }, { label: 'Retries after errors', ...figures().retries },
         { label: 'Accepted edits', value: data().summary.accepted }, { label: 'Commits', value: data().summary.commits },
         { label: 'Longest run without a change', value: data().summary.longest_dry, unit: 'requests' },
         { label: 'Requests since the last change', value: data().summary.tail_dry },
@@ -86,12 +87,12 @@ export default function Convergence(props: TabProps) {
         <Strip data={data()} />
       </Show>
     </Section>
-    <Section title={`Repeated identical calls (${data().clusters.length} of ${data().clusters_total})`}>
-      <Rows label="Repeated identical calls" rows={data().clusters} identity={['label', 'first']} empty="No call repeated 3 or more times."
+    <Section title={`Runs of identical calls · ${listed(data().clusters.length, data().clusters_total)}`}>
+      <Rows label="Repeated identical calls" rows={data().clusters} identity={['label', 'first']} empty={figures().noRepeatRun}
         columns={['label', 'calls', 'failed', ['first', 'First request', 'number'], ['last', 'Last request', 'number']]} />
     </Section>
-    <Section title={`Retry runs (${data().retry_runs.length} of ${data().retry_runs_total})`}>
-      <Rows label="Retry runs" rows={data().retry_runs} identity={['first']} empty="No retries after errors."
+    <Section title={`Retry runs · ${listed(data().retry_runs.length, data().retry_runs_total)}`}>
+      <Rows label="Retry runs" rows={data().retry_runs} identity={['first']} empty={figures().noRetryRun}
         columns={[['first', 'First request', 'number'], ['last', 'Last request', 'number'], 'retries']} />
     </Section>
     <Section title="Most edited files">
@@ -100,5 +101,5 @@ export default function Convergence(props: TabProps) {
     </Section>
     <Definitions items={data().definitions} title="How each signal is defined (heuristics)" />
     <QueryDetails query={data().query} copy={ctx.copy} />
-  </>}</Resource>
+  </>}}</Resource>
 }
