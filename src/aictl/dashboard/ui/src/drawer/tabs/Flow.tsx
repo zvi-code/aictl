@@ -10,11 +10,11 @@ import { Tooltip } from '../../ui/Tooltip'
 import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
 import { createHover, HoverCard, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { FLOW_PAGE, flowPages } from '../flowPages'
-import { barScale, definitions, lanesFor, layoutOf, openingRow, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
+import { barScale, definitions, lanesFor, layoutOf, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
 import {
   arrangeLanes, clampWidth, emptyWidths, fitWidths, hideLane, moveLane, readWidths, resolveWidths, writeWidths, type WidthState,
 } from '../flowWidths'
-import { agentPath, labelOf, openAgent, Resource, type Reference, type TabProps } from '../shared'
+import { agentPath, labelOf, openAgent, Resource, type TabProps } from '../shared'
 import { kustoLink, saveFlowFilters } from '../kqlLink'
 import { watchedDetail } from '../liveAgent'
 import { flowStatus } from '../sessionSpan'
@@ -35,9 +35,6 @@ function pref(key: string, initial: string) {
   const [value, set] = createSignal(read() || initial)
   return [value, (next: string) => { set(next); try { localStorage.setItem(key, next) } catch { /* not kept */ } }] as const
 }
-
-const matches = (event: PlacedEvent, reference: Reference) =>
-  event[reference.field] === reference.id && (!reference.traceId || event.trace_id === reference.traceId)
 
 type Figure = { label: string; value: string; title: string; tone?: 'danger' }
 
@@ -172,12 +169,13 @@ export default function Flow(props: TabProps) {
     if (step) { select(step.id); setReveal({ id: step.id }) }
   }
   // A reference from another tab selects its step, reading older windows until the event is loaded.
-  let found: Reference | undefined
-  createEffect(() => ({ reference: props.entry.flowRef, events: model().events, oldest: pages.oldest(),
+  let found: object | undefined
+  const reference = createMemo(() => props.entry.flowRef ?? (props.entry.failedAt != null ? { field: 'failed_at', id: String(props.entry.failedAt) } : undefined))
+  createEffect(() => ({ reference: reference(), events: model().events, oldest: pages.oldest(),
     failed: pages.problem(), ready: read()?.data != null }), current => {
     const reference = current.reference
     if (!reference || !current.ready || found === reference) return
-    const event = current.events.find(item => matches(item, reference))
+    const event = current.events.find(item => matchesReference(item, reference))
     if (event) { found = reference; setMissing(false); show(event); return }
     if (current.oldest > 0 && !current.failed) void pages.loadOlder()
     else setMissing(true)

@@ -23,7 +23,8 @@ export const records = (value: unknown): Row[] | undefined => Array.isArray(valu
   (item): item is Row => typeof item === 'object' && item !== null && !Array.isArray(item)) : undefined
 
 export type Reference = { field: 'step_key' | 'turn_id' | 'request_id' | 'message_id' | 'tool_call_id' | 'span_id' | 'round_id' | 'trace_id'; id: string; traceId?: string }
-export type AgentEntry = Extract<DrawerEntry, { type: 'agent' }> & { flowRef?: Reference; turnId?: string }
+/** `failedAt`: open Flow at the failed call or request that happened at this time (seconds), as the Failures tab lists it. */
+export type AgentEntry = Extract<DrawerEntry, { type: 'agent' }> & { flowRef?: Reference; turnId?: string; failedAt?: number }
 export type TabProps = {
   shell: DrawerProps
   entry: AgentEntry
@@ -97,6 +98,8 @@ export function Rows<T extends object>(props: {
   action?: { label: (row: T) => string; run: (row: T) => void }; empty?: string
   /** Run the action from this column's cell instead of a separate Actions column. */
   actionColumn?: string
+  /** More cell actions, by column key, besides the one of `actionColumn`. */
+  columnActions?: Readonly<Record<string, { label: (row: T) => string; run: (row: T) => void }>>
   /** Text shown on hover for a column's cell, by column key. */
   hints?: Readonly<Record<string, (row: T) => string | undefined>>
 }) {
@@ -115,6 +118,7 @@ export function Rows<T extends object>(props: {
           : format === 'usd' ? fmtUsd(n) : format === 'ms' ? fmtMs(n) : fmtN(n)
       } } : {}),
       ...(key === props.actionColumn ? { action: props.action } : {}),
+      ...(props.columnActions?.[key] ? { action: props.columnActions[key] } : {}),
       ...(props.hints?.[key] ? { hint: props.hints[key] } : {}),
     }
   })
