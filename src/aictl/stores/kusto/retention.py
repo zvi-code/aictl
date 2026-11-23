@@ -21,7 +21,7 @@ from .client import Result, quote
 from .health_metadata import _retention_days
 from .tables import TABLE_RETENTION_CLASS, format_period, tables_with_retention
 
-POLICY_QUERY = ".show tables details | project TableName, RetentionPolicy, TotalRowCount, TotalExtentSize, DocString"
+POLICY_QUERY = ".show tables details | project TableName, RetentionPolicy, TotalExtentSize, DocString"
 
 Command = Callable[[str], Result]
 
@@ -32,8 +32,7 @@ class TableRetention:
     retention_class: str
     configured_hours: int
     cluster_hours: float | None  # None: the table is not on the cluster, or has no soft-delete period
-    rows: int = 0
-    extent_bytes: int = 0
+    extent_bytes: int = 0  # sealed extents only: rows not yet sealed are in no size
     logical: str = ""
     node_key: str | None = None  # None: a table named like the logical one (shared, or a collector's)
 
@@ -86,8 +85,7 @@ def status(hours_by_class: Mapping[str, int], mgmt: Command) -> list[TableRetent
         logical, key = found
         seen.add(logical)
         out.append(TableRetention(name, TABLE_RETENTION_CLASS[logical], tables[logical].retention_period_hours,
-                                  _hours(row.get("RetentionPolicy")), int(row.get("TotalRowCount") or 0),
-                                  int(row.get("TotalExtentSize") or 0), logical, key))
+                                  _hours(row.get("RetentionPolicy")), int(row.get("TotalExtentSize") or 0), logical, key))
     for name, table in sorted(tables.items()):
         if name not in seen:
             out.append(TableRetention(name, TABLE_RETENTION_CLASS[name], table.retention_period_hours, None,

@@ -747,12 +747,12 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl memory stashes --root .` | List per-profile memory stashes |
 | `aictl db stats` | Show current logical counts, time range, and separate physical extent metadata |
 | `aictl db schema` | Print the Kusto table keys, columns, retention, and ingestion modes (`--markdown`, `--json`) |
-| `aictl db layout [--nodes]` | The stored layout of this node, the layout this aictl needs, the verdict, every node and the changelog; `--nodes` adds each node's tables |
+| `aictl db layout [--nodes]` | The stored layout of this node, the layout this aictl needs, the verdict, every node and the changelog; `--nodes` counts the rows by query and adds each node's tables, rows and last ingestion |
 | `aictl db migrate --dry-run` | Show each migration step, its commands and the rows it changes; change nothing |
 | `aictl db migrate --yes` | Upgrade the stored data to this aictl's layout and keep the history. Stop every writer first. See [Upgrading](#upgrading-and-migrating-the-stored-data) |
 | `aictl db migrate --take-over` | Continue a migration that another node started and stopped |
 | `aictl db migrate --drop-legacy` | Drop the `legacy__*` tables a finished migration kept |
-| `aictl db retention` | Show how long each class of data is kept, as configured and on the cluster, with table sizes |
+| `aictl db retention` | Show how long each class of data is kept, as configured and on the cluster, with table sizes (sealed extents only) |
 | `aictl db retention set CLASS PERIOD` | Keep a class for a period, such as `24h` or `365d` |
 | `aictl db trim-text` | Soft-delete records from text tables for this node |
 | `aictl db reimport-sessions --resumed` | Read again, at the next start, only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |

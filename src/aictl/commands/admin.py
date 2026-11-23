@@ -307,42 +307,60 @@ def _size(value) -> str:
     return "-" if value is None else f"{int(value) / 1e6:,.1f} MB"
 
 
-def _print_nodes(state, settings, *, details: bool, echo=click.echo) -> None:
+def _sealed(size, rows) -> str:
+    """The size of the sealed extents; rows that are not sealed yet are in no size, so it is not shown as 0."""
+    return "none sealed yet" if rows and not int(size or 0) else _size(size)
+
+
+def _print_nodes(state, settings, *, details: bool, counts=None, echo=click.echo) -> None:
+    """The nodes. *counts* (table -> (rows, newest ingestion)) comes from queries, only with ``--nodes``.
+
+    Table details leave out rows still in the row store and in unsealed extents, so they give
+    neither a row count nor a last ingestion: without *counts* those columns are not printed.
+    """
     nodes = state.node_list()
     excluded = [n for n in nodes if not n["included"]]
     echo(f"\nNodes: {len(nodes)}, {len(excluded)} not included in aggregate reads")
-    echo(f"  {'Node':<34} {'Key':<30} {'Layout':>6} {'Tables':>6} {'Rows':>12} {'Size':>12}  Last ingestion       "
-         "Included")
+    counted = counts is not None
+    head = f"  {'Node':<34} {'Key':<30} {'Layout':>6} {'Tables':>6} "
+    echo(head + (f"{'Rows':>12} {'Sealed size':>15}  {'Last ingestion':<24}" if counted else "") + "Included")
     for node in nodes:
         mine = " (this node)" if node["node_key"] == N.node_key(settings.node_id) else ""
         layout = "-" if node["version"] is None else str(node["version"])
-        last = str(node["last_ingestion"] or "-")[:19]
         included = "yes" if node["included"] else f"no: {node['reason']}"
-        echo(f"  {(node['node_id'] if node['node_id'] is not None else '?') + mine:<34} {node['node_key']:<30} "
-             f"{layout:>6} {node['tables']:>6} {node['rows']:>12,} {_size(node['size_bytes']):>12}  {last:<20} "
-             f"{included}")
+        line = (f"  {(node['node_id'] if node['node_id'] is not None else '?') + mine:<34} {node['node_key']:<30} "
+                f"{layout:>6} {node['tables']:>6} ")
+        if counted:
+            mine_counts = [counts[name] for name in state.nodes[node["node_key"]].tables.values()]
+            rows = sum(n for n, _ in mine_counts)
+            newest = max((t for _, t in mine_counts if t is not None), default=None)
+            line += f"{rows:>12,} {_sealed(node['size_bytes'], rows):>15}  {N.utc_text(newest):<24}"
+        echo(line + included)
         if node["data_epoch"]:
             echo(f"    data epoch {node['data_epoch']}")
-        if details:
+        if details and counted:
             mine_node = state.nodes[node["node_key"]]
             for logical, name in sorted(mine_node.tables.items()):
                 row = state.details.get(name, {})
-                count = row.get("TotalRowCount")
-                echo(f"      {logical:<38} {'-' if count is None else f'{int(count):,}':>12} rows "
-                     f"{int(row.get('TotalExtents') or 0):>5} extents {_size(row.get('TotalExtentSize')):>12}  "
-                     f"{str(row.get('MaxExtentsCreationTime') or '-')[:19]}")
+                rows, newest = counts[name]
+                echo(f"      {logical:<38} {rows:>12,} rows {int(row.get('TotalExtents') or 0):>5} sealed extents "
+                     f"{_sealed(row.get('TotalExtentSize'), rows):>15}  {N.utc_text(newest)}")
+    if not counted:
+        echo("\nRow counts, sizes and last ingestion are read from the tables: run aictl db layout --nodes.")
     if state.legacy:
-        echo(f"\nShared tables of layout 1 not yet migrated: {len(state.legacy)} "
-             f"({sum(r or 0 for r in state.legacy.values()):,} rows)")
+        echo(f"\nShared tables of layout 1 not yet migrated: {len(state.legacy)}"
+             + (f" ({sum(counts[n][0] for n in state.legacy):,} rows)" if counted else "."))
     if state.renamed:
-        size = sum(int(state.details.get(n, {}).get("TotalExtentSize") or 0) for n in state.renamed)
-        echo(f"\nLegacy shared tables kept by the migration: {len(state.renamed)} tables, "
-             f"{sum(r or 0 for r in state.renamed.values()):,} rows, {_size(size)}. "
-             "Remove them with: aictl db migrate --drop-legacy")
+        echo(f"\nLegacy shared tables kept by the migration: {len(state.renamed)} tables"
+             + (f", {sum(counts[n][0] for n in state.renamed):,} rows, sealed size "
+                f"{_sealed(sum(int(state.details.get(n, {}).get('TotalExtentSize') or 0) for n in state.renamed), sum(counts[n][0] for n in state.renamed))}"
+                if counted else "")
+             + ". Remove them with: aictl db migrate --drop-legacy")
 
 
 @db.command()
-@click.option("--nodes", "show_nodes", is_flag=True, help="Also list each node's tables: rows, extents, size, "
+@click.option("--nodes", "show_nodes", is_flag=True, help="Count the rows of every table by query and list each "
+                                                           "node's tables: rows, sealed extents and size, "
                                                            "last ingestion")
 @_store_options
 @click.pass_context
@@ -350,11 +368,13 @@ def layout(ctx, show_nodes, kusto_cluster, kusto_database):
     """Show this node's stored layout, this aictl's layout, the verdict, every node and the changelog."""
     from ..stores.kusto import layout as L
     from ..stores.kusto.client import KustoClientFactory
-    from ..stores.kusto.schema import SHARED, check_layout
+    from ..stores.kusto.schema import SHARED, check_layout, count_tables, querying
 
     settings = _target_settings(ctx, kusto_cluster, kusto_database)
     try:
-        state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
+        client = KustoClientFactory.client(settings)
+        query = querying(client, settings.database)
+        state = check_layout(client, settings.database, settings.node_id)
     except StoreError as exc:
         raise click.ClickException(str(exc)) from exc
     stored, verdict = state.stored, state.verdict
@@ -373,7 +393,16 @@ def layout(ctx, show_nodes, kusto_cluster, kusto_database):
     click.echo(f"Verdict:             {verdict}")
     if verdict not in L.COMPATIBLE:
         click.echo("\n" + str(state.error(settings.cluster, settings.database)))
-    _print_nodes(state, settings, details=show_nodes)
+    counts = None
+    if show_nodes:
+        counts = {}
+        try:
+            for names in [*(node.tables.values() for _, node in sorted(state.nodes.items())),
+                          [*state.legacy, *state.renamed]]:
+                counts.update(count_tables(query, names))
+        except StoreError as exc:
+            raise click.ClickException(str(exc)) from exc
+    _print_nodes(state, settings, details=show_nodes, counts=counts)
     click.echo("\nChangelog:")
     for line in L.changelog_lines():
         click.echo(line)
@@ -406,7 +435,7 @@ def migrate(ctx, dry_run, yes, take_over, slice_days, drop_legacy, kusto_cluster
         click.echo(f"These shared tables of layout 1 were kept by the migration in {settings.database} on "
                    f"{settings.cluster}; each node's rows are in its own tables:")
         for name, rows, size in tables:
-            click.echo(f"  {name:48s} {'unknown' if rows is None else f'{rows:,}':>14s} rows {_size(size):>12}")
+            click.echo(f"  {name:48s} {rows:>14,} rows {_sealed(size, rows):>15}")
         if dry_run:
             click.echo("Dry run: nothing was dropped.")
             return
@@ -569,21 +598,21 @@ def retention(ctx):
         raise click.ClickException(str(exc)) from exc
     total = sum(row.extent_bytes for row in rows) or 1
     click.echo(f"Retention in {settings.uri} (set in [storage.retention] of {config_path()}):")
-    click.echo(f"  {'Class':<15} {'Kept':>6} {'Size MB':>11} {'Share':>6}")
+    click.echo(f"  {'Class':<15} {'Kept':>6} {'Sealed MB':>11} {'Share':>6}")
     for cls, value in hours.items():
         size = sum(row.extent_bytes for row in rows if row.retention_class == cls)
         click.echo(f"  {cls:<15} {format_period(value):>6} {size / 1e6:>11.1f} {100 * size / total:5.1f}%")
     click.echo(f"  A text value over large_payload_bytes = {threshold} keeps a preview; its full text is in "
                "text_payloads (class large_payload).")
     click.echo("")
-    click.echo(f"  {'Table':<38} {'Class':<14} {'Configured':>10} {'On cluster':>11} {'Rows':>12} {'MB':>10} {'Share':>6}"
+    click.echo(f"  {'Table':<38} {'Class':<14} {'Configured':>10} {'On cluster':>11} {'Sealed MB':>10} {'Share':>6}"
                "  Node")
     for row in sorted(rows, key=lambda r: (-r.extent_bytes, r.table)):
         cluster = "-" if row.cluster_hours is None else (
             format_period(int(row.cluster_hours)) if row.cluster_hours == int(row.cluster_hours) else f"{row.cluster_hours:g}h")
         note = "  differs" if row.differs else ""
         click.echo(f"  {row.table:<38} {row.retention_class:<14} {format_period(row.configured_hours):>10} {cluster:>11}"
-                   f" {row.rows:>12} {row.extent_bytes / 1e6:>10.1f} {100 * row.extent_bytes / total:5.1f}%"
+                   f" {row.extent_bytes / 1e6:>10.1f} {100 * row.extent_bytes / total:5.1f}%"
                    f"  {row.node_key or '-'}{note}")
     differing = sum(1 for row in rows if row.differs)
     if differing:

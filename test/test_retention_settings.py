@@ -198,6 +198,9 @@ class TestRetentionCommand:
         assert _line(result.output, "tool_invocations_text").split()[1:4] == ["tool_content", "24h", "24h"]
         assert "50.0%" in _line(result.output, "OTELPayloads")  # 4 MB of 8 MB
         assert cluster.commands == [kusto_retention.POLICY_QUERY]
+        # Table details leave out rows still in the row store: no row count, and the size says what it is.
+        assert "TotalRowCount" not in kusto_retention.POLICY_QUERY and "Rows" not in result.output
+        assert "Sealed MB" in result.output
 
     def test_raising_applies_without_asking(self, cluster, tmp_path):
         result = _run("set", "thinking", "365d")

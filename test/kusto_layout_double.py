@@ -109,9 +109,15 @@ class FakeKusto:
                        ("TotalExtentSize", "long"), ("MaxExtentsCreationTime", "string"),
                        ("RetentionPolicy", "string"), ("StreamingIngestionPolicy", "string"),
                        ("Folder", "string"), ("DocString", "string")]
-            return response(columns, [[name, 0 if name in self.unsealed else self.count(name),
-                                       1 if self.count(name) else 0, 100 * self.count(name),
-                                       "2026-11-22T00:00:00Z" if self.count(name) else None, retention(name),
+            def sealed(name):
+                return bool(self.count(name)) and name not in self.unsealed
+
+            # Rows in the row store (or in unsealed extents) are in no total, and the cluster
+            # reports the empty creation time, year 1, for a table without sealed extents.
+            return response(columns, [[name, self.count(name) if sealed(name) else 0, 1 if sealed(name) else 0,
+                                       100 * self.count(name) if sealed(name) else 0,
+                                       "2026-11-22T00:00:00Z" if sealed(name) else "0001-01-01T00:00:00Z",
+                                       retention(name),
                                        json.dumps({"IsEnabled": True}), spec["folder"], spec["docstring"]]
                                       for name, spec in self.tables.items()])
         if text.startswith(".show functions"):
@@ -205,6 +211,10 @@ class FakeKusto:
                 rows = [r for r in rows if r["_day"] == day.group(1)]
         return rows
 
+    def _newest(self, name):
+        days = [r["_day"] for r in self.tables[name]["data"] if r["_day"]]
+        return f"{max(days)}T23:00:00Z" if days else None
+
     def _checksum(self, rows):
         return sum(hash(("row", r["node_id"], r["_id"])) % 1_000_000_007 for r in rows)
 
@@ -235,6 +245,12 @@ class FakeKusto:
             name = match.group(1) or match.group(2)
             rows = self._where(name, match.group(3))
             return response([("n", "long"), ("h", "long")], [[len(rows), self._checksum(rows)]])
+        if text.startswith("union (table("):  # the row count and newest ingestion of several tables
+            legs = re.findall(r'\(table\("(\w+)"\) \| summarize n=count\(\), newest=max\(ingestion_time\(\)\)'
+                              r' \| extend t="(\w+)"\)', text)
+            assert legs and all(a == b for a, b in legs), text
+            return response([("t", "string"), ("n", "long"), ("newest", "datetime")],
+                            [[name, self.count(name), self._newest(name)] for name, _ in legs])
         if match := re.match(rf"{_NAME} \| count$", text):
             return response([("Count", "long")], [[self.count(match.group(1)) if match.group(1) in self.tables else 0]])
         if text.endswith("| count"):

@@ -252,11 +252,18 @@ def migrate_store(settings, *, dry_run: bool, echo=print, take_over: bool = Fals
     return verdict, status
 
 
-def legacy_tables(settings) -> list[tuple[str, int | None, int]]:
-    """The shared tables the node_tables migration kept (legacy__*): name, rows, extent bytes."""
-    state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
-    return [(name, rows, int(state.details.get(name, {}).get("TotalExtentSize") or 0))
-            for name, rows in sorted(state.renamed.items())]
+def legacy_tables(settings) -> list[tuple[str, int, int]]:
+    """The shared tables the node_tables migration kept (legacy__*): name, rows, sealed extent bytes.
+
+    The rows are counted by query: table details leave out rows still in the row store.
+    """
+    from .schema import count_tables, querying
+
+    client = KustoClientFactory.client(settings)
+    state = check_layout(client, settings.database, settings.node_id)
+    counts = count_tables(querying(client, settings.database), state.renamed)
+    return [(name, counts[name][0], int(state.details.get(name, {}).get("TotalExtentSize") or 0))
+            for name in sorted(state.renamed)]
 
 
 def drop_legacy(settings, tables: list[str]) -> str:

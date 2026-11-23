@@ -749,9 +749,74 @@ def test_db_layout_shows_the_legacy_tables_after_the_migration(monkeypatch):
     ensure(fake, migrate=migrations.runner(fake, "db"))
     monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
     monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: SETTINGS)
-    result = CliRunner().invoke(db, ["layout"])
+    result = CliRunner().invoke(db, ["layout", "--nodes"])
     assert "Legacy shared tables kept by the migration: 3 tables, 12 rows" in result.output
     assert "aictl db migrate --drop-legacy" in result.output
+
+
+def _layout_output(monkeypatch, fake, *args):
+    from aictl.commands.admin import db
+
+    monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: SETTINGS)
+    result = CliRunner().invoke(db, ["layout", *args])
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def _node_line(output):
+    return next(line for line in output.splitlines() if "(this node)" in line)
+
+
+def test_db_layout_nodes_counts_rows_the_table_details_leave_out(monkeypatch):
+    """Rows in the row store are in no TotalRowCount and the creation time is year 1 (seen on a real cluster)."""
+    fake = started("node-a", rows=7)
+    fake.unsealed = set(fake.tables)
+    output = _layout_output(monkeypatch, fake, "--nodes")
+    line = _node_line(output)
+    assert re.search(r"\s7\s", line), line
+    assert "2026-11-01 23:00:00 UTC" in line
+    assert "-62135596800" not in output and "0001-01-01" not in output
+    assert re.search(r"requests\s+7 rows\s+0 sealed extents\s+none sealed yet", output)
+    assert "0.0 MB" not in line  # rows that are not sealed are not a size of 0
+
+
+def test_db_layout_nodes_says_unknown_for_a_last_ingestion_the_cluster_does_not_report(monkeypatch):
+    fake = started("node-a", rows=0)
+    output = _layout_output(monkeypatch, fake, "--nodes")
+    assert "unknown" in _node_line(output) and "-62135596800" not in output and "0001-01-01" not in output
+
+
+def test_db_layout_without_nodes_prints_no_row_count_and_no_raw_time(monkeypatch):
+    fake = started("node-a", rows=7)
+    fake.unsealed = set(fake.tables)
+    output = _layout_output(monkeypatch, fake)
+    assert "Rows" not in output and "0.0 MB" not in output and "-62135596800" not in output
+    assert "aictl db layout --nodes" in output
+
+
+def test_db_layout_counts_the_legacy_tables_by_query_with_nodes(monkeypatch):
+    fake = migrated_fake()
+    ensure(fake, migrate=migrations.runner(fake, "db"))
+    fake.unsealed = set(fake.tables)
+    output = _layout_output(monkeypatch, fake, "--nodes")
+    assert "Legacy shared tables kept by the migration: 3 tables, 12 rows, sealed size none sealed yet" in output
+    plain = _layout_output(monkeypatch, fake)
+    assert "Legacy shared tables kept by the migration: 3 tables. Remove" in plain and "12 rows" not in plain
+
+
+def test_db_migrate_drop_legacy_shows_the_real_row_counts(monkeypatch):
+    from aictl.commands.admin import db
+
+    fake = migrated_fake()
+    ensure(fake, migrate=migrations.runner(fake, "db"))
+    fake.unsealed = set(fake.tables)
+    monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
+    monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: SETTINGS)
+    result = CliRunner().invoke(db, ["migrate", "--drop-legacy"], input="n\n")
+    assert re.search(r"legacy__requests\s+10 rows none sealed", result.output), result.output
+    assert re.search(r"legacy__tool_invocations\s+2 rows none sealed", result.output)
+    assert re.search(r"legacy__sessions\s+0 rows\s+0.0 MB", result.output)  # a table that is empty says so
 
 
 def test_db_reset_lists_this_nodes_tables_and_needs_a_yes(monkeypatch):

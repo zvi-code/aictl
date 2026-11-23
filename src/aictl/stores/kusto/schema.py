@@ -355,6 +355,27 @@ def _rows_in(query: Query, names: set[str]) -> bool:
     return bool(rows and int(rows[0].get("Count") or 0))
 
 
+def count_query(names: Iterable[str]) -> str:
+    """One query: the row count and newest ingestion time of each table, in one row per table."""
+    legs = ", ".join(f"(table({json.dumps(name)}) | summarize n=count(), newest=max(ingestion_time())"
+                     f" | extend t={json.dumps(name)})" for name in sorted(names))
+    return f"union {legs}"
+
+
+def count_tables(query: Query, names: Iterable[str]) -> dict[str, tuple[int, float | None]]:
+    """Table -> (rows, newest ingestion time as epoch seconds; None if there is none), counted by query.
+
+    Table details leave out rows still in the row store and in extents not yet sealed, so they
+    are never the row count of a table. This reads the tables: one request for all of *names*.
+    """
+    names = sorted(names)
+    if not names:
+        return {}
+    result = query(count_query(names), "Count the rows of the tables").dicts()
+    found = {str(row["t"]): (int(row.get("n") or 0), row.get("newest")) for row in result}
+    return {name: found.get(name, (0, None)) for name in names}
+
+
 def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
     """Read the schema, the table details, the functions and the registry. Changes nothing."""
     have: dict[str, dict[str, str]] = {}

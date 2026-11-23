@@ -205,3 +205,24 @@ def registry_function_command() -> str:
 def table_counts(details: Mapping[str, Mapping]) -> dict[str, int | None]:
     return {name: None if row.get("TotalRowCount") is None else int(row["TotalRowCount"])
             for name, row in details.items()}
+
+
+def utc_text(value: object) -> str:
+    """A time as ``2026-11-22 21:14:03 UTC``; "unknown" when the cluster reports none or the empty time (year 1)."""
+    from datetime import datetime, timezone
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return "unknown"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            value = datetime.fromtimestamp(value, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return "unknown"
+    if not isinstance(value, datetime) or value.year <= 1:
+        return "unknown"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
