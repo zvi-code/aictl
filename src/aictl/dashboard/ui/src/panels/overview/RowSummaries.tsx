@@ -65,11 +65,12 @@ export const workflowSummary: Summary = rows => {
 
 export const loopOptions = ({ ctx, def }: PanelProps): VisualRowOptions => ({
   result: () => ctx.read(def.sources[0]),
-  summary: rows => <>
+  // With no loop the panel's one empty line says so; zero tiles and an empty day chart add nothing.
+  summary: rows => <Show when={rows()?.length}>
     <FieldStats label="Loop summary" ctx={ctx} columns={[
       { path: 'count', label: 'Loops' }, ...def.columns.slice(3, 6),
     ]} value={{ count: rows()?.length, repeats: sum(rows(), 'repeats'),
       tokens: sum(rows(), 'tokens'), cost_usd: sum(rows(), 'cost_usd') }} />
     <DailySummary label="Listed loops by start day" rows={rows()} path="since_ts" />
-  </>,
+  </Show>,
 })
