@@ -14,17 +14,22 @@ export default function NativeOutput(props: TabProps) {
     const id = session()
     return id && props.shell.ctx.scope() === 'local' ? nativeOutput(store, id) : []
   })
+  // The time of the newest line the tail holds.
+  const newest = () => entries().reduce<number | undefined>((latest, entry) => {
+    const ts = (entry.data as TopicRuntimeOutput).ts
+    return typeof ts === 'number' && (latest == null || ts > latest) ? ts : latest
+  }, undefined)
   const capture = () => store.meta.capabilities?.capture_mode ?? props.shell.ctx.board('capture_mode')
   const retained = (data: TopicRuntimeOutput) => (capture() == null || capture() === 'full') &&
     data.content_retained === true && !data.text_suppressed
   return <Section title="Native output">
     <Show when={props.shell.ctx.scope() === 'local' && session()} fallback={<PanelState state="unavailable" />}>
       <Stats items={[{ label: 'Live entries', value: store.meta.ready ? entries().length : undefined }]} />
-      <Show when={props.shell.ctx.client.status.error}><PanelState state="stale" message="The live connection was interrupted." /></Show>
+      <Show when={props.shell.ctx.client.status.error}><PanelState state="stale" message="The live connection was interrupted." updatedAt={newest()} /></Show>
       <Show when={entries().length} fallback={<PanelState state={store.meta.ready ? 'empty' : 'loading'}
         message={store.meta.ready ? 'No entries in the live tail.' : undefined} />}>
         <Show when={store.meta.orderedGap || entries().some(entry => entry.data.tail_truncated)}>
-          <PanelState state="stale" message="Only the recent tail is available; earlier entries may be missing." />
+          <PanelState state="stale" message="Only the recent tail is available; earlier entries may be missing." updatedAt={newest()} />
         </Show>
         <VirtualList label="Ordered native output" rows={entries()} identity={entry => entry.id} estimate={84}>
           {entry => {

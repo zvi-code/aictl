@@ -23,7 +23,8 @@ export function harness(routes: Routes, options: Options = {}) {
     filters: () => ({ range: { id: '24h' }, project: 'all', model: 'all', status: 'all', q: '', sel: undefined }),
     board: () => undefined, tools: () => undefined, startedAt: 1_800_000_000,
     copy: () => {},
-    client: { store: { topic: (name: string) => options.topics?.[name] ? new Map(options.topics[name].map((data, index) => [String(index), { data }])) : undefined } },
+    client: { status: { error: null }, store: { meta: { ready: true, orderedGap: false, capabilities: {} },
+      topic: (name: string) => options.topics?.[name] ? new Map(options.topics[name].map((data, index) => [String(index), { id: String(index), data }])) : undefined } },
     detail: <T,>(target: Accessor<string | undefined>) => {
       const read = () => {
         const value = target()
