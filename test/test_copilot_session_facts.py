@@ -209,3 +209,55 @@ def test_a_session_row_counts_the_files_its_outcome_row_counts():
     sessions = {r["session_id"]: r["files_modified"] for r in current(writer, "sessions")}
     outcomes = {r["session_id"]: r["files_changed"] for r in current(writer, "session_outcomes")}
     assert sessions == outcomes == {"cp-a": 13, "cp-b": 33}
+
+
+def worktree(tmp_path):
+    """A repository and a linked worktree of it, as git lays them out."""
+    repo = tmp_path / "kit"
+    (repo / ".git" / "worktrees" / "kit-doc").mkdir(parents=True)
+    tree = tmp_path / "kit-doc"
+    tree.mkdir()
+    (tree / ".git").write_text(f"gitdir: {repo}/.git/worktrees/kit-doc\n")
+    return repo, tree
+
+
+def claude_call(writer_buf, tree, call: str, command: str, stdout: str, seconds: float, *, failed: bool = False):
+    from aictl.ingesters.call_facts import ClaudeFacts
+
+    facts = ClaudeFacts(writer_buf)
+    base = {"sessionId": "cc-session", "cwd": str(tree), "gitBranch": "HEAD"}
+    facts.feed("cc-session", {**base, "type": "assistant", "uuid": f"a-{call}", "timestamp": at(seconds), "message": {
+        "role": "assistant", "id": f"m-{call}", "model": "claude-opus-5-5",
+        "content": [{"type": "tool_use", "id": call, "name": "Bash", "input": {"command": command}}]}})
+    facts.feed("cc-session", {**base, "type": "user", "uuid": f"u-{call}", "timestamp": at(seconds + 1),
+                              "toolUseResult": {"stdout": stdout, "stderr": "", "interrupted": False},
+                              "message": {"role": "user", "content": [
+                                  {"type": "tool_result", "tool_use_id": call, "content": stdout, "is_error": failed}]}})
+
+
+def test_a_commit_is_the_one_its_git_commit_output_names_under_the_worktrees_repository(tmp_path):
+    repo, tree = worktree(tmp_path)
+    writer = MemoryWriter()
+    buf = FactBuffer(SessionFacts(writer, keeps_text=lambda: True))
+    claude_call(buf, tree, "t1", "git add -A && git commit -m 'Add the doc types'",
+                "[doc-types 73e7a0c] Add the doc types\n 3 files changed, 40 insertions(+)\n", 10)
+    # Quiet: the output names no commit, so none is attributed, whatever happened in the folder then.
+    claude_call(buf, tree, "t2", "git commit -q -m 'Quiet'", "", 20)
+    claude_call(buf, tree, "t3", "git commit -m 'Fails'", "[main 1111111] Fails\n", 30, failed=True)
+    claude_call(buf, tree, "t4", "cat notes.txt", "[main 2222222] Not a commit\n", 40)
+    buf.flush()
+    rows = current(writer, "session_commits")
+    assert [(r["sha"], r["subject"], r["project"], r["session_id"]) for r in rows] == [
+        ("73e7a0c", "Add the doc types", str(repo), "cc-session")]
+
+
+def test_a_copilot_shell_call_reports_its_commit():
+    writer = read([
+        event("session.start", 0, {"context": {"cwd": "/work/kit"}}),
+        event("tool.execution_start", 1, {"toolCallId": "s1", "toolName": "bash",
+                                          "arguments": {"command": "git commit -am 'Fix the exporter'"}}),
+        event("tool.execution_complete", 2, {"toolCallId": "s1", "success": True, "result": {
+            "content": "[main (root-commit) 9f8e7d6] Fix the exporter\n 1 file changed\n"}}),
+    ], keep_text=False)
+    rows = current(writer, "session_commits")
+    assert [(r["sha"], r["subject"]) for r in rows] == [("9f8e7d6", "")]

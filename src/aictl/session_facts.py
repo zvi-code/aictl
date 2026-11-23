@@ -39,7 +39,7 @@ _FAMILIES = {
     "loaded_files": "session_loaded_files", "context_items": "session_context_items",
     "cost_links": "turn_request_links", "turns": "session_turns", "session_files": "session_files",
     "outcomes": "session_outcomes", "digests": "session_digests", "thinking": "session_thinking",
-    "file_versions": "file_history",
+    "file_versions": "file_history", "commits": "session_commits",
 }
 
 
@@ -736,7 +736,7 @@ class SessionFacts:
             for row in rows:
                 data = dict(row) if isinstance(row, dict) else asdict(row)
                 project = data.get("project_path", "")
-                if attr in ("loaded_files", "context_items", "digests", "thinking"):
+                if attr in ("loaded_files", "context_items", "digests", "thinking", "commits"):
                     data.pop("project_path", None)
                 if attr == "digests":
                     if not self.allows_text(row.ts):

@@ -818,10 +818,12 @@ class CallFacts:
     # Contents to keep once per hash in file_blobs: (hash, text, ts).
     blobs: list[tuple[str, str, float]] = field(default_factory=list)
     file_versions: list[FileVersionRow] = field(default_factory=list)
+    # session_commits rows: a commit a git commit call in the session reported making.
+    commits: list[dict[str, Any]] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.file_versions) + len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
+            len(self.commits) + len(self.file_versions) + len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
             + len(self.steps) + len(self.cost_links) + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)

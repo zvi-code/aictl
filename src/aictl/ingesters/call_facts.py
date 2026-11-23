@@ -57,7 +57,7 @@ from ..stores.base import StoreError
 from ..tool_targets import AGENT, FILE, describe_call, redact_secrets, split_mcp
 from ..utils import estimate_tokens_from_size
 from . import context_items, loaded_files
-from ._common import claude_line_finishes, coerce_ts, decode_file_uri
+from ._common import claude_line_finishes, coerce_ts, decode_file_uri, project_root
 from .session_outcomes import TRANSCRIPT as TRANSCRIPT_PART
 from .session_outcomes import _add_unique, digest_text, file_key
 from .transcript_steps import CopilotSteps, redact_step_text
@@ -332,6 +332,7 @@ class FactBuffer:
         self.blobs: dict[str, tuple[str, str, float]] = {}
         self.file_versions: dict[tuple, fact_rows.FileVersionRow] = {}
         self.outcomes: dict[str, dict] = {}
+        self.commits: dict[tuple[str, str], dict] = {}
         # Rows that sum up many lines (a turn, a file's use) change in place. They are marked
         # here when a line not stored before changes them, and copied when the buffer is written.
         self._marked: dict[tuple, Any] = {}
@@ -525,6 +526,11 @@ class FactBuffer:
         self.outcomes[row["session_id"]] = row
         self._maybe_flush()
 
+    def add_commit(self, row: dict) -> None:
+        if self._in_window(row["ts"]):
+            self.commits[(row["session_id"], row["sha"])] = row
+            self._maybe_flush()
+
     def _take_marked(self) -> None:
         for (kind, *key), row in self._marked.items():
             # Not _in_window: a flush can start while a line read again is being handled.
@@ -535,7 +541,7 @@ class FactBuffer:
     def __len__(self) -> int:
         return (
             len(self.file_versions) + len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests)
-            + len(self.outcomes)
+            + len(self.outcomes) + len(self.commits)
             + len(self._marked)
             + len(self.steps)
             + len(self.cost_links)
@@ -594,6 +600,7 @@ class FactBuffer:
             thinking=list(self.thinking.values()),
             blobs=list(self.blobs.values()),
             file_versions=list(self.file_versions.values()),
+            commits=list(self.commits.values()),
         )
         try:
             self.written += writer(facts)
@@ -616,6 +623,29 @@ class FactBuffer:
         self.thinking = {}
         self.blobs = {}
         self.file_versions = {}
+        self.commits = {}
+
+
+# The line git commit prints for the commit it made: "[<branch> <sha>] <subject>", "(root-commit)"
+# after the branch for a first commit. Its branch may say "detached HEAD".
+_COMMIT_LINE = re.compile(r"^\[(?P<branch>[^\]\n]+?)(?: \(root-commit\))? (?P<sha>[0-9a-f]{7,40})\] (?P<subject>.*)$", re.M)
+_GIT_COMMIT = re.compile(r"(?:^|[\s;&|(])git(?:\s+-C\s+\S+|\s+-c\s+\S+)*\s+commit\b")
+
+
+def commits_of(command: Any, output: Any, *, session_id: str, cwd: str, ts: float, keep_text: bool) -> list[dict]:
+    """The commits a successful shell call that ran ``git commit`` reports making: each
+    ``[branch sha] subject`` line of its output, a session_commits row under the repository that
+    holds *cwd* (a worktree's repository). Nothing is read from git and nothing is inferred from
+    time: a commit made with ``-q`` or whose output was not kept is not found. The subject is text,
+    kept only while text is kept; the author is not in the output and stays empty."""
+    if not isinstance(command, str) or not isinstance(output, str) or not _GIT_COMMIT.search(command):
+        return []
+    project = project_root(cwd)
+    rows = []
+    for m in _COMMIT_LINE.finditer(output):
+        rows.append({"session_id": session_id, "sha": m["sha"], "author_name": "", "author_email": "", "ts": ts,
+                     "subject": _redact(m["subject"][:300]) if keep_text else "", "project_path": project})
+    return rows
 
 
 def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> fact_rows.ContextItemRow:
@@ -795,6 +825,7 @@ COPILOT_IGNORED_EVENTS = {
     "system.notification": "a notice of the client",
 }
 AGENT_LABEL_MAX = 200
+_COPILOT_SHELLS = frozenset({"bash", "powershell"})
 
 
 def _config_value(value: Any) -> Any:
@@ -1619,6 +1650,12 @@ class ClaudeFacts:
             self.buffer.add_tool(row)
             if failed:
                 continue
+            if row.tool_name == "Bash":
+                result = obj.get("toolUseResult")
+                stdout = result.get("stdout") if isinstance(result, dict) else text
+                for commit in commits_of(args.get("command"), stdout, session_id=row.session_id, cwd=cwd, ts=ts,
+                                         keep_text=self.keep_text):
+                    self.buffer.add_commit(commit)
             if row.tool_name in _CLAUDE_WRITE_TOOLS:
                 self._file_edit(row, cwd, args, obj.get("toolUseResult"), ts)
             elif row.tool_name in _CLAUDE_READ_TOOLS and row.target_kind == FILE and row.target_id:
@@ -1813,6 +1850,8 @@ class CopilotFacts:
         self.turn = 0
         self._tasks: dict[str, tuple[str, dict[str, str]]] = {}
         self._views: dict[str, str] = {}
+        # The command of each shell call still running: its result may report a commit.
+        self._commands: dict[str, str] = {}
         self._summaries = 0
         self._compaction_count = 0
         self._todo_seq: dict[str, int] = {}
@@ -2432,6 +2471,8 @@ class CopilotFacts:
                                                if isinstance(args.get(k), str)})
         elif kind == FILE and name == "view" and target:
             self._views[call_id] = absolute_path(target, self.cwd)
+        if name in _COPILOT_SHELLS and isinstance(args.get("command"), str):
+            self._commands[call_id] = args["command"]
         row = fact_rows.ToolInvocationRow(
             dedup_key=self._tool_key(call_id),
             ts=ts,
@@ -2497,6 +2538,11 @@ class CopilotFacts:
         if row.tool_name in _PERSON_TOOLS:
             row.duration_ms = 0.0
         self.buffer.add_tool(row)
+        command = self._commands.pop(call_id, None)
+        if command is not None and not failed:
+            output = result.get("content") if isinstance(result, dict) else result
+            for commit in commits_of(command, output, session_id=self.sid, cwd=self.cwd, ts=ts, keep_text=self.keep_text):
+                self.buffer.add_commit(commit)
         viewed = self._views.pop(call_id, "")
         if viewed and not failed:
             # Writes are summed up by the tool itself in the store's ``session_files``.

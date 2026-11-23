@@ -508,16 +508,16 @@ Git commits made in a session's folder while the session ran.
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
-- Written by: `session_evidence.py` (`publish_commits`), from `git` in the session's folder
+- Written by: `session_evidence.py` (`publish_commits`), from `git` in the session's folder; `ingesters/call_facts.py` (`commits_of`), from the `[branch sha] subject` line a successful `git commit` shell call of the session printed (Claude Code `Bash`, Copilot CLI `bash`/`powershell`)
 
 | column | type | meaning |
 |---|---|---|
 | `session_id` | string | The session |
-| `sha` | string | Commit hash |
-| `author_name` | string | Commit author name |
-| `author_email` | string | Commit author email |
-| `ts` | real | Commit time, epoch seconds, UTC |
-| `subject` | string | First line of the commit message |
+| `sha` | string | Commit hash: the full hash from `git`, the abbreviated hash a `git commit` output printed |
+| `author_name` | string | Commit author name; "" for a commit read from a `git commit` output |
+| `author_email` | string | Commit author email; "" for a commit read from a `git commit` output |
+| `ts` | real | Commit time, epoch seconds, UTC; for a commit read from a `git commit` output, the time of the call's result |
+| `subject` | string | First line of the commit message; from a `git commit` output only while text is kept |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
