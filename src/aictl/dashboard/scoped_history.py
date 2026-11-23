@@ -82,6 +82,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
         artifact_details,
         board_filters,
         flow_projection,
+        insights,
         memory_views,
         projection_utils,
         session_details,
@@ -160,6 +161,9 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 for call in records["calls"]:
                     call["session_id"] = identity(node, raw)
             return result(200, {"node_id": label(node), **records})
+        if path in insights.ROUTES:
+            return result(*insights.insight(insights.ROUTES[path], board_filters.parse_filters(query, now), now,
+                                            history=history))
         if endpoint in {"mcp", "mcp/server", "convergence"}:
             from .board_routes import _pattern_view
 

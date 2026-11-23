@@ -28,10 +28,11 @@ import styles from './Shell.module.css'
 
 const Overview = lazy(() => import('./Overview'))
 const Health = lazy(() => import('./Health'))
+const Insights = lazy(() => import('./Insights'))
 const Settings = lazy(() => import('./Settings'))
 const Drawer = lazy(() => import('../drawer/DrawerView'))
-const screenNames = { board: 'Overview', health: 'Health', settings: 'Settings' }
-const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', settings: 'settings' }
+const screenNames = { board: 'Overview', health: 'Health', insights: 'Insights', settings: 'Settings' }
+const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', insights: 'spark', settings: 'settings' }
 const sectionGlyphs: Record<string, Glyph> = {
   top: 'top', usage: 'usage', agents: 'agents', sessions: 'clock', prompts: 'prompts', context: 'context', tools: 'tools',
   changes: 'changes', resources: 'resources', effect: 'effect', sources: 'sources',
@@ -415,6 +416,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
           <Switch>
             <Match when={screen() === 'board'}><Overview ctx={ctx} anchor={query().hash} order={sectionOrder} /></Match>
             <Match when={screen() === 'health'}><Health ctx={ctx} order={sectionOrder} /></Match>
+            <Match when={screen() === 'insights'}><Insights ctx={ctx} search={search()} /></Match>
             <Match when={screen() === 'settings'}><Settings ctx={ctx} /></Match>
           </Switch>
         </Loading>

@@ -1,0 +1,33 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Requests of the main agent against requests of subagents: a subagent request has an agent_id that is set
+// and differs from its session_id.
+let per_agent = materialize(requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, cost_usd
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | extend subagent=isnotempty(agent_id) and agent_id != session_id
+    | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), first_ts=min(ts),
+                last_ts=max(ts), tool=take_any(tool) by node_id, session_id, subagent, agent=iff(subagent, agent_id, ''));
+union
+    (per_agent
+        | summarize requests=sum(requests), priced=sum(priced), sum_cost=sum(sum_cost), agents=countif(subagent)
+              by tool, subagent
+        | extend row_type='split'),
+    (per_agent
+        | summarize main_priced=sumif(priced, not(subagent)), main_cost=sumif(sum_cost, not(subagent)),
+                    priced=sumif(priced, subagent), sum_cost=sumif(sum_cost, subagent), requests=sumif(requests, subagent),
+                    agents=countif(subagent), tool=take_any(tool) by node_id, session_id
+        | where agents > 0
+        | order by sum_cost desc, requests desc, node_id asc, session_id asc
+        | take 10
+        | extend row_type='session', main_cost=iff(main_priced == 0, real(null), main_cost)
+        | project-away main_priced),
+    (per_agent
+        | summarize first_ts=min(first_ts), last_ts=max(last_ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| extend cost_usd=iff(priced == 0, real(null), sum_cost)
+| project-away sum_cost
+| order by row_type asc, tool asc, subagent asc
+| take row_limit

@@ -1,0 +1,50 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// A tool result stays in the conversation and is sent again with every later request of the same session
+// and agent. Bytes carried = result bytes x later requests: an upper bound, since compaction and truncation
+// of the context are not counted. Only requests and calls in the period count.
+let reqs = requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | project node_id, session_id, agent_id, ts, is_request=1, tool='', tool_name='', output_bytes=long(null);
+let calls = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, output_bytes
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | project node_id, session_id, agent_id, ts, is_request=0, tool, tool_name, output_bytes;
+// At the same time, a request comes before the call it made.
+let steps = materialize(union reqs, calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, is_request desc
+    | extend restart=row_number() == 1 or prev(node_id) != node_id or prev(session_id) != session_id or prev(agent_id) != agent_id
+    | extend requests_so_far=row_cumsum(is_request, restart));
+let totals = steps | summarize total=sum(is_request) by node_id, session_id, agent_id;
+let carried = materialize(steps
+    | where is_request == 0
+    | lookup kind=inner totals on node_id, session_id, agent_id
+    | extend later=total - requests_so_far);
+union
+    (carried
+        | where isnotnull(output_bytes)
+        | summarize calls=count(), output_bytes=sum(output_bytes), later_requests=sum(later),
+                    carried_bytes=sum(todouble(output_bytes) * later) by tool, tool_name
+        | top 25 by carried_bytes desc
+        | extend row_type='tool_name'),
+    (carried
+        | summarize calls=count(), reported=countif(isnotnull(output_bytes)), output_bytes=sum(output_bytes),
+                    carried_bytes=sum(todouble(output_bytes) * later) by tool
+        | extend row_type='tool'),
+    (carried
+        | where isnotnull(output_bytes)
+        | summarize calls=count(), output_bytes=sum(output_bytes), carried_bytes=sum(todouble(output_bytes) * later),
+                    tool=take_any(tool) by node_id, session_id
+        | top 10 by carried_bytes desc
+        | extend row_type='session'),
+    (steps
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, carried_bytes desc
+| take row_limit

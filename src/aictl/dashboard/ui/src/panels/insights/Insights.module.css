@@ -1,0 +1,74 @@
+.screen { display: grid; gap: var(--space-6); padding: var(--space-6); min-inline-size: 0; }
+.heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-4) var(--space-6); }
+.heading h1 { margin: 0; font-size: var(--text-xl); }
+.heading p { margin: 0; color: var(--color-muted); font-size: var(--text-sm); }
+.range { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
+.range select {
+  font: inherit; color: var(--color-text); background: var(--color-surface);
+  border: var(--border-size) solid var(--color-border); border-radius: var(--radius-control); padding: var(--space-1) var(--space-3);
+}
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr)); gap: var(--space-6); align-items: start; }
+.card {
+  display: grid; gap: var(--space-4); padding: var(--space-6); min-inline-size: 0;
+  background: var(--color-surface); border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-md);
+}
+.card h2 { margin: 0; font-size: var(--text-lg); padding-inline-end: var(--space-8); }
+.meta { margin: 0; color: var(--color-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.finding { margin: 0; font-size: var(--text-md); font-weight: var(--weight-medium); line-height: var(--leading-normal); }
+.note { margin: 0; color: var(--color-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.disclosure { border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); min-inline-size: 0; }
+.disclosure > summary { cursor: pointer; font-size: var(--text-sm); }
+.disclosure[open] > summary { margin-block-end: var(--space-3); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-block-start: var(--space-3); font-size: var(--text-sm); }
+.actions button, .actions a {
+  font: inherit; color: var(--color-text); background: var(--color-surface); text-decoration: none;
+  border: var(--border-size) solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-3);
+}
+.actions span { color: var(--color-muted); }
+.actions button:focus-visible, .actions a:focus-visible, .range select:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
+
+/* Charts: one SVG per visual, coloured through tokens only. */
+.chart { inline-size: 100%; max-inline-size: 26rem; block-size: auto; display: block; overflow: visible; }
+.chart text { font-family: var(--font-ui); font-size: var(--text-xs); fill: var(--color-text); }
+.chart .muted { fill: var(--color-muted); }
+.axis { stroke: var(--color-border); stroke-width: 1; }
+.limit { stroke: var(--color-danger); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.chart .limitText { fill: var(--color-danger); }
+.s0 { fill: var(--color-chart-1); background: var(--color-chart-1); }
+.s1 { fill: var(--color-chart-2); background: var(--color-chart-2); }
+.s2 { fill: var(--color-chart-3); background: var(--color-chart-3); }
+.s3 { fill: var(--color-chart-4); background: var(--color-chart-4); }
+.unreported { fill: var(--color-border); background: var(--color-border); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); color: var(--color-muted); }
+.swatch { display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); margin-inline-end: var(--space-2); vertical-align: middle; }
+
+/* Paired and split bars. */
+.bars { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.barRow { display: grid; grid-template-columns: minmax(8rem, 13rem) 1fr; gap: var(--space-2) var(--space-4); align-items: center; font-size: var(--text-xs); min-inline-size: 0; }
+.barName { overflow-wrap: anywhere; }
+.barName small { display: block; color: var(--color-muted); }
+.barTrack { display: grid; gap: var(--space-1); min-inline-size: 0; }
+.bar { display: flex; align-items: center; gap: var(--space-2); min-inline-size: 0; font-variant-numeric: tabular-nums; }
+.fill { display: block; block-size: var(--space-4); border-radius: var(--radius-sm); flex: none; }
+.produced { background: var(--color-chart-3); }
+.carried { background: var(--color-chart-1); }
+.split { display: flex; block-size: var(--space-5); border-radius: var(--radius-sm); overflow: hidden; background: var(--color-raised); }
+.split > span { display: block; block-size: 100%; }
+.main { background: var(--color-chart-3); }
+.sub { background: var(--color-chart-2); }
+.first { background: var(--color-chart-3); }
+.again { background: var(--color-chart-2); }
+.splitText { color: var(--color-muted); font-variant-numeric: tabular-nums; }
+
+/* The flow after a failure: one band per outcome. */
+.flows { display: grid; gap: var(--space-5); grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); }
+.flow { display: grid; gap: var(--space-2); min-inline-size: 0; }
+.flow h3 { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.band { opacity: .55; }
+.band:hover { opacity: .85; }
+.node { fill: var(--color-text); }
+.o0 { fill: var(--color-danger); background: var(--color-danger); }
+.o1 { fill: var(--color-success); background: var(--color-success); }
+.o2 { fill: var(--color-chart-2); background: var(--color-chart-2); }
+.o3 { fill: var(--color-chart-3); background: var(--color-chart-3); }
+.o4 { fill: var(--color-chart-1); background: var(--color-chart-1); }

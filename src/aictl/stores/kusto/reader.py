@@ -272,6 +272,30 @@ _VIEWS = {
     ),
     "context.growth": (f"{_TIME} growth_points calendar_bins", "node_id ts mem_tokens memory_entries"),
     "context.telemetry": (f"{_TIME}", "node_id ts tool source confidence"),
+    "insights.pause_tax": (
+        _TIME,
+        "row_type tool bucket node_id session_id requests input_tokens cache_read_tokens cache_creation_tokens priced "
+        "cost_usd first_ts last_ts computed_at",
+    ),
+    "insights.context_carry": (
+        _TIME,
+        "row_type tool tool_name node_id session_id calls reported output_bytes later_requests carried_bytes first_ts "
+        "last_ts computed_at",
+    ),
+    "insights.subagents": (
+        _TIME,
+        "row_type tool subagent node_id session_id requests priced cost_usd main_cost agents first_ts last_ts computed_at",
+    ),
+    "insights.after_failure": (
+        _TIME,
+        "row_type tool outcome node_id session_id calls failures last_failures streaks streak_calls longest first_ts "
+        "last_ts computed_at",
+    ),
+    "insights.rereads": (
+        _TIME,
+        "row_type tool node_id session_id files reads repeat_reads files_5plus most_reads sized repeat_bytes unmatched "
+        "all_reads first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -358,7 +382,13 @@ _MAX_ROWS = 20_000
 # Each page of these views runs the whole query again, so one large page costs much less
 # than many small ones.
 _VIEW_MAX_ROWS = {"tools.activity_rows": 100_000}
-_CACHE_TTL_S = {"health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0}
+# Insights read months of rows: a short lifetime lets the screen and its retries share one answer.
+_INSIGHT_TTL_S = 120.0
+_CACHE_TTL_S = {
+    "health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0,
+    "insights.pause_tax": _INSIGHT_TTL_S, "insights.context_carry": _INSIGHT_TTL_S, "insights.subagents": _INSIGHT_TTL_S,
+    "insights.after_failure": _INSIGHT_TTL_S, "insights.rereads": _INSIGHT_TTL_S,
+}
 _NODE_STALE_MAX_S = 300.0
 _FAILURE_COOLDOWN_S = 5.0
 _CACHE_SIZE = 64

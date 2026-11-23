@@ -1,0 +1,38 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// File reads of a file the same session and agent already read in the period. A read is a call of a
+// file-read tool (the names tools.detail uses for skill reads); files compare by a hash of their path,
+// so no path leaves the cluster. A read with no recorded path cannot be compared and is counted apart.
+let read_calls = materialize(tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
+             target=column_ifexists('target', '')
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, output_bytes,
+              has_target=isnotempty(target), target_hash=hash(target)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | where tolower(tool_name) in ('read', 'view', 'read_file', 'readfile', 'view_file', 'open_file')
+    | project node_id, session_id, agent_id, ts, tool, output_bytes, has_target, target_hash);
+let per_file = materialize(read_calls
+    | where has_target
+    | summarize reads=count(), bytes=sum(output_bytes), sized=countif(isnotnull(output_bytes)), tool=take_any(tool)
+          by node_id, session_id, agent_id, target_hash);
+union
+    (per_file
+        | summarize files=count(), reads=sum(reads), repeat_reads=sum(reads - 1), files_5plus=countif(reads >= 5),
+                    most_reads=max(reads), sized=sum(sized),
+                    repeat_bytes=sum(iff(reads > 1 and sized > 0, todouble(bytes) * (reads - 1) / reads, 0.0)) by tool
+        | extend row_type='tool'),
+    (read_calls
+        | summarize unmatched=countif(not(has_target)), all_reads=count() by tool
+        | extend row_type='coverage'),
+    (per_file
+        | summarize repeat_reads=sum(reads - 1), reads=sum(reads), files_5plus=countif(reads >= 5), most_reads=max(reads),
+                    tool=take_any(tool) by node_id, session_id
+        | where repeat_reads > 0
+        | top 10 by repeat_reads desc
+        | extend row_type='session'),
+    (read_calls
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, tool asc
+| take row_limit

@@ -1,0 +1,48 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// What the next tool call of the same session and agent is after a failed call, and runs of consecutive
+// failed calls. Calls compare by tool name and a hash of their target, so no target text leaves the cluster.
+let calls = tool_invocations
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
+             target_hash=hash(column_ifexists('target', ''))
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, is_error, target_hash
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | project node_id, session_id, agent_id, ts, fact_key, tool, tool_name, failed=coalesce(is_error, 0) == 1, target_hash;
+let ordered = materialize(calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, fact_key asc
+    | extend has_next=next(node_id) == node_id and next(session_id) == session_id and next(agent_id) == agent_id,
+             next_name=next(tool_name), next_hash=next(target_hash), next_failed=next(failed),
+             restart=row_number() == 1 or prev(node_id) != node_id or prev(session_id) != session_id
+                 or prev(agent_id) != agent_id or not(failed) or not(prev(failed))
+    | extend run=row_cumsum(toint(restart)));
+let runs = materialize(ordered
+    | where failed
+    | summarize calls=count(), tool=take_any(tool), node_id=take_any(node_id), session_id=take_any(session_id) by run
+    | where calls >= 3);
+union
+    (ordered
+        | where failed and has_next
+        | extend outcome=case(
+            next_name == tool_name and next_hash == target_hash and next_failed, 'identical_failed',
+            next_name == tool_name and next_hash == target_hash, 'identical_succeeded',
+            next_name == tool_name and next_failed, 'changed_failed',
+            next_name == tool_name, 'changed_succeeded',
+            'other_tool')
+        | summarize calls=count() by tool, outcome
+        | extend row_type='outcome'),
+    (ordered
+        | summarize calls=count(), failures=countif(failed), last_failures=countif(failed and not(has_next)) by tool
+        | extend row_type='tool'),
+    (runs
+        | summarize streaks=count(), streak_calls=sum(calls), longest=max(calls) by tool
+        | extend row_type='streaks'),
+    (runs
+        | summarize longest=max(calls), streaks=count(), streak_calls=sum(calls), tool=take_any(tool) by node_id, session_id
+        | top 10 by longest desc
+        | extend row_type='session'),
+    (ordered
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, tool asc, outcome asc
+| take row_limit

@@ -3,7 +3,7 @@
 // screen), project, model, status, q, and sel (a selected time, "since-until").
 import { parseUrlState, rangeToParams, type Range, type TimeWindow } from './urlState';
 
-export type Screen = 'board' | 'health' | 'settings';
+export type Screen = 'board' | 'health' | 'insights' | 'settings';
 export type Filters = ReturnType<typeof parseFilters>;
 type Tools = readonly string[] | null;
 
@@ -20,7 +20,7 @@ const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 const DEFAULT_RANGE = '24h';
 export function readScreen(search: string): Screen {
   const screen = new URLSearchParams(search).get('screen');
-  return screen === 'settings' || screen === 'health' ? screen : 'board';
+  return screen === 'settings' || screen === 'health' || screen === 'insights' ? screen : 'board';
 }
 
 export function boardLiveRequest(filters: Filters, tools: Tools, screen: Screen, now: number) {
@@ -29,7 +29,7 @@ export function boardLiveRequest(filters: Filters, tools: Tools, screen: Screen,
       ? { since: Math.floor(filters.sel.since), until: Math.floor(filters.sel.until) }
       : windowOf(filters.range, now)),
     history: screen === 'board',
-    requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'settings'
+    requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'insights' ? ['runtime.machine'] : screen === 'settings'
       ? ['configuration.file'] : ['history.board', 'runtime.machine'],
   };
 }

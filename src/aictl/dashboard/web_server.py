@@ -19,6 +19,7 @@ from .board_routes import BoardRoutes
 from .http_assets import AssetRoutes
 from .http_request import RequestMethods, _local_request
 from .http_response import ResponseMethods
+from .insights import ROUTES as INSIGHT_ROUTES
 from .ingest_http import IngestRoutes
 from .live import stream as live_stream
 from .metrics_routes import MetricsRoutes
@@ -37,6 +38,7 @@ _SCOPED_BOARD_ROUTES = frozenset({
     "/api/board/skill", "/api/board/tool", "/api/session-evidence",
     "/api/board/mcp", "/api/board/mcp/server", "/api/board/convergence", "/api/board/session/convergence",
     "/api/board/memory/diff", "/api/board/memory/versions", "/api/board/agent/recalls", "/api/board/agent/checkpoint/files",
+    *INSIGHT_ROUTES,
 })
 
 GET_ROUTES = {
@@ -64,7 +66,7 @@ GET_ROUTES = {
         "/api/board/terminal/metrics", "/api/board/terminal/resources", "/api/board/terminal/sessions",
         "/api/board/mcp", "/api/board/mcp/server", "/api/board/convergence", "/api/board/session/convergence",
         "/api/board/memory/diff", "/api/board/memory/versions", "/api/board/agent/recalls",
-        "/api/board/agent/checkpoint/files",
+        "/api/board/agent/checkpoint/files", *INSIGHT_ROUTES,
     ), "_serve_board"),
     "/api/samples": "_serve_samples",
     "/api/context-audit": "_serve_context_audit",

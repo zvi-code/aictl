@@ -13,6 +13,7 @@ from ..stores.base import StoreError
 from ..tool_scope import normalize_selection
 from .artifact_details import error_detail, file_detail, file_excerpt, prompt_detail, skill_detail, tool_detail
 from .board_filters import BoardRequestError, parse_filters
+from . import insights
 from .history_scope import ScopeError, identity_parts, parse_scope
 from .http_request import _local_request
 from .live import stream as live_stream
@@ -92,6 +93,9 @@ def handle_get(
                                                history=history)
             else:
                 status, payload = 400, {"error": "Missing name"}
+        elif path in insights.ROUTES:
+            status, payload = insights.insight(insights.ROUTES[path], parse_filters(query, time.time() if now is None else now),
+                                               now, history=history)
         elif path in {"/api/board/mcp", "/api/board/mcp/server", "/api/board/convergence"}:
             status, payload = _pattern_view(path, qs, query, time.time() if now is None else now, history)
         elif path == "/api/board/session/convergence":

@@ -1,0 +1,44 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// The pause before each model request: the time since the previous request of the same session and agent
+// ended. Only requests in the period count, so the first request of each session and agent in the period
+// has no pause. A prompt cache entry lapses after about 5 minutes without use.
+let calls = materialize(requests
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, input_tokens,
+              cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | where coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0
+    | project node_id, session_id, agent_id, ts, tool, input_tokens, cache_read_tokens, cache_creation_tokens,
+              cost_usd, duration_ms);
+let paused = materialize(calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc
+    | extend pause_s=iff(prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id,
+                         ts - prev(ts) - coalesce(prev(duration_ms), 0.0) / 1000, real(null))
+    | where isnotnull(pause_s)
+    | extend bucket=case(pause_s < 60, 'under_1m', pause_s < 300, '1_5m', pause_s < 3600, '5_60m', 'over_60m'));
+union
+    (paused
+        | summarize requests=count(), input_tokens=sum(input_tokens), cache_read_tokens=sum(cache_read_tokens),
+                    cache_creation_tokens=sum(cache_creation_tokens), priced=countif(isnotnull(cost_usd)),
+                    sum_cost=sum(cost_usd) by tool, bucket
+        | extend row_type='bucket'),
+    (calls
+        | summarize requests=count(), cache_read_tokens=sum(cache_read_tokens),
+                    cache_creation_tokens=sum(cache_creation_tokens) by tool
+        | extend row_type='tool'),
+    (paused
+        | where bucket in ('5_60m', 'over_60m')
+        | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), tool=take_any(tool)
+              by node_id, session_id
+        | order by sum_cost desc, requests desc, node_id asc, session_id asc
+        | take 10
+        | extend row_type='session'),
+    (calls
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| extend cost_usd=iff(priced == 0, real(null), sum_cost)
+| project-away sum_cost
+| order by row_type asc, tool asc, bucket asc, cost_usd desc
+| take row_limit
