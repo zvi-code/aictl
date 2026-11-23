@@ -7,6 +7,8 @@ import type { PanelProps } from '../types'
 import { presentation, scalar } from '../kinds/model'
 import { States } from '../kinds/States'
 import { monitoredReport } from './monitoredReport'
+import { runtimeSummary } from '../../data/runtimeAgents'
+import { runningDetail, unlinkedText } from './agentTree'
 import styles from '../kinds/kinds.module.css'
 
 const metrics = [
@@ -37,20 +39,7 @@ export default function Kpis(props: PanelProps) {
     if (ctx.scope() !== 'local') return
     const index = ctx.client.store.topic('runtime.agent')
     if (!index) return
-    let running = 0, idle = 0, children = 0, unknown = 0
-    const sessions = new Set<string>()
-    for (const { data } of index.values()) {
-      if (data.running !== true || typeof data.session_id !== 'string' || !data.session_id) continue
-      if (!data.parent_id) sessions.add(data.session_id)
-      const tools = ctx.tools()
-      if (tools && (typeof data.tool !== 'string' || !tools.includes(data.tool))) continue
-      if (data.parent_id) {
-        if (data.status !== 'idle') children++
-      } else if (data.status === 'idle') idle++
-      else if (data.native_activity === 'unknown') unknown++
-      else if (data.status === 'running' || data.status === 'waiting' || data.status === 'looping') running++
-    }
-    return { running, idle, children, unknown, sessions: sessions.size }
+    return runtimeSummary([...index.values()], ctx.tools())
   })
   const monitored = createMemo(() => {
     if (ctx.scope() !== 'local') return report()
@@ -69,7 +58,8 @@ export default function Kpis(props: PanelProps) {
     <States result={history} retry={ctx.refresh} reserveStaleSpace>
       <div class={`${styles.stats} ${styles.kpiStats}`}>
         <Stat label="Monitored sessions" value={monitored()?.count}
-          detail={ctx.scope() === 'local' ? (ctx.paused() ? 'Last received runtime data' : 'Live runtime, independent of filters') :
+          detail={ctx.scope() === 'local' ? [ctx.paused() ? 'Last received runtime data' : 'Live runtime, independent of filters',
+            runtime()?.unlinked ? unlinkedText(runtime()!.unlinked) : ''].filter(Boolean).join(' · ') :
             monitored() ? `${monitored()!.hosts} reporting ${monitored()!.hosts === 1 ? 'node' : 'nodes'}` : 'No fresh monitor report'} />
         <For each={metrics}>{([key, label, section, spark]) => {
         const detail = () => {
@@ -78,13 +68,7 @@ export default function Kpis(props: PanelProps) {
             const delta = Math.round(((current - previous) / previous) * 100)
             return `${delta > 0 ? '+' : ''}${delta}% vs before`
           }
-          if (key === 'running') {
-            const sampled = runtime(), idle = sampled?.idle ?? data()?.idle
-            const children = sampled?.children ?? data()?.subagents_running
-            const unknown = sampled?.unknown ?? at(data(), 'activity_unknown')
-            return [children != null ? `${children} subagents` : '', idle != null ? `${idle} idle` : '',
-              typeof unknown === 'number' && unknown ? `${unknown} activity unknown` : ''].filter(Boolean).join(' · ')
-          }
+          if (key === 'running') return runningDetail(runtime(), data() as Parameters<typeof runningDetail>[1])
           if (key === 'failures') return format('fail_rate', data()?.fail_rate)
           if (key === 'p95_ms') return `p50: ${format('p50_ms', data()?.p50_ms) ?? 'Not available from this source'}`
           if (key === 'cached_share') {

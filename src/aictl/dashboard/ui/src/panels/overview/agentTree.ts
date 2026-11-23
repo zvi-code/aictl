@@ -138,6 +138,34 @@ export function subagentText(summary: Summary) {
   return parts.join(' · ')
 }
 
+/** The Agents panel's header counts from its listed rows: sessions, and the subagents under them.
+ * A subagent runs by the server's rule for kpis.subagents_running (ACTIVE_STATUSES in board_projection.py). */
+export function agentsCounts(rows: readonly TreeAgent[]) {
+  const all = rows.filter(row => row.kind !== 'group')
+  const subs = all.filter(row => row.parent_id && row.kind !== 'main')
+  return { sessions: all.length - subs.length, subs: subs.length, running: subs.filter(row => isActive(row.status)).length }
+}
+
+/** The Agents panel's header line before its notes. */
+export function agentsHeader(counts: ReturnType<typeof agentsCounts>, unlinked: number) {
+  return `${counts.sessions} sessions · ${counts.subs} subagents (${counts.running} running) listed` +
+    (unlinked ? ` · ${unlinkedText(unlinked)}, listed below the table` : '')
+}
+
+/** How both the Overview and the Agents panel name processes that are not sessions. */
+export const unlinkedText = (n: number) => `${n} unlinked ${n === 1 ? 'process' : 'processes'} (not sessions)`
+
+/** The detail under "Agents running": running subagents, idle sessions, sessions whose activity is unknown.
+ * The runtime report has sessions only, so running subagents always come from the stored rows (kpis). */
+export function runningDetail(runtime: { idle: number; unknown: number } | undefined,
+  kpis: { idle?: number; subagents_running?: number; activity_unknown?: unknown } | undefined) {
+  const idle = runtime?.idle ?? kpis?.idle
+  const children = kpis?.subagents_running
+  const unknown = runtime?.unknown ?? kpis?.activity_unknown
+  return [children != null ? `${children} ${children === 1 ? 'subagent' : 'subagents'} running` : '', idle != null ? `${idle} idle` : '',
+    typeof unknown === 'number' && unknown ? `${unknown} activity unknown` : ''].filter(Boolean).join(' · ')
+}
+
 /** A short age: "12 s", "4 min", "3 h", "2 d". */
 export function ago(seconds: number) {
   const s = Math.max(0, seconds)

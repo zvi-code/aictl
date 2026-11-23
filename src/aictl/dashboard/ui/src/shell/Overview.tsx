@@ -4,7 +4,9 @@ import { RANGES } from '../data/filters'
 import DockScreen from '../panels/DockScreen'
 import { overviewA } from '../panels/overview/a'
 import { overviewB } from '../panels/overview/b'
+import { unlinkedText } from '../panels/overview/agentTree'
 import { monitoredReport } from '../panels/overview/monitoredReport'
+import { runtimeSummary } from '../data/runtimeAgents'
 import type { PanelContext } from '../panels/types'
 import { Meter } from '../ui/Meter'
 import { scopeLabel } from './NodePicker'
@@ -18,16 +20,12 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
   const runtime = createMemo(() => ctx.read({ topic: 'runtime.agent' }))
   const reported = monitoredReport(ctx)
   const counts = createMemo(() => {
-    const agents = runtime().value as TopicRuntimeAgent[] | undefined
+    const read = runtime(), agents = read.value as TopicRuntimeAgent[] | undefined
     if (!Array.isArray(agents)) return
-    const sessions = new Map<string, string>()
-    for (const agent of agents) {
-      if (agent.running === true && !agent.parent_id && agent.session_id) sessions.set(agent.session_id, agent.tool)
-    }
-    const tools = new Map<string, number>()
-    for (const tool of sessions.values()) tools.set(tool, (tools.get(tool) ?? 0) + 1)
-    return { total: sessions.size, tools: [...tools].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])) }
+    const summary = runtimeSummary(agents.map((data, i) => ({ id: read.rowKeys?.[i] ?? String(i), data })))
+    return { ...summary, total: summary.sessions }
   })
+  const toolLabel = (tool: string) => ctx.board('tool_labels')?.[tool] ?? (tool || 'Unreported tool')
   const period = () => ctx.filters().sel ? 'selected interval' :
     RANGES.find(r => r.id === ctx.filters().range.id)?.label ?? 'custom range'
   return <section class={styles.start} aria-labelledby="history-start-title">
@@ -36,8 +34,13 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
       <Show when={counts()}>{data => <section class={styles.runtime} aria-label="Monitored sessions by tool">
         <h2>{ctx.paused() || runtime().state === 'stale' || !ctx.client.status.connected ? 'Last received runtime' : 'Live runtime'} · This node</h2>
         <p><strong>{data().total.toLocaleString()}</strong> monitored {data().total === 1 ? 'session' : 'sessions'}</p>
-        <For each={data().tools}>{([tool, n]) => <Meter label={ctx.board('tool_labels')?.[tool] ?? (tool || 'Unreported tool')}
+        <For each={data().tools}>{([tool, n]) => <Meter label={toolLabel(tool)}
           value={n} max={data().total} display={`${n} of ${data().total}`} />}</For>
+        <Show when={data().unlinked}>
+          <p title="Processes of AI tools that aictl cannot link to a session by evidence. The Agents panel lists them below its table.">
+            {unlinkedText(data().unlinked)}: {data().unlinkedTools.map(([tool, n]) => `${toolLabel(tool)} ${n}`).join(' · ')}
+          </p>
+        </Show>
         <small>Runtime counts are independent of history filters.</small>
       </section>}</Show>
       <Show when={reported()}>{sample => <section class={styles.runtime} aria-label="Reported monitored sessions">

@@ -59,7 +59,7 @@ for (const state of ['pending', 'failed']) {
     const cold = await startReplay({ dist, speed: 10, boardWindow: true, bootstrapOnly: true, supplemental: true,
       mapBootstrap: data => {
         monitored = new Set(data.entities.filter(e => e.topic === 'runtime.agent' && e.data.running === true &&
-          !e.data.parent_id && e.data.session_id).map(e => e.data.session_id)).size;
+          !e.data.parent_id && e.data.session_id && !e.data.unlinked_reason).map(e => e.data.session_id)).size;
         return { ...data, entities: data.entities.filter(e => e.topic !== 'history.board').map(e =>
           e.topic === 'source.status' && e.data.component === 'history' ? { ...e, data: { ...e.data,
             ready: false, pending: state === 'pending', stale: state === 'failed',

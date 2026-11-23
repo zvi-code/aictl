@@ -62,6 +62,51 @@ export function unlinkedProcesses(historical: readonly Agent[], entities: readon
   })
 }
 
+/** Whether a runtime record is a live session: running, not a subagent, and linked to a session by evidence.
+ * Every count of live sessions uses this rule; a process with ``unlinked_reason`` is not a session. */
+export function isRuntimeSession(data: Values): boolean {
+  return data.running === true && !data.parent_id && typeof data.session_id === 'string' && !!data.session_id &&
+    !unlinkedReason(data)
+}
+
+export type RuntimeSummary = {
+  /** Live sessions, by session id. */
+  sessions: number
+  /** Live sessions per tool, most first. */
+  tools: [string, number][]
+  /** Processes of AI tools that no evidence links to a session: the same list the Agents panel shows below its table. */
+  unlinked: number
+  unlinkedTools: [string, number][]
+  /** Activity of the live sessions of the selected tools. */
+  running: number
+  idle: number
+  unknown: number
+}
+
+const byCount = (counts: Map<string, number>) => [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+
+/** One count of the live runtime for the Overview: its sessions, and apart from them the unlinked processes. */
+export function runtimeSummary(entities: readonly Entity[], tools: string[] | null = null): RuntimeSummary {
+  const sessions = new Map<string, string>()
+  let running = 0, idle = 0, unknown = 0
+  for (const { data } of entities) {
+    if (!isRuntimeSession(data)) continue
+    sessions.set(data.session_id as string, typeof data.tool === 'string' ? data.tool : '')
+    if (tools && (typeof data.tool !== 'string' || !tools.includes(data.tool))) continue
+    if (data.status === 'idle') idle++
+    else if (data.native_activity === 'unknown') unknown++
+    else if (data.status === 'running' || data.status === 'waiting' || data.status === 'looping') running++
+  }
+  const count = (values: Iterable<string>) => {
+    const counts = new Map<string, number>()
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+    return byCount(counts)
+  }
+  const unlinked = unlinkedProcesses([], entities)
+  return { sessions: sessions.size, tools: count(sessions.values()), unlinked: unlinked.length,
+    unlinkedTools: count(unlinked.map(item => item.tool ?? '')), running, idle, unknown }
+}
+
 /** Only advertised runtime fields can replace fields on a historical row.
  *
  * A runtime record that no evidence links to a session (``unlinked_reason``) is left out:

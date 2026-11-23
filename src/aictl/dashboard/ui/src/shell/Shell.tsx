@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, For, lazy, Loading, onCleanup, 
 import { render } from '@solidjs/web'
 import { boardLiveRequest, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
+import { isRuntimeSession } from '../data/runtimeAgents'
 import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
 import { agentView, selectAgentWatch, supportsLiveAgent } from '../drawer/liveAgent'
 import { drawerStack } from '../drawer/navigation'
@@ -224,7 +225,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   createEffect(agents, list => {
     if (!landOnFlow || !list.length || untrack(screen) !== 'board') return
     const active = new Set([...(client.store.topic('runtime.agent')?.values() ?? [])].flatMap(({ data }) =>
-      data.running === true && !data.parent_id && typeof data.session_id === 'string' ? [data.session_id] : []))
+      isRuntimeSession(data) ? [data.session_id as string] : []))
     const agent = list.find(agent => agent.status === 'running' || active.has(agent.id)) ?? list[0]
     landOnFlow = false
     setStack([{ type: 'agent', id: agent.id, tab: 'flow' }])

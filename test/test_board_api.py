@@ -1287,6 +1287,9 @@ class TestStatusRules:
         assert _agent(payload, "looper/s2")["status"] == "ended"
         assert _agent(payload, "looper/s3")["status"] == "running"
         assert payload["kpis"]["subagents_running"] == 1
+        # The Agents panel counts its listed subagent rows by the same statuses (agentTree.ts isActive).
+        listed = [a for a in payload["agents"] if a.get("parent_id") and a["status"] in board_projection.ACTIVE_STATUSES]
+        assert payload["kpis"]["subagents_running"] == len(listed)
 
 
 # ─── Loop and test rules ──────────────────────────────────────────

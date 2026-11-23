@@ -4,7 +4,7 @@ import { States } from '../kinds/States'
 import type { KeyedRow, PanelProps } from '../types'
 import { agentRows } from './agentRows'
 import {
-  ago, buildTree, childrenOf, duration, durationMissing, elapsed, isLive, lastMissing, missingReason, nameHint, subagentText, summarize,
+  agentsCounts, agentsHeader, ago, buildTree, childrenOf, duration, durationMissing, elapsed, isLive, lastMissing, missingReason, nameHint, subagentText, summarize,
   type TreeAgent, type TreeEntry,
 } from './agentTree'
 import css from './AgentsTree.module.css'
@@ -108,11 +108,7 @@ export default function AgentsTree(props: PanelProps) {
       if (run) { event.preventDefault(); run() }
     }
   }
-  const counts = createMemo(() => {
-    const all = rows().filter(row => row.kind !== 'group')
-    const subs = all.filter(row => row.parent_id && row.kind !== 'main')
-    return { sessions: all.length - subs.length, subs: subs.length, running: subs.filter(row => isLive(row.status)).length }
-  })
+  const counts = createMemo(() => agentsCounts(rows()))
   const unlinked = () => setup.unlinked()
   const unlinkedGroups = createMemo(() => {
     const labels = ctx.board('tool_labels')
@@ -128,8 +124,7 @@ export default function AgentsTree(props: PanelProps) {
   return <div class={css.panel}>
     {setup.controls}
     <p class={css.note}>
-      {counts().sessions} sessions · {counts().subs} subagents ({counts().running} live) listed
-      <Show when={unlinked().length}> · {unlinked().length} unlinked processes (not sessions, listed below the table)</Show>
+      {agentsHeader(counts(), unlinked().length)}
       <Show when={setup.emptyCount() && !setup.showEmpty()}> · {setup.emptyCount()} with no activity (hidden)</Show>
       <Show when={recorded() !== undefined && recorded()! > listedHistory()}>
         {' '}· showing {listedHistory().toLocaleString()} of {recorded()!.toLocaleString()} recorded agents (the list holds 200 rows)
