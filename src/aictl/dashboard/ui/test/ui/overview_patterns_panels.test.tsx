@@ -60,8 +60,9 @@ describe('Convergence', () => {
     const { props } = panel('convergence', { detail: () => ({ data: { ...body, node_scope: undefined }, status: 'refreshing', error: null }) })
     const { host, dispose } = mount(() => <Convergence {...props} />)
     // The stale notice keeps its space but is hidden.
-    expect(Array.from(host.querySelectorAll('[aria-hidden]')).filter(el => el.textContent?.includes('Last updated'))
+    expect(Array.from(host.querySelectorAll('[aria-hidden]')).filter(el => el.textContent?.includes('last available data'))
       .map(el => el.getAttribute('aria-hidden'))).toEqual(['true'])
+    expect(host.textContent).not.toContain('Last updated')
     expect(host.textContent).toContain('Fix the parser')
     dispose()
   })
