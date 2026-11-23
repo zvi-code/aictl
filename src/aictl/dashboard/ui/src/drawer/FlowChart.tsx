@@ -44,15 +44,17 @@ export function chartColumns(scales: Scales, tracks: number): ChartColumn[] {
 /** A bar to a column's scale; a dashed box when the value was not reported (never a zero-length bar). */
 function Bar(props: { value: number | null | undefined; scale: Scale; text: string; title: string; mark?: number; missing?: string }) {
   const share = () => barShare(props.value, props.scale)
-  return <span class={styles.cellBar} title={props.title}>
-    <span class={styles.barTrack}>
-      <Show when={share()} fallback={<Show when={props.missing}><span class={styles.missing} /></Show>}>{bar =>
-        <span class={styles.fill} data-cut={bar().cut ? 'true' : undefined} style={{ 'inline-size': barLength(bar().share) }} />}</Show>
-      <Show when={props.mark != null && barShare(props.mark, props.scale)}>{mark =>
-        <span class={styles.tick} style={{ 'inset-inline-start': pct(mark().share) }} />}</Show>
-    </span>
-    <span class={styles.value} data-missing={share() ? undefined : 'true'}>{share() ? props.text : props.missing ?? ''}</span>
-  </span>
+  // An unreported value is said in words across the cell, never drawn as a bar of any length.
+  return <Show when={share()} fallback={<span class={styles.cellBar} title={props.missing ? 'The source did not report this value; it is not zero.' : props.title}>
+    <span class={styles.value} data-missing="true">{props.missing ?? ''}</span></span>}>{bar =>
+    <span class={styles.cellBar} title={props.title}>
+      <span class={styles.barTrack}>
+        <span class={styles.fill} data-cut={bar().cut ? 'true' : undefined} style={{ 'inline-size': barLength(bar().share) }} />
+        <Show when={props.mark != null && barShare(props.mark, props.scale)}>{mark =>
+          <span class={styles.tick} style={{ 'inset-inline-start': pct(mark().share) }} />}</Show>
+      </span>
+      <span class={styles.value}>{props.text}</span>
+    </span>}</Show>
 }
 
 function TimeBars(props: { step: Step; scale: Scale }) {
