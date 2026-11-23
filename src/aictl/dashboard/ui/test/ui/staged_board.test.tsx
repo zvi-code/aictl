@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot, flush } from 'solid-js'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseFilters } from '../../src/data/filters'
 import { createLiveClient } from '../../src/data/live'
 import { panelData } from '../../src/panels/data'
@@ -125,5 +125,48 @@ describe('BOARD-STAGED-02 · KPI tiles before the period before is read', () => 
     expect(said).toHaveLength(4)
     expect(said[0].getAttribute('title')).toBe('Kusto view board.previous failed: timeout')
     dispose()
+  })
+})
+
+describe('BOARD-STAGED-03 · a fleet board names the fields the server could not read', () => {
+  const def = overviewA.find(panel => panel.id === 'kpis')!
+  const reasons = { changes: 'Kusto view board.changes failed: timeout', projects: 'Kusto view board.changes failed: timeout',
+    'kpis.prev': 'Kusto view board.previous failed: timeout' }
+
+  function fleetBoard() {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async path => {
+      const url = new URL(String(path), location.origin)
+      if (url.pathname === '/api/datapoints') return Response.json([])
+      return Response.json({ node_scope: { kind: 'fleet', node_id: null }, generated_at: 1000, kpis, loops: [],
+        field_errors: reasons })
+    }))
+    return createRoot(dispose => {
+      const base = {
+        client: createLiveClient(), scope: () => 'fleet' as const, nodeId: () => null,
+        filters: () => parseFilters('?range=24h'), tools: () => null, paused: () => false, startedAt: 86_400,
+        revision: () => 0, navigate() {}, jump() {}, select() {}, openAgent() {}, openDetail() {},
+        stopped: () => false, stopAgent() {}, runCommand() {}, copy() {}, refresh() {},
+      }
+      return { ctx: { ...base, ...panelData(base, () => 'board') } as PanelContext, dispose }
+    })
+  }
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('shows the reason on the failed fields and the values on the others', async () => {
+    const fleet = fleetBoard()
+    try {
+      await vi.waitFor(() => expect(fleet.ctx.read({ field: 'kpis' }).state).toBe('ready'))
+      expect(fleet.ctx.read({ field: 'changes' })).toEqual({ state: 'error', message: reasons.changes })
+      expect(fleet.ctx.read({ field: 'projects' })).toEqual({ state: 'error', message: reasons.projects })
+      expect(fleet.ctx.read({ field: 'kpis', path: 'prev' })).toEqual({ state: 'error', message: reasons['kpis.prev'] })
+      expect(fleet.ctx.read({ field: 'kpis', path: 'tokens' })).toMatchObject({ state: 'ready', value: 345_000 })
+      expect(fleet.ctx.read({ field: 'loops' }).state).toBe('empty')
+      const { host, dispose } = mount(() => <Kpis ctx={fleet.ctx} def={def} params={{}} />)
+      expect(host.textContent).toContain('345')
+      const said = Array.from(host.querySelectorAll('span[title]')).filter(span => span.textContent === 'period before not read')
+      expect(said).toHaveLength(4)
+      expect(said[0].getAttribute('title')).toBe(reasons['kpis.prev'])
+      dispose()
+    } finally { fleet.dispose() }
   })
 })

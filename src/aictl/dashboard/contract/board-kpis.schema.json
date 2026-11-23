@@ -19,6 +19,7 @@
     "loops": {"type": "integer"},
     "prev": {
       "type": "object",
+      "description": "The previous window's totals. Absent when that read failed; field_errors names \"kpis.prev\" then.",
       "properties": {
         "messages": {"type": ["integer", "null"]},
         "tokens": {"type": ["integer", "null"]},
@@ -71,7 +72,6 @@
     "p50_ms",
     "p95_ms",
     "loops",
-    "prev",
     "spark"
   ]
 }

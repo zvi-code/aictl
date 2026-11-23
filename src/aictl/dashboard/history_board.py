@@ -12,6 +12,7 @@ from ..stores.base import StoreError
 from .board_filters import BoardRequestError, parse_filters
 from .board_projection import compute_board
 from .history_scope import ScopeError, label, parse_scope
+from .projection_utils import safe_reason
 from .projections.history import HistoryScope
 
 _PANEL_FIELDS = (
@@ -20,12 +21,16 @@ _PANEL_FIELDS = (
     "project_prompts_searched", "projects", "prompts", "prompts_total", "saved_usd", "scope", "skills",
     "sources", "tests", "tests_piped", "tool_labels", "tools", "unpriced",
 )
-_cache: dict[tuple, tuple[float, bytes]] = {}
+# Per key: (read at, body, complete). An incomplete answer lacks the fields of an optional section that failed.
+_cache: dict[tuple, tuple[float, bytes, bool]] = {}
 _inflight: dict[tuple, Future] = {}
 _lock = threading.Lock()
 _CACHE_KEYS = 12
 # An answer older than its TTL is still returned at once, up to this age, while a new one is read.
 _STALE_MAX_S = 600.0
+# An incomplete answer is kept this long, and never served once older, so a later request reads the
+# failed sections again; the same delay as the live board's retry.
+_INCOMPLETE_TTL_S = 5.0
 logger = logging.getLogger(__name__)
 
 
@@ -51,26 +56,32 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
     ttl = 15 if local else 120 if span > 86400 else 45
     key = (history.reader, history.node, scope, filters, charts)
 
-    def build() -> bytes:
+    def build() -> tuple[bytes, bool]:
+        # Only the panels view leaves a failed optional section out; the charts need none.
+        field_errors: dict[str, str] | None = None if charts else {}
         try:
             fields = compute_board(store, filters, getattr(store, "snapshot", None) if local else None,
-                                   now, history=history, charts_only=charts)
+                                   now, history=history, charts_only=charts, field_errors=field_errors)
         except StoreError as exc:
             if local:
                 raise
             raise ScopeError(str(exc), 503, "query_failed") from exc
-        payload = fields if charts else {name: fields[name] for name in _PANEL_FIELDS}
+        payload = fields if charts else {
+            name: fields[name] for name in _PANEL_FIELDS if name in fields or name not in field_errors}
+        if field_errors:
+            payload["field_errors"] = {
+                field: safe_reason(reason) or "History read failed" for field, reason in field_errors.items()}
         payload["node_scope"] = {"kind": scope.kind, "node_id": label(scope.node) if scope.node is not None else None}
-        return json.dumps(payload).encode("utf-8")
+        return json.dumps(payload).encode("utf-8"), not field_errors
 
     # Each key is read by one caller at a time; other keys do not wait for it.
     with _lock:
         hit = _cache.get(key)
         pending = _inflight.get(key)
         age = time.monotonic() - hit[0] if hit else None
-        if hit and age < ttl:
+        if hit and age < (ttl if hit[2] else _INCOMPLETE_TTL_S):
             return hit[1]
-        if hit and age < _STALE_MAX_S:
+        if hit and hit[2] and age < _STALE_MAX_S:
             if pending is None:
                 _inflight[key] = Future()
                 threading.Thread(target=_refresh_quietly, args=(key, build), daemon=True,
@@ -87,7 +98,7 @@ def _refresh(key: tuple, build) -> bytes:
     with _lock:
         future = _inflight[key]
     try:
-        body = build()
+        body, complete = build()
     except BaseException as exc:
         with _lock:
             _inflight.pop(key, None)
@@ -95,7 +106,7 @@ def _refresh(key: tuple, build) -> bytes:
         raise
     with _lock:
         _cache.pop(key, None)
-        _cache[key] = (time.monotonic(), body)
+        _cache[key] = (time.monotonic(), body, complete)
         if len(_cache) > _CACHE_KEYS:
             _cache.pop(next(iter(_cache)))
         _inflight.pop(key, None)

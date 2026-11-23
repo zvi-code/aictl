@@ -37,6 +37,11 @@ def mask_secrets(text: str | None) -> str:
     return mask_text(text)
 
 
+def safe_reason(reason: Any) -> str | None:
+    """A failure reason fit to send to the browser: secrets masked, at most 600 characters."""
+    return mask_secrets(str(reason))[:600] if reason else None
+
+
 def _one_line(text: str | None, limit: int) -> str:
     clean = " ".join(mask_secrets(text).split())
     return clean[: limit - 1] + "…" if len(clean) > limit else clean

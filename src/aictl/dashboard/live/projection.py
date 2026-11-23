@@ -10,6 +10,7 @@ from dataclasses import field as dataclass_field
 from typing import Any
 
 from ...stores import OBSERVATION_FAMILIES, UnresolvedObservationsError, reader_feature, retains_unresolved_facts
+from ..projection_utils import safe_reason
 from ..projections.history import configured_reader
 from .drawer import project_agent
 from .hub import LiveCapacityError, LiveHub
@@ -489,11 +490,7 @@ class LiveDashboard:
                 refresh_pending=False,
             )
 
-    @staticmethod
-    def _safe_reason(reason: Any) -> str | None:
-        from ..projection_utils import mask_secrets
-
-        return mask_secrets(str(reason))[:600] if reason else None
+    _safe_reason = staticmethod(safe_reason)
 
     def _filters_now(self, entry: _Scope, now: float) -> Any:
         from ..board_filters import _clock_range

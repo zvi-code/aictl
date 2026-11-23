@@ -633,6 +633,80 @@ def test_history_errors_do_not_become_empty_or_local(monkeypatch, kusto_store):
     assert status == 503 and body["reason"] == "query_failed"
 
 
+def _serve_board(store, query):
+    from test_live_routes import handler
+
+    from aictl.dashboard.history_board import serve
+
+    req = handler("/api/history/board?" + query)
+    req.server.store = store
+    serve(req, query)
+    return req.status, json.loads(req.wfile.getvalue())
+
+
+def test_scoped_board_answers_without_a_failed_optional_section(history, kusto_store, monkeypatch):
+    from test_contract import validate_detail
+
+    from aictl.dashboard import board_projection
+    from aictl.stores.base import StoreError
+
+    def failing(*_args):
+        raise StoreError("Kusto view board.changes failed: Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789")
+
+    monkeypatch.setattr(board_projection, "_changes_section", failing)
+    status, board = _serve_board(kusto_store, "scope=fleet&since=1000&until=2000&buckets=2")
+    assert status == 200
+    validate_detail("/api/history/board", board)
+    reason = "Kusto view board.changes failed: Authorization: Bearer <redacted>"
+    assert board["field_errors"] == {"changes": reason, "projects": reason}
+    assert not {"changes", "projects"} & board.keys()
+    assert board["kpis"]["tokens"] == 520 and len({r["id"] for r in board["prompts"]}) == 3
+
+
+def test_scoped_board_still_fails_when_an_early_section_fails(history, kusto_store, monkeypatch):
+    from aictl.dashboard import board_projection
+    from aictl.stores.base import StoreError
+
+    def failing(*_args):
+        raise StoreError("Kusto view board.tools failed: timeout")
+
+    monkeypatch.setattr(board_projection, "_tools_section", failing)
+    status, body = _serve_board(kusto_store, "scope=fleet&since=1000&until=2000&buckets=2")
+    assert status == 503 and body == {"error": "Kusto view board.tools failed: timeout", "reason": "query_failed"}
+
+
+def test_incomplete_scoped_board_is_read_again_after_its_short_lifetime(history, kusto_store, monkeypatch):
+    from aictl.dashboard import board_projection, history_board
+    from aictl.stores.base import StoreError
+
+    clock = [1000.0]
+    monkeypatch.setattr(history_board, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0]))
+    real = board_projection._previous
+    failing = [True]
+
+    def previous(*args):
+        if failing[0]:
+            raise StoreError("Kusto view board.previous failed: timeout")
+        return real(*args)
+
+    monkeypatch.setattr(board_projection, "_previous", previous)
+    query = "scope=fleet&since=1000&until=2000&buckets=2"
+    _, first = _serve_board(kusto_store, query)
+    assert first["field_errors"] == {"kpis.prev": "Kusto view board.previous failed: timeout"}
+    assert "prev" not in first["kpis"]
+    failing[0] = False
+    clock[0] += history_board._INCOMPLETE_TTL_S - 1
+    assert _serve_board(kusto_store, query)[1] == first
+    # Past its short lifetime the incomplete answer is not served, even while a new read runs.
+    clock[0] += 2
+    _, second = _serve_board(kusto_store, query)
+    assert "field_errors" not in second and "prev" in second["kpis"]
+    # A complete answer keeps the route's usual lifetime.
+    failing[0] = True
+    clock[0] += 30
+    assert _serve_board(kusto_store, query)[1] == second
+
+
 def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(tmp_path, monkeypatch, kusto_store):
     from aictl.dashboard.web_server import _DashboardHandler, _DashboardHTTPServer
     from aictl.orchestrator import AllowedPaths, SnapshotStore

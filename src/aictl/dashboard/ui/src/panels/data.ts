@@ -101,6 +101,11 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     let value: unknown, rowKeys: readonly string[] | undefined
     let updatedAt: number | undefined
     let stale = ctx.paused(), pending = false, fault: string | undefined, fieldFault: string | undefined
+    // A field the server names as failed, such as "kpis.prev", covers its own path and the paths under it.
+    const fieldPath = 'field' in source ? [source.field, source.path].filter(Boolean).join('.') : ''
+    const covers = (listed: string) => fieldPath === listed || fieldPath.startsWith(listed + '.')
+    const failedField = (errors: Record<string, string> | undefined) =>
+      Object.entries(errors ?? {}).find(([listed]) => covers(listed))?.[1]
     if ('field' in source && (ctx.scope() !== 'local' || (source.wholeRange && ctx.filters().sel))) {
       const resource = source.wholeRange && ctx.filters().sel ? whole() : remote()
       value = at(at(resource?.data, source.field), source.path)
@@ -108,6 +113,7 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
       pending = !resource || resource.status === 'loading'
       stale ||= resource?.status === 'stale' || resource?.status === 'refreshing'
       if (resource?.error) fault = String(resource.error)
+      fieldFault = failedField(resource?.data?.field_errors)
     } else if (ctx.scope() !== 'local') {
       return { state: 'unavailable' }
     } else {
@@ -132,15 +138,13 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
       const history = 'field' in source ? relevant.find((status): status is Extract<TopicSourceStatus, { component: 'history' }> =>
         'component' in status && status.component === 'history') : undefined
       // A first load names the fields still to come: a field that is already there is final, not stale.
-      const fieldPath = 'field' in source ? [source.field, source.path].filter(Boolean).join('.') : ''
-      const covers = (listed: string) => fieldPath === listed || fieldPath.startsWith(listed + '.')
       const staged = history?.pending && Array.isArray(history.pending_fields)
       const waiting = (status: TopicSourceStatus) => 'pending' in status && status.pending &&
         (status !== history || !staged || history.pending_fields!.some(covers))
       if ('field' in source) {
         const generated = store.boardField('generated_at').value
         updatedAt = typeof generated === 'number' ? generated : history?.computed_at
-        fieldFault = Object.entries(history?.field_errors ?? {}).find(([listed]) => covers(listed))?.[1]
+        fieldFault = failedField(history?.field_errors)
       }
       pending = !store.meta.ready || relevant.some(waiting)
       fault = relevant.flatMap(status => 'error' in status && status.error ? [status.error] : [])[0] ?? ctx.client.status.error?.message
