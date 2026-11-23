@@ -3,6 +3,8 @@ import { isConfigSelected, isToolSelected } from '../data/toolScope'
 import { rowTip } from './tips'
 
 export const MISSING = 'Not available from this source'
+/** aictl's own process environment: fixed when the daemon started, never a session's value. */
+export const DAEMON_ENV = "aictl daemon's environment (not the session's)"
 export const DASH = '—'
 export const ENV_PREFIX = 'env:'
 export const SECTIONS = [

@@ -110,14 +110,17 @@ def _env() -> dict[str, str] | os._Environ[str]:
 
 
 def live_environ(persisted: dict[str, dict[str, str]]) -> dict[str, str]:
-    """This process's environment under the literal values the profiles and the registry set now.
+    """The variables a new tool session gets: the values the profiles, env.sh and the registry set now.
 
-    A value with a shell expansion ($HOME, %APPDATA%, a command) is not resolved
-    here, so the process's value stands for it.
+    The aictl daemon's own environment is never a session's: it was fixed when the
+    daemon started, from wherever it was started. It is used only to resolve a
+    persisted value with a shell expansion ($HOME, %APPDATA%, a command), which is
+    not expanded here.
     """
-    env = dict(os.environ)
+    env: dict[str, str] = {}
     for values in persisted.values():
-        env.update({k: v for k, v in values.items() if _LITERAL_ENV_RE.match(v)})
+        for k, v in values.items():
+            env[k] = v if _LITERAL_ENV_RE.match(v) else os.environ.get(k, v)
     return env
 
 
@@ -1131,6 +1134,8 @@ _ENV_PREFIXES: dict[str, tuple[str, ...]] = {
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # A variable whose name says it holds a credential, or whose value can carry one.
 _ENV_SECRET_RE = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL|HEADERS|COOKIE|EMAIL", re.I)
+# A variable that identifies an account, an organization or a user: masked. Session ids stay readable.
+_ENV_IDENTITY_RE = re.compile(r"(?:^|_)(?:ACCOUNT|ORG|ORGANIZATION|TENANT|USER_?ID|LOGIN)(?:_|$)", re.I)
 ENV_MASK = "<hidden>"
 ENV_VALUE_MAX = 300
 
@@ -1165,7 +1170,7 @@ def env_display(name: str, value: object) -> tuple[str, bool]:
     from ..context_audit import _redact
 
     text = str(value)
-    if _ENV_SECRET_RE.search(name) or _redact(text) != text:
+    if _ENV_SECRET_RE.search(name) or _ENV_IDENTITY_RE.search(name) or _redact(text) != text:
         return ENV_MASK, True
     return text[:ENV_VALUE_MAX], False
 
@@ -1184,8 +1189,10 @@ def env_var_rows(
     entry from the variable.
 
     ``value`` is what a session started now gets: a settings file's value, else a
-    persisted one, else this process's. *environ* is this process's environment,
-    fixed when it started; its own value is ``process`` so a change since then shows.
+    persisted one. *environ* is this process's environment (the aictl daemon's),
+    fixed when it started: it is never a session's value, so it is only ``process``
+    (with ``in_process``), and a variable set there alone has ``set`` false and
+    ``daemon_only`` true.
     """
     environ = os.environ if environ is None else environ
     persisted = persisted or {}
@@ -1214,8 +1221,10 @@ def env_var_rows(
             if name in values
         ]
         later = [v[name] for v in [*cfg.env_blocks.values(), *persisted.values()] if name in v]
-        raw = later[0] if later else here
+        raw = later[0] if later else None
         value, masked = env_display(name, raw) if raw is not None else ("", False)
+        if raw is None and here is not None:
+            masked = env_display(name, here)[1]
         out.append(
             {
                 "name": name,
@@ -1224,6 +1233,7 @@ def env_var_rows(
                 "masked": masked,
                 "source": env_source(name),
                 "in_process": here is not None,
+                "daemon_only": raw is None and here is not None,
                 "process": env_display(name, here)[0] if here is not None else "",
                 "persisted": saved,
                 "drives": drives.get(name, []),

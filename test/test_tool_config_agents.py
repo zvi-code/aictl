@@ -34,6 +34,12 @@ AGENT_FIELDS = {
 SCOPE_FIELDS = {"id", "label", "path", "exists", "changeable", "note"}
 
 
+def _session_env(name: str, value: str) -> None:
+    """Set *name* where a new session gets it (a shell start file); the daemon's own environment never counts."""
+    with (Path.home() / ".zshenv").open("a", encoding="utf-8") as f:
+        f.write(f"export {name}={value}\n")
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     """Every tool home, managed file and the catalog pointed at temp paths; returns them."""
@@ -163,7 +169,7 @@ def test_copilot_agents_pin_file_policy(env):
 
 
 def test_claude_agent_alias_effort_and_env_fallback(env, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")
+    _session_env("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")
     user_dir, proj = env["claude_global_dir"], env["proj"]
     _write(user_dir / "settings.json", json.dumps({"model": "opus"}))
     rev = _write(
@@ -285,7 +291,7 @@ def test_codex_project_file_read_only_when_trusted(env):
 
 
 def test_scopes_are_emitted_in_order(env, monkeypatch):
-    monkeypatch.setenv("COPILOT_MODEL", "env-model")
+    _session_env("COPILOT_MODEL", "env-model")
     _write(env["copilot_global_dir"] / "settings.json", '{"model": "file-model"}')
     _write(env["claude_global_dir"] / "settings.json", '{"model": "opus"}')
     _write(env["codex_global_dir"] / "config.toml", 'model = "m"\n')

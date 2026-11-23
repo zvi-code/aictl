@@ -130,6 +130,7 @@
           "set": {"type": "boolean"},
           "masked": {"type": "boolean"},
           "in_process": {"type": "boolean"},
+          "daemon_only": {"type": "boolean"},
           "process": {"type": ["string", "null"]},
           "label": {"type": "string"},
           "description": {"type": "string"},

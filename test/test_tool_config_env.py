@@ -10,6 +10,7 @@ reads, with secrets masked.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from test_tool_config_agents import _collect, _rows, _write, env  # noqa: F401 - env is a fixture
@@ -21,6 +22,12 @@ from aictl.orchestrator import slim_tool_configs
 
 REAL_CATALOG = tc.SETTINGS_CATALOG_PATH
 SECRET = "ghp_abcdefghijklmnop1234"
+
+
+def _session_env(name: str, value: str) -> None:
+    """Set *name* where a new session gets it (a shell start file); the daemon's own environment never counts."""
+    with (Path.home() / ".zshenv").open("a", encoding="utf-8") as f:
+        f.write(f"export {name}={value}\n")
 
 
 @pytest.fixture()
@@ -35,7 +42,7 @@ def test_env_source_is_env_scope():
 
 
 def test_claude_anthropic_model_names_its_variable(env, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("ANTHROPIC_MODEL", "opus-env")
+    _session_env("ANTHROPIC_MODEL", "opus-env")
     user = _write(env["claude_global_dir"] / "settings.json", json.dumps({"model": "sonnet"}))
     model = _rows(_collect(env["proj"])["claude-code"])["model"]
     assert model["value"] == "opus-env" and model["scope"] == "env" and model["source"] == "env:ANTHROPIC_MODEL"
@@ -44,9 +51,9 @@ def test_claude_anthropic_model_names_its_variable(env, monkeypatch):  # noqa: F
 
 
 def test_claude_telemetry_rows_name_their_variables(env, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
-    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "otlp")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    _session_env("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+    _session_env("OTEL_METRICS_EXPORTER", "otlp")
+    _session_env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     _write(env["claude_global_dir"] / "settings.json", '{"model": "opus"}')
     rows = _rows(_collect(env["proj"])["claude-code"], "telemetry")
     assert rows["otel.enabled"]["source"] == "env:CLAUDE_CODE_ENABLE_TELEMETRY"
@@ -77,7 +84,7 @@ def test_no_env_value_anywhere_lacks_its_variable(real_catalog, monkeypatch):
         ("COPILOT_OTEL_ENABLED", "true"),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
     ):
-        monkeypatch.setenv(name, value)
+        _session_env(name, value)
     _write(real_catalog["copilot_global_dir"] / "settings.json", '{"model": "gpt-6-astra"}')
     _write(real_catalog["claude_global_dir"] / "agents" / "helper.md", "---\nname: helper\n---\n")
     configs = _collect(real_catalog["proj"])
@@ -188,10 +195,12 @@ def test_env_var_rows_order_origin_and_masking(monkeypatch):
     assert [r["name"] for r in rows if r["set"]] == [
         "COPILOT_MODEL",
         "GH_TOKEN",
-        "COPILOT_EXTRA_FLAG",
         "COPILOT_FROM_PROFILE",
     ]
-    assert [r["name"] for r in rows if not r["set"]] == ["COPILOT_HOME"]
+    # A variable only the aictl daemon has is not a session's value: not set, and marked daemon-only.
+    assert [r["name"] for r in rows if not r["set"]] == ["COPILOT_HOME", "COPILOT_EXTRA_FLAG"]
+    extra = by["COPILOT_EXTRA_FLAG"]
+    assert extra["daemon_only"] and extra["in_process"] and extra["value"] == "" and extra["process"] == "1"
     assert "PATH" not in by
     model = by["COPILOT_MODEL"]
     # New shells get the registry's value; the process's own, fixed at its start, is shown apart.

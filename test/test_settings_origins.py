@@ -333,3 +333,38 @@ def test_folders_and_absent_files_have_unknown_size_not_zero(tmp_path):
     assert files["watched"]["bytes"] is None and files["watched"]["settings"] is None
     assert files["gone.json"]["bytes"] is None and files["gone.json"]["exists"] is False
     assert files["settings.json"]["bytes"] == 2 and files["settings.json"]["settings"] == 0
+
+
+# ─── The aictl daemon's environment is never a session's ───────────
+
+
+def test_daemon_only_variable_is_not_a_session_value():
+    cfg = tc.ToolConfig(tool="claude-code")
+    rows = {r["name"]: r for r in tc.env_var_rows(cfg, {}, {"CLAUDE_EFFORT": "medium"})}
+    effort = rows["CLAUDE_EFFORT"]
+    assert effort["set"] is False and effort["daemon_only"] is True
+    assert effort["value"] == "" and effort["process"] == "medium" and effort["in_process"] is True
+
+
+def test_identifier_variables_are_masked_but_session_ids_stay():
+    for name in ("CLAUDE_CODE_ORGANIZATION_UUID", "ANTHROPIC_ACCOUNT_ID", "COPILOT_ORG", "GH_USER_ID"):
+        assert tc.env_display(name, "0f3c2a1e-9b7d-4c55-8e21-4a6b9d0c7f12") == (tc.ENV_MASK, True), name
+    assert tc.env_display("CLAUDE_SESSION_ID", "s-123")[1] is False
+    assert tc.env_display("COPILOT_FORGE_MODE", "on")[1] is False  # "ORG" only as a whole word
+
+
+def test_collection_never_takes_the_daemon_environment_as_a_session_layer(homes, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "daemon-only-model")
+    (homes["claude"] / "settings.json").write_text(json.dumps({"model": "file-model"}, indent=2))
+    homes["project"].mkdir()
+    configs = {c.tool: c for c in tc.collect_tool_configs(homes["project"])}
+    claude = configs["claude-code"]
+    rows = {r["key"]: r for s in claude.sections for r in s["rows"]}
+    assert rows["model"]["value"] == "file-model" and rows["model"]["scope"] == "user"
+    env = {e["name"]: e for e in claude.env_vars}
+    assert env["ANTHROPIC_MODEL"]["daemon_only"] is True and env["ANTHROPIC_MODEL"]["set"] is False
+    # Set where a new session gets it, the variable wins over the file.
+    (homes["home"] / ".zshenv").write_text("export ANTHROPIC_MODEL=profile-model\n")
+    configs = {c.tool: c for c in tc.collect_tool_configs(homes["project"])}
+    rows = {r["key"]: r for s in configs["claude-code"].sections for r in s["rows"]}
+    assert rows["model"]["value"] == "profile-model" and rows["model"]["source"] == "env:ANTHROPIC_MODEL"

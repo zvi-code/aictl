@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  agentTools, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  agentTools, DAEMON_ENV, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
   settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
 import { derivePermissions, listDiff, parseLines, permissionEdit } from '../src/settings/permissions'
+import { environmentValue } from '../src/settings/ToolViews'
 
 const settings = '/work/.claude/settings.local.json'
 const projectScope = { id: 'project-local', path: settings, exists: true, changeable: true }
@@ -68,6 +69,13 @@ describe('settings contract projections', () => {
     expect(entry.hooks).toHaveLength(1)
     expect(hookStatusId('copilot')).toBe('copilot-vscode')
     expect(hookStatusId('claude-code')).toBe('claude-code')
+  })
+
+  it("never shows the aictl daemon's environment as a session's value", () => {
+    const value = environmentValue({ name: 'CLAUDE_EFFORT', tool: 'claude-code', uid: 'x', set: false, daemon_only: true,
+      in_process: true, process: 'medium', masked: false, value: '' })
+    expect(value).toBe(`Not set where sessions start · only in ${DAEMON_ENV}`)
+    expect(value).not.toContain('medium')
   })
 
   it('never renders an unknown or absent list as 0', () => {

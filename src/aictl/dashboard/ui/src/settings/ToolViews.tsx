@@ -6,7 +6,7 @@ import { Table } from '../ui/Table'
 import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
-  DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
+  DAEMON_ENV, DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
   hookStatusId, mcpState, type Comparison, type Entry, type Environment, type Hook, type McpServer, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
@@ -35,11 +35,13 @@ const envFields: Field<Environment>[] = [
   { id: 'name', label: 'Name', read: row => row.name },
   { id: 'value', label: 'Value', read: environmentValue },
   { id: 'origin', label: 'Origin', read: row => [
-    row.in_process === true ? 'Process' : '', ...(row.persisted ?? []).map(item => item.origin),
+    ...(row.persisted ?? []).map(item => item.origin), row.in_process === true ? DAEMON_ENV : '',
   ].filter(Boolean).join(' · ') || undefined },
   { id: 'drives', label: 'Driven settings', read: row => row.drives == null ? undefined : row.drives.length || 'None' },
 ]
 export function environmentValue(env: Environment) {
+  // Only a settings file or a persisted origin says what a session gets; the daemon's own value never does.
+  if (env.daemon_only) return `Not set where sessions start · only in ${DAEMON_ENV}`
   if (env.masked !== false) return env.masked ? 'Masked' : env.set === false ? 'Unset' : undefined
   if (env.set === false) return 'Unset'
   return env.value === '' ? 'Empty string' : env.value
@@ -135,8 +137,10 @@ function EnvironmentView(props: { w: Workspace; entry: Entry }) {
   const rows = () => props.entry.envVars.filter(row => (props.w.state().unset || row.set !== false) &&
     matches(props.w.query(), row.name, row.label, row.description, environmentValue(row), row.drives?.map(drive => drive.label)))
   return <div class={styles.stack}>
+    <p>Values are what a new session gets from settings files and persisted shell or registry settings.
+      The {DAEMON_ENV} is shown apart and never as a session's value.</p>
     <div class={styles.stats}>
-      <Stat label="Set variables" value={props.entry.envVars.filter(row => row.set === true).length} />
+      <Stat label="Set for new sessions" value={props.entry.envVars.filter(row => row.set === true).length} />
       <Stat label="Masked variables" value={props.entry.envVars.filter(row => row.masked).length} />
     </div>
     <Table label="Environment variables" fields={envFields} rows={rows()} rowId={row => row.uid}

@@ -198,6 +198,7 @@ def _inventory_files(home: Path, project: Path) -> list[Path]:
             "leaky@market": [{"scope": "user", "installPath": str(plugin)}]}})),
         _write(copilot_plugin / ".mcp.json", json.dumps({"mcpServers": {"copilot-plugin-srv": {
             "url": "https://plugin.example.test/mcp", "headers": {"Authorization": f"Bearer {S['copilot_plugin_header']}"}}}})),
+        _write(vscode_user_dir() / "settings.json", json.dumps({"github.copilot.enable": {"*": True}})),
         _write(vscode_user_dir() / "mcp.json", json.dumps({"servers": {"vscode-srv": {
             "command": "node", "args": ["srv.js", "--token", S["vscode_mcp_arg"]]}}}, indent=2)),
         _write(project / ".claude" / "settings.json", json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [

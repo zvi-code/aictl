@@ -7,7 +7,7 @@ import { PanelState } from '../ui/PanelState'
 import { Stat } from '../ui/Stat'
 import { Table } from '../ui/Table'
 import {
-  agentInherits, agentTools, basename, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
+  agentInherits, agentTools, basename, DAEMON_ENV, envName, findingTools, isFileSource, isLockedEntry, MISSING, pinWins, plainValue,
   purposeLabel, rowState, rowValue, samePath, scopeLabel, title, type ConfigFile, type Environment, type Finding, type Setting,
 } from './model'
 import { permissionEdit } from './permissions'
@@ -170,16 +170,16 @@ function AgentDetail(props: { w: Workspace; row: Setting }) {
 
 function EnvironmentDetail(props: { w: Workspace; value: Environment }) {
   const env = () => props.value
-  const origins = () => [...(env().in_process ? [{ kind: 'Process', origin: "aictl's environment", value: env().process }] : []),
-    ...(env().persisted ?? [])]
+  const origins = () => [...(env().persisted ?? []),
+    ...(env().in_process ? [{ kind: 'daemon', origin: DAEMON_ENV, value: env().process }] : [])]
   return <div class={styles.stack}>
     <header><h2>{env().name}</h2><p>{env().description}</p></header>
-    <Stat label="Environment value" value={environmentValue(env())} />
+    <Stat label="Value for new sessions" value={environmentValue(env())} />
     <Show when={origins().length} fallback={<PanelState inline state={env().set === false ? 'empty' : 'unavailable'}
       message={env().set === false ? 'No origins reported for this unset variable.' : undefined} />}>
       <Table label="Environment origins" rows={origins()} rowId={row => `${row.kind}\u0001${row.origin}`}
         fields={[{ id: 'origin', label: 'Origin', read: row => row.origin },
-          { id: 'kind', label: 'Kind', read: row => title(row.kind) },
+          { id: 'kind', label: 'Kind', read: row => row.kind === 'daemon' ? 'Not the session' : title(row.kind) },
           { id: 'value', label: 'Value', read: row => env().masked !== false ? env().masked ? 'Masked' : undefined : row.value }]}
         action={{ label: row => row.kind === 'settings' ? 'Open origin file' : '',
           run: row => props.w.openSource(row.origin) }} />
