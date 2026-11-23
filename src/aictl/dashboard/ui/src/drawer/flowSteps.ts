@@ -186,6 +186,12 @@ export function spanSummary(span: Span) {
 }
 
 /**
+ * When a step stopped being active, for the pauses between steps. A prompt's recorded end is the end of its turn, which
+ * runs over every step of the turn: it is not activity, so a pause inside a turn still shows.
+ */
+const activeEnd = (step: Step) => step.kind === 'prompt' ? step.ts : step.end
+
+/**
  * Steps with a marker before each step that started more than GAP_S after the previous one ended,
  * and a summary row before each subagent span. A collapsed span shows its summary row only.
  */
@@ -197,7 +203,7 @@ export function rowsOf(steps: readonly Step[], options: { collapsed?: ReadonlySe
   for (const step of steps) {
     const span = step.agent ? spans.get(step.agent) : undefined
     if (end != null && step.ts - end > GAP_S) rows.push({ type: 'gap', id: `gap:${step.id}`, seconds: step.ts - end, before: step.kind })
-    end = Math.max(end ?? step.end, step.end)
+    end = Math.max(end ?? activeEnd(step), activeEnd(step))
     if (!span) { rows.push({ type: 'step', id: step.id, step }); continue }
     const collapsed = !!options.collapsed?.has(span.agent)
     if (!headed.has(span.agent)) {

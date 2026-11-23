@@ -189,7 +189,9 @@
   background: repeating-linear-gradient(135deg, transparent 0 var(--space-3), var(--color-hover) var(--space-3) var(--space-4));
   border-block-end: var(--border-size) solid var(--color-border-subtle);
 }
-.gap strong { color: var(--color-warning); font-weight: var(--weight-strong); font-variant-numeric: tabular-nums; }
+.gap strong { color: var(--color-warning); font-weight: var(--weight-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The swim-lane list is as wide as its lanes and scrolls: the pause stays in the visible part, as a span row does. */
+.laneList .gap { position: sticky; inset-inline-start: 0; inline-size: min(100%, 100cqi); box-sizing: border-box; }
 
 /* Timeline: one row per step, its title, its numbers and the tool calls it issued. */
 .step {
