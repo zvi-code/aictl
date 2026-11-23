@@ -1692,6 +1692,27 @@ class TestTestClassification:
         assert rows["cargo test"]["state"] == "Failing"
         assert rows["cargo test"]["median_ms"] is None
 
+    def test_a_row_names_the_runner_and_groups_one_test_run_from_several_folders(self, db):
+        """Rows read "cd /Users/…" or "$env:PYTHONPATH='C:\\…" and the same run in two folders was two rows."""
+        conn = db
+        ts = NOW - DAY
+        posix = "cd /home/dev/one && PYTHONPATH=src python -m pytest test/test_y.py -q"
+        windows = ("Set-Location -LiteralPath 'C:\\work\\two'; $env:PYTHONPATH='C:\\work\\two\\src'; "
+                   + "python -m pytest test\\test_y.py -q " + "-k " + "x" * 300)
+        _call(conn, ts, "t", "claude-code", "/p/alpha", "Bash", posix, exit_code=0)
+        _call(conn, ts + 1, "t", "claude-code", "/p/alpha", "Bash", posix, exit_code=1)
+        _call(conn, ts + 2, "t", "claude-code", "/p/alpha", "powershell", windows.replace(" -k " + "x" * 300, ""), exit_code=0)
+        _call(conn, ts + 3, "t", "claude-code", "/p/alpha", "Bash", windows, exit_code=0)
+
+        rows = {t["command"]: t for t in _board(db)["tests"]}
+        row = rows["python -m pytest test/test_y.py -q"]
+        assert (row["runs"], row["failed"], row["command_lines"]) == (3, 1, 2)
+        assert row["full_command"].startswith("Set-Location -LiteralPath")
+        long = next(r for r in rows.values() if r["command"].endswith("…"))
+        # Label and full command together carry no more text than a row did before.
+        assert all(len(r["command"]) + len(r["full_command"]) <= 200 for r in rows.values())
+        assert long["full_command"].startswith("Set-Location") and long["full_command"].endswith("…")
+
     def test_test_series(self, db):
         tests = _board(db)["series"]["tests"]
         assert sum(tests["passed"]) == 1

@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: d13002a637e3a028b42a9bfd242960ad036c425643d8786598a3140d6d54fcba
+// Schema digest: 27dcdef136148b50827b4f96c072e410e5f44cc1a577d2d3bee456407ec0f9d8
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -435,6 +435,8 @@ export type BoardTestsPiped = number;
 
 export type BoardTests = Array<{
   command: string;
+  full_command: string;
+  command_lines: number;
   runs: number;
   failed: number;
   median_ms: number | null;

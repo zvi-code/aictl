@@ -6,7 +6,9 @@
   "items": {
     "type": "object",
     "properties": {
-      "command": {"type": "string"},
+      "command": {"type": "string", "description": "The test runner and its target, e.g. \"pytest test/test_x.py\": folder changes, environment assignments and wrappers left out. Runs with the same label are one row."},
+      "full_command": {"type": "string", "description": "The newest full command line of the row, on one line, cut so that it and command carry at most 200 characters."},
+      "command_lines": {"type": "integer", "description": "How many different command lines the row groups."},
       "runs": {"type": "integer"},
       "failed": {"type": "integer"},
       "median_ms": {"type": ["number", "null"]},
@@ -15,6 +17,6 @@
       "project": {"type": "string"},
       "node_id": {"type": "string"}
     },
-    "required": ["command", "runs", "failed", "median_ms", "state", "last_ts"]
+    "required": ["command", "full_command", "command_lines", "runs", "failed", "median_ms", "state", "last_ts"]
   }
 }

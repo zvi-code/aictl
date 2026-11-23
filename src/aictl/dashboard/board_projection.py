@@ -62,7 +62,7 @@ from .projections.history import (
     project_usage,
 )
 from .runtime_health import _self_section
-from .shell_program import is_test_run
+from .shell_program import is_test_run, run_label
 from .skill_inventory import _skill_file
 
 logger = logging.getLogger(__name__)
@@ -2146,11 +2146,16 @@ def _changes_section(board: _Board) -> tuple[dict, dict[str, tuple[int, int]]]:
     )
 
 
+# The text one Testing row carries: its label and its newest full command line together.
+TEST_ROW_CHARS = 200
+TEST_LABEL_CHARS = 80
+
+
 def _tests_section(board: _Board) -> tuple[list[dict], list[int], list[int], dict[str, list[int]]]:
     passed = [0] * board.f.buckets
     failed = [0] * board.f.buckets
     commands: dict[str, dict] = {}
-    shown: dict[str, str] = {}
+    labels: dict[str, str] = {}
     by_project: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for sid, _aid, ts, _name, target, is_error, exit_code, duration in board.test_rows:
         if sid not in board.scope:
@@ -2160,13 +2165,17 @@ def _tests_section(board: _Board) -> tuple[list[dict], list[int], list[int], dic
         counts = by_project[board.session_project.get(sid, "")]
         counts[0] += 1
         counts[1] += 0 if bad else 1
-        command = shown.get(target)
-        if command is None:
-            command = shown[target] = _one_line(target, 200)
-        row = commands.setdefault(command, {"runs": 0, "failed": 0, "durations": [], "last_ts": ts})
+        # A row is a runner and its target; runs that differ only in folder or environment are one row.
+        label = labels.get(target)
+        if label is None:
+            label = labels[target] = _one_line(run_label(target), TEST_LABEL_CHARS)
+        row = commands.setdefault(label, {"runs": 0, "failed": 0, "durations": [], "last_ts": ts,
+                                          "full": target, "lines": set()})
         row["runs"] += 1
         row["failed"] += 1 if bad else 0
-        row["last_ts"] = max(row["last_ts"], ts)
+        row["lines"].add(target)
+        if ts >= row["last_ts"]:
+            row["last_ts"], row["full"] = ts, target
         if duration and duration > 0:
             row["durations"].append(duration)
     out = []
@@ -2175,6 +2184,9 @@ def _tests_section(board: _Board) -> tuple[list[dict], list[int], list[int], dic
         out.append(
             {
                 "command": command,
+                # The newest full command line, within the 200 characters a row carried before.
+                "full_command": _one_line(row["full"], TEST_ROW_CHARS - len(command)),
+                "command_lines": len(row["lines"]),
                 "runs": row["runs"],
                 "failed": row["failed"],
                 "median_ms": _ms(_percentile(sorted(row["durations"]), 0.5)),
