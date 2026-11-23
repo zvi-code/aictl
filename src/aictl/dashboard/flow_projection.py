@@ -105,7 +105,9 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
         prompts = [(ts, mask_secrets(text)) for ts, text, _model in messages]
     prompt_info: list[dict] = [{} for _ in prompts]
     native_authorship = False
-    native = rows("native")
+    # The replies the session file holds (role assistant); the rest are the person's and agents' messages.
+    replies = [row for row in rows("native") if row[2] == "assistant"]
+    native = [row for row in rows("native") if row[2] != "assistant"]
     # The task a subagent received, from its own transcript: (ts, text, step_key, text_status) by agent.
     agent_tasks: dict[str, tuple[float, str, str, str]] = {}
     if native:
@@ -226,7 +228,32 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
                                         ("before_tokens", before), ("after_tokens", after), ("estimated", estimated)) if v is not None})
         events.append(event)
 
-    messages = facts.get("assistant", [])
+    for row in replies:
+        ts, _kind, _role, key, turn, status, text = row[:7]
+        agent = row[7] if len(row) > 7 else ""
+        reply = mask_secrets(text or "") if keep_text and ts >= text_floor else ""
+        if not keep_text:
+            status = "withheld"
+        elif not reply:
+            status = "expired"
+        event = {"ts": ts, "type": "api_response", "from": "api", "to": tool, "model": "", "response": reply,
+                 "response_preview": reply[:FLOW_PREVIEW_CHARS], "text_status": status or "captured",
+                 "step_key": key, "turn_id": turn, "source": "assistant.message"}
+        if agent:
+            event["agent_id"] = agent
+        events.append(event)
+    for ts, text, agent in rows("outcome"):
+        # The agent's own summary of what it achieved: the outcome of the turn it ends.
+        summary = mask_secrets(text or "")
+        if summary:
+            event = {"ts": ts, "type": "task_summary", "from": tool, "to": "user", "summary": summary,
+                     "preview": summary[:FLOW_PREVIEW_CHARS], "source": "session.task_complete"}
+            if agent:
+                event["agent_id"] = agent
+            events.append(event)
+
+    # A reply the session file holds is not read a second time from the tool's message store.
+    messages = [] if replies else facts.get("assistant", [])
     for ts, text, model in messages:
         reply = mask_secrets(text)
         events.append(
@@ -430,6 +457,8 @@ def _merge_flow(store: list[dict], legacy: list[dict]) -> list[dict]:
         if best is None:
             if event.get("type") in _STORE_COUNTED and event.get("type") in store_kinds:
                 continue
+            if event.get("type") == "api_response" and "api_response" in store_kinds:
+                continue  # the session file holds the replies; telemetry's copy of one is not a second reply
             if event.get("type") == "api_response" and "api_call" in store_kinds:
                 # The reply half of a model call the store counts already: its text only, never its tokens.
                 if not event.get("response"):
@@ -843,6 +872,8 @@ def _transcript_turn(ts: float, prompt: str = "", opened_by_prompt: bool = False
         "reply_ms": None,
         "actions": [],
         "tool_use_count": 0,
+        # The agent's own summary of what the turn achieved (Copilot CLI task_complete), "" when none.
+        "outcome": "",
     }
 
 
@@ -855,6 +886,12 @@ def _flow_transcript(events: list[dict]) -> list[dict]:
             current = _transcript_turn(event["ts"], event.get("message") or "", True)
             current["end_ts"] = event.get("end_ts") or event["ts"]
             turns.append(current)
+            continue
+        if event["type"] == "task_summary":
+            if current is None:
+                current = _transcript_turn(event["ts"])
+                turns.append(current)
+            current["outcome"] = (current["outcome"] + "\n\n" + event["summary"]) if current["outcome"] else event["summary"]
             continue
         action = _flow_action(event)
         if action is None:
@@ -960,7 +997,7 @@ def agent_transcript(
     flow_summary = _flow_summary(events, source, cumulative, largest)
     live = None
     turns = _merge_transcript(_flow_transcript(events), live)
-    replies_kept = any(t["response"] for t in turns)
+    replies_kept = any(t["response"] or t.get("outcome") for t in turns)
     actions = [a for t in turns for a in t["actions"]]
     summary = {
         **{k: flow_summary[k] for k in ("total_input_tokens", "total_output_tokens", "total_cache_tokens", "total_tokens", "avg_tokens_per_call", "duration_s", "source")},
@@ -992,4 +1029,7 @@ def _brief_turn(turn: dict) -> dict:
     """A turn without its actions and long texts, and ``detail`` when the whole turn holds more."""
     prompt, response = turn.get("prompt") or "", turn.get("response") or ""
     more = bool(turn.get("actions")) or len(prompt) > FLOW_PREVIEW_CHARS or len(response) > FLOW_PREVIEW_CHARS
-    return {**turn, "prompt": prompt[:FLOW_PREVIEW_CHARS], "response": response[:FLOW_PREVIEW_CHARS], "actions": [], "detail": more}
+    outcome = turn.get("outcome") or ""
+    more = more or len(outcome) > FLOW_PREVIEW_CHARS
+    return {**turn, "prompt": prompt[:FLOW_PREVIEW_CHARS], "response": response[:FLOW_PREVIEW_CHARS],
+            "outcome": outcome[:FLOW_PREVIEW_CHARS], "actions": [], "detail": more}

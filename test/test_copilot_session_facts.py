@@ -153,3 +153,20 @@ def test_an_agent_row_written_after_a_restart_keeps_the_stored_end(tmp_path):
     row, = current(writer, "agents")
     assert (row["started_at"], row["ended_at"], row["completed"], row["status"], row["description"]) == (
         T, T + 18, 1, "completed", "Check the exporter")
+
+
+def test_a_reply_and_a_task_summary_are_kept_only_while_text_is_kept():
+    events = [
+        event("user.message", 1, {"content": "Check the exporter", "interactionId": "i1"}),
+        event("assistant.message", 2, {"content": "The exporter sends to the local collector.", "messageId": "m1"}),
+        event("session.task_complete", 3, {"success": True, "summary": "Checked the exporter settings."}),
+    ]
+    kept = read(events)
+    reply = [r for r in current(kept, "session_steps") if r["role"] == "assistant" and r["kind"] == "message"]
+    texts = {r["step_key"]: r["text"] for r in current(kept, "session_step_text")}
+    assert [texts[r["step_key"]] for r in reply] == ["The exporter sends to the local collector."]
+    assert [r["text"] for r in current(kept, "session_digests") if r["kind"] == "task_summary"] == [
+        "Checked the exporter settings."]
+    withheld = read(events, keep_text=False)
+    assert current(withheld, "session_step_text") == [] and current(withheld, "session_digests") == []
+    assert {r["text_status"] for r in current(withheld, "session_steps") if r["role"] == "assistant"} == {"withheld"}

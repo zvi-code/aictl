@@ -136,3 +136,37 @@ def test_an_invoke_agent_span_takes_the_tool_call_id_of_its_execute_tool_parent(
     ]
     spawns = [t for t in build_turns_from_otel([], spans, SID) if t["type"] == "subagent"]
     assert [s.get("tool_call_id") for s in spawns] == ["call-c", None]
+
+
+def native(ts, role, text, key, status="", kind="message", aid=""):
+    return {"row_type": "native", "values": [ts, kind, role, key, "0", status, text, aid]}
+
+
+def transcript(rows, **kwargs):
+    store = Store(reader=FixtureReader({
+        "agents.resolve": lambda params: [{"session_id": SID, "priority": 0}],
+        "sequence.flow": rows,
+        "sequence.stamp": [{"revision": 1}],
+    }))
+    status, body = flow_projection.agent_transcript(store, SID, now=T + 10_000, legacy_flow=lambda *_: {}, brief=False,
+                                                    **kwargs)
+    assert status == 200
+    return body
+
+
+def test_copilot_replies_and_the_task_summary_are_the_turns_reply_and_outcome():
+    rows = [
+        {"row_type": "session", "values": ["copilot-cli", "/p", T, None]},
+        native(T + 1, "user", "Check the exporter", "u1"),
+        call(T + 2),
+        native(T + 2.5, "assistant", "The exporter sends to the local collector.", "a1"),
+        {"row_type": "outcome", "values": [T + 3, "Checked the exporter settings.", ""]},
+        native(T + 60, "user", "And the endpoint?", "u2"),
+        call(T + 61),
+    ]
+    body = transcript(rows)
+    assert body["replies_kept"] is True and body["reply_note"] is None
+    first, second = body["turns"]
+    assert first["response"] == "The exporter sends to the local collector."
+    assert first["outcome"] == "Checked the exporter settings."
+    assert (second["response"], second["outcome"]) == ("", "")
