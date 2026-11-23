@@ -19,6 +19,7 @@ const scopeLabels: Record<string, string> = {
 type RawRow = NonNullable<SettingsToolConfig['sections']>[number]['rows'][number]
 type RawEnvironment = NonNullable<SettingsToolConfig['env_vars']>[number]
 export type McpServer = NonNullable<SettingsToolConfig['mcp_inventory']>[number]
+export type Hook = NonNullable<SettingsToolConfig['hook_inventory']>[number]
 export type ChainEntry = NonNullable<RawRow['chain']>[number]
 export type Setting = RawRow & {
   uid: string; tool: string; sec: string; label: string; chain: ChainEntry[]; wins: number
@@ -116,14 +117,16 @@ export function toolEntries(configs: readonly SettingsToolConfig[] | undefined, 
     }
     const envVars = [...env.values()].sort((a, b) => Number(b.set === true) - Number(a.set === true))
     const mcp = full?.mcp_inventory ?? config.mcp_inventory ?? []
-    // A tool whose servers are only in its inventory still gets its MCP section.
-    if (mcp.length && !grouped.some(sec => sec.id === 'mcp')) {
-      grouped.push({ id: 'mcp', title: sectionTitles.get('mcp')!, rows: [] })
+    const hooks = full?.hook_inventory ?? config.hook_inventory ?? []
+    // A tool whose servers or hooks are only in its inventory still gets the section.
+    for (const [id, items] of [['mcp', mcp], ['hooks', hooks]] as const) {
+      if (!items.length || grouped.some(sec => sec.id === id)) continue
+      grouped.push({ id, title: sectionTitles.get(id)!, rows: [] })
       grouped.sort((a, b) => rank(a.id) - rank(b.id))
     }
-    for (const server of mcp) if (server.source && !files.some(path => samePath(path, server.source))) files.push(server.source)
+    for (const item of [...mcp, ...hooks]) if (item.source && !files.some(path => samePath(path, item.source))) files.push(item.source)
     return { id: config.tool, label: labelOf(config.tool, detail), files, scopes, sections: grouped,
-      rows, envVars, hints: config.hints, mcp }
+      rows, envVars, hints: config.hints, mcp, hooks }
   })
 }
 
@@ -132,6 +135,8 @@ const MCP_STATES: Record<string, string> = {
   rejected: 'Rejected', 'needs-approval': 'Waiting for approval', declared: 'Declared (start state not in a file)',
 }
 export const mcpState = (server: McpServer) => MCP_STATES[server.state] ?? title(server.state)
+/** aictl's own hook status is keyed by the hook host; Copilot in VS Code reports as copilot-vscode. */
+export const hookStatusId = (tool: string) => tool === 'copilot' ? 'copilot-vscode' : tool
 
 export function settingsSummary(entries: readonly Entry[]) {
   const rows = entries.flatMap(entry => entry.rows)

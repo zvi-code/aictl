@@ -222,6 +222,9 @@ class ToolConfig:
     # Every declared MCP server with its scope, file, plugin and state, masked
     # (settings_inventory.mcp_entry). Always in to_dict(); empty when the parser has none.
     mcp_inventory: list[dict] = field(default_factory=list)
+    # Every hook command the tool runs, user-defined and aictl's own (``aictl``), with event,
+    # matcher, masked command, file, layer and plugin (settings_inventory.hook_entries). Always in to_dict().
+    hook_inventory: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -1383,6 +1386,12 @@ COPILOT_MANAGED_FILES: list[Path] = _per_os(
     [Path("/Library/Application Support/GitHubCopilot/managed-settings.json")],
     [Path("/etc/github-copilot/managed-settings.json")],
 )
+# Copilot CLI policy hook folders (hooks-reference.md): machine-wide, loaded before every other hook.
+COPILOT_HOOK_POLICY_DIRS: list[Path] = _per_os(
+    [_program_dir("ProgramData", r"C:\ProgramData") / "GitHub" / "Copilot" / "policy.d"],
+    [Path("/etc/github-copilot/policy.d")],
+    [Path("/etc/github-copilot/policy.d")],
+)
 # Managed Copilot keys that are floors: they win over every other scope.
 COPILOT_FLOOR_KEYS: tuple[str, ...] = ("sandbox", "permissions.disableBypassPermissionsMode")
 
@@ -2215,6 +2224,9 @@ def _parse_claude_code_config(root: Path, tool: str = "claude-code") -> ToolConf
 
     managed_mcp = [p.parent / "managed-mcp.json" for p in CLAUDE_MANAGED_FILES]
     inventory_layers = [(s, d, str(p)) for s, d, p in layers]
+    from .settings_inventory import claude_code_hooks
+
+    cfg.hook_inventory = claude_code_hooks(claude_global_dir(), inventory_layers)
     cfg.mcp_inventory = claude_code_mcp(
         root, claude_global_dir(), account if isinstance(account, dict) else None, account_path,
         inventory_layers, [p for p in managed_mcp if _fixed_file(p)],
@@ -2792,6 +2804,9 @@ def _parse_copilot_config(root: Path, tool: str = "copilot") -> ToolConfig | Non
 
     user_mcp = vscode_user_dir() / "mcp.json"
     ws_mcp = root / ".vscode" / "mcp.json"
+    from .settings_inventory import vscode_hooks
+
+    cfg.hook_inventory = vscode_hooks(root, copilot_global_dir(), {**vscode_settings, **(ws_settings or {})})
     cfg.mcp_inventory = vscode_mcp([
         ("user", user_mcp, _read_json(user_mcp)),
         ("user", user_settings_path, vscode_settings),
@@ -3772,6 +3787,12 @@ def _parse_copilot_home_config(root: Path, tool: str = "copilot-cli") -> ToolCon
         ("managed", managed, str(managed_path or "")),
     ]
     cfg.mcp_inventory = copilot_cli_mcp(home, root, state_layers)
+    from .settings_inventory import copilot_cli_hooks
+
+    cfg.hook_inventory = copilot_cli_hooks(home, root, state_layers, COPILOT_HOOK_POLICY_DIRS)
+    for hook in cfg.hook_inventory:
+        if hook["source"] not in cfg.config_files:
+            cfg.config_files.append(hook["source"])
     _adopt_mcp_inventory(cfg)
 
     instr = home / "copilot-instructions.md"

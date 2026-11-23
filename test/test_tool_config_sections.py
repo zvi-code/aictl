@@ -97,6 +97,7 @@ def isolated_home(tmp_path, monkeypatch):
         "CODEX_SYSTEM_FILES",
         "CODEX_REQUIREMENTS_FILES",
         "VSCODE_POLICY_FILES",
+        "COPILOT_HOOK_POLICY_DIRS",
     ):
         monkeypatch.setattr(tc, name, [fixed / name.lower()])
     monkeypatch.setattr(tc, "SETTINGS_CATALOG_PATH", tmp_path / "no-catalog.yaml")
@@ -616,8 +617,11 @@ def test_claude_code_project_overrides_user_chain(isolated_home, tmp_path):
     ]
     assert model["wins"] == 1
     assert model["line"] == 3
-    dumped = json.dumps(configs["claude-code"].to_dict())
-    assert "secret-cmd" not in dumped  # hook commands never reach the result
+    record = configs["claude-code"].to_dict()
+    # A hook command is shown only in the hook inventory, masked; never as a settings value.
+    assert "secret-cmd" not in json.dumps(record["sections"])
+    assert [h["command"] for h in record["hook_inventory"]] == ["secret-cmd"]
+    dumped = json.dumps(record)
     assert "setting_values" not in dumped and "project_root" not in dumped
 
 

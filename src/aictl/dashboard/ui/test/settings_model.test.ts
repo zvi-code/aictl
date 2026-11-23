@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  agentTools, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  agentTools, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
   settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
@@ -56,6 +56,18 @@ describe('settings contract projections', () => {
     expect(entry.sections.map(sec => sec.id)).toEqual(['mcp'])
     expect(entry.mcp.map(mcpState)).toEqual(['Waiting for approval', 'Plugin turned off'])
     expect(entry.files).toEqual(['/work/.mcp.json', '/p/.mcp.json'])
+  })
+
+  it('lists user-defined hooks apart from aictl status and maps the hook host id', () => {
+    const config: SettingsToolConfig = { tool: 'copilot', sections: [], hook_inventory: [
+      { event: 'preToolUse', matcher: '', type: 'command', command: 'audit', scope: 'workspace',
+        source: '/work/.github/hooks/a.json', enabled: true, aictl: false },
+    ] }
+    const [entry] = toolEntries([config])
+    expect(entry.sections.map(sec => sec.id)).toEqual(['hooks'])
+    expect(entry.hooks).toHaveLength(1)
+    expect(hookStatusId('copilot')).toBe('copilot-vscode')
+    expect(hookStatusId('claude-code')).toBe('claude-code')
   })
 
   it('never renders an unknown or absent list as 0', () => {

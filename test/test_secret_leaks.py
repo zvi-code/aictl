@@ -214,6 +214,8 @@ def _settings_tools(tree: LeakTree) -> str:
     configs = [c.to_dict() for c in collect_tool_configs(tree.project)]
     servers = {s["name"] for c in configs for s in c.get("mcp_inventory") or []}
     assert {"claude-plugin-srv", "copilot-plugin-srv", "vscode-srv", "user-srv", "stdio-srv"} <= servers, servers
+    hooks = [h for c in configs for h in c.get("hook_inventory") or []]
+    assert {h["source"].rsplit("/", 1)[-1] for h in hooks} >= {"settings.json", "audit.json"}, hooks
     return json.dumps(configs)
 
 

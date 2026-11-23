@@ -175,6 +175,26 @@
       }
     },
     "local_data": {"type": "object", "additionalProperties": {"type": "boolean"}},
+    "hook_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event": {"type": "string"},
+          "matcher": {"type": "string"},
+          "type": {"type": "string"},
+          "command": {"type": "string"},
+          "url": {"type": "string"},
+          "scope": {"type": "string"},
+          "source": {"type": "string"},
+          "plugin": {"type": "string"},
+          "enabled": {"type": "boolean"},
+          "aictl": {"type": "boolean"},
+          "note": {"type": "string"}
+        },
+        "required": ["event", "type", "scope", "source", "enabled", "aictl"]
+      }
+    },
     "mcp_inventory": {
       "type": "array",
       "items": {

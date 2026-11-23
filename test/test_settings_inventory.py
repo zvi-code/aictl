@@ -1,6 +1,6 @@
 # aictl - Cross-platform AI Tool Context Control + Dashboard
 # Copyright (c) 2026 Zvi Schneider. MIT License.
-"""Every declared MCP server per tool, with its scope, file, plugin and state; secrets masked."""
+"""Every declared MCP server and hook per tool, with its scope, file, plugin and state; secrets masked."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ def homes(tmp_path, monkeypatch):
     for name in ("COPILOT_MANAGED_FILES", "CLAUDE_MANAGED_FILES", "CLAUDE_MANAGED_DIRS", "VSCODE_POLICY_FILES"):
         monkeypatch.setattr(tc, name, [fixed / name.lower() / "managed-settings.json"])
     monkeypatch.setattr(tc, "vscode_user_dir", lambda: vscode)
+    monkeypatch.setattr(tc, "COPILOT_HOOK_POLICY_DIRS", [fixed / "policy.d"])
     monkeypatch.setattr(tc.shutil, "which", lambda _name: None)
     monkeypatch.setattr(tc, "_macos_login_items", lambda: set())
     return {"home": home, "copilot": copilot, "claude": claude, "vscode": vscode, "project": project, "fixed": fixed}
@@ -147,4 +148,71 @@ def test_vscode_mcp_comes_from_vscode_files_not_the_copilot_cli(homes):
 
 def test_mcp_inventory_is_always_in_the_record(homes):
     cfg = tc.ToolConfig(tool="x")
-    assert cfg.to_dict()["mcp_inventory"] == []
+    assert cfg.to_dict()["mcp_inventory"] == [] and cfg.to_dict()["hook_inventory"] == []
+
+
+# ─── Hooks ─────────────────────────────────────────────────────────
+
+
+def _claude_rule(command: str, matcher: str = "") -> dict:
+    return {"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+
+
+def test_claude_code_lists_user_project_and_plugin_hooks_masked(homes):
+    root, claude = homes["project"], homes["claude"]
+    _write(claude / "settings.json", {
+        "enabledPlugins": {"hooky@market": True},
+        "hooks": {
+            "PreToolUse": [_claude_rule(f"guard --token {FAKE}", "Bash"), _claude_rule("lint.sh", "Edit|Write")],
+            "Stop": [{"hooks": [{"type": "command", "command": "notify done"}],
+                      "_aictl_owner": "aictl"}],
+        },
+    })
+    _write(root / ".claude" / "settings.json", {"hooks": {"SessionStart": [_claude_rule("echo hello")]}})
+    plugin = claude / "plugins" / "cache" / "hooky"
+    _write(plugin / "hooks" / "hooks.json", {"hooks": {"PostToolUse": [_claude_rule("fmt.sh", "Write")]}})
+    _write(claude / "plugins" / "installed_plugins.json", {"version": 2, "plugins": {
+        "hooky@market": [{"scope": "user", "installPath": str(plugin)}]}})
+    cfg = tc._parse_claude_code_config(root)
+    hooks = cfg.hook_inventory
+    by = {(h["event"], h["matcher"], h["scope"]): h for h in hooks}
+    guard = by[("PreToolUse", "Bash", "user")]
+    assert guard["command"].startswith("guard --token") and FAKE not in guard["command"]
+    assert guard["source"] == str(claude / "settings.json") and guard["enabled"] is True and guard["aictl"] is False
+    assert by[("PreToolUse", "Edit|Write", "user")]["command"] == "lint.sh"
+    assert by[("SessionStart", "", "project")]["source"] == str(root / ".claude" / "settings.json")
+    assert by[("PostToolUse", "Write", "plugin")]["plugin"] == "hooky@market"
+    assert len({h["event"] for h in hooks}) == 4  # every event the files define, not only aictl's
+    assert FAKE not in json.dumps(cfg.to_dict())
+
+
+def test_copilot_cli_lists_hook_files_inline_hooks_and_plugin_hooks(homes):
+    root, copilot = homes["project"], homes["copilot"]
+    _write(copilot / "settings.json", {"hooks": {"sessionStart": [{"type": "command", "bash": "echo user"}]}})
+    _write(copilot / "hooks" / "audit.json", {"version": 1, "hooks": {"preToolUse": [
+        {"type": "command", "bash": f"audit --api-key {FAKE}", "powershell": "audit.ps1"}]}})
+    _write(root / ".github" / "hooks" / "repo.json", {"version": 1, "hooks": {"postToolUse": [
+        {"type": "http", "url": f"https://hooks.example.test/x?token={FAKE}"}]}})
+    _write(root / ".claude" / "settings.json", {"hooks": {"PreToolUse": [_claude_rule("claude-format.sh", "Bash")]}})
+    _write(copilot / "installed-plugins" / "market" / "p" / "hooks" / "hooks.json",
+           {"hooks": {"UserPromptSubmit": [_claude_rule("plugin-hook.sh")]}})
+    policy = homes["fixed"] / "policy.d"
+    _write(policy / "corp.json", {"version": 1, "hooks": {"preToolUse": [{"type": "command", "bash": "corp-check"}]}})
+    cfg = tc._parse_copilot_home_config(root, tool="copilot-cli")
+    by = {(h["event"], h["scope"]): h for h in cfg.hook_inventory}
+    assert by[("sessionStart", "user")]["source"] == str(copilot / "settings.json")
+    assert by[("preToolUse", "user")]["command"].startswith("audit --api-key")
+    assert by[("postToolUse", "project")]["type"] == "http" and FAKE not in by[("postToolUse", "project")]["url"]
+    assert by[("PreToolUse", "project")]["matcher"] == "Bash"  # the repository's .claude/settings.json is read too
+    assert by[("UserPromptSubmit", "plugin")]["plugin"] == "p@market"
+    assert by[("preToolUse", "policy")]["source"] == str(policy / "corp.json")
+    assert FAKE not in json.dumps(cfg.to_dict())
+
+
+def test_disable_all_hooks_marks_hooks_off(homes):
+    root, copilot = homes["project"], homes["copilot"]
+    _write(copilot / "settings.json", {"disableAllHooks": True})
+    _write(copilot / "hooks" / "a.json", {"version": 1, "hooks": {"preToolUse": [{"bash": "x"}]}})
+    cfg = tc._parse_copilot_home_config(root, tool="copilot-cli")
+    assert [h["enabled"] for h in cfg.hook_inventory] == [False]
+    assert "disableAllHooks" in cfg.hook_inventory[0]["note"]

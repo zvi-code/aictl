@@ -316,6 +316,133 @@ def claude_code_mcp(
     return out
 
 
+# ─── Hooks ──────────────────────────────────────────────────────
+#
+# One entry per hook command a tool will run: event, matcher, type, the command
+# (masked through secret_mask.mask_command_line) or URL (masked), the file and
+# layer it is defined in, the providing plugin, and whether it runs. Hooks that
+# aictl installed are marked ``aictl: true`` so they read apart from the user's.
+
+
+def _is_aictl(rule: dict, command: str) -> bool:
+    from .._hook_owner import _AICTL_OWNER_MARKER, _is_legacy_aictl_hook
+
+    return rule.get("_aictl_owner") == _AICTL_OWNER_MARKER or bool(_is_legacy_aictl_hook(rule)) or (
+        "aictl" in command and "/api/hooks" in command
+    )
+
+
+def _hook_entry(event: str, matcher: str, item: dict, rule: dict, *, scope: str, source: str, plugin: str,
+                enabled: bool, note: str) -> dict:
+    from ..secret_mask import mask_command_line, mask_url
+
+    kind = str(item.get("type") or "command")
+    raw = next((str(item[k]) for k in ("command", "bash", "exec", "powershell") if isinstance(item.get(k), str)), "")
+    url = str(item.get("url") or "") if kind == "http" else ""
+    return {
+        "event": event,
+        "matcher": matcher,
+        "type": kind,
+        "command": mask_command_line(raw) if raw else "",
+        "url": mask_url(url) if url else "",
+        "scope": scope,
+        "source": source,
+        "plugin": plugin,
+        "enabled": enabled,
+        "aictl": _is_aictl({**rule, **item}, raw),
+        "note": note,
+    }
+
+
+def hook_entries(hooks: object, *, scope: str, source: str, plugin: str = "", enabled: bool = True,
+                 note: str = "") -> list[dict]:
+    """Every hook command of a ``hooks`` object, in the Claude format (``[{matcher, hooks: [...]}]``)
+    or the Copilot format (``[{type, bash, command, matcher}]``)."""
+    out: list[dict] = []
+    if not isinstance(hooks, dict):
+        return out
+    for event, rules in hooks.items():
+        for rule in rules if isinstance(rules, list) else []:
+            if not isinstance(rule, dict):
+                continue
+            matcher = str(rule.get("matcher") or "")
+            items = rule.get("hooks") if isinstance(rule.get("hooks"), list) else [rule]
+            for item in items:
+                if isinstance(item, dict):
+                    out.append(_hook_entry(str(event), matcher, item, rule, scope=scope, source=source, plugin=plugin,
+                                           enabled=enabled, note=note))
+    return out
+
+
+def _hook_file(path: Path) -> object:
+    data = read_json(path)
+    return data.get("hooks") if isinstance(data, dict) else None
+
+
+def _plugin_hook_files(folder: Path) -> list[Path]:
+    return [p for p in (folder / "hooks.json", folder / "hooks" / "hooks.json",
+                        folder / "com.github.copilot" / "hooks" / "hooks.json") if p.is_file()]
+
+
+def claude_code_hooks(claude_home: Path, layers: list[tuple[str, dict | None, str]]) -> list[dict]:
+    """Hooks Claude Code runs: the ``hooks`` key of every settings file and enabled plugins' hooks files."""
+    off = next((str(p) for _s, d, p in reversed(layers) if isinstance(d, dict) and d.get("disableAllHooks") is True), "")
+    note = f"disableAllHooks is true in {off}." if off else ""
+    out: list[dict] = []
+    for scope, data, path in layers:
+        if isinstance(data, dict):
+            out += hook_entries(data.get("hooks"), scope=scope, source=str(path), enabled=not off or scope == "managed",
+                                note=note if scope != "managed" else "")
+    enabled = merged_enabled_plugins(layers)
+    for spec, folder in claude_plugins(claude_home):
+        on, _where = _plugin_state(spec, enabled, absent_enabled=False)
+        for path in _plugin_hook_files(folder):
+            out += hook_entries(_hook_file(path), scope="plugin", source=str(path), plugin=spec, enabled=on and not off,
+                                note=note if on else f"The plugin {spec} is not enabled.")
+    return out
+
+
+def copilot_cli_hooks(home: Path, root: Path, layers: list[tuple[str, dict | None, str]],
+                      policy_dirs: list[Path]) -> list[dict]:
+    """Hooks the Copilot CLI runs (hooks-reference.md): policy files, ``.github/hooks/*.json``,
+    ``$COPILOT_HOME/hooks/*.json``, the inline ``hooks`` of the repository and user settings (and the
+    repository's ``.claude/settings*.json``) and installed plugins' hooks files."""
+    off = next((str(p) for _s, d, p in reversed(layers) if isinstance(d, dict) and d.get("disableAllHooks") is True), "")
+    note = f"disableAllHooks is true in {off}." if off else ""
+    out: list[dict] = []
+    for folder in policy_dirs:
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            out += hook_entries(_hook_file(path), scope="policy", source=str(path), note="Policy hooks always run.")
+    for scope, folder in (("project", root / ".github" / "hooks"), ("user", home / "hooks")):
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            out += hook_entries(_hook_file(path), scope=scope, source=str(path), enabled=not off, note=note)
+    claude_repo = [("project", root / ".claude" / "settings.json"), ("project-local", root / ".claude" / "settings.local.json")]
+    for scope, data, path in [*layers, *((s, read_json(p), str(p)) for s, p in claude_repo if p.is_file())]:
+        if isinstance(data, dict) and scope != "managed":
+            out += hook_entries(data.get("hooks"), scope=scope, source=str(path), enabled=not off, note=note)
+    enabled = merged_enabled_plugins(layers)
+    for spec, folder in copilot_plugins(home):
+        on, _where = _plugin_state(spec, enabled, absent_enabled=True)
+        for path in _plugin_hook_files(folder):
+            out += hook_entries(_hook_file(path), scope="plugin", source=str(path), plugin=spec, enabled=on and not off,
+                                note=note if on else f"The plugin {spec} is turned off in enabledPlugins.")
+    return out
+
+
+def vscode_hooks(root: Path, copilot_home: Path, settings: dict) -> list[dict]:
+    """Hook files Copilot in VS Code loads: ``.github/hooks/*.json`` and ``~/.copilot/hooks/*.json``.
+
+    ``chat.useHooks: false`` turns them all off.
+    """
+    on = settings.get("chat.useHooks") is not False
+    note = "" if on else "chat.useHooks is false."
+    out: list[dict] = []
+    for scope, folder in (("workspace", root / ".github" / "hooks"), ("user", copilot_home / "hooks")):
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            out += hook_entries(_hook_file(path), scope=scope, source=str(path), enabled=on, note=note)
+    return out
+
+
 # ─── VS Code ────────────────────────────────────────────────────
 
 

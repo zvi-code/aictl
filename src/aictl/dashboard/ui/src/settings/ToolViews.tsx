@@ -7,7 +7,7 @@ import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
   DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
-  mcpState, type Comparison, type Entry, type Environment, type McpServer, type Setting,
+  hookStatusId, mcpState, type Comparison, type Entry, type Environment, type Hook, type McpServer, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
 import type { Workspace } from './workspaceState'
@@ -73,10 +73,10 @@ function ToolSections(props: { w: Workspace; entry: Entry }) {
   const showUnset = createMemo(() => w.state().unset)
   const items = createMemo(() => [
     ...props.entry.sections.filter(sec => showUnset() || sec.rows.some(row => !row.unset) ||
-      (sec.id === 'mcp' && props.entry.mcp.length))
+      (sec.id === 'mcp' && props.entry.mcp.length) || (sec.id === 'hooks' && props.entry.hooks.length))
       .map(sec => ({ id: sec.id, label: sec.title, content: () => <>
         <Show when={sec.id === 'autonomy'}><PermissionView entries={[props.entry]} w={w} /></Show>
-        <Show when={sec.id === 'hooks'}><HookView w={w} id={props.entry.id} /></Show>
+        <Show when={sec.id === 'hooks'}><DefinedHooks w={w} entry={props.entry} /><HookView w={w} id={props.entry.id} /></Show>
         <Show when={sec.id === 'mcp' && props.entry.mcp.length}><McpView w={w} entry={props.entry} /></Show>
         <Rows w={w} label={`${props.entry.label} ${sec.title}`} rows={rows().filter(row => row.sec === sec.id)}
           agents={sec.id === 'agents'} />
@@ -246,22 +246,49 @@ function McpView(props: { w: Workspace; entry: Entry }) {
   </section>
 }
 
+const hookFields: Field<Hook>[] = [
+  { id: 'event', label: 'Event', read: row => row.event },
+  { id: 'matcher', label: 'Matcher', read: row => row.matcher || 'Every call' },
+  { id: 'command', label: 'Command or URL', read: row => row.command || row.url || undefined },
+  { id: 'runs', label: 'Runs', read: row => row.enabled ? 'Yes' : `No${row.note ? ` · ${row.note}` : ''}` },
+  { id: 'scope', label: 'Layer', read: row => scopeLabel(row.scope) },
+  { id: 'source', label: 'Defined in', read: row => setIn({ source: row.source }) },
+  { id: 'owner', label: 'Installed by', read: row => row.aictl ? 'aictl' : row.plugin ? `Plugin ${row.plugin}` : 'You' },
+]
+function DefinedHooks(props: { w: Workspace; entry: Entry }) {
+  const rows = () => props.entry.hooks.filter(row => matches(props.w.query(), row.event, row.matcher, row.command, row.url, row.source))
+  return <section class={styles.stack} aria-label="Hooks defined in files">
+    <h3>Hooks defined in files</h3>
+    <Show when={props.entry.hooks.length} fallback={<PanelState inline state="empty" message="No hook is defined in the files this tool reads." />}>
+      <div class={styles.stats}>
+        <Stat label="Hook events defined" value={new Set(props.entry.hooks.map(row => row.event)).size} />
+        <Stat label="Hook commands" value={props.entry.hooks.length} />
+        <Stat label="Installed by aictl" value={props.entry.hooks.filter(row => row.aictl).length} />
+      </div>
+      <Table label={`${props.entry.label} hooks`} fields={hookFields} rows={rows()}
+        rowId={row => `${row.source}\u0001${row.event}\u0001${row.matcher}\u0001${row.command}${row.url}`}
+        action={{ label: row => `Open ${basename(row.source)}`, run: row => props.w.openSource(row.source) }} />
+    </Show>
+  </section>
+}
+
 function HookView(props: { w: Workspace; id: string }) {
   const res = untrack(() => props.w.hookStatus)
-  const tool = () => res()?.data?.tools?.[props.id]
+  const tool = () => res()?.data?.tools?.[hookStatusId(props.id)]
   const [expanded, setExpanded] = createSignal(false)
-  return <section class={styles.stack} aria-label="Hook registration">
+  return <section class={styles.stack} aria-label="aictl's own hooks">
+    <h3>aictl's own hooks</h3>
     <Show when={tool()} fallback={<PanelState inline state={res()?.status === 'loading' ? 'loading' : 'unavailable'}
       message={res()?.status === 'loading' ? 'Loading hook registration…' : undefined} />}>{hook => <>
         <Show when={res()?.status === 'stale' || res()?.status === 'refreshing'}><PanelState inline state="stale" /></Show>
         <div class={styles.metrics}>
-          <Stat label="Hook registration" value={hook().configured == null ? undefined : hook().configured ? 'Registered' : 'Not registered'} />
-          <Meter label="Configured hook events" value={hook().configured_events?.length}
+          <Stat label="aictl hook registration" value={hook().configured == null ? undefined : hook().configured ? 'Registered' : 'Not registered'} />
+          <Meter label="aictl hook events registered" value={hook().configured_events?.length}
             max={(hook().configured_events?.length ?? 0) + (hook().missing_events?.length ?? 0)}
             tone={hook().configured ? 'positive' : 'warning'} compact />
-          <Stat label="Fired in 24 h" value={hook().fired_24h} />
+          <Stat label="aictl hooks fired in 24 h" value={hook().fired_24h} />
         </div>
-        <details onToggle={event => setExpanded(event.currentTarget.open)}><summary>Hook events and sources</summary>
+        <details onToggle={event => setExpanded(event.currentTarget.open)}><summary>aictl hook events and sources</summary>
           <Show when={expanded()}>
           <p>Configured: {hook().configured_events?.join(', ') || (hook().configured_events ? 'None' : MISSING)}</p>
           <p>Missing: {hook().missing_events?.join(', ') || (hook().missing_events ? 'None' : MISSING)}</p>

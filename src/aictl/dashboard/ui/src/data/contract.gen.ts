@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 7dd676a1b18a43bfbc5f24382602b2a80860c965cf49d1939ac3a95c763ad7e3
+// Schema digest: 28c636de9023e88bdfa3d375a7abf5083eb695b87ec769b0bf79c8bdeb817302
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2928,6 +2928,19 @@ export type SettingsToolConfig = {
     label?: string;
   }>;
   local_data?: Record<string, boolean>;
+  hook_inventory?: Array<{
+    event: string;
+    matcher?: string;
+    type: string;
+    command?: string;
+    url?: string;
+    scope: string;
+    source: string;
+    plugin?: string;
+    enabled: boolean;
+    aictl: boolean;
+    note?: string;
+  }>;
   mcp_inventory?: Array<{
     name: string;
     transport: string;

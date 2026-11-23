@@ -364,14 +364,18 @@ def test_credential_named_keys_and_hook_commands_are_skipped(env):
             {
                 "githubToken": "TOKEN-MARKER",
                 "proxy": {"password": "PW-MARKER", "host": "h"},
-                "hooks": {"preToolUse": [{"command": "HOOK-MARKER"}]},
+                "hooks": {"preToolUse": [{"command": "HOOK-MARKER --token FAKEHOOKTOKEN0042value"}]},
             }
         ),
     )
     cfg = _collect(env["proj"])["copilot-cli"]
     rows = _rows(cfg)
-    dumped = json.dumps(cfg.to_dict())
-    assert "TOKEN-MARKER" not in dumped and "PW-MARKER" not in dumped and "HOOK-MARKER" not in dumped
+    record = cfg.to_dict()
+    dumped = json.dumps(record)
+    assert "TOKEN-MARKER" not in dumped and "PW-MARKER" not in dumped and "FAKEHOOKTOKEN0042value" not in dumped
+    # The hook command is listed in the hook inventory only, with its secret masked.
+    assert "HOOK-MARKER" not in json.dumps(record["sections"])
+    assert record["hook_inventory"][0]["command"].startswith("HOOK-MARKER --token")
     assert "githubToken" not in rows and rows["proxy.host"]["value"] == "h"
     assert rows["hooks"]["value"] == "configured" and rows["hooks"]["label"] == "Hooks"
 

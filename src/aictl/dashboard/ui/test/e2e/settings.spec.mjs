@@ -124,15 +124,15 @@ settings('SET-01/02/03/12: the keyboard selects pivots and rows, and tool values
   await page.getByRole('button', { name: 'Managed · Locked · Not present' }).click();
   await page.getByRole('button', { name: 'Inspect Policy setting' }).press('Enter');
   await expect(inspector(page).getByText('Locked policy')).toBeVisible();
-  await expect(inspector(page).getByText('Undocumented')).toBeVisible();
+  await expect(inspector(page).getByText(/Present, not in catalog/)).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(inspector(page)).toBeHidden();
   await expect(page.getByRole('button', { name: 'Inspect Policy setting' })).toBeFocused();
   await page.getByRole('button', { name: 'Managed · Locked · Not present' }).click();
   await page.getByRole('button', { name: 'Show unset knobs' }).click();
-  await expect(page.getByText('Default value', { exact: true })).toBeVisible();
+  await expect(page.getByText('Not set · default Default value', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Only non-default' }).click();
-  await expect(page.getByText('Default value', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Not set · default Default value', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Only non-default' }).click();
   await tool.press('ArrowRight');
   await expect(page.getByRole('radio', { name: 'By topic' })).toBeChecked();
