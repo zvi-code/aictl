@@ -15,27 +15,30 @@ function SignalGrid(props: { body: ProblemBody; label: Label }) {
   const tools = () => props.body.tools.filter(tool => tool.reports)
   return <>
     <div class={styles.gridScroll}>
-      <table class={styles.signalGrid} aria-label="Sessions flagged per signal and tool">
-        <thead><tr><th scope="col">Signal</th>
-          <For each={tools()}>{tool => <th scope="col">{props.label(tool.tool)}<small>{plural(tool.sessions, 'session')}</small></th>}</For>
-        </tr></thead>
-        <tbody>
-          <For each={SIGNALS}>{(signal, i) => <tr data-signal={signal}>
-            <th scope="row">{SIGNAL_LABELS[signal]}</th>
-            <For each={tools()}>{tool => {
-              const cell = () => tool.signals[i()]
-              return <Show when={cell().reported} fallback={<td class={styles.unreportedCell} data-cell="not-reported"
-                title={`${props.label(tool.tool)} does not record ${SIGNAL_LABELS[signal].toLowerCase()}`}>{NOT_REPORTED}</td>}>
-                <td data-cell={cell().sessions} style={{ background: tint(cell()) }}
-                  title={`${props.label(tool.tool)}: ${plural(cell().sessions ?? 0, 'session')}, ${share(cell().share)} of its sessions, ` +
-                    `${money(cell().cost_usd)} at list price`}>
-                  <strong>{fmtNum(cell().sessions)}</strong><small>{share(cell().share)}</small>
-                </td>
-              </Show>
-            }}</For>
-          </tr>}</For>
-        </tbody>
-      </table>
+      {/* A chart laid out as a grid, not a data table: the data table below the card holds the same figures. */}
+      <div class={styles.signalGrid} role="table" aria-label="Sessions flagged per signal and tool"
+        style={{ 'grid-template-columns': `minmax(8rem, auto) repeat(${tools().length}, minmax(5.5rem, 1fr))` }}>
+        <div role="row" class={styles.gridRow} data-head>
+          <span role="columnheader" class={styles.gridHead}>Signal</span>
+          <For each={tools()}>{tool => <span role="columnheader" class={styles.gridHead}>{props.label(tool.tool)}
+            <small>{plural(tool.sessions, 'session')}</small></span>}</For>
+        </div>
+        <For each={SIGNALS}>{(signal, i) => <div role="row" class={styles.gridRow} data-signal={signal}>
+          <span role="rowheader" class={styles.gridHead}>{SIGNAL_LABELS[signal]}</span>
+          <For each={tools()}>{tool => {
+            const cell = () => tool.signals[i()]
+            return <Show when={cell().reported} fallback={<span role="cell" class={`${styles.gridCell} ${styles.unreportedCell}`}
+              data-cell="not-reported" title={`${props.label(tool.tool)} does not record ${SIGNAL_LABELS[signal].toLowerCase()}`}>
+              {NOT_REPORTED}</span>}>
+              <span role="cell" class={styles.gridCell} data-cell={cell().sessions} style={{ background: tint(cell()) }}
+                title={`${props.label(tool.tool)}: ${plural(cell().sessions ?? 0, 'session')}, ${share(cell().share)} of its sessions, ` +
+                  `${money(cell().cost_usd)} at list price`}>
+                <strong>{fmtNum(cell().sessions)}</strong><small>{share(cell().share)}</small>
+              </span>
+            </Show>
+          }}</For>
+        </div>}</For>
+      </div>
     </div>
     <Show when={props.body.summary.not_reporting.length}>
       <p class={styles.note}>No signal is recorded by {props.body.summary.not_reporting.map(props.label).join(', ')}; left out.</p>

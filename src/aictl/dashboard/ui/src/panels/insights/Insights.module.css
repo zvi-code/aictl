@@ -115,17 +115,18 @@
 
 /* Problem sessions: signals by tools, each cell tinted by the share of the tool's sessions it flags. */
 .gridScroll { overflow-x: auto; min-inline-size: 0; }
-.signalGrid { border-collapse: separate; border-spacing: var(--space-1); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
-.signalGrid th { font-weight: var(--weight-medium); text-align: start; padding: var(--space-1) var(--space-2); }
-.signalGrid thead th { vertical-align: bottom; }
-.signalGrid thead th small { display: block; color: var(--color-muted); font-weight: normal; }
-.signalGrid td {
-  min-inline-size: 5.5rem; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); color: var(--color-text);
+.signalGrid { display: grid; gap: var(--space-1); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.gridRow { display: contents; }
+.gridHead { font-weight: var(--weight-medium); padding: var(--space-1) var(--space-2); align-self: center; }
+.gridRow[data-head] .gridHead { align-self: end; }
+.gridHead small { display: block; color: var(--color-muted); font-weight: normal; }
+.gridCell {
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); color: var(--color-text);
   border: var(--border-size) solid var(--color-border-subtle);
 }
-.signalGrid td strong { display: block; font-size: var(--text-sm); font-weight: var(--weight-medium); }
-.signalGrid td small { color: var(--color-text); }
-.signalGrid td.unreportedCell {
+.gridCell strong { display: block; font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.gridCell small { display: block; color: var(--color-text); }
+.gridCell.unreportedCell {
   color: var(--color-muted); font-style: italic;
   background: repeating-linear-gradient(45deg, transparent 0 4px, var(--color-border-subtle) 4px 5px);
 }
