@@ -25,6 +25,7 @@ from .. import session_lifecycle
 from ..data.model_pricing import request_cost_usd, resolve_pricing
 from ..ingesters._common import project_key, project_root
 from ..tool_scope import is_unattributed, stored_ids_for
+from . import subagents
 from .analytics import _day_span
 from .board_filters import SPARK_POINTS, Filters
 from .history_scope import identity, identity_parts
@@ -47,12 +48,12 @@ from .projection_utils import (
     _session_uuid,
     _short,
     _usd,
+    agent_address,
     is_server_tool,
-    mask_secrets,
     known_mcp_servers,
+    mask_secrets,
     mcp_server_of,
 )
-from . import subagents
 from .projections.history import (
     HistoryScope,
     capture_mode,
@@ -512,11 +513,12 @@ class _Board:
         self.prompt_agg: dict[tuple[str, str], int] = {}
         self.prompt_rows: list[tuple] = []
         self.meta: dict[str, dict] = {}
-        self.sub_rows: dict[str, dict] = {}
+        # Subagents by (session id, agent key): an agent id is unique only within its session.
+        self.sub_rows: dict[tuple[str, str], dict] = {}
         self.spawns: list[dict] = []
-        self.spawn_of: dict[str, dict] = {}
-        self.sub_lifecycle: dict[str, tuple[str, str]] = {}
-        self.sub_last_line: dict[str, float | None] = {}
+        self.spawn_of: dict[tuple[str, str], dict] = {}
+        self.sub_lifecycle: dict[tuple[str, str], tuple[str, str]] = {}
+        self.sub_last_line: dict[tuple[str, str], float | None] = {}
         self.session_tool: dict[str, str] = {}
         self.session_project: dict[str, str] = {}
         self.live_by_sid: dict[str, dict] = {}
@@ -527,7 +529,7 @@ class _Board:
         self.confirm_rows: list[tuple] = []
         self.loops: list[dict] = []
         self.status: dict[str, str] = {}
-        self.sub_status: dict[str, str] = {}
+        self.sub_status: dict[tuple[str, str], str] = {}
         self.lifecycle: dict[str, session_lifecycle.Lifecycle] = {}
         self.scope: set[str] = set()
         self._prefetched: dict[str, list[dict]] = {}
@@ -706,8 +708,9 @@ class _Board:
             ran_outside = self.only_session is None and (
                 (last is not None and last < self.f.since) or (agent["started_at"] or 0.0) > self.f.until
             )
-            if agent["agent_id"] != agent["session_id"] and not ran_outside:
-                self.sub_rows[agent["agent_id"]] = agent
+            sid = agent["session_id"]
+            if agent["agent_id"] != sid and not ran_outside:
+                self.sub_rows[(sid, _agent_key(sid, agent["agent_id"]))] = agent
 
     def _resolve_sessions(self) -> None:
         """One tool and one project per session; a row with neither takes the session's."""
@@ -1047,8 +1050,8 @@ class _Board:
             agents_by_root[c.sid].add(_agent_key(c.sid, c.aid))
         for sid, agent in self.prompt_agg:
             agents_by_root[sid].add(agent)
-        for sub in self.sub_rows.values():
-            agents_by_root[sub["session_id"]].add(sub["agent_id"])
+        for sid, agent in self.sub_rows:
+            agents_by_root[sid].add(agent)
         for sid in self.live_by_sid:
             agents_by_root[sid].add(sid)
 
@@ -1087,7 +1090,7 @@ class _Board:
             for agent in agents:
                 if agent == sid:
                     continue
-                sub = self.sub_rows.get(agent) or {}
+                sub = self.sub_rows.get((sid, agent)) or {}
                 agg = self.tool_agg.get((sid, agent))
                 # The subagent's own transcript says when it last wrote, not its parent's.
                 lines = (sub.get("ended_at"), sub.get("last_call_ts"), last_call.get((sid, agent)), agg.max_ts if agg else None)
@@ -1098,9 +1101,9 @@ class _Board:
                     pending=bool(agg is not None and agg.pending), looping=(sid, agent) in looping_at_end,
                     failed=last_failed(sid, [agent]), idle_window=ACTIVE_WINDOW_S,
                 )
-                self.sub_status[agent] = status
-                self.sub_lifecycle[agent] = (words, reason)
-                self.sub_last_line[agent] = last_line
+                self.sub_status[(sid, agent)] = status
+                self.sub_lifecycle[(sid, agent)] = (words, reason)
+                self.sub_last_line[(sid, agent)] = last_line
         self.agents_by_root = agents_by_root
 
     def _apply_filters(self) -> None:
@@ -1153,8 +1156,8 @@ class _Board:
         for c in self.all_cells:
             models[c.sid].add(c.model)
         roles: dict[str, list[str]] = defaultdict(list)
-        for agent_id, sub in self.sub_rows.items():
-            roles[sub["session_id"]].extend([agent_id, sub.get("task") or ""])
+        for (sid, agent), sub in self.sub_rows.items():
+            roles[sid].extend([agent, sub.get("task") or ""])
         for sid in scope:
             haystack = [sid, self.session_tool.get(sid, ""), self.session_project.get(sid, ""), *models[sid], *roles[sid]]
             if any(needle in (value or "").lower() for value in haystack):
@@ -1286,9 +1289,8 @@ class _Board:
         """Each row's name. A session keeps its stored title; a subagent is named by its task, never its prompt."""
         sub_rows = getattr(self, "sub_rows", {})
         spawns = getattr(self, "spawns", None) or [r for r in sub_rows.values() if r.get("row_kind") == "spawn"]
-        subs = {aid: row for aid, row in sub_rows.items() if row.get("row_kind") != "spawn"}
-        prompts = {agent: text for (_sid, agent), text in firsts.items()}
-        self.spawn_of = subagents.match_spawns(subs, spawns, prompts)
+        subs = {key: row for key, row in sub_rows.items() if row.get("row_kind") != "spawn"}
+        self.spawn_of = subagents.match_spawns(subs, spawns)
         self.name_meta: dict[tuple[str, str], dict] = {}
         titles = {}
         for sid, agent in keys:
@@ -1296,9 +1298,9 @@ class _Board:
             meta = (getattr(self, "meta", {}).get(sid) or {}) if agent == sid else {}
             stored = meta.get("title")
             if agent != sid:
-                sub = subs.get(agent) or {}
+                sub = subs.get((sid, agent)) or {}
                 titles[(sid, agent)], source = subagents.subagent_name(
-                    sub, self.spawn_of.get(agent), _short(agent), text or sub.get("task"),
+                    sub, self.spawn_of.get((sid, agent)), _short(agent), text or sub.get("task"),
                     task_is_prompt=self.session_tool.get(sid, "") == "claude-code")
             elif stored:
                 titles[(sid, agent)] = _one_line(stored, STORED_TITLE_CHARS)
@@ -1311,7 +1313,7 @@ class _Board:
                 project = _basename(self.session_project.get(sid, ""))
                 titles[(sid, agent)] = " · ".join(part for part in (tool, project) if part) or _short(sid)
                 source = "tool and project"
-            prompt = text or ((subs.get(agent) or {}).get("task") if agent != sid else None)
+            prompt = text or ((subs.get((sid, agent)) or {}).get("task") if agent != sid else None)
             self.name_meta[(sid, agent)] = {"name_source": source, "prompt_line": subagents.prompt_line(prompt)}
         return titles
 
@@ -1323,10 +1325,10 @@ class _Board:
         user = self._agent_user_msgs(sid, None if root else agent)
         tool = self.session_tool.get(sid, "")
         # No status was decided for this row: say so rather than call it ended.
-        status = self.status.get(sid, "unknown") if root else self.sub_status.get(agent, "unknown")
+        status = self.status.get(sid, "unknown") if root else self.sub_status.get((sid, agent), "unknown")
         meta = self.meta.get(sid) or {}
-        sub = self.sub_rows.get(agent) or {}
-        spawn = getattr(self, "spawn_of", {}).get(agent) or {}
+        sub = self.sub_rows.get((sid, agent)) or {}
+        spawn = getattr(self, "spawn_of", {}).get((sid, agent)) or {}
         live = self.live_by_sid.get(sid) if root else None
         active = status in LIVE_STATUSES
         keys = self.agents_by_root.get(sid, ()) if root else (agent,)
@@ -1394,7 +1396,8 @@ class _Board:
     def _status_evidence(self, sid: str, root: bool, sub: dict, active: bool, agent: str = "") -> dict:
         """Why the row has its status, in a few words, and the kind of end (empty while live)."""
         if not root:
-            words, reason = getattr(self, "sub_lifecycle", {}).get(agent or sub.get("agent_id") or "", (None, ""))
+            key = (sid, agent or _agent_key(sid, sub.get("agent_id")))
+            words, reason = getattr(self, "sub_lifecycle", {}).get(key, (None, ""))
             return {"status_evidence": words, "end_reason": reason}
         lifecycle = self.lifecycle.get(sid)
         if lifecycle is None:
@@ -1419,8 +1422,8 @@ class _Board:
                 last_activity_at=max((float(ts) for ts in seen if ts), default=None),
                 now=None,
                 subagent_count=len(members),
-                subagents_running=sum(1 for a in members if self.sub_status.get(a) in ACTIVE_STATUSES),
-                subagents_live=sum(1 for a in members if self.sub_status.get(a) in LIVE_STATUSES),
+                subagents_running=sum(1 for a in members if self.sub_status.get((sid, a)) in ACTIVE_STATUSES),
+                subagents_live=sum(1 for a in members if self.sub_status.get((sid, a)) in LIVE_STATUSES),
                 # The row's usage is the whole session: the main agent and every subagent. These are the main agent alone.
                 main_input=own.input if own else None,
                 main_output=own.output if own else None,
@@ -1439,7 +1442,7 @@ class _Board:
             description=spawn.get("description") or sub.get("description") or None,
             spawned_at=spawn.get("started_at"),
             spawned_by=(spawn.get("spawned_by") or sub.get("parent_agent_id") or None),
-            last_activity_at=getattr(self, "sub_last_line", {}).get(agent),
+            last_activity_at=getattr(self, "sub_last_line", {}).get((sid, agent)),
             now=subagents.now_text(sub, status),
         )
         return fields
@@ -1536,7 +1539,7 @@ class _Board:
             known = (self.meta.get(sid) or {}).get("started_at")
             keys = self.agents_by_root.get(sid, ())
         else:
-            known = (self.sub_rows.get(agent) or {}).get("started_at")
+            known = (self.sub_rows.get((sid, agent)) or {}).get("started_at")
             keys = (agent,)
         if known:
             return float(known)
@@ -1614,8 +1617,18 @@ class _Board:
 
 
 def _agent_key(sid: str, aid: str | None) -> str:
-    """A row's agent: its subagent id, or the session id for the main agent."""
-    return aid if aid and aid != sid else sid
+    """A row's agent: the session id for the main agent, ``<session>/<agent>`` for a subagent.
+
+    An agent id is unique only within its session (a resumed session copies its subagents), so
+    a subagent's row id, route and ``?agent=`` link always carry its session. In a node-qualified
+    history both ids are qualified; the address is qualified once, with the session's node.
+    """
+    if not aid or aid == sid:
+        return sid
+    session, agent = identity_parts(sid), identity_parts(aid)
+    if session and agent:
+        return identity(session[0], agent_address(session[1], agent[1]))
+    return agent_address(sid, aid)
 
 
 def _mem_of(memory: dict[int, float], pids: list[int]) -> float | None:
@@ -3074,7 +3087,7 @@ def compute_board(
             own_calls = agg.n if agg else 0
             own_fails = agg.errs if agg else 0
             usage = board.by_key.get((sid, agent))
-            sub = board.sub_rows.get(agent) or {}
+            sub = board.sub_rows.get((sid, agent)) or {}
             kind = "Main agents" if agent == sid else (sub.get("task") or "Subagent")
             role = role_rows[kind]
             role["runs"] += 1

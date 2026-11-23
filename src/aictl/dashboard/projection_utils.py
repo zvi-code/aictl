@@ -88,7 +88,8 @@ def _short(identifier: str) -> str:
     parts = identity_parts(identifier)
     if parts:
         identifier = parts[1]
-    return identifier.rsplit(":", 1)[-1][:8] if identifier else ""
+    # A subagent's address "<session>/<agent>" is shown by its agent id.
+    return identifier.rsplit(AGENT_SEPARATOR, 1)[-1].rsplit(":", 1)[-1][:8] if identifier else ""
 
 
 def _session_uuid(identifier: str) -> str | None:

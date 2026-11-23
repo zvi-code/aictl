@@ -4,12 +4,15 @@ declare query_parameters(
 // Two kinds of rows, told apart by row_kind:
 // 'agent': one subagent, with its newest tool call (to say what it does now and whether a result is still out);
 // 'spawn': one Agent/Task call that started a subagent, with the caller's description, agent type and model.
+// An agent id is unique only within its session: every key, join and dedup of agents includes session_id.
 let tasks = union isfuzzy=true
-    (datatable(['project']:string, node_id:string, agent_id:string, _v:datetime, task:string, _deleted:bool)[]),
-    (agents_text | project ['project'], node_id, agent_id, _v, task, _deleted=column_ifexists('_deleted', false))
-    | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+    (datatable(['project']:string, node_id:string, session_id:string, agent_id:string, _v:datetime, task:string,
+        _deleted:bool)[]),
+    (agents_text | project ['project'], node_id, session_id=tostring(column_ifexists('session_id', '')), agent_id, _v,
+        task, _deleted=column_ifexists('_deleted', false))
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(coalesce(_deleted, false))
-    | project ['project'], node_id, agent_id, retained_task=task;
+    | project ['project'], node_id, session_id, agent_id, retained_task=task;
 let calls = tool_invocations
     | where all_nodes or node_id == requested_node
     | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
@@ -26,23 +29,26 @@ let last_calls = calls
     | join kind=leftouter texts on ['project'], node_id, $left.fact_key == $right.dedup_key
     | project node_id, session_id, agent_id, last_call_ts=ts, last_call_name=tool_name, last_call_target=substring(target, 0, 300),
         last_call_open=isnull(output_bytes) and coalesce(duration_ms, 0.0) <= 0 and is_error == 0;
+// Claude Code's Agent/Task and Copilot CLI's task call: each subagent row records the call's id
+// (meta.json toolUseId, Copilot's toolCallId) as parent_tool_use_id, the only link the board uses.
 let spawns = calls
-    | where tool_name in ('Agent', 'Task')
+    | where tool_name in ('Agent', 'Task', 'task')
     | join kind=inner texts on ['project'], node_id, $left.fact_key == $right.dedup_key
     | extend args=parse_json(input)
-    | where isnotempty(tostring(args.description))
+    | extend description=coalesce(tostring(args.description), tostring(args.name))
+    | where isnotempty(description) and isnotempty(source_event_id)
     | project node_id, session_id, agent_id=strcat('spawn:', source_event_id), row_kind='spawn', started_at=ts,
-        description=tostring(args.description), agent_type=tostring(args.subagent_type),
+        description, agent_type=coalesce(tostring(args.subagent_type), tostring(args.agent_type)),
         spawn_model=tostring(args.model), spawn_prompt=substring(tostring(args.prompt), 0, 500),
         spawned_by=agent_id, spawn_tool_use_id=source_event_id;
 let subagents = agents
     | where all_nodes or node_id == requested_node
-    | summarize arg_max(_v, *) by ['project'], node_id, agent_id
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(coalesce(column_ifexists('_deleted', false), false))
     | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
     | extend legacy_task=column_ifexists('task', '')
-    | join kind=leftouter tasks on ['project'], node_id, agent_id
-    | summarize arg_max(_v, *) by node_id, agent_id
+    | join kind=leftouter tasks on ['project'], node_id, session_id, agent_id
+    | summarize arg_max(_v, *) by node_id, session_id, agent_id
     | join kind=leftouter last_calls on node_id, session_id, agent_id
     | project node_id, agent_id, session_id, row_kind='agent', task=coalesce(retained_task, legacy_task), model,
         started_at, ended_at, completed,

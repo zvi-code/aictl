@@ -16,6 +16,7 @@ from typing import Any
 from ..utils import estimate_tokens_from_size
 from .board_filters import SPARK_POINTS, _detail_filters
 from .board_projection import (
+    _agent_key,
     _api_error_key,
     _Board,
     _cost_of,
@@ -29,7 +30,9 @@ from .board_projection import (
     is_command_tool,
     is_test_command,
 )
+from .history_scope import identity, identity_parts
 from .projection_utils import (
+    AGENT_SEPARATOR,
     MAX_DETAIL_ROWS,
     MAX_LIST_ROWS,
     _as_number,
@@ -46,8 +49,8 @@ from .projection_utils import (
     _session_uuid,
     _short,
     _usd,
-    mask_secrets,
     known_mcp_servers,
+    mask_secrets,
     mcp_server_of,
 )
 from .projections.history import (
@@ -124,12 +127,14 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     now = time.time() if now is None else now
     history = history or HistoryScope.local(db)
     conn = None
-    sid, agent = _resolve_agent(history, agent_id)
+    sid, bare = _resolve_agent(history, agent_id)
+    # The board keys a subagent by its address, "<session>/<agent>"; the store reads take the agent id.
+    agent = _agent_key(sid, bare)
     board = _session_board(db, _CLUSTER_READS, sid, snapshot, now, history)
     if sid not in board.scope:
         return 404, {"error": "No such agent"}
     root = agent == sid
-    requested_agent = "" if root else history.split(agent)[1]
+    requested_agent = "" if root else history.split(bare)[1]
     detail_scope = {"sid": sid, "requested_agent": requested_agent}
     from .projections.history import typed_rows
 
@@ -153,7 +158,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         lambda: _lm_by_extension(history, sid) if root else None,
         lambda: history.read("requests.errors", limit=MAX_DETAIL_ROWS, page=True, **detail_scope),
         lambda: _session_row(history, sid),
-        lambda: _agent_skills(history, sid, agent, root),
+        lambda: _agent_skills(history, sid, bare, root),
     ])
     row = board._agent_row(sid, agent, titles.get((sid, agent), _short(agent)), activity.get((sid, agent), [0] * SPARK_POINTS))
     subagents = [
@@ -245,7 +250,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "subagents": subagents,
         "process": process,
         "skills": skills,
-        "context": _agent_context(conn, sid, agent, root, facts=context_facts, raw_agent=history.split(agent)[1],
+        "context": _agent_context(conn, sid, bare, root, facts=context_facts, raw_agent=requested_agent,
                                   raw_sid=history.split(sid)[1],
                                   keep_text=not history.qualified and capture_mode(db, default="full") == "full"),
         "turns": turns,
@@ -320,7 +325,9 @@ def _agent_record(db: Any, conn: Any, session: dict, sid: str, row: dict, root: 
 
     project = str(session.get("project_path") or row.get("project") or "")
     agent = "" if root else str(row.get("id") or "")
-    loaded = _loaded_files(conn, history.split(sid)[1], history.split(agent)[1] if agent else "",
+    # A subagent's row id is its address, "<session>/<agent>"; the store keeps the agent id.
+    raw_agent = history.split(agent)[1].rpartition(AGENT_SEPARATOR)[2] if agent else ""
+    loaded = _loaded_files(conn, history.split(sid)[1], raw_agent,
                            facts=context_facts)
     from .queryable_context import session_context_files
 
@@ -786,8 +793,11 @@ def _agent_context(conn: Any, sid: str, agent: str, root: bool, *,
         for agent_id, size in groups:
             if size:
                 per_agent.setdefault(agent_id or "", []).append(size)
+        parts = identity_parts(sid)
         by_agent = [
-            {"agent_id": a, "calls": len(v), "first": v[0], "last": v[-1], "peak": max(v)}
+            # address: how a link opens that agent, with its session (an agent id alone is not unique).
+            {"agent_id": a, "address": _agent_key(sid, identity(parts[0], a) if parts and a else a),
+             "calls": len(v), "first": v[0], "last": v[-1], "peak": max(v)}
             for a, v in sorted(per_agent.items())
         ]
     result = {

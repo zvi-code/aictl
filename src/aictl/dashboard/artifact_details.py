@@ -209,7 +209,10 @@ def _history_titles(history: HistoryScope, pairs: set[tuple[str, str]], now: flo
         board.session_project[row["session_id"]] = row["project_path"]
     if any(sid != aid for sid, aid in pairs):
         for row in history.read("board.agents", session_keys=keys):
-            board.sub_rows[row["agent_id"]] = row
+            if row.get("row_kind") == "spawn":
+                board.spawns.append(row)
+            else:
+                board.sub_rows[(row["session_id"], _agent_key(row["session_id"], row["agent_id"]))] = row
     return board._titles(pairs)
 
 

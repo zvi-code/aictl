@@ -282,3 +282,30 @@ def test_views_bracket_the_title_column():
     found = [f"{path.name}:{number}" for path in sorted(queries.glob("*.kql"))
              for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if bare.search(line)]
     assert found == []
+
+
+def test_board_agents_keys_every_agent_by_its_session():
+    """An agent id is unique only within its session: the view groups, joins and dedups agents with session_id."""
+    import re
+
+    columns = ("node_id agent_id session_id row_kind task model started_at ended_at completed description spawn_depth "
+               "parent_agent_id parent_tool_use_id resolved_model agent_status last_call_ts last_call_name "
+               "last_call_target last_call_open agent_type spawn_model spawn_prompt spawned_by spawn_tool_use_id").split()
+    seen = []
+
+    def execute(database, text, props):
+        seen.append(text)
+        rows = [[{"node_id": "n", "agent_id": "a1", "session_id": sid, "row_kind": "agent"}.get(c) for c in columns]
+                for sid in ("s-a", "s-b")]
+        return response(columns, rows)
+
+    reader = KustoReader(SimpleNamespace(execute_query=execute), "db")
+    result = reader.read("board.agents", {"session_keys": ["1:ns-a", "1:ns-b"], "limit": 10})
+    assert [(r["session_id"], r["agent_id"]) for r in result.rows] == [("s-a", "a1"), ("s-b", "a1")]
+    text = " ".join(seen[0].split())
+    assert "summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id" in text
+    assert "join kind=leftouter tasks on ['project'], node_id, session_id, agent_id" in text
+    assert "summarize arg_max(_v, *) by node_id, session_id, agent_id" in text
+    assert "session_id=tostring(column_ifexists('session_id', ''))" in text
+    # No grouping or join of agents by agent id alone.
+    assert not re.search(r"\b(by|on) (\['project'\], )?node_id, agent_id\b", text)

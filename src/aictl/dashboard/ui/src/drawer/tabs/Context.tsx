@@ -167,7 +167,8 @@ export default function Context(props: TabProps) {
           }}</Show>
           <Rows label="Context by agent" rows={context()?.by_agent} identity={['agent_id']} columns={['agent_id', 'calls', 'first', 'peak', 'last']}
             action={{ label: row => `Open ${row.agent_id || 'main agent'}`, run: row => {
-              const id = text(row.agent_id)
+              // The address carries the session: an agent id alone can name agents of several sessions.
+              const id = text(row.address) ?? text(row.agent_id)
               if (id) openAgent(props, id, 'context')
             } }} />
         </Section>

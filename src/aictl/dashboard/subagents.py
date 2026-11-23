@@ -4,7 +4,8 @@
 
 A subagent's name is, in order: the description its tool stored for it, the description its
 caller gave the Agent/Task call that started it, its agent type with a short id, or "Subagent"
-with a short id. Its prompt is never the name.
+with a short id. Its prompt is never the name. The call that started it is known only from the
+tool-use id the tool recorded for it in the same session; without one it stays unknown.
 
 Its status comes from its own transcript, not from the ``completed`` flag alone and not from
 its parent's activity:
@@ -22,17 +23,14 @@ With no line and no start time at all, the status is "unknown", never "ended".
 
 from __future__ import annotations
 
-import math
-from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Hashable, Iterable, Mapping
+from typing import TypeVar
 
 from .. import session_lifecycle
 from .projection_utils import _one_line
 
-# A spawn call and the subagent's first line are written within milliseconds; allow clock skew.
-SPAWN_MATCH_S = 30.0
-# Characters of the prompt compared between the call and the subagent (the call keeps 500).
-PROMPT_MATCH_CHARS = 400
+K = TypeVar("K", bound=Hashable)
+
 QUIET_AFTER_S = 120.0
 NAME_CHARS = 80
 PROMPT_LINE_CHARS = 140
@@ -48,52 +46,22 @@ def _norm(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
-def _compatible(prompt: str, called: str) -> bool:
-    """The subagent's first prompt and the call's prompt agree, as far as both were kept."""
-    if not prompt or not called:
-        return True
-    n = min(len(prompt), len(called), PROMPT_MATCH_CHARS)
-    return prompt[:n] == called[:n]
+def match_spawns(subs: Mapping[K, dict], spawns: Iterable[dict]) -> dict[K, dict]:
+    """The Agent/Task call that started each subagent, from evidence only.
 
-
-def match_spawns(subs: Mapping[str, dict], spawns: Iterable[dict],
-                 prompts: Mapping[str, str] | None = None) -> dict[str, dict]:
-    """The Agent/Task call that started each subagent.
-
-    The call's tool-use id is exact when the subagent row records it. Otherwise each subagent,
-    in start order, takes the unclaimed call of its session that started closest to it (within
-    ``SPAWN_MATCH_S``) whose prompt agrees with its first prompt.
+    A subagent's spawning call is the call of its own session whose tool-use id the subagent
+    row records (``parent_tool_use_id``: Claude Code's ``meta.json`` ``toolUseId``, Copilot CLI's
+    ``toolCallId``). A subagent without that link, or whose link names no call of its session,
+    has no known spawning call: it is never matched by start time or by prompt text.
     """
-    prompts = prompts or {}
-    spawns = [s for s in spawns if s.get("spawn_tool_use_id")]
-    by_use = {s["spawn_tool_use_id"]: s for s in spawns}
-    used: set[str] = set()
-    found: dict[str, dict] = {}
-    for aid, sub in subs.items():
-        key = sub.get("parent_tool_use_id") or ""
-        if key in by_use and key not in used:
-            found[aid] = by_use[key]
-            used.add(key)
-    by_session: dict[str, list[dict]] = defaultdict(list)
-    for spawn in spawns:
-        by_session[spawn.get("session_id") or ""].append(spawn)
-    ordered = sorted(subs.items(), key=lambda kv: (kv[1].get("started_at") or math.inf, kv[0]))
-    for aid, sub in ordered:
-        start = sub.get("started_at")
-        if aid in found or not start:
-            continue
-        prompt = _norm(prompts.get(aid) or sub.get("task"))
-        best: tuple[tuple[float, str], dict] | None = None
-        for spawn in by_session.get(sub.get("session_id") or "", ()):
-            key = spawn["spawn_tool_use_id"]
-            gap = abs(float(spawn.get("started_at") or 0.0) - float(start))
-            if key in used or gap > SPAWN_MATCH_S or not _compatible(prompt, _norm(spawn.get("spawn_prompt"))):
-                continue
-            if best is None or (gap, key) < best[0]:
-                best = ((gap, key), spawn)
-        if best is not None:
-            found[aid] = best[1]
-            used.add(best[0][1])
+    by_use = {(s.get("session_id") or "", s["spawn_tool_use_id"]): s for s in spawns if s.get("spawn_tool_use_id")}
+    used: set[tuple[str, str]] = set()
+    found: dict[K, dict] = {}
+    for key, sub in subs.items():
+        use = (sub.get("session_id") or "", sub.get("parent_tool_use_id") or "")
+        if use[1] and use in by_use and use not in used:
+            found[key] = by_use[use]
+            used.add(use)
     return found
 
 
