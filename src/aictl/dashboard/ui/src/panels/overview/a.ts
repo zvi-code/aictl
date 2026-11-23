@@ -192,7 +192,7 @@ export const overviewA: readonly PanelDef[] = [
     sources: [context('memory.entries'), context('memory.growth'), context('memory.tokens')],
     columns: [field('name', 'File or group'), field('tokens', 'Memory tokens', 'memory.entry.tokens'),
       count('lines', 'Lines', 'board.project.lines'), stamp('mtime', 'Changed')],
-    actions: [{ kind: 'detail', field: 'file', type: 'file', localOnly: true }], empty: 'No agent memory files were reported.',
+    actions: [{ kind: 'detail', field: 'file', type: 'file' }], empty: 'No agent memory files were reported.',
     load: () => import('./Memory'),
   },
   {

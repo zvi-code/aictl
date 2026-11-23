@@ -34,7 +34,19 @@ export function truncationNote(sets: readonly { tool: string; count: number; fil
     `${name(set.tool)}${set.node_id ? ` (${set.node_id})` : ''} has ${fmtNum(set.count)}`).join(', ')}.`
 }
 
-export const loadLabel =(load: unknown) => loads.find(([key]) => key === load)?.[1]
+/** A memory group row's figures from its files: lines summed (unknown if any file's is), the latest
+ *  change, and in fleet scope the node or the number of nodes the files come from. */
+export function groupFigures(items: readonly { lines?: number | null; mtime?: number | null; node_id?: string }[]) {
+  const lines = items.every(item => typeof item.lines === 'number') ? items.reduce((sum, item) => sum + item.lines!, 0) : undefined
+  const times = items.flatMap(item => typeof item.mtime === 'number' ? [item.mtime] : [])
+  const nodes = [...new Set(items.flatMap(item => item.node_id ? [item.node_id] : []))]
+  return {
+    lines, mtime: times.length ? Math.max(...times) : undefined,
+    ...(nodes.length ? { node_id: nodes.length === 1 ? nodes[0] : `${fmtNum(nodes.length)} nodes` } : {}),
+  }
+}
+
+export const loadLabel = (load: unknown) => loads.find(([key]) => key === load)?.[1]
 
 /** A row that names a file opens the file's drawer; the drawer itself says what this scope can show. */
 export function openFile(ctx: Pick<PanelContext, 'openDetail'>, row: Row, path = 'path') {

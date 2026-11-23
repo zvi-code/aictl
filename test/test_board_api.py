@@ -3461,6 +3461,20 @@ class TestContext:
         out = context_projection._context_from_snapshot(snapshot, None, self.NOW, True, {"daily": {}, "growth": [], "observed": {}})
         assert all(r["sessions"] is None for t in out["files"] for r in t["files"])
 
+    def test_fleet_memory_growth_of_each_node_shares_one_time_axis(self):
+        """With three nodes, each bin's sample kept its own time, so the chart drew each node's
+        series as dots between the other nodes' times. Samples now sit at their bin's start."""
+        from aictl.dashboard import scoped_history
+
+        width = context_projection.CONTEXT_GROWTH_S / context_projection.CONTEXT_GROWTH_POINTS
+        start = (self.NOW // width - 2) * width
+        growth = [{"node_id": node, "ts": start + offset, "mem_tokens": 10 * i, "memory_entries": i}
+                  for i, (node, offset) in enumerate([("a", 5), ("b", 700), ("c", 4000), ("a", width + 1)])]
+        history = SimpleNamespace(read=lambda name, **_: growth if name == "context.growth" else [])
+        out = scoped_history._reported_context(history, None, self.NOW)
+        axes = {part["node_id"]: [g["ts"] for g in part["memory"]["growth"]] for part in out["nodes"]}
+        assert axes == {"a": [start, start + width], "b": [start], "c": [start]}
+
     def test_a_long_file_list_is_cut_and_says_so(self, monkeypatch):
         monkeypatch.setattr(context_projection, "CONTEXT_MAX_FILES", 2)
         f = self._ctx(_csnap(self._tools()))["files"][0]

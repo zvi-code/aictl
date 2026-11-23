@@ -30,6 +30,9 @@ def _reported_context(history, tools, now):
     growth = history.read("context.growth", since=now - context_projection.CONTEXT_GROWTH_S, until=now,
                           growth_points=context_projection.CONTEXT_GROWTH_POINTS, calendar_bins=True)
     nodes = {r["node_id"] for rows in (inventory, telemetry, daily, growth) for r in rows}
+    # Each node's sample is the latest in its calendar bin; at the bin's start, the nodes share one
+    # time axis, so a chart draws one line per node, not dots scattered between the others' times.
+    width = context_projection.CONTEXT_GROWTH_S / context_projection.CONTEXT_GROWTH_POINTS
     parts = []
     for node in sorted(nodes, key=lambda n: (label(n) == "legacy", label(n))):
         reports = telemetry_rows([r for r in telemetry if r["node_id"] == node])
@@ -40,8 +43,8 @@ def _reported_context(history, tools, now):
         data = context_projection._context_from_snapshot(snapshot, tools, now, True, {
             "daily": context_projection._daily_from_rows([r for r in daily if r["node_id"] == node], now),
             "observed": context_projection.observed_models([r for r in daily if r["node_id"] == node]),
-            "growth": [{k: r[k] for k in ("ts", "mem_tokens", "memory_entries")}
-                       for r in growth if r["node_id"] == node],
+            "growth": [{"ts": math.floor(r["ts"] / width) * width, "mem_tokens": r["mem_tokens"],
+                        "memory_entries": r["memory_entries"]} for r in growth if r["node_id"] == node],
         }, global_budget=True)
         parts.append({**data, "node_id": label(node)})
     return {"generated_at": now, "nodes": parts}

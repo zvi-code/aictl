@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { excludedSummary, loadLabel, loadSplit, openFile, truncationNote } from '../../../src/panels/overview/contextData'
+import { excludedSummary, groupFigures, loadLabel, loadSplit, openFile, truncationNote } from '../../../src/panels/overview/contextData'
 import { budgetNote, budgetSays } from '../../../src/panels/overview/contextOptions'
 import { overviewA } from '../../../src/panels/overview/a'
 import { overviewB } from '../../../src/panels/overview/b'
@@ -85,6 +85,17 @@ describe('Lifetime totals read as dates and short labels', () => {
     // Found on Windows: "Input tokens consumed by thi…", "Total number of sessions rec…" cut off as headers.
     const def = overviewB.find(panel => panel.id === 'lifetime')!
     expect(def.columns.every(column => column.label && column.label.length <= 16)).toBe(true)
+  })
+})
+
+describe('Agent memory group rows carry their files\' figures', () => {
+  it('sums lines, keeps the latest change and names the nodes', () => {
+    // Found on the fleet board: rows "memory" and "instructions" with n/a in Lines, Changed and Node.
+    const files = [{ lines: 10, mtime: 100, node_id: 'win-a' }, { lines: 5, mtime: 300, node_id: 'win-b' }, { lines: 1, mtime: 200, node_id: 'win-a' }]
+    expect(groupFigures(files)).toEqual({ lines: 16, mtime: 300, node_id: '2 nodes' })
+    expect(groupFigures([{ lines: 3, mtime: 1, node_id: 'mac' }])).toEqual({ lines: 3, mtime: 1, node_id: 'mac' })
+    // This machine's rows have no node, and a file whose lines are not known leaves the sum unknown, not smaller.
+    expect(groupFigures([{ lines: 3, mtime: null }, { lines: null, mtime: 5 }])).toEqual({ lines: undefined, mtime: 5 })
   })
 })
 
