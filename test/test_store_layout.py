@@ -924,3 +924,23 @@ def test_after_ga_a_breaking_change_must_declare_a_migration():
     [problem] = L.rule_violations(changes, ga=2, latest=3, compatible_since=3)
     assert "layout 3 breaks compatibility after the GA layout 2 and declares no migration" in problem
     assert L.rule_violations(changes, ga=3, latest=3, compatible_since=3) == []
+
+
+def test_a_copy_of_rows_past_the_retention_period_gets_a_creation_time_the_cluster_accepts():
+    """The cluster refuses an extent creation time older than the soft-delete period
+    ("Creation time ... is older than the soft delete period"); the source still holds such rows."""
+    from datetime import datetime
+
+    from aictl.stores.kusto import migrations as M
+
+    now = datetime(2026, 11, 23, 11, 14, 22)
+    # A 24 hour table: rows ingested 27 hours ago are past the period.
+    assert M.creation_time("2026-11-22T07:40:46.01Z", 24, now) == "2026-11-22T13:38:22Z"
+    # Rows inside the period keep their own time.
+    assert M.creation_time("2026-11-23T09:00:00Z", 24, now) == "2026-11-23T09:00:00Z"
+    # A one year table: the margin is one day.
+    assert M.creation_time("2025-01-01T00:00:00Z", 365 * 24, now) == "2025-11-24T11:14:22Z"
+    assert M.creation_time(None, 24, now) is None
+    old = [{"n": 3, "newest": "2020-01-01T00:00:00Z"}]
+    command = M.copy_commands("tool_invocations_text", "t__k", "node-a", old, keep_hours=24)[0]
+    assert "2020-01-01" not in command and "creationTime=" in command

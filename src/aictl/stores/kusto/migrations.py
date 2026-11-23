@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import nodes as N
@@ -346,7 +346,28 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
-def copy_commands(table: str, target: str, node_id: str, slices: list[dict], days: int = 1) -> list[str]:
+def creation_time(newest: Any, keep_hours: float | None, now: datetime | None = None) -> str | None:
+    """The extent creation time of a copied slice: the newest ingestion time of its rows.
+
+    The cluster refuses a creation time older than the table's soft-delete period, and the source
+    can still hold such rows (retention deletes late). Those rows get the oldest time the cluster
+    accepts, with a margin of a tenth of the period (at most a day), so they are copied, verified
+    and then removed by retention like the rest.
+    """
+    text = _iso(newest)
+    if text is None or not keep_hours:
+        return text
+    try:
+        at = datetime.fromisoformat(text.rstrip("Z")[:26])
+    except ValueError:
+        return text
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    floor = now - timedelta(hours=keep_hours) + timedelta(hours=min(keep_hours / 10, 24))
+    return text if at >= floor else floor.isoformat() + "Z"
+
+
+def copy_commands(table: str, target: str, node_id: str, slices: list[dict], days: int = 1,
+                  keep_hours: float | None = None) -> list[str]:
     """One ``.set-or-append`` per slice of ingestion time, each with the slice's latest ingestion time
     as the extent creation time, so the soft-delete period of the copy counts from about when the
     source rows arrived (never earlier: the copy is never deleted before its source would be)."""
@@ -359,7 +380,7 @@ def copy_commands(table: str, target: str, node_id: str, slices: list[dict], day
             day = _iso(item["slice_start"])
             where += (" | where isnull(ingestion_time())" if day is None
                       else f" | where bin(ingestion_time(), {days}d) == datetime({day})")
-        created = _iso(item.get("newest"))
+        created = creation_time(item.get("newest"), keep_hours)
         props = f" with (creationTime={json.dumps(created)})" if created else ""
         commands.append(f".set-or-append {quote(target)}{props} <| {quote(target)} | take 0 | union ({where})")
     return commands
@@ -471,7 +492,8 @@ def node_tables(ctx: Context) -> int:
         spec = configured.get(table)
         daily = spec is None or spec.retention_period_hours > 24
         slices = ctx.query(slices_query(table, ident, daily, ctx.slice_days)).dicts()
-        commands = copy_commands(table, target, ident, slices, ctx.slice_days)
+        commands = copy_commands(table, target, ident, slices, ctx.slice_days,
+                                 keep_hours=spec.retention_period_hours if spec is not None else None)
         echo(f"  {table} / {ident or '(no node id)'}: {count:,} rows -> {target} in {len(commands)} slice(s)")
         if ctx.dry_run:
             for text in commands:
