@@ -1,0 +1,36 @@
+// Every recorded version of one memory or instruction file across sessions, in time order: each
+// session's change (file_write_events) with its actor, each checkpoint's copy and each inventory scan
+// (file_history; actor "" = not known). content_hash is a file_blobs hash; two rows' hashes feed memory.diff.
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_path:string,
+    after_row:string='', row_limit:long);
+let cursor_row = parse_json(after_row);
+let wanted_path = requested_path;
+union
+    (file_write_events
+        // path is carried by every tombstone, so it may filter before the versions are reduced.
+        | where path == wanted_path and (all_nodes or node_id == requested_node)
+        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+        | summarize arg_max(_v, *) by ['project'],node_id,key
+        | where not(column_ifexists('_deleted',false))
+        | project ['project'], node_id, ts, row_key=strcat('write:',key), origin='write_event', session_id, agent_id,
+            actor, operation, content_hash=after_hash, size_bytes=after_bytes, before_hash, before_source,
+            after_source, lines_added, lines_removed, source_event_id, state=''),
+    (file_history
+        | where path == wanted_path and (all_nodes or node_id == requested_node)
+        | summarize arg_max(_v, *) by ['project'],node_id,path,ts
+        | project ['project'], node_id, ts, row_key=strcat('version:',tostring(ts)),
+            origin=iff(isempty(column_ifexists('origin','')),'scan',origin), session_id=column_ifexists('session_id',''),
+            agent_id=column_ifexists('agent_id',''), actor='', operation='', content_hash=blob_hash, size_bytes,
+            before_hash='', before_source='', after_source='', lines_added=column_ifexists('lines_added',long(null)),
+            lines_removed=column_ifexists('lines_removed',long(null)),
+            source_event_id=column_ifexists('source_event_id',''), state=column_ifexists('state',''))
+| where isempty(after_row) or case(
+    ts != toreal(cursor_row[0]), ts > toreal(cursor_row[0]),
+    row_key != tostring(cursor_row[1]), strcmp(row_key,tostring(cursor_row[1])) > 0,
+    node_id != tostring(cursor_row[2]), strcmp(node_id,tostring(cursor_row[2])) > 0,
+    strcmp(['project'],tostring(cursor_row[3])) > 0)
+| order by ts asc, row_key asc, node_id asc, ['project'] asc
+| take row_limit
+| project node_id, ts, origin, session_id, agent_id, actor, operation, content_hash, size_bytes, before_hash,
+    before_source, after_source, lines_added, lines_removed, source_event_id, state,
+    _page_cursor=tostring(pack_array(ts,row_key,node_id,['project']))

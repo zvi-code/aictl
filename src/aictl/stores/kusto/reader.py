@@ -180,6 +180,29 @@ _VIEWS = {
         "tool_name calls failures timed durations input_bytes input_count output_bytes output_count max_output_bytes total_duration last_ts",
     ),
     "sessions.commits": (f"{_SCOPE} requested_session after_row", "sha author_name author_email ts subject"),
+    "memory.changes": (
+        f"{_SCOPE} requested_session requested_agent after_row",
+        "node_id ts key path mechanism operation tool tool_name agent_id actor prompt_id turn_index lines_added "
+        "lines_removed before_hash after_hash before_bytes after_bytes before_source after_source source_event_id "
+        "source_event_kind",
+    ),
+    "memory.versions": (
+        "all_nodes requested_node requested_path after_row",
+        "node_id ts origin session_id agent_id actor operation content_hash size_bytes before_hash before_source "
+        "after_source lines_added lines_removed source_event_id state",
+    ),
+    "memory.diff": ("all_nodes requested_node keep_text first_hash second_hash", "side hash content size_bytes"),
+    "checkpoints.session": (
+        f"{_SCOPE} requested_session after_row",
+        "node_id ts key kind agent_id tool trigger checkpoint_no message_id files_count lines_added lines_removed "
+        "before_tokens after_tokens dropped_messages dropped_tokens cumulative_dropped_tokens preserved_messages path "
+        "tool_call_id prompt_id turn_index detail summary_kind summary_seq summary_title summary summary_hash "
+        "summary_bytes",
+    ),
+    "checkpoints.files": (
+        "all_nodes requested_node requested_session requested_message after_row",
+        "node_id path ts origin mechanism version state blob_hash size_bytes lines lines_added lines_removed",
+    ),
     "sessions.commit_counts": ("all_nodes requested_node session_keys", "node_id session_id count"),
     "skills.agents": ("all_nodes requested_node requested_session requested_agent", "name uses agents started_by first_ts last_ts"),
     "skills.detail": (
@@ -325,6 +348,7 @@ _LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
 _PAGED_VIEWS = {
     "files.artifacts", "files.inventory", "prompts.page", "requests.long", "sequence.context", "sequence.flow", "sequence.otel",
     "sequence.skills", "sessions.commits", "skills.detail", "skills.window", "tools.activity_rows", "tools.detail",
+    "memory.changes", "memory.versions", "checkpoints.session", "checkpoints.files",
 }
 
 

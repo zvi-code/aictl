@@ -117,6 +117,51 @@ def _long_requests(seed):
     return {None: 8}
 
 
+MEMORY = "/home/u/.claude/projects/-p/memory/MEMORY.md"
+
+
+def _memory_changes(seed):
+    for project in ("p", "q"):
+        for node in ("test-node", "n2"):
+            for i in range(2):
+                seed("file_write_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key=f"m{i}",
+                     path=MEMORY, mechanism="claude_auto_memory", actor="agent", after_hash=f"h{i}")
+            seed("file_write_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key="src",
+                 path="/p/a.py")
+    return {None: 8}
+
+
+def _memory_versions(seed):
+    for project in ("p", "q"):
+        for node in ("test-node", "n2"):
+            seed("file_write_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key="m",
+                 path=MEMORY, mechanism="claude_auto_memory", after_hash="h")
+            seed("file_history", project=project, node_id=node, path=MEMORY, ts=TIE, blob_hash="b")
+    return {None: 8}
+
+
+def _checkpoints(seed):
+    for project in ("p", "q"):
+        for node in ("test-node", "n2"):
+            for i in range(2):
+                seed("context_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key=f"x{i}",
+                     kind="compaction", summary_kind="compact_summary", summary_seq=i + 1)
+                seed("session_digests", project=project, node_id=node, session_id=SID, kind="compact_summary",
+                     seq=i + 1, ts=TIE, text="summary")
+            seed("context_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key="r",
+                 kind="memory_recall")
+    return {None: 8}
+
+
+def _checkpoint_files(seed):
+    for project in ("p", "q"):
+        for node in ("test-node", "n2"):
+            for path in ("/p/a.py", MEMORY):
+                seed("file_history", project=project, node_id=node, path=path, ts=TIE, session_id=SID,
+                     source_event_id="u-1", origin="claude_file_history", state="backup")
+    return {None: 8}
+
+
 KEYS = [f"{len(node)}:{node}{SID}" for node in ("test-node", "n2")]
 
 
@@ -133,6 +178,10 @@ KEYS = [f"{len(node)}:{node}{SID}" for node in ("test-node", "n2")]
     ("skills.window", {"since": 0.0, "until": 1e10, "session_keys": KEYS}, _skill_window),
     ("requests.long", {"sid": SID, "since": 0.0, "until": 1e10, "grid": 4, "requested_models": ["m"],
                        "min_tokens": 200_000}, _long_requests),
+    ("memory.changes", {"sid": SID}, _memory_changes),
+    ("memory.versions", {"requested_path": MEMORY}, _memory_versions),
+    ("checkpoints.session", {"sid": SID}, _checkpoints),
+    ("checkpoints.files", {"sid": SID, "requested_message": "u-1"}, _checkpoint_files),
 ])
 def test_session_reads_are_complete_past_the_limit(kusto_store, view, params, seeder):
     counts = seeder(kusto_store.insert)

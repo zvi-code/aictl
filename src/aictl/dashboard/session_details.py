@@ -142,7 +142,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     # None of these reads needs another's result, so on a cluster they run side by side.
     # More reads than workers: the slowest ones are listed first so that none of them waits for a worker.
     (activity, otel_facts, page, by_model, turns, test_rows, context_facts, error_rows, tool_totals, write_summary,
-     titles, lm_by_extension, api_error_rows, session, skills) = _gather(_CLUSTER_READS, [
+     titles, lm_by_extension, api_error_rows, session, skills, memory_rows, checkpoint_rows) = _gather(_CLUSTER_READS, [
         lambda: board._activity_for(keys),
         lambda: typed_rows(history.read("sequence.otel", sid=sid)) if root else {},
         lambda: history.read("tools.detail", limit=MAX_DETAIL_ROWS + 1, page=True, **detail_scope),
@@ -159,6 +159,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         lambda: history.read("requests.errors", limit=MAX_DETAIL_ROWS, page=True, **detail_scope),
         lambda: _session_row(history, sid),
         lambda: _agent_skills(history, sid, bare, root),
+        lambda: history.read("memory.changes", sid=sid, requested_agent=requested_agent),
+        lambda: history.read("checkpoints.session", sid=sid),
     ])
     row = board._agent_row(sid, agent, titles.get((sid, agent), _short(agent)), activity.get((sid, agent), [0] * SPARK_POINTS))
     subagents = [
@@ -244,7 +246,11 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
             "tokens": newest.get("tokens"),
             "cost_usd": newest.get("cost_usd"),
         }
+    keep_text = not history.qualified and capture_mode(db, default="full") == "full"
     return 200, {
+        "memory_changes": [_memory_change(r) for r in memory_rows],
+        "checkpoints": [_checkpoint(r, keep_text) for r in checkpoint_rows
+                        if root or (history.split(r["agent_id"])[1] if r.get("agent_id") else "") == requested_agent],
         "agent": row,
         "by_model": by_model,
         "subagents": subagents,
@@ -268,6 +274,38 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         "sources": _agent_sources(conn, sid, otel, facts=otel_facts) if root else None,
         **record,
     }
+
+
+_MEMORY_CHANGE_FIELDS = (
+    "ts", "path", "mechanism", "operation", "tool_name", "agent_id", "actor", "prompt_id", "turn_index",
+    "lines_added", "lines_removed", "before_hash", "after_hash", "before_bytes", "after_bytes", "before_source",
+    "after_source",
+)
+_CHECKPOINT_FIELDS = (
+    "ts", "kind", "agent_id", "trigger", "checkpoint_no", "message_id", "files_count", "lines_added", "lines_removed",
+    "before_tokens", "after_tokens", "dropped_messages", "dropped_tokens", "cumulative_dropped_tokens",
+    "preserved_messages", "path", "tool_call_id", "prompt_id", "turn_index",
+)
+
+
+def _memory_change(row: dict) -> dict:
+    """One memory or instruction file change as the store has it; "" and None stay "not known"."""
+    return {name: row.get(name) for name in _MEMORY_CHANGE_FIELDS} | {"tool_call_id": row.get("source_event_id") or ""}
+
+
+def _checkpoint(row: dict, keep_text: bool) -> dict:
+    """One checkpoint with what it captured and its summary. The summary's text only while text is kept;
+    a long one is a preview, and ``summary.hash`` names its whole text (memory.diff reads blobs by hash)."""
+    try:
+        detail = json.loads(row.get("detail") or "{}")
+    except ValueError:
+        detail = {}
+    summary = None
+    if row.get("summary_kind") and row.get("summary_seq") is not None:
+        summary = {"kind": row["summary_kind"], "seq": row["summary_seq"], "title": row.get("summary_title") or "",
+                   "text": (row.get("summary") or "") if keep_text else None,
+                   "hash": row.get("summary_hash") or "", "bytes": row.get("summary_bytes")}
+    return {name: row.get(name) for name in _CHECKPOINT_FIELDS} | {"detail": detail, "summary": summary}
 
 
 def _agent_models(history: HistoryScope, sid: str, requested_agent: str, root: bool, now: float) -> list[dict]:

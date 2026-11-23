@@ -8,6 +8,82 @@
     "subagents": {"type": "array", "items": {"$ref": "board-agent-row.schema.json"}},
     "loop": {"anyOf": [{"$ref": "board-loop-row.schema.json"}, {"type": "null"}]},
     "node_scope": {"$ref": "node-scope.schema.json"},
+    "memory_changes": {
+      "description": "The session's (or this subagent's) memory and instruction file changes, oldest first. \"\" and null are not known.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "path": {"type": "string"},
+          "mechanism": {"type": "string"},
+          "operation": {"type": "string"},
+          "tool_name": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "actor": {"type": "string"},
+          "prompt_id": {"type": "string"},
+          "turn_index": {"type": ["integer", "null"]},
+          "lines_added": {"type": ["integer", "null"]},
+          "lines_removed": {"type": ["integer", "null"]},
+          "before_hash": {"type": "string"},
+          "after_hash": {"type": "string"},
+          "before_bytes": {"type": ["integer", "null"]},
+          "after_bytes": {"type": ["integer", "null"]},
+          "before_source": {"type": "string"},
+          "after_source": {"type": "string"},
+          "tool_call_id": {"type": "string"}
+        },
+        "required": ["ts", "path", "mechanism", "operation", "agent_id", "actor", "before_hash", "after_hash",
+                     "before_source", "after_source"]
+      }
+    },
+    "checkpoints": {
+      "description": "Compactions, rewind points, checkpoints, truncations and context resets, oldest first, with what each captured.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "kind": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "trigger": {"type": "string"},
+          "checkpoint_no": {"type": ["integer", "null"]},
+          "message_id": {"type": "string"},
+          "files_count": {"type": ["integer", "null"]},
+          "lines_added": {"type": ["integer", "null"]},
+          "lines_removed": {"type": ["integer", "null"]},
+          "before_tokens": {"type": ["integer", "null"]},
+          "after_tokens": {"type": ["integer", "null"]},
+          "dropped_messages": {"type": ["integer", "null"]},
+          "dropped_tokens": {"type": ["integer", "null"]},
+          "cumulative_dropped_tokens": {"type": ["integer", "null"]},
+          "preserved_messages": {"type": ["integer", "null"]},
+          "path": {"type": "string"},
+          "tool_call_id": {"type": "string"},
+          "prompt_id": {"type": "string"},
+          "turn_index": {"type": ["integer", "null"]},
+          "detail": {"type": "object"},
+          "summary": {
+            "anyOf": [
+              {"type": "null"},
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {"type": "string"},
+                  "seq": {"type": "integer"},
+                  "title": {"type": "string"},
+                  "text": {"type": ["string", "null"]},
+                  "hash": {"type": "string"},
+                  "bytes": {"type": ["integer", "null"]}
+                },
+                "required": ["kind", "seq", "title", "text", "hash", "bytes"]
+              }
+            ]
+          }
+        },
+        "required": ["ts", "kind", "agent_id", "trigger", "message_id", "path", "detail", "summary"]
+      }
+    },
     "artifacts_total": {"type": "integer"},
     "artifacts_bytes": {"type": "integer"},
     "prs_note": {"type": ["string", "null"]},

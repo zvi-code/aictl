@@ -7,6 +7,8 @@ file_write_events
 | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
 | summarize arg_max(_v, *) by ['project'],node_id,key
 | where not(column_ifexists('_deleted',false)) and ts between (since .. until)
+// A change the tool saw made outside the session is not the session's edit.
+| where column_ifexists('actor','') != 'outside_session'
 | where not(restrict_sessions) or strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
 | where array_length(requested_paths)==0 or path in (requested_paths)
 | extend added=tolong(parse_json(detail).lines_added), removed=tolong(parse_json(detail).lines_removed)

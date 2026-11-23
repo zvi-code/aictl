@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 134890c31d74f3873c9e158007cf418c0ff6f9dc4be72301418fa2ec34258ca3
+// Schema digest: a18504b7c0dd7673745f2d25d156dfb16bec2d90c81062ce31620f05da645cd6
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -707,6 +707,56 @@ export type DetailAgent = {
   subagents: Array<BoardAgentRow>;
   loop: BoardLoopRow | null;
   node_scope?: NodeScope;
+  memory_changes?: Array<{
+    ts: number;
+    path: string;
+    mechanism: string;
+    operation: string;
+    tool_name?: string;
+    agent_id: string;
+    actor: string;
+    prompt_id?: string;
+    turn_index?: number | null;
+    lines_added?: number | null;
+    lines_removed?: number | null;
+    before_hash: string;
+    after_hash: string;
+    before_bytes?: number | null;
+    after_bytes?: number | null;
+    before_source: string;
+    after_source: string;
+    tool_call_id?: string;
+  }>;
+  checkpoints?: Array<{
+    ts: number;
+    kind: string;
+    agent_id: string;
+    trigger: string;
+    checkpoint_no?: number | null;
+    message_id: string;
+    files_count?: number | null;
+    lines_added?: number | null;
+    lines_removed?: number | null;
+    before_tokens?: number | null;
+    after_tokens?: number | null;
+    dropped_messages?: number | null;
+    dropped_tokens?: number | null;
+    cumulative_dropped_tokens?: number | null;
+    preserved_messages?: number | null;
+    path: string;
+    tool_call_id?: string;
+    prompt_id?: string;
+    turn_index?: number | null;
+    detail: Record<string, unknown>;
+    summary: null | {
+      kind: string;
+      seq: number;
+      title: string;
+      text: string | null;
+      hash: string;
+      bytes: number | null;
+    };
+  }>;
   artifacts_total: number;
   artifacts_bytes: number;
   prs_note: string | null;

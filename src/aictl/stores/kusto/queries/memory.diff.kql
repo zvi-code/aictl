@@ -1,0 +1,12 @@
+// The two contents a diff is computed from, by their file_blobs hashes (a version's content_hash,
+// a change's before_hash and after_hash). At most two rows; a hash whose content is not kept (text
+// off, expired, or a file whose content is never stored) returns no row.
+declare query_parameters(all_nodes:bool=true, requested_node:string='', keep_text:bool=true,
+    first_hash:string='', second_hash:string='');
+file_blobs
+| where keep_text and isnotempty(['hash']) and ['hash'] in (first_hash, second_hash)
+    and (all_nodes or node_id == requested_node)
+| summarize arg_max(_v, *) by ['project'],node_id,['hash']
+// The same content may be stored by several nodes: one copy is enough.
+| summarize arg_max(_v, *) by ['hash']
+| project side=iff(['hash'] == first_hash, 'first', 'second'), ['hash'], content, size_bytes

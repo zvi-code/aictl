@@ -1,0 +1,21 @@
+// The files one rewind point covers (its message id), with the version each was at: Claude Code's
+// backup (state backup, or absent when the file did not exist) or Copilot's preimage. blob_hash names
+// the content in file_blobs, kept for memory and instruction files only. Pages by after_row.
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
+    requested_message:string, after_row:string='', row_limit:long);
+let cursor_row = parse_json(after_row);
+file_history
+// file_history takes no delete rows; a checkpoint's rows name their session and message.
+| where column_ifexists('session_id','') == requested_session and column_ifexists('source_event_id','') == requested_message
+    and (all_nodes or node_id == requested_node)
+| summarize arg_max(_v, *) by ['project'],node_id,path,ts
+// A message's snapshot can list a file again later; its latest line is the file's version.
+| summarize arg_max(ts, *) by ['project'],node_id,path
+| where isempty(after_row) or case(
+    path != tostring(cursor_row[0]), strcmp(path,tostring(cursor_row[0])) > 0,
+    node_id != tostring(cursor_row[1]), strcmp(node_id,tostring(cursor_row[1])) > 0,
+    strcmp(['project'],tostring(cursor_row[2])) > 0)
+| order by path asc, node_id asc, ['project'] asc
+| take row_limit
+| project node_id, path, ts, origin, mechanism, version, state, blob_hash, size_bytes, lines, lines_added, lines_removed,
+    _page_cursor=tostring(pack_array(path,node_id,['project']))

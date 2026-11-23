@@ -14,6 +14,7 @@ let writes = file_write_events
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'],node_id,key
     | where not(column_ifexists('_deleted',false)) and ts between (since .. until)
+        and column_ifexists('actor','') != 'outside_session'
     | summarize writes=count(), first_ts=min(ts), last_ts=max(ts), size=max(size_bytes) by node_id,session_id,path;
 let indexed = index_rows | summarize indexed=count_distinct(path) by node_id,session_id;
 union

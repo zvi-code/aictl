@@ -4,6 +4,7 @@ file_write_events
 | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
 | summarize arg_max(_v, *) by ['project'],node_id,key
 | where not(column_ifexists('_deleted',false)) and ts between (since .. until)
+| where column_ifexists('actor','') != 'outside_session'
 | order by ts desc,node_id asc,key asc
 | take row_limit
 | project ts, session_id, tool, tool_name, path
