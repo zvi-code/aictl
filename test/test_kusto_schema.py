@@ -4,6 +4,7 @@ import pytest
 from test_kusto_connection import FakeClient, response
 
 from aictl.kusto.observations import CURRENT_STORE
+from aictl.stores.kusto import nodes as N
 from aictl.stores.kusto.maintenance import schema_rows
 from aictl.stores.kusto.otel import TABLES as OTLP_TABLES
 from aictl.stores.kusto.schema import ensure_schema
@@ -32,6 +33,9 @@ def test_schema_marks_only_a_fresh_report_layout(existing):
     ensure_schema(client, "test", tables=tables, modes=dict.fromkeys(tables, "queued"))
     creates = [c for c in client.commands if c.startswith(".create-merge table")]
     assert any(CURRENT_STORE in command for command in creates) == (existing is None)
-    assert any("requests_observations" in command for command in creates) == (existing == "requests_observations")
-    assert any("['requests']" in command for command in creates)
-    assert any("['tool_invocations']" in command for command in creates)
+    # Each node writes its own tables (nodes.py); an observation companion only where one existed.
+    key = N.node_key("")
+    assert any(f"['requests_observations__{key}']" in command for command in creates) == (
+        existing == "requests_observations")
+    assert any(f"['requests__{key}']" in command for command in creates)
+    assert any(f"['tool_invocations__{key}']" in command for command in creates)

@@ -204,8 +204,10 @@ def test_schema_widens_tables_then_falls_back_when_streaming_policy_denied():
                            tables={"files": TABLES["files"]})
     assert not status.streaming_available and "Database Admin" in status.warning
     assert "['project']:string" in next(s for s in sent if s.startswith(".create-merge"))
-    assert sent[-2].endswith("policy retention softdelete = 365d")
-    assert sent[-1].startswith(".set-or-append ['schema_version'] <|")
+    assert "365.00:00:00" in next(s for s in sent if s.startswith(".alter tables (['files__"))
+    record = max(i for i, s in enumerate(sent) if s.startswith(".set-or-append ['schema_version'] <|"))
+    # The stored functions are regenerated after this node's layout row is recorded.
+    assert any(s.startswith(".create-or-alter function") for s in sent[record:])
     assert not any(s.startswith(".clear") for s in sent)
 
 
@@ -215,7 +217,7 @@ def test_schema_names_required_role_when_retention_is_denied():
             raise RuntimeError("Forbidden")
         return response()
 
-    with pytest.raises(StorePermissionError, match="Set retention for session_step_text requires Table Admin"):
+    with pytest.raises(StorePermissionError, match="Set retention for .*session_step_text__unattributed requires Table Admin"):
         ensure_schema(
             SimpleNamespace(execute_mgmt=execute), "db", tables={"session_step_text": TABLES["session_step_text"]}
         )

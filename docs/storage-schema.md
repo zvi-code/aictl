@@ -607,6 +607,18 @@ saved in the checkpoint. Rows summed from transcript lines (`session_turns`,
 `session_files`, digests, thinking) are written only for lines not stored before a
 restart, as for the other fact tables.
 
+## One table set per node (Kusto layout 3)
+
+Each node writes its own physical tables: logical table `T` of node `N` is `T__<node key>` (see
+`src/aictl/stores/kusto/nodes.py` for the key: the node ID made of `[a-z0-9_]`, at most 32 characters, then the first
+8 hex digits of its SHA-256; rows without a node ID use `unattributed`). Each is in folder `aictl/nodes/<key>` with a
+JSON docstring that names the node ID and the logical table. A stored function named `T` (folder `aictl`) unions the
+node tables of every node whose layout this aictl reads, starting with an empty datatable of the logical schema, so
+every view and query names `T` as before and reads all nodes; `node_id` stays a column. `schema_version` (the
+registry) and `aictl_current_store_v1` stay shared. The layout, the data epoch, migrations, resets and retention are
+per node. The migration from the shared tables, `node_tables`, copies each node's rows, verifies them, switches, and
+keeps the shared tables as `legacy__T`; see [kusto-cluster.md](kusto-cluster.md#one-table-set-per-node-layout-3).
+
 ## Retention per class of table
 
 Every Kusto table belongs to exactly one retention class (`TABLE_RETENTION_CLASS` in

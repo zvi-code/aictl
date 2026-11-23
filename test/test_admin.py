@@ -256,7 +256,10 @@ class TestDbReset:
         for call in receive.call_args_list:
             database, command = call.args
             assert database == "aictl_perf_test"
+            if command.startswith(".show"):
+                continue  # the layout check: which tables are this node's
             assert command.startswith(".delete table ") and "records with (whatif=true) <|" in command
+            assert "__host_a_" in command  # this node's own tables
             assert '| where node_id == "host-a"' in command
 
 

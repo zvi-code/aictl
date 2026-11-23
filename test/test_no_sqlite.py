@@ -159,47 +159,55 @@ def _supplement_replay(client, settings):
                 "response": [{"columns": [{"name": name, "type": typ} for name, typ in columns], "rows": rows}],
             })
 
-    names = [name for name in TABLES if not name.endswith("_observations")] + [CURRENT_STORE]
-    response("command", LAYOUT_QUERY, [("TableName", "string")], [[name] for name in names], replace=True)
+    # A database with node tables (stores/kusto/nodes.py): this node's tables, the shared registry and
+    # marker, and a stored function per logical table.
+    from aictl.stores.kusto import layout
+    from aictl.stores.kusto import nodes as N
+    from aictl.stores.kusto.schema import _FUNCTIONS_QUERY, _POLICY_QUERY
+    from aictl.stores.kusto.schema import LAYOUT_QUERY as STORED_LAYOUT_QUERY
+
+    logical = [name for name in TABLES if not name.endswith("_observations") and name not in N.SHARED_TABLES]
+    mine = {name: N.physical(name, N.node_key(settings.node_id)) for name in logical}
+    names = [*mine.values(), "schema_version", CURRENT_STORE]
+    response("command", LAYOUT_QUERY, [("DatabaseName", "string"), ("TableName", "string")],
+             [[settings.database, name] for name in [*names, *logical]], replace=True)
+    columns_of = {**{mine[n]: n for n in logical}, "schema_version": "schema_version"}
     response(
         "command", ".show database schema | project TableName, ColumnName, ColumnType",
         [(name, "string") for name in ("TableName", "ColumnName", "ColumnType")],
-        [[name, column, kind] for name in names if name in TABLES
-         for column, kind in (*TABLES[name].columns, *LEGACY_COLUMNS.get(name, ()))],
+        [[name, column, kind] for name, source in columns_of.items()
+         for column, kind in (*TABLES[source].columns, *LEGACY_COLUMNS.get(source, ()))],
     )
     response(
-        "command",
-        ".show tables details | project TableName, TotalRowCount, RetentionPolicy, StreamingIngestionPolicy",
+        "command", _POLICY_QUERY,
         [("TableName", "string"), ("TotalRowCount", "long"), ("RetentionPolicy", "dynamic"),
-         ("StreamingIngestionPolicy", "dynamic")],
-        [[name, 0, {"SoftDeletePeriod": f"{TABLES[name].retention_days}.00:00:00"}, {"IsEnabled": True}]
-         for name in names if name in TABLES],
+         ("StreamingIngestionPolicy", "dynamic"), ("DocString", "string")],
+        [[name, 0, {"SoftDeletePeriod": TABLES[source].retention_timespan}, {"IsEnabled": True},
+          N.table_docstring(settings.node_id, N.node_key(settings.node_id), source)]
+         for name, source in columns_of.items()],
     )
+    response("command", _FUNCTIONS_QUERY, [("Name", "string"), ("Body", "string")], [])
     # The stored layout: this build's, so the store opens without a migration or a reset.
-    from aictl.stores.kusto import layout
-    from aictl.stores.kusto.schema import LAYOUT_QUERY as STORED_LAYOUT_QUERY
-
     response("query", STORED_LAYOUT_QUERY,
-             [(c, "string") for c in ("kind", "version", "compatible_since", "data_epoch", "aictl_version",
-                                      "written_at", "step", "detail")],
-             [["layout", layout.LAYOUT_VERSION, layout.COMPATIBLE_SINCE, "recorded-epoch", "0.test",
-               "2026-11-23T00:00:00Z", "", "new"]])
-    response("command", ".show tables details | project TableName, TotalRowCount",
-             [("TableName", "string"), ("TotalRowCount", "long")], [[name, 0] for name in names])
-    response("command", f".drop tables ({', '.join(quote(name) for name in sorted(names))}) ifexists")
+             [(c, "string") for c in ("kind", "node_id", "version", "compatible_since", "data_epoch",
+                                      "aictl_version", "written_at", "step", "detail")],
+             [["database", "", layout.LAYOUT_VERSION, layout.NODE_TABLES_SINCE, "recorded-epoch", "0.test",
+               "2026-11-23T00:00:00Z", "node_tables", "node tables"],
+              ["layout", settings.node_id, layout.LAYOUT_VERSION, layout.COMPATIBLE_SINCE, "recorded-epoch",
+               "0.test", "2026-11-23T00:00:00Z", "", "new"]])
+    response("command", f".drop tables ({', '.join(quote(name) for name in sorted(mine.values()))}) ifexists")
     response("command", ".show tables details | project TableName, TotalExtents, TotalRowCount, TotalExtentSize",
              [("TableName", "string"), ("TotalExtents", "long"), ("TotalRowCount", "long"),
-              ("TotalExtentSize", "long")], [["sessions", 0, 0, 0]])
+              ("TotalExtentSize", "long")], [[mine["sessions"], 0, 0, 0]])
     response(
         "command",
         ".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
         "TotalOriginalSize, HotExtentSize, RetentionPolicy | top 513 by TableName asc",
         [("TableName", "string"), ("RetentionPolicy", "dynamic")],
-        [["sessions", {"SoftDeletePeriod": "30.00:00:00"}]],
+        [[mine["sessions"], {"SoftDeletePeriod": "30.00:00:00"}]],
     )
-    for name in names:
-        if name in TABLES:
-            response("command", f".clear table {quote(name)} data")
+    for name in [*logical, *mine.values()]:
+        response("command", f".clear table {quote(name)} data")
     node = kql_literal(settings.node_id, "string")
     instant = kql_literal(datetime.fromtimestamp(_TRIM_TIME, timezone.utc), "datetime")
     for name, (column, kind) in TRIM_TIMESTAMPS.items():
@@ -207,9 +215,21 @@ def _supplement_replay(client, settings):
         age = f"{column} < {cutoff}"
         if column != "_v":
             age += f" or (isnull({column}) and _v < {instant})"
-        table = quote(name)
+        table = quote(mine.get(name, name))
         response("command", f".delete table {table} records with (whatif=true) <| {table}"
                             f" | where node_id == {node} | where {age}")
+    # Writes whose text carries a fresh epoch or time (the registry, the functions a start
+    # regenerates, a reset's new tables) are answered, not replayed.
+    execute_mgmt = client.execute_mgmt
+    written = (".set-or-append ['schema_version']", ".create-or-alter function", ".drop function",
+               ".alter table ", ".alter tables ", ".create-merge tables ")
+
+    def mgmt(database, text, properties=None):
+        if text.startswith(written) and not client._responses.get(("command", text)):
+            return SimpleNamespace(primary_results=[])
+        return execute_mgmt(database, text, properties)
+
+    client.execute_mgmt = mgmt
     # Ungrouped summaries return one row even when their source is empty.
     for view, columns, rows in (
         ("events.count", [("count", "long")], [[0]]),

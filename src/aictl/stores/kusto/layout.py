@@ -12,7 +12,15 @@ values, and add a line to ``CHANGES``:
   to delete the stored data, and history whose session files are gone is lost.
 - Once ``GA_LAYOUT_VERSION`` is set, every breaking change after it must have a migration.
 
-Data without a recorded version counts as layout 0.
+Since layout 3 each node has its own tables (see ``nodes.py``), and the layout is recorded
+and checked per node: a node checks and upgrades only its own tables, and another node on
+an older or newer layout is not an error for it. A migration is either database-wide (it
+runs once, for all nodes; ``node_tables`` is one) or per node (it runs on one node's tables
+when that node starts). Data without a recorded version counts as layout 0.
+
+The fingerprint: ``FINGERPRINT`` is ``fingerprint()`` of the table definitions; after a
+change to ``tables.py`` or ``otel.py`` set it to the value that
+``python -c "from aictl.stores.kusto.layout import fingerprint; print(fingerprint())"`` prints.
 """
 
 from __future__ import annotations
@@ -24,10 +32,12 @@ from typing import Any
 
 from ..base import StoreConfigurationError
 
-LAYOUT_VERSION = 2
-COMPATIBLE_SINCE = 2
+LAYOUT_VERSION = 3
+COMPATIBLE_SINCE = 3
 # The first layout released as generally available. From then on a breaking change needs a migration.
 GA_LAYOUT_VERSION: int | None = None
+# The layout that gave each node its own tables. The database record carries it.
+NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
 FINGERPRINT = "44c62b9a7ee2482582d41150ecd9705749748736184fef1f3d3e233b0d417fba"
 
@@ -59,6 +69,14 @@ CHANGES: tuple[Change, ...] = (
         breaks=True,
         migration="agents_by_session",
     ),
+    Change(
+        3,
+        "Each node writes its own tables (requests__<node key>, ...); a stored function named like each "
+        "table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies "
+        "each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*.",
+        breaks=True,
+        migration="node_tables",
+    ),
 )
 
 
@@ -79,7 +97,7 @@ def fingerprint() -> str:
 
 @dataclass(frozen=True)
 class StoredLayout:
-    """What the database's ``schema_version`` table says."""
+    """What the ``schema_version`` registry says about one node (or, before layout 2, the database)."""
 
     version: int
     compatible_since: int
@@ -109,20 +127,24 @@ NEWER = "newer"        # the database was written by a newer aictl that this one
 COMPATIBLE = frozenset({NEW, CURRENT, UPGRADE})
 
 
-def breaking_changes(stored_version: int) -> list[Change]:
-    return [c for c in CHANGES if stored_version < c.version <= LAYOUT_VERSION and c.breaks]
+def breaking_changes(stored_version: int, settled: frozenset[str] = frozenset()) -> list[Change]:
+    """The breaking changes after *stored_version*, without those whose migration is *settled*."""
+    return [c for c in CHANGES if stored_version < c.version <= LAYOUT_VERSION and c.breaks
+            and not (c.migration and c.migration in settled)]
 
 
-def assess(stored: StoredLayout | None, *, has_data: bool) -> str:
+def assess(stored: StoredLayout | None, *, has_data: bool, settled: frozenset[str] = frozenset()) -> str:
+    """The verdict on *stored*. *settled*: database-wide migrations already done, which no node repeats."""
     if stored is None:
         if not has_data:
             return NEW
         stored = UNVERSIONED
     if stored.compatible_since > LAYOUT_VERSION:
         return NEWER
-    if stored.version >= COMPATIBLE_SINCE:
+    changes = breaking_changes(stored.version, settled)
+    if not changes:
         return UPGRADE if stored.version < LAYOUT_VERSION else CURRENT
-    return MIGRATE if all(c.migration for c in breaking_changes(stored.version)) else RESET
+    return MIGRATE if all(c.migration for c in changes) else RESET
 
 
 def describe(stored: StoredLayout | None) -> str:
@@ -148,19 +170,22 @@ def target_options(cluster: str, database: str) -> str:
     return f" --kusto-cluster {cluster} --kusto-database {database}" if cluster else ""
 
 
-def message(verdict: str, stored: StoredLayout | None, *, cluster: str, database: str) -> str:
+def message(verdict: str, stored: StoredLayout | None, *, cluster: str, database: str, node: str = "",
+            settled: frozenset[str] = frozenset()) -> str:
+    """What to do about *verdict*. With *node*, the verdict is about that node's tables only."""
     where = f"{database} on {cluster}" if cluster else database
+    whose = f"The aictl data of node {node} in {where}" if node else f"The aictl data in {where}"
     found = stored or UNVERSIONED
     target = target_options(cluster, database)
-    head = (f"The aictl data in {where} has layout {describe(found)}; this aictl writes layout {LAYOUT_VERSION} "
+    head = (f"{whose} has layout {describe(found)}; this aictl writes layout {LAYOUT_VERSION} "
             f"and reads layouts {COMPATIBLE_SINCE} to {LAYOUT_VERSION}.")
     if verdict == NEWER:
-        return (f"The aictl data in {where} was written by a newer aictl: layout {found.version}, readable only by "
+        return (f"{whose} was written by a newer aictl: layout {found.version}, readable only by "
                 f"code that understands layout {found.compatible_since} or newer (written by aictl "
                 f"{found.aictl_version or 'unknown'}). This aictl writes layout {LAYOUT_VERSION}.\n"
                 "Upgrade aictl on this node (aictl reinstall, or pipx upgrade aictl) and start it again. "
                 "Do not delete the stored data: newer nodes are using it.")
-    changes = breaking_changes(found.version)
+    changes = breaking_changes(found.version, settled)
     lines = "\n".join(changelog_lines(changes))
     if verdict == MIGRATE:
         return (f"{head}\nThese changes since layout {found.version} make the stored rows wrong for this aictl:\n"
@@ -169,11 +194,12 @@ def message(verdict: str, stored: StoredLayout | None, *, cluster: str, database
                 f"To run it:               aictl db migrate{target}\n"
                 "Stop the other aictl writers of this database first.")
     missing = [c for c in changes if not c.migration]
+    reset = f"aictl db reset --node {node}{target}" if node else f"aictl db reset{target}"
     return (f"{head}\nThese changes since layout {found.version} make the stored rows wrong for this aictl:\n"
             f"{lines}\nNo migration exists for: "
             + ", ".join(f"layout {c.version}" for c in missing)
             + ". The stored data must be deleted before this aictl can write to it.\n"
-            f"To delete it:  aictl db reset{target}\n"
+            f"To delete it:  {reset}\n"
             "After the reset every node re-imports its history from the session files still on its disk. "
             "Data whose session files are gone, and data older than the retention period, cannot be rebuilt.")
 
@@ -181,12 +207,14 @@ def message(verdict: str, stored: StoredLayout | None, *, cluster: str, database
 class StoreLayoutError(StoreConfigurationError):
     """The stored data has a layout this aictl must not write to as it is."""
 
-    def __init__(self, verdict: str, stored: StoredLayout | None, *, cluster: str = "", database: str = ""):
+    def __init__(self, verdict: str, stored: StoredLayout | None, *, cluster: str = "", database: str = "",
+                 node: str = "", settled: frozenset[str] = frozenset()):
         self.verdict = verdict
         self.stored = stored
         self.cluster = cluster
         self.database = database
-        super().__init__(message(verdict, stored, cluster=cluster, database=database))
+        self.node = node
+        super().__init__(message(verdict, stored, cluster=cluster, database=database, node=node, settled=settled))
 
 
 class LayoutMigrationRequired(StoreLayoutError):
@@ -199,6 +227,10 @@ class LayoutResetRequired(StoreLayoutError):
 
 class LayoutNewerError(StoreLayoutError):
     pass
+
+
+class MigrationInProgress(StoreConfigurationError):
+    """Another node runs the database-wide migration; this node must not write until it is done."""
 
 
 ERRORS: dict[str, type[StoreLayoutError]] = {
@@ -222,8 +254,14 @@ def rule_violations(changes: tuple[Change, ...] = CHANGES, *, ga: int | None = G
     return problems
 
 
-def summary(verdict: str, stored: StoredLayout | None, epoch: str, warning: str | None = None) -> dict[str, Any]:
-    """The ``layout`` object of the store health and the start banner."""
+def summary(verdict: str, stored: StoredLayout | None, epoch: str, warning: str | None = None,
+            nodes: list[dict] | None = None, legacy: list[dict] | None = None) -> dict[str, Any]:
+    """The ``layout`` object of the store health and the start banner.
+
+    ``nodes``: every node the database has tables or layout rows for, with whether aggregate
+    reads include it and why not; ``excluded``: how many are left out.
+    """
+    nodes = nodes or []
     return {
         "version": LAYOUT_VERSION,
         "compatible_since": COMPATIBLE_SINCE,
@@ -231,4 +269,7 @@ def summary(verdict: str, stored: StoredLayout | None, epoch: str, warning: str 
         "stored_version": None if stored is None else stored.version,
         "verdict": verdict,
         "warning": warning,
+        "nodes": nodes,
+        "excluded": sum(1 for node in nodes if not node.get("included")),
+        "legacy_tables": legacy or [],
     }

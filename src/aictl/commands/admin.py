@@ -16,6 +16,7 @@ from ..cli_context import CliContext
 from ..kusto import kusto_settings
 from ..platforms import config_path, show_config, write_default_config
 from ..stores.base import StoreError
+from ..stores.kusto import nodes as N
 from ..stores.kusto.tables import RETENTION_CLASSES
 
 # ─── db ─────────────────────────────────────────────────────────────────────
@@ -302,34 +303,77 @@ def _target_settings(ctx, kusto_cluster, kusto_database):
         raise click.UsageError(str(exc)) from exc
 
 
+def _size(value) -> str:
+    return "-" if value is None else f"{int(value) / 1e6:,.1f} MB"
+
+
+def _print_nodes(state, settings, *, details: bool, echo=click.echo) -> None:
+    nodes = state.node_list()
+    excluded = [n for n in nodes if not n["included"]]
+    echo(f"\nNodes: {len(nodes)}, {len(excluded)} not included in aggregate reads")
+    echo(f"  {'Node':<34} {'Key':<30} {'Layout':>6} {'Tables':>6} {'Rows':>12} {'Size':>12}  Last ingestion       "
+         "Included")
+    for node in nodes:
+        mine = " (this node)" if node["node_key"] == N.node_key(settings.node_id) else ""
+        layout = "-" if node["version"] is None else str(node["version"])
+        last = str(node["last_ingestion"] or "-")[:19]
+        included = "yes" if node["included"] else f"no: {node['reason']}"
+        echo(f"  {(node['node_id'] if node['node_id'] is not None else '?') + mine:<34} {node['node_key']:<30} "
+             f"{layout:>6} {node['tables']:>6} {node['rows']:>12,} {_size(node['size_bytes']):>12}  {last:<20} "
+             f"{included}")
+        if node["data_epoch"]:
+            echo(f"    data epoch {node['data_epoch']}")
+        if details:
+            mine_node = state.nodes[node["node_key"]]
+            for logical, name in sorted(mine_node.tables.items()):
+                row = state.details.get(name, {})
+                count = row.get("TotalRowCount")
+                echo(f"      {logical:<38} {'-' if count is None else f'{int(count):,}':>12} rows "
+                     f"{int(row.get('TotalExtents') or 0):>5} extents {_size(row.get('TotalExtentSize')):>12}  "
+                     f"{str(row.get('MaxExtentsCreationTime') or '-')[:19]}")
+    if state.legacy:
+        echo(f"\nShared tables of layout 1 not yet migrated: {len(state.legacy)} "
+             f"({sum(r or 0 for r in state.legacy.values()):,} rows)")
+    if state.renamed:
+        size = sum(int(state.details.get(n, {}).get("TotalExtentSize") or 0) for n in state.renamed)
+        echo(f"\nLegacy shared tables kept by the migration: {len(state.renamed)} tables, "
+             f"{sum(r or 0 for r in state.renamed.values()):,} rows, {_size(size)}. "
+             "Remove them with: aictl db migrate --drop-legacy")
+
+
 @db.command()
+@click.option("--nodes", "show_nodes", is_flag=True, help="Also list each node's tables: rows, extents, size, "
+                                                           "last ingestion")
 @_store_options
 @click.pass_context
-def layout(ctx, kusto_cluster, kusto_database):
-    """Show the stored data layout, this aictl's layout, the verdict and the changelog."""
+def layout(ctx, show_nodes, kusto_cluster, kusto_database):
+    """Show this node's stored layout, this aictl's layout, the verdict, every node and the changelog."""
     from ..stores.kusto import layout as L
     from ..stores.kusto.client import KustoClientFactory
-    from ..stores.kusto.schema import check_layout
+    from ..stores.kusto.schema import SHARED, check_layout
 
     settings = _target_settings(ctx, kusto_cluster, kusto_database)
     try:
-        state = check_layout(KustoClientFactory.client(settings), settings.database)
+        state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
     except StoreError as exc:
         raise click.ClickException(str(exc)) from exc
     stored, verdict = state.stored, state.verdict
     click.echo(f"Database:            {settings.database} on {settings.cluster}")
+    click.echo(f"Tables:              {'shared by all nodes (layout 1 or older)' if state.mode == SHARED else 'one set per node' if state.mode == 'nodes' else 'none yet'}")
+    click.echo(f"This node:           {settings.node_id} (table key {N.node_key(settings.node_id)})")
     click.echo(f"Stored layout:       {L.describe(L.UNVERSIONED if stored is None and state.has_data else stored)}")
     if stored is not None:
         click.echo(f"  compatible since:  {stored.compatible_since}")
         click.echo(f"  data epoch:        {stored.data_epoch or '-'} (began by {stored.origin or '-'})")
         click.echo(f"  written by aictl:  {stored.aictl_version or '-'} at {stored.written_at or '-'}")
         if stored.migrations_done:
-            click.echo(f"  migrations done:   {', '.join(sorted(stored.migrations_done))}")
+            click.echo(f"  migrations done:   {', '.join(sorted(m for m in stored.migrations_done if '/' not in m))}")
     click.echo(f"This aictl:          layout {L.LAYOUT_VERSION}, reads layouts {L.COMPATIBLE_SINCE} to "
                f"{L.LAYOUT_VERSION}")
     click.echo(f"Verdict:             {verdict}")
     if verdict not in L.COMPATIBLE:
-        click.echo("\n" + L.message(verdict, stored, cluster=settings.cluster, database=settings.database))
+        click.echo("\n" + str(state.error(settings.cluster, settings.database)))
+    _print_nodes(state, settings, details=show_nodes)
     click.echo("\nChangelog:")
     for line in L.changelog_lines():
         click.echo(line)
@@ -338,19 +382,48 @@ def layout(ctx, kusto_cluster, kusto_database):
 @db.command()
 @click.option("--dry-run", is_flag=True, help="Print each step's commands and the rows they change; change nothing")
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--take-over", is_flag=True, help="Continue a node_tables migration another node started and stopped")
+@click.option("--slice-days", type=click.IntRange(min=1, max=31), default=1, show_default=True,
+              help="Copy rows in slices of this many days of ingestion time (each keeps its creation time)")
+@click.option("--drop-legacy", is_flag=True, help="Drop the legacy__ tables the finished migration kept")
 @_store_options
 @click.pass_context
-def migrate(ctx, dry_run, yes, kusto_cluster, kusto_database):
+def migrate(ctx, dry_run, yes, take_over, slice_days, drop_legacy, kusto_cluster, kusto_database):
     """Upgrade the stored data to this aictl's layout and keep the history. Stop all writers first."""
     from ..stores.kusto import layout as L
-    from ..stores.kusto.maintenance import migrate_store
+    from ..stores.kusto.maintenance import drop_legacy as drop
+    from ..stores.kusto.maintenance import legacy_tables, migrate_store
 
     settings = _target_settings(ctx, kusto_cluster, kusto_database)
+    if drop_legacy:
+        try:
+            tables = legacy_tables(settings)
+        except StoreError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if not tables:
+            click.echo("No legacy tables to drop.")
+            return
+        click.echo(f"These shared tables of layout 1 were kept by the migration in {settings.database} on "
+                   f"{settings.cluster}; each node's rows are in its own tables:")
+        for name, rows, size in tables:
+            click.echo(f"  {name:48s} {'unknown' if rows is None else f'{rows:,}':>14s} rows {_size(size):>12}")
+        if dry_run:
+            click.echo("Dry run: nothing was dropped.")
+            return
+        if not yes and not click.confirm("Drop them? This cannot be undone", default=False):
+            raise click.exceptions.Exit(1)
+        try:
+            click.echo(drop(settings, [name for name, _, _ in tables]))
+        except StoreError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Dropped {len(tables)} legacy tables.")
+        return
     if not dry_run and not yes:
         click.confirm(f"Migrate the stored data in {settings.database} on {settings.cluster} to layout "
                       f"{L.LAYOUT_VERSION}? Stop the other aictl writers of this database first.", abort=True)
     try:
-        verdict, _ = migrate_store(settings, dry_run=dry_run, echo=click.echo)
+        verdict, _ = migrate_store(settings, dry_run=dry_run, echo=click.echo, take_over=take_over,
+                                   slice_days=slice_days)
     except (StoreError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
     if verdict == L.MIGRATE:
@@ -367,8 +440,8 @@ def migrate(ctx, dry_run, yes, kusto_cluster, kusto_database):
 def reimport_sessions(ctx, session_ids, resumed, dry_run):
     """Read the given sessions' files again at the next start, and store their rows again.
 
-    Only the read positions of these files are cleared: nothing stored is deleted, and every other
-    file stays as read. Use it for sessions that an older aictl attributed wrongly, such as a
+    Only this node's read positions of these files are cleared (each node keeps its own, and
+    writes its own tables): nothing stored is deleted, and every other file stays as read. Use it for sessions that an older aictl attributed wrongly, such as a
     resumed session's copy of the session it was resumed from. Stop the daemon first.
     """
     from .. import platforms, tool_homes
@@ -397,44 +470,59 @@ def reimport_sessions(ctx, session_ids, resumed, dry_run):
     click.echo(f"Cleared {removed} saved read position(s); the next start reads these files again.")
 
 
-def confirm_and_reset(settings, *, yes: bool, echo=click.echo, confirm=click.confirm) -> bool:
+def confirm_and_reset(settings, *, yes: bool, echo=click.echo, confirm=click.confirm, node: str | None = None,
+                      all_nodes: bool = False) -> bool:
     """Print what a reset deletes, ask unless *yes*, reset. Returns False when the user says no."""
-    from ..stores.kusto.maintenance import reset_plan, reset_store
+    from ..stores.kusto.maintenance import reset_plan, reset_scope, reset_store
 
-    plan = reset_plan(settings)
-    echo(f"A reset deletes every aictl table in {settings.database} on {settings.cluster}, for ALL nodes:")
+    target = node or settings.node_id
+    whole = reset_scope(settings, all_nodes)
+    plan = reset_plan(settings, target, all_nodes=whole)
+    if whole:
+        echo(f"A reset deletes every aictl table in {settings.database} on {settings.cluster}, for ALL nodes:")
+    else:
+        echo(f"A reset deletes the tables of node {target} in {settings.database} on {settings.cluster}; "
+             "the other nodes keep theirs:")
     for name, rows in plan:
-        echo(f"  {name:40s} {'unknown' if rows is None else f'{rows:,}':>14s} rows")
-    echo("Tables aictl does not own are kept. Each node then reads its history again from the session files "
+        echo(f"  {name:48s} {'unknown' if rows is None else f'{rows:,}':>14s} rows")
+    echo("Tables aictl does not own are kept. The node then reads its history again from the session files "
          "still on its disk; data whose session files are gone, and data older than the retention period, "
          "cannot be rebuilt.")
-    if not yes and not confirm(f"Delete the stored data in {settings.database} on {settings.cluster} and start "
-                               "again?", default=False):
+    what = "the stored data" if whole else f"the stored data of node {target}"
+    if not yes and not confirm(f"Delete {what} in {settings.database} on {settings.cluster} and start again?",
+                               default=False):
         return False
-    status = reset_store(settings, [name for name, _ in plan])
-    echo(f"Dropped {len(plan)} aictl tables and created them again; new data epoch {status.data_epoch}.")
+    status = reset_store(settings, [name for name, _ in plan], node=None if target == settings.node_id else target,
+                         all_nodes=whole)
+    epoch = getattr(status, "data_epoch", None) or getattr(getattr(status, "stored", None), "data_epoch", "")
+    echo(f"Dropped {len(plan)} aictl tables and created them again; new data epoch {epoch}.")
     return True
 
 
 @db.command()
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--node", "node", default=None, help="Reset the tables of this node ID (default: this node)")
+@click.option("--all-nodes", is_flag=True, help="Reset every node's tables and the registry")
 @_store_options
 @click.pass_context
-def reset(ctx, yes, kusto_cluster, kusto_database):
-    """Delete all stored aictl data (every node) and start again. Prefer `aictl db migrate` when it applies.
+def reset(ctx, yes, node, all_nodes, kusto_cluster, kusto_database):
+    """Delete one node's stored aictl data (default: this node) and start it again.
 
-    Stop all writers first.
+    Prefer `aictl db migrate` when it applies. With --all-nodes, every node's data. Stop the
+    writers of what is reset first.
     """
     from ..stores.kusto import layout as L
     from ..stores.kusto.client import KustoClientFactory
     from ..stores.kusto.schema import check_layout
 
+    if node and all_nodes:
+        raise click.UsageError("Give --node or --all-nodes, not both.")
     settings = _target_settings(ctx, kusto_cluster, kusto_database)
     try:
-        if check_layout(KustoClientFactory.client(settings), settings.database).verdict == L.MIGRATE:
+        if check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id).verdict == L.MIGRATE:
             click.echo("A migration upgrades this data and keeps the history: aictl db migrate --dry-run, then "
                        "aictl db migrate. A reset deletes it.")
-        if not confirm_and_reset(settings, yes=yes):
+        if not confirm_and_reset(settings, yes=yes, node=node, all_nodes=all_nodes):
             raise click.exceptions.Exit(1)
     except StoreError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -488,13 +576,15 @@ def retention(ctx):
     click.echo(f"  A text value over large_payload_bytes = {threshold} keeps a preview; its full text is in "
                "text_payloads (class large_payload).")
     click.echo("")
-    click.echo(f"  {'Table':<38} {'Class':<14} {'Configured':>10} {'On cluster':>11} {'Rows':>12} {'MB':>10} {'Share':>6}")
+    click.echo(f"  {'Table':<38} {'Class':<14} {'Configured':>10} {'On cluster':>11} {'Rows':>12} {'MB':>10} {'Share':>6}"
+               "  Node")
     for row in sorted(rows, key=lambda r: (-r.extent_bytes, r.table)):
         cluster = "-" if row.cluster_hours is None else (
             format_period(int(row.cluster_hours)) if row.cluster_hours == int(row.cluster_hours) else f"{row.cluster_hours:g}h")
         note = "  differs" if row.differs else ""
         click.echo(f"  {row.table:<38} {row.retention_class:<14} {format_period(row.configured_hours):>10} {cluster:>11}"
-                   f" {row.rows:>12} {row.extent_bytes / 1e6:>10.1f} {100 * row.extent_bytes / total:5.1f}%{note}")
+                   f" {row.rows:>12} {row.extent_bytes / 1e6:>10.1f} {100 * row.extent_bytes / total:5.1f}%"
+                   f"  {row.node_key or '-'}{note}")
     differing = sum(1 for row in rows if row.differs)
     if differing:
         click.echo(f"\n{differing} table(s) differ; the daemon applies the configured periods when it starts.")
@@ -504,11 +594,14 @@ def retention(ctx):
 @click.argument("retention_class", metavar="CLASS", type=click.Choice(RETENTION_CLASSES))
 @click.argument("period")
 @click.option("--yes", "-y", is_flag=True, help="Confirm deleting data older than a shorter limit")
+@click.option("--all-nodes", is_flag=True, help="Apply it to every node's tables, not only this node's")
 @click.pass_context
-def retention_set(ctx, retention_class, period, yes):
+def retention_set(ctx, retention_class, period, yes, all_nodes):
     """Keep CLASS for PERIOD (such as 24h or 365d; a bare number is days): save it and apply it.
 
-    Lowering a period deletes data older than the new limit, which cannot be undone.
+    It applies to this node's tables (each node applies its own setting when it starts);
+    --all-nodes applies it to every node's tables now. Lowering a period deletes data older
+    than the new limit, which cannot be undone.
     """
     import sys
 
@@ -522,7 +615,9 @@ def retention_set(ctx, retention_class, period, yes):
         raise click.BadParameter(str(exc), param_hint="PERIOD") from exc
     settings, mgmt, query = _retention_commands(ctx)
     try:
-        change, lower = kusto_retention.plan(retention_class, hours, mgmt)
+        change, lower = kusto_retention.plan(retention_class, hours, mgmt,
+                                             node_key=N.node_key(getattr(settings, "node_id", "") or ""),
+                                             all_nodes=all_nodes)
         removed = kusto_retention.removals(lower, hours, query)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

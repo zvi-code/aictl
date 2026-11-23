@@ -39,17 +39,14 @@ def read_only_layout(client: Any, settings: KustoSettings) -> dict[str, Any]:
     from .schema import check_layout
 
     try:
-        state = check_layout(client, settings.database)
+        state = check_layout(client, settings.database, settings.node_id)
     except Exception as exc:  # noqa: BLE001 - a diagnostic read must still open
         return {**L.summary("unknown", None, "", f"The data layout was not checked: {exc}"), "epoch_kept_data": False}
-    verdict, stored = state.verdict, state.stored
-    warning = None if verdict in L.COMPATIBLE else L.message(verdict, stored, cluster=settings.cluster,
-                                                              database=settings.database)
+    verdict = state.verdict
+    warning = None if verdict in L.COMPATIBLE else str(state.error(settings.cluster, settings.database))
     if warning:
         log.warning("%s", warning)
-    epoch = stored.data_epoch if stored is not None else ""
-    return {**L.summary(verdict, stored, epoch, warning),
-            "epoch_kept_data": bool(stored and stored.epoch_kept_data)}
+    return state.summary(verdict, warning)
 
 
 def _auto_migrate() -> bool:
@@ -91,8 +88,10 @@ def open_store(settings: KustoSettings | None = None, *, capture: bool = True, r
                            cluster=settings.cluster, migrate=migrate, **configured)
     if not schema.streaming_available:
         modes = {name: "queued" if mode == "streaming" else mode for name, mode in modes.items()}
+    # The writer names logical tables; the ingester writes this node's tables (nodes.py).
     ingester = KustoClientFactory.native_ingester(
-        replace(settings, streaming=None, ingestion="inline" if settings.is_local else "queued", table_ingestion=modes)
+        replace(settings, streaming=None, ingestion="inline" if settings.is_local else "queued", table_ingestion=modes),
+        tables=schema.tables,
     )
     writer = KustoWriter(ingester, node_id=settings.node_id, modes=modes, schema_warning=schema.warning,
                          trim_before=trim_before)

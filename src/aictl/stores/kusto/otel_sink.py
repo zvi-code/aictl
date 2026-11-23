@@ -20,6 +20,11 @@ Nothing is lost quietly:
 
 A request repeated after a timeout may store a row twice; ``RowKey`` is the same for
 both copies, so ``summarize take_any(*) by RowKey`` reads each row once.
+
+This sink writes the tables by their logical names, which a database with node tables
+reads as the collector's tables (see ``nodes.py``); the store's own path, OtelExportWriter,
+writes through KustoWriter to this node's tables.
+
 In queued mode, sent counters and ``flush`` confirm submission, not ingestion.
 Downstream ingestion failures must be inspected through DM diagnostics.
 """

@@ -1,30 +1,52 @@
-"""Provision the Kusto store outside the data write path."""
+"""Provision the Kusto store outside the data write path.
+
+Each node has its own tables, and a stored function per logical table reads all nodes
+(see ``nodes.py``). ``ensure_schema`` runs at every start of a writing node, in this order:
+
+1. Read the database: the table schemas, the table details, the stored functions and the
+   ``schema_version`` registry. Nothing is changed before the checks pass.
+2. Database-wide: a database still on the shared tables of layout 1 or older needs the
+   ``node_tables`` migration (and any older database-wide step). Without *migrate* this
+   raises, and no node writes. A node that finds another node running that migration
+   refuses to write (``MigrationInProgress``).
+3. This node: its own recorded layout decides (new, current, upgrade, migrate, reset,
+   newer); another node's layout is never an error here.
+4. Create or widen this node's tables in one ``.create-merge tables`` command, give new
+   tables their docstring, apply retention and streaming policies, record this node's
+   layout row.
+5. Regenerate the stored functions from the registry and the tables, until a second read
+   finds nothing to change (two nodes doing it at once end with the same content).
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from ...kusto.observations import COMPANIONS, CURRENT_STORE
 from ..base import StoreConfigurationError, StorePermissionError
 from . import layout as L
+from . import nodes as N
 from .client import Result, kql_literal, quote, retrying
 from .tables import TABLES, IngestionMode, Table
 
 log = logging.getLogger(__name__)
 _SCHEMA_QUERY = ".show database schema | project TableName, ColumnName, ColumnType"
-_POLICY_QUERY = ".show tables details | project TableName, TotalRowCount, RetentionPolicy, StreamingIngestionPolicy"
-LAYOUT_TABLE = "schema_version"
-_LAYOUT_COLUMNS = ("kind", "version", "compatible_since", "data_epoch", "aictl_version", "written_at", "step",
-                   "detail")
-LAYOUT_QUERY = f"{quote(LAYOUT_TABLE)} | project {', '.join(quote(c) for c in _LAYOUT_COLUMNS)} | take 10000"
+_POLICY_QUERY = (".show tables details | project TableName, TotalRowCount, TotalExtents, TotalExtentSize, "
+                 "MaxExtentsCreationTime, RetentionPolicy, StreamingIngestionPolicy, Folder, DocString")
+_FUNCTIONS_QUERY = ".show functions | project Name, Body"
+LAYOUT_TABLE = N.LAYOUT_TABLE
+_LAYOUT_COLUMNS = ("kind", "node_id", "version", "compatible_since", "data_epoch", "aictl_version", "written_at",
+                   "step", "detail")
+LAYOUT_QUERY = f"{quote(LAYOUT_TABLE)} | project {', '.join(quote(c) for c in _LAYOUT_COLUMNS)} | take 100000"
 # Tables earlier aictl versions created. They belong to aictl, and a reset drops them.
 LEGACY_OWNED = frozenset({"aictl_information_schema"})
+NODE_TABLES = "node_tables"  # the database-wide migration of layout 2, see migrations.py
 _TYPES = {
     "System.Int32": "int",
     "System.Int64": "long",
@@ -39,11 +61,26 @@ _TYPES = {
 }
 
 
-def owned_tables() -> frozenset[str]:
-    """Every table aictl creates in its database. A reset drops these and no other table."""
+def logical_tables() -> frozenset[str]:
+    """Every logical table aictl defines, the shared ones included."""
     from .otel import TABLES as OTEL_TABLES
 
-    return frozenset(TABLES) | {t.name for t in OTEL_TABLES} | {CURRENT_STORE} | COMPANIONS | LEGACY_OWNED
+    return frozenset(TABLES) | {t.name for t in OTEL_TABLES} | COMPANIONS
+
+
+def owned_tables() -> frozenset[str]:
+    """The logical and shared tables aictl creates. A reset drops these (or their node tables) and no other."""
+    return logical_tables() | {CURRENT_STORE} | LEGACY_OWNED
+
+
+def is_owned(name: str) -> bool:
+    """A table aictl owns: a logical or shared table, a node table, or a legacy__ table of the migration."""
+    logical = logical_tables()
+    if name in owned_tables():
+        return True
+    if name.startswith(N.LEGACY_PREFIX) and name.removeprefix(N.LEGACY_PREFIX) in logical:
+        return True
+    return N.parse(name, None, logical) is not None
 
 
 @dataclass(frozen=True)
@@ -55,6 +92,7 @@ class SchemaStatus:
     layout: dict | None = None
     data_epoch: str = ""
     epoch_kept_data: bool = False
+    tables: Mapping[str, str] = field(default_factory=dict)  # logical -> this node's physical table
 
 
 def _denied(exc: Exception) -> bool:
@@ -67,7 +105,7 @@ def _denied(exc: Exception) -> bool:
 
 def _policy(value: Any) -> dict:
     if isinstance(value, str):
-        value = json.loads(value)
+        value = json.loads(value) if value and value != "null" else {}
     return value if isinstance(value, dict) else {}
 
 
@@ -83,6 +121,12 @@ LEGACY_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
                  "copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_artifacts",
                  "session_folders", "session_commits", "memory_snapshots")
 }
+
+
+def logical_columns(name: str) -> tuple[tuple[str, str], ...]:
+    """The columns of logical table *name*, as its function and its node tables have them."""
+    return (*TABLES[name].columns, *LEGACY_COLUMNS.get(name, ()))
+
 
 Command = Callable[[str, str, str], Any]
 Query = Callable[[str, str], Result]
@@ -123,25 +167,49 @@ def _aictl_version() -> str:
         return "unknown"
 
 
+# ── the registry ────────────────────────────────────────────────────
+
+
+def _when(row: dict) -> tuple:
+    # The client returns datetimes as epoch seconds; a test double may use ISO text.
+    value = row.get("written_at")
+    if isinstance(value, datetime):
+        return (0, value.timestamp(), "")
+    return (0, float(value), "") if isinstance(value, (int, float)) else (1, 0.0, str(value or ""))
+
+
+def _iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds")
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds")
+    return str(value or "")
+
+
+def done_steps(rows: list[dict]) -> frozenset[str]:
+    return frozenset(str(r.get("step")) for r in rows
+                     if r.get("kind") == "migration" and str(r.get("detail") or "").startswith("done"))
+
+
+def _plain_layouts(rows: list[dict]) -> list[dict]:
+    """Layout rows of nodes: not the database record, not a migration lock."""
+    return [r for r in rows if r.get("kind") == "layout" and r.get("version") is not None and not r.get("step")]
+
+
 def stored_layout(rows: list[dict]) -> L.StoredLayout | None:
-    """The layout that the ``schema_version`` rows record, or None without a layout row.
+    """The layout of the shared tables (layout 1 and older), or None without a layout row.
 
     The version is the highest any node recorded, so an older node never lowers it. The
     data epoch is the one recorded first: when two nodes start on a new database at once,
     each writes a row, and both then follow the earlier one.
     """
-    layouts = [r for r in rows if r.get("kind") == "layout" and r.get("version") is not None]
+    layouts = _plain_layouts(rows)
     steps = [r for r in rows if r.get("kind") == "migration"]
-    done = frozenset(str(r.get("step")) for r in steps if str(r.get("detail") or "").startswith("done"))
-
-    def when(row: dict) -> tuple:
-        # The client returns datetimes as epoch seconds; a test double may use ISO text.
-        value = row.get("written_at")
-        return (0, float(value), "") if isinstance(value, (int, float)) else (1, 0.0, str(value or ""))
+    done = done_steps(rows)
 
     def earliest(candidates: list[dict]) -> dict:
         return min((r for r in candidates if r.get("data_epoch")),
-                   key=lambda r: (when(r), str(r["data_epoch"])), default={})
+                   key=lambda r: (_when(r), str(r["data_epoch"])), default={})
 
     if not layouts:
         if not steps:
@@ -149,18 +217,45 @@ def stored_layout(rows: list[dict]) -> L.StoredLayout | None:
         # A migration of unversioned data was interrupted: resume it in the same data epoch.
         return L.StoredLayout(0, 0, data_epoch=str(earliest(steps).get("data_epoch") or ""), origin="migrate",
                               migrations_done=done)
-    top = max(layouts, key=lambda r: (int(r["version"]), when(r)))
+    top = max(layouts, key=lambda r: (int(r["version"]), _when(r)))
     first = earliest(layouts)
     return L.StoredLayout(
         version=int(top["version"]),
         compatible_since=int(top.get("compatible_since") or 0),
         data_epoch=str(first.get("data_epoch") or ""),
         aictl_version=str(top.get("aictl_version") or ""),
-        written_at=(datetime.fromtimestamp(top["written_at"], timezone.utc).isoformat(timespec="seconds")
-                    if isinstance(top.get("written_at"), (int, float)) else str(top.get("written_at") or "")),
+        written_at=_iso(top.get("written_at")),
         origin=str(first.get("detail") or ""),
         migrations_done=done,
     )
+
+
+def node_layout(rows: list[dict], node_id: str) -> L.StoredLayout | None:
+    """The layout recorded for *node_id*; None when the registry has no layout row of it.
+
+    The data epoch is the one of the node's latest layout row (a reset starts a new one);
+    the version is the highest recorded in that epoch, so an older aictl never lowers it.
+    """
+    layouts = [r for r in _plain_layouts(rows) if str(r.get("node_id") or "") == node_id]
+    if not layouts:
+        return None
+    latest = max(layouts, key=_when)
+    epoch = str(latest.get("data_epoch") or "")
+    same = [r for r in layouts if str(r.get("data_epoch") or "") == epoch]
+    top = max(same, key=lambda r: (int(r["version"]), _when(r)))
+    first = min(same, key=_when)
+    mine = frozenset(str(r.get("step")) for r in rows if r.get("kind") == "migration"
+                     and str(r.get("node_id") or "") == node_id and str(r.get("detail") or "").startswith("done"))
+    return L.StoredLayout(
+        version=int(top["version"]), compatible_since=int(top.get("compatible_since") or 0), data_epoch=epoch,
+        aictl_version=str(top.get("aictl_version") or ""), written_at=_iso(top.get("written_at")),
+        origin=str(first.get("detail") or ""), migrations_done=mine | done_steps(rows),
+    )
+
+
+def database_record(rows: list[dict]) -> dict | None:
+    records = [r for r in rows if r.get("kind") == "database"]
+    return max(records, key=lambda r: (int(r.get("compatible_since") or 0), _when(r))) if records else None
 
 
 def record_command(*, version: int, compatible_since: int, epoch: str, node_id: str, kind: str,
@@ -187,61 +282,258 @@ def record_command(*, version: int, compatible_since: int, epoch: str, node_id: 
     return f".set-or-append {table} <| {table} | take 0 | union (print {printed})"
 
 
+# ── what the database holds ────────────────────────────────────────
+
+
+EMPTY = "empty"    # no aictl data yet
+SHARED = "shared"  # the shared tables of layout 1 and older: the node_tables migration has not finished
+NODES = "nodes"    # one table set per node
+
+
 @dataclass(frozen=True)
 class LayoutState:
     """What a database holds, read before anything is changed."""
 
     have: dict[str, dict[str, str]]
-    details: dict[str, tuple[dict, dict]]
+    details: dict[str, dict]
     counts: dict[str, int | None]
-    stored: L.StoredLayout | None
-    has_data: bool
+    stored: L.StoredLayout | None  # this node's layout; on shared tables, the database's
+    has_data: bool  # this node's tables hold rows; on shared tables, the shared tables do
+    rows: list[dict] = field(default_factory=list)
+    functions: dict[str, str] = field(default_factory=dict)
+    node_id: str = ""
+    mode: str = EMPTY
+    shared: L.StoredLayout | None = None
+    nodes: dict[str, N.Node] = field(default_factory=dict)
+    legacy: dict[str, int | None] = field(default_factory=dict)  # shared tables named like logical ones
+    renamed: dict[str, int | None] = field(default_factory=dict)  # legacy__ tables kept by the migration
+    settled: frozenset[str] = frozenset()  # database-wide migrations done
 
     @property
     def verdict(self) -> str:
-        return L.assess(self.stored, has_data=self.has_data)
+        if self.mode == SHARED:
+            verdict = L.assess(self.shared, has_data=True)
+            return L.MIGRATE if verdict in L.COMPATIBLE else verdict
+        return L.assess(self.stored, has_data=self.has_data, settled=self.settled)
+
+    @property
+    def node(self) -> N.Node | None:
+        return self.nodes.get(N.node_key(self.node_id))
+
+    def error(self, cluster: str, database: str) -> L.StoreLayoutError:
+        verdict = self.verdict
+        if self.mode == SHARED:
+            return L.ERRORS[verdict](verdict, self.shared, cluster=cluster, database=database)
+        return L.ERRORS[verdict](verdict, self.stored, cluster=cluster, database=database, node=self.node_id,
+                                 settled=self.settled)
+
+    def node_list(self) -> list[dict]:
+        return [node.as_dict() for _, node in sorted(self.nodes.items())]
+
+    def legacy_list(self) -> list[dict]:
+        return [{"table": name, "rows": self.counts.get(name),
+                 "size_bytes": int(self.details.get(name, {}).get("TotalExtentSize") or 0)}
+                for name in sorted(self.renamed)]
+
+    def summary(self, verdict: str | None = None, warning: str | None = None) -> dict[str, Any]:
+        epoch = self.stored.data_epoch if self.stored is not None else ""
+        return {**L.summary(verdict or self.verdict, self.stored, epoch, warning, self.node_list(),
+                            self.legacy_list()),
+                "epoch_kept_data": bool(self.stored and self.stored.epoch_kept_data), "mode": self.mode}
 
 
-def inspect(command: Command, query: Query) -> LayoutState:
-    """Read the schema, the table sizes and the layout rows. Changes nothing."""
+def _counted(counts: Mapping[str, int | None], names: Iterable[str]) -> bool:
+    # A table whose size is not reported counts as holding data: a wrong guess here must
+    # not take old rows for a new database.
+    return any(counts.get(name) is None or (counts[name] or 0) > 0 for name in names)
+
+
+def _rows_in(query: Query, names: set[str]) -> bool:
+    """Read the tables themselves: table details can lag fresh writes."""
+    tables = ", ".join(f"(table({json.dumps(name)}))" for name in sorted(names))
+    rows = query(f"union isfuzzy=true {tables} | take 1 | count", "Check aictl tables for rows").dicts()
+    return bool(rows and int(rows[0].get("Count") or 0))
+
+
+def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
+    """Read the schema, the table details, the functions and the registry. Changes nothing."""
     have: dict[str, dict[str, str]] = {}
     response = command(_SCHEMA_QUERY, "Database Viewer", "Read database schema")
     for name, column, kind in Result.from_response(response).rows:
-        if column:
+        if name and column:
             have.setdefault(name, {})[column] = _TYPES.get(kind, kind)
-    details: dict[str, tuple[dict, dict]] = {}
-    counts: dict[str, int | None] = {}
+    details: dict[str, dict] = {}
     if have:
         response = command(_POLICY_QUERY, "Database Viewer", "Read table policies")
-        for row in Result.from_response(response).dicts():
-            if "TableName" not in row:
-                continue
-            count = row.get("TotalRowCount")
-            counts[row["TableName"]] = None if count is None else int(count)
-            if "RetentionPolicy" in row:
-                details[row["TableName"]] = (_policy(row["RetentionPolicy"]), _policy(row["StreamingIngestionPolicy"]))
-    stored = None
-    if set(_LAYOUT_COLUMNS) <= have.get(LAYOUT_TABLE, {}).keys():
-        stored = stored_layout(query(LAYOUT_QUERY, "Read the data layout").dicts())
-    # A table whose size is not reported counts as holding data: a wrong guess here must
-    # not take old rows for a new database.
-    data_tables = (have.keys() & owned_tables()) - {LAYOUT_TABLE, CURRENT_STORE}
-    has_data = any(counts.get(name) is None or counts[name] > 0 for name in data_tables)
-    if stored is None and data_tables and not has_data:
-        # Table details can lag fresh writes: read the tables themselves before calling them empty.
-        tables = ", ".join(quote(name) for name in sorted(data_tables))
-        rows = query(f"union isfuzzy=true {tables} | take 1 | count", "Check aictl tables for rows").dicts()
-        has_data = bool(rows and int(rows[0].get("Count") or 0))
-    return LayoutState(have, details, counts, stored, has_data)
+        details = {row["TableName"]: row for row in Result.from_response(response).dicts() if row.get("TableName")}
+    counts = N.table_counts(details)
+    response = command(_FUNCTIONS_QUERY, "Database Viewer", "Read stored functions")
+    functions = {str(row["Name"]): str(row.get("Body") or "") for row in Result.from_response(response).dicts()
+                 if row.get("Name")}
+    rows: list[dict] = []
+    if {"kind", "version", "compatible_since", "data_epoch"} <= have.get(LAYOUT_TABLE, {}).keys():
+        rows = query(LAYOUT_QUERY, "Read the data layout").dicts()
+
+    logical = logical_tables()
+    nodes: dict[str, N.Node] = {}
+    for name in have:
+        table = N.parse(name, details.get(name, {}).get("DocString"), logical)
+        if table is None:
+            continue
+        node = nodes.setdefault(table.key, N.Node(table.key))
+        node.tables[table.logical] = name
+        node.node_id = node.node_id if node.node_id is not None else table.node_id
+        row = details.get(name, {})
+        node.rows += int(row.get("TotalRowCount") or 0)
+        node.extents += int(row.get("TotalExtents") or 0)
+        node.size += int(row.get("TotalExtentSize") or 0)
+        last = row.get("MaxExtentsCreationTime")
+        if last is not None and (node.last_ingestion is None or str(last) > str(node.last_ingestion)):
+            node.last_ingestion = last
+    for row in _plain_layouts(rows):
+        ident = str(row.get("node_id") or "")
+        node = nodes.setdefault(N.node_key(ident), N.Node(N.node_key(ident)))
+        node.node_id = ident
+    for node in nodes.values():
+        if node.node_id is not None:
+            node.stored = node_layout(rows, node.node_id)
+        node.included, node.reason = N.readable(node.stored, L.LAYOUT_VERSION, L.COMPATIBLE_SINCE)
+
+    legacy = {name: counts.get(name) for name in have
+              if name in logical and name not in N.SHARED_TABLES and name not in N.COLLECTOR_TABLES}
+    renamed = {name: counts.get(name) for name in have if name.startswith(N.LEGACY_PREFIX)}
+    done = done_steps(rows)
+    started = any(str(r.get("step") or "").startswith(NODE_TABLES) for r in rows if r.get("kind") != "database")
+    record = database_record(rows)
+    # The layout of the shared tables: without the database record and without the node layout
+    # rows an interrupted node_tables migration already wrote (those belong to the node tables).
+    shared = stored_layout([r for r in rows if r.get("kind") != "database" and not (
+        r.get("kind") == "layout" and int(r.get("version") or 0) >= L.NODE_TABLES_SINCE
+        and int(r.get("compatible_since") or 0) <= L.LAYOUT_VERSION)]) if rows else None
+    if record is not None and (NODE_TABLES in done or not started):
+        mode = NODES
+    elif record is not None or started:
+        mode = SHARED  # the node_tables migration was interrupted: resume it
+    elif shared is not None or (legacy and (_counted(counts, legacy) or _rows_in(query, set(legacy)))):
+        mode = SHARED
+    else:
+        mode = EMPTY
+    settled = done if record is not None else frozenset()
+
+    if mode == SHARED:
+        return LayoutState(have, details, counts, shared, True, rows, functions, node_id, mode, shared, nodes,
+                           legacy, renamed, settled)
+    mine = nodes.get(N.node_key(node_id))
+    stored = mine.stored if mine is not None else None
+    tables = set(mine.tables.values()) if mine is not None else set()
+    has_data = _counted(counts, tables)
+    if stored is None and tables and not has_data:
+        has_data = _rows_in(query, tables)
+    return LayoutState(have, details, counts, stored, has_data, rows, functions, node_id, mode, shared, nodes,
+                       legacy, renamed, settled)
 
 
-def check_layout(client: Any, database: str) -> LayoutState:
+def check_layout(client: Any, database: str, node_id: str = "") -> LayoutState:
     """The stored layout and its verdict, for a read-only open, ``aictl db layout`` and the start prompt."""
-    return inspect(management(client, database), querying(client, database))
+    return inspect(management(client, database), querying(client, database), node_id)
 
 
-# migrate(stored, data_epoch, record) runs the migration steps; record(change, migration, detail).
-Migrate = Callable[..., None]
+# ── stored functions ────────────────────────────────────────────────
+
+
+def function_commands(state: LayoutState, logical: Iterable[str]) -> list[str]:
+    """The ``.create-or-alter function`` (or drop) commands that bring the functions up to date."""
+    included = [node for node in state.nodes.values() if node.included]
+    commands = []
+    for name in sorted(set(logical) - N.SHARED_TABLES):
+        if name not in TABLES:
+            continue  # a table a newer aictl added: its nodes keep its function
+        legs = sorted(node.tables[name] for node in included if name in node.tables)
+        if "_observations" in name and not legs:
+            if name in state.functions:
+                commands.append(f".drop function {quote(name)} ifexists")
+            continue
+        collector = name if name in N.COLLECTOR_TABLES and name in state.have else None
+        body = N.function_body(logical_columns(name), legs, collector)
+        if N.normalized_body(state.functions.get(name)) != N.normalized_body(body):
+            commands.append(N.function_command(name, body, N.function_docstring(
+                name, [leg.rsplit(N.SEPARATOR, 1)[1] for leg in legs], bool(collector))))
+    registry = N.registry_function_command()
+    if N.normalized_body(state.functions.get("aictl_nodes")) != N.normalized_body(_body(registry)):
+        commands.append(registry)
+    return commands
+
+
+def _body(command: str) -> str:
+    return command[command.index("{"):]
+
+
+def sync_functions(command: Command, query: Query, node_id: str, logical: Iterable[str],
+                   attempts: int = 3) -> LayoutState:
+    """Regenerate the functions until a read after the writes finds nothing to change.
+
+    Each node records its tables and layout row before it calls this, so a node that reads
+    after another node's writes includes that node; a read after one's own writes catches
+    a stale write that landed after another node's newer one.
+    """
+    logical = set(logical)
+    state = inspect(command, query, node_id)
+    for _ in range(attempts):
+        pending = function_commands(state, logical)
+        if not pending:
+            return state
+        for text in pending:
+            command(text, "Database User (create) or Function Admin", "Create or alter the stored functions")
+        state = inspect(command, query, node_id)
+    return state
+
+
+# ── this node's tables ──────────────────────────────────────────────
+
+
+# migrate(...) is migrations.runner(...): .database(...) and .node(...)
+Migrate = Any
+
+
+def _created_docstrings(command: Command, node_id: str, key: str, created: Iterable[tuple[str, str]]) -> None:
+    for logical, name in created:
+        command(f".alter table {quote(name)} docstring {json.dumps(N.table_docstring(node_id, key, logical))}",
+                "Table Admin", f"Describe {name}")
+
+
+def create_node_tables(command: Command, node_id: str, specs: Mapping[str, tuple[tuple[str, str], ...]],
+                       have: Mapping[str, Mapping[str, str]]) -> list[tuple[str, str]]:
+    """Create or widen this node's tables in one command. Returns (logical, physical) of the new ones."""
+    key = N.node_key(node_id)
+    wanted = {}
+    for logical, columns in specs.items():
+        name = N.physical(logical, key)
+        if not set(dict(columns)) <= have.get(name, {}).keys():
+            wanted[name] = (logical, columns)
+    if not wanted:
+        return []
+    spec = ", ".join(f"{quote(name)}(" + ", ".join(f"{quote(c)}:{t}" for c, t in columns) + ")"
+                     for name, (_, columns) in sorted(wanted.items()))
+    command(f".create-merge tables {spec} with (folder = {json.dumps(N.folder(key))}, docstring = "
+            f"{json.dumps(N.node_docstring(node_id, key))})",
+            "Database User (create) or Table Admin (alter)", f"Create or widen the tables of node {node_id}")
+    created = [(logical, name) for name, (logical, _) in sorted(wanted.items()) if name not in have]
+    _created_docstrings(command, node_id, key, created)
+    return created
+
+
+def retention_commands(periods: Mapping[str, tuple[str, str]], details: Mapping[str, dict]) -> list[str]:
+    """``.alter tables (...) policy retention`` per period, for tables whose period differs.
+
+    *periods*: {physical table: (timespan as Kusto shows it, e.g. 365.00:00:00)}.
+    """
+    by_period: dict[str, list[str]] = {}
+    for name, (timespan, _) in periods.items():
+        if _policy(details.get(name, {}).get("RetentionPolicy")).get("SoftDeletePeriod") != timespan:
+            by_period.setdefault(timespan, []).append(name)
+    policy = '{{"SoftDeletePeriod": "{0}", "Recoverability": "Enabled"}}'
+    return [f".alter tables ({', '.join(quote(n) for n in sorted(names))}) policy retention "
+            f"{json.dumps(policy.format(timespan))}" for timespan, names in sorted(by_period.items())]
 
 
 def ensure_schema(
@@ -254,53 +546,83 @@ def ensure_schema(
     cluster: str = "",
     migrate: Migrate | None = None,
     origin: str = "new",
+    reset: bool = False,
 ) -> SchemaStatus:
-    """Check the stored layout, then create missing tables/columns and apply retention.
+    """Check the database and this node's layout, then create this node's tables and the functions.
 
-    Nothing is created, widened or written before the layout check passes. An older,
-    incompatible layout raises unless *migrate* is given; *migrate* runs after the tables
-    are widened and before the new version is recorded. Refuse incompatible column types.
+    Nothing is created, widened or written before the checks pass. A database on the shared
+    tables, or this node's tables on an older incompatible layout, raises unless *migrate*
+    is given. Refuse incompatible column types. *reset*: this node's tables were just
+    dropped; start a new data epoch for it whatever its earlier layout rows say.
     """
-    command = management(client, database)
-    state = inspect(command, querying(client, database))
-    have, details, stored, verdict = state.have, state.details, state.stored, state.verdict
-    migrating = verdict == L.MIGRATE and migrate is not None
-    if verdict not in L.COMPATIBLE and not migrating:
-        raise L.ERRORS[verdict](verdict, stored, cluster=cluster, database=database)
-    tables = {**tables, LAYOUT_TABLE: TABLES[LAYOUT_TABLE]}
-    for name, table in tables.items():
+    command, query = management(client, database), querying(client, database)
+    state = inspect(command, query, node_id)
+    migrated = False
+    if state.mode == SHARED:
+        from .migrations import lock_owner
+
+        owner = lock_owner(state.rows)
+        if owner is not None and owner != node_id and not getattr(migrate, "take_over", False):
+            raise L.MigrationInProgress(
+                f"Node {owner} runs the node_tables migration of {database}. This node does not write until it is "
+                "done; start it again afterwards (aictl db layout shows the progress).")
+        if state.verdict != L.MIGRATE or migrate is None:
+            raise state.error(cluster, database)
+        epoch = state.shared.data_epoch if state.shared is not None and state.shared.data_epoch else uuid.uuid4().hex
+        command(f".create-merge table {quote(LAYOUT_TABLE)} ("
+                + ", ".join(f"{quote(c)}:{t}" for c, t in TABLES[LAYOUT_TABLE].columns) + ")",
+                "Database User (create) or Table Admin (alter)", "Create or widen schema_version")
+        migrate.database(state, epoch, node_id,
+                         sync=lambda: sync_functions(command, query, node_id, set(tables) | logical_tables()))
+        state = inspect(command, query, node_id)
+        migrated = True
+        if state.mode == SHARED:
+            raise StoreConfigurationError("The node_tables migration did not finish; run aictl db migrate again")
+
+    verdict = state.verdict
+    if reset and state.mode != SHARED and verdict != L.NEWER:
+        state = replace(state, stored=None, has_data=False)
+        verdict = L.NEW
+    node_migrating = verdict == L.MIGRATE and migrate is not None
+    if verdict not in L.COMPATIBLE and not node_migrating:
+        raise state.error(cluster, database)
+    key = N.node_key(node_id)
+    have, details = state.have, state.details
+    specs = {name: logical_columns(name) for name, table in tables.items()
+             if name not in N.SHARED_TABLES and ("_observations" not in name or N.physical(name, key) in have
+                                                    or name in have or N.legacy_name(name) in have)}
+    mapping = {name: N.physical(name, key) for name in specs}
+    for name, columns in [*((mapping[n], c) for n, c in specs.items()),
+                          (LAYOUT_TABLE, TABLES[LAYOUT_TABLE].columns)]:
         existing = have.get(name, {})
-        for column, kind in (*table.columns, *LEGACY_COLUMNS.get(name, ())):
+        for column, kind in columns:
             if column in existing and existing[column] != kind:
                 raise StoreConfigurationError(f"{name}.{column} has Kusto type {existing[column]}; expected {kind}")
 
-    report_tables = {"requests", "tool_invocations"}
-    if report_tables <= tables.keys() and not have.keys() & (report_tables | COMPANIONS | {CURRENT_STORE}):
-        # A fresh layout is complete once both fact tables exist. Never mark an
-        # existing baseline whose unresolved evidence may not be represented.
-        command(f".create-merge table {quote(CURRENT_STORE)} (['version']:long)",
-                "Database User (create)", "Mark native report layout")
-    tables = {name: table for name, table in tables.items()
-              if "_observations" not in name or name in have}
+    if state.mode == EMPTY:
+        if state.legacy:
+            # Empty shared tables of an older aictl: move them out of the way of the functions.
+            command(".rename tables " + ", ".join(f"{quote(N.legacy_name(n))} = {quote(n)}" for n in sorted(state.legacy)),
+                    "Database Admin", "Rename the empty shared tables")
+        report_tables = {"requests", "tool_invocations"}
+        if report_tables <= tables.keys() and not have.keys() & (report_tables | COMPANIONS | {CURRENT_STORE}):
+            # A fresh layout is complete once both fact tables exist. Never mark an
+            # existing baseline whose unresolved evidence may not be represented.
+            command(f".create-merge table {quote(CURRENT_STORE)} (['version']:long)",
+                    "Database User (create)", "Mark native report layout")
+    if not set(dict(TABLES[LAYOUT_TABLE].columns)) <= have.get(LAYOUT_TABLE, {}).keys():
+        command(f".create-merge table {quote(LAYOUT_TABLE)} ("
+                + ", ".join(f"{quote(c)}:{t}" for c, t in TABLES[LAYOUT_TABLE].columns) + ")",
+                "Database User (create) or Table Admin (alter)", "Create or widen schema_version")
+    created = create_node_tables(command, node_id, specs, have)
+    changed = bool(created) or any(not set(dict(c)) <= have.get(mapping[n], {}).keys() for n, c in specs.items())
 
-    changed = False
-    for name, table in tables.items():
-        existing = have.get(name, {})
-        wanted = (*table.columns, *LEGACY_COLUMNS.get(name, ()))
-        if not set(dict(wanted)) <= existing.keys():
-            spec = ", ".join(f"{quote(column)}:{kind}" for column, kind in wanted)
-            command(
-                f".create-merge table {quote(name)} ({spec})",
-                "Database User (create) or Table Admin (alter)",
-                f"Create or widen {name}",
-            )
-            changed = True
-
-    streamed = {name for name, table in tables.items()
-                if (modes.get(name, table.ingestion) if modes is not None else table.ingestion) == "streaming"}
+    streamed = {mapping[name] for name, table in tables.items() if name in mapping
+                and (modes.get(name, table.ingestion) if modes is not None else table.ingestion) == "streaming"}
     streaming = bool(streamed)
     warning = None
-    if streaming and not all(details.get(name, ({}, {}))[1].get("IsEnabled") is True for name in streamed):
+    if streaming and not all(_policy(details.get(name, {}).get("StreamingIngestionPolicy")).get("IsEnabled") is True
+                             for name in streamed):
         try:
             result = command(f".show database {quote(database)} policy streamingingestion", "Database Viewer",
                              "Read database streaming ingestion policy")
@@ -310,7 +632,7 @@ def ensure_schema(
                         "Set streaming ingestion policy")
             else:
                 for name in sorted(streamed & details.keys()):
-                    if details[name][1].get("IsEnabled") is False:
+                    if _policy(details[name].get("StreamingIngestionPolicy")).get("IsEnabled") is False:
                         command(f".alter table {quote(name)} policy streamingingestion enable", "Table Admin",
                                 f"Set streaming ingestion policy for {name}")
         except StoreConfigurationError as exc:
@@ -318,43 +640,52 @@ def ensure_schema(
             warning = f"{exc}; using queued ingestion"
             log.warning("%s", warning)
 
-    for name, table in tables.items():
-        if details.get(name, ({}, {}))[0].get("SoftDeletePeriod") == table.retention_timespan:
-            continue
-        command(
-            f".alter-merge table {quote(name)} policy retention softdelete = {table.retention_literal}",
-            "Table Admin or Database Admin",
-            f"Set retention for {name}",
-        )
+    periods = {mapping[name]: (table.retention_timespan, table.retention_literal)
+               for name, table in tables.items() if name in mapping}
+    periods[LAYOUT_TABLE] = (TABLES[LAYOUT_TABLE].retention_timespan, TABLES[LAYOUT_TABLE].retention_literal)
+    for text in retention_commands(periods, details):
+        names = ", ".join(n.strip("[]'") for n in text.split("(", 1)[1].split(")", 1)[0].split(", "))
+        command(text, "Table Admin or Database Admin", f"Set retention for {names}")
     if changed and streaming:
         clear_streaming_schema_cache(
             lambda text: Result.from_response(command(text, "Database Ingestor", "Clear streaming schema cache"))
         )
 
+    stored = state.stored
     has_epoch = stored is not None and bool(stored.data_epoch)
     epoch = stored.data_epoch if has_epoch else uuid.uuid4().hex
     # A new epoch for data that was kept (a migration of unversioned data) keeps restart state.
     kept = stored.epoch_kept_data if has_epoch else verdict != L.NEW
 
-    def record(kind: str, detail: str, step: str = "", version: int = L.LAYOUT_VERSION) -> None:
-        command(record_command(version=version, compatible_since=L.COMPATIBLE_SINCE, epoch=epoch,
-                               node_id=node_id, kind=kind, step=step, detail=detail),
+    def record(kind: str, detail: str, step: str = "", version: int = L.LAYOUT_VERSION, node: str = node_id,
+               compatible_since: int = L.COMPATIBLE_SINCE) -> None:
+        command(record_command(version=version, compatible_since=compatible_since, epoch=epoch, node_id=node,
+                               kind=kind, step=step, detail=detail),
                 "Database User or Table Ingestor", "Record the data layout")
 
-    if migrating:
+    if state.mode == EMPTY and database_record(state.rows) is None:
+        record("database", "node tables", NODE_TABLES, compatible_since=L.NODE_TABLES_SINCE, node="")
+    if node_migrating:
         assert migrate is not None
-        migrate(stored or L.UNVERSIONED, epoch,
-                lambda change, migration, detail: record("migration", detail, migration.name, change.version))
+        migrate.node(stored or L.UNVERSIONED, epoch, node_id, mapping,
+                     lambda change, migration, detail: record("migration", detail, migration.name, change.version))
         record("layout", "migrate")
     elif verdict == L.NEW:
         record("layout", origin)
     elif verdict == L.UPGRADE:
         record("layout", "upgrade")
     if verdict != L.CURRENT:
-        log.info("Data layout %s recorded in %s (stored: %s; data epoch %s)", L.LAYOUT_VERSION, database,
-                 L.describe(stored), epoch)
-    summary = {**L.summary(verdict, stored, epoch), "epoch_kept_data": kept}
-    return SchemaStatus(streaming, warning, summary, epoch, kept)
+        log.info("Data layout %s recorded for node %s in %s (stored: %s; data epoch %s)", L.LAYOUT_VERSION, node_id,
+                 database, L.describe(stored), epoch)
+    final = sync_functions(command, query, node_id, set(tables) | {n for node in state.nodes.values()
+                                                                   for n in node.tables})
+    reported = L.MIGRATE if migrated or node_migrating else verdict
+    stored_now = final.stored or stored
+    summary = {**L.summary(reported, stored, epoch, None, final.node_list(), final.legacy_list()),
+               "epoch_kept_data": kept, "mode": final.mode}
+    if stored_now is not None and stored_now.data_epoch:
+        epoch = stored_now.data_epoch
+    return SchemaStatus(streaming, warning, summary, epoch, kept, {**mapping, LAYOUT_TABLE: LAYOUT_TABLE})
 
 
 def clear_streaming_schema_cache(command: Callable[[str], Result]) -> None:

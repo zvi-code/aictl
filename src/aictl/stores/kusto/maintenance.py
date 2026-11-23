@@ -1,10 +1,13 @@
 """Explicit administration. Collectors and the writer do not run commands."""
 
 import math
+import uuid
 from datetime import datetime, timezone
 
 from ...state_file import StateFile, TextWatermark, restart_directory, sync_data_epoch
 from ..base import StoreError
+from . import layout as L
+from . import nodes as N
 from .client import KustoClientFactory, Result, kql_literal, query_memory_error, quote, retrying
 from .tables import TABLES
 
@@ -16,7 +19,9 @@ def store_stats(settings):
     client = KustoClientFactory.client(settings)
     command = ".show tables details | project TableName, TotalExtents, TotalRowCount, TotalExtentSize"
     response = retrying(lambda: client.execute_mgmt(settings.database, command), "Read table details")
-    details = [row for row in Result.from_response(response).dicts() if row["TableName"] in TABLES]
+    from .schema import is_owned
+
+    details = [row for row in Result.from_response(response).dicts() if is_owned(str(row["TableName"]))]
     reader = KustoReader(client, settings.database)
     counts = reader.read("health.totals", {"limit": 100})
     if counts.truncated:
@@ -75,34 +80,53 @@ TRIM_TIMESTAMPS["OTELPayloads"] = ("Timestamp", "datetime")
 
 
 def trim_text(settings, before: float, *, dry_run: bool) -> list[str]:
+    """Soft-delete this node's old text, in this node's tables (or the shared ones before layout 2)."""
     if not math.isfinite(before):
         raise ValueError("The trim cutoff must be finite")
     client = KustoClientFactory.client(settings)
+    state = check_layout(client, settings.database, settings.node_id)
     if not dry_run:
-        directory = restart_state(settings, current_layout(client, settings.database))
+        directory = restart_state(settings, state.stored)
         TextWatermark(StateFile(directory / "text_trim.json")).advance(before)
     node = kql_literal(settings.node_id, "string")
     instant = kql_literal(datetime.fromtimestamp(before, timezone.utc), "datetime")
+    names = this_node_tables(state, settings.node_id)
     completed = []
     for table, (column, kind) in sorted(TRIM_TIMESTAMPS.items()):
+        name = names.get(table, table)
+        if state.have and name not in state.have:
+            continue  # this node has no such table
         # Older W2 rows have no source time. Use their version time for the cutoff.
         modifier = " with (whatif=true)" if dry_run else ""
         cutoff = instant if kind == "datetime" else kql_literal(before, "real")
         age = f"{column} < {cutoff}"
         if column != "_v":
             age += f" or (isnull({column}) and _v < {instant})"
-        command = (f".delete table {quote(table)} records{modifier} <| {quote(table)}"
+        command = (f".delete table {quote(name)} records{modifier} <| {quote(name)}"
                    f" | where node_id == {node} | where {age}")
         retrying(lambda command=command: client.execute_mgmt(settings.database, command), f"Trim {table}")
         completed.append(table)
     return completed
 
 
-def current_layout(client, database):
-    """The stored layout, read without changing anything; None for a database without aictl data."""
-    from .schema import check_layout
+def check_layout(client, database, node_id=""):
+    from .schema import check_layout as check
 
-    return check_layout(client, database).stored
+    return check(client, database, node_id)
+
+
+def this_node_tables(state, node_id: str) -> dict[str, str]:
+    """{logical: physical} of *node_id*; on the shared tables of layout 1 each name is its own."""
+    from .schema import SHARED, logical_tables
+
+    if state.mode == SHARED:
+        return {}
+    return N.node_tables(node_id, logical_tables())
+
+
+def current_layout(client, database, node_id=""):
+    """This node's stored layout, read without changing anything; None without aictl data of it."""
+    return check_layout(client, database, node_id).stored
 
 
 def restart_state(settings, stored):
@@ -113,68 +137,154 @@ def restart_state(settings, stored):
     return sync_data_epoch(directory, stored.data_epoch, kept_data=stored.epoch_kept_data)
 
 
-def reset_plan(settings) -> list[tuple[str, int | None]]:
-    """The tables a reset drops, with their row counts: aictl's own tables, no other."""
-    from .schema import management, owned_tables
+def whole_database(state, all_nodes: bool) -> bool:
+    """A reset of every node: asked for, or the database still has the shared tables of layout 1."""
+    from .schema import SHARED
 
-    command = management(KustoClientFactory.client(settings), settings.database)
-    response = command(".show tables details | project TableName, TotalRowCount", "Database Viewer",
-                       "Read table details")
-    owned = owned_tables()
-    return sorted((str(row["TableName"]), row.get("TotalRowCount"))
-                  for row in Result.from_response(response).dicts() if row.get("TableName") in owned)
+    return all_nodes or state.mode == SHARED
 
 
-def reset_store(settings, tables: list[str] | None = None):
-    """Drop aictl's tables, create them again, and record a new data epoch.
+def reset_scope(settings, all_nodes: bool = False) -> bool:
+    """Whether a reset deletes every node's data (see whole_database)."""
+    return whole_database(check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id),
+                          all_nodes)
+
+
+def reset_plan(settings, node: str | None = None, *, all_nodes: bool = False) -> list[tuple[str, int | None]]:
+    """The tables a reset drops, with their row counts.
+
+    By default the tables of *node* (default: this node), nothing of another node. With
+    *all_nodes*, or while the database still has the shared tables of layout 1, every table
+    aictl owns, the registry included.
+    """
+    from .schema import is_owned
+
+    state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
+    if whole_database(state, all_nodes):
+        return sorted((name, state.counts.get(name)) for name in state.have if is_owned(name))
+    mine = state.nodes.get(N.node_key(settings.node_id if node is None else node))
+    return sorted((name, state.counts.get(name)) for name in (mine.tables.values() if mine else ()))
+
+
+def reset_store(settings, tables: list[str] | None = None, *, node: str | None = None, all_nodes: bool = False):
+    """Drop one node's tables (default: this node's), or with *all_nodes* every aictl table, and start again.
 
     Only tables aictl owns are dropped, and only those *tables* when given (the list the
-    user confirmed). This node's restart state follows the new epoch at once; other nodes
-    discard theirs when they next start.
+    user confirmed). A node reset gives that node a new data epoch; the other nodes' rows,
+    layouts and epochs stay. The functions stop reading the node before its tables are
+    dropped. This node's restart state follows its new epoch at once; another node reset
+    from here discards its restart state when it next starts.
     """
     from . import _configured_modes
-    from .schema import ensure_schema, management, owned_tables
+    from .schema import (
+        ensure_schema,
+        function_commands,
+        is_owned,
+        logical_tables,
+        management,
+        querying,
+        record_command,
+        sync_functions,
+    )
 
     client = KustoClientFactory.client(settings)
-    command = management(client, settings.database)
-    names = [name for name, _ in reset_plan(settings)] if tables is None else list(tables)
-    if unowned := set(names) - owned_tables():
+    command, query = management(client, settings.database), querying(client, settings.database)
+    target = settings.node_id if node is None else node
+    state = check_layout(client, settings.database, settings.node_id)
+    whole = whole_database(state, all_nodes)
+    names = [name for name, _ in reset_plan(settings, target, all_nodes=whole)] if tables is None else list(tables)
+    if unowned := {name for name in names if not is_owned(name)}:
         raise StoreError(f"Refusing to drop tables aictl does not own: {', '.join(sorted(unowned))}")
+    if not whole:
+        theirs = state.nodes.get(N.node_key(target))
+        if other := set(names) - set(theirs.tables.values() if theirs else ()):
+            raise StoreError(f"Refusing to drop tables of another node: {', '.join(sorted(other))}")
+        if theirs is not None and names:
+            theirs.tables = {k: v for k, v in theirs.tables.items() if v not in set(names)}
+            for text in function_commands(state, logical_tables()):
+                command(text, "Database User (create) or Function Admin", "Create or alter the stored functions")
     if names:
         command(f".drop tables ({', '.join(quote(name) for name in sorted(names))}) ifexists",
                 "Database Admin", "Drop aictl tables")
+    if not whole and target != settings.node_id:
+        # Another node's tables: record its new epoch; that node creates its tables when it starts.
+        command(record_command(version=L.LAYOUT_VERSION, compatible_since=L.COMPATIBLE_SINCE, epoch=uuid.uuid4().hex,
+                               node_id=target, kind="layout", detail="reset"),
+                "Database User or Table Ingestor", "Record the data layout")
+        final = sync_functions(command, query, settings.node_id, logical_tables())
+        return final.nodes.get(N.node_key(target))
     status = ensure_schema(client, settings.database, modes=_configured_modes(settings), node_id=settings.node_id,
-                           cluster=settings.cluster, origin="reset")
+                           cluster=settings.cluster, origin="reset", reset=True)
     sync_data_epoch(restart_directory(settings.cluster, settings.database, settings.node_id), status.data_epoch,
                     kept_data=False)
     return status
 
 
-def migrate_store(settings, *, dry_run: bool, echo=print):
+def migrate_store(settings, *, dry_run: bool, echo=print, take_over: bool = False, slice_days: int = 1):
     """Run, or with *dry_run* only count and print, the migrations from the stored layout to this one."""
     from . import _configured_modes
-    from . import layout as L
     from .migrations import run, runner
-    from .schema import check_layout, ensure_schema, management, querying
+    from .schema import SHARED, ensure_schema
+    from .tables import tables_with_retention
 
     client = KustoClientFactory.client(settings)
-    state = check_layout(client, settings.database)
+    state = check_layout(client, settings.database, settings.node_id)
     verdict, stored = state.verdict, state.stored
-    if verdict == L.NEWER:
-        raise L.LayoutNewerError(verdict, stored, cluster=settings.cluster, database=settings.database)
-    if verdict == L.RESET:
-        raise L.LayoutResetRequired(verdict, stored, cluster=settings.cluster, database=settings.database)
+    if verdict in (L.NEWER, L.RESET):
+        raise state.error(settings.cluster, settings.database)
     if verdict != L.MIGRATE:
-        echo(f"Nothing to migrate: the stored layout is {L.describe(stored)} and this aictl writes "
-             f"layout {L.LAYOUT_VERSION} ({verdict}).")
+        echo(f"Nothing to migrate: the stored layout of node {settings.node_id} is {L.describe(stored)} and this "
+             f"aictl writes layout {L.LAYOUT_VERSION} ({verdict}).")
         return verdict, []
+    configured = tables_with_retention(settings.retention) if settings.retention else None
+    migrate = runner(client, settings.database, echo, take_over=take_over, slice_days=slice_days, tables=configured)
     if dry_run:
-        query, command = querying(client, settings.database), management(client, settings.database)
-        results = run(stored or L.UNVERSIONED, count=lambda text: query(text, "Count the rows a migration changes"),
-                      execute=lambda text: command(text, "", ""), record=lambda *_: None, dry_run=True, echo=echo)
-        return verdict, results
+        if state.mode == SHARED:
+            epoch = stored.data_epoch if stored is not None and stored.data_epoch else "(new epoch)"
+            return verdict, migrate.database(state, epoch, settings.node_id, dry_run=True)
+        return verdict, run(stored or L.UNVERSIONED, count=migrate.query, execute=migrate.command,
+                            record=lambda *_: None, dry_run=True, echo=echo, scope="node")
+    kwargs = {"tables": configured} if configured else {}
     status = ensure_schema(client, settings.database, modes=_configured_modes(settings), node_id=settings.node_id,
-                           cluster=settings.cluster, migrate=runner(client, settings.database, echo))
+                           cluster=settings.cluster, migrate=migrate, **kwargs)
     sync_data_epoch(restart_directory(settings.cluster, settings.database, settings.node_id), status.data_epoch,
                     kept_data=status.epoch_kept_data)
     return verdict, status
+
+
+def legacy_tables(settings) -> list[tuple[str, int | None, int]]:
+    """The shared tables the node_tables migration kept (legacy__*): name, rows, extent bytes."""
+    state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
+    return [(name, rows, int(state.details.get(name, {}).get("TotalExtentSize") or 0))
+            for name, rows in sorted(state.renamed.items())]
+
+
+def drop_legacy(settings, tables: list[str]) -> str:
+    """Drop the legacy__ tables the user confirmed, once the node_tables migration has finished."""
+    from .migrations import legacy_drop_command
+    from .schema import NODE_TABLES, NODES, done_steps, management
+
+    client = KustoClientFactory.client(settings)
+    state = check_layout(client, settings.database, settings.node_id)
+    if state.mode != NODES or NODE_TABLES not in done_steps(state.rows):
+        raise StoreError("The node_tables migration has not finished; the legacy tables are still the only copy")
+    if wrong := [t for t in tables if t not in state.renamed]:
+        raise StoreError(f"Not a legacy table of the migration: {', '.join(wrong)}")
+    text = legacy_drop_command(tables)
+    management(client, settings.database)(text, "Database Admin", "Drop the legacy shared tables")
+    return text
+
+
+def node_traffic(settings) -> list[dict]:
+    """Per node: rows, extents, size and last ingestion per table and in total, and its layout."""
+    state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
+    out = []
+    for _, node in sorted(state.nodes.items()):
+        tables = []
+        for logical, name in sorted(node.tables.items()):
+            row = state.details.get(name, {})
+            tables.append({"table": logical, "physical": name, "rows": row.get("TotalRowCount"),
+                           "extents": row.get("TotalExtents"), "size_bytes": row.get("TotalExtentSize"),
+                           "last_ingestion": row.get("MaxExtentsCreationTime")})
+        out.append({**node.as_dict(), "table_details": tables})
+    return out

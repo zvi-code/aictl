@@ -192,7 +192,7 @@ def serve(
     if own_pid_file:
         Path(own_pid_file).write_text(str(os.getpid()), encoding="utf-8")
     from ..state_file import RestartStateError
-    from ..stores.kusto.layout import StoreLayoutError
+    from ..stores.kusto.layout import MigrationInProgress, StoreLayoutError
 
     try:
         if headless:
@@ -215,7 +215,7 @@ def serve(
                 include_live_monitor=include_live_monitor,
                 db_path=db_path,
             )
-    except (StoreLayoutError, RestartStateError) as exc:
+    except (StoreLayoutError, MigrationInProgress, RestartStateError) as exc:
         raise click.ClickException(str(exc)) from exc
     # Don't join live monitor workers after a clean shutdown. Startup failures
     # must propagate to the caller, not exit successfully from a finally block.
@@ -237,18 +237,24 @@ def _check_store_layout(cfg, *, interactive: bool, echo=click.echo, confirm=clic
     from ..stores.kusto import layout as L
     from ..stores.kusto.client import KustoClientFactory
     from ..stores.kusto.maintenance import migrate_store
-    from ..stores.kusto.schema import check_layout
+    from ..stores.kusto.migrations import lock_owner
+    from ..stores.kusto.schema import SHARED, check_layout
     from .admin import confirm_and_reset
 
     try:
-        state = check_layout(KustoClientFactory.client(settings), settings.database)
+        state = check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id)
     except StoreError as exc:
         logging.getLogger(__name__).debug("Layout check before start failed: %s", exc)
         return  # opening the store reports it
-    verdict, stored = state.verdict, state.stored
+    verdict = state.verdict
+    owner = lock_owner(state.rows) if state.mode == SHARED else None
+    if owner is not None and owner != settings.node_id:
+        raise click.ClickException(
+            f"Node {owner} runs the node_tables migration of {settings.database} on {settings.cluster}. This node "
+            "does not write until it is done; start it again afterwards. See: aictl db layout")
     if verdict in L.COMPATIBLE or verdict == L.MIGRATE and cfg.auto_migrate:
         return
-    text = L.message(verdict, stored, cluster=settings.cluster, database=settings.database)
+    text = str(state.error(settings.cluster, settings.database))
     if not interactive or verdict == L.NEWER:
         raise click.ClickException(text)
     echo(text, err=True)
@@ -267,6 +273,7 @@ def _check_store_layout(cfg, *, interactive: bool, echo=click.echo, confirm=clic
     except StoreError as exc:
         raise click.ClickException(str(exc)) from exc
     raise click.ClickException("Not reset. The stored data was left as it is. Run: aictl db reset"
+                               + ("" if state.mode == SHARED else f" --node {settings.node_id}")
                                + L.target_options(settings.cluster, settings.database))
 
 
