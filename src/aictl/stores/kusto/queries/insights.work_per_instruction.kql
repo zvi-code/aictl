@@ -168,8 +168,8 @@ union
         | extend row_type='tool'),
     // Per tool: sessions with a main-agent call or model call in the period; sessions with a prompt there, those a
     // script started, those known only from session-store.db, those whose first prompt has no stored text (a template
-    // cannot be recognised), those left out because no main-agent call of theirs is recorded, and person turns with
-    // neither a call nor a reply recorded (unread).
+    // cannot be recognised), those left out because no main-agent call of theirs is recorded, person turns with
+    // neither a call nor a reply recorded (unread), and led sessions none of whose turns was read (unread_sessions).
     (union (calls | project tool, node_id, session_id, ts), (model_calls | project tool, node_id, session_id, ts)
         | where ts < until and isnotempty(tool)
         | distinct tool, node_id, session_id
@@ -182,7 +182,11 @@ union
                   start_unread=coalesce(start_unread, 0)
         | lookup kind=leftouter (all_sessions | summarize no_calls=countif(calls == 0) by tool) on tool
         | lookup kind=leftouter (chains | summarize unread=countif(unread) by tool) on tool
-        | extend no_calls=coalesce(no_calls, 0), unread=coalesce(unread, 0)
+        // Sessions a person led with no read instruction in the period (every turn of theirs unread): the rest of the
+        // led sessions are in the figures or in no_calls.
+        | lookup kind=leftouter (led | join kind=leftanti all_sessions on node_id, session_id
+            | summarize unread_sessions=count() by tool) on tool
+        | extend no_calls=coalesce(no_calls, 0), unread=coalesce(unread, 0), unread_sessions=coalesce(unread_sessions, 0)
         | extend row_type='coverage'),
     (binned
         | summarize sessions=count(), p50_longest=percentile(longest, 50), p90_longest=percentile(longest, 90),

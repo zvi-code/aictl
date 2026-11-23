@@ -4,7 +4,8 @@ import { Segmented } from '../../ui/Segmented'
 import type { Field } from '../../ui/tableModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  autonomyFinding, autonomyHero, binDay, binWait, enoughMulti, logScale, measuredTools, pickedTool, silence, waitFigure,
+  autonomyFinding, autonomyHero, binDay, binWait, enoughMulti, logScale, measuredTools, MIN_MULTI, MIN_WAITS, pickedTool, silence,
+  waitFigure,
   type AutonomyBin, type AutonomyBody, type AutonomyTool,
 } from './autonomyModel'
 import { NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
@@ -92,8 +93,8 @@ function Multiples(props: { body: AutonomyBody; label: Label; picked: AutonomyTo
     </ul>
     <Show when={measured().length}>
       <p class={base.note}>Dots: median of sessions with 2 or more instructions, bar to the 90th percentile, joined where a
-        {' '}{props.body.bin_unit ?? 'bin'} has 5 or more; hollow with n= below that. Faint dot: median of all sessions. Log scale, calls.
-        {' '}Wait strip: the median wait where there are 10 or more waits.{start() > 0 ? ` From ${stamp(start(), true)}.` : ''}</p>
+        {' '}{props.body.bin_unit ?? 'bin'} has {MIN_MULTI} or more; hollow with n= below that. Faint dot: median of all sessions. Log
+        {' '}scale, calls. Wait strip: the median wait where there are {MIN_WAITS} or more waits.{start() > 0 ? ` From ${stamp(start(), true)}.` : ''}</p>
     </Show>
     <For each={silent()}>{tool => <p class={styles.silent} data-silent={tool.tool}>{props.label(tool.tool)}: {silence(tool)}</p>}</For>
   </>
@@ -126,7 +127,7 @@ export default function WorkPerInstruction(props: CardProps) {
       'and does not end a run. A session is left out as started by a script when its first prompt is a template, or when its first ' +
       '40 characters, with digits ignored, open 3 or more sessions; this also catches a person who opens sessions the same way. ' +
       'Automation with unique text still looks like a person, so single-instruction sessions may be scripted: the lead figure uses ' +
-      'sessions with 2 or more instructions and reads too few sessions under 5. Where prompt text is not kept, templates cannot be ' +
+      `sessions with 2 or more instructions and reads too few sessions under ${MIN_MULTI}. Where prompt text is not kept, templates cannot be ` +
       'recognised and the session counts as led by a person. Copilot sessions known only from the session store are left out (not ' +
       'comparable: the session store keeps shell commands only). A turn with no recorded call or reply is unread and is not ' +
       'counted (Copilot in VS Code turns outside its debug log); a run the log covers only in part can be undercounted. The agent ' +
@@ -135,35 +136,45 @@ export default function WorkPerInstruction(props: CardProps) {
       'slightly long; for Copilot CLI and the Copilot app it is the end of the turn, or the last call end where turn ends are not ' +
       'recorded; for Copilot in VS Code the end of the last model call. The wait runs to the person\'s next prompt. A gap under ' +
       '2 s is a queued prompt sent while the agent worked, not a wait (gaps of 2 to 5 s may also be queued); a gap over 24 hours ' +
-      'is a resumed session. The median wait is shown only when waits and queued prompts cover at least half of the answered ' +
-      'turns. Tools that record no prompts (Codex CLI, Cursor) are not reported; Copilot in Visual Studio and JetBrains is not ' +
+      'is a resumed session, and a gap up to 24 hours, such as a session left open overnight, counts as a wait. In Copilot in ' +
+      'VS Code a tool span may include time the agent waited for the person to confirm it, so a prompt sent instead of a ' +
+      'confirmation can count as queued. The median wait is shown only when waits and queued prompts cover at least half of the ' +
+      `answered turns, and only over ${MIN_WAITS} or more waits. Tools whose prompts aictl does not read (Codex CLI, Cursor) ` +
+      'are not reported; Copilot in Visual Studio and JetBrains is not ' +
       'read. Prompts have their own retention: no session before the oldest stored prompt can be read. Bins are UTC days up to ' +
       '14 days, weeks up to 180 days, months beyond.'}
     table={{
       label: 'Work per instruction by tool',
-      rows: body => body.tools.map((row): Row => ({
+      rows: body => body.tools.map((row): Row => {
+        // A tool whose prompts aictl does not read has no session counts: they read not reported, never 0.
+        const count = (value: number) => row.reported ? value : null
+        return {
         id: row.tool, tool: label(row.tool), status: row.sessions ? '' : silence(row),
-        sessions: row.sessions, multi: row.multi_sessions, instructions: row.instructions, single: row.one_instruction,
+        sessions: count(row.sessions), multi: count(row.multi_sessions), instructions: count(row.instructions),
+        single: count(row.one_instruction),
         p50: row.p50_longest, p90: row.p90_longest, mean: row.mean_longest,
-        p50_multi: row.p50_multi, p90_multi: row.p90_multi, mean_multi: row.mean_multi, delegated: row.delegated,
-        answered: row.turns_answered, waits: row.waits, queued: row.queued, wait: row.p50_wait_s, over: row.over_5m,
-        over_share: row.over_5m_share, resumed: row.resumed, scripted: row.scripted, store_only: row.store_only,
-        unread: row.unread, no_calls: row.no_calls, start_unread: row.start_unread,
-      })),
-      fields: [textField('tool', 'Tool'), textField('status', 'Status'), numberField('sessions', 'Sessions', fmtNum),
-        numberField('multi', 'With 2 or more instructions', fmtNum), numberField('instructions', 'Instructions', fmtNum),
-        numberField('single', 'Single-instruction sessions', fmtNum),
+        p50_multi: row.p50_multi, p90_multi: row.p90_multi, mean_multi: row.mean_multi, delegated: count(row.delegated),
+        answered: count(row.turns_answered), waits: count(row.waits), queued: count(row.queued), wait: row.p50_wait_s,
+        over: row.over_5m, over_share: row.over_5m_share, resumed: count(row.resumed), scripted: row.scripted,
+        store_only: row.store_only, unread: row.unread, unread_sessions: row.unread_sessions, no_calls: row.no_calls,
+        start_unread: row.start_unread,
+      } }),
+      fields: [textField('tool', 'Tool'), textField('status', 'Status'), figure('sessions', 'Sessions', fmtNum),
+        figure('multi', 'With 2 or more instructions', fmtNum), figure('instructions', 'Instructions', fmtNum),
+        figure('single', 'Single-instruction sessions', fmtNum),
         figure('p50', 'Longest run, median', fmtNum), figure('p90', 'Longest run, 90th percentile', fmtNum),
         figure('mean', 'Longest run, mean', fmtNum), figure('p50_multi', 'Longest run, median (2+ instructions)', fmtNum),
         figure('p90_multi', 'Longest run, 90th percentile (2+ instructions)', fmtNum),
-        figure('mean_multi', 'Longest run, mean (2+ instructions)', fmtNum), numberField('delegated', 'Delegated calls', fmtNum),
-        numberField('answered', 'Turns answered', fmtNum), numberField('waits', 'Waits', fmtNum),
-        numberField('queued', 'Queued prompts', fmtNum), figure('wait', 'Median wait', fmtDur),
+        figure('mean_multi', 'Longest run, mean (2+ instructions)', fmtNum), figure('delegated', 'Delegated calls', fmtNum),
+        figure('answered', 'Turns answered', fmtNum), figure('waits', 'Waits', fmtNum),
+        figure('queued', 'Queued prompts', fmtNum), figure('wait', 'Median wait', fmtDur),
         figure('over', 'Waits over 5 min', fmtNum), figure('over_share', 'Share of waits over 5 min', fmtShare),
-        numberField('resumed', 'Resumed after more than 24 h', fmtNum),
+        figure('resumed', 'Resumed after more than 24 h', fmtNum),
         numberField('scripted', 'Left out: started by a script', fmtNum),
         numberField('store_only', 'Left out: store only (not comparable: session store keeps shell commands only)', fmtNum),
-        numberField('unread', 'Left out: unread turns', fmtNum), numberField('no_calls', 'Left out: no recorded calls', fmtNum),
+        numberField('unread', 'Left out: unread turns', fmtNum),
+        numberField('unread_sessions', 'Left out: sessions with every turn unread', fmtNum),
+        numberField('no_calls', 'Left out: no recorded calls', fmtNum),
         numberField('start_unread', 'Prompt text not kept (counted as a person)', fmtNum)],
     }}
     sessionFields={[textField('tool', 'Tool', row => label(String(row.tool ?? ''))),

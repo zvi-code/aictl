@@ -12,7 +12,8 @@ import { installDom, layoutHeaders, mount } from './dom'
 const NOV_12 = 1_699_747_200, NOV_19 = 1_700_352_000, NOV_26 = 1_700_956_800
 const none = { p50_longest: null, p90_longest: null, mean_longest: null, p50_multi: null, p90_multi: null, mean_multi: null,
   turns_answered: 0, waits: 0, queued: 0, p50_wait_s: null, over_5m: null, over_5m_share: null }
-const counts = { active: 0, prompted: 0, scripted: 0, store_only: 0, start_unread: 0, no_calls: 0, unread: 0, instructions: 0,
+const counts = { active: 0, prompted: 0, scripted: 0, store_only: 0, start_unread: 0, no_calls: 0, unread: 0, unread_sessions: 0,
+  instructions: 0,
   calls: 0, delegated: 0, one_instruction: 0, resumed: 0, no_stop: 0, sessions: 0, multi_sessions: 0 }
 const claude: AutonomyTool = {
   ...counts, ...none, tool: 'claude-code', reported: true, active: 40, prompted: 38, scripted: 3, unread: 2, no_calls: 1,
@@ -36,8 +37,8 @@ const body: AutonomyBody = {
     kusto_url: 'https://c.kusto.windows.net/db' },
   tools: [claude, cli, codex],
   bins: [
-    bin('claude-code', NOV_12, 5, 20, { waits: 30, p50_wait_s: 90 }), bin('claude-code', NOV_19, 3, 60, { waits: 4, p50_wait_s: 50 }),
-    bin('claude-code', NOV_26, 6, 32, { waits: 12, p50_wait_s: null }), bin('copilot-cli', NOV_19, 3, 14),
+    bin('claude-code', NOV_12, 10, 20, { waits: 30, p50_wait_s: 90 }), bin('claude-code', NOV_19, 3, 25, { waits: 4, p50_wait_s: 50 }),
+    bin('claude-code', NOV_26, 12, 32, { waits: 12, p50_wait_s: null }), bin('copilot-cli', NOV_19, 3, 14),
   ],
   bin_unit: 'week', prompts_from: 1_699_800_000,
   summary: { lead: 'claude-code', sessions: 50, multi_sessions: 15, one_instruction: 35, not_reported: ['codex-cli'] },
@@ -71,7 +72,29 @@ describe('INS-11 · Work per instruction states its figures from the response', 
     expect(autonomyFinding(body, { ...tool, queued: 1 }, label)).toContain('1 prompt was queued while the agent worked')
   })
 
-  it('reads too few sessions under 5 multi-instruction sessions, and names single-instruction sessions as maybe scripted', () => {
+  it('states a trend from first to last only when the bins between move the same way, and the range otherwise', () => {
+    const at = (p50s: number[]) => ({ ...body, bin_unit: 'month' as const,
+      bins: p50s.map((p50, i) => bin('claude-code', NOV_12 + i * 2_678_400, 12, p50)) })
+    expect(trend(at([110, 91, 71, 36, 66]), 'claude-code')).toBe('the median per month ranged from 36 calls to 110 calls with no ' +
+      'steady change (110 calls in the month starting Nov 12, 66 calls in the month starting Mar 15)')
+    expect(trend(at([46, 46]), 'claude-code')).toBe('the median stayed at 46 calls in each month')
+    // A month between with too few sessions still breaks a steady change: 46, 85 (n=6), 38 is not a decline.
+    const between = { ...body, bin_unit: 'month' as const, bins: [bin('copilot-vscode', NOV_12, 20, 46),
+      bin('copilot-vscode', NOV_12 + 2_678_400, 6, 85), bin('copilot-vscode', NOV_12 + 2 * 2_678_400, 12, 38)] }
+    expect(trend(between, 'copilot-vscode')).toBe('the median per month ranged from 38 calls to 85 calls with no steady change ' +
+      '(46 calls in the month starting Nov 12, 38 calls in the month starting Jan 13; months with fewer than 10 such sessions included)')
+    expect(trend(at([20, 25, 30]), 'claude-code')).toBe('the median went from 20 calls in the month starting Nov 12 to 30 calls in ' +
+      'the month starting Jan 13')
+  })
+
+  it('states a wait median only over 10 waits', () => {
+    const few = { ...claude, waits: 5, queued: 1, p50_wait_s: 143, over_5m: 2 }
+    expect(waitFigure(few)).toBe('too few waits (n=5) · 1 queued')
+    expect(autonomyFinding(body, few, label)).toContain('Too few measured waits for a median wait (n=5).')
+    expect(autonomyFinding(body, few, label)).not.toContain('People answered')
+  })
+
+  it('reads too few sessions under 10 multi-instruction sessions, and names single-instruction sessions as maybe scripted', () => {
     const tool = pickedTool(body, 'copilot-cli')!
     expect(autonomyHero(body, tool, label)).toEqual({ value: 'too few sessions (n=3)', label: 'copilot-cli sessions with 2 or more ' +
       'instructions. All 20 sessions: median 8 calls, including single-instruction sessions, which may be scripted' })
@@ -83,12 +106,14 @@ describe('INS-11 · Work per instruction states its figures from the response', 
     expect(waitFigure(tool)).toBe('not reported')
   })
 
-  it('says a tool that records no prompts is not reported and has no lead figure', () => {
+  it('says a tool whose prompts aictl does not read is not reported and has no lead figure', () => {
+    const few = { ...cli, multi_sessions: 8, p50_multi: 7, p90_multi: 97 }
+    expect(autonomyHero({ ...body, tools: [few] }, few, label)!.value).toBe('too few sessions (n=8)')
     const silent = { ...body, tools: [codex], bins: [], summary: { ...body.summary, lead: null, sessions: 0 } }
     expect(pickedTool(silent, undefined)).toBeUndefined()
     expect(autonomyHero(silent, undefined, label)).toBeUndefined()
-    expect(autonomyFinding(silent, undefined, label)).toBe('The tools in this period record no prompts (codex-cli), so work per ' +
-      'instruction is not reported.')
+    expect(autonomyFinding(silent, undefined, label)).toBe('aictl reads no prompts for the tools in this period (codex-cli), so ' +
+      'work per instruction is not reported.')
     const empty = { ...silent, tools: [], summary: { ...silent.summary, not_reported: [] } }
     expect(autonomyFinding(empty, undefined, label)).toBe("No session with a person's instruction and a recorded tool call in this period.")
   })
@@ -99,7 +124,7 @@ describe('INS-11 · Work per instruction states its figures from the response', 
 })
 
 describe('INS-11 · Work per instruction draws one row per tool on a shared axis', () => {
-  it('joins bins with 5 or more multi-instruction sessions, labels the others and lists unreported tools', () => {
+  it('joins bins with 10 or more multi-instruction sessions, labels the others and lists unreported tools', () => {
     const { host, dispose } = mount(() => <WorkPerInstruction {...props(context({ data: body, status: 'ready', error: null }))} />)
     const card = host.querySelector('[data-box="insight-autonomy"]')!
     const rows = card.querySelectorAll('[data-tool]')
@@ -111,7 +136,7 @@ describe('INS-11 · Work per instruction draws one row per tool on a shared axis
     expect(claudeRow.querySelectorAll('[data-all]')).toHaveLength(3)
     expect([...claudeRow.querySelectorAll('[data-waits] span')].map(cell => cell.textContent)).toEqual(['wait', '1 min 30 s', '–', '–'])
     expect([...rows[1].querySelectorAll('[data-waits] span')].map(cell => cell.textContent)).toEqual(['wait', '–', '–', '–'])
-    expect(card.querySelector('[data-silent="codex-cli"]')!.textContent).toBe('codex-cli: not reported (the tool records no prompts)')
+    expect(card.querySelector('[data-silent="codex-cli"]')!.textContent).toBe("codex-cli: not reported (aictl does not read this tool's prompts)")
     expect(card.querySelector('[data-hero]')!.textContent).toContain('25 calls')
     expect(card.querySelector('[data-wait]')!.textContent).toContain('1 min 50 s · 24 of 80 over 5 min · 9 queued')
     dispose()
@@ -136,8 +161,13 @@ describe('INS-11 · Work per instruction draws one row per tool on a shared axis
     for (const details of card.querySelectorAll<HTMLDetailsElement>('details')) details.open = true
     flush()
     const codexRow = [...card.querySelectorAll('tr')].find(row => row.textContent!.startsWith('codex-cli'))!
-    expect(codexRow.textContent).toContain('not reported (the tool records no prompts)')
-    expect(codexRow.querySelector('[data-col="p50_multi"]')!.textContent).toBe('not reported')
+    expect(codexRow.textContent).toContain("not reported (aictl does not read this tool's prompts)")
+    for (const col of ['p50_multi', 'sessions', 'instructions', 'delegated', 'answered', 'waits', 'queued', 'resumed']) {
+      expect(codexRow.querySelector(`[data-col="${col}"]`)!.textContent).toBe('not reported')
+    }
+    expect(codexRow.querySelector('[data-col="unread_sessions"]')!.textContent).toBe('0')
+    const claudeRow = [...card.querySelectorAll('tr')].find(row => row.textContent!.startsWith('claude-code'))!
+    expect(claudeRow.querySelector('[data-col="delegated"]')!.textContent).toBe('40')
     const sessions = card.querySelector('[data-sessions]')!
     expect(sessions.textContent).toContain('single instruction')
     expect(sessions.textContent).toContain('not reported · 0 queued')

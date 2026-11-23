@@ -549,7 +549,8 @@ def problem_sessions(rows: list[dict]) -> dict:
 
 
 # The coverage counts of insights.work_per_instruction: why a tool's sessions are not all in its figures.
-AUTONOMY_COVERAGE = ("active", "prompted", "scripted", "store_only", "start_unread", "no_calls", "unread")
+AUTONOMY_COVERAGE = ("active", "prompted", "scripted", "store_only", "start_unread", "no_calls", "unread",
+                     "unread_sessions")
 
 
 def _chain_figures(row: dict, sessions: int, multi: int) -> dict:

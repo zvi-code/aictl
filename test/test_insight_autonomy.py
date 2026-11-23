@@ -105,7 +105,11 @@ def test_the_longest_chain_runs_from_one_person_turn_to_the_next(kusto_store):
     assert {key: claude[key] for key in ("turns_answered", "waits", "queued", "resumed", "p50_wait_s", "over_5m")} == {
         "turns_answered": 3, "waits": 1, "queued": 1, "resumed": 1, "p50_wait_s": pytest.approx(60.0), "over_5m": 0}
     assert {key: claude[key] for key in insights.AUTONOMY_COVERAGE} == {
-        "active": 10, "prompted": 10, "scripted": 6, "store_only": 0, "start_unread": 1, "no_calls": 1, "unread": 1}
+        "active": 10, "prompted": 10, "scripted": 6, "store_only": 0, "start_unread": 1, "no_calls": 1, "unread": 1,
+        "unread_sessions": 0}
+    # Every led session is in the figures or in a left-out count.
+    assert claude["prompted"] - claude["scripted"] - claude["store_only"] == (
+        claude["sessions"] + claude["no_calls"] + claude["unread_sessions"])
     codex = tools["codex-cli"]
     assert codex["reported"] is False and codex["active"] == 1 and codex["prompted"] == 0
     assert all(codex[key] is None for key in ("p50_longest", "p50_multi", "mean_multi", "p50_wait_s", "over_5m"))
@@ -146,6 +150,8 @@ def test_copilot_turn_ends_stop_a_chain_and_store_only_sessions_are_left_out(kus
     _call(s, "v1b", 4110.0, "replace_string_in_file", session="v1", tool="copilot-vscode")
     _reply(s, "v1r2", 4120.0, session="v1", tool="copilot-vscode")
     _prompt(s, "v1p3", 4200.0, "thanks, that is all for now", session="v1", tool="copilot-vscode")
+    # v2, VS Code: its only turn is outside the debug log, so the session has no read instruction (unread_sessions).
+    _prompt(s, "v2p1", 4500.0, "summarise the open review comments here", session="v2", tool="copilot-vscode")
     tools = _tools(_card(s))
     cli = tools["copilot-cli"]
     assert {key: cli[key] for key in ("sessions", "instructions", "calls", "multi_sessions", "p50_multi", "turns_answered",
@@ -157,7 +163,8 @@ def test_copilot_turn_ends_stop_a_chain_and_store_only_sessions_are_left_out(kus
     assert {key: vscode[key] for key in ("sessions", "instructions", "calls", "p50_longest", "turns_answered", "waits",
                                           "queued", "p50_wait_s", "unread")} == {
         "sessions": 1, "instructions": 2, "calls": 2, "p50_longest": 1, "turns_answered": 2, "waits": 2, "queued": 0,
-        "p50_wait_s": pytest.approx(70.0), "unread": 1}
+        "p50_wait_s": pytest.approx(70.0), "unread": 2}
+    assert (vscode["prompted"], vscode["no_calls"], vscode["unread_sessions"]) == (2, 0, 1)
     assert vscode["over_5m"] == 0 and vscode["over_5m_share"] == 0.0
 
 
@@ -184,7 +191,7 @@ def _rows(**tool):
     return [
         {"row_type": "tool", **figures},
         {"row_type": "coverage", "tool": "copilot-cli", "active": 6, "prompted": 5, "scripted": 1, "store_only": 0,
-         "start_unread": 0, "no_calls": 0, "unread": 0},
+         "start_unread": 0, "no_calls": 0, "unread": 0, "unread_sessions": 0},
         {"row_type": "coverage", "tool": "cursor", "active": 3, "prompted": 0},
         {"row_type": "bin", "tool": "copilot-cli", "bin_ts": 86_400.0, "sessions": 4, "multi_sessions": 0, "p50_longest": 8,
          "p90_longest": 20, "p50_multi": None, "turns_answered": 0, "waits": 0, "queued": 0},
