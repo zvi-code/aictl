@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { presentFields } from '../../src/panels/kinds/model'
 
 type Row = Record<string, unknown>
-const field = (id: string, label: string) => ({ id, label, read: (row: Row) => row[id] as string | number | undefined })
+type F = { id: string; label: string; read: (row: Row) => unknown; clip?: 'start'; title?: string }
+const field = (id: string, label: string): F => ({ id, label, read: (row: Row) => row[id] })
 
 describe('every panel table shows its columns by one rule', () => {
   it('leaves out a column no row has a value for, but keeps the first column', () => {

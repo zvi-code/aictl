@@ -48,9 +48,11 @@ export const promptSummary = ({ ctx }: PanelProps): Summary => rows => <>
   <FieldStats label="Prompt summary" ctx={ctx} columns={[
     { path: 'retained', label: 'Listed prompts', datapoint: 'board.prompt.total' },
     { path: 'total', label: 'Total prompts', datapoint: 'board.prompt.total' },
-    tokens('tokens', 'Listed prompt tokens'),
+    // Each prompt's figure is the tokens of the turn it started (all its model calls), not the prompt's own size.
+    tokens('tokens', "Tokens of the listed prompts' turns"),
   ]} value={{ retained: rows()?.length, total: measured(ctx.read({ field: 'prompts_total' }).value), tokens: sum(rows(), 'tokens') }} />
-  <DailySummary label="Listed prompts by day" rows={rows()} path="ts" />
+  <DailySummary label="Listed prompts in the selected time" rows={rows()} path="ts"
+    range={ctx.board('range') ?? undefined} />
 </>
 
 export const workflowSummary: Summary = rows => {

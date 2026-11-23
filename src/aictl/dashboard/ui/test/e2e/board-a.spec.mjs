@@ -471,8 +471,8 @@ test('BRD-11/12/13/14: filter a project, read prompt files and open prompt and s
   const prompts = await showPanel(page, 'promptsL');
   await expect(stat(prompts, 'Listed prompts')).toHaveText('100');
   await expect(stat(prompts, 'Total prompts')).toHaveText('331');
-  await expect(stat(prompts, 'Listed prompt tokens')).toHaveText(unavailable);
-  await expect(prompts.getByRole('figure', { name: /^Listed prompts by day/ }).locator('canvas')).toBeVisible();
+  await expect(stat(prompts, "Tokens of the listed prompts' turns")).toHaveText(unavailable);
+  await expect(prompts.getByRole('figure', { name: /^Listed prompts in the selected time/ }).locator('canvas')).toBeVisible();
   const prompt = row(prompts, 'anon_dd85c5690df1d5d8b5136112');
   await expect(prompt).toContainText('anon_6132d9ba726c0d2cbc921d3f');
   const list = prompts.getByRole('region', { name: 'Prompts scroll area' });
