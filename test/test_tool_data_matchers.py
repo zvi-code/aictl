@@ -82,6 +82,16 @@ CASES = [
     ("ssh to host called copilot", "/usr/bin/ssh", ["copilot-box"], None),
     ("unrelated electron app", f"{APPS}/Grok Bot.app/Contents/Frameworks/Grok Bot Helper (Renderer).app/Contents/MacOS/Grok Bot Helper (Renderer)",
      ["--type=renderer"], None),
+    # Docker Desktop is not OpenClaw: its own "docker-sandbox" plugin and Chromium "--enable-sandbox" helpers
+    ("docker desktop sandbox plugin", f"{APPS}/Docker.app/Contents/Resources/cli-plugins/docker-sandbox", ["daemon", "start"], None),
+    ("docker desktop network helper",
+     f"{APPS}/Docker.app/Contents/MacOS/Docker Desktop.app/Contents/Frameworks/Docker Desktop Helper.app/Contents/MacOS/Docker Desktop Helper",
+     ["--type=utility", "--service-sandbox-type=network", "--enable-sandbox"], None),
+    ("docker desktop renderer",
+     f"{APPS}/Docker.app/Contents/MacOS/Docker Desktop.app/Contents/Frameworks/Docker Desktop Helper (Renderer).app/Contents/MacOS/Docker Desktop Helper (Renderer)",
+     ["--type=renderer", "--enable-sandbox"], None),
+    ("docker run with a sandbox flag", "/usr/local/bin/docker", ["run", "--rm", "--security-opt", "sandbox=on", "alpine"], None),
+    ("openclaw docker sandbox", "/usr/local/bin/docker", ["run", "--name", "openclaw-sandbox-main", "openclaw/sandbox"], "openclaw"),
 ]
 
 

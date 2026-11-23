@@ -67,7 +67,7 @@ chromium (WhatsApp),openclaw,community,cli,browser,chromium,whatsapp-web.js,gate
 telegram bot,openclaw,community,cli,child,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,api.telegram.org,20,50,no,,none,,openclaw.*telegram|openclaw.*tg-bot,all,Telegram bot polling connection
 discord bot,openclaw,community,cli,child,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,discord.com,30,60,no,,none,,openclaw.*discord,all,Discord.js bot connection
 node mcp-server-*,openclaw,community,cli,mcp-server,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,varies,15,50,no,,low,,mcp-server-,all,MCP servers for OpenClaw tools
-docker (sandbox),openclaw,community,cli,child,docker,openclaw gateway,on-demand,on-demand,no,no,none,none,50,200,no,,none,,docker.*openclaw|docker.*sandbox,all,Per-session Docker sandbox (if sandbox.mode: non-main)
+docker (sandbox),openclaw,community,cli,child,docker,openclaw gateway,on-demand,on-demand,no,no,none,none,50,200,no,,none,,docker.*openclaw,all,Per-session Docker sandbox (if sandbox.mode: non-main)
 cron scheduler,openclaw,community,cli,child,node,openclaw gateway,gateway-start,gateway-stop,yes,yes,none,none,10,20,no,,none,,openclaw.*cron|openclaw.*heartbeat,all,Heartbeat & scheduled task runner
 ChatGPT,chatgpt-desktop,openai,desktop,app,electron,root,app-launch,app-close,no,no,none,api.openai.com;chatgpt.com,200,400,no,,none,,ChatGPT$|ChatGPT.exe,all,Electron main process (thin client)
 ChatGPT Helper (Renderer),chatgpt-desktop,openai,desktop,helper,chromium,ChatGPT,app-launch,app-close,no,yes,none,none,100,300,no,,none,,ChatGPT Helper.*Renderer,all,Chat UI renderer
