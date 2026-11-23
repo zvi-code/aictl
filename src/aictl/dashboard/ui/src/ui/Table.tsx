@@ -93,6 +93,7 @@ function Header<T extends object>(props: SortedTableProps<T>) {
   return <thead><tr aria-rowindex={1}>
     <For each={props.columns.control.visible()} keyed={column => column.id}>{column =>
       <th scope="col" class={columnStyles.header} data-col={column().id} data-pinned={column().pin ? '' : undefined}
+        title={column().field?.title ?? column().label}
         data-drop={controls().dropSide(column().id)} data-dragging={controls().dragging(column().id)}
         data-numeric={props.pageSize && column().field?.numeric ? '' : undefined}
         aria-sort={props.sort?.id === column().id ? (props.sort.desc ? 'descending' : 'ascending') : undefined}

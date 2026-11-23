@@ -144,14 +144,6 @@ export const overviewA: readonly PanelDef[] = [
     load: () => loadRows(import('./usageOptions').then(m => m.promptOptions)),
   },
   {
-    id: 'pprompts', title: 'Project prompts', kind: 'table', defaultSize: 'medium', requiredCapabilities: [],
-    sources: [{ field: 'project_prompts' }, { field: 'project_prompts_searched' }], rowIdentity: ['project', 'file'],
-    columns: [field('file', 'Prompt file'), field('project', 'Project'), count('uses', 'Uses', 'board.project_prompt.row'),
-      stamp('last_ts', 'Last used')],
-    actions: [{ kind: 'detail', field: 'file', type: 'file', localOnly: true }], empty: 'No prompt files were reported.',
-    load: () => loadRows(import('./usageOptions').then(m => m.projectPromptOptions)),
-  },
-  {
     id: 'skills', title: 'Skills used', kind: 'table', defaultSize: 'medium', requiredCapabilities: [],
     sources: [{ field: 'skills' }], rowIdentity: ['name'],
     columns: [field('name', 'Skill'), field('scope', 'Scope'), count('agents', 'Agents', 'board.project.agents'),

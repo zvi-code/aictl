@@ -11,7 +11,7 @@ const inventory = [
   ['BRD-05', 'agents', 'byRole', 'Main agents and subagents'], ['BRD-06', 'sessions', 'sessionsT', 'Find a session'],
   ['BRD-08', 'usage', 'cacheRate', 'Cache hit rate'], ['BRD-09', 'usage', 'cost', 'Cost'], ['BRD-10', 'usage', 'messages', 'Messages'],
   ['BRD-11', 'usage', 'projects', 'Projects'], ['BRD-12', 'prompts', 'promptsL', 'Prompts'],
-  ['BRD-13', 'prompts', 'pprompts', 'Project prompts'], ['BRD-14', 'prompts', 'skills', 'Skills used'],
+  ['BRD-14', 'prompts', 'skills', 'Skills used'],
   ['BRD-15', 'prompts', 'workflows', 'Workflows and prompt files'], ['BRD-16', 'context', 'budget', 'Context window budget'],
   ['BRD-17', 'context', 'tokenSplit', 'Tokens by category'], ['BRD-18', 'context', 'ctxMap', 'Context window map'],
   ['BRD-19', 'context', 'memory', 'Agent memory'], ['BRD-20', 'context', 'dailyModels', 'Daily usage by model'],
@@ -482,15 +482,6 @@ test('BRD-11/12/13/14: filter a project, read prompt files and open prompt and s
   await prompt.getByRole('button', { name: 'Open prompt' }).press('Space');
   await expect(page).toHaveURL(/[?&]detail=prompt.*[?&]detail_ts=/);
   await page.keyboard.press('Escape');
-  const projectPrompts = await showPanel(page, 'pprompts');
-  // The recording includes file references but does not report their use counts.
-  await expect(stat(projectPrompts, 'File references')).toHaveText('23');
-  await expect(stat(projectPrompts, 'Uses')).toHaveText(unavailable);
-  const references = projectPrompts.getByRole('table', { name: 'Project prompts' });
-  await expect(references.getByRole('button', { name: 'Open anon_35113d4c9b4556165f79ee20', exact: true })).toBeVisible();
-  await expect(references.getByText(unavailable, { exact: true }).first()).toBeVisible();
-  await references.getByRole('button', { name: 'Prompt file' }).press('Enter');
-  await expect(references.getByRole('columnheader', { name: 'Prompt file' })).toHaveAttribute('aria-sort', 'ascending');
   const skills = await showPanel(page, 'skills');
   const skill = row(skills, 'anon_129bb554841e4f1ff82e337d');
   await expect(skill).toContainText(unavailable);

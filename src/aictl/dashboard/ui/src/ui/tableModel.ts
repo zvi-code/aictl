@@ -18,6 +18,8 @@ export type Field<T> = {
   numeric?: boolean
   /** Clip long text at its start, so a path keeps its file name visible. */
   clip?: 'start'
+  /** The full column name, shown on hover over its header. */
+  title?: string
   action?: { label: (row: T) => string | undefined; run: (row: T) => void }
   /** Tooltip text for this row's cell. */
   hint?: (row: T) => string | undefined

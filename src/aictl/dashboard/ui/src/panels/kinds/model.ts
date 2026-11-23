@@ -75,3 +75,33 @@ export function rowAction(def: PanelDef, ctx: PanelContext, row: Row) {
     return { label: action.label, run: () => ctx.navigate({ [action.filter]: ctx.filters()[action.filter] === id ? null : id }) }
   }
 }
+
+type ShownField<T> = { id: string; label: string; read: (row: T) => unknown; clip?: 'start'; title?: string }
+
+const isPath = (value: unknown) => typeof value === 'string' && /[\\/]/.test(value) && !/\s/.test(value.trim())
+const empty = (value: unknown) => value == null || value === '' || value === 'Not available from this source'
+
+/** The columns of a panel table as shown, by one rule for every table:
+ * - a column that no row has a value for is left out (the first column always stays);
+ * - a first word that three or more later columns repeat ("Lifetime input", "Lifetime output") is
+ *   left out of their headers, and the full name stays on hover;
+ * - a column whose every value is a path clips at its start, so the file name stays visible. */
+export function presentFields<T, F extends ShownField<T>>(fields: readonly F[], rows: readonly T[]): F[] {
+  const kept = rows.length ? fields.filter((field, index) => index === 0 || rows.some(row => !empty(field.read(row)))) : [...fields]
+  const words = new Map<string, number>()
+  for (const field of kept.slice(1)) {
+    const first = field.label.split(' ')[0]
+    if (field.label.includes(' ')) words.set(first, (words.get(first) ?? 0) + 1)
+  }
+  return kept.map((field, index) => {
+    let label = field.label
+    const first = label.split(' ')[0]
+    if (index > 0 && label.includes(' ') && (words.get(first) ?? 0) >= 3) {
+      const rest = label.slice(first.length + 1)
+      label = rest.charAt(0).toUpperCase() + rest.slice(1)
+    }
+    const values = rows.map(row => field.read(row)).filter(value => !empty(value))
+    const clip = field.clip ?? (values.length && values.every(isPath) ? 'start' as const : undefined)
+    return { ...field, label, title: field.title ?? field.label, ...(clip ? { clip } : {}) }
+  })
+}

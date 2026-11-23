@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, type ParentProps } from 'solid-js'
 import { createResourceCache } from '../../../data/resource'
 import { at } from '../../data'
-import { keyedRows, nodeColumn, presentation, scalar } from '../../kinds/model'
+import { keyedRows, nodeColumn, presentation, presentFields, scalar } from '../../kinds/model'
 import { States } from '../../kinds/States'
 import type { DetailState, FieldRef, PanelContext, Read, Row } from '../../types'
 import { Table } from '../../../ui/Table'
@@ -85,15 +85,13 @@ export function DataTable(props: {
   action?: Action; fields?: readonly Field<Entry>[]
 }) {
   const node = createMemo(() => nodeColumn(props.ctx.scope(), props.rows))
-  const fields = createMemo(() => {
-    return [
-      ...(node() ? [{ path: 'node_id', label: 'Node' }] : []),
-      ...props.columns,
-    ].map<Field<Entry>>(column => {
-      const { label, format } = displayField(props.ctx, column)
-      return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format }
-    }).concat(props.fields ?? [])
-  })
+  const fields = createMemo(() => presentFields([
+    ...(node() ? [{ path: 'node_id', label: 'Node' }] : []),
+    ...props.columns,
+  ].map<Field<Entry>>(column => {
+    const { label, format } = displayField(props.ctx, column)
+    return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format }
+  }).concat(props.fields ?? []), props.rows))
   // Hidden columns from the earlier per-panel menu carry over once.
   return <Table label={props.label} fields={fields()} rows={props.rows} rowId={entry => entry.id} action={props.action}
     legacyKeys={{ hidden: `aictl-panel-columns-${props.label}` }} />

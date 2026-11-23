@@ -1,10 +1,9 @@
 import { createMemo, Show } from 'solid-js'
 import { Freshness } from '../../ui/PanelState'
-import { presentation } from '../kinds/model'
 import type { VisualRowOptions } from '../kinds/Rows'
 import type { PanelProps } from '../types'
 import { cost, tokens } from './aFields'
-import { Bars, bins, DailySummary, FieldStats, fileName, measured, StatStrip, sum, topRows } from './Summary'
+import { Bars, bins, DailySummary, FieldStats, measured, StatStrip, sum } from './Summary'
 import css from './overviewA.module.css'
 
 type Summary = NonNullable<VisualRowOptions['summary']>
@@ -53,17 +52,6 @@ export const promptSummary = ({ ctx }: PanelProps): Summary => rows => <>
   ]} value={{ retained: rows()?.length, total: measured(ctx.read({ field: 'prompts_total' }).value), tokens: sum(rows(), 'tokens') }} />
   <DailySummary label="Listed prompts by day" rows={rows()} path="ts" />
 </>
-
-export const projectPromptSummary = ({ ctx, def }: PanelProps): Summary => rows => {
-  const top = createMemo(() => topRows(rows(), 'uses', ({ row }) => fileName(row.file)))
-  const format = () => presentation(ctx, def.columns[2]).format
-  return <>
-    <FieldStats label="Project prompt summary" ctx={ctx} columns={[
-      { path: 'files', label: 'File references' }, def.columns[2],
-    ]} value={{ files: rows()?.length, uses: sum(rows(), 'uses') }} />
-    <Bars label="Top prompt files by uses" items={top()} format={format()} />
-  </>
-}
 
 export const workflowSummary: Summary = rows => {
   const types = createMemo(() => rows() && bins(rows()!.map(({ row }) => row.type)))

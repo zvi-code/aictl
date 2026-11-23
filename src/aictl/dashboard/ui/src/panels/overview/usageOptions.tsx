@@ -6,7 +6,7 @@ import type { PanelProps, Read } from '../types'
 import { Choice, Measures } from './aControls'
 import { cost, count, field, tokens } from './aFields'
 import { knownSum, rankedSeries } from './overviewMath'
-import { projectPromptSummary, promptSummary } from './RowSummaries'
+import { promptSummary } from './RowSummaries'
 import css from './overviewA.module.css'
 
 const splits = [['tool', 'Tool'], ['project', 'Project'], ['model', 'Model']] as const
@@ -57,18 +57,6 @@ export function promptOptions(props: PanelProps) {
     ...entry, row: { ...entry.row, text: entry.row.text || (captured() ? 'Text not stored in metadata mode' : undefined) },
   })))
   return { result, rows, summary: promptSummary(props) } satisfies VisualRowOptions
-}
-
-export function projectPromptOptions(props: PanelProps) {
-  const { ctx, def } = untrack(() => props)
-  const result = createMemo(() => ctx.read(def.sources[0]))
-  const searched = () => ctx.board('project_prompts_searched')
-  return { result, summary: projectPromptSummary(props),
-    description: <p class={css.note}>{ctx.scope() === 'local' ? 'Local project, parent and user prompt files.' : 'References in recorded prompts.'}</p>,
-    empty: () => ctx.scope() === 'local' && searched()?.length
-      ? `No prompt files found. Searched ${searched()!.slice(0, 6).join(', ')}${searched()!.length > 6 ? ` and ${searched()!.length - 6} more folders` : ''}.`
-      : def.empty,
-  } satisfies VisualRowOptions
 }
 
 export const skillOptions = ({ ctx, def }: PanelProps) => ({

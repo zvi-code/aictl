@@ -3,7 +3,7 @@ import type { JSX } from '@solidjs/web'
 import { fmtN, fmtUsd } from '../../design/format'
 import { at } from '../data'
 import type { FieldRef, KeyedRow, PanelProps, Read, RowOptions } from '../types'
-import { keyedRows, nodeColumn, presentation, rowAction, scalar } from './model'
+import { keyedRows, nodeColumn, presentation, presentFields, rowAction, scalar } from './model'
 import { States } from './States'
 import type { TableProps } from '../../ui/Table'
 
@@ -67,7 +67,7 @@ export function RowTable(props: {
 } & Pick<TableProps<KeyedRow>, 'tableId' | 'defaultHidden' | 'legacyKeys'>) {
   const { ctx, def } = untrack(() => props.panel)
   const columns = () => props.columns ?? def.columns
-  const fields = createMemo(() => [
+  const fields = createMemo(() => presentFields([
     ...columns(),
     ...(nodeColumn(ctx.scope(), props.rows) && !columns().some(field => field.path === 'node_id')
       ? [{ path: 'node_id', label: 'Node' }] : []),
@@ -90,7 +90,7 @@ export function RowTable(props: {
       action: index === 0 && (props.action || def.actions.length)
         ? { label: (entry: KeyedRow) => action(entry)?.label, run: (entry: KeyedRow) => action(entry)?.run() } : undefined,
     }
-  }))
+  }), props.rows.filter(row => row.row.kind !== 'group')))
   const action = (entry: KeyedRow) => props.action ? props.action(entry) : rowAction(def, ctx, entry.row)
   return <Show when={props.rows.some(row => row.folded !== undefined)}
     fallback={<Table label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} rowId={row => row.id}
