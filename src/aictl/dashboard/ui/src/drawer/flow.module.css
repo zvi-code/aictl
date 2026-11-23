@@ -365,6 +365,8 @@
 .seg { position: absolute; box-sizing: border-box; background: var(--work); border-radius: 1px; }
 .barTrack[data-lines="1"] .seg { border-radius: var(--radius-sm); }
 .seg[data-failed] { background: var(--work-failed); }
+/* The wait for the first token of a reply, when reported: the lighter start of the reply bar. */
+.firstToken { position: absolute; inset-block: 0; inset-inline-start: 0; border-radius: inherit; background: color-mix(in srgb, var(--color-surface) 55%, transparent); }
 .barTrack[data-lines]:not([data-lines="1"]) .seg { box-shadow: inset 0 calc(var(--border-size) * -1) 0 var(--color-surface); }
 .cut { position: absolute; inset-block: -2px; inset-inline-end: 3px; inline-size: 3px; background: var(--color-surface); transform: skewX(-20deg); }
 .chartRow:hover .cut { background: var(--color-hover); }

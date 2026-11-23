@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { FlowEvent } from '../src/data/contract.gen'
 import { flowModel } from '../src/drawer/flowModel'
 import {
-  aliveAt, barLength, barShare, callHeadline, collapseRuns, contextOf, MIN_MARK, packLines, repeatsOf, resultOf, ROW_PX, rowOffsets, rowRange,
+  aliveAt, barLength, barShare, callHeadline, firstTokenShare, segmentTitle, collapseRuns, contextOf, MIN_MARK, packLines, repeatsOf, resultOf, ROW_PX, rowOffsets, rowRange,
   scaleOf, scalesOf, stepHeadline, timingOf, tracksOf, workCounts, workOf, type Segment,
 } from '../src/drawer/chartModel'
 import { GAP_S, rowsOf, stepsOf } from '../src/drawer/flowSteps'
@@ -55,6 +55,14 @@ describe('DRW-FL-11 · Time bars: a request from when it was sent, its calls fro
       ['model', 0, 4, 0], ['run', expect.closeTo(4.2), expect.closeTo(6.2), 0], ['run', expect.closeTo(4.3), expect.closeTo(4.8), 1], ['run', 6.5, expect.closeTo(6.6), 0]])
     expect(timing.lines).toBe(2)
     expect(timing.span).toBeCloseTo(6.6)
+  })
+
+  it('marks the wait for the first token inside the reply when the source reports it', () => {
+    const [round] = steps([event('api_call', 10, { model: 'm', duration_ms: 4000, ttft_ms: 1000, request_n: 3 })])
+    const [reply] = timingOf(round).segments
+    expect(firstTokenShare(reply)).toBe(0.25)
+    expect(segmentTitle(reply, { ms: ms => `${ms} ms` })).toBe('Model reply · m · 4000 ms · first token after 1000 ms · request 3')
+    expect(firstTokenShare(timingOf(steps([event('api_call', 10, { duration_ms: 4000 })])[0]).segments[0])).toBeUndefined()
   })
 
   it('keeps an unreported duration apart from zero and from the step time', () => {

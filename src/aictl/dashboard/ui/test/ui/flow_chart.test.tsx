@@ -88,6 +88,9 @@ describe('DRW-FL-15 · The Flow chart', () => {
     const { host, dispose, picked, closed } = render()
     const rows = stepRows(host)
     rows[0].focus()
+    // With no step open, Escape is not the chart's: it goes on to the drawer.
+    expect(key(rows[0], 'Escape')).toBe(true)
+    expect(closed()).toBe(0)
     key(rows[0], 'ArrowDown')
     expect(document.activeElement).toBe(rows[1])
     key(rows[1], 'End')

@@ -4,7 +4,7 @@ import { fmtBytes, fmtMs, fmtN, fmtUsd } from '../design/format'
 import { Icon } from '../ui/Icon'
 import { clockTime } from './flowModel'
 import {
-  aliveAt, barLength, barShare, resultOf, rowOffsets, rowRange, segmentTitle, stepContext, stepHeadline, timingOf, workLabels,
+  aliveAt, barLength, barShare, firstTokenShare, resultOf, rowOffsets, rowRange, segmentTitle, stepContext, stepHeadline, timingOf, workLabels,
   type ChartRow, type Run, type Scale, type Scales, type Segment, type Tracks, type Work,
 } from './chartModel'
 import { GapRow, SpanRow, StepPreview, stepColor, stepKindLabels, type GapRowData, type Hover, type SpanRowData } from './FlowParts'
@@ -73,7 +73,9 @@ function TimeBars(props: { step: Step; scale: Scale }) {
     <span class={styles.barTrack} data-lines={lines()}>
       <For each={timing().segments}>{segment =>
         <span class={segment.to == null ? styles.segMissing : styles.seg} data-work={segment.work} data-failed={segment.failed ? 'true' : undefined}
-          style={position(segment)} title={segmentTitle(segment, { ms: fmtMs })} />
+          style={position(segment)} title={segmentTitle(segment, { ms: fmtMs })}>
+          <Show when={firstTokenShare(segment)}>{share => <span class={styles.firstToken} style={{ 'inline-size': pct(share()) }} />}</Show>
+        </span>
       }</For>
       <Show when={total() != null && total()! > props.scale.cap}><span class={styles.cut} title={`Cut: ${seconds(total()!)}, longer than the scale`} /></Show>
     </span>
@@ -313,10 +315,12 @@ export function FlowChart(props: ChartProps) {
     const find = () => scroller.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(row.id)}"] [data-step-row]`)
     const now = find()
     if (now) now.focus()
-    else queueMicrotask(() => find()?.focus())
+    // A row scrolled into view is drawn on the next update or, at the latest, the next frame.
+    else queueMicrotask(() => { const next = find(); if (next) next.focus(); else requestAnimationFrame(() => find()?.focus()) })
   }
   const keys = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); props.close(); return }
+    // Escape closes the step panel first; with nothing selected it goes on (to the drawer).
+    if (event.key === 'Escape') { if (props.selected) { event.preventDefault(); event.stopPropagation(); props.close() } return }
     const from = (event.target as HTMLElement).closest<HTMLElement>('[data-row-index]')
     if (!from || event.altKey || event.ctrlKey || event.metaKey) return
     const index = Number(from.dataset.rowIndex)

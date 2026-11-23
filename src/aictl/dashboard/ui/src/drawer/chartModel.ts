@@ -353,11 +353,21 @@ export function workCounts(steps: readonly Step[]) {
   return WORK_ORDER.filter(work => counts.has(work)).map(work => ({ work, count: counts.get(work)! }))
 }
 
-/** Every number of one tool call for the title of its bar. */
+/** The share of a model reply spent waiting for its first token, when both times are reported. */
+export function firstTokenShare(segment: Segment) {
+  const ttft = segment.event.type === 'api_call' ? segment.event.ttft_ms : undefined
+  if (!ttft || segment.to == null || segment.to <= segment.from) return undefined
+  return Math.min(1, ttft / 1000 / (segment.to - segment.from))
+}
+
+/** Every number of one bar for its title. */
 export function segmentTitle(segment: Segment, fmt: { ms: (ms: number) => string }) {
   const event = segment.event
   const took = segment.to == null ? 'duration not reported' : fmt.ms((segment.to - segment.from) * 1000)
-  if (event.type === 'api_call') return `Model reply${event.model ? ` · ${event.model}` : ''} · ${took}${event.request_n != null ? ` · request ${event.request_n}` : ''}${event.is_error ? ' · failed' : ''}`
+  if (event.type === 'api_call') {
+    const first = event.ttft_ms ? ` · first token after ${fmt.ms(event.ttft_ms)}` : ''
+    return `Model reply${event.model ? ` · ${event.model}` : ''} · ${took}${first}${event.request_n != null ? ` · request ${event.request_n}` : ''}${event.is_error ? ' · failed' : ''}`
+  }
   if (event.type === 'tool_use') return `${toolDisplayName(rawName(event) || 'tool name not reported')} · ${callHeadline(event)} · ${took}${segment.failed ? ' · failed' : ''}`
   return `${workLabels[segment.work]} · ${took}`
 }
