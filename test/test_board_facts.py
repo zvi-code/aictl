@@ -1539,3 +1539,13 @@ class TestToolCallSizesAndSkills:
         assert skill_of_path("C:\\work\\.github\\skills\\worklist\\SKILL.md") == "worklist"
         assert skill_of_path("/home/u/.copilot/skills/intake/skill.md") == "intake"
         assert skill_of_path("/work/README.md") == ""
+
+
+def test_copilot_shell_failure_without_error_object_keeps_its_reason():
+    """A Copilot shell call that exits non-zero has no error object: the exit code and last output line say why."""
+    from aictl.ingesters.call_facts import _copilot_failure_text
+
+    assert _copilot_failure_text({"message": "boom", "code": "failure"}, {"exitCode": 3}, None) == "boom"
+    assert _copilot_failure_text({}, {"exitCode": 1}, {"content": "line one\nCannot find path\n\n"}) == "Exit code 1: Cannot find path"
+    assert _copilot_failure_text({}, {"exitCode": 2}, {"content": ""}) == "Exit code 2"
+    assert _copilot_failure_text({}, {}, {"content": "anything"}) == ""

@@ -2527,8 +2527,9 @@ class CopilotFacts:
         row.output_bytes = byte_size(result.get("content") if isinstance(result, dict) else result)
         error = data.get("error") if isinstance(data.get("error"), dict) else {}
         if failed and self.keep_text:
-            row.result_summary = _redact(str(error.get("message") or error.get("code") or "")[:RESULT_MAX_CHARS])
-            row.error_summary = error_excerpt(str(error.get("message") or error.get("code") or ""), True)
+            reason = _copilot_failure_text(error, shell, result)
+            row.result_summary = _redact(reason[:RESULT_MAX_CHARS])
+            row.error_summary = error_excerpt(reason, True)
         if isinstance(shell.get("exitCode"), int):
             row.exit_code = shell["exitCode"]
         # The runtime records a permission event whenever it asks, so no event means nobody was asked.
@@ -3168,6 +3169,20 @@ def target_fields(name: str, args: Any, *, keep_text: bool, server_hint: str = "
     found = describe_call(name, args, keep_text=keep_text, server_hint=server_hint)
     found["target_id"] = found.pop("target")
     return found
+
+
+def _copilot_failure_text(error: dict, shell: dict, result: Any) -> str:
+    """Why a Copilot CLI tool call failed: its error, else the shell's exit code and last output line.
+
+    A shell command that exits non-zero reports no error object; its reason is in the output.
+    """
+    reason = str(error.get("message") or error.get("code") or "")
+    code = shell.get("exitCode")
+    if reason or not isinstance(code, int) or code == 0:
+        return reason
+    output = result.get("content") if isinstance(result, dict) else result
+    lines = [line.strip() for line in output.splitlines() if line.strip()] if isinstance(output, str) else []
+    return f"Exit code {code}: {lines[-1]}" if lines else f"Exit code {code}"
 
 
 def error_excerpt(text: Any, keep_text: bool) -> str:
