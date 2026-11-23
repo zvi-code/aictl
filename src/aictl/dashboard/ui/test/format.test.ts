@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ago, baseName, fmtAge, fmtBytes, fmtDur, fmtMem, fmtMoney, fmtMs, fmtNum, fmtPct, projectName } from '../src/design/format'
+import { formatField } from '../src/ui/tableModel'
 import { presentation } from '../src/panels/kinds/model'
 import type { PanelContext } from '../src/panels/types'
 
@@ -84,6 +85,11 @@ describe('PRECISION · one rule per kind of value', () => {
 
   it('shows a plain number with three significant digits', () => {
     expect([83.804, 0.4567, 1234.5, 12, 1_206_000, 0].map(fmtNum)).toEqual(['83.8', '0.457', '1,235', '12', '1,206,000', '0'])
+  })
+
+  it('applies the rule to a table cell that has no formatter of its own', () => {
+    const field = { id: 'rate', label: 'Rate', read: (row: number) => row }
+    expect([83.804, 1234.5678, 7].map(row => formatField(field, row))).toEqual(['83.8', '1,235', '7'])
   })
 
   it('applies the rule to every value the panels present', () => {

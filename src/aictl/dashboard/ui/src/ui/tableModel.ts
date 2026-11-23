@@ -4,6 +4,8 @@ import {
 } from '@tanstack/table-core'
 import { storeReactivityBindings } from '@tanstack/table-core/store-reactivity-bindings'
 
+import { fmtNum } from '../design/format'
+
 export type RowIdentity = string
 
 export type Field<T> = {
@@ -22,7 +24,6 @@ export type Field<T> = {
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true })
-const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 })
 export const missingField = 'Not available from this source'
 
 export function formatField<T>(field: Field<T>, row: T) {
@@ -32,7 +33,7 @@ export function formatField<T>(field: Field<T>, row: T) {
 export function formatValue<T>(field: Field<T>, value: ReturnType<Field<T>['read']>) {
   if (value == null) return missingField
   if (field.format) return field.format(value)
-  return typeof value === 'number' ? number.format(value) : String(value)
+  return typeof value === 'number' ? fmtNum(value) : String(value)
 }
 
 // A cell action button shows the cell value, so its accessible name must contain

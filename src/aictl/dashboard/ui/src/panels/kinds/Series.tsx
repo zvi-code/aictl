@@ -6,7 +6,7 @@ import { at } from '../data'
 import type { ChartOptions, FieldRef, PanelProps, Read } from '../types'
 import { presentation } from './model'
 import { States } from './States'
-import { aggregateFor, rangeValues } from './seriesReadout'
+import { aggregateFor, axisNaming, rangeValues } from './seriesReadout'
 import styles from './kinds.module.css'
 
 type SeriesRow = { x: number; values: (number | null)[] }
@@ -49,6 +49,7 @@ export function SeriesView(props: {
   const units = createMemo(() => new Set(display().map(field => field.unit)))
   const ratio = () => units().size === 1 && units().has('ratio')
   const unit = () => ratio() || (units().size === 1 && units().has('percent')) ? '%' : undefined
+  const naming = createMemo(() => axisNaming(display().map(field => field.unit)))
   const visible = (i: number) => !hidden().has(columns()[i].path)
   const series = createMemo(() => display().map(({ label }, i) => ({ label, visible: visible(i) })), {
     equals: (a, b) => a.length === b.length && a.every((series, i) => series.label === b[i].label && series.visible === b[i].visible),
@@ -104,7 +105,8 @@ export function SeriesView(props: {
     }])
   })
   const plot = () => <Chart label={label()} description={props.description} series={series()} points={points()}
-    xAxis={props.time ? 'time' : 'number'} stack={props.stack} unit={unit()}
+    xAxis={props.time ? 'time' : 'number'} stack={props.stack} unit={unit()} axisLabel={naming().label}
+    ticks={naming().formatTicks ? values => values.map(display()[0].format) : undefined}
     onToggleSeries={toggle} onHover={props.select ? setIndex : undefined} onBrush={props.select ? apply : undefined} />
   return <>{props.controls}<States result={result} empty={props.empty ?? def.empty} retry={props.retry ?? ctx.refresh} reserveStaleSpace>
     <Show when={props.compact && !table()}><div class={styles.compactPlot}>{plot()}</div></Show>

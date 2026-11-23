@@ -14,3 +14,11 @@ export function rangeValues(rows: readonly Row[], units: readonly (string | unde
     return aggregateFor(unit) === 'mean' ? total / values.length : total
   })
 }
+
+/** How the value axis shows its unit: ticks that carry it, or a title for a unit they cannot carry. */
+export function axisNaming(units: readonly (string | undefined)[]): { formatTicks?: true; label?: string } {
+  const [unit, ...rest] = units
+  if (unit === undefined || rest.some(other => other !== unit)) return {}
+  if (unit === 'bytes' || unit === 'seconds' || unit === 'usd') return { formatTicks: true }
+  return unit === 'tokens' ? { label: 'tokens' } : {}
+}

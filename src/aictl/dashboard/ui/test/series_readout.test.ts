@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateFor, rangeValues } from '../src/panels/kinds/seriesReadout'
+import { aggregateFor, axisNaming, rangeValues } from '../src/panels/kinds/seriesReadout'
 
 const rows = [
   { x: 1, values: [2, 0.5, 10] }, { x: 2, values: [215, 0.7, null] }, { x: 3, values: [0, null, 30] },
@@ -18,5 +18,14 @@ describe('SERIES-READOUT · the readout under a chart', () => {
   it('sums counts, tokens and money; averages shares, gauges and durations', () => {
     expect(['count', 'tokens', 'usd', 'ai_credits', undefined].map(aggregateFor)).toEqual(['sum', 'sum', 'sum', 'sum', 'sum'])
     expect(['percent', 'ratio', 'seconds', 'bytes', 'rate_bps'].map(aggregateFor)).toEqual(['mean', 'mean', 'mean', 'mean', 'mean'])
+  })
+
+  it('names the value axis by its unit: formatted ticks for sizes, times and money, a title for tokens', () => {
+    expect(axisNaming(['bytes', 'bytes'])).toEqual({ formatTicks: true })
+    expect(axisNaming(['seconds'])).toEqual({ formatTicks: true })
+    expect(axisNaming(['usd'])).toEqual({ formatTicks: true })
+    expect(axisNaming(['tokens', 'tokens'])).toEqual({ label: 'tokens' })
+    expect(axisNaming(['tokens', 'count'])).toEqual({})
+    expect(axisNaming([undefined])).toEqual({})
   })
 })
