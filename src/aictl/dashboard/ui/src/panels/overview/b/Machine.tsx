@@ -192,7 +192,8 @@ function FleetProcesses(props: PanelProps) {
     </Show>
     <View result={result} retry={ctx.refresh}
       empty={model().silent.length ? 'No node reports its running sessions.' : 'No node reports a running session for the selected tools.'}>
-      <p class={styles.note}>Sessions running now, as each node last reported them in the past five minutes. The time range does not apply.</p>
+      <p class={styles.note}>Sessions running now, as each node last reported them in the past five minutes. The time range does not apply.
+        A session not on this board has no activity among the board’s sessions; open it to see its record.</p>
       <DataTable ctx={ctx} label="Running sessions" columns={sessionColumns} rows={rows()} action={{
         label: ({ row }) => row.title === UNLISTED_SESSION ? 'Open session' : `Open ${row.title}`,
         run: ({ row }) => ctx.openAgent(String(row.open_id)),

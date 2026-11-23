@@ -78,7 +78,7 @@ const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(
 const word = (value: unknown) => typeof value === 'string' && value ? value : undefined
 /** The id the board, the agent drawer and the session-process records give one session of one node. */
 export const sessionKey = (node: string, session: string) => JSON.stringify([node, session])
-export const UNLISTED_SESSION = 'Not in this board’s session list'
+export const UNLISTED_SESSION = 'Not on this board'
 
 /**
  * The sessions each reporting node runs now, named as the board names them, with the process ids

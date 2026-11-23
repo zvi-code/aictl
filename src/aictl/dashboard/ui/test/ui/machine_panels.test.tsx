@@ -66,7 +66,7 @@ describe('BOARD-MACHINE-01 · Processes in fleet scope lists the sessions each n
     const { host, dispose } = mount(() => <Processes ctx={ctx} def={def('procs')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
     const text = host.textContent!
     expect(text).toContain('Fix the build')
-    expect(text).toContain('Not in this board’s session list')
+    expect(text).toContain('Not on this board')
     expect(text).not.toMatch(/\["/)
     expect(text).not.toContain('lead')
     expect(text).toContain('4100, 4101')
