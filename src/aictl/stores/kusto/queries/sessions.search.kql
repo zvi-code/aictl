@@ -9,7 +9,7 @@ let candidates = materialize(sessions
     | where (isnull(since) or started_at >= since) and (isnull(until) or started_at <= until)
     | where not(restrict_tools) or tool in (requested_tools)
     | project node_id,session_id,tool,project_path,started_at,ended_at,
-        title=column_ifexists('title',''),title_source=column_ifexists('title_source',''));
+        ['title']=column_ifexists('title',''),title_source=column_ifexists('title_source',''));
 let candidate_ids = candidates | project node_id,session_id;
 let prompts = materialize(session_prompts
     | where all_nodes or node_id == requested_node
@@ -36,8 +36,8 @@ let eligible = union
     (candidates | where session_id in (moving_sessions) | project node_id,session_id)
     | distinct node_id,session_id;
 let hits = union
-    (candidates | where isnotempty(search_text) and title contains search_text
-        | project node_id,session_id,rank=0,match_text=title,stamp=0.0),
+    (candidates | where isnotempty(search_text) and ['title'] contains search_text
+        | project node_id,session_id,rank=0,match_text=['title'],stamp=0.0),
     (candidates | where isnotempty(search_text) and session_id contains search_text
         | project node_id,session_id,rank=6,match_text=session_id,stamp=0.0),
     (candidates | where isnotempty(search_text) and project_path contains search_text
@@ -86,7 +86,7 @@ union
     (page | lookup kind=leftouter titles on node_id,session_id
         | order by page_n asc, started_at desc, session_id asc
         | summarize data=make_list(bag_pack('session_id',session_id,'tool',tool,'project',project_path,
-                    'started_at',started_at,'ended_at',ended_at,'title',text,'title_ts',ts,'name',title,'name_source',title_source,
+                    'started_at',started_at,'ended_at',ended_at,'title',text,'title_ts',ts,'name',['title'],'name_source',title_source,
                     'rank',rank,'match_text',match_text)) by node_id,logical_id,page_n
         | project row_type='item',node_id,session_id=logical_id,page_n,data)
 | order by row_type asc,page_n asc,node_id asc

@@ -257,3 +257,14 @@ def test_recording_replays_occurrences_in_order(tmp_path):
             file.write(json.dumps(record) + "\n")
     with KustoClientFactory.replay(path) as client:
         assert [Result.from_response(client.execute("db", "T")).rows for _ in range(3)] == [[(1,)], [(2,)], [(2,)]]
+
+
+def test_views_bracket_the_title_column():
+    """``title`` is a KQL keyword: a bare use is a syntax error on a real cluster, which no replay tape shows."""
+    import re
+
+    bare = re.compile(r"(?<![\[\w'])title(?![\w'\]])")
+    queries = Path(__file__).parents[1] / "src" / "aictl" / "stores" / "kusto" / "queries"
+    found = [f"{path.name}:{number}" for path in sorted(queries.glob("*.kql"))
+             for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if bare.search(line)]
+    assert found == []

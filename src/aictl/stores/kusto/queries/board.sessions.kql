@@ -10,4 +10,4 @@ sessions
 | order by node_id asc, session_id asc
 | take row_limit
 | project node_id, session_id, tool, project_path, model, pid, started_at, ended_at, last_activity_at, end_reason,
-    title, title_source
+    ['title'], title_source
