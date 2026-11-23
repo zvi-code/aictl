@@ -398,6 +398,9 @@ class SessionFacts:
                     row.model, str(row.input_tokens), str(row.output_tokens))
                 key = data["dedup_key"] or _dedup_key(row.session_id, *identity, data["source"])
                 data.update(dedup_key=key)
+                if data["finish_reason"] == "error" and not data["is_error"]:
+                    # The source reports the call as ended by an error (Copilot finishReason "error").
+                    data.update(is_error=1, error_type=data["error_type"] or "error")
                 data["cost_usd"] = round(data["cost_usd"], 6)
                 for name in ("duration_ms", "ttft_ms"):
                     data[name] = round(data[name], 1)
