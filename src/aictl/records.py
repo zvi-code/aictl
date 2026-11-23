@@ -467,6 +467,24 @@ class FileWriteRow:
     size_bytes: int = 0
     detail: dict[str, Any] = field(default_factory=dict)
     dedup_key: str = ""
+    # Who and when: the subagent ('' for the main agent; the session is its parent's), the turn.
+    agent_id: str = ""
+    prompt_id: str = ""
+    turn_index: int | None = None
+    # memory_changes.memory_mechanism of the path; '' for a file that is no memory or instruction file.
+    mechanism: str = ""
+    # agent | subagent (a session's own write) | outside_session (the tool says so) | '' (not known).
+    actor: str = ""
+    lines_added: int | None = None
+    lines_removed: int | None = None
+    # The content before and after, as file_blobs hashes and sizes; '' and None when not known.
+    # *_source says where each came from (see the file_write_events section of docs/storage-schema.md).
+    before_hash: str = ""
+    after_hash: str = ""
+    before_bytes: int | None = None
+    after_bytes: int | None = None
+    before_source: str = ""
+    after_source: str = ""
 
 
 @dataclass(slots=True)
@@ -740,10 +758,12 @@ class CallFacts:
     digests: list[SessionDigestRow] = field(default_factory=list)
     outcomes: list[dict[str, Any]] = field(default_factory=list)
     thinking: list[SessionThinkingRow] = field(default_factory=list)
+    # Contents to keep once per hash in file_blobs: (hash, text, ts).
+    blobs: list[tuple[str, str, float]] = field(default_factory=list)
 
     def __len__(self) -> int:
         return (
-            len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
+            len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
             + len(self.steps) + len(self.cost_links) + len(self.context_items)
             + len(self.loaded_files)
             + len(self.context_events)

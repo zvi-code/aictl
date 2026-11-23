@@ -39,7 +39,7 @@ GA_LAYOUT_VERSION: int | None = None
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "f7b196414f20068497190bb347a09eaa7e2006a3dcfed53f17107fecac4aa06d"
+FINGERPRINT = "3e20df6ad605837643492539630c778eba387d2bf060836e2c4cc65703dae730"
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,11 @@ CHANGES: tuple[Change, ...] = (
         "TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under "
         "text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could "
         "overwrite each other); event_key links a summary to its context_events row, whose summary_kind and "
-        "summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen.",
+        "summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. "
+        "file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, "
+        "before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the "
+        "VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook "
+        "row and its transcript row share one key. Rows written before have these columns empty.",
         breaks=False,
     ),
 )

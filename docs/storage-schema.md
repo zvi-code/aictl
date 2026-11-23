@@ -26,7 +26,7 @@ stored values bumps the layout and adds a line here:
 | 2 | yes | `agents_by_session` | agents: keyed by (session_id, agent_id), with a tombstone, the folder, branch and worktree the agent ran in, and observed_at (the time completed and ended_at were observed; the latest observation wins). agents_text: keyed by session_id too. sessions: resumed_from, the session a resumed or forked session's file replays. Before, an agent id copied into a resumed session settled under whichever session was written last. |
 | 3 | yes | `node_tables` | Each node writes its own tables (requests__&lt;node key&gt;, ...); a stored function named like each table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*. |
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
-| 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. |
+| 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. |
 
 ### The `schema_version` registry
 
@@ -1300,13 +1300,13 @@ One row per write-like file event of an agent.
 | column | type | meaning |
 |---|---|---|
 | `id` | long | Equal to `rowid` |
-| `dedup_key` | string | Key of the write: from the source, else a hash of the session, operation, path and event id or time |
+| `dedup_key` | string | Key of the write: from the source, else a hash of the session, operation, path and event id or time. A Claude Code edit has one key from its tool call id and path argument, so its hook and its transcript line are one row |
 | `ts` | real | Time of the write, epoch seconds, UTC |
 | `session_id` | string | The session |
 | `tool` | string | Tool id |
 | `tool_name` | string | The tool that wrote, for example `Edit`, `Write` |
 | `operation` | string | The kind of write as the reader names it, for example `write` |
-| `path` | string | The file path |
+| `path` | string | The file path. A memory without a file of its own has a path no file has: `copilot-memory://<scope>/<repository>/<subject>` (Copilot `store_memory`; `vote_memory` names `copilot-memory://<scope>/<repository>`), `vscode-memory:///memories/...` (VS Code `memory` tool) |
 | `project_path` | string | Working folder |
 | `pid` | long | Process id, when known |
 | `source_event_kind` | string | `transcript` for a write read from a transcript; otherwise the reporting source, for example `hook` |
@@ -1318,6 +1318,19 @@ One row per write-like file event of an agent.
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `_deleted` | bool | Tombstone flag: true on a delete row, which carries only the key columns |
+| `agent_id` | string | The subagent that wrote; "" for the main agent. `session_id` is then the parent session |
+| `prompt_id` | string | The turn: Claude Code `promptId`, Copilot `interactionId`; "" when the source does not say |
+| `turn_index` | long | The turn's number in its session, from 1; null when the source does not say |
+| `mechanism` | string | The memory or instruction mechanism of `path`: `claude_auto_memory`, `claude_md`, `agents_md`, `copilot_instructions`, `copilot_store_memory`, `vscode_memory` or `codex_memory`; "" for any other file (`memory_changes.memory_mechanism`) |
+| `actor` | string | `agent` or `subagent` when the session's own write event shows it; `outside_session` when the tool reports the file changed outside the session (Claude Code `edited_text_file`); "" when not known. Never a guess |
+| `lines_added` | long | Lines added, as the tool reports them or as counted from the call's own text; null when not known |
+| `lines_removed` | long | Lines removed; null when not known |
+| `before_hash` | string | The `file_blobs.hash` of the content before the write; "" when not known |
+| `after_hash` | string | The `file_blobs.hash` of the content after the write; "" when not known |
+| `before_bytes` | long | Size of the content before; null when not known |
+| `after_bytes` | long | Size of the content after; null when not known |
+| `before_source` | string | For a memory or instruction file, where the before-image came from: `tool_result` (Claude Code's own copy of the file before the call, `originalFile`), `absent` (the tool says the file did not exist), `previous_version` (the after-image of the last change of the path this node stored; a change no event reported lies inside the diff), `claude_backup` or `copilot_preimage` (the tool's checkpoint backup), or a value starting `unknown:` that says why there is none; "" for other files |
+| `after_source` | string | Where the after-image came from: `tool_input` (the whole text the call wrote: a Write, a stored fact, a created memory file), `file_at_ingest` (the file read when the event was read, its mtime inside the write's time, so no later change), `absent` (deleted), or `unknown: …` (for example `unknown: the file changed after the write`); "" for other files |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 
 ### session_steps
@@ -1843,7 +1856,7 @@ Content of tracked context files, memory versions and large session summaries, b
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `file_text` (default 365d)
-- Written by: `file_inventory.py` (`sync`), only while text is kept, for files up to 512 KiB that are not sensitive; `session_facts.py` (`blobs`), only while text is kept, for the whole text of a large `session_digests` row
+- Written by: `file_inventory.py` (`sync`), only while text is kept, for files up to 512 KiB that are not sensitive; `session_facts.py` (`blobs`), only while text is kept, for the whole text of a large `session_digests` row and the before- and after-images of memory and instruction file changes (`file_write_events.before_hash`, `file_write_events.after_hash`; not for sensitive file names)
 
 | column | type | meaning |
 |---|---|---|

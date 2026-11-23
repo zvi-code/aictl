@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import ntpath
+import os
+from dataclasses import dataclass
 from urllib.parse import quote
 
 from . import platforms
@@ -56,6 +58,108 @@ def copilot_memory_path(scope: str, repository: str, subject: str = "") -> str:
 def vscode_memory_path(path: str) -> str:
     """The VS Code memory tool's own path (``/memories/notes.md``) under a scheme of its own."""
     return VSCODE_MEMORY_SCHEME + (path if path.startswith("/") else f"/{path}")
+
+
+# Where a before- or after-image came from (file_write_events.before_source / after_source).
+TOOL_INPUT = "tool_input"  # the text the call wrote, as sent (a Write, a stored fact, a created memory file)
+TOOL_RESULT = "tool_result"  # the tool's own copy of the file before the call (Claude ``originalFile``)
+FILE_AT_INGEST = "file_at_ingest"  # read from disk when the event was read, unchanged since the write
+ABSENT = "absent"  # the tool says the file did not exist before
+PREVIOUS_VERSION = "previous_version"  # the after-image of the last write of the path this node stored
+CLAUDE_BACKUP = "claude_backup"  # Claude Code's file-history backup of the file
+COPILOT_PREIMAGE = "copilot_preimage"  # Copilot's rewind snapshot backup of the file
+UNKNOWN_CHANGED = "unknown: the file changed after the write"
+UNKNOWN_MISSING = "unknown: the file was gone when the event was read"
+UNKNOWN_TOO_LARGE = "unknown: the content is larger than one stored value"
+UNKNOWN_NO_FILE = "unknown: the tool keeps this memory in no local file"
+UNKNOWN_NOT_SENT = "unknown: the call does not carry the whole content"
+# A file's mtime may lag or lead the event's own clock by this much.
+CLOCK_SLACK_S = 2.0
+
+
+@dataclass(slots=True)
+class Image:
+    """One side of a change: the content's hash and size, where it came from, and the text to store."""
+
+    source: str
+    hash: str = ""
+    size: int | None = None
+    text: str | None = None
+
+
+def image_of(content: str | bytes | None, source: str) -> Image:
+    if content is None:
+        return Image(source)
+    raw = content.encode("utf-8", "replace") if isinstance(content, str) else content
+    if len(raw) > BLOB_MAX_BYTES:
+        return Image(UNKNOWN_TOO_LARGE, size=len(raw))
+    return Image(source, blob_hash(raw), len(raw), raw.decode("utf-8", "replace"))
+
+
+def read_if_fresh(path: str, written_from: float, written_by: float) -> Image:
+    """The file's content now, when it is the version a write between the two times left.
+
+    It is that version when the file's mtime falls between the write's start and its end (with
+    ``CLOCK_SLACK_S``): a later change would have moved the mtime past the end. ``written_from``
+    of 0 accepts any older mtime (an outside change seen at ``written_by``)."""
+    try:
+        before = os.stat(path)
+        if before.st_size > BLOB_MAX_BYTES:
+            return Image(UNKNOWN_TOO_LARGE, size=before.st_size)
+        if before.st_mtime > written_by + CLOCK_SLACK_S or (written_from and before.st_mtime < written_from - CLOCK_SLACK_S):
+            return Image(UNKNOWN_CHANGED)
+        with open(path, "rb") as fh:
+            raw = fh.read(BLOB_MAX_BYTES + 1)
+        if os.stat(path).st_mtime_ns != before.st_mtime_ns:
+            return Image(UNKNOWN_CHANGED)
+    except OSError:
+        return Image(UNKNOWN_MISSING)
+    return image_of(raw, FILE_AT_INGEST)
+
+
+def set_images(row, before: Image | None, after: Image | None) -> list[tuple[str, str, float]]:
+    """Put the images on a ``FileWriteRow``; returns the (hash, text, ts) blobs to store.
+
+    A path the file inventory never stores the content of (``records._is_sensitive_path``) keeps
+    its hashes and sizes only."""
+    from .records import _is_sensitive_path
+
+    keep = not _is_sensitive_path(row.path)
+    blobs = []
+    for side, image in (("before", before), ("after", after)):
+        if image is None:
+            continue
+        setattr(row, f"{side}_source", image.source)
+        setattr(row, f"{side}_hash", image.hash)
+        setattr(row, f"{side}_bytes", image.size)
+        if keep and image.hash and image.text is not None:
+            blobs.append((image.hash, image.text, row.ts))
+    return blobs
+
+
+def claude_write_key(tool_use_id: str, path_argument: str) -> str:
+    """The dedup_key of one Claude Code file write: its tool call id and the path argument as the tool got it.
+
+    The transcript and the PostToolUse hook both carry these two, so one edit is one row.
+    """
+    from .records import _dedup_key
+
+    return _dedup_key("claude-edit", tool_use_id, path_argument)
+
+
+def fill_write(row):
+    """Give a ``FileWriteRow`` of a session its mechanism, its actor and its line counts where it lacks them.
+
+    Every row that reaches ``file_write_events`` is a session's own write unless its reader set the
+    actor (``outside_session``), so an empty actor here is the main agent's or the subagent's.
+    """
+    row.mechanism = row.mechanism or memory_mechanism(row.path, row.tool_name)
+    row.actor = row.actor or actor_of(row.agent_id)
+    for name in ("lines_added", "lines_removed"):
+        value = row.detail.get(name) if isinstance(row.detail, dict) else None
+        if getattr(row, name) is None and type(value) is int:
+            setattr(row, name, value)
+    return row
 
 
 def _under(path: str, root) -> bool:

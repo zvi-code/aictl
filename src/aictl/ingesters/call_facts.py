@@ -30,6 +30,23 @@ from typing import TYPE_CHECKING, Any
 
 from ..context_audit import _redact
 from ..data.model_pricing import is_billable_model, normalize_model_id, request_cost_usd
+from ..memory_changes import (
+    ABSENT,
+    COPILOT_MEMORY_TOOLS,
+    OUTSIDE_SESSION,
+    TOOL_INPUT,
+    TOOL_RESULT,
+    UNKNOWN_NO_FILE,
+    UNKNOWN_NOT_SENT,
+    Image,
+    claude_write_key,
+    copilot_memory_path,
+    image_of,
+    memory_mechanism,
+    read_if_fresh,
+    set_images,
+    vscode_memory_path,
+)
 from ..records import THINKING_TEXT_MAX
 from ..stores.base import StoreError
 from ..tool_targets import AGENT, FILE, describe_call, redact_secrets, split_mcp
@@ -288,6 +305,7 @@ class FactBuffer:
         self.session_files: dict[tuple, fact_rows.SessionFileRow] = {}
         self.digests: dict[tuple, fact_rows.SessionDigestRow] = {}
         self.thinking: dict[tuple, fact_rows.SessionThinkingRow] = {}
+        self.blobs: dict[str, tuple[str, str, float]] = {}
         self.outcomes: dict[str, dict] = {}
         # Rows that sum up many lines (a turn, a file's use) change in place. They are marked
         # here when a line not stored before changes them, and copied when the buffer is written.
@@ -355,6 +373,13 @@ class FactBuffer:
         if self._in_window(row.ts):
             self.file_writes[row.dedup_key] = row
             self._maybe_flush()
+
+    def add_memory_write(self, row: fact_rows.FileWriteRow, before: Image | None, after: Image | None) -> None:
+        """A write with its before- and after-images, whose contents are kept in file_blobs."""
+        if self._in_window(row.ts):
+            for blob in set_images(row, before, after):
+                self.blobs[blob[0]] = blob
+            self.add_file_write(row)
 
     def add_context_event(self, row: fact_rows.ContextEventRow) -> None:
         if self._in_window(row.ts):
@@ -465,7 +490,8 @@ class FactBuffer:
 
     def __len__(self) -> int:
         return (
-            len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests) + len(self.outcomes)
+            len(self.blobs) + len(self.thinking) + len(self.turns) + len(self.session_files) + len(self.digests)
+            + len(self.outcomes)
             + len(self._marked)
             + len(self.steps)
             + len(self.cost_links)
@@ -522,6 +548,7 @@ class FactBuffer:
             digests=list(self.digests.values()),
             outcomes=list(self.outcomes.values()),
             thinking=list(self.thinking.values()),
+            blobs=list(self.blobs.values()),
         )
         try:
             self.written += writer(facts)
@@ -542,6 +569,7 @@ class FactBuffer:
         self.context_items = {}
         self.turns, self.session_files, self.digests, self.outcomes = {}, {}, {}, {}
         self.thinking = {}
+        self.blobs = {}
 
 
 def _context_item_row(sid: str, agent_id: str, ts: float, item: Any, tool: str, project: str) -> fact_rows.ContextItemRow:
@@ -778,6 +806,24 @@ class ClaudeFacts:
 
         for item in context_items.claude_attachment(obj.get("attachment")):
             self.buffer.add_context_item(_context_item_row(sid, agent_id, ts, item, "claude-code", str(obj.get("cwd") or "")))
+        attachment = obj.get("attachment") if isinstance(obj.get("attachment"), dict) else {}
+        if attachment.get("type") == "edited_text_file":
+            self._outside_edit(sid, obj, attachment, ts, agent_id)
+
+    def _outside_edit(self, sid: str, obj: dict, attachment: dict, ts: float, agent_id: str) -> None:
+        """Claude Code's word that a file it had read changed outside the session (by a person, another
+        session or a program; it does not say which). Kept for memory and instruction files only."""
+        cwd = str(obj.get("cwd") or "")
+        path = absolute_path(str(attachment.get("filename") or ""), cwd)
+        if not path or not memory_mechanism(path):
+            return
+        turn = self._turn(sid, agent_id)
+        self.buffer.add_memory_write(fact_rows.FileWriteRow(
+            dedup_key=fact_rows._dedup_key("claude-outside-edit", sid, str(obj.get("uuid") or ts), path),
+            ts=ts, path=path, session_id=sid, tool="claude-code", tool_name="edited_text_file",
+            operation="outside_edit", project_path=cwd, source_event_id=str(obj.get("uuid") or ""),
+            agent_id=agent_id, prompt_id=turn.prompt_id if turn else "", turn_index=turn.turn_index if turn else None,
+            actor=OUTSIDE_SESSION), None, read_if_fresh(path, 0.0, ts))
 
     def _touch_agent(self, agent_id: str, sid: str, role: str, ts: float, obj: dict, meta: dict | None = None) -> None:
         """A line of a subagent. Its parent, depth, spawning tool call and worktree come from the
@@ -1278,7 +1324,7 @@ class ClaudeFacts:
             if failed:
                 continue
             if row.tool_name in _CLAUDE_WRITE_TOOLS:
-                self._file_edit(row, cwd, args, obj.get("toolUseResult"))
+                self._file_edit(row, cwd, args, obj.get("toolUseResult"), ts)
             elif row.tool_name in _CLAUDE_READ_TOOLS and row.target_kind == FILE and row.target_id:
                 self.buffer.touch_file(row.session_id, row.agent_id, absolute_path(row.target_id, cwd), "read",
                                        row.tool_name, row.ts, row.tool, cwd)
@@ -1302,7 +1348,8 @@ class ClaudeFacts:
             resolved_model=str(result.get("resolvedModel") or "")[:120], status=status,
             completed=1 if done else 0, ended_at=ts if done and ts else None, observed_at=ts if done else 0.0))
 
-    def _file_edit(self, row: fact_rows.ToolInvocationRow, cwd: str, args: dict, result: Any) -> None:
+    def _file_edit(self, row: fact_rows.ToolInvocationRow, cwd: str, args: dict, result: Any, done: float = 0.0) -> None:
+        """A file the call wrote. *done* is the time of its result line: the write happened between it and the call."""
         path = str(args.get("file_path") or args.get("notebook_path") or "")
         if not path:
             return
@@ -1323,20 +1370,38 @@ class ClaudeFacts:
             self._touch_turn(turn, row.ts)
         if (part := self._outcome(row.session_id, row.agent_id, row.ts)) is not None:
             _add_unique(part.setdefault("file_keys", []), file_key(full))
-        self.buffer.add_file_write(
-            fact_rows.FileWriteRow(
-                dedup_key=fact_rows._dedup_key("claude-edit", row.source_event_id, path),
-                ts=row.ts,
-                path=absolute_path(path, cwd),
-                session_id=row.session_id,
-                tool=row.tool,
-                tool_name=row.tool_name,
-                operation=_CLAUDE_WRITE_TOOLS[row.tool_name],
-                project_path=cwd,
-                source_event_id=row.source_event_id,
-                detail=detail,
-            )
+        if isinstance(result, dict) and result.get("memdirStamped") is True:
+            detail["memdir_stamped"] = True  # the tool's own mark of a write into its memory folder
+        write = fact_rows.FileWriteRow(
+            dedup_key=claude_write_key(row.source_event_id, path),
+            ts=row.ts,
+            path=full,
+            session_id=row.session_id,
+            tool=row.tool,
+            tool_name=row.tool_name,
+            operation=_CLAUDE_WRITE_TOOLS[row.tool_name],
+            project_path=cwd,
+            source_event_id=row.source_event_id,
+            detail=detail,
+            agent_id=row.agent_id,
+            prompt_id=row.prompt_id,
+            turn_index=row.turn_index,
         )
+        if not memory_mechanism(full):
+            self.buffer.add_file_write(write)
+            return
+        # A memory or instruction file: its content before and after, from the call itself where it has it.
+        result = result if isinstance(result, dict) else {}
+        original = result.get("originalFile")
+        if created or (row.tool_name == "Write" and "originalFile" in result and original is None):
+            before = Image(ABSENT, size=0)
+        else:
+            before = image_of(original, TOOL_RESULT) if isinstance(original, str) else None
+        if row.tool_name == "Write" and isinstance(args.get("content"), str):
+            after = image_of(args["content"], TOOL_INPUT)
+        else:
+            after = read_if_fresh(full, row.ts, done or row.ts)
+        self.buffer.add_memory_write(write, before, after)
 
 
 def _claude_input_line_counts(tool_name: str, args: dict) -> tuple[int, int] | None:
@@ -1455,6 +1520,9 @@ class CopilotFacts:
         self._summaries = 0
         self._compaction_count = 0
         self._todo_seq: dict[str, int] = {}
+        # The arguments of memory tool calls still running: their completion says whether they saved.
+        self._memory_args: dict[str, dict] = {}
+        self.repository = ""
         # The request row of each recent call, by apiCallId: its message comes after its usage record
         # and adds the thinking counts. Values: (row, visible chars, visible blocks, redacted blocks).
         self._calls_by_api: dict[str, list] = {}
@@ -1485,6 +1553,7 @@ class CopilotFacts:
             ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
             self.cwd = str(ctx.get("cwd") or self.cwd)
             self.git_root = str(ctx.get("gitRoot") or self.git_root)
+            self.repository = str(ctx.get("repository") or self.repository)
         elif kind == "system.message":
             self._system_message(data, ts, agent_id)
         elif kind == "subagent.selected":
@@ -1877,6 +1946,8 @@ class CopilotFacts:
         )
         self._running[call_id] = row
         self.buffer.add_tool(row)
+        if name in COPILOT_MEMORY_TOOLS:
+            self._memory_args[call_id] = args
         if name == "update_todo" and isinstance(args.get("todos"), str):
             # Copilot sends its whole list as Markdown each time: each list is a version.
             seq = self._todo_seq[agent_id] = self._todo_seq.get(agent_id, 0) + 1
@@ -1925,9 +1996,12 @@ class CopilotFacts:
         if viewed and not failed:
             # Writes are summed up by the tool itself in the store's ``session_files``.
             self.buffer.touch_file(self.sid, "", viewed, "read", row.tool_name, row.ts, row.tool, self.cwd)
-        self._file_edits(row, data, patch_counts)
+        self._file_edits(row, data, patch_counts, ts)
+        if row.tool_name in COPILOT_MEMORY_TOOLS:
+            self._memory_tool(row, data)
 
-    def _file_edits(self, row: fact_rows.ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]]) -> None:
+    def _file_edits(self, row: fact_rows.ToolInvocationRow, data: dict, patch_counts: dict[str, tuple[int, int]],
+                    done: float = 0.0) -> None:
         edits = data.get("fileEdits")
         if row.is_error or not isinstance(edits, list):
             return
@@ -1944,20 +2018,46 @@ class CopilotFacts:
             if len(paths) == 1 and "linesAdded" in metrics:
                 detail = {"lines_added": to_int(metrics.get("linesAdded")), "lines_removed": to_int(metrics.get("linesRemoved"))}
             path = str(edit["path"])
-            self.buffer.add_file_write(
-                fact_rows.FileWriteRow(
-                    dedup_key=fact_rows._dedup_key("copilot-edit", self.sid, row.source_event_id, path),
-                    ts=row.ts,
-                    path=absolute_path(path, self.cwd),
-                    session_id=self.sid,
-                    tool=row.tool,
-                    tool_name=row.tool_name,
-                    operation=str(edit.get("kind") or "edit"),
-                    project_path=self.cwd,
-                    source_event_id=row.source_event_id,
-                    detail=detail,
-                )
+            write = fact_rows.FileWriteRow(
+                dedup_key=fact_rows._dedup_key("copilot-edit", self.sid, row.source_event_id, path),
+                ts=row.ts,
+                path=absolute_path(path, self.cwd),
+                session_id=self.sid,
+                tool=row.tool,
+                tool_name=row.tool_name,
+                operation=str(edit.get("kind") or "edit"),
+                project_path=self.cwd,
+                source_event_id=row.source_event_id,
+                detail=detail,
+                agent_id=row.agent_id,
+                prompt_id=str(data.get("interactionId") or ""),
+                turn_index=row.turn_index,
             )
+            if memory_mechanism(write.path):
+                # The event carries no content: the after-image is the file, when it is still that version.
+                self.buffer.add_memory_write(write, None, read_if_fresh(write.path, row.ts, done or row.ts))
+            else:
+                self.buffer.add_file_write(write)
+
+    def _memory_tool(self, row: fact_rows.ToolInvocationRow, data: dict) -> None:
+        """A Copilot ``store_memory`` or ``vote_memory`` call that succeeded: a change to the repository's
+        memory, which the tool keeps on GitHub and in no local file. Its path names the memory
+        (``copilot-memory://<scope>/<repository>[/<subject>]``); a stored fact is its after-image."""
+        args = self._memory_args.pop(row.source_event_id, None)
+        if args is None or row.is_error:
+            return
+        scope = str(args.get("scope") or "")
+        if row.tool_name == "store_memory":
+            path, operation = copilot_memory_path(scope, self.repository, str(args.get("subject") or "")), "store"
+        else:
+            path, operation = copilot_memory_path(scope, self.repository), str(args.get("direction") or "vote")[:40]
+        stored = row.tool_name == "store_memory" and isinstance(args.get("fact"), str)
+        self.buffer.add_memory_write(fact_rows.FileWriteRow(
+            dedup_key=fact_rows._dedup_key("copilot-memory", self.sid, row.source_event_id),
+            ts=row.ts, path=path, session_id=self.sid, tool=row.tool, tool_name=row.tool_name, operation=operation,
+            project_path=self.cwd, source_event_id=row.source_event_id, agent_id=row.agent_id,
+            prompt_id=str(data.get("interactionId") or ""), turn_index=row.turn_index),
+            Image(UNKNOWN_NO_FILE) if stored else None, image_of(args["fact"], TOOL_INPUT) if stored else None)
 
     def _permission_requested(self, data: dict, ts: float, agent_id: str) -> None:
         request_id = str(data.get("requestId") or "")
@@ -2041,6 +2141,8 @@ def _vscode_file_edits(name: str, args: Any) -> list[tuple[str, int | None, int 
 
 # The tools VS Code reads a file with, and the link it shows when the file is a skill.
 _VSCODE_READ_TOOLS = frozenset({"read_file", "copilot_readFile"})
+# The commands of VS Code's memory tool that change a memory file (seen: create, str_replace, insert, delete).
+_VSCODE_MEMORY_WRITES = frozenset({"create", "str_replace", "insert", "delete", "rename"})
 _VSCODE_SKILL_LINK = re.compile(r"skill \[([^\]]+)\]\(([^)?]*SKILL\.md)", re.IGNORECASE)
 
 
@@ -2221,8 +2323,40 @@ class VSCodeDebugFacts:
                     project_path=self.project_path,
                     source_event_id=span,
                     detail={"lines_added": added, "lines_removed": removed},
+                    agent_id=self.agent_id,
+                    turn_index=row.turn_index,
                 )
             )
+        if name == "memory" and isinstance(args, dict):
+            self._memory_tool(row, args)
+
+    def _memory_tool(self, row: fact_rows.ToolInvocationRow, args: dict) -> None:
+        """A change made with VS Code's ``memory`` tool, in its own ``/memories/`` namespace.
+
+        Its path is the tool's path under ``vscode-memory://``: the call does not say whether the
+        file is the user's or the workspace's copy on disk. ``view`` reads and changes nothing."""
+        command = str(args.get("command") or "")
+        path = str(args.get("path") or "")
+        if command not in _VSCODE_MEMORY_WRITES or not path:
+            return
+        added = removed = None
+        if command == "create":
+            added, removed = len(_lines(str(args.get("file_text") or ""))), None
+        elif command == "str_replace":
+            added, removed = edit_line_counts(str(args.get("old_str") or ""), str(args.get("new_str") or ""))
+        elif command == "insert":
+            added, removed = len(_lines(str(args.get("insert_text") or ""))), 0
+        if command == "create" and isinstance(args.get("file_text"), str):
+            after = image_of(args["file_text"], TOOL_INPUT)
+        elif command == "delete":
+            after = Image(ABSENT, size=0)
+        else:
+            after = Image(UNKNOWN_NOT_SENT)  # a replacement or an insertion sends a part only
+        self.buffer.add_memory_write(fact_rows.FileWriteRow(
+            dedup_key=fact_rows._dedup_key("vscode-memory", self.sid, row.source_event_id or f"{path}{row.ts}"),
+            ts=row.ts, path=vscode_memory_path(path), session_id=self.sid, tool="copilot-vscode", tool_name="memory",
+            operation=command[:40], project_path=self.project_path, source_event_id=row.source_event_id,
+            agent_id=self.agent_id, turn_index=row.turn_index, lines_added=added, lines_removed=removed), None, after)
 
     def _prompt(self, attrs: dict, ts: float, span: str) -> None:
         # The main log's prompts come from the chat file, which also names prompt files.

@@ -12,6 +12,7 @@ import time
 import zlib
 from pathlib import Path
 
+from ..memory_changes import claude_write_key, fill_write
 from ..records import EventRow, FileWriteRow, HookCallRow, SessionRow, ToolInvocationRow
 from .otel_receiver import (
     _load_otlp_proto,
@@ -273,7 +274,8 @@ def _extract_file_write_row(
         content_hash = hashlib.sha256(content_bytes).hexdigest()[:16]
         size_bytes = len(content_bytes)
     cwd = str(detail.get("cwd", ""))
-    return FileWriteRow(
+    tool_use_id = str(detail.get("tool_use_id", ""))
+    return fill_write(FileWriteRow(
         ts=ts,
         session_id=session_id,
         tool=tool,
@@ -283,11 +285,15 @@ def _extract_file_write_row(
         project_path=cwd,
         pid=int(detail.get("pid", 0) or 0),
         source_event_kind="hook:PostToolUse",
-        source_event_id=str(detail.get("tool_use_id", "")),
+        source_event_id=tool_use_id,
         content_hash=content_hash,
         size_bytes=size_bytes,
         detail={"tool_use_id": detail.get("tool_use_id", ""), "input_keys": sorted(input_data.keys())},
-    )
+        # The transcript reports the same edit under this key (D5: one edit, one row).
+        dedup_key=claude_write_key(tool_use_id, str(raw_path)) if tool == "claude-code" and tool_use_id else "",
+        # Claude Code names the subagent in the hook input of a subagent's tool call.
+        agent_id=str(detail.get("agent_id") or ""),
+    ))
 
 
 class IngestRoutes:

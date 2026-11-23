@@ -13,7 +13,7 @@ from typing import Any
 
 from . import context_lists
 from .ingesters.session_titles import clean_title, outranks
-from .memory_changes import BLOB_MAX_BYTES, blob_hash
+from .memory_changes import ABSENT, BLOB_MAX_BYTES, PREVIOUS_VERSION, blob_hash, fill_write
 from .records import TEXT_PREVIEW_CHARS, SessionRow, _dedup_key, newer_observation, strip_event_text
 from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
@@ -37,6 +37,10 @@ _FAMILIES = {
     "cost_links": "turn_request_links", "turns": "session_turns", "session_files": "session_files",
     "outcomes": "session_outcomes", "digests": "session_digests", "thinking": "session_thinking",
 }
+
+
+# Values a write row lacks: another report of the same write may fill them.
+_UNSET = ("", None, 0, "{}")
 
 
 def _json(value: Any) -> str:
@@ -74,6 +78,10 @@ class SessionFacts:
         self._call_counts: OrderedDict = OrderedDict()
         # list_id -> when this node last wrote that list to context_lists (see context_lists.py).
         self._lists: OrderedDict = OrderedDict()
+        # The last stored row of each recent write event, by dedup_key (see file_writes).
+        self._file_writes: OrderedDict = OrderedDict()
+        # path -> (dedup_key, ts, after_hash, after_bytes) of the last stored change of a memory file.
+        self._versions: OrderedDict = OrderedDict()
         self.event_listener = None
         if state is not None:
             try:
@@ -590,17 +598,48 @@ class SessionFacts:
                                                         ts=row.ts or row.received_at)])
 
     def file_writes(self, rows, *, transcript: bool) -> None:
+        """Store write events. A hook and the transcript report one edit under one key (see
+        ``memory_changes.claude_write_key``): the row is the transcript's, with what only the hook
+        knows (its pid, the hash of the text it sent) kept from whichever came first."""
         values = []
-        for row in rows:
-            data = asdict(row)
-            data["dedup_key"] = row.dedup_key or call_key(
-                row.session_id, row.operation, row.path, row.source_event_id or str(row.ts))
-            if transcript:
-                data["source_event_kind"] = "transcript"
-            data["detail"] = _json(data["detail"]) if self.allows_text(row.ts) else "{}"
-            values.append(dict(data, project=row.project_path))
+        with self._lock:
+            for row in rows:
+                fill_write(row)
+                key = row.dedup_key or call_key(row.session_id, row.operation, row.path, row.source_event_id or str(row.ts))
+                if row.mechanism:
+                    self._previous_version(row, key)
+                data = asdict(row)
+                data["dedup_key"] = key
+                if transcript:
+                    data["source_event_kind"] = "transcript"
+                data["detail"] = _json(data["detail"]) if self.allows_text(row.ts) else "{}"
+                data["project"] = row.project_path
+                prior = self._file_writes.get(data["dedup_key"])
+                if prior is not None:
+                    later_hook = not transcript and prior["source_event_kind"] == "transcript"
+                    winner, other = (prior, data) if later_hook else (data, prior)
+                    merged = dict(winner)
+                    for name, value in other.items():
+                        if merged.get(name) in _UNSET and value not in _UNSET:
+                            merged[name] = value
+                    if merged == prior:
+                        continue
+                    data = merged
+                self._remember(self._file_writes, data["dedup_key"], data)
+                values.append(data)
         if values:
             self.writer.upsert("file_write_events", values)
+
+    def _previous_version(self, row, key: str) -> None:
+        """A memory change whose source has no before-image starts from the after-image of the last
+        change of its path this node stored (before_source ``previous_version``); a change made between
+        the two that no event reported is then inside the diff. Only an earlier change counts."""
+        last = self._versions.get(row.path)
+        if (last and last[0] != key and last[1] <= row.ts and not row.before_hash
+                and not row.before_source.startswith(ABSENT)):
+            row.before_hash, row.before_bytes, row.before_source = last[2], last[3], PREVIOUS_VERSION
+        if row.after_hash and (not last or last[1] <= row.ts):
+            self._remember(self._versions, row.path, (key, row.ts, row.after_hash, row.after_bytes))
 
     def _list_refresh_s(self) -> float:
         """How long a written list counts as stored. Retention drops a list's rows by their age, so
@@ -626,6 +665,8 @@ class SessionFacts:
         if only is None:
             self.requests(facts.requests, transcript=True)
             self.agents(facts.agents)
+            # Contents first: a write row never points to a blob that is not stored yet.
+            self.blobs(facts.blobs)
             self.file_writes(facts.file_writes, transcript=True)
         count = len(facts) if only is None else len(getattr(facts, only))
         for attr, table in _FAMILIES.items():
