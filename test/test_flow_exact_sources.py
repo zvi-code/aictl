@@ -66,3 +66,73 @@ def test_a_subagent_end_comes_from_the_reported_end_with_its_totals():
     assert (start["ts"], start["agent_type"], start["tool_call_id"]) == (T + 20, "task", "call-c")
     assert (end["ts"], end["outcome"], end["duration_ms"], end["reported_total_tokens"], end["reported_tool_calls"]) == (
         T + 38, "completed", 18757.0, 103729, 2)
+
+
+def use(ts, name="task", call="", aid="", duration=10.0):
+    return {"row_type": "use", "values": [ts, aid, name, "", "", "", duration, 0, None, "auto", None, None, None, call]}
+
+
+def otel_spawn(ts, call=""):
+    event = {"ts": ts, "type": "subagent", "to": "task", "detail": {"otel.span_id": "span-b", "otel.parent_span_id": "span-a"}}
+    if call:
+        event["tool_call_id"] = call
+    return event
+
+
+def spawn_rows():
+    return [
+        *BASE,
+        use(T + 10, call="call-f"), use(T + 20, call="call-c"),
+        agent("agent-f", started=T + 10.01, ended=T + 10.1, completed=1, call="call-f", status="failed"),
+        lifecycle(T + 10.01, "subagent_start", "agent-f", "started", call="call-f"),
+        lifecycle(T + 10.1, "subagent_end", "agent-f", "failed", 89.0, "call-f"),
+        # Started 14 s before its first call, which the agent row's time says.
+        agent("agent-c", started=T + 34, call="call-c"),
+        lifecycle(T + 20.01, "subagent_start", "agent-c", "started", call="call-c"),
+    ]
+
+
+def test_a_telemetry_spawn_joins_the_store_spawn_on_its_tool_call_id_only():
+    legacy = {"summary": {"source": "otel"}, "turns": [otel_spawn(T + 10.0, "call-f"), otel_spawn(T + 40.0, "call-c")]}
+    body = flow(spawn_rows(), legacy)
+    spawns = [e for e in body["turns"] if e["type"] == "subagent"]
+    assert sorted((e["agent_id"], e["source"]) for e in spawns) == [("agent-c", "store+otel"), ("agent-f", "store+otel")]
+    assert body["summary"]["subagents"] == 2
+
+
+def test_a_telemetry_spawn_without_an_id_is_shown_but_not_counted_twice():
+    # Within a second of the store's spawn, but no shared id: never joined by time.
+    legacy = {"summary": {"source": "otel"}, "turns": [otel_spawn(T + 10.2)]}
+    body = flow(spawn_rows(), legacy)
+    spawns = [e for e in body["turns"] if e["type"] == "subagent"]
+    assert len(spawns) == 3 and body["summary"]["subagents"] == 2
+    lone = next(e for e in spawns if not e.get("agent_id"))
+    assert lone["counted"] is False and lone["source"] == "otel"
+
+
+def test_a_spawn_is_linked_to_the_call_that_reports_its_id():
+    body = flow(spawn_rows())
+    calls = {e["tool_call_id"]: e for e in body["turns"] if e["type"] == "tool_use"}
+    assert (calls["call-f"]["spawned_agent_id"], calls["call-c"]["spawned_agent_id"]) == ("agent-f", "agent-c")
+    # A spawn whose id names no call is linked to none, however close in time.
+    rows = [r for r in spawn_rows() if not (r["row_type"] == "use" and r["values"][-1] == "call-c")]
+    rows.append(use(T + 20.0, call="call-other"))
+    body = flow(rows)
+    other = next(e for e in body["turns"] if e.get("tool_call_id") == "call-other")
+    assert "spawned_agent_id" not in other
+
+
+def test_an_invoke_agent_span_takes_the_tool_call_id_of_its_execute_tool_parent():
+    from aictl.dashboard.session_flow import build_turns_from_otel
+    from aictl.records import EventRow
+
+    spans = [
+        EventRow(ts=T, tool="copilot-cli", kind="otel:execute_tool task",
+                 detail={"otel.span_id": "span-a", "gen_ai.tool.call.id": "call-c", "gen_ai.tool.name": "task"}),
+        EventRow(ts=T + 0.01, tool="copilot-cli", kind="otel:invoke_agent task",
+                 detail={"otel.span_id": "span-b", "otel.parent_span_id": "span-a", "gen_ai.agent.name": "task"}),
+        EventRow(ts=T + 1, tool="copilot-cli", kind="otel:invoke_agent task",
+                 detail={"otel.span_id": "span-c", "otel.parent_span_id": "span-z", "gen_ai.agent.name": "task"}),
+    ]
+    spawns = [t for t in build_turns_from_otel([], spans, SID) if t["type"] == "subagent"]
+    assert [s.get("tool_call_id") for s in spawns] == ["call-c", None]

@@ -176,7 +176,7 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
 
     for row in rows("use"):
         ts, aid, name, target, raw_input, result, duration, is_error, exit_code, confirm = row[:10]
-        input_bytes, output_bytes, confirm_wait = (*row[10:13], None, None, None)[:3]
+        input_bytes, output_bytes, confirm_wait, call_id = (*row[10:14], None, None, None, None)[:4]
         use = {"ts": ts, "type": "tool_use", "from": tool, "to": name or "", "success": not is_error, "duration_ms": duration, "source": "store"}
         if target:
             use["target"] = _one_line(target, FLOW_TARGET_CHARS)
@@ -191,7 +191,7 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
         if result:
             use["result_summary"] = mask_secrets(result)
         for key, value in (("exit_code", exit_code), ("confirm", confirm), ("agent_id", aid),
-                           ("input_bytes", input_bytes), ("output_bytes", output_bytes)):
+                           ("input_bytes", input_bytes), ("output_bytes", output_bytes), ("tool_call_id", call_id)):
             if value not in _EMPTY:
                 use[key] = value
         if output_bytes is not None:
@@ -349,22 +349,15 @@ def _task_prompt(aid: str, started: float, native: tuple[float, str, str, str] |
 
 def _link_spawns(events: list[dict]) -> None:
     """Give a tool call that started a subagent the subagent's id (``spawned_agent_id``), and the
-    subagent start the parent call's time (``spawned_by_ts``). A call is the one of the same agent whose
-    run contains the subagent's start, within FLOW_MATCH_S."""
-    calls = [e for e in events if e["type"] == "tool_use"]
-    taken: set[int] = set()
-    for start in (e for e in events if e["type"] == "subagent" and e.get("agent_id")):
-        best = None
-        for call in calls:
-            if id(call) in taken or (call.get("agent_id") or "") == start.get("agent_id"):
-                continue
-            begin, end = call["ts"] - FLOW_MATCH_S, call["ts"] + (call.get("duration_ms") or 0) / 1000 + FLOW_MATCH_S
-            if begin <= start["ts"] <= end and (best is None or abs(call["ts"] - start["ts"]) < abs(best["ts"] - start["ts"])):
-                best = call
-        if best is not None:
-            taken.add(id(best))
-            best["spawned_agent_id"] = start["agent_id"]
-            start["spawned_by_ts"] = best["ts"]
+    subagent start the parent call's time (``spawned_by_ts``). The call is the one whose tool call id
+    the subagent reports (Copilot's ``toolCallId``, Claude Code's ``parent_tool_use_id``); a subagent
+    without that id is linked to no call, whatever the times."""
+    calls = {e["tool_call_id"]: e for e in events if e["type"] == "tool_use" and e.get("tool_call_id")}
+    for start in (e for e in events if e["type"] == "subagent" and e.get("agent_id") and e.get("tool_call_id")):
+        call = calls.get(start["tool_call_id"])
+        if call is not None and (call.get("agent_id") or "") != start["agent_id"]:
+            call["spawned_agent_id"] = start["agent_id"]
+            start["spawned_by_ts"] = call["ts"]
 
 
 def _legacy_flow_events(legacy: dict) -> tuple[list[dict], str]:
@@ -407,7 +400,24 @@ def _merge_flow(store: list[dict], legacy: list[dict]) -> list[dict]:
     taken: set[int] = set()
     store_kinds = {e["type"] for e in store}
     merged = list(store)
+    spawns = {e["tool_call_id"]: e for e in store if e["type"] == "subagent" and e.get("tool_call_id")}
     for event in legacy:
+        if event.get("type") == "subagent":
+            # One spawn is one event only on an exact shared id, never by time: the telemetry span
+            # carries the tool call id of the execute_tool span it ran under.
+            best = spawns.get(event.get("tool_call_id") or "")
+            if best is None or id(best) in taken:
+                if "subagent" in store_kinds:
+                    # No id to join on: shown, but the store's own spawns are the ones counted.
+                    event = {**event, "counted": False, "unmatched": "no shared tool call id"}
+                merged.append(event)
+                continue
+            taken.add(id(best))
+            for field, value in event.items():
+                if field not in ("ts", "source") and value not in _EMPTY and best.get(field) in _EMPTY:
+                    best[field] = value
+            best["source"] = "store+" + str(event.get("source") or "")
+            continue
         key = _match_key(event)
         group, ts_list = index.get(key, []), times.get(key, [])
         window = FLOW_SESSION_MATCH_S if event.get("type") in _FLOW_MARKERS else FLOW_MATCH_S
@@ -513,7 +523,7 @@ def _flow_summary(events: list[dict], source: str, cumulative: int, largest: int
         "duration_s": round(last - first, 1) if first else 0,
         "source": source,
         "event_count": len(events),
-        "subagents": count["subagent"],
+        "subagents": sum(1 for e in events if e["type"] == "subagent" and e.get("counted") is not False),
         "hooks": count["hook"],
         "errors": count["error"] + sum(1 for e in api if e.get("is_error")) + sum(1 for e in events if e["type"] == "tool_use" and e.get("success") is False),
         "cumulative_tokens": cumulative,
@@ -682,7 +692,7 @@ def _turn_marks(events: list[dict]) -> list[dict]:
         mark["end_ts"] = max(mark["end_ts"], event.get("end_ts") or event["ts"])
         mark["tokens"] = max(mark["tokens"], int(event.get("rt_tokens") or 0))
         mark["tools"] += kind == "tool_use"
-        mark["subagents"] += kind == "subagent"
+        mark["subagents"] += kind == "subagent" and event.get("counted") is not False
         mark["errors"] += kind == "error" or bool(event.get("is_error")) or (kind == "tool_use" and event.get("success") is False)
         if kind == "user_message" and not mark["prompt"]:
             mark["prompt"] = _clip(event.get("preview") or event.get("message"), 120)
@@ -806,6 +816,8 @@ def _flow_action(event: dict) -> dict | None:
         action["success"] = not event.get("is_error")
     if kind == "tool_use" and isinstance(event.get("success"), bool):
         action["success"] = event["success"]
+    if event.get("counted") is False:
+        action["counted"] = False
     detail = {key: event[key] for key in ("exit_code", "confirm", "agent_id") if event.get(key) not in _EMPTY}
     if kind == "api_response" and event.get("response"):
         detail["response"] = event["response"]
@@ -957,7 +969,7 @@ def agent_transcript(
         "total_tool_uses": sum(t["tool_use_count"] for t in turns),
         "compactions": sum(1 for a in actions if a.get("kind") == "compaction"),
         "errors": sum(1 for a in actions if a.get("kind") == "error" or (a.get("kind") in ("api_call", "tool_use") and a.get("success") is False)),
-        "subagents": sum(1 for a in actions if a.get("kind") == "subagent"),
+        "subagents": sum(1 for a in actions if a.get("kind") == "subagent" and a.get("counted") is not False),
         "event_count": len(actions) + sum(1 for t in turns if t["prompt_event"]),
     }
     body = {

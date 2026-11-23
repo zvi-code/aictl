@@ -101,7 +101,7 @@ union
             iff(keep_text and ts >= text_floor,coalesce(retained_target,column_ifexists('target','')),''),
             iff(keep_text and ts >= text_floor,coalesce(retained_input,column_ifexists('input','')),''),
             iff(keep_text and ts >= text_floor,coalesce(retained_result,column_ifexists('result_summary','')),''),
-            duration_ms,is_error,exit_code,confirm,input_bytes,output_bytes,confirm_wait_ms)),
+            duration_ms,is_error,exit_code,confirm,input_bytes,output_bytes,confirm_wait_ms,source_event_id)),
     (agent_rows | join kind=leftouter tasks on ['project'], node_id, session_id, agent_id
         | project row_type='agent', ts=started_at, key=agent_id, node_id, ['project'],
                   values=pack_array(agent_id,iff(keep_text,coalesce(retained_task,column_ifexists('task','')),''),model,started_at,ended_at,completed,

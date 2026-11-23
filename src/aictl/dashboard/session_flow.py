@@ -501,6 +501,14 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                 }
             )
 
+    # The tool call each execute_tool span ran, by its span id: an invoke_agent span whose parent
+    # is that span is the subagent the call started (Copilot CLI), an exact link to its transcript.
+    span_calls = {
+        str(d.get("otel.span_id")): str(d.get("gen_ai.tool.call.id"))
+        for d in (ev.detail for ev in otel_events if (ev.kind or "").startswith("otel:execute_tool"))
+        if isinstance(d, dict) and d.get("otel.span_id") and d.get("gen_ai.tool.call.id")
+    }
+
     # Process OTel events into sequence diagram entries
     for ev in otel_events:
         kind = ev.kind or ""
@@ -628,15 +636,16 @@ def build_turns_from_otel(all_events, otel_events, session_id):
                 # A span without an agent name is a turn of the main agent (Copilot CLI
                 # sends one per prompt), not a subagent.
                 continue
-            turns.append(
-                {
-                    "ts": ev.ts,
-                    "type": "subagent",
-                    "from": ev.tool,
-                    "to": agent_name or "agent",
-                    "detail": {k: v for k, v in detail.items() if k not in ("tool", "session_id")},
-                }
-            )
+            spawn = {
+                "ts": ev.ts,
+                "type": "subagent",
+                "from": ev.tool,
+                "to": agent_name or "agent",
+                "detail": {k: v for k, v in detail.items() if k not in ("tool", "session_id")},
+            }
+            if call_id := span_calls.get(str(detail.get("otel.parent_span_id") or "")):
+                spawn["tool_call_id"] = call_id
+            turns.append(spawn)
 
         # ── Copilot session/turn events ──────────────────
         elif kind == "otel:copilot_chat.session.start":
