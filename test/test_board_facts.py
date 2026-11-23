@@ -368,6 +368,45 @@ class TestSupersededRows:
         assert tools[0]["result_summary"] == "kept"  # what only the hook had
         assert tools[0]["duration_ms"] > 0
 
+    @staticmethod
+    def _reported(ago, **counts):
+        """What Claude Code telemetry reports for the call that c_assistant writes."""
+        ts = NOW - ago
+        numbers = dict(input_tokens=10, output_tokens=5, cache_read_tokens=100, cache_creation_tokens=20) | counts
+        return RequestRow(ts=ts, source_ts=ts, session_id=SESSION, tool="claude-code", model=MODEL, source="otel",
+                          prompt_id="p1", **numbers)
+
+    def test_a_call_reported_by_telemetry_then_read_from_the_file_is_one_row(self, db, tmp_path):
+        db.requests([self._reported(99)])
+        assert count(db, "requests") == 1
+        write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100)])
+        make_ingester(db, tmp_path).poll()
+        stored, = rows(db, "requests")
+        assert stored["source"] == "transcript" and stored["input_tokens"] == 10
+        assert stored["prompt_id"] == "p1"  # what only the telemetry had
+
+    def test_a_call_read_from_the_file_then_reported_by_telemetry_is_one_row(self, db, tmp_path):
+        write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100)])
+        make_ingester(db, tmp_path).poll()
+        db.requests([self._reported(99)])
+        stored, = rows(db, "requests")
+        assert stored["source"] == "transcript" and stored["prompt_id"] == "p1"
+        # The same report again, as a retried export sends it, adds nothing.
+        db.requests([self._reported(99)])
+        assert count(db, "requests") == 1
+
+    def test_two_calls_with_the_same_counts_pair_one_to_one(self, db, tmp_path):
+        db.requests([self._reported(99), self._reported(89), self._reported(79)])
+        write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100), c_assistant("m2", "r2", 90)])
+        make_ingester(db, tmp_path).poll()
+        assert sorted(r["source"] for r in rows(db, "requests")) == ["otel", "transcript", "transcript"]
+
+    def test_a_reported_call_with_other_counts_stays_until_the_file_has_it(self, db, tmp_path):
+        db.requests([self._reported(99, output_tokens=7)])
+        write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100)])
+        make_ingester(db, tmp_path).poll()
+        assert sorted(r["source"] for r in rows(db, "requests")) == ["otel", "transcript"]
+
     def test_team_scan_cannot_bring_rows_back(self, db, tmp_path):
         write_lines(claude_path(tmp_path), [c_assistant("m1", "r1", 100)])
         make_ingester(db, tmp_path).poll()

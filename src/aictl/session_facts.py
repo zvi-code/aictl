@@ -49,19 +49,28 @@ class SessionFacts:
         self._usage_projects: OrderedDict = OrderedDict()
         self._hook_times: OrderedDict = OrderedDict()
         self._heartbeats: OrderedDict = OrderedDict()
+        # A model call reported by OpenTelemetry and read again from the transcript is one
+        # call. Both carry the same four token counts, so the n-th call of a session with
+        # the same counts is paired; these hold the calls still waiting for the other side.
+        self._otel_calls: OrderedDict = OrderedDict()
+        self._transcript_calls: OrderedDict = OrderedDict()
+        self._call_counts: OrderedDict = OrderedDict()
         self.event_listener = None
         if state is not None:
             try:
                 saved = state.read()
                 self._sessions.update(saved.get("sessions", {}))
                 self._hook_times.update(saved.get("hook_times", {}))
+                for counts, waiting in saved.get("otel_calls", []):
+                    self._otel_calls[tuple(counts)] = waiting
             except (OSError, ValueError, TypeError):
                 log.warning("Could not load session restart state", exc_info=True)
 
     def save(self) -> None:
         with self._lock:
             if self.state is not None and self._dirty:
-                self.state.replace({"sessions": self._sessions, "hook_times": self._hook_times})
+                self.state.replace({"sessions": self._sessions, "hook_times": self._hook_times,
+                                    "otel_calls": list(self._otel_calls.items())})
                 self._dirty = False
 
     @staticmethod
@@ -201,9 +210,29 @@ class SessionFacts:
         if retired:
             self.writer.delete(table, retired)
 
+    @staticmethod
+    def _call_counts_of(data: dict) -> tuple | None:
+        counts = tuple(int(data[name] or 0) for name in (
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"))
+        return (data["session_id"], *counts) if data["session_id"] and any(counts) else None
+
+    def _waiting(self, cache: OrderedDict, counts: tuple | None) -> list:
+        return cache.get(counts, []) if counts else []
+
+    def _wait(self, cache: OrderedDict, counts: tuple, entry) -> None:
+        self._remember(cache, counts, [*cache.get(counts, []), entry])
+
+    def _take(self, cache: OrderedDict, counts: tuple):
+        waiting = cache[counts]
+        entry = waiting.pop(0)
+        if not waiting:
+            del cache[counts]
+        return entry
+
     def requests(self, rows, *, transcript: bool = False) -> None:
         with self._lock:
             staged = {}
+            dropped = []
             for row in rows:
                 data = asdict(row)
                 embedded = data.pop("source_ts")
@@ -217,6 +246,49 @@ class SessionFacts:
                 for name in ("duration_ms", "ttft_ms"):
                     data[name] = round(data[name], 1)
                 prior = staged.get(key, self._requests.get(key))
+                counts = self._call_counts_of(data)
+                if transcript:
+                    waited = self._call_counts.get(key)
+                    if waited != "paired" and waited != counts:
+                        # A reply still streaming is read with growing counts: the call
+                        # waits under its latest counts only.
+                        if waited in self._transcript_calls and key in self._transcript_calls[waited]:
+                            self._transcript_calls[waited].remove(key)
+                            if not self._transcript_calls[waited]:
+                                del self._transcript_calls[waited]
+                        if counts and self._waiting(self._otel_calls, counts):
+                            reported = self._take(self._otel_calls, counts)
+                            dropped.append({"project": reported["project_path"], "dedup_key": reported["dedup_key"]})
+                            staged.pop(reported["dedup_key"], None)
+                            self._requests.pop(reported["dedup_key"], None)
+                            self._remember(self._call_counts, reported["dedup_key"], "paired")
+                            for name in ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason"):
+                                data[name] = data[name] or reported[name]
+                            self._remember(self._call_counts, key, "paired")
+                        elif counts:
+                            self._wait(self._transcript_calls, counts, key)
+                            self._remember(self._call_counts, key, counts)
+                elif data["source"] == "otel" and not prior and counts:
+                    if self._call_counts.get(key) == "paired":
+                        continue  # a retried export of a call already paired
+                    if self._waiting(self._transcript_calls, counts):
+                        self._remember(self._call_counts, key, "paired")
+                        # The transcript already stored this call: add what only the
+                        # telemetry knows and store nothing under a second key.
+                        key = self._take(self._transcript_calls, counts)
+                        self._remember(self._call_counts, key, "paired")
+                        read = staged.get(key, self._requests.get(key))
+                        if read:
+                            merged = dict(read)
+                            for name in ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason"):
+                                merged[name] = merged[name] or data[name]
+                            if merged != read:
+                                staged[key] = merged
+                        continue
+                    self._wait(self._otel_calls, counts, {
+                        name: data[name] for name in (
+                            "dedup_key", "project_path", "duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason")})
+                    self._dirty = True
                 if prior and transcript:
                     for name in ("tool_tokens", "max_prompt_tokens", "request_bytes", "available_tools"):
                         if data[name] is None:
@@ -235,6 +307,9 @@ class SessionFacts:
                 self._retire_projects("requests", "dedup_key", self._requests, staged)
                 for key, data in staged.items():
                     self._remember(self._requests, key, data)
+            if dropped:
+                self.writer.delete("requests", dropped)
+                self._dirty = True
 
     def agents(self, rows) -> None:
         with self._lock:
