@@ -9,6 +9,17 @@ export function billedCost(credits: BoardCredits | undefined): number | undefine
   return credits?.usd != null && credits.cost_usd != null ? credits.cost_usd : undefined
 }
 
+/**
+ * The Cost tile's title: "not a bill" only when the figure is a list-price estimate alone. With
+ * Copilot credits in view the figure is what Copilot billed, plus the list-price estimate of the
+ * rest of the usage when there is any (cost_usd - usd, the board's own split).
+ */
+export function costTitle(credits: BoardCredits | undefined): string {
+  const billed = billedCost(credits)
+  if (billed == null) return 'Cost (estimate, not a bill)'
+  return billed - (credits!.usd ?? 0) >= 0.005 ? 'Cost (billed + estimate)' : 'Cost (Copilot billed)'
+}
+
 /** What Copilot billed, then the list-price estimate of the same usage and what that estimate leaves out. */
 export function copilotBilledText(credits: BoardCredits | undefined): string | undefined {
   if (credits?.usd == null || credits.amount == null) return undefined

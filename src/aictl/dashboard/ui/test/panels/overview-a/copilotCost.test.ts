@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { billedCost, copilotBilledText } from '../../../src/panels/overview/copilotCost'
+import { billedCost, copilotBilledText, costTitle } from '../../../src/panels/overview/copilotCost'
 
 const credits = {
   amount: 1277, by_tool: { 'copilot-cli': 1277 }, approximate: false, unit: 'ai_credits' as const,
@@ -23,5 +23,13 @@ describe('Copilot cost', () => {
     expect(billedCost(none)).toBeUndefined()
     expect(copilotBilledText(none)).toBeUndefined()
     expect(billedCost(null)).toBeUndefined()
+  })
+
+  it('titles the Cost tile by what its figure is', () => {
+    // Found on the board: "Cost (not a bill)" over a figure that was what Copilot billed.
+    expect(costTitle(credits)).toBe('Cost (Copilot billed)')
+    expect(costTitle({ ...credits, cost_usd: 20.5 })).toBe('Cost (billed + estimate)')
+    expect(costTitle({ ...credits, amount: null, usd: null, cost_usd: null })).toBe('Cost (estimate, not a bill)')
+    expect(costTitle(undefined)).toBe('Cost (estimate, not a bill)')
   })
 })

@@ -110,6 +110,8 @@ describe('BOARD-STAGED-02 · KPI tiles show their own detail, never a comparison
     expect(text).toContain('345')
     expect(text).toMatch(/p50: \S/)
     expect(text).not.toMatch(/vs before|period before|collected since/)
+    // No Copilot credits in view: the cost is a list-price estimate and the title says so.
+    expect(text).toContain('Cost (estimate, not a bill)')
     dispose()
   })
 })

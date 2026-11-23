@@ -8,7 +8,7 @@ import { States } from '../kinds/States'
 import { monitoredReport } from './monitoredReport'
 import { runtimeSummary } from '../../data/runtimeAgents'
 import { runningDetail, unlinkedText } from './agentTree'
-import { billedCost, copilotBilledText } from './copilotCost'
+import { billedCost, copilotBilledText, costTitle } from './copilotCost'
 import styles from '../kinds/kinds.module.css'
 
 const metrics = [
@@ -16,7 +16,8 @@ const metrics = [
   ['messages', 'Messages', 'usage', 'messages'],
   ['tokens', 'Tokens', 'usage', 'tokens'],
   ['cached_share', 'Cached', 'usage', 'cached'],
-  ['cost_usd', 'Cost (not a bill)', 'usage', 'cost'],
+  // The title follows what the figure is: costTitle.
+  ['cost_usd', 'Cost', 'usage', 'cost'],
   ['tool_calls', 'Tool calls', 'tools', 'tool_calls'],
   ['failures', 'Failures', 'tools', 'failures'],
   ['p95_ms', 'p95 reply', 'tools', 'p95'],
@@ -74,7 +75,7 @@ export default function Kpis(props: PanelProps) {
           return null
         }
         return <a href={`#sec-${section}`} onClick={event => { event.preventDefault(); ctx.jump(section) }}>
-          <Stat label={label} value={format(key, (key === 'running' ? runtime()?.running : undefined) ??
+          <Stat label={key === 'cost_usd' ? costTitle(ctx.board('credits')) : label} value={format(key, (key === 'running' ? runtime()?.running : undefined) ??
             (key === 'cost_usd' ? billedCost(ctx.board('credits')) : undefined) ?? data()?.[key])}
             detail={<div class={styles.kpiDetail}>
               <span>{detail()}</span><Spark values={data()?.spark?.[spark] ?? []} />
