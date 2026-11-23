@@ -28,7 +28,7 @@ export function ToolCalls(props: PanelProps) {
       metric('total', 'board.kpi.tool_calls', 'Total calls'), metric('unnamed', 'board.kpi.tool_calls', 'Calls without a tool name'),
     ]} value={{ total: total(), unnamed: unnamed() }} />
     <Show when={rows().length} fallback={<p>No named tool calls in this time.</p>}>
-      <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} columnMenu action={{
+      <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} action={{
         label: ({ row }) => `Open tool ${row.name}`,
         run: ({ row }) => { const name = text(row.name); if (name) ctx.openDetail({ type: 'tool', name }) },
       }} />

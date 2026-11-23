@@ -1,17 +1,15 @@
-import { createMemo, createSignal, lazy, Show, untrack, type Accessor } from 'solid-js'
+import { createMemo, lazy, Show, untrack, type Accessor } from 'solid-js'
 import type { JSX } from '@solidjs/web'
-import { Menu } from '../../ui/Menu'
 import { fmtN, fmtUsd } from '../../design/format'
 import { at } from '../data'
 import type { FieldRef, KeyedRow, PanelProps, Read, RowOptions } from '../types'
 import { keyedRows, nodeColumn, presentation, rowAction, scalar } from './model'
 import { States } from './States'
-import styles from './kinds.module.css'
+import type { TableProps } from '../../ui/Table'
 
 type PanelRow = ReturnType<typeof keyedRows>[number]
 const Table = lazy(() => import('../../ui/Table').then(module => ({ default: module.Table<PanelRow> })))
 const FoldTable = lazy(() => import('./FoldTable'))
-const ColumnChooser = lazy(() => import('./TableColumns'))
 const pageSize = 10
 const numericUnits = new Set(['bytes', 'count', 'epoch_s', 'ms', 'percent', 'ratio', 'seconds', 'tokens', 'usd'])
 
@@ -29,20 +27,6 @@ export default function Rows(props: PanelProps & { setup?: (props: PanelProps) =
   const keyed = createMemo(() => setup?.rows?.() ?? keyedRows(read(), identity))
   const rows = createMemo(() => keyed().filter(({ row }) =>
     !def.actions.some(action => action.kind === 'agent' && action.excludeStopped && ctx.stopped(String(at(row, action.field))))))
-  const key = `aictl-panel-columns-${def.id}`
-  const [hidden, setHidden] = createSignal<ReadonlySet<string>>((() => {
-    try {
-      const data: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
-      return new Set(Array.isArray(data) ? data.filter((id): id is string => typeof id === 'string') : [])
-    } catch { return new Set<string>() }
-  })())
-  const toggle = (id: string) => {
-    const next = new Set(hidden())
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    setHidden(next)
-    try { localStorage.setItem(key, JSON.stringify([...next])) } catch { /* No storage. */ }
-  }
   const result = () => {
     const value = read()
     if (value.state !== 'ready' && !(setup?.status && value.state === 'stale')) return value
@@ -58,23 +42,9 @@ export default function Rows(props: PanelProps & { setup?: (props: PanelProps) =
   }
   const contents = () => <Show when={rows().length} fallback={
     setup?.status ? undefined : <p>{setup?.empty?.() ?? def.empty ?? 'No results'}</p>}>
-    <Show when={setup?.flowColumns} fallback={<>
-      <Show when={def.kind === 'table' && def.columns.length > 1}>
-        <div class={styles.chartTools}><Menu label={`${def.title} columns`} items={def.columns.map(field => ({
-          id: field.path,
-          label: `${hidden().has(field.path) ? 'Show' : 'Hide'} ${presentation(ctx, field).label}`,
-          disabled: (rows().some(row => row.folded !== undefined) && field === def.columns[0]) ||
-            (!hidden().has(field.path) && def.columns.filter(item => !hidden().has(item.path)).length <= 1),
-          onSelect: () => toggle(field.path),
-        }))} /></div>
-      </Show>
-      <RowTable panel={props} rows={rows()} columns={def.columns.filter(field => !hidden().has(field.path))} />
-    </>}>{defaults =>
-      <ColumnChooser id={def.id} title={def.title} columns={def.columns} defaults={defaults()}
-        label={field => presentation(ctx, field).label}>
-        {columns => <RowTable panel={props} rows={rows()} columns={columns()} pageSize={pageSize} />}
-      </ColumnChooser>
-    }</Show>
+    <RowTable panel={props} rows={rows()} tableId={def.id} pageSize={setup?.flowColumns ? pageSize : undefined}
+      defaultHidden={setup?.flowColumns && def.columns.slice(1).flatMap(field => setup.flowColumns!.includes(field.path) ? [] : [field.path])}
+      legacyKeys={setup?.flowColumns ? { visible: `aictl-panel-visible-columns-v1-${def.id}` } : { hidden: `aictl-panel-columns-${def.id}` }} />
   </Show>
   return <>
     {setup?.status?.(result)}
@@ -94,7 +64,7 @@ export function RowTable(props: {
   sorted?: { sort: { id: string; desc: boolean } | undefined; onSort: (column: string) => void; columns: ReadonlySet<string> }
   /** The narrowest the table may get before its region scrolls sideways. */
   minWidth?: string
-}) {
+} & Pick<TableProps<KeyedRow>, 'tableId' | 'defaultHidden' | 'legacyKeys'>) {
   const { ctx, def } = untrack(() => props.panel)
   const columns = () => props.columns ?? def.columns
   const fields = createMemo(() => [
@@ -125,7 +95,8 @@ export function RowTable(props: {
   return <Show when={props.rows.some(row => row.folded !== undefined)}
     fallback={<Table label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} rowId={row => row.id}
       sorted={props.sorted ? { sort: props.sorted.sort, onSort: field => props.sorted?.onSort(field.id) } : undefined}
-      minWidth={props.minWidth} />}>
-    <FoldTable label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} action={action} />
+      minWidth={props.minWidth} tableId={props.tableId} defaultHidden={props.defaultHidden} legacyKeys={props.legacyKeys} />}>
+    <FoldTable label={props.label ?? def.title} pageSize={props.pageSize} fields={fields()} rows={props.rows} action={action}
+      tableId={props.tableId} defaultHidden={props.defaultHidden} legacyKeys={props.legacyKeys} />
   </Show>
 }

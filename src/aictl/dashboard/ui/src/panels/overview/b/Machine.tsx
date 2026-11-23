@@ -230,7 +230,7 @@ export function Processes(props: PanelProps) {
       </div>}
     </Show>
     <DataTable ctx={ctx} label={local() && mode() === 'tree' ? 'Process tree' : def.title} columns={def.columns}
-      rows={rows()} columnMenu action={{
+      rows={rows()} action={{
         label: ({ row }) => row.children || row.owner_id || row.cleanup_cmd || row.cmdline ? `Inspect process ${row.pid}` : '',
         run: ({ id }) => setSelected(value => value === id ? undefined : id),
       }} />
@@ -253,7 +253,7 @@ export function Traffic(props: PanelProps) {
     })), row => identity(row.node_id)))
   return <View result={() => local() ? live() : remote.result(remote.data()?.hosts)} retry={ctx.refresh} empty={def.empty}>
     <p class={styles.note}>{local() ? 'Live network and file measurements.' : 'Last host samples. The Tool filter and time range do not apply.'} Token values are network estimates, not tool-reported counts.</p>
-    <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} columnMenu />
+    <DataTable ctx={ctx} label={def.title} columns={def.columns} rows={rows()} />
   </View>
 }
 

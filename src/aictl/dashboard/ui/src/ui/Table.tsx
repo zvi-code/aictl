@@ -3,10 +3,15 @@ import type { JSX } from '@solidjs/web'
 import { defaultRangeExtractor, elementScroll, observeElementOffset, observeElementRect, Virtualizer } from '@tanstack/virtual-core'
 import type { SortingState } from '@tanstack/table-core'
 import { actionName, createTableModel, formatValue, makeColumns, updateTableModel, type Field, type RowIdentity } from './tableModel'
+import { createColumnLayout, tableKey, type LegacyKeys } from './columnState'
+import { columnStyles, createColumnControls } from './ColumnControls'
 import { PanelState } from './PanelState'
 import styles from './Table.module.css'
 
-type TableProps<T> = {
+/** The column id of the trailing Actions column in the saved layout. */
+export const actionColumnId = '@actions'
+
+export type TableProps<T> = {
   label: string
   fields: readonly Field<T>[]
   rows: readonly T[]
@@ -18,7 +23,36 @@ type TableProps<T> = {
   minWidth?: string
   /** A sort the caller applies, such as a server-side order: the rows arrive sorted and a header click calls onSort. */
   sorted?: { sort: SortingState[number] | undefined; onSort: (field: Field<T>) => void }
+  /** Saves the column layout under this id instead of the label, for a label that changes. */
+  tableId?: string
+  /** Columns hidden until the user shows them. */
+  defaultHidden?: readonly string[]
+  /** Keys an earlier column control saved under, read once when this table has no saved layout. */
+  legacyKeys?: LegacyKeys
 }
+
+type Column<T> = { id: string; label: string; pin?: 'start' | 'end'; field?: Field<T> }
+
+function useColumns<T extends object>(props: TableProps<T>) {
+  const columns = createMemo((): Column<T>[] => [
+    ...props.fields.map((field, index): Column<T> => ({
+      id: field.id, label: field.label, field, pin: index === 0 && props.primaryCell ? 'start' : undefined,
+    })),
+    ...(props.action ? [{ id: actionColumnId, label: 'Actions', pin: 'end' as const }] : []),
+  ])
+  const control = createColumnLayout({
+    key: () => tableKey(props.tableId ?? props.label),
+    columns,
+    defaultHidden: () => props.defaultHidden,
+    legacy: () => props.legacyKeys,
+  })
+  const controls = createColumnControls({ control, label: () => props.label, columns })
+  const fields = createMemo(() => control.visible().flatMap(column => column.field ?? []))
+  const showAction = () => control.visible().some(column => column.id === actionColumnId)
+  return { control, controls, fields, showAction }
+}
+
+type Columns<T extends object> = ReturnType<typeof useColumns<T>>
 
 export function Table<T extends object>(props: TableProps<T>): JSX.Element {
   const [sort, setSort] = createSignal<SortingState[number]>()
@@ -26,16 +60,18 @@ export function Table<T extends object>(props: TableProps<T>): JSX.Element {
     : props.fields.some(field => field.id === sort()?.id) ? sort() : undefined)
   const changeSort = (field: Field<T>) => props.sorted ? props.sorted.onSort(field) : setSort(previous => previous?.id !== field.id
     ? { id: field.id, desc: false } : previous.desc ? undefined : { id: field.id, desc: true })
+  const columns = useColumns(props)
   return <Show when={props.rows.length > 0} fallback={<PanelState state="empty" />}>
-    <Show when={props.pageSize} fallback={<VirtualTable {...props} sort={active()} changeSort={changeSort} />}>
-      <PagedTable {...props} sort={active()} changeSort={changeSort} />
+    <Show when={props.pageSize} fallback={<VirtualTable {...props} sort={active()} changeSort={changeSort} columns={columns} />}>
+      <PagedTable {...props} sort={active()} changeSort={changeSort} columns={columns} />
     </Show>
   </Show>
 }
 
-type SortedTableProps<T> = TableProps<T> & {
+type SortedTableProps<T extends object> = TableProps<T> & {
   sort: SortingState[number] | undefined
   changeSort: (field: Field<T>) => void
+  columns: Columns<T>
 }
 
 function sortedRows<T extends object>(props: SortedTableProps<T>) {
@@ -52,26 +88,32 @@ function sortedRows<T extends object>(props: SortedTableProps<T>) {
 }
 
 function Header<T extends object>(props: SortedTableProps<T>) {
+  const controls = () => props.columns.controls
   return <thead><tr aria-rowindex={1}>
-    <For each={props.fields} keyed={field => field.id}>{field =>
-      <th scope="col" data-numeric={props.pageSize && field().numeric ? '' : undefined}
-        aria-sort={props.sort?.id === field().id ? (props.sort.desc ? 'descending' : 'ascending') : undefined}>
-        <Show when={field().sortable !== false} fallback={field().label}>
-          <button type="button" class={styles.sort} onClick={() => props.changeSort(field())}>
-            {field().label}<span aria-hidden="true">{props.sort?.id === field().id
+    <For each={props.columns.control.visible()} keyed={column => column.id}>{column =>
+      <th scope="col" class={columnStyles.header} data-col={column().id} data-pinned={column().pin ? '' : undefined}
+        data-drop={controls().dropSide(column().id)} data-dragging={controls().dragging(column().id)}
+        data-numeric={props.pageSize && column().field?.numeric ? '' : undefined}
+        aria-sort={props.sort?.id === column().id ? (props.sort.desc ? 'descending' : 'ascending') : undefined}
+        onPointerDown={event => controls().onHeaderPointerDown(column(), event)}
+        onKeyDown={event => controls().onHeaderKeyDown(column(), event)}>
+        <Show when={column().field && column().field!.sortable !== false} fallback={column().label}>
+          <button type="button" class={styles.sort} data-sort aria-keyshortcuts={controls().sortKeys(column())}
+            onClick={() => { if (!controls().takeDragClick()) props.changeSort(column().field!) }}>
+            {column().label}<span aria-hidden="true">{props.sort?.id === column().id
               ? (props.sort.desc ? ' ↓' : ' ↑') : props.pageSize ? '' : ' ↕'}</span>
           </button>
         </Show>
+        <props.columns.controls.Tools column={column()} />
       </th>
     }</For>
-    <Show when={props.action}><th scope="col">Actions</th></Show>
   </tr></thead>
 }
 
-function Cells<T extends object>(props: TableProps<T> & { row: T }) {
+function Cells<T extends object>(props: SortedTableProps<T> & { row: T }) {
   const row = () => props.row
   return <>
-    <For each={props.fields} keyed={field => field.id}>{(field, index) => {
+    <For each={props.columns.fields()} keyed={field => field.id}>{(field, index) => {
       const value = createMemo(() => field().read(props.row))
       const display = () => formatValue(field(), value())
       const short = () => {
@@ -86,19 +128,20 @@ function Cells<T extends object>(props: TableProps<T> & { row: T }) {
         <span title={display()} class={value() == null ? styles.missing : undefined} aria-hidden="true">{compact()}</span>
         <span class={styles.visuallyHidden}>{display()}</span>
       </>}</Show>
-      return <td class={styles.cell} data-numeric={props.pageSize && (typeof value() === 'number' || field().numeric) ? '' : undefined}
-        title={field().hint?.(props.row) ?? (!props.pageSize && props.primaryCell ? display() : undefined)}>
-        <Show when={index() === 0 && props.primaryCell} fallback={
+      // A narrowed column cuts its text; the full value shows on hover.
+      return <td class={styles.cell} data-col={field().id} data-numeric={props.pageSize && (typeof value() === 'number' || field().numeric) ? '' : undefined}
+        title={field().hint?.(props.row) ?? (!props.pageSize ? display() : undefined)}>
+        <Show when={index() === 0 && props.primaryCell && props.fields[0]?.id === field().id} fallback={
           <Show when={field().action?.label(props.row)} fallback={text}>{label =>
             <button type="button" class={styles.action} aria-label={actionName(display(), label())}
               onClick={() => field().action?.run(props.row)}>{text}</button>}
           </Show>}>
-          {render => render()(row, display, text)}
+          {props.primaryCell!(row, display, text)}
         </Show>
       </td>
     }}</For>
-    <Show when={props.action}>{action =>
-      <td class={styles.cell}><Show when={action().label(props.row)}><button type="button" class={styles.action}
+    <Show when={props.columns.showAction() && props.action}>{action =>
+      <td class={styles.cell} data-col={actionColumnId}><Show when={action().label(props.row)}><button type="button" class={styles.action}
         onClick={() => action().run(props.row)}>{action().label(props.row)}</button></Show></td>
     }</Show>
   </>
@@ -125,6 +168,7 @@ function PagedTable<T extends object>(props: SortedTableProps<T>) {
     return () => observer.disconnect()
   })
   createEffect(last, end => { setPage(current => Math.min(current, end)) })
+  const controls = () => props.columns.controls
   return <>
     <Show when={last() > 0}>
       <div class={styles.pager} role="group" aria-label={`${props.label} pages`}>
@@ -135,18 +179,24 @@ function PagedTable<T extends object>(props: SortedTableProps<T>) {
           onClick={() => { if (index() < last()) setPage(index() + 1) }}>Next page</button>
       </div>
     </Show>
-    <div ref={setHost} class={styles.pageViewport} role={overflow() ? 'region' : undefined}
-      aria-label={overflow() ? `${props.label} scroll area` : undefined} tabindex={overflow() ? 0 : undefined}>
-      <table ref={setTable} class={styles.paged} aria-label={props.label} aria-rowcount={rows().length + 1}>
-        <Header {...props} changeSort={field => { setPage(0); props.changeSort(field) }} />
-        <tbody>
-          <For each={visible()} keyed={row => props.rowId(row)}>{(row, i) =>
-            <tr data-row-id={props.rowId(row())} aria-rowindex={start() + i() + 2}>
-              <Cells {...props} row={row()} />
-            </tr>}
-          </For>
-        </tbody>
-      </table>
+    <div class={columnStyles.frame}>
+      <div ref={setHost} class={styles.pageViewport} role={overflow() ? 'region' : undefined}
+        aria-label={overflow() ? `${props.label} scroll area` : undefined} tabindex={overflow() ? 0 : undefined}>
+        <table ref={element => { setTable(element); controls().setTable(element) }} class={styles.paged} aria-label={props.label}
+          aria-rowcount={rows().length + 1} data-sized={controls().sized() ? '' : undefined} style={controls().tableStyle()}>
+          <props.columns.controls.ColGroup />
+          <Header {...props} changeSort={field => { setPage(0); props.changeSort(field) }} />
+          <tbody>
+            <For each={visible()} keyed={row => props.rowId(row)}>{(row, i) =>
+              <tr data-row-id={props.rowId(row())} aria-rowindex={start() + i() + 2}>
+                <Cells {...props} row={row()} />
+              </tr>}
+            </For>
+          </tbody>
+        </table>
+      </div>
+      <props.columns.controls.Menu />
+      <props.columns.controls.Status />
     </div>
   </>
 }
@@ -210,37 +260,43 @@ function VirtualTable<T extends object>(props: SortedTableProps<T>): JSX.Element
   })
   const total = () => { revision(); return virtual.getTotalSize() }
   const height = () => rowHeight()
-  const colSpan = () => props.fields.length + (props.action ? 1 : 0)
+  const colSpan = () => props.columns.control.visible().length
+  const controls = () => props.columns.controls
   return (
-    <div ref={setScroll} class={styles.viewport} role="region" aria-label={`${props.label} scroll area`} tabindex={0}>
-      <span class={styles.ruler} data-row-ruler aria-hidden="true" />
-      <table class={styles.table} aria-label={props.label} aria-rowcount={rows().length + 1}
-        style={{ 'min-inline-size': props.minWidth }}>
-        <Header {...props} changeSort={field => {
-          props.changeSort(field)
-          const element = scroll()
-          if (element) element.scrollTop = 0
-        }} />
-        <tbody>
-          <For each={visible()} keyed={item => item.key}>{(item, index) => {
-            const gap = () => item().start - (visible()[index() - 1]?.end ?? height())
-            return <>
-              <Show when={gap() > 0}>
-                <tr aria-hidden="true" class={styles.spacer}>
-                  <td colspan={colSpan()} style={{ height: `${gap()}px` }} />
+    <div class={columnStyles.frame}>
+      <div ref={setScroll} class={styles.viewport} role="region" aria-label={`${props.label} scroll area`} tabindex={0}>
+        <span class={styles.ruler} data-row-ruler aria-hidden="true" />
+        <table ref={element => controls().setTable(element)} class={styles.table} aria-label={props.label} aria-rowcount={rows().length + 1}
+          data-sized={controls().sized() ? '' : undefined} style={controls().tableStyle(props.minWidth)}>
+          <props.columns.controls.ColGroup />
+          <Header {...props} changeSort={field => {
+            props.changeSort(field)
+            const element = scroll()
+            if (element) element.scrollTop = 0
+          }} />
+          <tbody>
+            <For each={visible()} keyed={item => item.key}>{(item, index) => {
+              const gap = () => item().start - (visible()[index() - 1]?.end ?? height())
+              return <>
+                <Show when={gap() > 0}>
+                  <tr aria-hidden="true" class={styles.spacer}>
+                    <td colspan={colSpan()} style={{ height: `${gap()}px` }} />
+                  </tr>
+                </Show>
+                <tr aria-rowindex={item().index + 2} data-row-id={item().key}
+                  onFocusIn={() => setFocusedRow(props.rowId(item().row))} onFocusOut={() => setFocusedRow(undefined)}>
+                  <Cells {...props} row={item().row} />
                 </tr>
-              </Show>
-              <tr aria-rowindex={item().index + 2} data-row-id={item().key}
-                onFocusIn={() => setFocusedRow(props.rowId(item().row))} onFocusOut={() => setFocusedRow(undefined)}>
-                <Cells {...props} row={item().row} />
-              </tr>
-            </>
-          }}</For>
-          <tr aria-hidden="true" class={styles.spacer}>
-            <td colspan={colSpan()} style={{ height: `${Math.max(0, total() - ((visible().at(-1)?.end ?? height()) - height()))}px` }} />
-          </tr>
-        </tbody>
-      </table>
+              </>
+            }}</For>
+            <tr aria-hidden="true" class={styles.spacer}>
+              <td colspan={colSpan()} style={{ height: `${Math.max(0, total() - ((visible().at(-1)?.end ?? height()) - height()))}px` }} />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <props.columns.controls.Menu />
+      <props.columns.controls.Status />
     </div>
   )
 }

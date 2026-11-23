@@ -1,5 +1,5 @@
 import { createMemo, createSignal, Show } from 'solid-js'
-import { Table } from '../../ui/Table'
+import { Table, type TableProps } from '../../ui/Table'
 import { actionName, compareFieldValues, type Field } from '../../ui/tableModel'
 import type { KeyedRow } from '../types'
 import table from '../../ui/Table.module.css'
@@ -10,7 +10,7 @@ type Entry = { row: KeyedRow; depth: number; folded: boolean }
 export default function FoldTable(props: {
   label: string; fields: readonly Field<KeyedRow>[]; rows: readonly KeyedRow[]; pageSize?: number
   action: (row: KeyedRow) => { label: string; run: () => void } | undefined
-}) {
+} & Pick<TableProps<KeyedRow>, 'tableId' | 'defaultHidden' | 'legacyKeys'>) {
   const [folds, setFolds] = createSignal<ReadonlyMap<string, boolean>>(new Map())
   const children = createMemo(() => {
     const byId = new Set(props.rows.map(row => row.id))
@@ -44,6 +44,7 @@ export default function FoldTable(props: {
   })))
   const rows = createMemo(() => orderRows())
   return <Table label={props.label} pageSize={props.pageSize}
+    tableId={props.tableId} defaultHidden={props.defaultHidden} legacyKeys={props.legacyKeys}
     minWidth={`calc(${props.fields.length} * var(--space-8) * 2)`}
     fields={fields()} rows={rows()} rowId={entry => entry.row.id}
     orderRows={sort => sort ? orderRows(sort) : rows()}

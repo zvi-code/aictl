@@ -1,10 +1,13 @@
 import { createEffect, createMemo, createSignal, For, Show, untrack } from 'solid-js'
+import type { JSX } from '@solidjs/web'
 import { fmtN, fmtUsd } from '../../design/format'
+import { columnStyles, createColumnControls } from '../../ui/ColumnControls'
+import { createColumnLayout, tableKey } from '../../ui/columnState'
 import { States } from '../kinds/States'
 import type { KeyedRow, PanelProps } from '../types'
 import { agentRows } from './agentRows'
 import {
-  agentsCounts, agentsHeader, ago, buildTree, childrenOf, duration, durationMissing, elapsed, isLive, lastMissing, missingReason, nameHint, subagentText, summarize,
+  agentsCounts, agentsHeader, ago, buildTree, cellSpans, childrenOf, duration, durationMissing, elapsed, isLive, lastMissing, missingReason, nameHint, subagentText, summarize,
   type TreeAgent, type TreeEntry,
 } from './agentTree'
 import css from './AgentsTree.module.css'
@@ -25,6 +28,9 @@ const columns: readonly Column[] = [
   { id: 'tokens', label: 'Tokens in / out', help: 'In: input tokens, including cache reads and writes. Out: output tokens. A session counts its subagents too; hover for the split.', numeric: true },
   { id: 'cost', label: 'Cost', help: 'List price of the recorded tokens, not a bill. A session counts its subagents too.', numeric: true },
 ]
+const historyColumns: ReadonlySet<string> = new Set(['last', 'requests', 'tools', 'tokens', 'cost'])
+// The agent name carries the tree, so it stays first and visible.
+const specs = columns.map(column => ({ ...column, pin: column.id === 'name' ? 'start' as const : undefined }))
 const pageRoots = 40
 const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
 const dateTime = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -51,6 +57,8 @@ export default function AgentsTree(props: PanelProps) {
   const panel = untrack(() => props)
   const { ctx, def } = panel
   const setup = agentRows(panel)
+  const layout = createColumnLayout({ key: () => tableKey(def.id), columns: () => specs })
+  const controls = createColumnControls({ control: layout, label: () => def.title, columns: () => specs })
   const [folds, setFolds] = createSignal<ReadonlyMap<string, boolean>>(new Map())
   const [roots, setRoots] = createSignal(pageRoots)
   const [now, setNow] = createSignal(Date.now() / 1000)
@@ -142,12 +150,20 @@ export default function AgentsTree(props: PanelProps) {
       <dl><For each={columns}>{column => <><dt>{column.label}</dt><dd>{column.help}</dd></>}</For></dl>
     </details>
     <States result={setup.result} empty={def.empty} retry={ctx.refresh}>
+      <div class={columnStyles.frame}>
       <div class={css.frame}>
-        <table class={css.table} role="treegrid" aria-label={def.title}>
+        <table ref={controls.setTable} class={css.table} role="treegrid" aria-label={def.title}
+          data-sized={controls.sized() ? '' : undefined} style={controls.tableStyle()}>
+          <controls.ColGroup />
           <thead><tr>
-            <For each={columns}>{column =>
-              <th scope="col" data-col={column.id} data-numeric={column.numeric ? '' : undefined} title={column.help}>
-                {column.label}
+            <For each={layout.visible()} keyed={column => column.id}>{column =>
+              <th scope="col" class={columnStyles.header} data-col={column().id} data-pinned={column().pin ? '' : undefined}
+                data-drop={controls.dropSide(column().id)} data-dragging={controls.dragging(column().id)}
+                data-numeric={column().numeric ? '' : undefined} title={column().help}
+                onPointerDown={event => controls.onHeaderPointerDown(column(), event)}
+                onKeyDown={event => controls.onHeaderKeyDown(column(), event)}>
+                {column().label}
+                <controls.Tools column={column()} />
               </th>}
             </For>
           </tr></thead>
@@ -182,102 +198,110 @@ export default function AgentsTree(props: PanelProps) {
                 return lines.join('\n')
               }
               const nowText = () => text(row().now) ?? (row().pending ? `Waiting for you: ${(row().pending as { name?: string }).name ?? 'a confirmation'}` : undefined)
+              const spans = createMemo(() => cellSpans(layout.visible().map(column => column.id), noHistory() ? historyColumns : undefined))
+              const cells: Record<string, () => JSX.Element> = {
+                  name: () => <td data-col="name" class={css.name}>
+                    <div class={css.tree} style={{ '--depth': String(Math.min(entry().depth, 4)) }}>
+                      <Show when={entry().depth > 0}><span class={css.connector} data-last={entry().last ? '' : undefined} aria-hidden="true" /></Show>
+                      <Show when={entry().children} fallback={<span class={css.foldSpace} aria-hidden="true" />}>
+                        <button type="button" class={css.fold} tabindex={-1} aria-expanded={entry().expanded ? 'true' : 'false'}
+                          aria-label={`${entry().expanded ? 'Collapse' : 'Expand'} ${row().title}`} onClick={() => toggle(entry())}>
+                          {entry().expanded ? '▾' : '▸'}
+                        </button>
+                      </Show>
+                      <div class={css.label}>
+                        <div class={css.line}>
+                          <Show when={!group()}>
+                            <span class={css.kind} data-kind={sub() ? 'subagent' : 'main'}>{sub() ? 'Subagent' : text(row().tool) ?? 'Session'}</span>
+                          </Show>
+                          <Show when={action()} fallback={<span class={css.title} title={nameHint(row())}>{row().title}</span>}>{run =>
+                            <button type="button" class={css.titleButton} title={nameHint(row())} tabindex={-1}
+                              aria-label={`${row().title}, open its flow`} onClick={() => run()()}>{row().title}</button>
+                          }</Show>
+                          <Show when={sub() && text(row().agent_type)}>
+                            <span class={css.chip} title={`Agent type: ${row().agent_type}`}>{row().agent_type as string}</span>
+                          </Show>
+                          <Show when={!group() && model()}>
+                            <span class={css.chip} title={`Model: ${[row().model_alias, row().resolved_model ?? row().primary_model].filter(Boolean).join(' → ')}`}>{model()}</span>
+                          </Show>
+                        </div>
+                        <Show when={!group() && secondary()}>
+                          <div class={css.secondary} title={sub() ? `Prompt, first line: ${secondary()}` : undefined}>{secondary()}</div>
+                        </Show>
+                      </div>
+                    </div>
+                  </td>,
+                  status: () => <td data-col="status" title={text(row().status_evidence) ?? (group() ? undefined : 'No evidence recorded for this status')}>
+                    <Show when={!group()}>
+                      <span class={css.status} data-status={row().status ?? 'unknown'}>{row().display ?? 'Activity unknown'}</span>
+                      <Show when={text(row().status_evidence)}>{evidence => <div class={css.secondary}>{evidence()}</div>}</Show>
+                    </Show>
+                  </td>,
+                  now: () => <td data-col="now" class={css.nowCell} title={nowText()}>{nowText()}</td>,
+                  started: () => <td data-col="started" title={num(row().started_at) ? full.format(new Date(num(row().started_at)! * 1000)) : undefined}>
+                    <Show when={!group()}>
+                      <Show when={num(row().started_at)} fallback={<Missing why="No start time recorded" />}>{at => stamp(at(), now())}</Show>
+                    </Show>
+                  </td>,
+                  duration: () => <td data-col="duration" data-numeric="">
+                    <Show when={!group()}>
+                      <Show when={dur() !== undefined} fallback={<Missing why={durationMissing(row())} />}>
+                        <span title={isLive(row().status) ? 'Running time so far' : 'Start to last line'}>{elapsed(dur()!)}</span>
+                      </Show>
+                    </Show>
+                  </td>,
+                  last: () => <td data-col="last" data-numeric="">
+                    <Show when={!group()}>
+                      <Show when={last()} fallback={<Missing why={lastMissing(row())} />}>
+                        {at => <span title={full.format(new Date(at() * 1000))}>{ago(now() - at())} ago</span>}
+                      </Show>
+                    </Show>
+                  </td>,
+                  requests: () => <td data-col="requests" data-numeric="">
+                    <Show when={!group()}>
+                      <Show when={requests() !== undefined} fallback={<Missing why={missingReason(row(), 'requests')} />}>{fmtN(requests())}</Show>
+                    </Show>
+                  </td>,
+                  tools: () => <td data-col="tools" data-numeric="">
+                    <Show when={!group()}>
+                      <Show when={calls() !== undefined} fallback={<Missing why={missingReason(row(), 'tool_calls')} />}>
+                        {fmtN(calls())}<Show when={num(row().failures)}>{failed => <span class={css.failed}> · {failed()} failed</span>}</Show>
+                      </Show>
+                    </Show>
+                  </td>,
+                  tokens: () => <td data-col="tokens" data-numeric="" title={group() ? undefined : tokenHint()}>
+                    <Show when={!group()}>
+                      <Show when={tin() !== undefined || tout() !== undefined} fallback={<Missing why={missingReason(row(), 'tokens')} />}>
+                        <span class={css.pair}><span>{fmtN(tin())} <small>in</small></span> <span>{fmtN(tout())} <small>out</small></span></span>
+                      </Show>
+                      <Show when={includes()}><div class={css.secondary}>incl. {includes()} subagents</div></Show>
+                    </Show>
+                  </td>,
+                  cost: () => <td data-col="cost" data-numeric="">
+                    <Show when={!group()}>
+                      <Show when={num(row().cost_usd) !== undefined} fallback={<Missing why={missingReason(row(), 'cost')} />}>{fmtUsd(num(row().cost_usd))}</Show>
+                    </Show>
+                  </td>,
+              }
               return <tr data-row-id={row().id} tabindex={0} aria-level={entry().depth + 1}
                 aria-expanded={entry().children ? (entry().expanded ? 'true' : 'false') : undefined}
                 aria-posinset={entry().position} aria-setsize={entry().siblings}
                 data-kind={group() ? 'group' : sub() ? 'subagent' : 'main'} data-live={isLive(row().status) ? '' : undefined}
                 data-changed={changed().has(row().id) ? '' : undefined} onKeyDown={event => keydown(event, entry())}>
-                <td data-col="name" class={css.name}>
-                  <div class={css.tree} style={{ '--depth': String(Math.min(entry().depth, 4)) }}>
-                    <Show when={entry().depth > 0}><span class={css.connector} data-last={entry().last ? '' : undefined} aria-hidden="true" /></Show>
-                    <Show when={entry().children} fallback={<span class={css.foldSpace} aria-hidden="true" />}>
-                      <button type="button" class={css.fold} tabindex={-1} aria-expanded={entry().expanded ? 'true' : 'false'}
-                        aria-label={`${entry().expanded ? 'Collapse' : 'Expand'} ${row().title}`} onClick={() => toggle(entry())}>
-                        {entry().expanded ? '▾' : '▸'}
-                      </button>
-                    </Show>
-                    <div class={css.label}>
-                      <div class={css.line}>
-                        <Show when={!group()}>
-                          <span class={css.kind} data-kind={sub() ? 'subagent' : 'main'}>{sub() ? 'Subagent' : text(row().tool) ?? 'Session'}</span>
-                        </Show>
-                        <Show when={action()} fallback={<span class={css.title} title={nameHint(row())}>{row().title}</span>}>{run =>
-                          <button type="button" class={css.titleButton} title={nameHint(row())} tabindex={-1}
-                            aria-label={`${row().title}, open its flow`} onClick={() => run()()}>{row().title}</button>
-                        }</Show>
-                        <Show when={sub() && text(row().agent_type)}>
-                          <span class={css.chip} title={`Agent type: ${row().agent_type}`}>{row().agent_type as string}</span>
-                        </Show>
-                        <Show when={!group() && model()}>
-                          <span class={css.chip} title={`Model: ${[row().model_alias, row().resolved_model ?? row().primary_model].filter(Boolean).join(' → ')}`}>{model()}</span>
-                        </Show>
-                      </div>
-                      <Show when={!group() && secondary()}>
-                        <div class={css.secondary} title={sub() ? `Prompt, first line: ${secondary()}` : undefined}>{secondary()}</div>
-                      </Show>
-                    </div>
-                  </div>
-                </td>
-                <td data-col="status" title={text(row().status_evidence) ?? (group() ? undefined : 'No evidence recorded for this status')}>
-                  <Show when={!group()}>
-                    <span class={css.status} data-status={row().status ?? 'unknown'}>{row().display ?? 'Activity unknown'}</span>
-                    <Show when={text(row().status_evidence)}>{evidence => <div class={css.secondary}>{evidence()}</div>}</Show>
-                  </Show>
-                </td>
-                <td data-col="now" class={css.nowCell} title={nowText()}>{nowText()}</td>
-                <td data-col="started" title={num(row().started_at) ? full.format(new Date(num(row().started_at)! * 1000)) : undefined}>
-                  <Show when={!group()}>
-                    <Show when={num(row().started_at)} fallback={<Missing why="No start time recorded" />}>{at => stamp(at(), now())}</Show>
-                  </Show>
-                </td>
-                <td data-col="duration" data-numeric="">
-                  <Show when={!group()}>
-                    <Show when={dur() !== undefined} fallback={<Missing why={durationMissing(row())} />}>
-                      <span title={isLive(row().status) ? 'Running time so far' : 'Start to last line'}>{elapsed(dur()!)}</span>
-                    </Show>
-                  </Show>
-                </td>
-                <Show when={noHistory()}>{note =>
-                  <td data-col="last" colspan={5} class={css.secondary}>{note()}</td>
-                }</Show>
-                <Show when={!noHistory()}>
-                <td data-col="last" data-numeric="">
-                  <Show when={!group()}>
-                    <Show when={last()} fallback={<Missing why={lastMissing(row())} />}>
-                      {at => <span title={full.format(new Date(at() * 1000))}>{ago(now() - at())} ago</span>}
-                    </Show>
-                  </Show>
-                </td>
-                <td data-col="requests" data-numeric="">
-                  <Show when={!group()}>
-                    <Show when={requests() !== undefined} fallback={<Missing why={missingReason(row(), 'requests')} />}>{fmtN(requests())}</Show>
-                  </Show>
-                </td>
-                <td data-col="tools" data-numeric="">
-                  <Show when={!group()}>
-                    <Show when={calls() !== undefined} fallback={<Missing why={missingReason(row(), 'tool_calls')} />}>
-                      {fmtN(calls())}<Show when={num(row().failures)}>{failed => <span class={css.failed}> · {failed()} failed</span>}</Show>
-                    </Show>
-                  </Show>
-                </td>
-                <td data-col="tokens" data-numeric="" title={group() ? undefined : tokenHint()}>
-                  <Show when={!group()}>
-                    <Show when={tin() !== undefined || tout() !== undefined} fallback={<Missing why={missingReason(row(), 'tokens')} />}>
-                      <span class={css.pair}><span>{fmtN(tin())} <small>in</small></span> <span>{fmtN(tout())} <small>out</small></span></span>
-                    </Show>
-                    <Show when={includes()}><div class={css.secondary}>incl. {includes()} subagents</div></Show>
-                  </Show>
-                </td>
-                <td data-col="cost" data-numeric="">
-                  <Show when={!group()}>
-                    <Show when={num(row().cost_usd) !== undefined} fallback={<Missing why={missingReason(row(), 'cost')} />}>{fmtUsd(num(row().cost_usd))}</Show>
-                  </Show>
-                </td>
-                </Show>
+                {/* A row with no recorded history spans its history columns with one note. */}
+                <For each={spans()}>{(cell, index) => cell.joined
+                  ? <td data-col={cell.id} colspan={cell.span} class={css.secondary}>
+                    {spans().findIndex(item => item.joined) === index() ? noHistory() : undefined}
+                  </td>
+                  : cells[cell.id]()
+                }</For>
               </tr>
             }}</For>
           </tbody>
         </table>
+      </div>
+      <controls.Menu />
+      <controls.Status />
       </div>
       <Show when={topCount() > roots()}>
         <button type="button" class={css.more} onClick={() => setRoots(roots() + pageRoots)}>

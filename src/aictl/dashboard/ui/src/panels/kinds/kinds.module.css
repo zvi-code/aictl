@@ -29,14 +29,3 @@
 .compactPlot { block-size: calc(var(--panel-sm) + var(--space-8) * 2); }
 .treeCell { display: flex; align-items: center; gap: var(--space-1); min-inline-size: 0; }
 .foldButton { flex: 0 0 var(--space-5); align-self: flex-start; }
-.tableTools { float: inline-start; margin-inline-end: var(--space-4); margin-block-end: var(--space-2); }
-.tableTools > button { padding-inline: var(--space-3); font-size: var(--text-sm); }
-.columnChoices {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--panel-sm)), 1fr));
-  gap: var(--space-2) var(--space-4);
-  inline-size: min(calc(var(--panel-sm) * 2 + var(--space-4)), 75vw);
-  margin-block-end: var(--space-4);
-}
-.columnChoices label { display: flex; align-items: flex-start; gap: var(--space-2); }
-.columnChoices input { accent-color: var(--color-accent); }

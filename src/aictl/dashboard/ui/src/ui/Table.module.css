@@ -120,3 +120,6 @@
 }
 .pageButton { composes: button from "./control.module.css"; padding-inline: var(--space-3); }
 .pageButton[aria-disabled="true"] { color: var(--color-muted); cursor: default; }
+/* Stored column widths fix the layout; a narrowed column cuts its text instead of growing. */
+.paged[data-sized] { table-layout: fixed; }
+.paged[data-sized] th, .paged[data-sized] td { overflow: hidden; }

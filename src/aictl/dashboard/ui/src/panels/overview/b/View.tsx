@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, Show, untrack, type ParentProps } from 'solid-js'
+import { createEffect, createMemo, createSignal, type ParentProps } from 'solid-js'
 import { createResourceCache } from '../../../data/resource'
 import { at } from '../../data'
 import { keyedRows, nodeColumn, presentation, scalar } from '../../kinds/model'
@@ -6,7 +6,6 @@ import { States } from '../../kinds/States'
 import type { DetailState, FieldRef, PanelContext, Read, Row } from '../../types'
 import { Table } from '../../../ui/Table'
 import { measured, MetricItems } from '../Summary'
-import { Menu } from '../../../ui/Menu'
 import type { Field } from '../../../ui/tableModel'
 import styles from './boardB.module.css'
 
@@ -83,42 +82,21 @@ export function Metrics(props: { ctx: PanelContext; columns: readonly FieldRef[]
 type Action = { label: (entry: Entry) => string; run: (entry: Entry) => void }
 export function DataTable(props: {
   ctx: PanelContext; label: string; columns: readonly FieldRef[]; rows: readonly Entry[]
-  action?: Action; fields?: readonly Field<Entry>[]; columnMenu?: boolean
+  action?: Action; fields?: readonly Field<Entry>[]
 }) {
-  const key = untrack(() => `aictl-panel-columns-${props.label}`)
-  const [hidden, setHidden] = createSignal(new Set<string>())
-  if (untrack(() => props.columnMenu)) {
-    try {
-      const saved: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
-      if (Array.isArray(saved)) setHidden(new Set(saved.filter((item): item is string => typeof item === 'string')))
-    } catch { /* No storage. */ }
-  }
   const node = createMemo(() => nodeColumn(props.ctx.scope(), props.rows))
   const fields = createMemo(() => {
     return [
       ...(node() ? [{ path: 'node_id', label: 'Node' }] : []),
-      ...props.columns.filter(column => !hidden().has(column.path)),
+      ...props.columns,
     ].map<Field<Entry>>(column => {
       const { label, format } = displayField(props.ctx, column)
       return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format }
     }).concat(props.fields ?? [])
   })
-  return <>
-    <Show when={props.columnMenu}><Menu label={`${props.label} columns`} items={props.columns.map(column => {
-      return {
-        id: column.path, label: `${hidden().has(column.path) ? 'Show' : 'Hide'} ${displayField(props.ctx, column).label}`,
-        disabled: !hidden().has(column.path) && props.columns.filter(item => !hidden().has(item.path)).length <= 1,
-        onSelect() {
-          const next = new Set(hidden())
-          if (next.has(column.path)) next.delete(column.path)
-          else next.add(column.path)
-          setHidden(next)
-          try { localStorage.setItem(key, JSON.stringify([...next])) } catch { /* No storage. */ }
-        },
-      }
-    })} /></Show>
-    <Table label={props.label} fields={fields()} rows={props.rows} rowId={entry => entry.id} action={props.action} />
-  </>
+  // Hidden columns from the earlier per-panel menu carry over once.
+  return <Table label={props.label} fields={fields()} rows={props.rows} rowId={entry => entry.id} action={props.action}
+    legacyKeys={{ hidden: `aictl-panel-columns-${props.label}` }} />
 }
 
 export function rowsFrom<T extends Row>(values: readonly T[], key: (value: T) => string) {

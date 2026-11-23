@@ -136,3 +136,7 @@ tr[data-kind="subagent"] .title, tr[data-kind="subagent"] .titleButton { font-we
   [data-col="status"] .secondary { max-inline-size: var(--panel-sm); }
 }
 @container (max-width: 36rem) { [data-col="status"] .secondary { display: none; } }
+/* Stored column widths fix the layout; a narrowed column cuts its text instead of growing. */
+.table[data-sized] { table-layout: fixed; }
+.table[data-sized] th, .table[data-sized] td { overflow: hidden; text-overflow: ellipsis; }
+.table[data-sized] td.name { min-inline-size: 0; max-inline-size: none; }

@@ -250,3 +250,16 @@ export function noActivity(row: Readonly<Record<string, unknown>>, hasChildren: 
     !isLive(row.status) && count(msgs.assistant) + count(msgs.user) + count(row.tool_calls) + count(row.input) +
     count(row.output) + count(row.cache_read) + count(row.cache_write) === 0
 }
+
+/** One row's cells in column order. A run of adjacent joined columns becomes one cell that spans them. */
+export function cellSpans(order: readonly string[], joined?: ReadonlySet<string>) {
+  const cells: { id: string; span: number; joined: boolean }[] = []
+  for (let index = 0; index < order.length; index++) {
+    if (!joined?.has(order[index])) { cells.push({ id: order[index], span: 1, joined: false }); continue }
+    let end = index
+    while (end + 1 < order.length && joined.has(order[end + 1])) end++
+    cells.push({ id: order[index], span: end - index + 1, joined: true })
+    index = end
+  }
+  return cells
+}

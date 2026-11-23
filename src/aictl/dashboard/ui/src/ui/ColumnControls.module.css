@@ -1,0 +1,115 @@
+/* The one look for column controls in every table: a resize edge and a hide button in each
+   header cell, and a columns button in the table's top corner. None takes layout space. */
+.frame { position: relative; min-inline-size: 0; }
+/* With stored widths the frame ends where the table ends, so the corner button stays at the table's corner. */
+.frame:has(table[data-sized]) { inline-size: fit-content; max-inline-size: 100%; }
+
+.header { position: relative; user-select: none; }
+/* The last header leaves room under the corner button; its resize edge sits beside the button. */
+.frame thead th:last-child { padding-inline-end: calc(var(--control-size-sm) + var(--space-2)); }
+.frame thead th:last-child > .grip { inset-inline-end: var(--control-size-sm); }
+.header:not([data-pinned]) { cursor: grab; }
+.header[data-dragging] { cursor: grabbing; opacity: .6; }
+.header[data-drop="before"] { box-shadow: inset var(--focus-size) 0 0 var(--color-accent); }
+.header[data-drop="after"] { box-shadow: inset calc(-1 * var(--focus-size)) 0 0 var(--color-accent); }
+:dir(rtl) .header[data-drop="before"] { box-shadow: inset calc(-1 * var(--focus-size)) 0 0 var(--color-accent); }
+:dir(rtl) .header[data-drop="after"] { box-shadow: inset var(--focus-size) 0 0 var(--color-accent); }
+
+.grip {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  z-index: 1;
+  inline-size: var(--space-3);
+  display: grid;
+  place-items: center;
+  cursor: col-resize;
+  touch-action: none;
+}
+.grip::after {
+  content: '';
+  block-size: 55%;
+  inline-size: var(--border-size);
+  background: var(--color-border);
+}
+.grip:hover::after, .grip:focus-visible::after { inline-size: var(--focus-size); background: var(--color-accent); }
+.grip:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: calc(-1 * var(--focus-size)); }
+
+/* Shown on hover or focus of its own header only, over the label's end. */
+.hide { composes: iconButton small from "./control.module.css"; }
+.header > .hide {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: var(--space-3);
+  z-index: 1;
+  translate: 0 -50%;
+  background: var(--color-raised);
+  opacity: 0;
+  pointer-events: none;
+}
+/* Header-scoped selectors outrank the composed control styles, whatever order the sheets load in. */
+.header:hover > .hide, .header:focus-within > .hide { opacity: 1; pointer-events: auto; }
+.frame thead th:last-child > .hide { inset-inline-end: calc(var(--control-size-sm) + var(--space-3)); }
+.header > .hide:hover:not(:disabled) { background: var(--color-pressed); }
+.header > .hide:focus-visible { outline-offset: calc(-1 * var(--focus-size)); }
+
+.corner { composes: iconButton small from "./control.module.css"; }
+.frame > .corner {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  z-index: 2;
+  background: var(--color-raised);
+}
+.frame > .corner:hover:not(:disabled), .frame > .corner[aria-expanded="true"] { background: var(--color-pressed); }
+.frame > .corner:focus-visible { outline-offset: calc(-1 * var(--focus-size)); }
+/* A small count on the corner of the icon, so hidden columns are never silently missing. */
+.badge {
+  position: absolute;
+  inset-block-start: calc(-1 * var(--space-1));
+  inset-inline-end: calc(-1 * var(--space-1));
+  min-inline-size: var(--space-5);
+  padding-inline: var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: calc(var(--text-xs) * .8);
+  font-weight: var(--weight-strong);
+  line-height: var(--space-5);
+  text-align: center;
+  pointer-events: none;
+}
+
+.menu {
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  margin: var(--space-2) 0;
+  padding: var(--space-2);
+  min-inline-size: min(var(--overlay-sm), 90vw);
+  max-inline-size: 90vw;
+  max-block-size: 70vh;
+  overflow: auto;
+  border: var(--border-size) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--elevation-2);
+  font: var(--text-md)/var(--leading-normal) var(--font-ui);
+}
+.item { composes: button from "./control.module.css"; }
+.menu > .item {
+  display: flex;
+  justify-content: start;
+  gap: var(--space-3);
+  inline-size: 100%;
+  min-block-size: var(--control-size-sm);
+  padding-block: 0;
+  text-align: start;
+  font-weight: inherit;
+}
+.menu > .item:focus-visible { outline-offset: calc(-1 * var(--focus-size)); }
+.menu > .item[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed; }
+.menu > .item[aria-checked="false"] { color: var(--color-muted); }
+.check { display: inline-grid; place-items: center; inline-size: var(--icon-size); flex: none; color: var(--color-accent); }
+.rule { margin: var(--space-2) 0; border: 0; border-block-start: var(--border-size) solid var(--color-border-subtle); }
+.status { composes: visuallyHidden from "./control.module.css"; }

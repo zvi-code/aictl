@@ -37,7 +37,7 @@ test('DRW-01: tabs load on selection and update the drawer URL', async ({ page, 
     await expect(page).toHaveURL(new RegExp(`[?&]tab=${key}(?:&|$)`));
   }
   expect(transcriptLoaded).toBe(true);
-  const resize = drawer(page).getByRole('separator');
+  const resize = drawer(page).getByRole('separator', { name: 'Drawer width' });
   const width = async () => (await drawer(page).boundingBox()).width;
   const original = await width();
   await resize.focus();

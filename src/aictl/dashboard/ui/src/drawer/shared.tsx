@@ -8,7 +8,7 @@ import { Chart } from '../ui/Chart'
 import { PanelState } from '../ui/PanelState'
 import { Stat } from '../ui/Stat'
 import type { Field } from '../ui/tableModel'
-import { ResizableTable } from './ResizableTable'
+import { Table, actionColumnId } from '../ui/Table'
 import styles from './drawer.module.css'
 
 export const NA = 'Not available from this source'
@@ -81,6 +81,12 @@ export function Stats(props: { items: readonly Measure[] }) {
   }</For></div>
 }
 
+// The drawer saved widths by position before every table had column controls.
+const legacyWidths = (label: string, fields: readonly Field<never>[], action: boolean) => ({
+  widths: `aictl.drawer.columns.v1:${JSON.stringify([label, fields.map(field => field.id), action])}`,
+  widthIds: [...fields.map(field => field.id), ...(action ? [actionColumnId] : [])],
+})
+
 type Column = string | readonly [key: string, label: string, format?: 'number' | 'time' | 'bytes' | 'path']
 export function Rows<T extends object>(props: {
   label: string; rows?: readonly T[] | null; columns: readonly Column[]; identity: readonly string[];
@@ -104,8 +110,8 @@ export function Rows<T extends object>(props: {
   })
   return <Show when={props.rows != null} fallback={<PanelState state="unavailable" />}>
     <Show when={props.rows!.length} fallback={<PanelState state="empty" message={props.empty} />}>
-      <ResizableTable label={props.label} fields={fields()} rows={props.rows!} rowId={row => rowId(...props.identity.map(key => (row as Row)[key]))}
-        action={props.actionColumn ? undefined : props.action} />
+      <Table label={props.label} fields={fields()} rows={props.rows!} rowId={row => rowId(...props.identity.map(key => (row as Row)[key]))}
+        action={props.actionColumn ? undefined : props.action} legacyKeys={legacyWidths(props.label, fields(), !props.actionColumn && !!props.action)} />
     </Show>
   </Show>
 }
