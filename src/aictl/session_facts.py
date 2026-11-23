@@ -17,6 +17,7 @@ from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
 from .stores.base import InvalidRowError
+from .stores.kusto.tables import TABLES
 from .tool_calls import call_key
 
 _LIMIT = 20_000
@@ -26,6 +27,8 @@ _COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creati
              "cost_usd", "request_count", "tool_call_count", "files_modified")
 # What a telemetry report of a model call knows and its transcript line may not.
 _TELEMETRY_ONLY = ("duration_ms", "ttft_ms", "prompt_id", "pid", "finish_reason", "request_id", "response_id")
+# What a request tombstone must carry of the row it deletes; a waiting telemetry call keeps it.
+_TOMBSTONE_SCOPE = TABLES["requests"].tombstone_scope
 _FAMILIES = {
     "prompts": "session_prompts", "skills": "skill_uses", "context_events": "context_events",
     "loaded_files": "session_loaded_files", "context_items": "session_context_items",
@@ -179,7 +182,8 @@ class SessionFacts:
                 if entry is not None:
                     project = entry["row"]["project_path"]
                     self._dirty = True
-                gone.append({"project": project, "session_id": sid})
+                # The tombstone is the last row written, when this node holds it.
+                gone.append(dict(entry["row"] if entry else {}, project=project, session_id=sid))
             if gone:
                 self.writer.delete("sessions", gone)
 
@@ -295,16 +299,18 @@ class SessionFacts:
             data.update(project=project, project_path=project, updated_at=time.time())
             self.writer.upsert("session_usage", [data])
             if sid in self._usage_projects and prior != project:
-                self.writer.delete("session_usage", [dict(project=prior, session_id=sid)])
+                # This node keeps only the project of the earlier row; the rest is the same session's.
+                self.writer.delete("session_usage", [dict(data, project=prior, project_path=prior)])
             self._remember(self._usage_projects, sid, project)
 
     def _retire_projects(self, table, key_name, known, updates, *, previous_row=lambda row: row):
         retired = []
         for key, row in updates.items():
             if key in known:
-                project = previous_row(known[key])["project_path"]
+                previous = previous_row(known[key])
+                project = previous["project_path"]
                 if project != row["project_path"]:
-                    retired.append({"project": project, key_name: key})
+                    retired.append(dict(previous, project=project))
         if retired:
             self.writer.delete(table, retired)
 
@@ -356,9 +362,12 @@ class SessionFacts:
                                 del self._transcript_calls[waited]
                         if counts and self._waiting(self._otel_calls, counts):
                             reported = self._take(self._otel_calls, counts)
-                            dropped.append({"project": reported["project_path"], "dedup_key": reported["dedup_key"]})
-                            staged.pop(reported["dedup_key"], None)
+                            # The tombstone is the telemetry row as stored, so a view that selects
+                            # the session's rows before it reduces versions also sees the delete.
+                            stored = staged.pop(reported["dedup_key"], None) or self._requests.pop(
+                                reported["dedup_key"], None) or {**data, "source": "otel", **reported}
                             self._requests.pop(reported["dedup_key"], None)
+                            dropped.append(dict(stored, project=reported["project_path"]))
                             self._remember(self._call_counts, reported["dedup_key"], "paired")
                             for name in _TELEMETRY_ONLY:
                                 data[name] = data[name] or reported.get(name)
@@ -384,7 +393,8 @@ class SessionFacts:
                                 staged[key] = merged
                         continue
                     self._wait(self._otel_calls, counts, {
-                        name: data[name] for name in ("dedup_key", "project_path", *_TELEMETRY_ONLY)})
+                        name: data[name] for name in ("dedup_key", "project_path", *_TELEMETRY_ONLY,
+                                                      *_TOMBSTONE_SCOPE)})
                     self._dirty = True
                 if prior and transcript:
                     for name in ("tool_tokens", "max_prompt_tokens", "request_bytes", "available_tools",
@@ -462,8 +472,8 @@ class SessionFacts:
         with self._lock:
             gone = []
             for sid, agent_id in keys:
-                self._agents.pop((sid, agent_id), None)
-                gone.append(dict(project=self.project_for(sid), session_id=sid, agent_id=agent_id))
+                prior = self._agents.pop((sid, agent_id), None) or {}
+                gone.append(dict(prior, project=self.project_for(sid), session_id=sid, agent_id=agent_id))
             if gone:
                 self.writer.delete("agents", gone)
 

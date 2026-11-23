@@ -109,7 +109,7 @@ class ToolCalls:
             metadata["source"] = "transcript"
             metadata["project"] = project = metadata["project_path"]
         if previous and project != previous["project"]:
-            self._writer.delete("tool_invocations", [self._key_fields(previous)])
+            self._writer.delete("tool_invocations", [previous])
         text = {}
         if self._keeps_text() and row.ts >= self._text_floor():
             text = self._key_fields(metadata) | {
@@ -130,7 +130,7 @@ class ToolCalls:
             for other_key in self._sessions.get(sid, set()).copy():
                 other, _ = self._calls[other_key]
                 if other["source"] in ("hook", "otel") and other["ts"] <= row.ts:
-                    self._writer.delete("tool_invocations", [self._key_fields(other)])
+                    self._writer.delete("tool_invocations", [other])
                     self._forget(other_key, sid)
         return 1
 

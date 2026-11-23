@@ -90,6 +90,12 @@ def test_each_section_states_key_version_tombstone_ingestion_and_retention(name)
     assert meta["Retention class"] == f"`{cls}` (default {format_period(RETENTION_DEFAULTS[cls])})"
 
 
+@pytest.mark.parametrize("name", sorted(TABLES))
+def test_a_section_names_the_columns_every_tombstone_carries(name):
+    carries = SECTIONS[name]["meta"].get("Tombstone carries")
+    assert carries == (", ".join(f"`{c}`" for c in TABLES[name].tombstone_scope) or None)
+
+
 def test_the_retention_class_table_matches_the_code():
     rows = {m[1]: (m[2], set(re.findall(r"`(\w+)`", m[3])))
             for m in re.finditer(r"^\| `(\w+)` \| (\d+[hd]) \| (.+) \|$", TEXT, re.MULTILINE)}

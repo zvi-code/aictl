@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
-from .base import ReadResult, Row, UnknownViewError
+from .base import InvalidRowError, ReadResult, Row, UnknownViewError
 
 
 class FixtureReader:
@@ -43,7 +43,15 @@ class MemoryWriter:
         self.operations.append(("upsert", table, deepcopy(list(rows))))
 
     def delete(self, table: str, keys: Iterable[Row]) -> None:
-        self.operations.append(("delete", table, deepcopy(list(keys))))
+        rows = deepcopy(list(keys))
+        from .kusto.tables import TABLES
+
+        # The same refusal as the Kusto writer, so a caller that drops these is caught in its own tests.
+        scope = TABLES[table].tombstone_scope if table in TABLES else ()
+        for row in rows:
+            if missing := [column for column in scope if column not in row]:
+                raise InvalidRowError(f"{table}: a tombstone carries {', '.join(missing)} of the row it deletes")
+        self.operations.append(("delete", table, rows))
 
     def flush(self) -> None:
         self.flushes += 1

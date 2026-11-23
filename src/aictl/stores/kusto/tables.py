@@ -18,6 +18,11 @@ class Table:
     version: str = "_v"
     tombstone: str | None = None
     retention_hours: int | None = None  # when set, the exact period; retention_days is it rounded up
+    # Columns besides the key that every tombstone of the table carries, copied from the row it
+    # deletes. A view may filter on these (and on the key) before it reduces versions, because
+    # the filter keeps the tombstone with its row; on any other column it must reduce first.
+    # The writer refuses a delete without them (stores/kusto/writer.py).
+    tombstone_scope: tuple[str, ...] = ()
 
     @property
     def retention_period_hours(self) -> int:
@@ -336,6 +341,7 @@ _DEFINED = (
             ("project", "node_id", "dedup_key"),
             "streaming",
             tombstone="_deleted",
+            tombstone_scope=('session_id', 'agent_id', 'ts', 'tool', 'source'),
         ),
         "context_events": Table(
             (
@@ -408,6 +414,7 @@ _DEFINED = (
             ("project", "node_id", "dedup_key"),
             "streaming",
             tombstone="_deleted",
+            tombstone_scope=('session_id', 'agent_id', 'ts', 'tool', 'tool_name', 'source'),
         ),
         "tool_invocations_text": Table(
             (
@@ -815,6 +822,7 @@ _DEFINED = (
             ("project", "node_id", "dedup_key"),
             "streaming",
             tombstone="_deleted",
+            tombstone_scope=('session_id', 'ts', 'tool', 'path'),
         ),
         "session_folders": Table(
             (

@@ -324,7 +324,9 @@ class FixtureWriter:
 
     def delete(self, table, keys):
         self.memory.delete(table, keys)
-        for key in self.memory.operations[-1][2]:
+        for row in self.memory.operations[-1][2]:
+            # A tombstone may carry the whole deleted row; the key alone selects what it deletes.
+            key = {k: v for k, v in row.items() if k in TABLES[table].key}
             self.facts.rows[table] = [
                 row for row in self.facts.rows.get(table, ()) if any(row.get(k) != v for k, v in key.items())
             ]

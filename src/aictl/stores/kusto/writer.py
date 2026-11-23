@@ -112,6 +112,8 @@ class KustoWriter:
         self._enqueue(table, rows, delete=False)
 
     def delete(self, table: str, keys: Iterable[Row]) -> None:
+        """Store tombstones. Each row is the last known version of the row it deletes, or at least
+        its key and the table's ``tombstone_scope`` columns; the tombstone keeps every column given."""
         self._enqueue(table, keys, delete=True)
 
     def _enqueue(self, name: str, rows: Iterable[Row], *, delete: bool) -> None:
@@ -126,7 +128,7 @@ class KustoWriter:
         if table.tombstone:
             owned.add(table.tombstone)
         columns = dict(table.columns)
-        input_columns = set(table.key if delete else columns) - owned
+        input_columns = set(columns) - owned
         for row in rows:
             with self._lock:
                 if self._closed:
@@ -153,6 +155,10 @@ class KustoWriter:
             raise InvalidRowError(f"{name} expects row dictionaries")
         if unknown := row.keys() - allowed:
             raise InvalidRowError(f"{name}: unknown or writer-owned columns: {', '.join(sorted(map(str, unknown)))}")
+        if delete and (missing := [column for column in table.tombstone_scope if column not in row]):
+            # A view that filters on these before it reduces versions would drop a tombstone
+            # without them, and the deleted row would show again.
+            raise InvalidRowError(f"{name}: a tombstone carries {', '.join(missing)} of the row it deletes")
         for column in table.key:
             if column == "node_id":
                 continue

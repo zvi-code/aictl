@@ -95,12 +95,15 @@ Use the key of the table as listed in its section. Every key starts with `projec
 `node_id`, so rows of two nodes are never merged, and a row filed under one project is not
 merged with a row filed under another.
 
-A delete is a tombstone row: `_deleted` is true and only the key columns are set; every other
-column is null. So:
+A delete is a tombstone row: `_deleted` is true. The writer copies into it the columns of the
+row it deletes that it still holds, at least the key and, for `requests`, `tool_invocations`
+and `file_write_events`, the columns named by their "Tombstone carries" line. aictl's own views
+filter on those columns before the dedup. A tombstone stored before November 2026 holds only
+the key columns, so a query of your own should:
 
 - Filter after the dedup, never before. A filter on a column that is not in the key (for
-  example `requests | where session_id == "s"`) drops the tombstone, and the deleted row
-  comes back as current.
+  example `requests | where session_id == "s"`) drops a tombstone that lacks the column, and
+  the deleted row comes back as current.
 - A filter on key columns only may come first. It keeps the tombstones and makes the query
   cheaper.
 - Then drop the tombstones: `where not(coalesce(_deleted, false))`.
@@ -940,6 +943,7 @@ One row per model call.
 - Key: `project`, `node_id`, `dedup_key`
 - Version column: `_v`
 - Tombstone column: `_deleted`
+- Tombstone carries: `session_id`, `agent_id`, `ts`, `tool`, `source`
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`requests`), from transcripts and from OTel
@@ -1028,6 +1032,7 @@ One row per tool call, without its text.
 - Key: `project`, `node_id`, `dedup_key`
 - Version column: `_v`
 - Tombstone column: `_deleted`
+- Tombstone carries: `session_id`, `agent_id`, `ts`, `tool`, `tool_name`, `source`
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `tool_calls.py` (`ToolCalls`), from transcripts, hooks and OTel
@@ -1208,6 +1213,7 @@ One row per write-like file event of an agent.
 - Key: `project`, `node_id`, `dedup_key`
 - Version column: `_v`
 - Tombstone column: `_deleted`
+- Tombstone carries: `session_id`, `ts`, `tool`, `path`
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`file_writes`), from transcripts and hooks
