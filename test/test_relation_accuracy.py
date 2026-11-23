@@ -29,7 +29,7 @@ from aictl.ingesters.message_facts import MessageFacts
 from aictl.ingesters.transcript_usage import (
     TranscriptUsageIngester,
     claude_resume_origin,
-    forget_read_positions,
+    request_reread,
     resumed_claude_sessions,
 )
 from aictl.ingesters.vscode_chat_logs import VSCodeChatLogsIngester
@@ -275,17 +275,18 @@ def test_a_copied_subagent_row_left_by_an_older_reader_is_deleted(tmp_path):
     assert set(agents(db)) == {(A, "sub1")}
 
 
-def test_forgetting_read_positions_reimports_only_those_files(tmp_path):
+def test_a_reread_request_reimports_only_those_files(tmp_path):
     projects = tmp_path / "projects"
     folder = original(projects)
     state = StateFile(tmp_path / "transcript_usage.json")
     ingester(Facts(), projects, checkpoint=state).poll()
     files = sorted(folder.rglob("*.jsonl"))
-    assert forget_read_positions(state, files[:1]) == 1
+    request_reread(tmp_path, files[:1])
     db = Facts()
     ingester(db, projects, checkpoint=StateFile(tmp_path / "transcript_usage.json")).poll()
     written = {name for _, name, rows in db.writer.operations if rows}
     assert "requests" in written
+    assert not list(tmp_path.glob("transcript_usage.reread-*.json"))
 
 
 # ── 3. One agent id under two sessions ────────────────────────────────

@@ -181,6 +181,31 @@ The alternative is `aictl db reset`, then reading the data again. It deletes thi
 
 The steps, the verification and the `legacy__*` details are in [docs/kusto-cluster.md](docs/kusto-cluster.md#data-layout-version-compatibility-and-migrations).
 
+#### Reading the session files again
+
+Each reader of session files has a version. aictl saves, per file, the version that read it to its end. When a new aictl reads a kind of file differently (a new record type, a value it did not store before), it reads every file of that kind again from its start, and stores the rows again under the same keys: nothing is counted twice, and nothing stored is deleted. An aictl from before reader versions counts as version 0, so the first start after the upgrade reads all session history again once.
+
+This runs in the background, in the daemon's normal polls. A poll reads the new and changed files first, then up to 128 MB of the older backlog (none in the first poll). The tools share those bytes in this order: Copilot CLI and the Copilot app, VS Code, Claude Code, Codex. Each tool with a backlog gets an equal part, so no tool waits for another's backlog, and each reads its newest sessions first. At that rate 14 GB of history takes about two hours. The Health screen's transcript-usage record shows per tool the files and bytes still waiting, those waiting to be read again, and the day of the oldest one. To read less, set `history_days` under `[storage]`: files older than that are not read at all.
+
+`aictl db reread` asks for the same on files you choose, for example after a bug fix:
+
+```bash
+aictl db reread --tool copilot-desktop --since 2026-11-01 --dry-run
+aictl db reread --session 0a1b2c3d-...
+aictl db reread --all
+```
+
+| Option | Description |
+|--------|-------------|
+| `--tool NAME` | Only this tool's files: `copilot-cli`, `copilot-desktop`, `copilot-vscode`, `claude-code`, `codex-cli`. Repeat for several |
+| `--since DATE` | Only files changed on or after this local date (`2026-11-01` or `2026-11-01T14:30`) |
+| `--session ID` | Only this session's files. Repeat for several |
+| `--all` | Every session file within `history_days` |
+| `--dry-run` | Report per tool how many files and bytes would be read again; queue nothing |
+| `--dry-run --types` | Also count the record types in this machine's session files that no reader reads or lists as ignored |
+
+It works with the daemon running or stopped. It writes a request file beside the reader's saved positions, in this node's restart folder; the daemon applies it at its next poll, or at its next start. The files are read after the new and changed files, at the same pace as the backlog. `aictl db reimport-sessions [SESSION_IDS]... [--resumed]` is the same for Claude Code sessions; `--resumed` finds the resumed or forked sessions and the sessions they replay.
+
 ### Insight report from a Kusto store: `aictl db report` (work in progress)
 
 With a Kusto cluster as the store, one command writes a report on how your coding agents work. It runs a fixed set of KQL queries on the configured cluster and writes one HTML file that opens in any browser, with no server. It only reads.
@@ -755,7 +780,8 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl db retention` | Show how long each class of data is kept, as configured and on the cluster, with table sizes (sealed extents only) |
 | `aictl db retention set CLASS PERIOD` | Keep a class for a period, such as `24h` or `365d` |
 | `aictl db trim-text` | Soft-delete records from text tables for this node |
-| `aictl db reimport-sessions --resumed` | Read again, at the next start, only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |
+| `aictl db reread --all` | Read session files again and store their rows again (`--tool`, `--since`, `--session`, `--dry-run`, `--dry-run --types`). See [Reading the session files again](#reading-the-session-files-again) |
+| `aictl db reimport-sessions --resumed` | Read again only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |
 | `aictl db reset` | Delete this node's stored data and start it again (`--node ID`, `--all-nodes`). Prefer `aictl db migrate` when it applies |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
@@ -846,7 +872,7 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 `aictl db reset` deletes the aictl tables of one node (default: this node) and creates them again. `--node ID` picks another node and `--all-nodes` resets every node and the registry. Use `-y` / `--yes` to skip the confirmation prompt. Stop the writers of what is reset first.
 
-`aictl db reimport-sessions [SESSION_IDS]... [--resumed] [--dry-run]` clears this node's saved read positions of those sessions' files, so the next start reads them again. It deletes nothing that is stored. Stop the daemon first.
+`aictl db reread [--tool NAME]... [--since DATE] [--session ID]... [--all] [--dry-run] [--types]` queues session files for this node's reader to read again, with the daemon running or stopped. `aictl db reimport-sessions [SESSION_IDS]... [--resumed] [--dry-run]` does the same for Claude Code sessions. Neither deletes anything that is stored.
 
 `aictl db report` takes `--out PATH`, `--days N`, `--sections A,B`, `--kusto-cluster URL`, `--kusto-database NAME` and the filters `--from`, `--to`, `--project`, `--tool`, `--model`, `--mcp`, `--skill`, `--agent`, and needs a Kusto cluster as the store: [insight report](#insight-report-from-a-kusto-store-aictl-db-report-work-in-progress).
 

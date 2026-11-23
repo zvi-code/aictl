@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from test_session_investigation import Facts, ingester
 
-from aictl.ingesters import call_facts, transcript_steps
+from aictl.ingesters import call_facts, record_types, transcript_steps
 from aictl.ingesters.transcript_usage import _CLAUDE_RECORD_TYPES
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
@@ -74,6 +74,34 @@ def test_every_copilot_config_event_becomes_its_config_row(tmp_path):
     ingester(facts, tmp_path, backfill_days=0).poll()
     stored = {row["kind"] for _, name, rows in facts.writer.operations if name == "context_events" for row in rows}
     assert set(call_facts.COPILOT_CONFIG_KINDS.values()) - stored == set()
+
+
+def unlisted_in(directory: Path) -> dict[str, dict[str, int]]:
+    """Per tool, the line and event types in a folder of fixture lines (claude-*.jsonl, copilot-*.jsonl,
+    codex-*.jsonl) that no reader reads or lists as ignored. The same count as ``aictl db reread --dry-run
+    --types`` makes over a machine's own folders."""
+    found = {}
+    for tool, prefix in (("claude-code", "claude-"), ("copilot-cli", "copilot-"), ("codex-cli", "codex-")):
+        if counts := record_types.unlisted(tool, sorted(directory.glob(f"{prefix}*.jsonl"))):
+            found[tool] = dict(counts)
+    return found
+
+
+def test_no_fixture_line_has_a_type_no_reader_lists():
+    assert unlisted_in(FIXTURES) == {}
+
+
+def test_the_folder_check_names_a_new_type(tmp_path):
+    (tmp_path / "claude-new.jsonl").write_text(
+        json.dumps({"type": "assistant"}) + "\n" + json.dumps({"type": "memory-saved"}) + "\n"
+        + json.dumps({"type": "attachment", "attachment": {"type": "memory_recall"}}) + "\n")
+    (tmp_path / "copilot-new.jsonl").write_text(json.dumps({"type": "session.memory_saved", "data": {}}) + "\n")
+    (tmp_path / "codex-new.jsonl").write_text("\n".join(json.dumps(line) for line in (
+        {"type": "session_meta", "payload": {"id": "s"}}, {"type": "event_msg", "payload": {"type": "token_count"}},
+        {"type": "event_msg", "payload": {"type": "agent_reasoning"}})) + "\n")
+    assert unlisted_in(tmp_path) == {"claude-code": {"memory-saved": 1, "attachment:memory_recall": 1},
+                                     "copilot-cli": {"session.memory_saved": 1},
+                                     "codex-cli": {"event_msg:agent_reasoning": 1}}
 
 
 def test_the_readers_take_every_fixture_line(tmp_path):

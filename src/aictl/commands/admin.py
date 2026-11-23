@@ -460,6 +460,89 @@ def migrate(ctx, dry_run, yes, take_over, slice_days, drop_legacy, kusto_cluster
                    f"Migrated {settings.database} on {settings.cluster} to layout {L.LAYOUT_VERSION}.")
 
 
+REREAD_TOOLS = ("copilot-cli", "copilot-desktop", "copilot-vscode", "claude-code", "codex-cli")
+
+
+def _file_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n} B"
+
+
+def _queue_reread(ctx, selection: dict[str, list[tuple[Path, int]]], *, copilot_store: bool, dry_run: bool) -> None:
+    """Report *selection* per tool and, unless *dry_run*, hand it to this node's transcript reader."""
+    from ..ingesters.transcript_usage import request_reread
+    from ..state_file import restart_directory
+
+    for tool in [t for t in REREAD_TOOLS if t in selection] + sorted(selection.keys() - set(REREAD_TOOLS)):
+        files = selection[tool]
+        click.echo(f"  {tool:16s} {len(files):>7,} file(s) {_file_bytes(sum(size for _, size in files)):>10s}")
+    total = sum(len(files) for files in selection.values())
+    if dry_run:
+        click.echo(f"Dry run: {total} file(s) would be read again; nothing was queued.")
+        return
+    if not total and not copilot_store:
+        click.echo("No session file matches; nothing was queued.")
+        return
+    settings = _admin_settings(ctx)
+    directory = restart_directory(settings.cluster, settings.database, settings.node_id)
+    request_reread(directory, [path for files in selection.values() for path, _ in files], copilot_store=copilot_store)
+    click.echo(f"Queued {total} file(s){' and the Copilot store rows' if copilot_store else ''}. A running daemon "
+               "reads them again from its next poll, else the next start does; they are read after new and "
+               "changed files, newest first, within each poll's read limit.")
+
+
+def _unlisted_types(ing) -> None:
+    from ..ingesters import record_types
+
+    files = ing.list_files()[0]
+    for tool in record_types.TOOLS:
+        found = record_types.unlisted(tool, files.get(tool, []))
+        click.echo(f"{tool}: {sum(found.values()):,} line(s) of {len(found)} type(s) no reader lists")
+        for kind, count in found.most_common():
+            click.echo(f"  {count:>9,}  {kind}")
+    click.echo("copilot-vscode: its readers keep no record lists; not counted")
+
+
+@db.command("reread")
+@click.option("--tool", "tools", multiple=True, type=click.Choice(REREAD_TOOLS),
+              help="Only this tool's session files (repeat for several)")
+@click.option("--since", type=click.DateTime(formats=["%Y-%m-%d", "%Y-%m-%dT%H:%M"]),
+              help="Only files changed on or after this local date or time")
+@click.option("--session", "sessions", multiple=True, help="Only this session's files (repeat for several)")
+@click.option("--all", "every", is_flag=True, help="Every session file within history_days")
+@click.option("--dry-run", is_flag=True, help="Report what would be read again; queue nothing")
+@click.option("--types", is_flag=True,
+              help="With --dry-run: count the record types in this machine's session files that no reader lists")
+@click.pass_context
+def reread(ctx, tools, since, sessions, every, dry_run, types):
+    """Read session files again from their start and store their rows again.
+
+    The files are queued for this node's transcript reader: a running daemon picks them up at its
+    next poll, a stopped one at its next start. Rows are stored again under the same keys, so
+    nothing is counted twice; nothing stored is deleted. The reader also does this by itself for
+    every file a lower reader version read (after an upgrade).
+    """
+    from ..ingesters.transcript_usage import TranscriptUsageIngester
+    from ..platforms import load_config
+
+    if types and not dry_run:
+        raise click.UsageError("--types reads every session file on this machine; use it with --dry-run")
+    if not (tools or since or sessions or every or types):
+        raise click.UsageError("Choose the files: --tool, --since, --session or --all")
+    ing = TranscriptUsageIngester(None, backfill_days=load_config().history_days)
+    if types:
+        _unlisted_types(ing)
+        if not (tools or since or sessions or every):
+            return
+    selection = ing.reread_selection(tools=tools, since=since.timestamp() if since else 0.0, sessions=sessions,
+                                     every=every)
+    copilot_store = not sessions and (every or bool({"copilot-cli", "copilot-desktop"} & set(tools)))
+    _queue_reread(ctx, selection, copilot_store=copilot_store, dry_run=dry_run)
+
+
 @db.command("reimport-sessions")
 @click.argument("session_ids", nargs=-1)
 @click.option("--resumed", is_flag=True,
@@ -467,17 +550,14 @@ def migrate(ctx, dry_run, yes, take_over, slice_days, drop_legacy, kusto_cluster
 @click.option("--dry-run", is_flag=True, help="List the files; change nothing")
 @click.pass_context
 def reimport_sessions(ctx, session_ids, resumed, dry_run):
-    """Read the given sessions' files again at the next start, and store their rows again.
+    """Read the given Claude Code sessions' files again: ``aictl db reread --tool claude-code --session``.
 
-    Only this node's read positions of these files are cleared (each node keeps its own, and
-    writes its own tables): nothing stored is deleted, and every other file stays as read. Use it for sessions that an older aictl attributed wrongly, such as a
-    resumed session's copy of the session it was resumed from. Stop the daemon first.
+    Use it for sessions that an older aictl attributed wrongly, such as a resumed session's copy of
+    the session it was resumed from. ``--resumed`` finds those sessions.
     """
     from .. import platforms, tool_homes
-    from ..ingesters.transcript_usage import claude_session_files, forget_read_positions, resumed_claude_sessions
-    from ..state_file import StateFile, restart_directory
+    from ..ingesters.transcript_usage import TranscriptUsageIngester, resumed_claude_sessions
 
-    settings = _admin_settings(ctx)
     roots = [platforms.claude_projects_dir(), *tool_homes.session_dirs("claude")]
     roots = [r for i, r in enumerate(roots) if r.is_dir() and r not in roots[:i]]
     wanted = set(session_ids)
@@ -487,16 +567,14 @@ def reimport_sessions(ctx, session_ids, resumed, dry_run):
             wanted |= {copy, origin}
     if not wanted:
         raise click.UsageError("Name the sessions to read again, or pass --resumed")
-    files = claude_session_files(roots, wanted)
-    click.echo(f"{len(files)} file(s) of {len(wanted)} session(s)")
+    from ..platforms import load_config
+
+    ing = TranscriptUsageIngester(None, backfill_days=load_config().history_days)
+    selection = ing.reread_selection(tools=["claude-code"], sessions=wanted)
     if dry_run:
-        for path in files:
+        for path, _ in selection.get("claude-code", []):
             click.echo(f"  {path}")
-        return
-    checkpoint = StateFile(restart_directory(settings.cluster, settings.database, settings.node_id)
-                           / "transcript_usage.json")
-    removed = forget_read_positions(checkpoint, files)
-    click.echo(f"Cleared {removed} saved read position(s); the next start reads these files again.")
+    _queue_reread(ctx, selection, copilot_store=False, dry_run=dry_run)
 
 
 def confirm_and_reset(settings, *, yes: bool, echo=click.echo, confirm=click.confirm, node: str | None = None,
