@@ -1,6 +1,7 @@
 import gzip
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -129,4 +130,7 @@ def test_inventory_read_budget_and_metadata_only_files(tmp_path):
     assert inventory.sync(rows) == dict(added=1, deferred=0, unchanged=3, updated=0, removed=0)
     written = [row for _, table, batch in writer.operations if table == "file_blobs" for row in batch]
     assert [row["content"] for row in written] == ["one", "two"]
-    assert sum(len(batch) for _, table, batch in writer.operations if table == "file_history") == 2
+    # Every file has a version row; the two that were read carry their hash, the others only their size.
+    versions = [row for _, table, batch in writer.operations if table == "file_history" for row in batch]
+    assert sorted((Path(row["path"]).name, bool(row["blob_hash"])) for row in versions) == [
+        (".env", False), ("large.md", False), ("one.md", True), ("two.md", True)]

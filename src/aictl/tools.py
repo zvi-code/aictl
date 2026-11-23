@@ -862,7 +862,7 @@ def batch_resolve_paths(
 
 # ─── Discovery ─────────────────────────────────────────────────────────────
 
-from .fsutil import safe_glob, safe_iterdir, safe_rglob, safe_stat, warn_once
+from .fsutil import safe_glob, safe_rglob, safe_stat, warn_once
 from .platforms import CURRENT_PLATFORM, IS_MACOS, IS_WINDOWS
 from .tool_scope import is_selected
 from .utils import estimate_tokens, estimate_tokens_from_size, norm_path
@@ -886,6 +886,7 @@ class ResourceFile:
     cacheable: str = ""  # yes, no, n/a
     survives_compaction: str = ""  # yes, no, n/a
     mtime: float = 0.0  # file modification time (epoch seconds)
+    project: str = ""  # the project path the file belongs to, when it lies outside the project folder
 
     def __post_init__(self):
         self.path = norm_path(self.path)
@@ -975,6 +976,25 @@ def files_to_sample(files: list[ResourceFile]) -> list[ResourceFile]:
     if len(files) <= MAX_FILE_SAMPLES_PER_TOOL:
         return files
     return heapq.nlargest(MAX_FILE_SAMPLES_PER_TOOL, files, key=lambda f: f.tokens)
+
+
+def memory_inventory_files() -> list[ResourceFile]:
+    """Every memory file of every Claude Code project, each with the project it belongs to.
+
+    The files lie in the Claude Code home, outside the project folders, so the project path is
+    what ties a file to its project. This list and the "Agent memory" panel come from one discovery.
+    """
+    from .memory import claude_memory_files, claude_project_path
+
+    out = []
+    for project, md in claude_memory_files():
+        if rf := _file_resource(md, "memory"):
+            entry = md.name == "MEMORY.md"
+            rf.tool, rf.scope = "claude-code", "project"
+            rf.sent_to_llm, rf.loaded_when = ("yes", "every-call") if entry else ("on-demand", "on-demand")
+            rf.project = claude_project_path(project)
+            out.append(rf)
+    return out
 
 
 def _file_resource(path: Path, kind: str) -> ResourceFile | None:
@@ -1719,11 +1739,10 @@ def _read_memory_file(path: Path, source: str, profile: str) -> MemoryEntry | No
 def collect_agent_memory(root: Path) -> list[MemoryEntry]:
     """Collect all agent memory, policies, and decisions from multiple sources."""
     from . import tool_homes
-    from .memory import _find_project_dir, list_stashes
+    from .memory import _find_project_dir, claude_memory_files, list_stashes
     from .platforms import copilot_global_storage, windsurf_global_dir
 
     entries: list[MemoryEntry] = []
-    home = Path.home()
 
     # 1–2. Claude Code single-file sources
     # The user files of each tool home found on this machine, not only the default one.
@@ -1742,22 +1761,14 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
         if entry := _read_memory_file(path, source, profile):
             entries.append(entry)
 
-    # 3. Claude auto-memory — ~/.claude/projects/<hash>/memory/*.md
-    claude_projects = home / ".claude" / "projects"
-    if claude_projects.is_dir():
-        proj_for_root = _find_project_dir(root)
-        for proj_dir in safe_iterdir(claude_projects):
-            if not proj_dir.is_dir():
-                continue
-            mem_dir = proj_dir / "memory"
-            if not mem_dir.is_dir():
-                continue
-            is_active = proj_dir == proj_for_root
-            readable = proj_dir.name.lstrip("-").split("-")[-1] if not is_active else ""
-            profile_tag = "(active)" if is_active else f"({readable})"
-            for md in safe_glob(mem_dir, "*.md"):
-                if entry := _read_memory_file(md, "claude-auto-memory", profile_tag):
-                    entries.append(entry)
+    # 3. Claude auto-memory — <claude home>/projects/<hash>/memory/*.md, every project of every home
+    proj_for_root = _find_project_dir(root)
+    for proj_dir, md in claude_memory_files():
+        is_active = proj_dir == proj_for_root
+        readable = proj_dir.name.lstrip("-").split("-")[-1] if not is_active else ""
+        profile_tag = "(active)" if is_active else f"({readable})"
+        if entry := _read_memory_file(md, "claude-auto-memory", profile_tag):
+            entries.append(entry)
 
     for stash in list_stashes(root):
         if stash["profile"] == "(active)":
@@ -1767,11 +1778,12 @@ def collect_agent_memory(root: Path) -> list[MemoryEntry]:
             if entry := _read_memory_file(md, "claude-auto-memory", stash["profile"]):
                 entries.append(entry)
 
-    # 4. Copilot Chat globalStorage — agent definitions, session state
+    # 4. Copilot Chat globalStorage — memory-tool files, agent definitions (not memory), session state
     copilot_storage = copilot_global_storage()
     if copilot_storage.is_dir():
         for md in safe_rglob(copilot_storage, "*.md"):
-            if entry := _read_memory_file(md, "copilot-agent-memory", "(copilot)"):
+            source = "copilot-memory" if "memory-tool" in md.relative_to(copilot_storage).parts else "copilot-agent-definition"
+            if entry := _read_memory_file(md, source, "(copilot)"):
                 entries.append(entry)
         for jf in safe_glob(copilot_storage, "*.json"):
             st = safe_stat(jf)

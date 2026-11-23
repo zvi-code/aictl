@@ -48,7 +48,8 @@ class FileInventory:
             text = keeps_text and not self._sensitive(path) and row["size_bytes"] <= self._max_bytes
             signature = [row[name] for name in ("tool", "category", "scope", "mtime", "size_bytes", "tokens", "meta")]
             signature.append(text)
-            if prev.get("signature") == signature:
+            project = row.get("project", "")
+            if prev.get("signature") == signature and prev.get("project", "") == project:
                 stats["unchanged"] += 1
                 continue
             digest = content_hash = ""
@@ -72,20 +73,24 @@ class FileInventory:
                 except OSError:
                     pass  # The scan still supplied inventory metadata.
             changed = not prev or digest != prev.get("blob_hash") or signature[:6] != prev["signature"][:6]
+            # A version is a new file, new content, or, when no hash is available, a new size or mtime.
+            version = (digest != prev.get("blob_hash")) if digest else (not prev or signature[3:5] != prev["signature"][3:5])
+            if prev and prev.get("project", "") != project:
+                removed.append(dict(project=prev.get("project", ""), path=path))
             state = dict(signature=signature, blob_hash=digest, first_seen=prev.get("first_seen", now),
-                         last_changed=now if changed else prev["last_changed"])
+                         last_changed=now if changed else prev["last_changed"], project=project)
             known[path] = state
-            row = row | dict(project="", blob_hash=digest, content_hash=content_hash, lines=lines,
+            row = row | dict(project=project, blob_hash=digest, content_hash=content_hash, lines=lines,
                              first_seen=state["first_seen"], last_changed=state["last_changed"],
                              last_read=now if digest else 0.0)
             inventory.append(row)
-            if digest and digest != prev.get("blob_hash"):
+            if version:
                 history.append({k: row[k] for k in ("project", "path", "blob_hash", "content_hash",
                                                       "size_bytes", "tokens", "lines")} | {"ts": now})
             stats["updated" if prev else "added"] += 1
         for path in self._known.keys() - seen.keys():
             del known[path]
-            removed.append(dict(project="", path=path))
+            removed.append(dict(project=self._known[path].get("project", ""), path=path))
             stats["removed"] += 1
         if blobs:
             self._writer.upsert("file_blobs", blobs.values())
@@ -108,4 +113,5 @@ def inventory_row(file, tool: str) -> Row:
                 category=getattr(file, "kind", ""), scope=getattr(file, "scope", ""),
                 mtime=float(getattr(file, "mtime", 0) or 0), size_bytes=int(getattr(file, "size", 0)),
                 tokens=int(getattr(file, "tokens", 0)),
-                meta=json.dumps({"sent_to_llm": getattr(file, "sent_to_llm", "")}))
+                meta=json.dumps({"sent_to_llm": getattr(file, "sent_to_llm", "")}),
+                project=getattr(file, "project", "") or "")

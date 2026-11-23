@@ -249,3 +249,9 @@ $HOME/.copilot/copilot-instructions.md,copilot-cli,github,cli,all,yes,global,ins
 ~/.vscode/extensions/google.gemini-cli-vscode-ide-companion-*/,gemini-cli,google,vscode,all,yes,global,extensions,no,0,rw,n/a,n/a,runtime,,Gemini CLI VS Code IDE companion,literal,none
 ~/.cursor/cli-config.json,cursor,cursor-inc,cli,all,yes,global,config,no,0,rw,n/a,n/a,session-start,,Cursor CLI (cursor-agent) permissions and settings,literal,git-root
 ~/.cursor/mcp.json,cursor,cursor-inc,standalone,all,yes,global,config,no,0,rw,n/a,n/a,app-start,,User-level MCP server configuration,literal,none
+~/.codex/memories/**/*.md,codex-cli,openai,cli,all,yes,global,memory,no,varies,rw,n/a,n/a,runtime,,"Codex memory files: MEMORY.md, memory_summary.md, raw_memories.md and rollout_summaries/",literal,git-root
+~/.codex/memories_v2/**/*.md,codex-cli,openai,cli,all,yes,global,memory,on-demand,varies,rw,n/a,n/a,session-start,,Codex memory files of the second-generation store,literal,git-root
+%APPDATA%\Code\User\globalStorage\github.copilot-chat\memory-tool\memories\**\*,copilot-vscode,github,vscode,windows,no,global,memory,on-demand,varies,rw,n/a,n/a,runtime,,VS Code Copilot memory-tool files (global),literal,none
+%APPDATA%\Code\User\workspaceStorage\*\GitHub.copilot-chat\memory-tool\memories\**\*,copilot-vscode,github,vscode,windows,no,global,memory,no,varies,rw,n/a,n/a,runtime,,VS Code Copilot memory-tool files (per workspace),literal,none
+%APPDATA%\Claude\local-agent-mode-sessions\*\*\agent\memory\**\*.md,claude-desktop,anthropic,desktop,windows,no,global,memory,no,varies,rw,n/a,n/a,runtime,,Claude Desktop local agent memory files,literal,none
+%APPDATA%\Claude\local-agent-mode-sessions\*\*\memory\**\*.md,claude-desktop,anthropic,desktop,windows,no,global,memory,no,varies,rw,n/a,n/a,runtime,,Claude Desktop local agent session memory files,literal,none

@@ -1261,7 +1261,7 @@ def _build_provenance(snap: DashboardSnapshot) -> dict[str, dict[str, Any]]:
     }
 
     prov["api.file_history"] = {
-        "note": "Stored in file_history table, updated on content_hash changes",
+        "note": "Stored in file_history table, one row per new version: new content, or a new size or mtime when no content was read",
     }
 
     # OTel receiver / traces datapoints

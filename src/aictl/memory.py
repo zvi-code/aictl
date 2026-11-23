@@ -213,6 +213,112 @@ def _find_project_dir(root: Path) -> Path | None:
     return None
 
 
+def claude_memory_folders() -> list[tuple[Path, Path]]:
+    """The (project folder, memory folder) of every Claude Code project that keeps memory.
+
+    Every Claude Code home found on this machine is read, not only the default one. The inventory
+    of memory files and the live "Agent memory" panel both use this function, so they list the
+    same projects.
+    """
+    from . import tool_homes
+    from .fsutil import safe_iterdir
+    from .platforms import claude_projects_dir
+
+    roots: list[Path] = []
+    for folder in [claude_projects_dir(), *tool_homes.session_dirs("claude")]:
+        if folder not in roots:
+            roots.append(folder)
+    found: list[tuple[Path, Path]] = []
+    for projects in roots:
+        for project in safe_iterdir(projects):
+            memory = project / "memory"
+            if project.is_dir() and memory.is_dir() and (project, memory) not in found:
+                found.append((project, memory))
+    return found
+
+
+def claude_memory_files() -> list[tuple[Path, Path]]:
+    """The (project folder, file) of every memory file of every Claude Code project."""
+    from .fsutil import safe_glob
+
+    return [(project, md) for project, memory in claude_memory_folders() for md in safe_glob(memory, "*.md")
+            if md.is_file()]
+
+
+_PROJECT_PATHS: dict[Path, tuple[float, str]] = {}  # project folder -> (its mtime, its project path)
+_SESSION_HEAD_BYTES = 64 * 1024
+_SESSIONS_TRIED = 3
+
+
+def _working_folder_of_a_session(project: Path) -> str:
+    """The working folder that the newest sessions of a Claude Code project record, or an empty string."""
+    from .fsutil import safe_glob
+
+    sessions = []
+    for file in safe_glob(project, "*.jsonl"):
+        try:
+            sessions.append((file.stat().st_mtime, file))
+        except OSError:
+            continue
+    for _, file in sorted(sessions, key=lambda item: item[0], reverse=True)[:_SESSIONS_TRIED]:
+        try:
+            with file.open("rb") as handle:
+                head = handle.read(_SESSION_HEAD_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in head.splitlines():
+            try:
+                cwd = json.loads(line).get("cwd")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(cwd, str) and cwd:
+                return cwd
+    return ""
+
+
+def _folder_named_by(name: str) -> str:
+    """The existing folder that an encoded project name stands for, or an empty string.
+
+    The encoding turns every separator into a dash, so a dash in a folder name is ambiguous. Each
+    step takes the longest run of dash-separated words that is a folder.
+    """
+    if not name.startswith("-"):
+        return ""
+    words = name[1:].split("-")
+    current = Path("/")
+    start = 0
+    while start < len(words):
+        for end in range(len(words), start, -1):
+            candidate = current / "-".join(words[start:end])
+            if candidate.exists():
+                current, start = candidate, end
+                break
+        else:
+            return ""
+    return str(current)
+
+
+def claude_project_path(project: Path) -> str:
+    """The real project path of a Claude Code project folder, or an empty string when nothing tells it.
+
+    A session records the working folder it ran in; the project is the repository that holds it, as
+    for every other table. Without a session the folder name is decoded against the file system.
+    """
+    try:
+        stamp = project.stat().st_mtime
+    except OSError:
+        return ""
+    cached = _PROJECT_PATHS.get(project)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    from .ingesters._common import project_root
+
+    cwd = _working_folder_of_a_session(project)
+    path = project_root(cwd or _folder_named_by(project.name))
+    _PROJECT_PATHS[project] = (stamp, path)
+    return path
+
+
 def swap_memory(root: Path, old_profile: str | None, new_profile: str | None) -> SwapResult | None:
     """Swap memory for profile change at given root.
 

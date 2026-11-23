@@ -51,8 +51,10 @@ def test_file_inventory_keeps_last_listing_and_withholds_large_content(tmp_path)
     row, = inventory_batch(tmp_path, 1, "large", size=200)
     result = inventory.sync([row, row | {"mtime": 123.0}])
     assert result["added"] == 1
-    [(operation, table, [stored])] = writer.operations
+    [(history_operation, history_table, [version]), (operation, table, [stored])] = writer.operations
     assert (operation, table, stored["mtime"], stored["blob_hash"]) == ("upsert", "files", 123.0, "")
+    # The withheld content still leaves a version row: its size, without a hash.
+    assert (history_operation, history_table, version["size_bytes"], version["blob_hash"]) == ("append", "file_history", 200, "")
 
 
 def test_session_and_request_facts_are_batched():

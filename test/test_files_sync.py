@@ -118,7 +118,8 @@ class TestSyncContentPolicy:
         assert sync.sync(discovered)["added"] == 1
         row, = writer.written("files")
         assert row["size_bytes"] == size and not row["content_hash"] and not row["blob_hash"]
-        assert not writer.written("file_history") and not writer.written("file_blobs")
+        history, = writer.written("file_history")
+        assert history["size_bytes"] == size and not history["blob_hash"] and not writer.written("file_blobs")
         assert sync.sync(discovered)["unchanged"] == 1
 
     def test_unreadable_file_upserts_metadata(self, inventory, tmp_path):
@@ -130,6 +131,77 @@ class TestSyncContentPolicy:
         assert sync.sync(discovered)["added"] == 1
         row, = writer.written("files")
         assert not row["blob_hash"] and not writer.written("file_blobs")
+
+
+class TestVersionRowsInEveryCaptureMode:
+    """A file's versions are recorded whether or not the capture mode keeps its text."""
+
+    def test_metadata_capture_writes_a_version_row_for_a_new_file_and_for_each_change(self, inventory, tmp_path):
+        sync, writer = inventory(keeps_text=lambda: False)
+        path = tmp_path / "MEMORY.md"
+        path.write_text("one")
+        _set_mtime(path, 1_000_000.0)
+        sync.sync([_disc(path)], now=10)
+        assert sync.sync([_disc(path)], now=20)["unchanged"] == 1
+        path.write_text("one and two")
+        _set_mtime(path, 1_000_100.0)
+        sync.sync([_disc(path)], now=30)
+        first, second = writer.written("file_history")
+        assert (first["ts"], first["size_bytes"], first["blob_hash"]) == (10, 3, "")
+        assert (second["ts"], second["size_bytes"], second["blob_hash"]) == (30, 11, "")
+        assert not writer.written("file_blobs")
+
+    def test_full_capture_writes_the_hash_and_keeps_the_content(self, inventory, tmp_path):
+        sync, writer = inventory()
+        path = tmp_path / "MEMORY.md"
+        path.write_text("one")
+        sync.sync([_disc(path)], now=10)
+        history, = writer.written("file_history")
+        assert history["blob_hash"] == _blob_hash("one") and [b["content"] for b in writer.written("file_blobs")] == ["one"]
+
+    def test_switching_the_mode_off_does_not_repeat_a_version_that_did_not_change(self, tmp_path):
+        mode = {"text": True}
+        writer = MemoryWriter()
+        sync = FileInventory(writer, StateFile(tmp_path / "inventory.json"), keeps_text=lambda: mode["text"],
+                             sensitive=_is_sensitive_path)
+        path = tmp_path / "MEMORY.md"
+        path.write_text("one")
+        sync.sync([_disc(path)], now=10)
+        mode["text"] = False
+        sync.sync([_disc(path)], now=20)
+        sync.sync([_disc(path)], now=30)
+        assert [h["ts"] for h in writer.written("file_history")] == [10]
+
+
+class TestProjectOfARow:
+    def test_a_row_keeps_the_project_it_is_attributed_to_in_the_inventory_and_the_history(self, inventory, tmp_path):
+        sync, writer = inventory()
+        path = tmp_path / "MEMORY.md"
+        path.write_text("one")
+        sync.sync([_disc(path, project="/p/alpha")], now=10)
+        row, = writer.written("files")
+        history, = writer.written("file_history")
+        assert row["project"] == history["project"] == "/p/alpha"
+        assert sync.sync([_disc(path, project="/p/alpha")], now=20)["unchanged"] == 1
+
+    def test_a_removed_file_is_deleted_under_its_project(self, inventory, tmp_path):
+        sync, writer = inventory()
+        path = tmp_path / "MEMORY.md"
+        path.write_text("one")
+        other = tmp_path / "other.md"
+        other.write_text("x")
+        sync.sync([_disc(path, project="/p/alpha"), _disc(other)], now=10)
+        sync.sync([_disc(other)], now=20)
+        assert writer.operations[-1] == ("delete", "files", [{"project": "/p/alpha", "path": str(path)}])
+
+    def test_a_file_that_gains_a_project_replaces_its_old_row(self, inventory, tmp_path):
+        sync, writer = inventory()
+        path = tmp_path / "MEMORY.md"
+        path.write_text("one")
+        sync.sync([_disc(path)], now=10)
+        sync.sync([_disc(path, project="/p/alpha")], now=20)
+        assert [op for op in writer.operations if op[0] == "delete"] == [("delete", "files", [{"project": "", "path": str(path)}])]
+        assert writer.written("files")[-1]["project"] == "/p/alpha"
 
 
 def test_read_budget_defers_then_stores_next_pass(inventory, tmp_path):

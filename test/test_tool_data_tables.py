@@ -191,3 +191,26 @@ def test_generic_helper_rules_are_scoped_to_the_tool_tree(name):
             assert r["match_scope"] == "tree", (r["ai_tool"], r["process_name"])
         if r["match_scope"] == "tree":
             assert r["parent_process"] not in ("", "root"), (r["ai_tool"], r["process_name"])
+
+
+# Memory folders that are not inventoried yet. Discovery skips a row that ends in a separator, so a memory
+# folder needs a row for its files (a glob such as ``<folder>/**/*.md``) to be inventoried at all.
+MEMORY_FOLDERS_NOT_INVENTORIED = {
+    ("paths-unix.csv", "~/.gemini/memory/"),
+    ("paths-unix.csv", "~/Library/Application Support/Claude/side-session-notes/"),
+    ("paths-unix.csv", "{project-root}/cascade-memories/"),
+    ("paths-windows.csv", "{project-root}/cascade-memories/"),
+    ("paths-windows.csv", "%APPDATA%\\Code - Insiders\\User\\globalStorage\\github.copilot-chat\\"),
+}
+
+
+@pytest.mark.parametrize("name", PATH_FILES)
+def test_a_memory_folder_row_has_a_row_for_its_files_or_is_listed_as_not_inventoried(name):
+    rows = _load(name)
+    paths = [r["path"] for r in rows]
+    uncovered = {
+        (name, r["path"]) for r in rows
+        if r["category"] == "memory" and r["path"].endswith(("/", "\\"))
+        and not any(p != r["path"] and p.startswith(r["path"]) for p in paths)
+    }
+    assert uncovered == {entry for entry in MEMORY_FOLDERS_NOT_INVENTORIED if entry[0] == name}

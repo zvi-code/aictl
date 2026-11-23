@@ -1817,7 +1817,7 @@ A file that is no longer found is deleted with a tombstone.
 | `last_read` | real | When the content was last read, epoch seconds, UTC; 0 when not read |
 | `last_changed` | real | When the file last changed, epoch seconds, UTC |
 | `meta` | string | JSON text of the discovery's metadata for the file |
-| `project` | string | Part of the key. Always "" |
+| `project` | string | Part of the key. The project path the file belongs to. "" for a file that lies in a project folder, and for every file of a tool that keeps its files outside the project folders and has no project path |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `_deleted` | bool | Tombstone flag: true on a delete row, which carries only the key columns |
@@ -1848,7 +1848,7 @@ Content of tracked context files, by hash. Text.
 
 ### file_history
 
-A row each time a tracked file's content changed.
+A row each time a tracked file has a new version: the file was first seen, its content changed, or, when no content was read (metadata capture, a large or sensitive file), its size or modification time changed.
 
 - Key: `project`, `node_id`, `path`, `ts`
 - Version column: `_v`
@@ -1861,12 +1861,12 @@ A row each time a tracked file's content changed.
 |---|---|---|
 | `path` | string | Absolute file path |
 | `ts` | real | When the change was seen, epoch seconds, UTC |
-| `blob_hash` | string | Hash of the content; joins `file_blobs.hash` |
-| `content_hash` | string | First 16 hex digits of the SHA-256 of the text |
+| `blob_hash` | string | Hash of the content; joins `file_blobs.hash`. "" when no content was read |
+| `content_hash` | string | First 16 hex digits of the SHA-256 of the text. "" when no content was read |
 | `size_bytes` | long | Size |
 | `tokens` | long | Estimated tokens |
 | `lines` | long | Line count |
-| `project` | string | Part of the key. Always "" |
+| `project` | string | Part of the key. The project path of the file's row in `files` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |

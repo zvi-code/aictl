@@ -1252,7 +1252,7 @@ class SnapshotPersistence:
         # Set before the pass so a failing sync also waits out the interval.
         self._last_file_sync = now
         try:
-            from .tools import files_to_sample
+            from .tools import files_to_sample, memory_inventory_files
 
             discovered: dict[str, dict] = {}
             for tool_rec in snap.tools:
@@ -1261,6 +1261,9 @@ class SnapshotPersistence:
                     prev = discovered.get(f.path)
                     if prev is None or (not prev.get("tool") and entry["tool"]):
                         discovered[f.path] = entry
+            # Memory of every project lies outside the project folders: it is found on its own.
+            for f in memory_inventory_files():
+                discovered[f.path] = inventory_row(f, f.tool)
             if not discovered:
                 # Empty discovery (e.g. transient failure) must not wipe
                 # the file store via removed-files handling.
