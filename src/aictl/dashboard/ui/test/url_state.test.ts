@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   mergeSearch, parseUrlState, rangeToParams, toolsToParams,
 } from '../src/data/urlState';
+import { boardRangePatch, parseFilters } from '../src/data/filters';
 
 describe('parseUrlState', () => {
   it('reads preset range and tools', () => {
@@ -34,5 +35,22 @@ describe('serializers', () => {
   it('round-trip a custom range', () => {
     const p = rangeToParams({ id: 'custom', since: 100.7, until: 200.2 });
     expect(p).toEqual({ range: 'custom', since: 100, until: 200 });
+  });
+});
+
+describe('BRD-RANGE-01 · the board address says the range the board shows', () => {
+  it('drops a range the board has no window for, such as the Insights "all"', () => {
+    const patch = boardRangePatch('?range=all&scope=fleet');
+    expect(patch).toEqual({ range: null, since: null, until: null, sel: null });
+    const fixed = mergeSearch('?range=all&scope=fleet', patch!);
+    expect(fixed).toBe('?scope=fleet');
+    expect(parseFilters(fixed).range.id).toBe('24h');
+    expect(boardRangePatch('?range=custom&since=9')).toBeDefined();
+  });
+
+  it('leaves a range the board shows alone', () => {
+    for (const search of ['', '?scope=fleet', '?range=7d', '?range=24h', '?range=custom&since=100&until=200']) {
+      expect(boardRangePatch(search)).toBeUndefined();
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, lazy, Loading, onCleanup, Show, Switch, Match, untrack } from 'solid-js'
 import { render } from '@solidjs/web'
-import { boardLiveRequest, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
+import { boardLiveRequest, boardRangePatch, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
 import { isRuntimeSession } from '../data/runtimeAgents'
 import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
@@ -108,7 +108,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     setOrder(sections.board.map(section => section.id))
     const patch = { ...CLEAR_SETTINGS_PARAMS, ...clearDrawer, screen: next === 'board' ? null : next,
       scope: scope() === 'local' ? null : scope() }
-    go(location.pathname + mergeSearch(location.search, patch))
+    const search = mergeSearch(location.search, patch)
+    // The board has no range such as Insights' "all": its address says the range it shows.
+    go(location.pathname + (next === 'board' ? mergeSearch(search, boardRangePatch(search) ?? {}) : search))
     window.scrollTo(0, 0)
   }
   const jump = (id: string) => {
@@ -212,6 +214,8 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   }
   createEffect(() => filters().q, value => { setFindText(value) })
   createEffect(screen, () => { clearTimeout(findTimer) })
+  // A pasted or restored board address with a range the board cannot show is corrected in place.
+  createEffect(() => screen() === 'board' ? boardRangePatch(search()) : undefined, patch => { if (patch) go(nextAddress(patch), true) })
   createEffect(theme, value => { document.documentElement.dataset.theme = value; remember('aictl-theme', value) })
   createEffect(density, value => { document.documentElement.dataset.density = value; remember('aictl-shell-density', value) })
   createEffect(rail, value => remember('aictl-shell-rail', value ? 'open' : 'closed'))

@@ -1,7 +1,7 @@
 // ─── Board filters — time and filters live in the URL ─────────────
 // Keys: range (with since and until for custom), tools (shared with every other
 // screen), project, model, status, q, and sel (a selected time, "since-until").
-import { parseUrlState, rangeToParams, type Range, type TimeWindow } from './urlState';
+import { parseUrlState, rangeToParams, type Range, type TimeWindow, type UrlPatch } from './urlState';
 
 export type Screen = 'board' | 'health' | 'insights' | 'settings';
 export type Filters = ReturnType<typeof parseFilters>;
@@ -57,6 +57,14 @@ export function parseFilters(search: string) {
     q: q.get('q') || '',
     sel,
   };
+}
+
+/** The URL keys that make the board's address say the range it shows. The board has no range such as
+ * Insights' "all": it shows its default, so the address and the picker say that default too. */
+export function boardRangePatch(search: string): UrlPatch | undefined {
+  const asked = new URLSearchParams(search || '').get('range');
+  if (asked == null || asked === parseFilters(search).range.id) return undefined;
+  return { range: null, since: null, until: null, sel: null };
 }
 
 export function filtersToParams(f: Filters) {
