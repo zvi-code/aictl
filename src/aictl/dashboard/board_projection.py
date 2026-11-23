@@ -533,7 +533,8 @@ class _Board:
         self.loops: list[dict] = []
         self.status: dict[str, str] = {}
         self.sub_status: dict[tuple[str, str], str] = {}
-        self.lifecycle: dict[str, session_lifecycle.Lifecycle] = {}
+        self.lifecycle: dict[str, session_lifecycle.SessionStatus] = {}
+        self.process_status: dict[str, session_lifecycle.SessionStatus] = {}
         self.scope: set[str] = set()
         self._prefetched: dict[str, list[dict]] = {}
         facts = facts or {}
@@ -890,6 +891,9 @@ class _Board:
                 merged["matched_by"] = "evidence"
             if not live.get("ended"):
                 merged["pids"].update(int(p) for p in live.get("pids") or [])
+                if live.get("native_state") not in (None, "", "unknown"):
+                    # What the tool's own session file says this process's session is doing.
+                    merged["native_activity"] = live["native_state"]
             elif known and live.get("last_seen_at"):
                 # The monitor saw the process exit; the stored end may not be readable yet.
                 merged["exited_at"] = max(merged.get("exited_at") or 0.0, float(live["last_seen_at"]))
@@ -1074,25 +1078,18 @@ class _Board:
             ended_at, end_reason = meta.get("ended_at"), str(meta.get("end_reason") or "")
             if live.get("exited_at") and not session_lifecycle.ended_by_fact(ended_at, end_reason, seen):
                 ended_at, end_reason = live["exited_at"], session_lifecycle.PROCESS_EXIT
-            lifecycle = session_lifecycle.assess(
-                now=self.now, pids=live.get("pids") or (), last_activity=seen, ended_at=ended_at,
+            decided = dict(
+                now=self.now, native_activity=live.get("native_activity"), last_activity=seen, ended_at=ended_at,
                 end_reason=end_reason, matched_by=live.get("matched_by", ""), idle_window=ACTIVE_WINDOW_S,
+                pending=bool(pending_by_root[sid]), looping=sid in roots_looping, turn_ended=sid in turn_ended,
+                failed=last_failed(sid, agents),
             )
+            lifecycle = session_lifecycle.session_status(pids=live.get("pids") or (), **decided)
             self.lifecycle[sid] = lifecycle
-            recent = self.now - seen < ACTIVE_WINDOW_S
+            # The status this history gives once the runtime report shows the session's process.
+            self.process_status[sid] = session_lifecycle.session_status(assume_process=True, **decided)
             active = lifecycle.live
-            if active and pending_by_root[sid]:
-                self.status[sid] = "waiting"
-            elif active and sid in roots_looping:
-                self.status[sid] = "looping"
-            elif active and (not recent or sid in turn_ended):
-                self.status[sid] = "idle"
-            elif active:
-                self.status[sid] = "running"
-            elif last_failed(sid, agents):
-                self.status[sid] = "failed"
-            else:
-                self.status[sid] = "ended"
+            self.status[sid] = lifecycle.status
             for agent in agents:
                 if agent == sid:
                     continue
@@ -1427,8 +1424,13 @@ class _Board:
             return {"status_evidence": words, "end_reason": reason}
         lifecycle = self.lifecycle.get(sid)
         if lifecycle is None:
-            return {"status_evidence": None, "end_reason": ""}
-        return {"status_evidence": lifecycle.evidence, "end_reason": lifecycle.end_reason}
+            return {"status_evidence": None, "end_reason": "", "status_basis": None, "process_status": None}
+        once = getattr(self, "process_status", {}).get(sid)
+        return {
+            "status_evidence": lifecycle.evidence, "end_reason": lifecycle.end_reason, "status_basis": lifecycle.basis,
+            # The status once the runtime report shows this session's process, with its activity words.
+            "process_status": {"status": once.status, "activity": once.activity, "basis": once.basis} if once else None,
+        }
 
     def _identity_fields(self, sid: str, agent: str, sub: dict, spawn: dict, status: str, root: bool) -> dict:
         """What the row is: its kind, where its name came from, its type and models, and its subagents."""
@@ -1512,7 +1514,8 @@ class _Board:
                     "title": f"{label}, no session data yet",
                     "parent_id": None,
                     "role": None,
-                    "status": "running",
+                    # A process with no stored line yet: its activity is unknown, not assumed.
+                    "status": session_lifecycle.session_status(now=self.now, pids=pids).status,
                     "tool": tool,
                     "project": project,
                     "models": [],

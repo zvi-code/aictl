@@ -604,6 +604,18 @@ def live_pids(snapshot: Any) -> dict[str, set[int]]:
     return out
 
 
+def live_activity(snapshot: Any) -> dict[str, str]:
+    """What the tool's own session file says each live session is doing, by every id it is known under."""
+    out: dict[str, str] = {}
+    for live in getattr(snapshot, "sessions", None) or ():
+        if not isinstance(live, dict) or live.get("ended") or live.get("native_state") in (None, "", "unknown"):
+            continue
+        for key in (live.get("native_session_id"), live.get("session_id")):
+            for name in ({str(key), _session_uuid(str(key)) or ""} - {""}) if key else ():
+                out[name] = str(live["native_state"])
+    return out
+
+
 def model_prices(now: float) -> dict[str, list[float]]:
     """USD per 1M input, output, cache read and cache write tokens of each priced model, as at *now*.
 
@@ -651,6 +663,7 @@ def search_sessions(
     query: SessionQuery | None = None,
     live: dict[str, set[int]] | None = None,
     now: float | None = None,
+    activity: dict[str, str] | None = None,
 ) -> dict:
     """Return one page of matching sessions: running ones first, then by last activity."""
     if query is None:
@@ -659,16 +672,17 @@ def search_sessions(
             limit=max(1, min(int(limit or SEARCH_DEFAULT_LIMIT), SEARCH_MAX_LIMIT)), offset=max(0, int(offset or 0)),
         )
     history = history or HistoryScope.local(db)
-    return _reader_search(db, history, query, now=now, live=live)
+    return _reader_search(db, history, query, now=now, live=live, activity=activity)
 
 
-def _reader_search(db, history, query: SessionQuery, *, now=None, live=None):
+def _reader_search(db, history, query: SessionQuery, *, now=None, live=None, activity=None):
     from collections import Counter
 
     from .history_scope import identity, label
 
     now = time.time() if now is None else now
     live = {} if history.qualified else (live or {})
+    activity = {} if history.qualified else (activity or {})
     moving = set() if history.qualified else _moving(db)
     results = history.read(
         "sessions.search", limit=20_000 if history.qualified else query.limit + 2,
@@ -694,7 +708,7 @@ def _reader_search(db, history, query: SessionQuery, *, now=None, live=None):
     for r in items:
         data, node = r["data"], r["node_id"]
         if data.get("imported"):
-            row = _imported_row(data, node, qualify(node, r["session_id"]), qualify, query.q, live, moving, now)
+            row = _imported_row(data, node, qualify(node, r["session_id"]), qualify, query.q, live, moving, now, activity)
         else:
             row = _unread_row(data, qualify(node, data.get("src_session") or r["session_id"]), query.q)
         out.append((node, row))
@@ -718,7 +732,8 @@ def _reader_search(db, history, query: SessionQuery, *, now=None, live=None):
     return result
 
 
-def _imported_row(data, node, key, qualify, q, live, moving, now) -> dict:
+def _imported_row(data, node, key, qualify, q, live, moving, now, activity=None) -> dict:
+    activity = activity or {}
     members = data.get("members") or []
     sids = [qualify(node, m["session_id"]) for m in members]
     base = dict(zip(sids, members))
@@ -733,8 +748,10 @@ def _imported_row(data, node, key, qualify, q, live, moving, now) -> dict:
     for i in raw_ids:
         pids |= live.get(i, set()) | live.get(_session_uuid(i) or "", set())
     ended_at = data.get("ended_at")
-    lifecycle = session_lifecycle.assess(
-        now=now, pids=pids, last_activity=float(data.get("seen") or 0.0), ended_at=ended_at,
+    native = next((activity.get(i) or activity.get(_session_uuid(i) or "") for i in raw_ids
+                   if activity.get(i) or activity.get(_session_uuid(i) or "")), None)
+    lifecycle = session_lifecycle.session_status(
+        now=now, pids=pids, native_activity=native, last_activity=float(data.get("seen") or 0.0), ended_at=ended_at,
         end_reason=str(data.get("end_reason") or ""), idle_window=session_lifecycle.IDLE_END_S,
     )
     openable = int(data.get("facts") or 0) > 0 or any(i in moving for i in raw_ids)
@@ -743,7 +760,9 @@ def _imported_row(data, node, key, qualify, q, live, moving, now) -> dict:
         ended_at=ended_at,
         last_activity_at=data.get("last_active") or None,
         duration=data.get("duration"),
-        status="running" if lifecycle.live else "inferred" if lifecycle.inferred else "ended",
+        # The finder's word for an end inferred from the idle window is "inferred"; the rest is the one status.
+        status="inferred" if lifecycle.inferred else lifecycle.status,
+        status_basis=lifecycle.basis,
         status_evidence=lifecycle.evidence,
         end_reason=lifecycle.end_reason,
         pids=sorted(pids),

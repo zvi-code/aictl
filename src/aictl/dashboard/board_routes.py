@@ -67,14 +67,14 @@ def handle_get(
         elif path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now, history=history) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/sessions":
-            from .session_record import finder_query, live_pids, search_sessions
+            from .session_record import finder_query, live_activity, live_pids, search_sessions
 
             try:
                 finder = finder_query(qs)
             except ValueError as exc:
                 raise BoardRequestError(str(exc)) from exc
             status, payload = 200, search_sessions(
-                db, query=finder, history=history, live=live_pids(snapshot), now=now,
+                db, query=finder, history=history, live=live_pids(snapshot), now=now, activity=live_activity(snapshot),
             )
         elif path == "/api/board/tool":
             if one("name"):

@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 060e65a4a39925b4a3ed6a042a8e216af4db18683bc59c29fc5f394c43e4f899
+// Schema digest: 866aa140e9038f53d5173f5812392c2520ed08a34703a8b271b323e4cedfa7ff
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -29,6 +29,12 @@ export type BoardAgentRow = {
   activity: Array<number>;
   placeholder?: boolean;
   status_evidence?: string | null;
+  status_basis?: string | null;
+  process_status?: {
+    status: string;
+    activity: string;
+    basis: string;
+  } | null;
   end_reason?: string;
   node_id?: string;
   native_id?: string;
@@ -1879,7 +1885,8 @@ export type DetailSessions = {
     ended_at: number | null;
     last_activity_at: number | null;
     duration: number | null;
-    status: "running" | "ended" | "inferred" | "not_imported";
+    status: "running" | "waiting" | "looping" | "idle" | "unknown" | "ended" | "failed" | "inferred" | "not_imported";
+    status_basis?: string;
     status_evidence: string;
     end_reason: string;
     pids: Array<number>;
@@ -2406,6 +2413,12 @@ export type HistoryAgentRow = {
   activity: Array<number>;
   placeholder?: boolean;
   status_evidence?: string | null;
+  status_basis?: string | null;
+  process_status?: {
+    status: string;
+    activity: string;
+    basis: string;
+  } | null;
   end_reason?: string;
   node_id?: string;
   native_id?: string;

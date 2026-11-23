@@ -29,6 +29,13 @@
     "activity": {"type": "array", "items": {"type": "integer"}},
     "placeholder": {"type": "boolean"},
     "status_evidence": {"type": ["string", "null"]},
+    "status_basis": {"type": ["string", "null"]},
+    "process_status": {
+      "type": ["object", "null"],
+      "properties": {"status": {"type": "string"}, "activity": {"type": "string"}, "basis": {"type": "string"}},
+      "required": ["status", "activity", "basis"],
+      "additionalProperties": false
+    },
     "end_reason": {"type": "string"},
     "node_id": {"type": "string"},
     "native_id": {"type": "string"},

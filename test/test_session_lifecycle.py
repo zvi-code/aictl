@@ -281,7 +281,7 @@ def _board(now: float, *, cells=(), live_by_sid=None, meta=None) -> _Board:
     board.live_by_sid = live_by_sid or {}
     board.loops = []
     board.meta = meta or {}
-    board.status, board.sub_status, board.lifecycle = {}, {}, {}
+    board.status, board.sub_status, board.lifecycle, board.process_status = {}, {}, {}, {}
     board.history = SimpleNamespace(read=lambda *_a, **_k: [], keys=lambda ids: sorted(ids))
     return board
 
@@ -297,7 +297,7 @@ def test_board_status_follows_the_bound_process_not_the_timer():
                    live_by_sid={SID: {"pids": {4312}, "matched_by": "evidence"}})
     board._assign_status()
     assert board.status[SID] == "idle"  # alive but quiet: live, not ended
-    assert board.lifecycle[SID].evidence == "process 4312 running"
+    assert board.lifecycle[SID].evidence.startswith("process 4312 running; last activity ")
     assert board.status[OTHER] == "ended"
     assert board.lifecycle[OTHER].evidence == "no activity for 15 min (inferred)"
 

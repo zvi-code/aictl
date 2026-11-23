@@ -137,6 +137,15 @@ export function overlayAgents(historical: readonly Agent[], entities: readonly E
       // The tool's own session file names it, so it is a session; the store has nothing for it in this time.
       row.no_history = 'No activity recorded in the selected time: its transcript lines are older or not imported yet';
     }
+    const once = previous?.process_status as { status?: unknown; activity?: unknown; basis?: unknown } | null | undefined
+    if (data.running === true && data.status === 'unknown' && typeof once?.status === 'string' && typeof once.activity === 'string') {
+      // The tool's file does not report the activity: the history decides it, by the rule of
+      // aictl.session_lifecycle.session_status, from the time of the session's last line.
+      const process = typeof data.status_evidence === 'string' ? data.status_evidence.split('; ')[0] : ''
+      row.status = once.status
+      row.status_basis = once.basis
+      row.status_evidence = process ? `${process}; ${once.activity}` : once.activity
+    }
     if (typeof data.project_path === 'string' && data.project_path && !runtime.project) row.project = data.project_path;
     if (Array.isArray(row.pids)) { row.pid_list = row.pids; row.pids = row.pids.length; }
     if (!previous && !matchesAgent(row, filters, tools)) continue;

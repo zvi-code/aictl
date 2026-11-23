@@ -101,9 +101,40 @@ def counts(total, **facets):
     ]
 
 
-def search(rows, query=None, live=None, artifacts=()):
+def search(rows, query=None, live=None, artifacts=(), activity=None):
     history = FakeHistory(rows, artifacts)
-    return search_sessions(None, history=history, query=query or SessionQuery(), live=live or {}, now=NOW), history
+    kwargs = {"activity": activity} if activity is not None else {}
+    return search_sessions(None, history=history, query=query or SessionQuery(), live=live or {}, now=NOW,
+                           **kwargs), history
+
+
+# ─── One status for one session, in every panel ──────────────────
+
+
+def test_the_finder_and_the_board_give_one_status_for_the_same_evidence():
+    """A process alive for a session whose last line is weeks old is idle in both, by its last activity."""
+    from test_session_lifecycle import _board, _cell
+
+    old = NOW - 26 * 86400
+    out, _ = search([*counts(1), stored(seen=old, last_active=old)], live={SID: {42}})
+    board = _board(NOW, cells=[_cell(SID, old)], live_by_sid={SID: {"pids": {42}, "matched_by": "evidence"}})
+    board._assign_status()
+    row = out["rows"][0]
+    assert row["status"] == board.status[SID] == "idle"
+    assert row["status_evidence"] == board.lifecycle[SID].evidence
+    assert row["status_evidence"].startswith("process 42 running; last activity ")
+    assert row["status_basis"] == "live process"
+
+
+def test_the_session_file_report_decides_the_activity_of_a_live_process():
+    out, _ = search([*counts(1), stored(seen=NOW - 30, last_active=NOW - 30)], live={SID: {42}}, activity={SID: "idle"})
+    row = out["rows"][0]
+    assert (row["status"], row["status_evidence"]) == ("idle", "process 42 running; session file reports idle")
+    snapshot = SimpleNamespace(sessions=[
+        {"native_session_id": SID, "session_id": "m1", "pids": [42], "native_state": "idle"},
+        {"session_id": "m2", "pids": [7], "native_state": "unknown"},
+    ])
+    assert session_record.live_activity(snapshot) == {SID: "idle", "m1": "idle"}
 
 
 # ─── Status ───────────────────────────────────────────────────────
@@ -120,7 +151,8 @@ def test_each_row_has_the_status_and_evidence_of_the_lifecycle_rules():
         stored(d, seen=NOW - 60),
     ], live={a: {42}})
     got = {r["id"]: (r["status"], r["status_evidence"], r["end_reason"]) for r in out["rows"]}
-    assert got[a] == ("running", "process 42 running", "")
+    # Alive for 67 min with no line: idle by its last activity, as the board says (one rule).
+    assert got[a][0] == "idle" and got[a][1].startswith("process 42 running; last activity ") and got[a][2] == ""
     assert got[b] == ("ended", "tool reported end", "hook")
     assert got[c] == ("inferred", "no activity for 15 min (inferred)", "idle")
     assert got[d][0] == "running" and got[d][1].startswith("no process seen; last activity")
@@ -299,7 +331,7 @@ def test_the_route_answers_400_for_a_bad_value_and_passes_the_filters(monkeypatc
     status, body = board_routes.handle_get("/api/board/sessions", "sort=duration&order=asc&status=running&limit=50",
                                            store, store, NOW)
     payload = json.loads(body)
-    assert status == 200 and payload["rows"][0]["status_evidence"] == "process 3 running"
+    assert status == 200 and payload["rows"][0]["status_evidence"].startswith("process 3 running")
     params = history.reads[-2][1]
     assert (params["sort_key"], params["ascending"], params["requested_status"], params["page_size"]) == (
         "duration", True, "running", 50)

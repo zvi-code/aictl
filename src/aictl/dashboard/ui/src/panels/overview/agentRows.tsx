@@ -77,7 +77,7 @@ export function agentRows({ ctx, def }: PanelProps) {
         parent = JSON.stringify(['group', groupBy, label ?? null])
         if (!groups.has(parent)) groups.set(parent, { id: parent, folded: false, row: { title: label || missing, kind: 'group' } })
       }
-      const processOnly = a.runtime_present === true && (a.status == null || a.status === 'unknown' || a.native_activity === 'unknown')
+      const processOnly = a.runtime_present === true && (a.status == null || a.status === 'unknown')
       const ended = typeof a.ended_at === 'number' ? a.ended_at : a.running === true ? ctx.startedAt : undefined
       return { ...entry, parent, folded: typeof a.id === 'string' && parents.has(a.id) ? false : undefined, row: {
         ...a,

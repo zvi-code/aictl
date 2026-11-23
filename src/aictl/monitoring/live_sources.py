@@ -194,10 +194,17 @@ def _runtime_evidence(processes: list[ProcessInfo], status: str, native: dict) -
         return f"tool reported end; {words}"
     if not native.get("session_id"):
         return f"{words}; not linked to a session, activity unknown"
-    if status in ("unknown", ""):
-        return f"{words}; activity unknown"
-    source = native.get("status_source") or "session log"
-    return f"{words}; {source} reports {'running' if status == 'working' else status}"
+    if not pids:
+        return f"{words}; {native.get('status_source') or 'session log'} reports {status}"
+    return _linked_status(processes, native).evidence
+
+
+def _linked_status(processes: list[ProcessInfo], native: dict) -> session_lifecycle.SessionStatus:
+    """The status of a session linked to live processes, by the one rule every panel uses."""
+    return session_lifecycle.session_status(
+        now=time.time(), pids=[process.pid for process in processes],
+        native_activity=native.get("native_activity"), native_source=native.get("status_source") or "session log",
+    )
 
 
 class LiveRuntimeSources:
@@ -492,7 +499,8 @@ class LiveRuntimeSources:
             "pids": sorted(p.pid for p in processes),
             "running": bool(processes) and status != "ended",
             "native_activity": native.get("native_activity", "unknown"),
-            "status": "running" if status == "working" else status,
+            "status": _linked_status(processes, native).status
+            if processes and native.get("session_id") and status != "ended" else status,
             "cpu_percent": (
                 sum(sample["cpu_percent"] for sample in samples)
                 if samples and all(sample.get("cpu_percent") is not None for sample in samples)

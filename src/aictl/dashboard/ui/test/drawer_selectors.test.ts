@@ -25,6 +25,16 @@ it('shows why a status holds and marks an inferred end as inferred', () => {
   expect(agent).toMatchObject({ status: 'idle', status_evidence: 'process 4312 running; session file reports idle' });
 });
 
+it('takes the activity from the history when the runtime report does not know it', () => {
+  const overlay = overlayAt([liveEntity('runtime.agent', 's', {
+    id: 's', session_id: 's', status: 'unknown', native_activity: 'unknown', running: true,
+    status_evidence: 'processes 26192, 26193 running; activity unknown' })]);
+  const [agent] = overlay([{ id: 's', status: 'ended', ended_at: 10, status_evidence: 'no activity for 15 min (inferred)',
+    process_status: { status: 'idle', activity: 'last activity Oct 28 10:31', basis: 'live process' } }], {});
+  expect(agent).toMatchObject({ status: 'idle', status_basis: 'live process',
+    status_evidence: 'processes 26192, 26193 running; last activity Oct 28 10:31' });
+});
+
 it('honors the runtime field allowlist and filters agents after the overlay', () => {
   const history = [{ id: 'a', status: 'running', input: 10, cost_usd: 0.1, activity: [1, 2], tool_calls: 3 }, { id: 'b', status: 'running' }];
   const overlay = overlayAt([

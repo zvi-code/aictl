@@ -36,7 +36,7 @@ export type FinderRow = DetailSessions['rows'][number]
 export type FinderPage = DetailSessions
 
 export const STATUS_LABELS: Record<Exclude<FinderStatus, ''>, string> = {
-  running: 'Running', ended: 'Ended', inferred: 'Ended (inferred)', importing: 'Still importing',
+  running: 'Live now', ended: 'Ended', inferred: 'Ended (inferred)', importing: 'Still importing',
   not_imported: 'Not imported yet',
 }
 export const SORT_LABELS: Record<FinderSort, string> = {
@@ -213,12 +213,18 @@ export function emptyReason(state: FinderState, page: Pick<FinderPage, 'total' |
   return `No session matches ${chips.map(chip => `${chip.label}: ${chip.value}`).join(', ')}.`
 }
 
+const LIVE_LABELS: Record<string, string> = {
+  running: '● Running', waiting: '● Waiting', looping: '● Looping', idle: '● Idle', unknown: '● Activity unknown',
+  failed: 'Failed',
+}
+
 export type RowState = { status: string; label: string; history: string; opens: boolean; reason?: string }
 
 /** How a row reads in the list: its status words, its import state and whether it opens. */
 export function rowState(row: Pick<FinderRow, 'status' | 'import_state' | 'import' | 'openable' | 'closed_reason'>): RowState {
   const status = row.status ?? 'ended'
-  const label = status === 'running' ? '● Running' : STATUS_LABELS[status as keyof typeof STATUS_LABELS] ?? status
+  // The one session status (aictl.session_lifecycle.session_status); the filter "Live now" covers every live word.
+  const label = LIVE_LABELS[status] ?? STATUS_LABELS[status as keyof typeof STATUS_LABELS] ?? status
   const imp = row.import
   const history = row.import_state === 'complete' ? 'Complete'
     : row.import_state === 'reading'
@@ -233,7 +239,7 @@ export function rowState(row: Pick<FinderRow, 'status' | 'import_state' | 'impor
 export function summaryItems(facets: FinderPage['facets'] | undefined): { status: FinderStatus; label: string; count?: number }[] {
   return [
     { status: '', label: 'sessions', count: facets?.sessions },
-    { status: 'running', label: 'running', count: facets?.running },
+    { status: 'running', label: 'live now', count: facets?.running },
     { status: 'importing', label: 'still importing', count: facets?.importing },
     { status: 'not_imported', label: 'not imported yet', count: facets?.not_imported },
   ]

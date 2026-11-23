@@ -135,7 +135,7 @@ def _board(subs: list[dict], *, spawns: list[dict] = (), parent_last: float = NO
     board.spawns = list(spawns)
     board.live_by_sid = {}
     board.meta = meta or {SID: {"started_at": NOW - 3000}, OTHER: {"started_at": NOW - 100}}
-    board.status, board.sub_status, board.lifecycle = {}, {}, {}
+    board.status, board.sub_status, board.lifecycle, board.process_status = {}, {}, {}, {}
     board.session_tool = {SID: "claude-code", OTHER: "claude-code"}
     board.session_project = {SID: "/p", OTHER: "/p"}
     board.history = SimpleNamespace(read=lambda *_a, **_k: [], keys=lambda ids: sorted(ids))

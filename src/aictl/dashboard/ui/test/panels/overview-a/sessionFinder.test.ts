@@ -82,7 +82,7 @@ describe('chips and the empty state', () => {
   it('shows each filter with its value and clears all but the order', () => {
     const chips = finderChips(busy, id => id.toUpperCase())
     expect(chips.map(chip => `${chip.label}: ${chip.value}`)).toEqual([
-      'Text: x', 'Status: Running', 'Tool: CODEX-CLI', 'Model: opus', 'Tokens: ≥ 10', 'Active in: Last 30 d',
+      'Text: x', 'Status: Live now', 'Tool: CODEX-CLI', 'Model: opus', 'Tokens: ≥ 10', 'Active in: Last 30 d',
     ])
     expect(clearAll({ ...busy, sort: 'cost' })).toEqual(state({ sort: 'cost' }))
   })
@@ -105,6 +105,8 @@ describe('row states', () => {
   it('reads running, ended, inferred and not imported rows', () => {
     expect(rowState(row({ status: 'running' }))).toEqual({ status: 'running', label: '● Running', history: 'Complete', opens: true })
     expect(rowState(row({})).label).toBe('Ended')
+    expect(rowState(row({ status: 'idle' })).label).toBe('● Idle')
+    expect(rowState(row({ status: 'unknown' })).label).toBe('● Activity unknown')
     expect(rowState(row({ status: 'inferred' })).label).toBe('Ended (inferred)')
     expect(rowState(row({ status: 'not_imported', import_state: 'waiting', openable: false, closed_reason: 'Not imported yet: why' })))
       .toEqual({ status: 'not_imported', label: 'Not imported yet', history: 'Not imported yet', opens: false, reason: 'Not imported yet: why' })

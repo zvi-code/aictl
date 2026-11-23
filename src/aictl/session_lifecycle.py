@@ -111,3 +111,95 @@ def assess(
     if last_activity and now - last_activity < idle_window:
         return Lifecycle(True, "", f"no process seen; last activity {_minutes(now - last_activity)} ago")
     return Lifecycle(False, IDLE, end_words(IDLE, None, now, idle_window))
+
+
+# What a tool's own session file or log says the session is doing, as a status.
+_NATIVE_STATUS = {"working": "running", "running": "running", "idle": "idle", "waiting": "waiting"}
+
+# The evidence a status rests on, in the order session_status consults it.
+BASIS_SESSION_FILE = "session file"  # a live process, and the tool's own file reports its activity
+BASIS_PROCESS = "live process"  # a live process; its activity is read from the time of the last line
+BASIS_LAST_ACTIVITY = "last activity"  # no process seen; the time of the last line decides
+BASIS_END = "end record"  # an end that was observed
+BASIS_IDLE_WINDOW = "idle window"  # no process and no activity for the idle window: an inferred end
+
+
+@dataclass(frozen=True, slots=True)
+class SessionStatus:
+    """The one status of a session, the evidence that decided it, and the kind of that evidence.
+
+    ``evidence`` is ``"<process part>; <activity part>"`` while a process is seen, so a reader
+    that knows the process from elsewhere can pair its own process words with ``activity``.
+    """
+
+    status: str  # running | waiting | looping | idle | unknown | ended | failed
+    evidence: str
+    basis: str
+    end_reason: str  # "" while live
+    activity: str  # the activity part of the evidence alone
+    live: bool
+
+    @property
+    def inferred(self) -> bool:
+        return self.end_reason == IDLE
+
+
+def session_status(
+    *,
+    now: float,
+    pids: Iterable[int] = (),
+    native_activity: str | None = None,
+    native_source: str = "session file",
+    last_activity: float | None = None,
+    ended_at: float | None = None,
+    end_reason: str = "",
+    matched_by: str = "",
+    idle_window: float = IDLE_END_S,
+    pending: bool = False,
+    looping: bool = False,
+    turn_ended: bool = False,
+    failed: bool = False,
+    assume_process: bool = False,
+) -> SessionStatus:
+    """The status of a session, from the evidence in this order; every panel and the drawer use it.
+
+    1. Not live by :func:`assess` (an observed end, or no process and no activity for the idle
+       window): ``ended``, or ``failed`` when its last call failed.
+    2. A tool call waiting to return: ``waiting``. A loop at the end of the session: ``looping``.
+    3. A live process and the tool's own file reports the activity: that activity.
+    4. A live process and a known last activity: ``running`` within the idle window and while
+       the last turn has not ended, else ``idle``. With no known last activity: ``unknown``.
+    5. No process seen and activity within the idle window: ``running``, or ``idle`` when the
+       last turn ended.
+
+    ``assume_process`` decides as if a process were seen without naming it: the history of a
+    session states what its status is once the runtime report shows its process.
+    """
+    alive = sorted({int(pid) for pid in pids if pid})
+    seen = float(last_activity or 0.0)
+    life = assess(now=now, pids=alive or ([1] if assume_process else ()), last_activity=seen, ended_at=ended_at,
+                  end_reason=end_reason, matched_by=matched_by, idle_window=idle_window)
+    if not life.live:
+        basis = BASIS_END if life.end_reason in END_OBSERVED else BASIS_IDLE_WINDOW
+        return SessionStatus("failed" if failed else "ended", life.evidence, basis, life.end_reason, life.evidence, False)
+    process = bool(alive) or assume_process
+    head = (process_words(alive) + (" (matched by project)" if matched_by == "project" else "")) if alive else ""
+    native = _NATIVE_STATUS.get(str(native_activity or ""))
+    recent = bool(seen) and now - seen < idle_window
+    if process and native:
+        status, basis, activity = native, BASIS_SESSION_FILE, f"{native_source} reports {native}"
+    elif process and seen:
+        status = "running" if recent and not turn_ended else "idle"
+        basis, activity = BASIS_PROCESS, f"last activity {clock(seen, now)}" + ("; its last turn ended" if turn_ended and recent else "")
+    elif process:
+        status, basis, activity = "unknown", BASIS_PROCESS, "activity unknown"
+    else:
+        status = "idle" if turn_ended else "running"
+        basis, activity = BASIS_LAST_ACTIVITY, life.evidence.split("; ", 1)[1]
+        head = "no process seen"
+    if pending:
+        status = "waiting"
+    elif looping and status in ("running", "idle", "unknown"):
+        status = "looping"
+    evidence = f"{head}; {activity}" if head else activity
+    return SessionStatus(status, evidence, basis, "", activity, True)
