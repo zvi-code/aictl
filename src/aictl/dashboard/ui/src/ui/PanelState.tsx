@@ -64,7 +64,7 @@ export function PanelState(props: {
     <div class={styles.notice}>
       <Icon data={states[props.state].icon} />
       <span role={props.state === 'error' ? 'alert' : 'status'}>{props.message ?? states[props.state].label}</span>
-      <Show when={props.state === 'stale'}><Freshness compact updatedAt={props.updatedAt} /></Show>
+      <Show when={props.state === 'stale' && props.updatedAt != null}><Freshness compact updatedAt={props.updatedAt} /></Show>
     </div>
     <Show when={props.onRetry}>
       <button type="button" class={styles.retry} onClick={() => props.onRetry?.()}>Retry</button>
