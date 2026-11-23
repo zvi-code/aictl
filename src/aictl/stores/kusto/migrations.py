@@ -43,6 +43,7 @@ class Statement:
     description: str
     count_query: str
     command: str
+    table: str = ""  # the table the command appends to
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,21 @@ class MigrationVerificationError(RuntimeError):
 def append(table: str, query: str, lets: str = "", read: str | None = None) -> str:
     """Append *query*'s rows to *table*, columns matched by name and type. *lets* go first."""
     return f".set-or-append {quote(table)} <| {lets}{read or quote(table)} | take 0 | union ({query})"
+
+
+def widen_command(table: str) -> str | None:
+    """Add the columns this aictl has and the stored table lacks, before rows are appended to it.
+
+    A table an older aictl created can lack a column the appended rows carry, and the append is
+    then refused. ``.create-merge`` only adds columns; it removes and changes none.
+    """
+    from . import schema as S
+    from .tables import TABLES
+
+    if table not in TABLES:
+        return None  # a node's own table: created with every column
+    columns = ", ".join(f"{quote(name)}:{kind}" for name, kind in S.logical_columns(table))
+    return f".create-merge table {quote(table)} ({columns})"
 
 
 def shared(name: str) -> str:
@@ -169,6 +185,7 @@ def _requests_single_copy(table: str = "requests", read: str | None = None) -> l
             "the transcript reader stores the same calls",
             f"{copies} | count",
             append(table, f"{copies} | extend _deleted=true, _v=now() | project-away fact_key", read=read),
+            table,
         ),
         Statement(
             "Copy timing, prompt id, pid and finish reason from a telemetry report to the transcript row "
@@ -177,6 +194,7 @@ def _requests_single_copy(table: str = "requests", read: str | None = None) -> l
             append(table, f"{_transcript_to_merge()} | {_MERGED} | extend _v=now()"
                           " | project-away fact_key, o_duration, o_ttft, o_prompt, o_pid, o_finish", pairs + " ",
                    read=read),
+            table,
         ),
         Statement(
             "Delete the telemetry row of a call the transcript also stored (same node, session and token "
@@ -184,6 +202,7 @@ def _requests_single_copy(table: str = "requests", read: str | None = None) -> l
             f"{pairs} {_telemetry_to_delete()} | count",
             append(table, f"{_telemetry_to_delete()} | extend _deleted=true, _v=now() | project-away fact_key",
                    pairs + " ", read=read),
+            table,
         ),
     ]
 
@@ -239,12 +258,14 @@ def _agents_by_session(agents: str | None = None, agents_text: str | None = None
             f"{shown} {unscoped_text} {text_to_scope} | count",
             append("agents_text", f"{text_to_scope} | extend session_id=shown_session, _v=now()"
                                   " | project-away shown_session", f"{shown} {unscoped_text} ", read=agents_text),
+            "agents_text",
         ),
         Statement(
             "Agents are now keyed by session and agent id: delete the older versions of an agent written "
             "under another session, so each agent shows under the session it showed under before",
             f"{shown} {resurfaced} | count",
             append("agents", f"{resurfaced} | extend _deleted=true, _v=now()", f"{shown} ", read=agents),
+            "agents",
         ),
         Statement(
             "Delete the session rows the agent-team scan wrote under a subagent's folder, where the session "
@@ -252,6 +273,7 @@ def _agents_by_session(agents: str | None = None, agents_text: str | None = None
             f"{live_sessions} {scan_copies} | count",
             append("sessions", f"{scan_copies} | extend _deleted=true, _v=now()", f"{live_sessions} ",
                    read=sessions),
+            "sessions",
         ),
     ]
 
@@ -596,14 +618,21 @@ def run(
         else:
             assert migration.plan is not None
             statements = migration.plan()
+            widened: set[str] = set()
             for statement in statements:
                 try:
                     rows = count(statement.count_query).dicts()
                     affected = int(next(iter(rows), {}).get("Count", 0) or 0)
                     echo(f"  {statement.description}: {affected:,} rows")
+                    widen = None if statement.table in widened else widen_command(statement.table)
                     if dry_run:
+                        if widen and affected:
+                            echo(f"    {widen}")
                         echo(f"    {statement.command}")
                     elif affected:
+                        if widen:
+                            execute(widen)
+                        widened.add(statement.table)
                         execute(statement.command)
                 except Exception as exc:
                     result.status, result.error = "failed", str(exc)

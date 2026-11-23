@@ -165,3 +165,23 @@ def test_resetting_one_node_keeps_the_others(database):
     assert query(client, database, "requests | summarize n=count() by node_id | order by node_id asc") == [
         {"node_id": "", "n": 1}, {"node_id": "node-a", "n": 3}]
     assert query(client, database, f"table('{N.legacy_name('requests')}') | count")[0]["Count"] == 6
+
+
+def test_a_step_widens_a_table_an_older_aictl_left_before_it_appends(database):
+    """agents_text of layout 1 has no session_id column; the layout 2 step appends rows that carry it.
+    Without the widening the cluster refuses the append ("Query schema does not match table schema")."""
+    client = KustoClientFactory.client(settings(database))
+    shared_layout(client, database, 1)
+    mgmt(client, database, ".drop table ['agents_text']")
+    mgmt(client, database, ".create table ['agents_text'] (['agent_id']:string, ['task']:string, ['project']:string, "
+                           "['node_id']:string, ['_v']:datetime, ['ts']:real)")
+    row = {"agent_id": "a1", "task": "look", "project": "", "node_id": "node-a", "_v": "2026-10-01T00:00:00Z", "ts": NOW}
+    mgmt(client, database, f'.ingest inline into table [\'agents_text\'] with (format="multijson") <|\n{json.dumps(row)}')
+    ingest(client, database, "agents", [{"project": "", "node_id": "node-a", "_v": "2026-10-01T00:00:00Z",
+                                         "session_id": "s-node-a", "agent_id": "a1", "_deleted": False}])
+
+    maintenance.migrate_store(settings(database), dry_run=False, echo=lambda _: None)
+
+    assert check_layout(client, database, "node-a").verdict == L.CURRENT
+    texts = query(client, database, "agents_text | where agent_id == 'a1' | summarize arg_max(_v, session_id)")
+    assert texts[0]["session_id"] == "s-node-a"
