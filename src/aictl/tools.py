@@ -1292,23 +1292,45 @@ _SKIP_COMMS = frozenset(
 _cmdline_cache: dict[tuple[int, str], str] = {}
 
 
+# psutil measures a process's CPU between two cpu_percent() calls on the same handle: the first
+# call on a new handle has no earlier sample and always returns 0.0. A handle is kept per PID across
+# scans, so the next scan measures the time since this one. Entries for PIDs that are gone are
+# dropped by _parse_ps_output. pid -> (handle, last value, monotonic time of the last measurement).
+_cpu_handles: dict[int, tuple[object, str, float]] = {}
+# Two reads closer than this measure a few milliseconds, which is noise: the last value is reused.
+_CPU_MIN_INTERVAL_S = 1.0
+
+
 def _proc_stats(pid: int, cpu: str = "0.0", rss_kb: str = "0") -> tuple[str, str]:
-    """Read (cpu_percent, rss_kb) for a matched PID when _parse_ps_output deferred them."""
+    """Read (cpu_percent, rss_kb) for a matched PID when _parse_ps_output deferred them.
+
+    CPU is "" (not measured) on the first read of a process: psutil needs a previous sample.
+    """
     if cpu != "0.0" or rss_kb != "0":
         return cpu, rss_kb
     try:
         import psutil
 
-        proc = psutil.Process(pid)
+        cached = _cpu_handles.get(pid)
+        # is_running() compares the creation time, so a reused PID gets a new handle.
+        if cached is None or not cached[0].is_running():
+            cached = None
+            proc = psutil.Process(pid)
+        else:
+            proc = cached[0]
+        now = time.monotonic()
         with proc.oneshot():
-            cpu_val = proc.cpu_percent()
             mem = proc.memory_info()
-        return (
-            f"{cpu_val:.1f}" if cpu_val is not None else "0.0",
-            str((mem.rss // 1024) if mem else 0),
-        )
+            if cached is not None and now - cached[2] < _CPU_MIN_INTERVAL_S:
+                value, now = cached[1], cached[2]
+            else:
+                measured = proc.cpu_percent(None)
+                # One process cannot use more than all cores.
+                value = "" if cached is None else f"{min(measured, 100.0 * (os.cpu_count() or 1)):.1f}"
+        _cpu_handles[pid] = (proc, value, now)
+        return value, str((mem.rss // 1024) if mem else 0)
     except Exception:  # noqa: BLE001
-        return cpu, rss_kb
+        return "", rss_kb
 
 
 def _process_parents() -> dict[int, int | None]:
@@ -1361,6 +1383,9 @@ def _parse_ps_output() -> list[tuple[str, str, str, str, str]]:
                 pass
         _cmdline_cache.clear()
         _cmdline_cache.update(cmdlines)
+        alive = {pid for pid, _name in cmdlines}
+        for pid in [pid for pid in _cpu_handles if pid not in alive]:
+            _cpu_handles.pop(pid, None)
         return rows
     except ImportError:
         pass

@@ -501,13 +501,20 @@ def _compute_token_breakdown(files: list[ResourceFile]) -> dict:
     return {**cats, "total": sum(cats.values()), "by_kind": by_kind}
 
 
-def _sum_process_stat(processes, attr: str) -> float:
-    """Sum a numeric string attribute (cpu_pct or mem_mb) across processes."""
-    return sum(
+def _sum_process_stat(processes, attr: str) -> float | None:
+    """Sum a numeric string attribute (cpu_pct or mem_mb) across processes.
+
+    0 when the tool runs no process; None when it runs some and none of them has a value yet
+    (CPU is not measured on a process's first scan), so an unmeasured value is not stored as 0.
+    """
+    values = [
         float(getattr(p, attr))
         for p in processes
         if hasattr(p, attr) and str(getattr(p, attr)).replace(".", "", 1).isdigit()
-    )
+    ]
+    if processes and not values:
+        return None
+    return sum(values)
 
 
 def _make_dt(name: str) -> DashboardTool:
@@ -1089,6 +1096,9 @@ FILE_SYNC_INTERVAL = 60.0
 
 
 TELEMETRY_HEARTBEAT_S = 300.0
+# An unchanged host or process sample is written again after this long. runtime.resources.kql
+# holds a sample until the next one for a little longer than this (its `hold`).
+SAMPLE_HEARTBEAT_S = 300.0
 
 
 class SnapshotPersistence:
@@ -1196,7 +1206,8 @@ class SnapshotPersistence:
         processes = []
         for tool, cpu, mem, _, _ in tool_rows:
             pid = int(call_key(tool), 16) % 2_000_000_000
-            row = dict(tool=tool, pid=pid, cpu_percent=round(cpu, 2), memory_rss_mb=round(mem, 1))
+            row = dict(tool=tool, pid=pid, cpu_percent=None if cpu is None else round(cpu, 2),
+                       memory_rss_mb=None if mem is None else round(mem, 1))
             if self._sample_changed(tool, row, ts):
                 processes.append(row | {"project": "", "ts": ts})
         if processes:
@@ -1214,7 +1225,7 @@ class SnapshotPersistence:
 
     def _sample_changed(self, key: str, values: dict, ts: float) -> bool:
         previous = self._last_samples.get(key)
-        if previous is not None and previous[0] == values and ts - previous[1] < 300:
+        if previous is not None and previous[0] == values and ts - previous[1] < SAMPLE_HEARTBEAT_S:
             return False
         self._last_samples[key] = values.copy(), ts
         return True
