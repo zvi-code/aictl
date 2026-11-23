@@ -129,7 +129,7 @@ export function toolEntries(configs: readonly SettingsToolConfig[] | undefined, 
     }
     for (const item of [...mcp, ...hooks]) if (item.source && !files.some(path => samePath(path, item.source))) files.push(item.source)
     return { id: config.tool, label: labelOf(config.tool, detail), files, scopes, sections: grouped,
-      rows, envVars, hints: config.hints, mcp, hooks }
+      rows, envVars, hints: config.hints, mcp, hooks, localData: localData(full?.local_data ?? config.local_data) }
   })
 }
 
@@ -140,6 +140,13 @@ const MCP_STATES: Record<string, string> = {
 export const mcpState = (server: McpServer) => MCP_STATES[server.state] ?? title(server.state)
 /** aictl's own hook status is keyed by the hook host; Copilot in VS Code reports as copilot-vscode. */
 export const hookStatusId = (tool: string) => tool === 'copilot' ? 'copilot-vscode' : tool
+
+/** What aictl can read for a tool on this machine; false means "not available from this machine", never zero. */
+export function localData(value: Record<string, boolean> | null | undefined) {
+  return Object.entries(value ?? {}).map(([key, available]) => ({ key, label: title(key), available: available === true }))
+}
+export const CLOUD_TOOL_NOTE = 'This tool is configured in the cloud (its tenant or account). Its conversations, ' +
+  'model calls and usage are not observable on this machine; only the local files listed here are read.'
 
 export function settingsSummary(entries: readonly Entry[]) {
   const rows = entries.flatMap(entry => entry.rows)

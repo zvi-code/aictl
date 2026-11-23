@@ -6,7 +6,7 @@ import { Table } from '../ui/Table'
 import { Tabs } from '../ui/Tabs'
 import type { Field } from '../ui/tableModel'
 import {
-  DAEMON_ENV, DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
+  CLOUD_TOOL_NOTE, DAEMON_ENV, DASH, MISSING, agentInherits, agentTools, basename, matches, pinWins, plainValue, rowState, rowValue, samePath, scopeLabel, setIn, title, topicMatrix,
   hookStatusId, mcpState, type Comparison, type Entry, type Environment, type Hook, type McpServer, type Setting,
 } from './model'
 import { derivePermissions } from './permissions'
@@ -99,7 +99,9 @@ function ToolSections(props: { w: Workspace; entry: Entry }) {
       </For>
       <Show when={w.fileSource()}><button type="button" onClick={() => w.setFileSource('')}>Clear source filter</button></Show>
     </div>
-    <Show when={items().length} fallback={<PanelState state="unavailable" message="No settings sections reported." />}>
+    <Show when={props.entry.localData.length}><LocalDataView entry={props.entry} /></Show>
+    <Show when={items().length} fallback={<Show when={!props.entry.localData.length}>
+      <PanelState state="unavailable" message="No settings sections reported." /></Show>}>
       <Tabs label="Tool sections" items={items()} value={active()} onChange={sec => w.change({ sec, row: '' })} />
     </Show>
     <Show when={props.entry.files.length}>
@@ -112,6 +114,17 @@ function ToolSections(props: { w: Workspace; entry: Entry }) {
       <ul><For each={props.entry.hints}>{hint => <li>{hint}</li>}</For></ul>
     </details></Show>
   </>
+}
+
+function LocalDataView(props: { entry: Entry }) {
+  const cloud = () => props.entry.localData.some(item => !item.available)
+  return <section class={styles.stack} aria-label="What aictl can read on this machine">
+    <h3>What aictl can read on this machine</h3>
+    <Show when={cloud()}><p>{CLOUD_TOOL_NOTE}</p></Show>
+    <Table label={`${props.entry.label} local data`} rows={props.entry.localData} rowId={row => row.key}
+      fields={[{ id: 'data', label: 'Data', read: row => row.label },
+        { id: 'local', label: 'On this machine', read: row => row.available ? 'Readable' : 'Not available from this machine' }]} />
+  </section>
 }
 
 function SourceTable(props: { w: Workspace; entry: Entry }) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DetailSettingsTools, SettingsToolConfig } from '../src/data/contract.gen'
 import {
-  agentTools, DAEMON_ENV, fileCounts, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
+  agentTools, CLOUD_TOOL_NOTE, DAEMON_ENV, fileCounts, hookStatusId, isNonDefault, isRecent, mcpState, labelOf, mergeFiles, MISSING, nextSettings, pinWins, readSettingsUrl, rowFilter, rowState, rowValue, setIn,
   settingsParams,
   settingsSummary, toolEntries, topicMatrix, withFindingIds,
 } from '../src/settings/model'
@@ -95,6 +95,15 @@ describe('settings contract projections', () => {
     expect(evidenceRows([loaded('s3', 'copilot-vscode')], [], 'copilot').map(row => row.id)).toEqual(['s3'])
     expect(evidenceRows([loaded('s1', 'a'), loaded('s2', 'b')], []).length).toBe(2)
     expect(UNKNOWN_MEANS).toMatch(/no evidence/)
+  })
+
+  it('shows what a cloud-configured tool exposes locally instead of an empty view', () => {
+    const [entry] = toolEntries([{ tool: 'copilot365', sections: [],
+      local_data: { sessions: false, tokens: false, cost: false, prompts: false, responses: false } }])
+    expect(entry.localData).toHaveLength(5)
+    expect(entry.localData.every(item => item.available === false)).toBe(true)
+    expect(entry.localData[0]).toMatchObject({ key: 'sessions', label: 'Sessions' })
+    expect(CLOUD_TOOL_NOTE).toMatch(/configured in the cloud/)
   })
 
   it('never renders an unknown or absent list as 0', () => {
