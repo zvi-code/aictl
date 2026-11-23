@@ -16,7 +16,9 @@ FAMILIES = (
 # An empty table is the layout marker: unlike a maintenance row it cannot expire.
 CURRENT_STORE = "aictl_current_store_v1"
 COMPANIONS = frozenset(family + "_observations" for family in FAMILIES)
-LAYOUT_QUERY = ".show tables | project TableName"
+# Tables and stored functions: since layout 2 a logical table is a function over node tables.
+LAYOUT_QUERY = (".show databases entities | where EntityType in ('Table', 'Function')"
+                " | project DatabaseName, TableName=EntityName")
 
 
 def has_current_store(names: set[str]) -> bool:

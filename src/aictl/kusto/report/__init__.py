@@ -275,7 +275,8 @@ def run_section(
         from ..observations import LAYOUT_QUERY, UnresolvedObservationsError, has_current_store
 
         layout = Result.from_response(_execute(client, database, LAYOUT_QUERY, props, _throttled))
-        names = {str(r["TableName"]) for r in layout.dicts() if "TableName" in r}
+        names = {str(r["TableName"]) for r in layout.dicts()
+                 if "TableName" in r and r.get("DatabaseName", database) == database}
         families = ("requests", "tool_invocations")
         if not has_current_store(names) or not set(families) <= names:
             reason = "legacy observation store" if names else "cutover state is unavailable"

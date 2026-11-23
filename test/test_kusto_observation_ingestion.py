@@ -340,7 +340,7 @@ def test_report_completeness_fails_closed_when_cutover_state_is_missing():
     assert "cutover state is unavailable" in result.error
     assert result.tables == []
     assert len(client.queries) == 1
-    assert ".show tables" in client.queries[0]
+    assert ".show databases entities" in client.queries[0]
 
 
 def test_current_report_runs_analytical_query_and_returns_its_data():
