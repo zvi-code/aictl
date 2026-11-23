@@ -18,7 +18,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
@@ -408,25 +408,35 @@ class QueuedIngester:
 
 
 class TableIngester:
-    """Route each table to its selected ingestion backend."""
+    """Route each table to its selected ingestion backend, and to this node's physical table.
 
-    def __init__(self, settings: KustoSettings, ingesters: dict[str, RowIngester]) -> None:
+    Callers name logical tables; the ingestion mode is chosen by the logical name, and
+    *tables* ({logical: physical}, see ``nodes.py``) names the table the rows go to. A
+    table missing from *tables* keeps its name.
+    """
+
+    def __init__(self, settings: KustoSettings, ingesters: dict[str, RowIngester],
+                 tables: Mapping[str, str] | None = None) -> None:
         self.settings = settings
         self.ingesters = ingesters
+        self.tables = dict(tables or {})
         self.operations = OperationStats(volume=True)
         for ingester in ingesters.values():
             ingester.operations = self.operations
 
+    def physical(self, table: str) -> str:
+        return self.tables.get(table, table)
+
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
-        self.ingesters[self.settings.ingestion_mode(table)].ingest(table, rows)
+        self.ingesters[self.settings.ingestion_mode(table)].ingest(self.physical(table), rows)
 
     def ingest_lines(self, table: str, lines: list[str]) -> None:
-        self.ingesters[self.settings.ingestion_mode(table)].ingest_lines(table, lines)
+        self.ingesters[self.settings.ingestion_mode(table)].ingest_lines(self.physical(table), lines)
 
     def wait_for_pending(self, table: str | None = None) -> None:
         queued = self.ingesters.get("queued")
         if isinstance(queued, QueuedIngester):
-            queued.wait_for_pending(table)
+            queued.wait_for_pending(None if table is None else self.physical(table))
 
 
 def ingestion_capacity(client: Any, database: str) -> int | None:
@@ -453,8 +463,9 @@ def make_ingester(
     *,
     inline_slots: int | None = None,
     queued_client: Any = None,
+    tables: Mapping[str, str] | None = None,
 ) -> RowIngester:
-    """Use the global default unless the table has an explicit override."""
+    """Use the global default unless the table has an explicit override. *tables*: see TableIngester."""
     ingesters: dict[str, RowIngester] = {"inline": InlineIngester(client, settings.database, slots=inline_slots)}
     modes = {settings.default_ingestion, *settings.table_ingestion.values()}
     if settings.ingestion == "auto" and not settings.is_local:
@@ -463,6 +474,6 @@ def make_ingester(
         ingesters["streaming"] = StreamingIngester(settings, ingest_client)
     if "queued" in modes:
         ingesters["queued"] = QueuedIngester(settings, client, queued_client)
-    if settings.table_ingestion or settings.ingestion == "auto":
-        return TableIngester(settings, ingesters)
+    if settings.table_ingestion or settings.ingestion == "auto" or tables:
+        return TableIngester(settings, ingesters, tables)
     return ingesters[settings.default_ingestion]

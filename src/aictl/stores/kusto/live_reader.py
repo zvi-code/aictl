@@ -277,6 +277,8 @@ class SharedKustoReader:
             raise ValueError("Unknown managed Kusto tables: " + ", ".join(sorted(unknown)))
         self._requested = tuple(sorted(requested))
         self._available: dict[str, _Spec] | None = None
+        # The physical tables behind each logical name: itself, or one table per node (nodes.py).
+        self._physical: dict[str, tuple[str, ...]] = {}
         self._policies: deque[str] = deque()
         self._cursor_tables: set[str] = set()
         self._policy_checked: dict[str, bool] = {}
@@ -494,10 +496,19 @@ class SharedKustoReader:
         return rows
 
     def _discover(self) -> None:
+        from . import nodes
+
         rows = self._execute(".show database schema | project TableName, ColumnName", management=True)
         columns: dict[str, set[str]] = {}
+        physical: dict[str, set[str]] = {}
         for row in rows:
-            columns.setdefault(str(row["TableName"]), set()).add(str(row["ColumnName"]))
+            name = str(row["TableName"])
+            # A node table counts for its logical table, which a stored function of that name reads.
+            node_table = nodes.parse(name, None, self._known)
+            logical = node_table.logical if node_table is not None else name
+            columns.setdefault(logical, set()).add(str(row["ColumnName"]))
+            physical.setdefault(logical, set()).add(name)
+        self._physical = {name: tuple(sorted(tables)) for name, tables in physical.items()}
         available = {}
         for name in self._requested:
             spec = self._known[name]
@@ -556,12 +567,21 @@ class SharedKustoReader:
 
     def _policy(self) -> None:
         name = self._policies[0]
-        rows = self._execute(f".show table {quote(name)} policy ingestiontime", management=True)
-        if len(rows) != 1 or "Policy" not in rows[0]:
-            raise ReaderQueryError("Missing ingestiontime policy")
-        policy = json.loads(rows[0]["Policy"]) if isinstance(rows[0]["Policy"], str) else rows[0]["Policy"]
+        tables = self._physical.get(name, (name,))
+        if tables == (name,):
+            rows = self._execute(f".show table {quote(name)} policy ingestiontime", management=True)
+            if len(rows) != 1 or "Policy" not in rows[0]:
+                raise ReaderQueryError("Missing ingestiontime policy")
+        else:
+            # Node tables: the logical table has cursors only if every one of its tables has them.
+            wanted = {f"].[{table}]" for table in tables}
+            rows = [row for row in self._execute(".show table * policy ingestiontime", management=True)
+                    if any(str(row.get("EntityName", "")).endswith(end) for end in wanted)]
+            if len(rows) != len(tables) or any("Policy" not in row for row in rows):
+                raise ReaderQueryError("Missing ingestiontime policy")
+        policies = [json.loads(row["Policy"]) if isinstance(row["Policy"], str) else row["Policy"] for row in rows]
         with self._lock:
-            enabled = isinstance(policy, dict) and policy.get("IsEnabled") is True
+            enabled = all(isinstance(policy, dict) and policy.get("IsEnabled") is True for policy in policies)
             previous = self._policy_checked.get(name)
             if enabled:
                 self._cursor_tables.add(name)

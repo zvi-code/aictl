@@ -8,7 +8,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -439,8 +439,11 @@ class KustoClientFactory:
             return ingester
 
     @classmethod
-    def native_ingester(cls, settings: KustoSettings) -> RowIngester:
-        """Use one ingestion attempt per call; the writer owns the retry budget."""
+    def native_ingester(cls, settings: KustoSettings, tables: Mapping[str, str] | None = None) -> RowIngester:
+        """Use one ingestion attempt per call; the writer owns the retry budget.
+
+        *tables* maps the logical tables the writer names to this node's physical tables.
+        """
         from .ingest import InlineIngester, QueuedIngester, StreamingIngester, TableIngester
 
         client = cls.client(settings)
@@ -455,7 +458,7 @@ class KustoClientFactory:
             ingesters["streaming"] = StreamingIngester(settings, retry=False)
         if "queued" in modes:
             ingesters["queued"] = QueuedIngester(settings, client)
-        return TableIngester(settings, ingesters)
+        return TableIngester(settings, ingesters, tables=tables)
 
 
 class Result:
