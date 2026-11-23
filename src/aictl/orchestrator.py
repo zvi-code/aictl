@@ -1285,10 +1285,11 @@ class SnapshotPersistence:
         """Write session_start/session_end events to the sessions table."""
         try:
             from . import session_lifecycle
-            from .records import SessionRow
+            from .records import CallFacts, SessionRow, launch_flags_event
 
             updates = []
             links = []
+            launches = []
             retired = []
             facts = self._facts
             # A family bound in this same batch never gets its monitor row written first.
@@ -1322,6 +1323,8 @@ class SnapshotPersistence:
                     if kind != "session_alive":
                         pids = {ev_pid, int(detail.get("evidence_pid", 0) or 0)} - {0}
                         links.extend((native, pid, tool, ts, "lead", project) for pid in sorted(pids))
+                        if isinstance(detail.get("launch"), dict):
+                            launches.append(launch_flags_event(native, tool, detail["launch"], ts))
                     if kind == "session_bound":
                         retired.append((sid, project))
                         previous = detail.get("previous_native_session_id") or ""
@@ -1356,6 +1359,8 @@ class SnapshotPersistence:
                     updates.append((row, ts, True))
             facts.sessions(updates)
             facts.links(links)
+            if launches:
+                facts.write(CallFacts(context_events=launches), only="context_events")
             if retired:
                 facts.retire(retired)
         except Exception as exc:

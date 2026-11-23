@@ -105,7 +105,10 @@ CHANGES: tuple[Change, ...] = (
         "compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; "
         "a transcript imported again stores its compactions once more under the new key). file_history: rows "
         "for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), "
-        "origin, mechanism, version, state and line counts.",
+        "origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, "
+        "session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, "
+        "assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran "
+        "under, with the reported fields in detail; sessions written before have none.",
         breaks=False,
     ),
 )

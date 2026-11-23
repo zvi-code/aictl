@@ -603,6 +603,22 @@ class ContextEventRow:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+def launch_flags_event(session_id: str, tool: str, launch: dict, observed_at: float) -> ContextEventRow:
+    """``config.launch_flags``: the masked launch flags of the process bound to *session_id*.
+
+    Keyed by the session, pid and process start, so binding the same process again writes the
+    same row. ``ts`` is the process start (when it was launched), or the binding time when the
+    start is unknown. ``detail``: pid, process name, started_at as reported, and the flags."""
+    started = launch.get("started_at")
+    pid = int(launch.get("pid") or 0)
+    flags = list(launch.get("flags") or [])
+    return ContextEventRow(
+        dedup_key=_dedup_key("launch-flags", session_id, str(pid), "" if started is None else f"{float(started):.3f}"),
+        ts=float(started) if started else observed_at, session_id=session_id, kind="config.launch_flags", tool=tool,
+        trigger=str(launch.get("name") or "")[:80],
+        detail={"pid": pid, "started_at": started, "flags": flags, "count": len(flags)})
+
+
 @dataclass(slots=True)
 class FileVersionRow:
     """One version of a file as a tool's checkpoint recorded it (a ``file_history`` row).

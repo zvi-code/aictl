@@ -62,6 +62,20 @@ def test_a_type_is_either_read_or_ignored_and_every_ignore_says_why(read, ignore
     assert all(isinstance(reason, str) and len(reason) > 10 for reason in ignored.values())
 
 
+def test_every_copilot_config_event_becomes_its_config_row(tmp_path):
+    # Each event that states a setting has a fixture line with data, and reading it stores its config.* row.
+    with_data = {line["type"] for line in lines("copilot-events.jsonl") if line["data"]}
+    assert set(call_facts.COPILOT_CONFIG_KINDS) <= COPILOT_READ
+    assert set(call_facts.COPILOT_CONFIG_KINDS) - with_data == set()
+    copilot = tmp_path / "copilot" / "session-state" / "bbbbbbbb-0000-4000-8000-000000000002" / "events.jsonl"
+    copilot.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "copilot-events.jsonl", copilot)
+    facts = Facts()
+    ingester(facts, tmp_path, backfill_days=0).poll()
+    stored = {row["kind"] for _, name, rows in facts.writer.operations if name == "context_events" for row in rows}
+    assert set(call_facts.COPILOT_CONFIG_KINDS.values()) - stored == set()
+
+
 def test_the_readers_take_every_fixture_line(tmp_path):
     claude = tmp_path / "claude" / "projects" / "-work-proj" / "aaaaaaaa-0000-4000-8000-000000000001.jsonl"
     copilot = tmp_path / "copilot" / "session-state" / "bbbbbbbb-0000-4000-8000-000000000002" / "events.jsonl"

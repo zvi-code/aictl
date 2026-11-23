@@ -16,6 +16,7 @@ from ..data.schema import metric_name as M
 from ..platforms import path_key
 from .collectors.process import classify_process
 from .config import MonitorConfig
+from .launch_flags import launch_flags
 from .session import (
     MCPState,
     ProcessInfo,
@@ -35,6 +36,12 @@ LIVE_SESSION_S = 120.0  # a session without processes still owns repository chan
 ALIVE_EVERY_S = 300.0
 MAX_CWD_WORKSPACES = 4096
 _UNATTRIBUTED_TOOL = "unknown"
+
+def _launch(tool: str, process: ProcessInfo) -> dict:
+    """The process that holds a session and its masked, allow-listed launch flags (``launch_flags``)."""
+    return {"pid": process.pid, "started_at": process.created_at, "name": process.name,
+            "flags": launch_flags(tool, process.cmdline)}
+
 
 @dataclass(frozen=True, slots=True)
 class MonitorSnapshot:
@@ -621,7 +628,9 @@ class SessionCorrelator:
         if current is not None and current["session_id"] == binding["session_id"]:
             if ts - self._alive_at.get(sid, 0.0) >= ALIVE_EVERY_S:
                 self._alive_at[sid] = ts
-                self._emit_event(ts, session.tool, "session_alive", self._binding_detail(session, binding, process))
+                alive = self._binding_detail(session, binding, process)
+                alive.pop("launch")  # stated once, when the session is bound
+                self._emit_event(ts, session.tool, "session_alive", alive)
             return
         self._alive_at[sid] = ts
         detail = self._binding_detail(session, binding, process)
@@ -637,6 +646,7 @@ class SessionCorrelator:
             "project": session.project,
             **self._process_facts(session, binding),
             "evidence_pid": process.pid,
+            "launch": _launch(session.tool, process),
         }
 
     def drain_events(self) -> list[dict]:
@@ -781,6 +791,7 @@ class SessionCorrelator:
                 self._binding_pid[session_id] = process.pid
                 self._alive_at[session_id] = ts
                 detail["native_session_id"] = binding["session_id"]
+                detail["launch"] = _launch(match.tool, process)
             detail.update(self._process_facts(session, binding), pid=process.pid)
             if not detail["cwd"] and process.cwd:
                 detail["cwd"] = process.cwd

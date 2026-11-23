@@ -699,7 +699,47 @@ COPILOT_READ_EVENTS = frozenset({
     "subagent.started", "subagent.completed", "subagent.failed", "tool.execution_start", "tool.execution_complete",
     "permission.requested", "permission.completed", "session.truncation", "session.snapshot_rewind",
     "instruction.update", "session.tool_baseline",
+    # Configuration the session ran under (context_events kinds config.*, see CopilotFacts._config).
+    "session.permissions_changed", "session.context_changed", "subagent.configured",
+    "model.captured_assignment_context",
+    # Only infoType managed_model_override: the other notices (notification, remote, model,
+    # authentication) are messages of the client and state no setting.
+    "session.info",
+    # Only requestSettings.enabledFeatureFlags: the calls themselves are read from session.usage_record.
+    "model.model_call_success",
 })
+# The context_events kind each Copilot CLI event that states a setting becomes. Every row keeps
+# the event's fields as reported, without a default for a field the tool did not write.
+COPILOT_CONFIG_KINDS = {
+    "session.start": "config.session_start",
+    "session.resume": "config.session_resume",
+    "session.model_change": "config.model_change",
+    "session.mode_changed": "config.mode_change",
+    "session.permissions_changed": "config.permissions_change",
+    "session.info": "config.managed_override",
+    "model.model_call_success": "config.feature_flags",
+    "model.captured_assignment_context": "config.assignment_context",
+    "subagent.configured": "config.subagent_configured",
+    "session.context_changed": "config.context_changed",
+}
+# The fields of each event kept as reported (strings, numbers and booleans only).
+_CONFIG_FIELDS = {
+    "session.start": ("selectedModel", "reasoningEffort", "contextTier", "copilotVersion", "producer", "version",
+                      "startTime", "alreadyInUse", "remoteSteerable"),
+    "session.resume": ("selectedModel", "reasoningEffort", "contextTier", "resumeTime", "sessionWasActive",
+                       "alreadyInUse", "remoteSteerable", "eventCount"),
+    "session.model_change": ("previousModel", "newModel", "previousReasoningEffort", "reasoningEffort",
+                             "contextTier", "source", "reason"),
+    "session.mode_changed": ("previousMode", "newMode"),
+    "session.permissions_changed": ("previousMode", "mode", "previousAllowAllPermissionMode",
+                                    "allowAllPermissionMode", "previousAllowAllPermissions", "allowAllPermissions"),
+    "session.info": ("infoType", "message"),
+    "subagent.configured": ("model", "reasoningEffort", "contextTier", "multiTurn"),
+    "session.context_changed": ("cwd", "gitRoot", "branch", "headCommit", "baseCommit", "repository",
+                                "repositoryHost", "hostType"),
+}
+_CONTEXT_FIELDS = _CONFIG_FIELDS["session.context_changed"]
+CONFIG_VALUE_MAX = 300
 COPILOT_IGNORED_EVENTS = {
     "abort": "the user stopped a turn; the turn's calls show where it ended",
     "assistant.fusion_phase_completed": "a phase of a fused reply; the reply is read from assistant.message",
@@ -707,25 +747,20 @@ COPILOT_IGNORED_EVENTS = {
     "external_tool.completed": "a tool the client ran; the call is read from tool.execution_*",
     "hook.start": "a hook began; its end (hook.end) is read",
     "instruction.update_delivery": "an instruction update reached the model; the update is read from instruction.update",
-    "model.captured_assignment_context": "the model's assignment context; no memory or checkpoint",
     "model.log": "the model client's log line",
     "model.message": "a message as sent to the model; the conversation is read from user and assistant events",
     "model.messages_snapshot": "a copy of the messages sent to the model; its text is in the user and assistant events",
     "model.model_call_started": "a model call began; calls are read from session.usage_record",
-    "model.model_call_success": "a model call ended; calls are read from session.usage_record",
     "model.response": "a model response; read from assistant.message",
     "model.telemetry": "client telemetry",
     "model.turn_started": "a model turn began; turns are read from user.message",
     "model.turn_ended": "a model turn ended",
     "session.autopilot_objective_changed": "an autopilot objective; not read yet",
     "session.binary_asset": "a binary asset of the session; not text",
-    "session.context_changed": "the working folder or repository changed; read from start and resume",
     "session.fusion_commit_started": "a fused reply's commit; not read",
     "session.fusion_completed": "a fused reply ended; not read",
     "session.fusion_resolved": "a fused reply resolved; not read",
-    "session.info": "an informational notice of the client",
     "session.mode_notice_delivered": "a mode notice reached the model; modes are read from mode_changed",
-    "session.permissions_changed": "the permission set changed; decisions are read per call",
     "session.remote_steerable_changed": "remote steering state; no session fact",
     "session.schedule_created": "a scheduled run; not read yet",
     "session.usage_checkpoint": "the session's billing totals so far (observe/copilot_events reads it for the live "
@@ -735,11 +770,17 @@ COPILOT_IGNORED_EVENTS = {
                                       "session_artifacts",
     "skill.context_delivered_ref": "a skill's text reached the model; the use is read from skill.invoked",
     "skill.invoked_ref": "a reference to a skill use; the use is read from skill.invoked",
-    "subagent.configured": "a subagent's configuration; the agent is read from subagent.started",
     "subagent.deselected": "a custom agent was deselected; selection is read from subagent.selected",
     "system.notification": "a notice of the client",
 }
 AGENT_LABEL_MAX = 200
+
+
+def _config_value(value: Any) -> Any:
+    """A reported setting as stored: a string (at most CONFIG_VALUE_MAX characters), number or boolean; None otherwise."""
+    if isinstance(value, str):
+        return value[:CONFIG_VALUE_MAX]
+    return value if isinstance(value, (bool, int, float)) else None
 
 
 def agent_label(text: Any) -> str:
@@ -1760,6 +1801,9 @@ class CopilotFacts:
         # The request row of each recent call, by apiCallId: its message comes after its usage record
         # and adds the thinking counts. Values: (row, visible chars, visible blocks, redacted blocks).
         self._calls_by_api: dict[str, list] = {}
+        # The interactionId of the person's current turn, and the hash of each agent's last feature flag set.
+        self.interaction = ""
+        self._flag_sets: dict[str, str] = {}
 
     def reset(self) -> None:
         """The file was rewritten and is read again from the start, so counting starts over."""
@@ -1783,6 +1827,10 @@ class CopilotFacts:
         event_id = str(obj.get("id") or "")
         if self.steps is not None:
             self.steps.feed(obj, data, ts, self.cwd)
+        if kind == "user.message" and not agent_id:
+            self.interaction = str(data.get("interactionId") or "")
+        if kind in COPILOT_CONFIG_KINDS:
+            self._config(kind, data, ts, agent_id, event_id)
         if kind in ("session.start", "session.resume"):
             ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
             self.cwd = str(ctx.get("cwd") or self.cwd)
@@ -1901,6 +1949,51 @@ class CopilotFacts:
         self._event("tool_baseline", event_id or str(ts), ts, agent_id, trigger=str(data.get("surface") or "")[:80],
                     detail={"tool_count": len(tools), "memory_tools": sorted(names & COPILOT_RECALL_AND_MEMORY_TOOLS),
                             "context_tools": sorted(names & COPILOT_CONTEXT_TOOLS)})
+
+    def _config(self, kind: str, data: dict, ts: float, agent_id: str, event_id: str) -> None:
+        """A setting the session ran under, or a change of one, as the event reports it.
+
+        ``detail`` keeps the event's own field names and only the fields it wrote: a value the tool
+        did not report is absent. The turn and prompt are the person's turn this event follows in
+        the file. Feature flags are a row only when an agent's set differs from its previous call's;
+        an assignment context keeps its hash and size, never its text."""
+        detail: dict[str, Any] = {name: _config_value(data[name]) for name in _CONFIG_FIELDS.get(kind, ())
+                                  if _config_value(data.get(name)) is not None}
+        trigger = ""
+        if kind in ("session.start", "session.resume"):
+            ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+            context = {name: _config_value(ctx[name]) for name in _CONTEXT_FIELDS if _config_value(ctx.get(name)) is not None}
+            if context:
+                detail["context"] = context
+        elif kind == "session.model_change":
+            trigger = str(data.get("source") or data.get("reason") or "")[:80]
+        elif kind == "session.info":
+            if data.get("infoType") != "managed_model_override":
+                return
+            trigger = "managed_model_override"
+            if isinstance(detail.get("message"), str):
+                detail["message"] = _redact(detail["message"])
+        elif kind == "model.model_call_success":
+            settings = data.get("requestSettings") if isinstance(data.get("requestSettings"), dict) else {}
+            flags = settings.get("enabledFeatureFlags")
+            if not isinstance(flags, list):
+                return
+            names = sorted({str(name) for name in flags if isinstance(name, str)})
+            digest = text_hash("\n".join(names))[:16]
+            if self._flag_sets.get(agent_id) == digest:
+                return
+            previous = self._flag_sets.get(agent_id)
+            self._flag_sets[agent_id] = digest
+            detail = {"flags": names, "count": len(names), "hash": digest,
+                      **({"previous_hash": previous} if previous is not None else {})}
+        elif kind == "model.captured_assignment_context":
+            context = data.get("assignmentContext")
+            if not isinstance(context, str):
+                return
+            detail = {"hash": text_hash(context)[:16], "bytes": len(context.encode("utf-8", "replace")),
+                      **({"kind": str(data["kind"])[:80]} if isinstance(data.get("kind"), str) else {})}
+        self._event(COPILOT_CONFIG_KINDS[kind], event_id or str(ts), ts, agent_id, trigger=trigger,
+                    prompt_id=self.interaction if self.turn else "", detail=detail)
 
     def _context_tool(self, row: fact_rows.ToolInvocationRow, data: dict) -> None:
         """A call of a tool that reads memory or manages the context: an event of its own.

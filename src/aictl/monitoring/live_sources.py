@@ -23,12 +23,15 @@ from ..dashboard.projection_utils import mask_secrets
 from ..observe.collect import capture_mode as storage_capture_mode
 from ..secret_mask import raw_args
 from .collectors.process import classify_process
+from .launch_flags import FLAGS_BY_TOOL, launch_flags
 from .native_sessions import NativeSessionTail
 from .session import ProcessInfo
 from .tool_config import _scrub, _secret_name, current_tool_configs
 
 log = logging.getLogger(__name__)
 _EFFECTIVE_KEYS = ("model", "reasoning_effort", "approval_policy", "sandbox_policy")
+# The launch flags that state an effective key.
+_FLAG_SETTINGS = {"--model": "model", "--reasoning-effort": "reasoning_effort", "--effort": "reasoning_effort"}
 _MAX_NATIVE_FILES = 64
 _DISCOVERY_BATCH = 256
 _DISCOVERY_RECONCILE_S = 5.0
@@ -96,15 +99,25 @@ def _identity(process: ProcessInfo) -> tuple[int, float | None]:
 
 
 def _flag_evidence(process: ProcessInfo, ts: float) -> dict[str, dict]:
-    """Allowlisted observed launch flags; never expose the command line."""
+    """Allowlisted observed launch flags; never expose the command line.
+
+    Copilot CLI and Claude Code read their allow-lists in ``launch_flags``: the model and effort
+    flags are the effective keys, every other listed flag is evidence under its own name (a flag
+    given more than once joins its values)."""
     tool = classify_process(process).tool
-    if tool not in ("copilot-cli", "codex-cli", "claude-code", "gemini-cli"):
+    if tool in FLAGS_BY_TOOL:
+        out: dict[str, dict] = {}
+        for entry in launch_flags(tool, process.cmdline):
+            setting = _FLAG_SETTINGS.get(entry["flag"], entry["flag"])
+            if setting in _EFFECTIVE_KEYS and not entry["value"]:
+                continue
+            prior = out.get(setting)
+            value = entry["value"] if prior is None or not prior["value"] else f"{prior['value']}, {entry['value']}"
+            out[setting] = {"key": setting, "value": value[:160], "source": "process-flag", "observed_at": ts}
+        return out
+    if tool not in ("codex-cli", "gemini-cli"):
         return {}
-    flags = {"--model": "model"}
-    if tool in ("codex-cli", "gemini-cli"):
-        flags["-m"] = "model"
-    if tool == "copilot-cli":
-        flags["--reasoning-effort"] = "reasoning_effort"
+    flags = {"--model": "model", "-m": "model"}
     if tool == "codex-cli":
         flags.update({"--ask-for-approval": "approval_policy", "--sandbox": "sandbox_policy"})
     out = {}

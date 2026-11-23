@@ -62,3 +62,13 @@
 {"type": "tool.execution_start", "id": "ev-61", "timestamp": "2026-11-01T10:00:00.000Z", "data": {}}
 {"type": "user.message", "id": "ev-62", "timestamp": "2026-11-01T10:00:00.000Z", "data": {}}
 {"type": "session.snapshot_rewind", "id": "ev-63", "timestamp": "2026-11-01T10:00:00.000Z", "data": {}}
+{"type": "session.start", "id": "ev-64", "timestamp": "2026-11-01T10:00:01.000Z", "data": {"selectedModel": "model-a", "reasoningEffort": "high", "contextTier": "long_context", "copilotVersion": "1.0.0", "context": {"cwd": "/work/fixture"}}}
+{"type": "session.resume", "id": "ev-65", "timestamp": "2026-11-01T10:00:02.000Z", "data": {"selectedModel": "model-a", "reasoningEffort": "high", "context": {"cwd": "/work/fixture"}}}
+{"type": "session.model_change", "id": "ev-66", "timestamp": "2026-11-01T10:00:03.000Z", "data": {"previousModel": "model-a", "newModel": "model-b", "source": "model_picker"}}
+{"type": "session.mode_changed", "id": "ev-67", "timestamp": "2026-11-01T10:00:04.000Z", "data": {"previousMode": "interactive", "newMode": "autopilot"}}
+{"type": "session.permissions_changed", "id": "ev-68", "timestamp": "2026-11-01T10:00:05.000Z", "data": {"previousMode": "manual", "mode": "allow-all"}}
+{"type": "session.info", "id": "ev-69", "timestamp": "2026-11-01T10:00:06.000Z", "data": {"infoType": "managed_model_override", "message": "An invented override notice"}}
+{"type": "model.model_call_success", "id": "ev-70", "timestamp": "2026-11-01T10:00:07.000Z", "data": {"requestSettings": {"enabledFeatureFlags": ["INVENTED_FLAG"]}}}
+{"type": "model.captured_assignment_context", "id": "ev-71", "timestamp": "2026-11-01T10:00:08.000Z", "data": {"kind": "captured_assignment_context", "assignmentContext": "invented:1;"}}
+{"type": "subagent.configured", "id": "ev-72", "timestamp": "2026-11-01T10:00:09.000Z", "agentId": "sub-1", "data": {"model": "model-c", "reasoningEffort": "high", "multiTurn": false}}
+{"type": "session.context_changed", "id": "ev-73", "timestamp": "2026-11-01T10:00:10.000Z", "data": {"cwd": "/work/fixture2"}}
