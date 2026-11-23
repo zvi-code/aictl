@@ -111,6 +111,7 @@ describe('Context window budget shows only rows that say something', () => {
     expect(budgetNote(rows)).toBe('Not shown: Cursor, Claude Desktop (no file they load into the model was reported).'
       + ' No share for Copilot CLI: no context limit is known for gpt-6-astra.')
     expect(budgetNote([tool('Claude Code', 300, 'claude-opus-5', 1_000_000)])).toBeUndefined()
+    expect(budgetNote([tool('Codex CLI', 30, null, null)])).toBe('No share for Codex CLI: no model was observed or set.')
     // A reported node's budget counts host-wide files only, and says so.
     expect(budgetNote([tool('Cursor', 0, null, null)], true)).toBe('Not shown: Cursor (no host-wide file they load into the model was reported).')
   })

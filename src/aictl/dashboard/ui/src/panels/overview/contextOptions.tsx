@@ -40,11 +40,13 @@ export function budgetNote(tools: readonly Pick<ToolBudget, 'label' | 'tool' | '
   hostWide = false) {
   const names = (list: typeof tools) => [...new Set(list.map(tool => tool.label || tool.tool))].join(', ')
   const left = tools.filter(tool => !budgetSays(tool))
-  const unlimited = tools.filter(tool => budgetSays(tool) && tool.window == null)
+  const unlimited = tools.filter(tool => budgetSays(tool) && tool.window == null && tool.model)
+  const unmodelled = tools.filter(tool => budgetSays(tool) && tool.window == null && !tool.model)
   return [
     left.length ? `Not shown: ${names(left)} (no ${hostWide ? 'host-wide ' : ''}file they load into the model was reported).` : '',
     unlimited.length ? `No share for ${names(unlimited)}: no context limit is known for ${
-      [...new Set(unlimited.map(tool => tool.model ?? 'an unreported model'))].join(', ')}.` : '',
+      [...new Set(unlimited.map(tool => tool.model))].join(', ')}.` : '',
+    unmodelled.length ? `No share for ${names(unmodelled)}: no model was observed or set.` : '',
   ].filter(Boolean).join(' ') || undefined
 }
 
