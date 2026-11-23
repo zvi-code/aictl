@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 4ba76307788b45e493d20ab2fccaa3f108d5a7be9ef19bfe881e7c7128d72eb2
+// Schema digest: d2c23b3583a9932f7d32668cc1a2a2f3763f71063f916103b21522809a730c4c
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2582,6 +2582,7 @@ export type MachineMonitor = {
     mode: string | null;
     status: string;
     detail: string | null;
+    last_run_at?: number | null;
   }>;
   roots: Array<{
     kind: string;
@@ -2686,6 +2687,8 @@ export type MachinePipeline = {
     tool: string | null;
     count: number;
     last_ok: number | null;
+    files_waiting?: Record<string, number> | null;
+    older_files_waiting?: number | null;
   }>;
   freshness: Array<{
     tool: string;

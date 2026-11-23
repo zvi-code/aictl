@@ -157,7 +157,13 @@
           "error": {"type": ["string", "null"]},
           "tool": {"type": ["string", "null"]},
           "count": {"type": "integer"},
-          "last_ok": {"type": ["number", "null"]}
+          "last_ok": {"type": ["number", "null"]},
+          "files_waiting": {
+            "type": ["object", "null"],
+            "description": "Session files waiting to be read, by tool. Absent when the ingester does not report a backlog.",
+            "additionalProperties": {"type": "integer"}
+          },
+          "older_files_waiting": {"type": ["integer", "null"]}
         },
         "required": [
           "ts",

@@ -599,3 +599,23 @@ def test_actual_ingesters_keep_mixed_group_modes_and_failures_separate(cached_he
     after = runtime_health.compute_health(None, history)["store"]["ingestion_traffic"]
     assert after["queued"]["failed"] == 1 and after["queued"]["rows"] == 3
     assert after["streaming"]["failed"] == after["inline"]["failed"] == 0
+
+
+def test_quality_rows_carry_the_backlog_an_ingester_reports_and_nothing_it_does_not():
+    rows = [
+        {"updated_at": 5.0, "component": "transcript-usage", "status": "degraded", "severity": "warning", "message": "waiting",
+         "count": 1, "detail": json.dumps({"files_waiting": {"claude-code": 3000, "codex-cli": 200, "bad": "x"},
+                                           "older_files_waiting": 3200})},
+        {"updated_at": 4.0, "component": "other", "status": "ok", "severity": "info", "message": "fine", "count": 1, "detail": "{}"},
+    ]
+    reader = SimpleNamespace(read=lambda *_: SimpleNamespace(rows=rows))
+    first, second = runtime_health._quality_rows(reader)
+    assert first["files_waiting"] == {"claude-code": 3000, "codex-cli": 200} and first["older_files_waiting"] == 3200
+    assert "files_waiting" not in second and "older_files_waiting" not in second
+
+
+def test_collectors_report_when_they_last_ran_only_when_the_snapshot_says_so():
+    snapshot = SimpleNamespace(live_monitor={"diagnostics": {
+        "a": {"status": "active", "last_run_at": 1700.0}, "b": {"status": "active"}}}, tools=[])
+    rows = {row["name"]: row for row in runtime_health._monitor_section(snapshot)["collectors"]}
+    assert rows["a"]["last_run_at"] == 1700.0 and rows["b"]["last_run_at"] is None

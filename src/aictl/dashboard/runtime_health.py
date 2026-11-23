@@ -482,6 +482,7 @@ def _monitor_section(snapshot: Any) -> dict:
             "mode": d.get("mode") or None,
             "status": d.get("status") or "unknown",
             "detail": d.get("detail") or None,
+            "last_run_at": _as_number(d.get("last_run_at")) or None,
         }
         for name, d in sorted((lm.get("diagnostics") or {}).items())
         if isinstance(d, dict)
@@ -650,8 +651,21 @@ def _quality_rows(reader) -> list[dict]:
                 "tool": detail.get("tool") or None,
                 "count": r.get("count"),
                 "last_ok": r.get("last_ok_at") or None,
+                **_backlog(detail),
             }
         )
+    return out
+
+
+def _backlog(detail: dict) -> dict:
+    """The files an ingester has not read yet, by tool, when its status record reports them."""
+    waiting = detail.get("files_waiting")
+    older = detail.get("older_files_waiting")
+    out: dict = {}
+    if isinstance(waiting, dict):
+        out["files_waiting"] = {str(tool): n for tool, n in waiting.items() if isinstance(n, int) and not isinstance(n, bool)}
+    if isinstance(older, int) and not isinstance(older, bool):
+        out["older_files_waiting"] = older
     return out
 
 

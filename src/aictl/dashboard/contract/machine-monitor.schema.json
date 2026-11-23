@@ -12,7 +12,8 @@
           "name": {"type": "string"},
           "mode": {"type": ["string", "null"]},
           "status": {"type": "string"},
-          "detail": {"type": ["string", "null"]}
+          "detail": {"type": ["string", "null"]},
+          "last_run_at": {"type": ["number", "null"], "description": "When the collector last ran, when it reports that."}
         },
         "required": ["name", "mode", "status", "detail"]
       }
