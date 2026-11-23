@@ -366,3 +366,22 @@ def raw_text(value: Any) -> str:
 def raw_args(value: Iterable[Any]) -> tuple[str, ...]:
     """The argv as the OS reported it when this process read it, else the value itself."""
     return value.raw if isinstance(value, MaskedArgs) else tuple(value)
+
+
+# ── Files that are never previewed as text ───────────────────────
+
+_BINARY_PROBE = 8192
+
+
+def is_binary_file(path: Any) -> bool:
+    """True for a file whose bytes are not text: a database, an archive, an image.
+
+    A preview of such a file would print whatever its tables hold (a tool's own database keeps
+    tokens), and a masker for text cannot find a secret in binary rows. Unreadable counts as binary.
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(_BINARY_PROBE)
+    except OSError:
+        return True
+    return b"\x00" in head

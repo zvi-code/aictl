@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...secret_mask import mask_text
+from ...secret_mask import is_binary_file, mask_text
 from ...stores.base import StoreConfigurationError
 from ...tools import TOOL_LABELS, ProcessInfo
 from ..models import DashboardSnapshot
@@ -77,6 +77,8 @@ def terminal_detail(view, params, snapshot, reader, is_allowed, now):
 
 
 def preview_file(path: str) -> dict:
+    if is_binary_file(path):
+        return {"text": "", "truncated": False}
     with Path(path).open("rb") as file:
         size = file.seek(0, 2)
         truncated = size > 200_000

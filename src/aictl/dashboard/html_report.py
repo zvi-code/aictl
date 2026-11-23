@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..data.token_usage import TokenUsage
-from ..secret_mask import mask_text
+from ..secret_mask import is_binary_file, mask_text
 from .models import STATUS_COLOURS as _STATUS_COLOURS
 from .models import DashboardSnapshot
 
@@ -348,7 +348,7 @@ def _read_file_tail(path_str: str, max_size: int = 50_000) -> str | None:
 def _read_file_tail_raw(path_str: str, max_size: int) -> str | None:
     try:
         p = Path(path_str)
-        if not p.is_file():
+        if not p.is_file() or is_binary_file(p):
             return None
         size = p.stat().st_size
         if size > max_size:

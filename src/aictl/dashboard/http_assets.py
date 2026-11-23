@@ -8,7 +8,7 @@ import logging
 import re
 from pathlib import Path
 
-from ..secret_mask import mask_text
+from ..secret_mask import is_binary_file, mask_text
 from ..tools import (
     HOST_LABELS as _REG_HOST_LABELS,
 )
@@ -47,7 +47,7 @@ def _read_file_safe(path_str: str) -> str | None:
 def _read_file_raw(path_str: str) -> str | None:
     try:
         p = Path(path_str)
-        if not p.is_file():
+        if not p.is_file() or is_binary_file(p):
             return None
         size = p.stat().st_size
         if size > _MAX_FILE_SIZE:

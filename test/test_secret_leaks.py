@@ -528,3 +528,36 @@ def test_mask_url_and_config_shapes():
     assert mask_mcp_config({"command": "npx", "args": ["--no-auth", "--port", "3000"]}) == {
         "command": "npx", "args": ["--no-auth", "--port", "3000"]}
     assert mask_mcp_config({"env": {"EMPTY": ""}})["env"] == {"EMPTY": ""}
+
+
+def _token_database(tmp_path):
+    """A SQLite file shaped like a tool's own database: a table that holds a token."""
+    import sqlite3
+
+    path = tmp_path / "data.db"
+    with sqlite3.connect(path) as db:
+        db.execute("create table accounts (login text, access_token text)")
+        db.execute("insert into accounts values ('someone', 'FAKE-DB-TOKEN-0123456789')")
+    return path
+
+
+def test_no_preview_shows_the_bytes_of_a_database(tmp_path):
+    from aictl.dashboard import html_report, http_assets
+    from aictl.dashboard.projections import terminal
+
+    path = str(_token_database(tmp_path))
+    shown = [html_report._read_file_tail(path), http_assets._read_file_safe(path), terminal.preview_file(path)["text"]]
+    for text in shown:
+        assert "FAKE-DB-TOKEN" not in (text or "")
+        assert "access_token" not in (text or "")
+
+
+def test_a_text_file_is_still_previewed(tmp_path):
+    from aictl.dashboard import html_report, http_assets
+    from aictl.dashboard.projections import terminal
+
+    path = tmp_path / "notes.md"
+    path.write_text("plain notes\n", encoding="utf-8")
+    assert html_report._read_file_tail(str(path)) == "plain notes\n"
+    assert http_assets._read_file_safe(str(path)) == "plain notes\n"
+    assert terminal.preview_file(str(path))["text"] == "plain notes\n"
