@@ -66,7 +66,9 @@ def board_entities(scope: str, payload: dict) -> list[tuple[str, str, dict, str]
         )
         value = raw_value
         if field == "kpis":
-            value = {key: item for key, item in value.items() if key not in {"running", "idle", "subagents_running"}}
+            # Session activity comes from the runtime report. The runtime report has no subagents,
+            # so the count of running subagents stays: it is the only source of that number.
+            value = {key: item for key, item in value.items() if key not in {"running", "idle"}}
         if not isinstance(value, list):
             add(topic, field, value)
             continue

@@ -38,9 +38,13 @@ def test_board_rows_have_stable_identity_and_mixed_fields_keep_their_authority()
                 "_configured_on_disk": True,
             }
         ],
-        "kpis": {"running": 1, "tokens": 50},
+        "kpis": {"running": 1, "idle": 2, "subagents_running": 3, "tokens": 50},
     }
     entities = board_entities("scope", payload)
+    kpis = next(data["value"] for topic, _, data, _ in entities if topic == "history.board" and data["field"] == "kpis")
+    # Sessions running and idle come from the runtime report; it has no subagents, so their
+    # count must reach the page from the stored rows (the Overview tile showed none).
+    assert kpis == {"subagents_running": 3, "tokens": 50}
     agent = next(
         data
         for topic, _, data, _ in entities

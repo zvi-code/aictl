@@ -4,6 +4,7 @@
   "title": "HistoryKpis",
   "type": "object",
   "properties": {
+    "subagents_running": {"type": "integer"},
     "messages": {"type": "integer"},
     "tokens": {"type": "integer"},
     "cached_share": {"type": ["number", "null"]},

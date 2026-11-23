@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: f0ce35ef1922d2a2737b8facfe36103fc1025d1e18d2ccec932b68e31fbb3fed
+// Schema digest: b4b36bc2d09ea39973b37434a9bfa1331d972650b41459d1365d2079ef7d911f
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2263,6 +2263,7 @@ export type HistoryAgentRow = {
 };
 
 export type HistoryKpis = {
+  subagents_running?: number;
   messages: number;
   tokens: number;
   cached_share: number | null;
