@@ -225,6 +225,18 @@ def real_home_violations() -> list[str]:
 
 
 @pytest.fixture(autouse=True)
+def _aictl_environment_does_not_leak():
+    """`aictl daemon serve` writes its options into os.environ (the store reads them there). A test
+    that runs the command would hand its Kusto target to every later test, which then tried to
+    reach that cluster. Each test starts and ends with the AICTL_* variables it was given."""
+    before = {name: value for name, value in os.environ.items() if name.startswith("AICTL_")}
+    yield
+    for name in [name for name in os.environ if name.startswith("AICTL_") and name not in before]:
+        del os.environ[name]
+    os.environ.update(before)
+
+
+@pytest.fixture(autouse=True)
 def _discovery_not_lazy():
     """A test that starts the collection service turns on lazy discovery; the next test must not inherit it."""
     yield
