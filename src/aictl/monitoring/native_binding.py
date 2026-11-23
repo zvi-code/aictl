@@ -231,7 +231,7 @@ def known_session_id(value: str, tool: str, homes: Iterable[Path]) -> bool:
                     return True
             elif tool == "codex-cli":
                 if _UUID.match(value) and any(
-                    (home / "sessions").glob(f"*/*/*/rollout-*{value}.jsonl{ext}") for ext in ("", ".zst")
+                    path for ext in ("", ".zst") for path in (home / "sessions").glob(f"*/*/*/rollout-*{value}.jsonl{ext}")
                 ):
                     return True
         except OSError:

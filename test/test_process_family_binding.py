@@ -272,3 +272,14 @@ def test_ends_and_switches_from_process_evidence_are_not_shells(tmp_path):
         assert row["tool"] == "claude-code" and row["started_at"] > BIRTH - 1 and row["source"] == "process"
     assert rows[CLAUDE_SID]["end_reason"] == "switched"
     assert rows[other]["end_reason"] == "process_exit"
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".jsonl.zst"])
+def test_a_codex_id_is_known_only_when_its_rollout_exists(tmp_path, suffix):
+    home = tmp_path / "codex-home"
+    day = home / "sessions" / "2026" / "11" / "09"
+    day.mkdir(parents=True)
+    known, unknown = "11111111-2222-4333-8444-555555555555", "99999999-2222-4333-8444-555555555555"
+    (day / f"rollout-2026-11-09T10-00-00-{known}{suffix}").write_bytes(b"")
+    assert native_binding.known_session_id(known, "codex-cli", [home])
+    assert not native_binding.known_session_id(unknown, "codex-cli", [home])
