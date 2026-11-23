@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: d349e4c44d82a6a1c374b5d6de078480a00dd98734b5f09bf1d76d714dd34441
+// Schema digest: fe699fdec1d3083a978b7968ee0c1f0472ee41269208a2a57a5a1173a47e4cbd
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -259,7 +259,7 @@ export type BoardLoops = Array<BoardLoopRow>;
 
 export type BoardMemoryFiles = Array<{
   path: string;
-  declared_for: string | null;
+  declared_for?: string | null;
   project?: string;
   loaded_sessions?: number;
   loaded_by?: Array<string> | null;
@@ -3325,7 +3325,7 @@ export type TopicHistoryBoard = {
   field: "memory_files";
   value: {
     path: string;
-    declared_for: string | null;
+    declared_for?: string | null;
     project?: string;
     loaded_sessions?: number;
     loaded_by?: Array<string> | null;

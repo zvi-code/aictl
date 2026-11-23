@@ -354,7 +354,6 @@
           },
           "required": [
             "path",
-            "declared_for",
             "scope",
             "tokens",
             "lines_added",

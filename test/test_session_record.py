@@ -478,7 +478,7 @@ class TestSearch:
         assert status == 200 and payload["total"] == 2
         assert set(payload["rows"][0]) == {
             "id", "tool", "title", "title_source", "project", "model", "started_at", "ended_at", "last_activity_at",
-            "duration", "status", "status_evidence", "end_reason", "pids", "import_state", "import_evidence", "import",
+            "duration", "status", "status_basis", "status_evidence", "end_reason", "pids", "import_state", "import_evidence", "import",
             "openable", "closed_reason", "tokens", "cost_usd", "tool_calls", "prompts", "errors", "artifacts", "commits",
             "match", "match_text",
         }
