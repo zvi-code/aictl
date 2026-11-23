@@ -281,6 +281,8 @@ BOUNDED = {
     "insights.rereads": "two rows per tool, 10 sessions and one meta row",
     "insights.subagents": "two rows per tool, 10 sessions and one meta row",
     "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions and one meta row",
+    "insights.work_per_instruction": "per tool, a coverage row per tool, one row per tool and bin (at most 26 weeks, or "
+                                     "months), 10 sessions and one meta row",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",
     "prompts.titles": "one row per agent of the board's sessions",

@@ -1,0 +1,210 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Work per instruction: the tool calls the main agent (agent id empty or equal to the session id) made between two
+// turns of a person, and how long the person took to answer after the agent stopped.
+// A person's turn is a session_prompts row of the main agent, or the answer to a question the agent asked (a call
+// named like the ingest's wait tools or AskUserQuestion). The readers already leave out compaction summaries, tool
+// results, hook and meta lines, local commands, Copilot messages another agent or the autopilot sent, and VS Code
+// requests the system started. Session-control commands (/compact, /autocompact, /model, /clear, /effort) are not
+// turns. Templates are counted per node and tool: a prompt whose first 100 characters (at least 20, not a slash
+// command) recur in 3 or more sessions, or that starts with <scheduled-task, is not a person and does not cut a
+// chain. A session is left out as started by a script when its first prompt is such a template, or when the first
+// 40 characters of its first prompt (lower case, digit runs made equal; not a slash command) start 3 or more sessions.
+// Copilot sessions read only from session-store.db (no events file) keep shell commands only, with prompt times
+// moved to the turn's first command: they are not comparable and are left out (store_only in the coverage row).
+// Subagent calls are not in the chain; a call that starts a subagent is one call of it and is counted as delegated.
+// A person's turn with neither a call nor a reply recorded after it is unread (the log did not cover it): it is not an
+// instruction. Chains are cut in time order (a person's turn first at equal times) before the period selects them by
+// their start; rows before the period can only belong to chains that started before it.
+let ask_names = dynamic(['ask_user', 'askuser', 'ask_question', 'askuserquestion', 'vscode_askquestions']);
+let agent_names = dynamic(['Agent', 'Task', 'task', 'runSubagent', 'run_subagent']);
+let store_source = 'copilot-session-store';
+let day_s = 86400.0;
+// A wait shorter than this is a prompt the person sent while the agent was still working, logged when the agent took
+// it: it is counted as queued, not as an answer.
+let queued_s = 2.0;
+let prompts = materialize(session_prompts
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
+             head=substring(text, 0, 100), text_chars=strlen(text)
+    | extend exact=hash(head), opening=hash(substring(replace_regex(tolower(head), @'[0-9]+', '#'), 0, 40)),
+             control=head matches regex @'^/(compact|autocompact|model|clear|effort)(\s|$)',
+             slash=head startswith '/', sched=head startswith '<scheduled-task'
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, text_chars, exact, opening,
+              control, slash, sched
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and isempty(agent_id) and not(control)
+    | project node_id, session_id, ts, tool, text_chars, exact, opening, slash, sched);
+let templates = prompts
+    | where text_chars >= 20 and not(slash)
+    | distinct node_id, tool, exact, session_id
+    | summarize sessions=count() by node_id, tool, exact
+    | where sessions >= 3
+    | project node_id, tool, exact, template=true;
+let marked = materialize(prompts
+    | lookup kind=leftouter templates on node_id, tool, exact
+    | project node_id, session_id, ts, tool, person=not(coalesce(template, false) or sched), slash, text_chars, opening);
+let starts = materialize(marked
+    | summarize arg_min(ts, person, slash, text_chars, opening, tool) by node_id, session_id);
+let openers = starts
+    | where text_chars > 0 and not(slash)
+    | summarize sessions=count() by node_id, tool, opening
+    | where sessions >= 3
+    | project node_id, tool, opening, opener_template=true;
+// Copilot assistant turn ends, and the marker of a session known only from session-store.db. session_steps has no
+// tombstone, so it is filtered before the version reduction.
+let steps = materialize(session_steps
+    | where all_nodes or node_id == requested_node
+    | where tool in ('copilot-cli', 'copilot-desktop') and source in ('assistant.turn_end', store_source)
+    | project ['project'], node_id, step_key, _v, ts, session_id, agent_id, source
+    | summarize arg_max(_v, *) by ['project'], node_id, step_key);
+let calls = materialize(tool_invocations
+    | where all_nodes or node_id == requested_node
+    // A tombstone written with its key only has no ts: it must reach the reduction.
+    | where (ts >= since or isnull(ts)) and (isempty(agent_id) or agent_id == session_id)
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, tool_name, target_kind, duration_ms,
+              source
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and not(tool_name startswith_cs 'permission:')
+    // w: 1 the person's answer to the agent's question (not the agent's work), 2 a call. A duration over 24 hours is a
+    // recording error: the call then ends at its start.
+    | extend ask=tolower(tool_name) in (ask_names)
+    | project node_id, session_id, ts, tool, store=source == store_source, w=iff(ask, 1, 2),
+              delegated=target_kind == 'agent' or tool_name in (agent_names),
+              e=iff(ask, real(null), ts + iff(duration_ms between (0.0 .. 86400000.0), duration_ms, 0.0) / 1000));
+let store_only = union
+        (calls | where store | project node_id, session_id),
+        (steps | where source == store_source | project node_id, session_id)
+    | distinct node_id, session_id;
+let in_period = materialize(marked
+    | where ts >= since and ts < until
+    | distinct node_id, session_id
+    | join kind=inner (starts | lookup kind=leftouter openers on node_id, tool, opening) on node_id, session_id
+    | join kind=leftouter (store_only | extend store=true) on node_id, session_id
+    | project node_id, session_id, tool, scripted=not(person) or coalesce(opener_template, false),
+              store=coalesce(store, false), start_text=text_chars > 0);
+let led = in_period | where not(scripted) and not(store) | project node_id, session_id, tool;
+let model_calls = materialize(requests
+    | where all_nodes or node_id == requested_node
+    | where (ts >= since or isnull(ts)) and (isempty(agent_id) or agent_id == session_id)
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, duration_ms
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false))
+    | project node_id, session_id, ts, tool, duration_ms);
+// The agent's replies: model calls of the main agent. A Copilot CLI or Copilot app session's usage rows may come
+// from the session store, stamped near the next prompt rather than when the reply ended, so for those two tools the
+// end of each main-agent turn (assistant.turn_end) stands in for the replies. A model call's ts is its end, except in
+// VS Code, whose rows stamp the start and carry the duration.
+let replies = union
+    (model_calls
+        | where tool !in ('copilot-cli', 'copilot-desktop')
+        | project node_id, session_id, ts, w=3, delegated=false,
+                  e=ts + iff(tool == 'copilot-vscode' and duration_ms between (0.0 .. 86400000.0), duration_ms / 1000, 0.0)),
+    (steps
+        | where source == 'assistant.turn_end' and ts >= since and isempty(agent_id)
+        | project node_id, session_id, ts, w=3, delegated=false, e=ts);
+let chains = materialize(union
+        (marked | where person and ts >= since | project node_id, session_id, ts, w=0, delegated=false, e=real(null)),
+        (calls | where not(store) | project node_id, session_id, ts, w, delegated, e),
+        replies
+    // Each session's rows are cut on one node: no single node sorts every row of the period.
+    | partition hint.strategy=shuffle by session_id (
+        sort by node_id asc, session_id asc, ts asc, w asc
+        | extend chain=row_cumsum(toint(w <= 1 or prev(node_id) != node_id or prev(session_id) != session_id))
+        | summarize start=min(ts), opener=min(w), calls=countif(w == 2), delegated=countif(delegated), stop=max(e)
+              by chain, node_id, session_id)
+    | where opener <= 1
+    | sort by node_id asc, session_id asc, start asc
+    | extend more=next(node_id) == node_id and next(session_id) == session_id
+    // The wait before the person's next prompt (followed): none after the session's last turn, after a turn with no
+    // recorded call or reply, or before an answer (its time is not recorded). A gap over 24 hours is a session resumed
+    // later. A wait under queued_s is queued, not an answer.
+    | extend gap=iff(more and next(opener) == 0, next(start) - stop, real(null)), followed=more and next(opener) == 0
+    | extend unread=opener == 0 and calls == 0 and isnull(stop)
+    | extend no_stop=followed and isnull(stop) and not(unread),
+             wait_s=iff(gap <= day_s, max_of(gap, 0.0), real(null)), resumed=gap > day_s
+    | extend queued=wait_s < queued_s, answer_s=iff(wait_s >= queued_s, wait_s, real(null))
+    | where start >= since and start < until
+    | lookup kind=inner led on node_id, session_id);
+let read_chains = chains | where not(unread);
+// A session with no recorded main-agent call in the period is left out of every figure: the store cannot tell a
+// session that called no tool from one whose calls were not read.
+let all_sessions = materialize(read_chains
+    | summarize tool=take_any(tool), first_ts=minif(start, opener == 0), instructions=countif(opener == 0),
+                longest=max(calls), calls=sum(calls), delegated=sum(delegated), waits=countif(isnotnull(answer_s)),
+                queued=countif(queued), p50_wait_s=percentile(answer_s, 50)
+          by node_id, session_id
+    | where instructions > 0);
+let per_session = materialize(all_sessions | where calls > 0 | extend multi=instructions >= 2);
+let lo = max_of(since, toscalar(per_session | summarize min(first_ts)));
+let unit = case(until - lo <= 14 * day_s, 'day', until - lo <= 180 * day_s, 'week', 'month');
+let binned = materialize(per_session
+    | extend at=unixtime_milliseconds_todatetime(first_ts * 1000)
+    | extend b=case(unit == 'day', startofday(at), unit == 'week', startofweek(at), startofmonth(at))
+    | project node_id, session_id, tool, longest, multi, bin_ts=todouble(datetime_diff('second', b, datetime(1970-01-01))));
+// The wait is reported only when it was measured for at least half of the turns a person's prompt followed; otherwise
+// its median and over-5-minute count are null (not reported), never 0.
+let wait_reported = (t:(turns_answered:long, waits:long, queued:long, p50_wait_s:real, over_5m:long)) {
+    t | extend ok=(waits + queued) * 2 >= turns_answered and waits > 0
+      | extend p50_wait_s=iff(ok, p50_wait_s, real(null)), over_5m=iff(ok, over_5m, long(null))
+      | project-away ok
+};
+let waited = read_chains | lookup kind=inner (binned | project node_id, session_id, bin_ts) on node_id, session_id;
+union
+    (per_session
+        | summarize sessions=count(), instructions=sum(instructions), calls=sum(calls), delegated=sum(delegated),
+                    one_instruction=countif(not(multi)), p50_longest=percentile(longest, 50),
+                    p90_longest=percentile(longest, 90), mean_longest=avg(longest), multi_sessions=countif(multi),
+                    p50_multi=percentile(iff(multi, longest, long(null)), 50),
+                    p90_multi=percentile(iff(multi, longest, long(null)), 90),
+                    mean_multi=avgif(longest, multi) by tool
+        | extend mean_multi=iff(multi_sessions > 0, mean_multi, real(null))
+        | lookup kind=leftouter (waited
+            | summarize turns_answered=countif(followed), waits=countif(isnotnull(answer_s)), queued=countif(queued),
+                        p50_wait_s=percentile(answer_s, 50), over_5m=countif(answer_s > 300), resumed=countif(resumed),
+                        no_stop=countif(no_stop) by tool) on tool
+        | invoke wait_reported()
+        | extend row_type='tool'),
+    // Per tool: sessions with a main-agent call or model call in the period; sessions with a prompt there, those a
+    // script started, those known only from session-store.db, those whose first prompt has no stored text (a template
+    // cannot be recognised), those left out because no main-agent call of theirs is recorded, and person turns with
+    // neither a call nor a reply recorded (unread).
+    (union (calls | project tool, node_id, session_id, ts), (model_calls | project tool, node_id, session_id, ts)
+        | where ts < until and isnotempty(tool)
+        | distinct tool, node_id, session_id
+        | summarize active=count() by tool
+        | join kind=fullouter (in_period
+            | summarize prompted=count(), scripted=countif(scripted), store_only=countif(store and not(scripted)),
+                        start_unread=countif(not(start_text)) by tool) on tool
+        | project tool=coalesce(tool, tool1), active=coalesce(active, 0), prompted=coalesce(prompted, 0),
+                  scripted=coalesce(scripted, 0), store_only=coalesce(store_only, 0),
+                  start_unread=coalesce(start_unread, 0)
+        | lookup kind=leftouter (all_sessions | summarize no_calls=countif(calls == 0) by tool) on tool
+        | lookup kind=leftouter (chains | summarize unread=countif(unread) by tool) on tool
+        | extend no_calls=coalesce(no_calls, 0), unread=coalesce(unread, 0)
+        | extend row_type='coverage'),
+    (binned
+        | summarize sessions=count(), p50_longest=percentile(longest, 50), p90_longest=percentile(longest, 90),
+                    mean_longest=avg(longest), multi_sessions=countif(multi),
+                    p50_multi=percentile(iff(multi, longest, long(null)), 50),
+                    p90_multi=percentile(iff(multi, longest, long(null)), 90) by tool, bin_ts
+        | lookup kind=leftouter (waited
+            | summarize turns_answered=countif(followed), waits=countif(isnotnull(answer_s)), queued=countif(queued),
+                        p50_wait_s=percentile(answer_s, 50), over_5m=countif(answer_s > 300) by tool, bin_ts)
+            on tool, bin_ts
+        | invoke wait_reported()
+        | extend row_type='bin'),
+    (per_session
+        | order by longest desc, calls desc, node_id asc, session_id asc
+        | take 10
+        | project node_id, session_id, tool, longest, instructions, calls, delegated, waits, queued, p50_wait_s, first_ts
+        | extend row_type='session'),
+    (per_session
+        | summarize first_ts=min(first_ts), last_ts=max(first_ts)
+        // prompts_from: the oldest stored prompt. Prompts have their own retention: before it no session can be read.
+        | extend row_type='meta', bin_unit=unit,
+                 prompts_from=toscalar(prompts | where ts > 0 | summarize min(ts)),
+                 computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, tool asc, bin_ts asc, longest desc
+| take row_limit

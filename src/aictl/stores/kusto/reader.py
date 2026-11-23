@@ -317,6 +317,13 @@ _VIEWS = {
         "row_type tool signal other node_id session_id sessions priced cost_usd flagged multi all_priced all_cost_usd "
         "all_sessions tools project_name signals names first_ts last_ts computed_at",
     ),
+    "insights.work_per_instruction": (
+        _TIME,
+        "row_type tool bin_ts node_id session_id sessions instructions calls delegated one_instruction longest p50_longest "
+        "p90_longest mean_longest multi_sessions p50_multi p90_multi mean_multi turns_answered waits queued p50_wait_s over_5m "
+        "resumed no_stop active prompted scripted store_only start_unread no_calls unread first_ts last_ts bin_unit "
+        "prompts_from computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -411,6 +418,7 @@ _CACHE_TTL_S = {
     "insights.after_failure": _INSIGHT_TTL_S, "insights.rereads": _INSIGHT_TTL_S, "insights.time_split": _INSIGHT_TTL_S,
     "insights.context_weight": _INSIGHT_TTL_S, "insights.orientation": _INSIGHT_TTL_S, "insights.fixed_context": _INSIGHT_TTL_S,
     "insights.problem_sessions": _INSIGHT_TTL_S,
+    "insights.work_per_instruction": _INSIGHT_TTL_S,
 }
 _NODE_STALE_MAX_S = 300.0
 _FAILURE_COOLDOWN_S = 5.0

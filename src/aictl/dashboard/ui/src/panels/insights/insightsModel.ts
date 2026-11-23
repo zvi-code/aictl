@@ -5,9 +5,11 @@ import { createSignal, untrack } from 'solid-js'
 import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, projectName } from '../../design/format'
 import { parseFilters, RANGES, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
+import type { AutonomyBody } from './autonomyModel'
 
 export type { QueryBlock }
 export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
+  | 'autonomy'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -18,6 +20,8 @@ type Base<C extends CardId> = {
   data_range: { first_ts: Num; last_ts: Num }; computed_at: number; query: QueryBlock
   sessions: InsightSession[]; tool_labels?: Record<string, string>; node_scope?: { kind: string; node_id: string | null }
 }
+/** What every card's answer carries, for a card whose own types live in its own model file. */
+export type InsightBase<C extends CardId> = Base<C>
 export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
 export type PauseBody = Base<'pause'> & {
   tools: { tool: string; cache_reported: boolean; buckets: PauseCell[] }[]
@@ -122,6 +126,7 @@ export type ProblemBody = Base<'problems'> & {
 }
 export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody | FixedBody
   | ProblemBody
+  | AutonomyBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',

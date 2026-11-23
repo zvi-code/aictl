@@ -28,6 +28,7 @@ CARDS = {
     "orientation": "insights.orientation",
     "fixed": "insights.fixed_context",
     "problems": "insights.problem_sessions",
+    "autonomy": "insights.work_per_instruction",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -547,10 +548,90 @@ def problem_sessions(rows: list[dict]) -> dict:
     }
 
 
+# The coverage counts of insights.work_per_instruction: why a tool's sessions are not all in its figures.
+AUTONOMY_COVERAGE = ("active", "prompted", "scripted", "store_only", "start_unread", "no_calls", "unread")
+
+
+def _chain_figures(row: dict, sessions: int, multi: int) -> dict:
+    """The longest-chain figures of a tool or bin row: None for a group with no session in it, never 0."""
+    return {
+        "p50_longest": _cost(row.get("p50_longest")) if sessions else None,
+        "p90_longest": _cost(row.get("p90_longest")) if sessions else None,
+        "mean_longest": _cost(row.get("mean_longest")) if sessions else None,
+        "p50_multi": _cost(row.get("p50_multi")) if multi else None,
+        "p90_multi": _cost(row.get("p90_multi")) if multi else None,
+    }
+
+
+def _wait_figures(row: dict) -> dict:
+    """The wait figures of a tool or bin row. The view leaves the median and the long count null when too few of the
+    turns a person answered have a measured wait; they stay None here."""
+    waits, wait = _int(row.get("waits")), _cost(row.get("p50_wait_s"))
+    over = _int(row.get("over_5m")) if wait is not None else None
+    return {
+        "turns_answered": _int(row.get("turns_answered")), "waits": waits, "queued": _int(row.get("queued")),
+        "p50_wait_s": wait, "over_5m": over, "over_5m_share": _ratio(over, waits) if over is not None else None,
+    }
+
+
+def work_per_instruction(rows: list[dict]) -> dict:
+    """Per tool and time bin: the longest run of main-agent tool calls between two turns of a person, and how long the
+    person took to answer after the agent stopped.
+
+    A tool that records no prompts is not reported, and a figure with no session behind it is None, never 0.
+    """
+    figures = {row.get("tool"): row for row in _of(rows, "tool")}
+    coverage = {row.get("tool"): row for row in _of(rows, "coverage")}
+    tools = []
+    for tool in sorted(set(figures) | set(coverage), key=str):
+        row, cover = figures.get(tool, {}), coverage.get(tool, {})
+        sessions, multi = _int(row.get("sessions")), _int(row.get("multi_sessions"))
+        tools.append({
+            "tool": tool, "reported": bool(_int(cover.get("prompted")) or sessions),
+            **{name: _int(cover.get(name)) for name in AUTONOMY_COVERAGE},
+            "sessions": sessions, "instructions": _int(row.get("instructions")), "calls": _int(row.get("calls")),
+            "delegated": _int(row.get("delegated")), "one_instruction": _int(row.get("one_instruction")),
+            "multi_sessions": multi, **_chain_figures(row, sessions, multi),
+            "mean_multi": _cost(row.get("mean_multi")) if multi else None,
+            **_wait_figures(row), "resumed": _int(row.get("resumed")), "no_stop": _int(row.get("no_stop")),
+        })
+    tools.sort(key=lambda tool: (not tool["reported"], -tool["multi_sessions"], -tool["sessions"], str(tool["tool"])))
+    bins = []
+    for row in _of(rows, "bin"):
+        sessions, multi = _int(row.get("sessions")), _int(row.get("multi_sessions"))
+        bins.append({"tool": row.get("tool"), "bin_ts": _cost(row.get("bin_ts")), "sessions": sessions,
+                     "multi_sessions": multi, **_chain_figures(row, sessions, multi), **_wait_figures(row)})
+    bins.sort(key=lambda row: (str(row["tool"]), _n(row["bin_ts"])))
+    meta = next(iter(_of(rows, "meta")), {})
+    measured = [tool for tool in tools if tool["sessions"]]
+    sessions = []
+    for row in _sessions(rows, ("longest", "instructions", "calls", "delegated", "waits", "queued", "p50_wait_s", "first_ts")):
+        instructions, waits = _int(row["instructions"]), _int(row["waits"])
+        sessions.append({**row, "longest": _int(row["longest"]), "instructions": instructions, "calls": _int(row["calls"]),
+                         "delegated": _int(row["delegated"]), "waits": waits, "queued": _int(row["queued"]),
+                         "p50_wait_s": _cost(row["p50_wait_s"]) if waits else None, "first_ts": _cost(row["first_ts"]),
+                         "single": instructions < 2})
+    sessions.sort(key=lambda row: (-row["longest"], -row["calls"]))
+    return {
+        "tools": tools, "bins": bins,
+        "bin_unit": meta.get("bin_unit") or None, "prompts_from": _cost(meta.get("prompts_from")),
+        "summary": {
+            # The tool the card leads with: the one with the most sessions of two or more instructions.
+            "lead": measured[0]["tool"] if measured else None,
+            "sessions": sum(tool["sessions"] for tool in tools),
+            "multi_sessions": sum(tool["multi_sessions"] for tool in tools),
+            "one_instruction": sum(tool["one_instruction"] for tool in tools),
+            "not_reported": [tool["tool"] for tool in tools if not tool["reported"]],
+        },
+        "sessions": sessions,
+    }
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
     "time": time_split, "context": context_weight, "orientation": orientation, "fixed": fixed_context,
     "problems": problem_sessions,
+    "autonomy": work_per_instruction,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -564,6 +645,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "orientation": lambda history, params: history.read("insights.orientation", limit=ROW_LIMIT, **params),
     "fixed": lambda history, params: history.read("insights.fixed_context", limit=ROW_LIMIT, **params),
     "problems": lambda history, params: history.read("insights.problem_sessions", limit=ROW_LIMIT, **params),
+    "autonomy": lambda history, params: history.read("insights.work_per_instruction", limit=ROW_LIMIT, **params),
 }
 
 
