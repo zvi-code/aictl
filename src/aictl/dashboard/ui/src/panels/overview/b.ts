@@ -100,7 +100,7 @@ export const overviewB: readonly PanelDef[] = [
     empty: 'No file changes in this time.', load: () => import('./b/History').then(m => ({ default: m.Changes })) },
   // Testing needs a chart, a command table and the pipe status caveat.
   { ...base, id: 'tests', title: 'Testing', kind: 'chart', sources: [tests, { field: 'tests' }, buckets, { field: 'tests_piped' }],
-    columns: [field('command', 'Command'), count('runs', 'Runs'), count('failed', 'Failed'),
+    columns: [{ ...field('command', 'Command'), hint: 'full_command' }, count('runs', 'Runs'), count('failed', 'Failed'),
       duration('median_ms', 'Median', 'board.latency.turn'), field('state', 'Result'), stamp('last_ts', 'Last')],
     chart: timeChart('Reported pass and fail counts per bucket.', true),
     empty: 'No test runs in this time.', load: () => import('./b/History').then(m => ({ default: m.HistoryBreakdown })) },
