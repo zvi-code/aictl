@@ -6,6 +6,7 @@ import { at } from '../data'
 import type { ChartOptions, FieldRef, PanelProps, Read } from '../types'
 import { presentation } from './model'
 import { States } from './States'
+import { aggregateFor, rangeValues } from './seriesReadout'
 import styles from './kinds.module.css'
 
 type SeriesRow = { x: number; values: (number | null)[] }
@@ -29,7 +30,8 @@ export function SeriesView(props: {
 }) {
   const { ctx, def } = untrack(() => props.panel)
   const [table, setTable] = createSignal(false)
-  const [index, setIndex] = createSignal(0)
+  // The bucket the user picked by hover or arrow keys; null shows the whole range.
+  const [index, setIndex] = createSignal<number | null>(null)
   const [hidden, setHidden] = createSignal(new Set<string>())
   const source = createMemo(() => props.source())
   const axis = createMemo(() => props.axis())
@@ -70,12 +72,13 @@ export function SeriesView(props: {
   }
   const formatX = (value: number) => props.time ? new Date(value * 1000).toLocaleString() : String(value)
   const label = () => props.label ?? def.title
-  const active = () => Math.min(index(), Math.max(rows().length - 1, 0))
+  const active = () => index() == null ? null : Math.min(index()!, Math.max(rows().length - 1, 0))
+  const bucketSeconds = () => ctx.board('range', true)?.bucket_s ?? 0
   const apply = (start: number, end: number) => {
     const data = rows(), since = data[Math.min(start, end)]?.x
     const last = data[Math.max(start, end)]?.x
     const until = data[Math.max(start, end) + 1]?.x ??
-      (last == null ? undefined : last + (ctx.board('range', true)?.bucket_s ?? 0))
+      (last == null ? undefined : last + bucketSeconds())
     if (since != null && until != null && until > since) ctx.select({ since, until })
   }
   const toggle = (i: number) => setHidden(old => {
@@ -85,9 +88,20 @@ export function SeriesView(props: {
     else next.add(key)
     return next
   })
-  const bucketText = createMemo(() => {
-    const row = rows()[active()]
-    return row ? formatX(row.x) : ''
+  const picked = () => active() == null ? undefined : rows()[active()!]
+  const rangeText = () => {
+    const first = rows()[0], last = rows().at(-1)
+    return first && last ? `${formatX(first.x)} – ${formatX(last.x + bucketSeconds())}` : ''
+  }
+  const bucketText = createMemo(() => picked() ? formatX(picked()!.x) : rangeText())
+  // Until a bucket is picked the readout is the range: totals, or averages for shares and gauges.
+  const reading = createMemo(() => {
+    const row = picked()
+    const values = row ? row.values : rangeValues(rows(), display().map(field => field.unit))
+    return values.flatMap((value, i) => value == null || !visible(i) ? [] : [{
+      label: row || aggregateFor(display()[i].unit) === 'sum' ? display()[i].label : `${display()[i].label} (avg)`,
+      value: display()[i].format(value),
+    }])
   })
   const plot = () => <Chart label={label()} description={props.description} series={series()} points={points()}
     xAxis={props.time ? 'time' : 'number'} stack={props.stack} unit={unit()}
@@ -100,14 +114,14 @@ export function SeriesView(props: {
       <Show when={props.select}>
         <button class={`${styles.button} ${styles.chartBucket}`} type="button"
           aria-label={`${props.namedControls ? `Select ${label()} time bucket` : 'Select chart bucket'}: ${bucketText()}`}
-          onClick={() => apply(active(), active())} onKeyDown={event => {
+          onClick={() => { const at = active(); if (at != null) apply(at, at) }} onKeyDown={event => {
             if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
               event.preventDefault()
-              setIndex(Math.max(0, Math.min(rows().length - 1, active() + (event.key === 'ArrowLeft' ? -1 : 1))))
-            } else if (event.key === 'Escape') { event.preventDefault(); ctx.select(null) }
+              const step = event.key === 'ArrowLeft' ? -1 : 1
+              setIndex(Math.max(0, Math.min(rows().length - 1, (active() ?? (step < 0 ? rows().length : -1)) + step)))
+            } else if (event.key === 'Escape') { event.preventDefault(); setIndex(null); ctx.select(null) }
           }}>{bucketText()}</button>
-        <span>{rows()[active()]?.values.flatMap((value, i) =>
-          value == null || !visible(i) ? [] : [`${display()[i].label}: ${display()[i].format(value)}`]).join(' · ')}</span>
+        <span>{picked() ? '' : 'Range · '}{reading().map(item => `${item.label}: ${item.value}`).join(' · ')}</span>
       </Show>
     </div>
     <Show when={!table()} fallback={
