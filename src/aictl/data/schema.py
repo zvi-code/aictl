@@ -21,11 +21,33 @@ import yaml
 _DATA_DIR = Path(__file__).parent
 
 
+class DuplicateKeyError(yaml.constructor.ConstructorError):
+    """A mapping names the same key twice; plain YAML would keep the last one silently."""
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """A safe loader that refuses a mapping with a repeated key."""
+
+    def construct_mapping(self, node, deep=False):  # noqa: ANN001 - PyYAML's signature
+        seen: set = set()
+        for key_node, _value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise DuplicateKeyError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_unique_yaml(stream) -> object:  # noqa: ANN001 - a file or a string, as yaml.load takes
+    """YAML parsed with :class:`UniqueKeyLoader`: a repeated mapping key is an error, never a silent overwrite."""
+    return yaml.load(stream, Loader=UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
+
+
 @functools.cache
 def _load_yaml(name: str) -> dict:
     path = _DATA_DIR / name
     with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        return load_unique_yaml(f) or {}
 
 
 # ─── Metrics ─────────────────────────────────────────────────────

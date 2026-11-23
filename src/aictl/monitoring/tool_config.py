@@ -1101,10 +1101,10 @@ def settings_catalog(tool: str) -> dict[str, dict]:
     if _catalog_cache is None or _catalog_cache[0] != str(path) or _catalog_cache[1] != mtime:
         tools: dict[str, dict[str, dict]] = {}
         try:
-            import yaml
+            from ..data.schema import load_unique_yaml
 
             with open(path, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                data = load_unique_yaml(f) or {}  # a repeated key is an error, never a silent overwrite
         except Exception:  # noqa: BLE001 - an unreadable catalog is an empty one
             data = {}
         spec = data.get("tools") if isinstance(data, dict) else None
