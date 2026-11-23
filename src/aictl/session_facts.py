@@ -24,6 +24,8 @@ from .stores.kusto.tables import TABLES
 from .tool_calls import call_key
 
 _LIMIT = 20_000
+# The agent rows the restart state keeps (the newest written).
+AGENTS_KEPT_ACROSS_RESTART = 2_000
 PAYLOAD_CHUNK_CHARS = 200_000  # a chunk stays under what one Kusto string value holds
 log = logging.getLogger(__name__)
 _COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
@@ -68,6 +70,8 @@ class SessionFacts:
         self._dirty = False
         self._sessions: OrderedDict = OrderedDict()
         self._agents: OrderedDict = OrderedDict()
+        # Agent rows known from the restart state only: the store may hold a newer version of them.
+        self._restored_agents: set[tuple[str, str]] = set()
         self._requests: OrderedDict = OrderedDict()
         self._usage_projects: OrderedDict = OrderedDict()
         self._hook_times: OrderedDict = OrderedDict()
@@ -93,6 +97,9 @@ class SessionFacts:
                 self._sessions.update(saved.get("sessions", {}))
                 self._hook_times.update(saved.get("hook_times", {}))
                 self._lists.update(saved.get("context_lists", {}))
+                for key, row in saved.get("agents", []):
+                    self._agents[tuple(key)] = row
+                    self._restored_agents.add(tuple(key))
                 for counts, waiting in saved.get("otel_calls", []):
                     self._otel_calls[tuple(counts)] = waiting
             except (OSError, ValueError, TypeError):
@@ -102,7 +109,12 @@ class SessionFacts:
         with self._lock:
             if self.state is not None and self._dirty:
                 self.state.replace({"sessions": self._sessions, "hook_times": self._hook_times,
-                                    "otel_calls": list(self._otel_calls.items()), "context_lists": self._lists})
+                                    "otel_calls": list(self._otel_calls.items()), "context_lists": self._lists,
+                                    # The newest agent rows: an agent row is written whole, so a row a reader
+                                    # gives after a restart (a call's agent id, no end) must merge with the
+                                    # stored one, not replace its end, status and label.
+                                    "agents": [[list(key), row] for key, row in
+                                               list(self._agents.items())[-AGENTS_KEPT_ACROSS_RESTART:]]})
                 self._dirty = False
 
     @staticmethod
@@ -522,6 +534,8 @@ class SessionFacts:
                 self.writer.upsert("agents", [dict(data, project=project) for data, project in staged.values()])
                 for key, (data, _) in staged.items():
                     self._remember(self._agents, key, data)
+                    self._restored_agents.discard(key)
+                self._dirty = True
             if text:
                 self.writer.append("agents_text", text)
 
@@ -546,7 +560,8 @@ class SessionFacts:
             staged = []
             for stored, fields in items:
                 key = (stored["session_id"], stored["agent_id"])
-                data = dict(self._agents.get(key) or {k: v for k, v in stored.items() if k != "project"})
+                cached = None if key in self._restored_agents else self._agents.get(key)
+                data = dict(cached or {k: v for k, v in stored.items() if k != "project"})
                 gained = {k: v for k, v in fields.items() if v not in (None, "") and data.get(k) in (None, "")}
                 if gained:
                     staged.append((key, {**data, **gained}, stored["project"]))
@@ -554,6 +569,7 @@ class SessionFacts:
                 self.writer.upsert("agents", [dict(data, project=project) for _, data, project in staged])
                 for key, data, _ in staged:
                     self._remember(self._agents, key, data)
+                    self._restored_agents.discard(key)
             return len(staged)
 
     def attribution(self, session_ids: list[str], tool: str) -> None:

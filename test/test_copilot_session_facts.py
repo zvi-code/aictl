@@ -9,6 +9,7 @@ import json
 import time
 
 from core_store_fakes import current
+
 from aictl.ingesters.call_facts import CopilotFacts, FactBuffer, stored_input
 from aictl.session_facts import SessionFacts
 from aictl.stores.testing import MemoryWriter
@@ -78,3 +79,77 @@ def test_tool_arguments_keep_lists_and_objects_masked():
     ])
     text = current(writer, "tool_invocations_text")
     assert [json.loads(r["input"]) for r in text] == [{"ids": ["cli-overview"]}]
+
+
+def spawn_events(call: str, agent: str, seconds: float, *, failed: bool = False) -> list[dict]:
+    """A task call that starts a subagent, as Copilot CLI writes it (invented texts)."""
+    args = {"name": "otel-check", "description": "Check the exporter", "agent_type": "task", "mode": "sync",
+            "prompt": "Look at the exporter settings"}
+    out = [
+        event("tool.execution_start", seconds, {"toolCallId": call, "toolName": "task", "arguments": args}),
+        event("subagent.started", seconds + 0.01, {"toolCallId": call, "agentName": "task", "agentType": "task",
+                                                   "agentDisplayName": "otel-check",
+                                                   "agentDescription": "Check the exporter", "model": "claude-opus-5"},
+              agentId=agent),
+    ]
+    if failed:
+        return out + [event("subagent.failed", seconds + 0.1, {
+            "toolCallId": call, "agentName": "task", "agentDisplayName": "otel-check", "model": "claude-opus-5",
+            "error": "Model not available for this plan", "durationMs": 89, "totalToolCalls": 0}, agentId=agent)]
+    return out + [
+        usage(seconds + 5, f"{agent}-api", "claude-opus-5.5", "stop", agent=agent),
+        event("subagent.completed", seconds + 18, {
+            "toolCallId": call, "agentName": "task", "agentDisplayName": "otel-check", "model": "claude-opus-5.5",
+            "durationMs": 18757, "totalTokens": 103729, "totalToolCalls": 2}, agentId=agent),
+    ]
+
+
+def test_a_subagent_keeps_its_name_end_and_reported_totals():
+    writer = read([*spawn_events("call-f", "agent-f", 10, failed=True), *spawn_events("call-c", "agent-c", 20)])
+    agents = {r["agent_id"]: r for r in current(writer, "agents")}
+    assert {aid: (r["status"], r["completed"], bool(r["ended_at"]), r["description"]) for aid, r in agents.items()} == {
+        "agent-f": ("failed", 1, True, "Check the exporter"), "agent-c": ("completed", 1, True, "Check the exporter")}
+    assert {r["agent_id"]: r["task"] for r in current(writer, "agents_text")} == {"agent-f": "otel-check",
+                                                                                  "agent-c": "otel-check"}
+    events = {(r["agent_id"], r["kind"]): r for r in current(writer, "context_events") if r["kind"].startswith("subagent_")}
+    end = events["agent-c", "subagent_end"]
+    assert (end["trigger"], end["duration_ms"], end["tool_call_id"]) == ("completed", 18757.0, "call-c")
+    assert json.loads(end["detail"]) == {"model": "claude-opus-5.5", "total_tokens": 103729, "tool_calls": 2}
+    failed = events["agent-f", "subagent_end"]
+    assert failed["trigger"] == "failed" and json.loads(failed["detail"])["error"] == "Model not available for this plan"
+    start = json.loads(events["agent-c", "subagent_start"]["detail"])
+    assert start == {"name": "otel-check", "type": "task", "description": "Check the exporter", "model": "claude-opus-5",
+                     "mode": "sync"}
+
+
+def test_reading_the_file_again_stores_no_second_lifecycle_row():
+    events = [*spawn_events("call-c", "agent-c", 20)]
+    writer = MemoryWriter()
+    buf = FactBuffer(SessionFacts(writer, keeps_text=lambda: True))
+    cop = CopilotFacts("cp-session", buf)
+    for _ in range(2):
+        cop.reset()
+        for obj in events:
+            cop.feed(obj)
+        buf.flush()
+    kinds = [r["kind"] for r in current(writer, "context_events")]
+    assert sorted(k for k in kinds if k.startswith("subagent_")) == ["subagent_end", "subagent_start"]
+
+
+def test_an_agent_row_written_after_a_restart_keeps_the_stored_end(tmp_path):
+    from aictl.records import AgentRow
+    from aictl.state_file import StateFile
+
+    writer = MemoryWriter()
+    first = SessionFacts(writer, state=StateFile(tmp_path / "sessions.json"))
+    first.agents([AgentRow(agent_id="agent-c", session_id="cp-session", tool="copilot-cli", model="claude-opus-5-5",
+                           started_at=T, ended_at=T + 18, completed=1, status="completed",
+                           description="Check the exporter", parent_tool_use_id="call-c", observed_at=T + 18)])
+    first.save()
+    # After a restart another reader of the session gives the agent again: its first call's time, no end.
+    second = SessionFacts(writer, state=StateFile(tmp_path / "sessions.json"))
+    second.agents([AgentRow(agent_id="agent-c", session_id="cp-session", tool="copilot-cli", model="claude-opus-5.5",
+                            is_sidechain=1, started_at=T + 5)])
+    row, = current(writer, "agents")
+    assert (row["started_at"], row["ended_at"], row["completed"], row["status"], row["description"]) == (
+        T, T + 18, 1, "completed", "Check the exporter")

@@ -65,6 +65,11 @@ let tasks = union isfuzzy=true
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(_deleted) and ts >= text_floor
     | project ['project'], node_id, session_id, agent_id, retained_task=task;
+let session_events = materialize(context_events
+    | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, key
+    | where not(column_ifexists('_deleted',false)));
 let known_events = events
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key)
@@ -99,11 +104,13 @@ union
             duration_ms,is_error,exit_code,confirm,input_bytes,output_bytes,confirm_wait_ms)),
     (agent_rows | join kind=leftouter tasks on ['project'], node_id, session_id, agent_id
         | project row_type='agent', ts=started_at, key=agent_id, node_id, ['project'],
-                  values=pack_array(agent_id,iff(keep_text,coalesce(retained_task,column_ifexists('task','')),''),model,started_at,ended_at,completed)),
-    (context_events | where session_id == requested_session and (all_nodes or node_id == requested_node)
-        | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
-        | summarize arg_max(_v, *) by ['project'], node_id, key
-        | where not(column_ifexists('_deleted',false)) and kind == 'compaction' and ts < until
+                  values=pack_array(agent_id,iff(keep_text,coalesce(retained_task,column_ifexists('task','')),''),model,started_at,ended_at,completed,
+                                   parent_tool_use_id,description,status)),
+    // A subagent's start and end as its session file reports them, with the totals of its end.
+    (session_events | where kind in ('subagent_start','subagent_end') and ts >= since and ts < until
+        | project row_type='lifecycle', ts, key, node_id, ['project'],
+                  values=pack_array(ts,kind,agent_id,trigger,duration_ms,tool_call_id,detail)),
+    (session_events | where kind == 'compaction' and ts < until
         | order by ts asc, key asc | serialize ordinal=row_number()
         | where ts >= since
         | project row_type='compaction', ts, key, node_id, ['project'], values=pack_array(ordinal,ts,agent_id,trigger,before_tokens,after_tokens,duration_ms)),

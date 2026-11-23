@@ -1809,7 +1809,7 @@ class CopilotFacts:
         # The person's turns so far (1 = the first), the task calls that start subagents, and
         # the file a call views, read when it completes.
         self.turn = 0
-        self._tasks: dict[str, tuple[str, str]] = {}
+        self._tasks: dict[str, tuple[str, dict[str, str]]] = {}
         self._views: dict[str, str] = {}
         self._summaries = 0
         self._compaction_count = 0
@@ -2325,45 +2325,77 @@ class CopilotFacts:
         )
 
     def _agent_started(self, obj: dict, data: dict, ts: float) -> None:
+        """``subagent.started``: the agent row, and a ``subagent_start`` event with what the spawn named.
+
+        ``task`` is the agent's own name (``agentDisplayName``, else the task call's ``name``, else
+        ``agentName``); ``description`` the label the task call gave, else ``agentDescription``. The event's detail keeps each as reported: name,
+        type (``agentType``), description, model and the task call's mode."""
         agent_id = str(obj.get("agentId") or data.get("agentId") or "")
-        if agent_id:
-            call_id = str(data.get("toolCallId") or "")
-            caller, label = self._tasks.get(call_id, ("", ""))
-            self.buffer.add_agent(
-                fact_rows.AgentRow(
-                    agent_id=agent_id,
-                    session_id=self.sid,
-                    tool="copilot-cli",
-                    task=str(data.get("agentName") or data.get("agentDisplayName") or ""),
-                    model=str(data.get("model") or ""),
-                    is_sidechain=1,
-                    started_at=ts,
-                    description=label,
-                    parent_agent_id=caller,
-                    parent_tool_use_id=call_id[:120],
-                    resolved_model=str(data.get("model") or "")[:120],
-                    status="running",
-                    observed_at=ts,
-                )
+        if not agent_id:
+            return
+        call_id = str(data.get("toolCallId") or "")
+        caller, spawn = self._tasks.get(call_id, ("", {}))
+        name = agent_label(data.get("agentDisplayName") or spawn.get("name") or data.get("agentName"))
+        description = agent_label(spawn.get("description") or data.get("agentDescription"))
+        model = str(data.get("model") or spawn.get("model") or "")[:120]
+        self.buffer.add_agent(
+            fact_rows.AgentRow(
+                agent_id=agent_id,
+                session_id=self.sid,
+                tool="copilot-cli",
+                task=name,
+                model=model,
+                is_sidechain=1,
+                started_at=ts,
+                description=description,
+                parent_agent_id=caller,
+                parent_tool_use_id=call_id[:120],
+                resolved_model=model,
+                status="running",
+                observed_at=ts,
             )
+        )
+        detail = {"name": name, "type": agent_label(data.get("agentType") or spawn.get("agent_type")),
+                  "description": description, "model": model,
+                  "mode": agent_label(spawn.get("mode") or data.get("executionMode"))}
+        self._event("subagent_start", str(obj.get("id") or call_id or ts), ts, agent_id, trigger="started",
+                    tool_call_id=call_id[:120], detail={k: v for k, v in detail.items() if v})
 
     def _agent_ended(self, obj: dict, data: dict, ts: float) -> None:
+        """``subagent.completed`` / ``subagent.failed``: the agent row's end, and a ``subagent_end``
+        event with the totals the tool reported (``durationMs`` in duration_ms; ``totalTokens``,
+        ``totalToolCalls``, the model and, with text kept, the error message in detail)."""
         agent_id = str(obj.get("agentId") or data.get("agentId") or "")
-        if agent_id:
-            self.buffer.add_agent(
-                fact_rows.AgentRow(
-                    agent_id=agent_id,
-                    session_id=self.sid,
-                    tool="copilot-cli",
-                    task=str(data.get("agentName") or ""),
-                    model=str(data.get("model") or ""),
-                    is_sidechain=1,
-                    ended_at=ts,
-                    completed=1,
-                    observed_at=ts,
-                    status="failed" if obj.get("type") == "subagent.failed" else "completed",
-                )
+        if not agent_id:
+            return
+        failed = obj.get("type") == "subagent.failed"
+        call_id = str(data.get("toolCallId") or "")
+        model = str(data.get("model") or "")[:120]
+        self.buffer.add_agent(
+            fact_rows.AgentRow(
+                agent_id=agent_id,
+                session_id=self.sid,
+                tool="copilot-cli",
+                task=agent_label(data.get("agentDisplayName") or data.get("agentName")),
+                model=model,
+                is_sidechain=1,
+                ended_at=ts,
+                completed=1,
+                observed_at=ts,
+                parent_tool_use_id=call_id[:120],
+                resolved_model=model,
+                status="failed" if failed else "completed",
             )
+        )
+        detail: dict[str, Any] = {"model": model, "total_tokens": to_count(data.get("totalTokens")),
+                                  "tool_calls": to_count(data.get("totalToolCalls"))}
+        error = data.get("error")
+        if failed and isinstance(error, str) and error and self.keep_text:
+            detail["error"] = error_excerpt(error, True)
+        self._event("subagent_end", str(obj.get("id") or call_id or ts), ts, agent_id,
+                    trigger="failed" if failed else "completed", tool_call_id=call_id[:120],
+                    duration_ms=to_float(data["durationMs"]) if to_count(data.get("durationMs")) is not None else None,
+                    detail={k: v for k, v in detail.items() if v not in (None, "")})
 
     def _tool_key(self, tool_call_id: str) -> str:
         return fact_rows._dedup_key("copilot-tool", self.sid, tool_call_id)
@@ -2390,7 +2422,9 @@ class CopilotFacts:
             found["target_id"] = server_tool
         kind, target = found["target_kind"], found["target_id"]
         if kind == AGENT:
-            self._tasks[call_id] = (agent_id, agent_label(args.get("description") or args.get("name")))
+            # What the task call names its subagent: read when the subagent starts.
+            self._tasks[call_id] = (agent_id, {k: args[k] for k in ("name", "description", "agent_type", "mode", "model")
+                                               if isinstance(args.get(k), str)})
         elif kind == FILE and name == "view" and target:
             self._views[call_id] = absolute_path(target, self.cwd)
         row = fact_rows.ToolInvocationRow(

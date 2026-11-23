@@ -201,29 +201,8 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
             use["confirm_wait_ms"] = confirm_wait
         events.append(use)
 
-    # What the transcript says each subagent ended with: its subagent.completed or subagent.failed step.
-    outcomes = {aid: phase for _ts, kind, _name, phase, aid, *_rest in rows("step") if kind == "agent" and aid and phase in _AGENT_OUTCOMES}
-    for aid, task, model, started, ended, completed in rows("agent"):
-        label = task or "subagent"
-        if inside(started):
-            start = {"ts": started, "type": "subagent", "from": tool, "to": label, "agent_id": aid, "source": "store"}
-            if model:
-                start["model"] = model
-            if task_prompts.get(aid):
-                start["prompt"] = task_prompts[aid]
-            events.append(start)
-            task = _task_prompt(aid, started, agent_tasks.get(aid), task_prompts.get(aid), keep_text=keep_text, text_floor=text_floor)
-            if task:
-                events.append(task)
-        if inside(ended):
-            outcome = outcomes.get(aid) or ("completed" if completed else "not reported")
-            end = {"ts": ended, "type": "subagent_end", "from": label, "to": tool, "agent_id": aid,
-                   "completed": outcome == "completed", "outcome": outcome, "source": "store"}
-            if outcome == "failed":
-                end["is_error"] = True
-            if started and ended >= started:
-                end["duration_ms"] = round((ended - started) * 1000)
-            events.append(end)
+    events.extend(_subagent_events(rows("agent"), rows("lifecycle"), rows("step"), tool, inside, task_prompts, agent_tasks,
+                                   keep_text=keep_text, text_floor=text_floor))
 
     compactions = rows("compaction")
     numbered = compactions
@@ -266,6 +245,83 @@ def _store_flow_events(conn: Any | None, sid: str, since: float, until: float, *
 
 
 _AGENT_OUTCOMES = frozenset({"completed", "failed"})
+
+
+def _detail(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _subagent_events(agent_rows: list[tuple], lifecycle: list[tuple], steps: list[tuple], tool: str,
+                     inside: Callable[[float | None], bool], task_prompts: dict[str, str],
+                     agent_tasks: dict[str, tuple[float, str, str, str]], *, keep_text: bool, text_floor: float) -> list[dict]:
+    """The start and end of each subagent.
+
+    A start or end the session file reports (``subagent_start`` / ``subagent_end`` events, Copilot
+    CLI) gives the time, the outcome and the reported totals; the agent row gives the rest, and the
+    times when the file reports none (Claude Code). The outcome is the file's own word, else the
+    transcript step's, else the row's ``completed``."""
+    outcomes = {s[4]: s[3] for s in steps if s[1] == "agent" and s[4] and s[3] in _AGENT_OUTCOMES}
+    reported: dict[str, dict[str, tuple]] = defaultdict(dict)
+    for row in lifecycle:
+        ts, kind, aid = row[:3]
+        if aid and kind in ("subagent_start", "subagent_end"):
+            reported[aid].setdefault(kind, row)
+    agents: dict[str, list] = {}
+    for row in agent_rows:
+        aid, task, model, started, ended, completed = row[:6]
+        call_id, description, status = (*row[6:9], "", "", "")[:3]
+        agents[aid] = [task, model, started, ended, completed, call_id or "", description or "", status or ""]
+    for aid in reported:
+        agents.setdefault(aid, ["", "", None, None, 0, "", "", ""])
+    out: list[dict] = []
+    for aid, (task, model, started, ended, completed, call_id, description, status) in agents.items():
+        begin, end = reported[aid].get("subagent_start"), reported[aid].get("subagent_end")
+        start_detail = _detail(begin[6]) if begin else {}
+        end_detail = _detail(end[6]) if end else {}
+        started = begin[0] if begin else started
+        ended = end[0] if end else ended
+        call_id = call_id or (begin[5] if begin else "") or (end[5] if end else "")
+        label = task or start_detail.get("name") or "subagent"
+        if inside(started):
+            event = {"ts": started, "type": "subagent", "from": tool, "to": label, "agent_id": aid, "source": "store"}
+            for key, value in (("model", model or start_detail.get("model")), ("tool_call_id", call_id),
+                               ("description", description or start_detail.get("description")),
+                               ("agent_type", start_detail.get("type")), ("mode", start_detail.get("mode"))):
+                if value:
+                    event[key] = value
+            if task_prompts.get(aid):
+                event["prompt"] = task_prompts[aid]
+            out.append(event)
+            prompt = _task_prompt(aid, started, agent_tasks.get(aid), task_prompts.get(aid), keep_text=keep_text, text_floor=text_floor)
+            if prompt:
+                out.append(prompt)
+        if inside(ended):
+            outcome = (end[3] if end and end[3] in _AGENT_OUTCOMES else None) or outcomes.get(aid) or (
+                "completed" if completed else "not reported")
+            finish = {"ts": ended, "type": "subagent_end", "from": label, "to": tool, "agent_id": aid,
+                      "completed": outcome == "completed", "outcome": outcome, "source": "store"}
+            if call_id:
+                finish["tool_call_id"] = call_id
+            if outcome == "failed":
+                finish["is_error"] = True
+            if end and end[4] is not None:
+                finish["duration_ms"] = end[4]  # as the tool reported it
+            elif started and ended >= started:
+                finish["duration_ms"] = round((ended - started) * 1000)
+            for key, name in (("total_tokens", "reported_total_tokens"), ("tool_calls", "reported_tool_calls"),
+                              ("model", "model")):
+                if end_detail.get(key) not in (None, ""):
+                    finish[name] = end_detail[key]
+            if keep_text and isinstance(end_detail.get("error"), str) and end_detail["error"]:
+                finish["error_message"] = mask_secrets(end_detail["error"])
+            out.append(finish)
+    return out
 
 
 def _task_prompt(aid: str, started: float, native: tuple[float, str, str, str] | None, stored: str | None, *,

@@ -40,3 +40,29 @@ def test_every_event_names_a_model_by_its_canonical_id():
     body = flow([*BASE, call(T + 2, model="claude-opus-5-5"), call(T + 3, model="claude-opus-5.5")], legacy)
     models = {e["model"] for e in body["turns"] if e.get("model")}
     assert models == {"claude-opus-5-5"}
+
+
+def agent(aid, task="otel-check", model="claude-opus-5-5", started=None, ended=None, completed=0, call="", status=""):
+    return {"row_type": "agent", "values": [aid, task, model, started, ended, completed, call, "Check the exporter", status]}
+
+
+def lifecycle(ts, kind, aid, trigger, duration=None, call="", detail=""):
+    return {"row_type": "lifecycle", "values": [ts, kind, aid, trigger, duration, call, detail]}
+
+
+def test_a_subagent_end_comes_from_the_reported_end_with_its_totals():
+    rows = [
+        *BASE,
+        # The agent row lost its end (written again from a call record): the reported end still shows.
+        agent("agent-c", started=T + 25, call="call-c"),
+        lifecycle(T + 20, "subagent_start", "agent-c", "started", call="call-c",
+                  detail='{"name": "otel-check", "type": "task", "model": "claude-opus-5"}'),
+        lifecycle(T + 38, "subagent_end", "agent-c", "completed", 18757.0, "call-c",
+                  '{"model": "claude-opus-5.5", "total_tokens": 103729, "tool_calls": 2}'),
+    ]
+    body = flow(rows)
+    start = next(e for e in body["turns"] if e["type"] == "subagent")
+    end = next(e for e in body["turns"] if e["type"] == "subagent_end")
+    assert (start["ts"], start["agent_type"], start["tool_call_id"]) == (T + 20, "task", "call-c")
+    assert (end["ts"], end["outcome"], end["duration_ms"], end["reported_total_tokens"], end["reported_tool_calls"]) == (
+        T + 38, "completed", 18757.0, 103729, 2)
