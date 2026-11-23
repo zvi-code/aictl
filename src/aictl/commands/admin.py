@@ -828,6 +828,29 @@ def _package_source(env: dict[str, str]) -> str:
         return "a custom index"
 
 
+def _keep_git_dashboard(root: Path, dist_dir: Path) -> bool:
+    """Put the built dashboard back as git has it. True when the build had changed it.
+
+    For a build of unchanged source: git already holds the build of that source, and npm
+    packages that differ between machines give other file names, which would leave hundreds
+    of changed tracked files and block the next pull.
+    """
+    import subprocess
+
+    def git(*args: str):
+        return subprocess.run(["git", "-C", str(root), *args, "--", str(dist_dir)],
+                              capture_output=True, text=True, timeout=60)
+
+    try:
+        if git("status", "--porcelain").stdout.strip() == "":
+            return False
+        git("restore", "--source=HEAD", "--staged", "--worktree")
+        git("clean", "-fdq")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def _ui_has_local_edits(root: Path, ui_dir: Path) -> bool:
     """Whether a build is needed: no built dashboard, or uncommitted changes to its source.
 
@@ -894,11 +917,15 @@ def reinstall(skip_ui, force_ui, index_url):
         click.echo("⏭  No local UI changes. The dashboard from git stays in place.")
     else:
         click.echo("→ Building dashboard UI...")
+        unchanged_source = not _ui_has_local_edits(root, ui_dir)
         try:
             if not (ui_dir / "node_modules").is_dir():
                 subprocess.run([_npm(), "install"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
             subprocess.run([_npm(), "run", "build"], cwd=ui_dir, check=True, capture_output=True, shell=_IS_WINDOWS)
             click.secho("  ✅ UI built", fg="green")
+            if unchanged_source and _keep_git_dashboard(root, ui_dir.parent / "dist"):
+                click.echo("  The source has no local changes, so the dashboard from git stays in place"
+                           " (this machine's build of it differs only by its npm packages).")
         except FileNotFoundError:
             click.secho("  ⚠ npm not found — skipping UI build", fg="yellow")
         except subprocess.CalledProcessError as exc:

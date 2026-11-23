@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 from click.testing import CliRunner
 
@@ -690,6 +688,27 @@ class TestReinstallLeavesTrackedFilesAlone:
         ui = self._project(tmp_path)
         (ui.parent / "dist" / "index.html").unlink()
         assert _ui_has_local_edits(tmp_path, ui) is True
+
+    def test_a_build_of_unchanged_source_leaves_no_changed_tracked_files(self, tmp_path):
+        """A forced build on another machine gave other file names: hundreds of changed tracked
+        files, and the next pull was refused."""
+        import subprocess
+
+        from aictl.commands.admin import _keep_git_dashboard
+
+        ui = self._project(tmp_path)
+        dist = ui.parent / "dist"
+        assert _keep_git_dashboard(tmp_path, dist) is False
+        (dist / "index.html").write_text("<html>other\n")
+        (dist / "app-NEWHASH.js").write_text("1\n")
+        assert _keep_git_dashboard(tmp_path, dist) is True
+        status = subprocess.run(["git", "-C", str(tmp_path), "status", "--porcelain"], capture_output=True, text=True)
+        assert status.stdout == "" and (dist / "index.html").read_text() == "<html>\n"
+        # Source changes outside the built dashboard are never touched.
+        (ui / "src" / "a.js").write_text("2\n")
+        (dist / "index.html").write_text("<html>other\n")
+        _keep_git_dashboard(tmp_path, dist)
+        assert (ui / "src" / "a.js").read_text() == "2\n"
 
     def test_the_server_never_builds_the_dashboard(self):
         """A page load ran npm when a pull made a source file look newer, and rewrote tracked files."""
