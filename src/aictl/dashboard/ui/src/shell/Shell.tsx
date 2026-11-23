@@ -124,24 +124,24 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     if (scope() === 'local') client.resync()
     bump(i => i + 1)
   }
+  // The URL is the one record of an open drawer: every change of the drawers writes it.
+  const showDrawers = (next: readonly DrawerEntry[], replace: boolean) => {
+    setStack(next)
+    go(nextAddress(drawerPatch(next.at(-1))), replace, next)
+  }
   const open = (entry: DrawerEntry, resetStack = false) => {
     landOnFlow = false
     if (!stack().length) drawerReturn = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-    const next = resetStack ? [entry] : [...stack(), entry]
-    setStack(next)
-    go(nextAddress(drawerPatch(entry)), false, next)
+    showDrawers(resetStack ? [entry] : [...stack(), entry], false)
   }
   const close = () => {
     landOnFlow = false
-    setStack([])
-    go(nextAddress(clearDrawer), true, [])
+    showDrawers([], true)
     drawerReturn?.focus()
   }
   const back = () => {
     if (stack().length < 2) { close(); return }
-    const next = stack().slice(0, -1)
-    setStack(next)
-    go(nextAddress(drawerPatch(next.at(-1))), true, next)
+    showDrawers(stack().slice(0, -1), true)
   }
   const copy = (text: string) => {
     const task = navigator.clipboard?.writeText(text)
@@ -228,7 +228,8 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
       isRuntimeSession(data) ? [data.session_id as string] : []))
     const agent = list.find(agent => agent.status === 'running' || active.has(agent.id)) ?? list[0]
     landOnFlow = false
-    setStack([{ type: 'agent', id: agent.id, tab: 'flow' }])
+    // Landing on the running session's Flow puts it in the URL, as a link to it would.
+    showDrawers([{ type: 'agent', id: agent.id, tab: 'flow' }], true)
   })
   const sectionList = () => order().flatMap(id => sections.board.find(section => section.id === id) ?? [])
   const commands = (): PaletteCommand[] => [
@@ -426,9 +427,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
             const last = stack().at(-1)
             if (last?.type !== 'agent') return
             const next = { ...last, tab }
-            const updated = [...stack().slice(0, -1), next]
-            setStack(updated)
-            go(nextAddress(drawerPatch(next)), true, updated)
+            showDrawers([...stack().slice(0, -1), next], true)
           }} />
       </Loading>
     </Show>
