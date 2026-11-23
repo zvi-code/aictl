@@ -7,6 +7,7 @@ import {
 } from '../src/settings/model'
 import { derivePermissions, listDiff, parseLines, permissionEdit } from '../src/settings/permissions'
 import { environmentValue } from '../src/settings/ToolViews'
+import { evidenceRows, UNKNOWN_MEANS } from '../src/settings/Evidence'
 
 const settings = '/work/.claude/settings.local.json'
 const projectScope = { id: 'project-local', path: settings, exists: true, changeable: true }
@@ -81,6 +82,19 @@ describe('settings contract projections', () => {
   it('defines a file count once: top-level keys and distinct settings', () => {
     expect(fileCounts({ top_level_keys: 31, settings: 46, rows: [] }).text).toBe('31 top-level keys · 46 settings')
     expect(fileCounts({ top_level_keys: null, settings: null, rows: [] }).text).toBeUndefined()
+  })
+
+  it('joins runtime evidence to session names and keeps it to the selected tool', () => {
+    const loaded = (session_id: string, tool: string) => ({ id: session_id, data: { session_id, native_session_id: null, tool,
+      configured_on_disk: true, effective_known: false, unknown: ['model'], evidence: [] } })
+    const agent = { id: 'a1', session_id: 's1', native_session_id: null, monitor_session_id: null, tool: 'copilot-cli',
+      project: 'demo', project_path: '/p/demo', pids: [], running: true, native_activity: '', status: 'running',
+      cpu_percent: null, mem_mb: null, started_at: 100, last_native_at: null, title: 'Fix the parser' }
+    const rows = evidenceRows([loaded('s1', 'copilot-cli'), loaded('s2', 'claude-code'), loaded('s3', 'copilot-vscode')], [agent], 'copilot-cli')
+    expect(rows.map(row => [row.data.session_id, row.title, row.project, row.started])).toEqual([['s1', 'Fix the parser', 'demo', 100]])
+    expect(evidenceRows([loaded('s3', 'copilot-vscode')], [], 'copilot').map(row => row.id)).toEqual(['s3'])
+    expect(evidenceRows([loaded('s1', 'a'), loaded('s2', 'b')], []).length).toBe(2)
+    expect(UNKNOWN_MEANS).toMatch(/no evidence/)
   })
 
   it('never renders an unknown or absent list as 0', () => {
