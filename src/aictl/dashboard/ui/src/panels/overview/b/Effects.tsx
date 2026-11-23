@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js'
-import type { DetailContextAudit, DetailEffectiveModels, DetailHooksStatus, DetailOtelStatus } from '../../../data/contract.gen'
+import type { BoardCoverage, DetailContextAudit, DetailEffectiveModels, DetailHooksStatus, DetailOtelStatus } from '../../../data/contract.gen'
 import { createResourceCache } from '../../../data/resource'
 import { PanelState } from '../../../ui/PanelState'
 import { isToolSelected } from '../../../data/toolScope'
@@ -184,20 +184,52 @@ export function Settings(props: PanelProps) {
   </div>
 }
 
+type CoverageRow = BoardCoverage['rows'][number]
+const stateMarks: Record<string, string> = {
+  exact: '✓', estimate: '≈', estimated: '≈', partial: '◐', 'totals only': 'Σ', 'no data': '○', 'not reported': '–', 'not checked': '?',
+}
+/** A coverage state as one short marked word, the same in every cell and in the legend. */
+export const coverageWord = (state: string) => {
+  const mark = stateMarks[state.toLowerCase()]
+  return mark ? `${mark} ${state}` : state
+}
+const isExact = (state: string | undefined) => state?.toLowerCase() === 'exact'
+
+/**
+ * Coverage rows for the selected tools: the rows where some tool is not exact stay rows; the rows exact for
+ * every tool fold into one count. The legend gives each state's reason once, in the order states first appear.
+ */
+export function coverageView(rows: readonly CoverageRow[], tools: readonly string[]) {
+  const exact = rows.filter(row => tools.length > 0 && tools.every(tool => isExact(row.cells[tool]?.state)))
+  const differing = rows.filter(row => !exact.includes(row))
+  const legend = new Map<string, string>()
+  for (const row of [...differing, ...exact]) {
+    for (const tool of tools) {
+      const cell = row.cells[tool]
+      if (cell?.state && !legend.has(cell.state)) legend.set(cell.state, cell.why)
+    }
+  }
+  return { exact, differing, legend: [...legend].map(([state, why]) => ({ state, word: coverageWord(state), why })) }
+}
+
 export function Coverage(props: PanelProps) {
   const { ctx, def } = untrack(() => props)
   const result = () => ctx.read(def.sources[0])
   const options = () => ctx.board('options')?.tools
   const tools = createMemo(() => (options() ?? []).filter(tool => isToolSelected(tool.id, ctx.tools())))
   const coverage = () => ctx.board('coverage')
-  const rows = createMemo(() => rowsFrom(coverage()?.rows ?? [], row => identity(row.key)))
+  const view = createMemo(() => coverageView(coverage()?.rows ?? [], tools().map(tool => tool.id)))
+  const [unfolded, setUnfolded] = createSignal(false)
+  const rows = createMemo(() => rowsFrom(unfolded() ? [...view().differing, ...view().exact] : view().differing, row => identity(row.key)))
   const byKey = createMemo(() => new Map((coverage()?.rows ?? []).map(row => [row.key, row.cells])))
-  const fields = createMemo(() => tools().map(tool => ({
-    id: tool.id, label: tool.label ?? toolName(ctx, tool.id), read: ({ row }: Entry) => {
-      const cell = byKey().get(String(row.key))?.[tool.id]
-      return cell ? [cell.state, cell.why].filter(Boolean).join(' · ') : undefined
-    },
-  })))
+  const fields = createMemo(() => tools().map(tool => {
+    const cell = ({ row }: Entry) => byKey().get(String(row.key))?.[tool.id]
+    return {
+      id: tool.id, label: tool.label ?? toolName(ctx, tool.id),
+      read: (entry: Entry) => { const value = cell(entry); return value?.state ? coverageWord(value.state) : undefined },
+      hint: (entry: Entry) => { const value = cell(entry); return value ? `${value.state}: ${value.why}` : undefined },
+    }
+  }))
   const state = (): Read => {
     const read = result()
     if (read.state !== 'ready') return read
@@ -205,20 +237,34 @@ export function Coverage(props: PanelProps) {
     return tools().length ? read : { state: 'empty' }
   }
   const reported = () => usable(state()) && Array.isArray(coverage()?.rows) && Array.isArray(options())
-  const states = createMemo(() => reported() ? bins(coverage()!.rows.flatMap(row => tools().map(tool => row.cells?.[tool.id]?.state)),
-    id => ({ exact: 'Exact', estimated: 'Estimated', absent: 'Absent', estimate: 'Estimated', missing: 'Missing' })[id] ?? id,
-    id => id === 'exact' ? 'positive' : ['estimate', 'estimated'].includes(id) ? 'warning' : 'neutral') : undefined)
+  const exactCount = () => view().exact.length
   return <div class={styles.stack}>
     <StatStrip label="Coverage summary" items={[
-      { label: 'Data types', value: reported() ? rows().length : undefined },
-      { label: 'Selected tools', value: options() ? tools().length : undefined },
+      { label: 'Data types', value: reported() ? coverage()!.rows.length : undefined },
+      { label: 'Exact for every selected tool', value: reported() ? exactCount() : undefined },
+      { label: 'Differ between tools or not exact', value: reported() ? view().differing.length : undefined },
     ]} />
-    <Bars label="Most common collection states" items={states()} max={reported() ? rows().length * tools().length : undefined} />
     <View result={state} retry={ctx.refresh} empty={def.empty}>
     <p class={styles.note}>{ctx.scope() === 'local'
       ? 'What aictl can collect for each tool, and how exact it is.'
       : 'Collection capabilities are global. Records apply to the selected node scope.'} Cost is a list-price estimate.</p>
-    <DataTable ctx={ctx} label={def.title} columns={def.columns} fields={fields()} rows={rows()} />
+    <Show when={exactCount()}>
+      <div class={styles.actions}>
+        <button type="button" aria-expanded={unfolded() ? 'true' : 'false'} onClick={() => setUnfolded(value => !value)}>
+          {unfolded() ? `Fold the ${exactCount()} data types exact for every tool`
+            : `${exactCount()} data ${exactCount() === 1 ? 'type' : 'types'} exact for every tool: show`}
+        </button>
+        <span class={`${styles.note} ${styles.foldList}`} title={view().exact.map(row => row.label).join(', ')}>{view().exact.map(row => row.label).join(', ')}</span>
+      </div>
+    </Show>
+    <Show when={rows().length}>
+      <DataTable ctx={ctx} label={def.title} columns={def.columns} fields={fields()} rows={rows()} />
+    </Show>
+    <Show when={view().legend.length}>
+      <dl class={styles.legend} aria-label="What each state means">
+        <For each={view().legend}>{item => <div><dt>{item.word}</dt><dd>{item.why}</dd></div>}</For>
+      </dl>
+    </Show>
     <For each={coverage()?.notes?.filter(note => tools().some(tool => tool.id === note.tool))}>
       {note => <p class={styles.note}>{note.text}</p>}
     </For>

@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
+import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { metric, overviewB } from '../../src/panels/overview/b'
+import { Coverage } from '../../src/panels/overview/b/Effects'
 import { Processes, Traffic } from '../../src/panels/overview/b/Machine'
 import { displayField } from '../../src/panels/overview/b/View'
 import type { PanelContext, PanelDef, PanelProps } from '../../src/panels/types'
@@ -24,7 +26,9 @@ export function boardContext(scope: 'local' | 'fleet', routes: Record<string, un
     scope: () => scope, nodeId: () => null, tools: () => null, paused: () => false, revision: () => 0,
     filters: () => ({ project: 'all' }), refresh() {}, copy() {}, navigate() {}, openAgent, openDetail() {},
     metadata: (key: string) => units[key], board: (key: string) => board[key], detail,
-    read: () => ({ state: 'unavailable' }), stopped: () => false,
+    read: (source: { field?: string }) => source.field && board[source.field] !== undefined
+      ? { state: 'ready', value: board[source.field] } : { state: 'unavailable' },
+    stopped: () => false,
   } as unknown as PanelContext
   return { ctx, openAgent }
 }
@@ -101,6 +105,39 @@ describe('BOARD-MACHINE-02 · Network, tokens and files writes each unit once an
     const headers = Array.from(view.querySelectorAll('thead th')).map(cell => cell.textContent?.replace(/\s*↕$/, ''))
     expect(headers).not.toContain('Tokens per second (estimate)')
     expect(text).not.toContain('network estimates')
+    dispose()
+  })
+})
+
+describe('BOARD-COVERAGE-01 · What each tool reports shows short states and only the rows that differ', () => {
+  const exact = { state: 'Exact', why: 'The tool’s own records state this.' }
+  const none = { state: 'No data', why: 'The tool can report this, but the store holds no rows for it yet.' }
+  const guess = { state: 'Estimate', why: 'Computed by aictl from other fields, not reported by the tool.' }
+  const coverage = { notes: [], rows: [
+    { key: 'tokens', label: 'Tokens', cells: { 'copilot-cli': exact, 'claude-code': exact } },
+    { key: 'cost', label: 'Cost', cells: { 'copilot-cli': guess, 'claude-code': exact } },
+    { key: 'models', label: 'Models', cells: { 'copilot-cli': exact, 'claude-code': exact } },
+    { key: 'confirms', label: 'Confirmations', cells: { 'copilot-cli': none, 'claude-code': exact } },
+  ] }
+  const options = { tools: [{ id: 'copilot-cli', label: 'Copilot CLI' }, { id: 'claude-code', label: 'Claude Code' }] }
+
+  it('writes each reason once, in the legend, and folds the rows exact for every tool', () => {
+    const { ctx } = boardContext('fleet', {}, { coverage, options })
+    const { host, dispose } = mount(() => <Coverage ctx={ctx} def={def('coverage')} {...({} as Omit<PanelProps, 'ctx' | 'def'>)} />)
+    const text = host.textContent!
+    for (const why of [exact.why, none.why, guess.why]) expect(text.split(why).length - 1).toBe(1)
+    expect(text).not.toContain(' · The tool')
+    const body = () => Array.from(host.querySelectorAll('tbody tr')).map(row => row.textContent).join('\n')
+    expect(body()).toContain('Cost')
+    expect(body()).not.toContain('Tokens')
+    const fold = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.includes('exact for every tool'))!
+    expect(fold.textContent).toContain('2 data types exact for every tool')
+    const cell = host.querySelector('td[data-col="copilot-cli"]') as HTMLElement
+    expect(cell.textContent).toBe('≈ Estimate')
+    expect(cell.title).toBe(`Estimate: ${guess.why}`)
+    fold.click()
+    flush()
+    expect(body()).toContain('Tokens')
     dispose()
   })
 })
