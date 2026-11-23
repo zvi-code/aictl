@@ -23,8 +23,9 @@ dependencies = [
 dashboard = ["textual>=0.79"]
 processes = ["psutil>=5.9"]
 monitor = ["psutil>=5.9", "watchdog>=4.0"]
+zstd = ["zstandard>=0.22; python_version < '3.14'"]  # Codex stores finished sessions as .jsonl.zst; Python 3.14 reads them without it
 otel = ["protobuf>=4.21", "opentelemetry-proto>=1.20"]
-all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0", "protobuf>=4.21", "opentelemetry-proto>=1.20"]
+all = ["textual>=0.79", "psutil>=5.9", "watchdog>=4.0", "protobuf>=4.21", "opentelemetry-proto>=1.20", "zstandard>=0.22; python_version < '3.14'"]
 test = ["pytest>=7.0", "pytest-timeout>=2.0", "jsonschema>=4.26"]
 dev = ["pytest>=7.0", "pytest-timeout>=2.0", "jsonschema>=4.26", "ruff>=0.5", "mypy>=1.8", "types-PyYAML", "types-psutil"]
 

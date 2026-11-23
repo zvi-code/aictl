@@ -11,7 +11,7 @@ Code session has no real numbers at all. Three stores are read, read-only:
     last line seen (streaming grows ``output_tokens``). The key is global, not
     per file, because a resumed or forked session replays earlier messages.
 
-``~/.codex/sessions/**/rollout-*.jsonl``
+``~/.codex/sessions/**/rollout-*.jsonl`` (finished sessions: ``rollout-*.jsonl.zst``)
     ``token_count`` events carry a cumulative ``info.total_token_usage``. Deltas
     go to the model of the latest ``turn_context``. OpenAI's ``input_tokens``
     INCLUDES cached tokens, so it is split here. A sub-agent thread has its own
@@ -51,6 +51,7 @@ from .. import platforms
 from ..data.model_pricing import is_billable_model, request_cost_usd
 from ..data.provenance import COPILOT_COST_REASON
 from ..state_file import StateFile
+from . import session_files, zstd_stream
 from ._common import SQLITE_UNAVAILABLE, coerce_ts, decode_file_uri, open_readonly, project_root, record_quality
 from .call_facts import (
     CLAUDE_SESSION_LINES,
@@ -1154,6 +1155,16 @@ def _tail_digest(fh: IO[bytes], size: int) -> str:
     return hashlib.sha256(data).hexdigest()[:16] if len(data) == size - start and data else ""
 
 
+def _discard(stream: IO[bytes], count: int) -> bool:
+    """Read and drop *count* bytes; False when the stream ends first."""
+    while count > 0:
+        chunk = stream.read(min(count, 1 << 20))
+        if not chunk:
+            return False
+        count -= len(chunk)
+    return True
+
+
 def _open_size(path: Path) -> int | None:
     try:
         with open(path, "rb") as fh:
@@ -1259,6 +1270,8 @@ class TranscriptUsageIngester:
         self._codex: dict[Path, CodexAccumulator] = {}
         self._copilot: dict[Path, CopilotAccumulator] = {}
         self._offsets: dict[Path, int] = {}
+        # Compressed rollouts that held bad data: path -> ((mtime_ns, size), why). Not read again until the file changes.
+        self._bad_zst: dict[Path, tuple[tuple[int, int], str]] = {}
         # Subagent transcripts read while their meta file gave no spawning call: (session, agent, meta signature).
         self._meta_pending: dict[Path, tuple[str, str, tuple[int, int] | None]] = {}
         self._written: dict[str, tuple] = {}
@@ -1412,10 +1425,11 @@ class TranscriptUsageIngester:
         # Publish only path identities before any replay or storage work. Native
         # output follows active append-only tails, never this history backlog.
         claude_files = [p for root in self._roots("claude", self.claude_projects) for p in iter_claude_files(root)]
-        codex_files = [p for root in self._roots("codex", self.codex_sessions) for p in root.glob("**/*.jsonl")]
+        codex_files, codex_unclaimed = self._codex_rollouts()
         copilot_files = [p for root in self._roots("copilot", self.copilot_state) for p in root.glob("*/events.jsonl")]
         self._note_transcript_paths(claude_files, "claude-code")
-        self._note_transcript_paths(codex_files, "codex-cli")
+        # A compressed rollout is a finished session: nothing tails it, so only plain ones are announced.
+        self._note_transcript_paths([p for p in codex_files if p.suffix != session_files.ZSTD], "codex-cli")
         self._note_transcript_paths(copilot_files, "copilot-cli")
         app_ids: set[str] = set()
         self._store.refresh_app_sessions(app_ids)
@@ -1491,14 +1505,23 @@ class TranscriptUsageIngester:
             self._check_fact_write()
             self._save_progress(touched, now, published)
 
+        no_library: dict[Path, str] = {}
         for path in self._changed(codex_files, cutoff, "codex-cli"):
-            acc = self._codex.setdefault(path, CodexAccumulator(self._codex_sessions, path.stem))
-            for obj in read(path):
-                acc.feed(obj)
+            logical = session_files.logical_path(path)
+            acc = self._codex.setdefault(logical, CodexAccumulator(self._codex_sessions, logical.stem))
+            if path.suffix == session_files.ZSTD:
+                for obj in self._read_compressed(path, logical, no_library):
+                    acc.feed(obj)
+            else:
+                for obj in read(path):
+                    acc.feed(obj)
             sid = acc.sid or acc.fallback_id
             if sid in self._codex_sessions:
                 touched[sid] = self._codex_sessions[sid]
             self._save_progress(touched, now, published)
+        listed = set(codex_files)
+        self._bad_zst = {p: bad for p, bad in self._bad_zst.items() if p in listed}
+        unreadable = {**{p: why for p, (_, why) in self._bad_zst.items()}, **no_library}
 
         copilot_ids: set[str] = set()
         # Copilot files are independent sessions, not Claude's cross-file replays.
@@ -1621,17 +1644,21 @@ class TranscriptUsageIngester:
             self.quality,
             "transcript-usage",
             self.claude_projects.parent,
-            "unavailable" if self.unavailable else "degraded" if errors or pending else "ok",
-            severity="warning" if self.unavailable or errors or pending else "info",
-            message=(
+            "unavailable" if self.unavailable else "degraded" if errors or pending or unreadable or codex_unclaimed else "ok",
+            severity="warning" if self.unavailable or errors or pending or unreadable or codex_unclaimed else "info",
+            message="; ".join(filter(None, (
+                self._unread_rollouts_message(unreadable, codex_unclaimed),
                 self.unavailable
                 or (f"{pending} fact row(s) waiting for storage"
                 if pending
                 else f"{errors} transcript file(s) unreadable"
                 if errors
-                else f"{written} session(s) updated")
-            ),
+                else f"{written} session(s) updated"),
+            ))),
             detail={
+                **({"unreadable": {"codex-cli": len(unreadable), "reason": "; ".join(sorted(set(unreadable.values())))}}
+                   if unreadable else {}),
+                **({"unclaimed_files": {"codex-cli": len(codex_unclaimed)}} if codex_unclaimed else {}),
                 "older_files_waiting": len(self._deferred),
                 "pending_fact_rows": pending,
                 "session_files": dict(self.source_counts),
@@ -1711,6 +1738,83 @@ class TranscriptUsageIngester:
                 continue
             add(path.stem, (clean_title(_chat_file_fields(path, size).get("customTitle")), USER))
         return found
+
+    def _codex_rollouts(self) -> tuple[list[Path], list[Path]]:
+        """The Codex rollouts to read, and the session-like files no rule covers.
+
+        A finished session is stored compressed under the plain name plus ``.zst``. When both
+        forms exist the plain one is read: they hold the same lines, and the compressed one needs
+        no library.
+        """
+        found: list[Path] = []
+        unclaimed: list[Path] = []
+        for root in self._roots("codex", self.codex_sessions):
+            read, other = session_files.codex_rollouts(root)
+            found += read
+            unclaimed += other
+        plain = {p for p in found if p.suffix != session_files.ZSTD}
+        return [p for p in found if p.suffix != session_files.ZSTD or session_files.logical_path(p) not in plain], unclaimed
+
+    @staticmethod
+    def _unread_rollouts_message(unreadable: dict[Path, str], unclaimed: list[Path]) -> str:
+        notes = []
+        if unreadable:
+            reasons = "; ".join(sorted(set(unreadable.values())))
+            notes.append(f"{len(unreadable)} Codex rollout(s) cannot be read: {reasons}")
+        if unclaimed:
+            notes.append(f"{len(unclaimed)} file(s) in the Codex sessions folder look like rollouts but are not a form the reader knows")
+        return "; ".join(notes)
+
+    def _read_compressed(self, path: Path, logical: Path, no_library: dict[Path, str]) -> Iterator[dict]:
+        """Yield the lines of a zstd rollout that no earlier read has delivered.
+
+        What was delivered is counted in decompressed bytes under the rollout's plain name, so a
+        session first read as ``x.jsonl`` carries on in ``x.jsonl.zst`` without a line twice or lost,
+        and a compressed file that gains a frame yields only the new frame's lines. The file's own
+        size is the position ``_changed`` compares. A file that holds bad data, or ends inside a
+        frame, is not read again until it changes, and what came before the break stays counted.
+        """
+        try:
+            st = path.stat()
+        except OSError:
+            return
+        sig = (st.st_mtime_ns, st.st_size)
+        bad = self._bad_zst.get(path)
+        if bad is not None and bad[0] == sig:
+            return
+        if not zstd_stream.available():
+            no_library[path] = zstd_stream.NO_LIBRARY
+            return
+        consumed = self._offsets.get(logical, 0)
+        stream = None
+        try:
+            stream = zstd_stream.open_stream(path)
+            if consumed and not _discard(stream, consumed):
+                # Shorter than what was read before: rewritten, so read again from its start.
+                stream.close()
+                consumed = 0
+                stream = zstd_stream.open_stream(path)
+            for line in stream:
+                if not line.endswith(b"\n"):
+                    break  # a line still being written
+                consumed += len(line)
+                self._offsets[logical] = consumed
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+        except OSError as exc:
+            self._bad_zst[path] = (sig, str(exc))
+            log.debug("transcript-usage: cannot read %s: %s", path.name, exc)
+            return
+        finally:
+            if stream is not None:
+                stream.close()
+        self._bad_zst.pop(path, None)
+        self._offsets[path] = st.st_size
+        self._read_complete[path] = sig
 
     def _stored_through(self, path: Path) -> int:
         """The size up to which an earlier run stored this file's rows, or 0 when that is not sure.
@@ -1819,7 +1923,7 @@ class TranscriptUsageIngester:
             return path.parent.name
         if tool == "claude-code" and path.parent.name == "subagents":
             return path.parents[1].name
-        return path.stem
+        return session_files.logical_path(path).stem
 
     def _vscode_dirs(self) -> tuple[list[Path], list[Path]]:
         """``workspaceStorage`` folders, then the folders of chats that had no folder open."""

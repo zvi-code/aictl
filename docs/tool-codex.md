@@ -14,7 +14,7 @@ In aictl these are two tools: `codex-cli` and `codex-desktop`. They share one st
 | `<profile>.config.toml` | One file per profile since 0.134 (for example `github-copilot.config.toml`) |
 | `AGENTS.md` | Global instructions (`instructions.md` is legacy) |
 | `auth.json` | Login or API key. Never read its values |
-| `sessions/YYYY/MM/DD/rollout-*.jsonl` | Session transcripts; `token_count` events carry cumulative usage |
+| `sessions/YYYY/MM/DD/rollout-*.jsonl`, `rollout-*.jsonl.zst` | Session transcripts; `token_count` events carry cumulative usage. A finished session is stored zstd-compressed (`.jsonl.zst`; on this Mac all 748 rollouts, none plain). aictl reads both forms; compressed ones need Python 3.14 or the `zstandard` package, and aictl reports the rollouts it cannot read when neither is there |
 | `archived_sessions/`, `session_index.jsonl` | Archived rollouts, session index |
 | `state_5.sqlite`, `logs_2.sqlite` | Thread/spawn state, structured logs (version number is in the file name) |
 | `sqlite/codex.db` | Desktop app: inbox, automations, thread catalog, timeline |
