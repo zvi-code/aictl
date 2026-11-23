@@ -126,3 +126,16 @@ def test_a_session_without_imported_steps_has_a_total_of_zero():
 
     body = session_evidence(None, {"session_id": [SID], "counts": ["1"]}, history=HistoryScope(FakeReader(), None))
     assert body["total"] == 0 and body["kinds"] == []
+
+
+def test_the_step_count_view_counts_each_current_step_once_by_kind(kusto_tape):
+    """The real view, on seeded rows: a step written twice counts once, and another session's steps do not count."""
+    from kusto_replay import Facts
+
+    facts = Facts()
+    for n, kind, session in ((1, "round", SID), (2, "round", SID), (3, "agent_prompt", SID), (4, "round", "other")):
+        facts.insert("session_steps", step_key=f"k{n}", ts=float(n), session_id=session, kind=kind, tool="copilot-cli", source="x")
+    facts.insert("session_steps", step_key="k1", ts=1.0, session_id=SID, kind="round", tool="copilot-cli", source="y")
+    reader = kusto_tape.reader(facts)
+    result = reader.read("sequence.evidence_counts", {"requested_session": SID, "limit": 200})
+    assert [(row["step_kind"], row["steps"]) for row in result.rows] == [("round", 2), ("agent_prompt", 1)]
