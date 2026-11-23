@@ -3,6 +3,7 @@ import { fmtN } from '../../design/format'
 import { Definitions, QueryDetails } from '../../panels/overview/b/Patterns'
 import { binsOf, requestRange, scaled, type SessionConvergence, type StripCell } from '../../panels/overview/b/patternsModel'
 import { PanelState } from '../../ui/PanelState'
+import { TOKENS_WITH_CACHE } from '../figures'
 import { Resource, Rows, Section, sessionPath, Stats, type TabProps } from '../shared'
 import styles from '../../panels/overview/b/patterns.module.css'
 
@@ -72,7 +73,7 @@ export default function Convergence(props: TabProps) {
       </Show>
       <Stats items={[
         { label: 'Requests', value: data().requests, detail: data().truncated ? 'Cut at 20,000 rows.' : undefined },
-        { label: 'Tokens', value: data().summary.tokens },
+        { label: TOKENS_WITH_CACHE, value: data().summary.tokens },
         { label: 'Repeated calls', value: data().summary.repeats }, { label: 'Retries after errors', value: data().summary.retries },
         { label: 'Accepted edits', value: data().summary.accepted }, { label: 'Commits', value: data().summary.commits },
         { label: 'Longest run without a change', value: data().summary.longest_dry, unit: 'requests' },

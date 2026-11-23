@@ -3,6 +3,7 @@ import { fmtDur, fmtUsd, stamp } from '../../design/format'
 import { Meter } from '../../ui/Meter'
 import { OtelSections } from '../OtelSections'
 import { ContextCards, GitCard, InstructionsCard, OutputsCard } from '../OverviewCards'
+import { modelCalls, TOKENS_IO, TOKENS_WITH_CACHE, tokensInOut, tokensWithCache } from '../figures'
 import { median, runDelta } from '../overviewModel'
 import { sessionSpan, spanLabel } from '../sessionSpan'
 import { ResourceCharts } from '../ResourceCharts'
@@ -26,12 +27,13 @@ export default function Overview(props: TabProps) {
     return <>
       <Section title="Session totals">
         <Stats items={[
-          { label: 'Tokens', value: sum([agent()?.input, agent()?.output, agent()?.cache_read, agent()?.cache_write]) },
+          { label: TOKENS_IO, value: tokensInOut(agent()) },
+          { label: TOKENS_WITH_CACHE, value: tokensWithCache(agent()) },
           { label: 'Cost', value: agent()?.cost_usd == null ? undefined : fmtUsd(agent()?.cost_usd) },
           { label: 'Duration', value: spanLabel(span()), detail: 'First to last recorded activity' },
           { label: 'Messages', value: sum([agent()?.msgs?.user, agent()?.msgs?.assistant, agent()?.msgs?.tool]) },
           { label: 'Tool calls', value: agent()?.tool_calls }, { label: 'Failures', value: agent()?.failures },
-          { label: 'Model calls', value: context()?.calls },
+          modelCalls(agent(), context()?.calls),
         ]} />
         <Meter label="Cache share" value={agent()?.cached_share == null ? undefined : agent()!.cached_share! * 100} />
         <Show when={context()?.series?.length}><Series label="Context growth" values={context()?.series} unit="tokens" /></Show>
@@ -58,7 +60,7 @@ export default function Overview(props: TabProps) {
       <Show when={!agent()?.parent_id}><InstructionsCard data={data()} tab={props} /></Show>
       <GitCard data={data()} tab={props} />
       <Section title="Usage by model"><Rows label="Usage by model" rows={data().by_model} identity={['model']}
-        columns={['model', ['msgs', 'Calls'], 'input', 'output', 'cache_read', 'cache_write', ['cost_usd', 'Cost (USD)', 'number']]} /></Section>
+        columns={['model', ['msgs', 'Calls'], 'input', 'output', 'cache_read', 'cache_write', 'cost_usd']} /></Section>
       <Section title="Session resources">
         <Stats items={[
           { label: 'CPU', value: live()?.cpu_percent ?? data().process?.cpu_percent, unit: '%' },

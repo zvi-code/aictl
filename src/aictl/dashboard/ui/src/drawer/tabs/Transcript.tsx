@@ -4,6 +4,7 @@ import { fmtMs, fmtN, stamp } from '../../design/format'
 import { CodeView } from '../../ui/CodeView'
 import { Markdown } from '../../ui/Markdown'
 import { PanelState } from '../../ui/PanelState'
+import { TOKENS_IO } from '../figures'
 import { watchedDetail } from '../liveAgent'
 import { agentPath, clip, Resource, Rows, Section, Stats, type TabProps } from '../shared'
 import { responseOf, tokenParts, transcriptIdentity, visibleTurns } from '../transcriptModel'
@@ -74,7 +75,7 @@ export default function Transcript(props: TabProps) {
       <Section title="Historical summary">
         <Stats items={[
           { label: 'Turns', value: summary()?.total_turns }, { label: 'Model calls', value: summary()?.total_api_calls },
-          { label: 'Tool calls', value: summary()?.total_tool_uses }, { label: 'Tokens', value: summary()?.total_tokens },
+          { label: 'Tool calls', value: summary()?.total_tool_uses }, { label: TOKENS_IO, value: summary()?.total_tokens },
           { label: 'Errors', value: summary()?.errors }, { label: 'Subagents', value: summary()?.subagents },
           { label: 'Compactions', value: summary()?.compactions },
         ]} />

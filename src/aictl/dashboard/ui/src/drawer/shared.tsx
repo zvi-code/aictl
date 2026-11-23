@@ -1,7 +1,7 @@
 import { For, Show, type Accessor } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import type { BoardAgentRow, DetailAgent, TopicRuntimeAgent } from '../data/contract.gen'
-import { fmtBytes, fmtN, stamp } from '../design/format'
+import { fmtBytes, fmtMs, fmtN, fmtUsd, stamp } from '../design/format'
 import type { DetailResource, PanelContext, Row } from '../panels/types'
 import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Chart } from '../ui/Chart'
@@ -87,7 +87,11 @@ const legacyWidths = (label: string, fields: readonly Field<never>[], action: bo
   widthIds: [...fields.map(field => field.id), ...(action ? [actionColumnId] : [])],
 })
 
-type Column = string | readonly [key: string, label: string, format?: 'number' | 'time' | 'bytes' | 'path']
+type ColumnFormat = 'number' | 'time' | 'bytes' | 'path' | 'usd' | 'ms'
+type Column = string | readonly [key: string, label: string, format?: ColumnFormat]
+
+/** A column named for its unit shows that unit: a cost is money and a time in milliseconds is a duration, never a rounded count. */
+const unitOf = (key: string): ColumnFormat | undefined => /_usd$/.test(key) ? 'usd' : /_ms$/.test(key) ? 'ms' : undefined
 export function Rows<T extends object>(props: {
   label: string; rows?: readonly T[] | null; columns: readonly Column[]; identity: readonly string[];
   action?: { label: (row: T) => string; run: (row: T) => void }; empty?: string
@@ -95,7 +99,9 @@ export function Rows<T extends object>(props: {
   actionColumn?: string
 }) {
   const fields = (): Field<T>[] => props.columns.map(column => {
-    const [key, label, format] = typeof column === 'string' ? [column, labelOf(column), undefined] : column
+    const [key, label, explicit] = typeof column === 'string'
+      ? [column, labelOf(column).replace(/ usd$/, ' (USD)').replace(/ ms$/, ''), undefined] : column
+    const format = explicit ?? unitOf(key)
     return {
       id: key, label, read: row => {
         const value = (row as Row)[key]
@@ -103,7 +109,8 @@ export function Rows<T extends object>(props: {
       },
       ...(format === 'path' ? { clip: 'start' as const } : format ? { format: (value: unknown) => {
         const n = number(value)
-        return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'bytes' ? fmtBytes(n) : fmtN(n)
+        return n == null ? NA : format === 'time' ? stamp(n, true) : format === 'bytes' ? fmtBytes(n)
+          : format === 'usd' ? fmtUsd(n) : format === 'ms' ? fmtMs(n) : fmtN(n)
       } } : {}),
       ...(key === props.actionColumn ? { action: props.action } : {}),
     }
