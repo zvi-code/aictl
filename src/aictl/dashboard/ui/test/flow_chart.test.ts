@@ -21,6 +21,8 @@ describe('DRW-FL-10 · Titles say what ran, not how the shell got there', () => 
     expect(callHeadline(event('tool_use', 1, { to: 'mcp__docs__search', target: 'virtual list' }))).toBe('docs › search virtual list')
     // A command that does not name a program plainly keeps the tool name.
     expect(callHeadline(bash(1, 'for f in *; do echo $f; done'))).toBe('Bash for f in *; do echo $f; done')
+    // A program held in a variable is not named, but the title still skips the setup before it.
+    expect(callHeadline(bash(1, 'cd ~/Projects/aictl && P=~/.venv/bin/python && PYTHONPATH=src $P -c "import x"'))).toBe('Bash $P -c "import x"')
   })
 
   it('titles parallel calls by tool and count, and a round without calls by its reply', () => {

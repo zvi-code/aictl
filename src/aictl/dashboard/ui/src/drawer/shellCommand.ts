@@ -268,3 +268,20 @@ export function commandText(params: string | null | undefined, target: string | 
   }
   return target ?? ''
 }
+
+const SETUP = /^\s*(?:(?:cd|pushd|popd|chdir|set-location|sl)(?:\s[^;&|\n]*)?|export\s+[^;&|\n]*|[A-Za-z_]\w*=[^\s;&|]*)\s*(?:&&|;|\n)\s*/i
+
+/** A variable set for the command that follows it: `PYTHONPATH=src python …`. */
+const ASSIGN = /^\s*[A-Za-z_]\w*=[^\s;&|]*\s+/
+
+/**
+ * A command line without its leading setup (`cd …`, `pushd …`, `export …`, `X=…` followed by `&&` or `;`, and variables set for the command), for a title
+ * when the program itself cannot be named plainly: what runs is shown, not how the shell got there.
+ */
+export function withoutSetup(command: string) {
+  let text = command
+  for (let match = SETUP.exec(text) ?? ASSIGN.exec(text); match && match[0].length < text.length; match = SETUP.exec(text) ?? ASSIGN.exec(text)) {
+    text = text.slice(match[0].length)
+  }
+  return text
+}

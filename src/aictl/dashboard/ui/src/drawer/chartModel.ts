@@ -7,7 +7,7 @@ import type { FlowEvent } from '../data/contract.gen'
 import { toolDisplayName } from '../design/format'
 import { failedEvent } from './flowModel'
 import { firstLine, stepTitle, toolName, type FlowRow, type Step } from './flowSteps'
-import { commandText, isShellTool, programHeadline, programOf } from './shellCommand'
+import { commandText, isShellTool, programHeadline, programOf, withoutSetup } from './shellCommand'
 
 /** The kind of work a bar stands for; its colour. */
 export type Work = 'model' | 'run' | 'read' | 'edit' | 'search' | 'web' | 'mcp' | 'agent' | 'context' | 'other'
@@ -53,11 +53,14 @@ function shortTarget(target: string) {
  */
 export function callHeadline(tool: FlowEvent) {
   const name = rawName(tool)
+  let text = tool.target ?? ''
   if (isShellTool(name)) {
-    const program = programOf(commandText(tool.params, tool.target))
+    const command = commandText(tool.params, tool.target)
+    const program = programOf(command)
     if (program) return programHeadline(program)
+    text = withoutSetup(command)
   }
-  const target = tool.target ? shortTarget(tool.target) : ''
+  const target = text ? shortTarget(text) : ''
   return target ? `${toolName(tool)} ${target}` : toolName(tool)
 }
 
