@@ -37,6 +37,29 @@
                      "before_source", "after_source"]
       }
     },
+    "config_timeline": {
+      "description": "The configuration the session ran under, oldest first: launch flags, values at start and resume, and every change with previous and new value as the tool reported them. \"\" and null are not reported.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {"type": "number"},
+          "kind": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "tool": {"type": "string"},
+          "source": {"type": "string"},
+          "setting": {"type": "string"},
+          "previous_value": {"type": "string"},
+          "new_value": {"type": "string"},
+          "previous_effort": {"type": "string"},
+          "new_effort": {"type": "string"},
+          "turn_index": {"type": ["integer", "null"]},
+          "prompt_id": {"type": "string"},
+          "detail": {"type": "object"}
+        },
+        "required": ["ts", "kind", "agent_id", "setting", "previous_value", "new_value", "detail"]
+      }
+    },
     "checkpoints": {
       "description": "Compactions, rewind points, checkpoints, truncations and context resets, oldest first, with what each captured.",
       "type": "array",

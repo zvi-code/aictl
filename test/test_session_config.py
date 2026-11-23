@@ -1,4 +1,4 @@
-"""The configuration a session ran under: Copilot CLI config.* events and launch flags.
+"""The configuration a session ran under: Copilot CLI config.* events, launch flags, and the sessions.config view.
 
 Every fixture is invented text in tmp_path; nothing here reads a real tool folder.
 """
@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from kusto_replay import NOW
 from test_board_facts import COPILOT_SID, copilot_events, ev, write_lines
 from test_process_family_binding import (
     BIRTH,
@@ -21,6 +22,7 @@ from test_process_family_binding import (
 from test_process_family_binding import COPILOT_SID as BOUND_SID
 from test_session_investigation import Facts, ingester, one, table
 
+from aictl.dashboard.projections.history import HistoryScope
 from aictl.monitoring.launch_flags import launch_flags
 from aictl.monitoring.live_sources import _flag_evidence
 from aictl.monitoring.session import ProcessInfo
@@ -232,3 +234,91 @@ def test_the_launch_flags_of_the_bound_process_are_stored_once_for_its_session(t
     assert "PRIVATE" not in row["detail"]
     alive = [e for e in events if e["kind"] == "session_alive"]
     assert alive and all("launch" not in e["detail"] for e in alive)
+
+
+# ── The sessions.config view and the drawer ───────────────────────
+
+
+SID = "11111111-1111-4111-8111-111111111111"
+OTHER = "99999999-9999-4999-8999-999999999999"
+
+
+def history(store) -> HistoryScope:
+    return HistoryScope(store.history_store.reader, None)
+
+
+def seed_timeline(seed, project: str = "") -> None:
+    def event(key, ago, kind, payload, **extra):
+        seed("context_events", session_id=SID, ts=NOW - ago, dedup_key=key, kind=kind, tool="copilot-cli",
+             detail=json.dumps(payload), project=project, **extra)
+
+    event("l1", 100, "config.launch_flags", {"pid": 7, "flags": [{"flag": "--model", "value": "model-a"},
+                                                                  {"flag": "--yolo", "value": ""}], "count": 2},
+          trigger="copilot")
+    event("s1", 99, "config.session_start", {"selectedModel": "model-a", "contextTier": "long_context"})
+    event("m1", 90, "config.model_change", {"previousModel": "model-a", "newModel": "model-b",
+                                            "previousReasoningEffort": "high", "reasoningEffort": "xhigh",
+                                            "source": "managed_settings"},
+          trigger="managed_settings", turn_index=1, prompt_id="i1")
+    event("o1", 91, "config.managed_override", {"infoType": "managed_model_override", "message": "replaced"},
+          trigger="managed_model_override", turn_index=1, prompt_id="i1")
+    event("d1", 80, "config.mode_change", {"previousMode": "interactive", "newMode": "autopilot"}, turn_index=2)
+    event("p1", 79, "config.permissions_change", {"previousAllowAllPermissionMode": "off",
+                                                  "allowAllPermissionMode": "on"}, turn_index=2)
+    event("p2", 78, "config.permissions_change", {"previousMode": "manual", "mode": "allow-all"}, turn_index=2)
+    event("f1", 70, "config.feature_flags", {"flags": ["A"], "count": 1, "hash": "h2", "previous_hash": "h1"})
+    event("a1", 69, "config.subagent_configured", {"model": "model-c", "reasoningEffort": "high"}, agent_id="sub-1")
+    seed("context_events", session_id=SID, ts=NOW - 60, dedup_key="c1", kind="compaction", tool="copilot-cli",
+         project=project)
+    seed("context_events", session_id=OTHER, ts=NOW - 50, dedup_key="x1", kind="config.session_start",
+         tool="copilot-cli", detail=json.dumps({"selectedModel": "other"}))
+
+
+def test_the_config_view_is_the_sessions_timeline_with_previous_and_new(kusto_store):
+    seed_timeline(kusto_store.insert)
+    rows = history(kusto_store).read("sessions.config", sid=SID)
+    assert [(r["kind"], r["setting"], r["previous_value"], r["new_value"]) for r in rows] == [
+        ("config.launch_flags", "launch_flags", "", "--model=model-a --yolo"),
+        ("config.session_start", "model", "", "model-a"),
+        ("config.managed_override", "model", "", "replaced"),
+        ("config.model_change", "model", "model-a", "model-b"),
+        ("config.mode_change", "mode", "interactive", "autopilot"),
+        ("config.permissions_change", "allow_all", "off", "on"),
+        ("config.permissions_change", "permission_mode", "manual", "allow-all"),
+        ("config.feature_flags", "feature_flags", "h1", "h2"),
+        ("config.subagent_configured", "model", "", "model-c"),
+    ]
+    change = rows[3]
+    assert (change["source"], change["turn_index"], change["prompt_id"]) == ("managed_settings", 1, "i1")
+    assert (change["previous_effort"], change["new_effort"]) == ("high", "xhigh")
+    assert rows[1]["new_effort"] == "" and rows[8]["agent_id"] == "sub-1"
+
+
+def test_the_drawer_carries_the_config_timeline(kusto_store):
+    from aictl.dashboard import session_details
+
+    seed = kusto_store.insert
+    seed("sessions", session_id=SID, tool="claude-code", project_path="/work/proj", started_at=NOW - 100,
+         ended_at=NOW - 10)
+    seed("requests", session_id=SID, tool="claude-code", project_path="/work/proj", ts=NOW - 95, dedup_key="c0",
+         model="m", input_tokens=10, output_tokens=1, source="transcript")
+    seed_timeline(seed, "/work/proj")
+    status, body = session_details.agent_detail(kusto_store, SID, None, NOW)
+    assert status == 200, body
+    timeline = body["config_timeline"]
+    assert [t["kind"] for t in timeline][:2] == ["config.launch_flags", "config.session_start"]
+    assert timeline[0]["detail"]["flags"][0] == {"flag": "--model", "value": "model-a"}
+    change = timeline[3]
+    assert (change["setting"], change["previous_value"], change["new_value"], change["source"]) == (
+        "model", "model-a", "model-b", "managed_settings")
+    from test_contract import validate_detail
+
+    validate_detail("/api/board/agent", body)
+
+
+@pytest.mark.parametrize("kind", ["config.session_start", "config.feature_flags"])
+def test_a_value_the_tool_did_not_report_stays_empty(kusto_store, kind):
+    kusto_store.insert("context_events", session_id=SID, ts=NOW - 10, dedup_key="e", kind=kind, tool="copilot-cli",
+                       detail=json.dumps({}))
+    (row,) = history(kusto_store).read("sessions.config", sid=SID)
+    assert (row["previous_value"], row["new_value"], row["previous_effort"], row["new_effort"]) == ("", "", "", "")

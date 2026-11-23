@@ -162,6 +162,17 @@ def _checkpoint_files(seed):
     return {None: 8}
 
 
+def _config(seed):
+    for project in ("p", "q"):
+        for node in ("test-node", "n2"):
+            for i in range(2):
+                seed("context_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key=f"g{i}",
+                     kind="config.model_change", detail=json.dumps({"previousModel": "a", "newModel": "b"}))
+            seed("context_events", project=project, node_id=node, session_id=SID, ts=TIE, dedup_key="c",
+                 kind="compaction")
+    return {None: 8}
+
+
 KEYS = [f"{len(node)}:{node}{SID}" for node in ("test-node", "n2")]
 
 
@@ -182,6 +193,7 @@ KEYS = [f"{len(node)}:{node}{SID}" for node in ("test-node", "n2")]
     ("memory.versions", {"requested_path": MEMORY}, _memory_versions),
     ("checkpoints.session", {"sid": SID}, _checkpoints),
     ("checkpoints.files", {"sid": SID, "requested_message": "u-1"}, _checkpoint_files),
+    ("sessions.config", {"sid": SID}, _config),
 ])
 def test_session_reads_are_complete_past_the_limit(kusto_store, view, params, seeder):
     counts = seeder(kusto_store.insert)

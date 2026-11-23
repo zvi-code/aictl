@@ -142,7 +142,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     # None of these reads needs another's result, so on a cluster they run side by side.
     # More reads than workers: the slowest ones are listed first so that none of them waits for a worker.
     (activity, otel_facts, page, by_model, turns, test_rows, context_facts, error_rows, tool_totals, write_summary,
-     titles, lm_by_extension, api_error_rows, session, skills, memory_rows, checkpoint_rows) = _gather(_CLUSTER_READS, [
+     titles, lm_by_extension, api_error_rows, session, skills, memory_rows, checkpoint_rows,
+     config_rows) = _gather(_CLUSTER_READS, [
         lambda: board._activity_for(keys),
         lambda: typed_rows(history.read("sequence.otel", sid=sid)) if root else {},
         lambda: history.read("tools.detail", limit=MAX_DETAIL_ROWS + 1, page=True, **detail_scope),
@@ -161,6 +162,7 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
         lambda: _agent_skills(history, sid, bare, root),
         lambda: history.read("memory.changes", sid=sid, requested_agent=requested_agent),
         lambda: history.read("checkpoints.session", sid=sid),
+        lambda: history.read("sessions.config", sid=sid),
     ])
     row = board._agent_row(sid, agent, titles.get((sid, agent), _short(agent)), activity.get((sid, agent), [0] * SPARK_POINTS))
     subagents = [
@@ -249,6 +251,8 @@ def agent_detail(db: Any, agent_id: str, snapshot: Any = None, now: float | None
     keep_text = not history.qualified and capture_mode(db, default="full") == "full"
     return 200, {
         "memory_changes": [_memory_change(r) for r in memory_rows],
+        "config_timeline": [_config_entry(r) for r in config_rows
+                            if root or (history.split(r["agent_id"])[1] if r.get("agent_id") else "") == requested_agent],
         "checkpoints": [_checkpoint(r, keep_text) for r in checkpoint_rows
                         if root or (history.split(r["agent_id"])[1] if r.get("agent_id") else "") == requested_agent],
         "agent": row,
@@ -291,6 +295,21 @@ _CHECKPOINT_FIELDS = (
 def _memory_change(row: dict) -> dict:
     """One memory or instruction file change as the store has it; "" and None stay "not known"."""
     return {name: row.get(name) for name in _MEMORY_CHANGE_FIELDS} | {"tool_call_id": row.get("source_event_id") or ""}
+
+
+_CONFIG_FIELDS = (
+    "ts", "kind", "agent_id", "tool", "source", "setting", "previous_value", "new_value", "previous_effort",
+    "new_effort", "turn_index", "prompt_id",
+)
+
+
+def _config_entry(row: dict) -> dict:
+    """One setting or change of the session's configuration timeline, with its fields as reported."""
+    try:
+        detail = json.loads(row.get("detail") or "{}")
+    except ValueError:
+        detail = {}
+    return {name: row.get(name) for name in _CONFIG_FIELDS} | {"detail": detail if isinstance(detail, dict) else {}}
 
 
 def _checkpoint(row: dict, keep_text: bool) -> dict:

@@ -199,6 +199,11 @@ _VIEWS = {
         "tool_call_id prompt_id turn_index detail summary_kind summary_seq summary_title summary summary_hash "
         "summary_bytes",
     ),
+    "sessions.config": (
+        f"{_SCOPE} requested_session after_row",
+        "node_id ts key kind agent_id tool source setting previous_value new_value previous_effort new_effort "
+        "turn_index prompt_id detail",
+    ),
     "checkpoints.files": (
         "all_nodes requested_node requested_session requested_message after_row",
         "node_id path ts origin mechanism version state blob_hash size_bytes lines lines_added lines_removed",
@@ -348,7 +353,7 @@ _LOW_FANOUT_VIEWS = {"health.totals", "nodes.reports", "tools.activity_rows"}
 _PAGED_VIEWS = {
     "files.artifacts", "files.inventory", "prompts.page", "requests.long", "sequence.context", "sequence.flow", "sequence.otel",
     "sequence.skills", "sessions.commits", "skills.detail", "skills.window", "tools.activity_rows", "tools.detail",
-    "memory.changes", "memory.versions", "checkpoints.session", "checkpoints.files",
+    "memory.changes", "memory.versions", "checkpoints.session", "checkpoints.files", "sessions.config",
 }
 
 

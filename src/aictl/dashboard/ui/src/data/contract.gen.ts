@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: a18504b7c0dd7673745f2d25d156dfb16bec2d90c81062ce31620f05da645cd6
+// Schema digest: 58709a0ceaf1026bfa89815deba83a53169c2a829e9cbd5c135102f88b14c4c2
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -726,6 +726,21 @@ export type DetailAgent = {
     before_source: string;
     after_source: string;
     tool_call_id?: string;
+  }>;
+  config_timeline?: Array<{
+    ts: number;
+    kind: string;
+    agent_id: string;
+    tool?: string;
+    source?: string;
+    setting: string;
+    previous_value: string;
+    new_value: string;
+    previous_effort?: string;
+    new_effort?: string;
+    turn_index?: number | null;
+    prompt_id?: string;
+    detail: Record<string, unknown>;
   }>;
   checkpoints?: Array<{
     ts: number;
