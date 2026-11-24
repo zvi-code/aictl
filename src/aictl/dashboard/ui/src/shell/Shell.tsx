@@ -21,6 +21,7 @@ import { BoardControls } from './BoardControls'
 import type { DrawerEntry } from './drawerTypes'
 import { NodePicker, scopeLabel } from './NodePicker'
 import { Palette, type PaletteCommand, type SessionLookup } from './Palette'
+import { PeriodPicker } from './PeriodPicker'
 import { ProjectChips, ProjectPicker } from './ProjectPicker'
 import { sectionSummary } from './railSummary'
 import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored, typing } from './viewState'
@@ -386,7 +387,10 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
             'ready' in status ? status.ready ? 'Ready' : 'Waiting' : 'Reported'}</p>}</For>
       </Show>
     </Popover>
-    <Show when={projectScreen()}><ProjectPicker ctx={ctx} /></Show>
+    <Show when={projectScreen()}>
+      <PeriodPicker ctx={ctx} custom={custom()} setCustom={setCustom} resolved={screen() === 'board' ? ctx.board('range', true) : undefined} />
+      <ProjectPicker ctx={ctx} />
+    </Show>
     <NodePicker scope={scope()} nodeId={nodeId()} select={selectScope} />
     <span class={styles.divider} aria-hidden="true" />
     <Tooltip class={styles.iconButton} label={paused() ? 'Resume live' : 'Pause live'} disabled={scope() !== 'local'}
@@ -424,7 +428,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
         <div class={styles.canvas}>
         <ProjectChips ctx={ctx} applies={projectScreen()} />
         <Show when={screen() === 'board'}>
-          <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} custom={custom()} setCustom={setCustom} text={findText()} search={searchFor}
+          <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} text={findText()} search={searchFor}
             rail={rail()} toggleRail={() => setRail(old => !old)} />
         </Show>
         <Loading fallback={<PanelState state="loading" />}>

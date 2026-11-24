@@ -1,19 +1,17 @@
-import { createSignal, For, Show, untrack } from 'solid-js'
-import { PERIODS, STATUSES, canClear, modelReportedAs, periodLabel } from '../data/filters'
+import { For, Show, untrack } from 'solid-js'
+import { STATUSES, canClear, modelReportedAs } from '../data/filters'
 import { toolsToParams } from '../data/urlState'
 import type { PanelContext } from '../panels/types'
-import { Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import styles from './Shell.module.css'
 
 export function BoardControls(props: {
   ctx: PanelContext; find: (element: HTMLInputElement) => void; clear: () => void
-  custom: boolean; setCustom: (open: boolean) => void; text: string; search: (text: string) => void
+  text: string; search: (text: string) => void
   rail: boolean; toggleRail: () => void
 }) {
   const ctx = untrack(() => props.ctx)
-  const [error, setError] = createSignal('')
   const options = () => ctx.board('options')
   const scope = () => ctx.board('scope')
   const tools = () => options()?.tools ?? []
@@ -38,17 +36,6 @@ export function BoardControls(props: {
       <label class={styles.search}><Icon glyph="search" /><span class={styles.srOnly}>Find</span>
         <input ref={props.find} type="search" value={props.text} placeholder="Find agents, prompts, files, tools"
           onInput={event => props.search(event.currentTarget.value)} /><kbd aria-hidden="true">/</kbd></label>
-      <label class={styles.filter}><Icon glyph="clock" /><span class={styles.srOnly}>Time range</span>
-        <select value={ctx.filters().range.id} onChange={event => {
-          const range = event.currentTarget.value
-          if (range === 'custom') { setError(''); props.setCustom(true); event.currentTarget.value = ctx.filters().range.id }
-          else ctx.navigate({ range, since: null, until: null, sel: null })
-        }}>
-          <For each={PERIODS}>{range => <option value={range.id}>{periodLabel(range, ctx.board('range', true))}</option>}</For>
-          <option value="custom">Custom</option>
-        </select><Icon glyph="down" small /></label>
-      <Show when={ctx.filters().range.id === 'custom'}><button class={styles.small} type="button"
-        onClick={() => { setError(''); props.setCustom(true) }}>Edit custom range</button></Show>
       <span class={styles.toolTrigger} data-active={ctx.tools() != null ? '' : undefined}>
         <Popover label={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`} title="Filter tools" glyph="tools"
           text={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`}>
@@ -95,21 +82,5 @@ export function BoardControls(props: {
         <span class={styles.count}>{scope()!.shown_agents} of {scope()!.all_agents} agents</span>
       </Show>
     </div>
-    <Dialog title="Custom time range" open={props.custom} onClose={() => props.setCustom(false)}>
-      <form class={styles.form} onSubmit={event => {
-        event.preventDefault()
-        const values = new FormData(event.currentTarget)
-        const since = Math.floor(new Date(String(values.get('since'))).getTime() / 1000)
-        const until = Math.floor(new Date(String(values.get('until'))).getTime() / 1000)
-        if (!(since > 0 && until > since)) { setError('Enter an end time after the start time.'); return }
-        ctx.navigate({ range: 'custom', since, until, sel: null })
-        props.setCustom(false)
-      }}>
-        <label>Start <input class={styles.input} type="datetime-local" name="since" value={date(ctx.filters().range.since)} required /></label>
-        <label>End <input class={styles.input} type="datetime-local" name="until" value={date(ctx.filters().range.until)} required /></label>
-        <Show when={error()}><span role="alert">{error()}</span></Show>
-        <button class={styles.primary} type="submit">Apply range</button>
-      </form>
-    </Dialog>
   </>
 }

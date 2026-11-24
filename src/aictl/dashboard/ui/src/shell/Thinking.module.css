@@ -3,8 +3,6 @@
 .heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-4) var(--space-6); }
 .heading h1 { margin: 0; font-size: var(--text-xl); }
 .heading p { margin: 0; color: var(--color-muted); font-size: var(--text-sm); }
-.range { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
-.rangeSelect { composes: field small focus from "../ui/control.module.css"; }
 
 .search { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-4); }
 .box {

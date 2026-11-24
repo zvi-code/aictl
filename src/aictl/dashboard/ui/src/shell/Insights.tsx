@@ -1,7 +1,7 @@
 import { createMemo, For, lazy, Loading, untrack } from 'solid-js'
 import { stamp } from '../design/format'
 import { FindingsSummary } from '../panels/insights/FindingsSummary'
-import { insightWindow, INSIGHT_RANGES } from '../panels/insights/insightsModel'
+import { insightWindow } from '../panels/insights/insightsModel'
 import type { PanelContext } from '../panels/types'
 import { createBoxes, HiddenBoxes } from '../ui/Box'
 import { PanelState } from '../ui/PanelState'
@@ -40,12 +40,6 @@ export default function Insights(props: { ctx: PanelContext; search: string }) {
   return <div data-screen="insights" class={styles.screen}>
     <header class={styles.heading}>
       <h1>Insights</h1>
-      <label class={styles.range}>Period
-        <select value={period().id} onChange={event => ctx.navigate({ range: event.currentTarget.value, since: null, until: null, sel: null })}>
-          <For each={INSIGHT_RANGES}>{range => <option value={range.id}>{range.label}</option>}</For>
-          {period().id === 'custom' ? <option value="custom">Custom range</option> : null}
-        </select>
-      </label>
       <p>{describe()}. Each card says the period its figures cover. Cost is list price, not a bill.</p>
       <HiddenBoxes boxes={boxes} />
     </header>

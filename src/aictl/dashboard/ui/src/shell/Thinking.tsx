@@ -3,7 +3,7 @@ import type { DetailThinking, DetailThinkingSearch } from '../data/contract.gen'
 import { fmtNum, stamp, toolDisplayName } from '../design/format'
 import { blockNote } from '../drawer/thinkingModel'
 import { detailPath, detailRead } from '../panels/data'
-import { insightWindow, INSIGHT_RANGES } from '../panels/insights/insightsModel'
+import { insightWindow } from '../panels/insights/insightsModel'
 import { States } from '../panels/kinds/States'
 import {
   flowTarget, PAGE_SIZE, pageText, searchQuery, searchSummary, shareText, snippetText,
@@ -68,12 +68,6 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
   return <div data-screen="thinking" class={styles.screen}>
     <header class={styles.heading}>
       <h1>Thinking</h1>
-      <label class={styles.range}>Period
-        <select class={styles.rangeSelect} value={period().id} onChange={event => ctx.navigate({ range: event.currentTarget.value, since: null, until: null, sel: null })}>
-          <For each={INSIGHT_RANGES}>{range => <option value={range.id}>{range.label}</option>}</For>
-          {period().id === 'custom' ? <option value="custom">Custom range</option> : null}
-        </select>
-      </label>
       <p>{describe()}. The visible thinking text of model calls, for the chosen tools, model, projects and nodes.</p>
     </header>
 

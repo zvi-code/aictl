@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The period picker of the board (Overview) and of Insights: the same choices, in the same order, with the
-// same words, and each choice gives the window the server is asked for.
+// The period picker in the top row, shared by the board (Overview), Insights and Thinking: its choices, their order
+// and words, and the window each choice asks the server for.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { boardQuery, filtersToParams, parseFilters, periodLabel, PERIODS, windowOf } from '../../src/data/filters'
 import { mergeSearch } from '../../src/data/urlState'
@@ -9,6 +9,7 @@ import { INSIGHT_RANGES, insightWindow } from '../../src/panels/insights/insight
 import { RANGE_LABELS as FINDER_RANGE_LABELS } from '../../src/panels/overview/sessionFinder'
 import type { PanelContext } from '../../src/panels/types'
 import { BoardControls } from '../../src/shell/BoardControls'
+import { PeriodPicker } from '../../src/shell/PeriodPicker'
 import { installDom, mount } from './dom'
 
 beforeEach(() => installDom())
@@ -22,15 +23,27 @@ function controls(search: string, board: Record<string, unknown> = {}) {
     filters: () => parseFilters(search), tools: () => null, board: (field: string) => board[field],
     navigate: (patch: Record<string, unknown>) => { asked.push(patch) }, select() {},
   } as unknown as PanelContext
-  const view = mount(() => <BoardControls ctx={ctx} find={() => {}} clear={() => {}} custom={false} setCustom={() => {}}
-    text="" search={() => {}} rail={false} toggleRail={() => {}} />)
+  const view = mount(() => <>
+    <div data-top><PeriodPicker ctx={ctx} custom={false} setCustom={() => {}} resolved={board.range as { since: number } | undefined} /></div>
+    <div data-board><BoardControls ctx={ctx} find={() => {}} clear={() => {}} text="" search={() => {}} rail={false} toggleRail={() => {}} /></div>
+  </>)
   unmount = view.dispose
-  const select = view.host.querySelector<HTMLSelectElement>('select')!
-  return { select, asked, options: () => [...select.options].map(option => [option.value, option.textContent]) }
+  const select = view.host.querySelector<HTMLSelectElement>('[data-top] [data-period] select')!
+  return { select, asked, host: view.host, options: () => [...select.options].map(option => [option.value, option.textContent]) }
 }
 
 describe('The period picker', () => {
-  it('offers 90 d after 30 d on the board', () => {
+  it('is one control in the top row: the board\'s own filter row has no period of its own', () => {
+    const picker = controls('?range=7d&screen=insights')
+    expect(picker.select.value).toBe('7d')
+    const own = [...picker.host.querySelectorAll('[data-board] select')].flatMap(select => [...(select as HTMLSelectElement).options])
+    expect(own.map(option => option.value)).not.toContain('90d')
+    picker.select.value = '30d'
+    picker.select.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(picker.asked).toEqual([{ range: '30d', since: null, until: null, sel: null }])
+  })
+
+  it('offers 90 d after 30 d', () => {
     const picker = controls('?range=90d')
     const ids = picker.options().map(([id]) => id)
     expect(ids.indexOf('90d')).toBe(ids.indexOf('30d') + 1)
@@ -57,7 +70,7 @@ describe('The period picker', () => {
 describe('All history', () => {
   const resolved = { since: 1_783_555_200, until: 1_795_564_800, bucket_s: 3 * 86_400, bucket_starts: [] }
 
-  it('follows 90 d and comes before Custom on the board, with the start the answer resolved', () => {
+  it('follows 90 d and comes before Custom, with the start the board\'s answer resolved', () => {
     const picker = controls('?range=all&scope=fleet', { range: resolved })
     expect(picker.options().map(([id]) => id).slice(-3)).toEqual(['90d', 'all', 'custom'])
     expect(picker.select.value).toBe('all')
