@@ -9,7 +9,7 @@
 .track > .tail { inset-block: calc(50% - 2px); background: var(--color-chart-1); }
 .track > .tailAll { inset-block: calc(50% - 2px); background: var(--color-muted); }
 .tailSwatch { background: var(--color-chart-1); block-size: 3px; }
-.split { display: flex; block-size: var(--space-5); max-inline-size: 28rem; border-radius: var(--radius-sm); overflow: hidden; background: var(--color-raised); }
+.split { position: relative; display: flex; block-size: var(--space-5); max-inline-size: 28rem; border-radius: var(--radius-sm); overflow: hidden; background: var(--color-raised); }
 .split > span { display: block; block-size: 100%; flex-basis: 0; min-inline-size: 0; }
 .quick { background: color-mix(in srgb, var(--color-chart-3) 55%, var(--color-surface)); }
 .slow { background: color-mix(in srgb, var(--color-chart-2) 55%, var(--color-surface)); }

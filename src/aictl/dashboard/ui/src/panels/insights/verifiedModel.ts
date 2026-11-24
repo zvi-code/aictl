@@ -1,7 +1,7 @@
 // ─── Verified before commit — the payload of /api/board/insights/verified and its sentence ─
 // A count the tool does not record is null and reads "not reported", never 0.
 import { fmtNum, fmtShare } from '../../design/format'
-import type { Base, Hero, Label } from './insightsModel'
+import { plural, type Base, type Hero, type Label } from './insightsModel'
 
 type Num = number | null
 export type VerifiedTool = {
@@ -24,22 +24,62 @@ export type VerifiedBody = Base<'verified'> & {
   }
 }
 
-/** The parts of a tool's bar, left to right; each count is a field of the tool's row. */
-export type Segment = { id: string; label: string; count: (tool: VerifiedTool) => Num }
+/** The parts of a tool's bar, left to right; each count is a field of the tool's row, and the rule that puts a commit in it. */
+export type Segment = { id: string; label: string; count: (tool: VerifiedTool) => Num; rule: string; classified: boolean }
 export const SEGMENTS: Segment[] = [
-  { id: 'passed', label: 'Tested, passed', count: tool => tool.passed },
-  { id: 'unreported', label: 'Tested, result not recorded', count: tool => tool.unreported },
-  { id: 'failed', label: 'Tested, failed', count: tool => tool.failed },
-  { id: 'changed_after', label: 'Changed after last test', count: tool => tool.changed_after },
-  { id: 'never_tested', label: 'Never tested', count: tool => tool.never_tested },
-  { id: 'no_change', label: 'No code change', count: tool => tool.no_change },
-  { id: 'unclassified', label: 'Not classified: edits not recorded or file unknown',
-    count: tool => tool.commits == null ? null : (tool.not_recorded ?? 0) + (tool.unknown_change ?? 0) },
+  { id: 'passed', label: 'Tested, passed', count: tool => tool.passed, classified: true,
+    rule: 'a test run saw every source change before the commit, and the last such run exited 0' },
+  { id: 'unreported', label: 'Tested, result not recorded', count: tool => tool.unreported, classified: true,
+    rule: 'a test run saw every source change before the commit, and the last such run has no recorded result' },
+  { id: 'failed', label: 'Tested, failed', count: tool => tool.failed, classified: true,
+    rule: 'a test run saw every source change before the commit, and the last such run failed' },
+  { id: 'changed_after', label: 'Changed after last test', count: tool => tool.changed_after, classified: true,
+    rule: 'a test run came before the commit, and a source file changed after it' },
+  { id: 'never_tested', label: 'Never tested', count: tool => tool.never_tested, classified: true,
+    rule: 'a source file changed before the commit, and no test run came before it' },
+  { id: 'no_change', label: 'No code change', count: tool => tool.no_change, classified: true,
+    rule: 'no source file changed since the commit before it' },
+  { id: 'unclassified', label: 'Not classified', classified: false,
+    count: tool => tool.commits == null ? null : (tool.not_recorded ?? 0) + (tool.unknown_change ?? 0),
+    rule: 'the tool did not record the session\'s edits, or the deciding change names no file' },
 ]
+
+/** "211 · 42%": a segment's commits and their share of the tool's commits, written on the segment. */
+export const segmentText = (tool: VerifiedTool, n: number) => `${fmtNum(n)} · ${fmtShare(tool.commits ? n / tool.commits : null)}`
+
+/** The hover of one segment: its commits, their share of the tool's commits and of the classified ones, and the rule. */
+export function segmentHover(tool: VerifiedTool, segment: Segment, label: Label) {
+  const n = segment.count(tool) ?? 0
+  const all = tool.commits ?? 0
+  const classified = segment.classified && tool.checked && tool.classified
+    ? `; ${fmtShare(n / tool.classified)} of the ${fmtNum(tool.classified)} classified ${tool.classified === 1 ? 'commit' : 'commits'}` : ''
+  const parts = segment.classified ? '' : ` (edits not recorded ${fmtNum(tool.not_recorded ?? 0)}, file unknown ` +
+    `${fmtNum(tool.unknown_change ?? 0)})`
+  const sessions = !tool.commit_sessions ? '' : ` The tool's commits come from ${plural(tool.commit_sessions, 'session')}; ` +
+    `the largest has ${commits(tool.top_session_commits ?? 0)}.`
+  return `${label(tool.tool)} · ${segment.label}: ${fmtNum(n)} of ${commits(all)} (${fmtShare(all ? n / all : null)})${classified}` +
+    `${parts}. Rule: ${segment.rule}.${sessions}`
+}
+
+/** A tool's sessions that changed source files, split by whether any recognised test ran in them; null when not reported. */
+export function sessionSplit(tool: VerifiedTool): { tested: number; untested: number; total: number } | null {
+  if (tool.untested_sessions == null || tool.edit_sessions == null || !tool.edit_sessions) return null
+  return { tested: Math.max(0, tool.edit_sessions - tool.untested_sessions), untested: tool.untested_sessions, total: tool.edit_sessions }
+}
+
+/** The hover of one part of a tool's session bar. */
+export function sessionHover(tool: VerifiedTool, part: 'tested' | 'untested', label: Label) {
+  const split = sessionSplit(tool)
+  if (!split) return `${label(tool.tool)}: ${untestedText(tool)}`
+  const n = split[part]
+  const what = part === 'tested' ? 'ran a recognised test' : 'ran no recognised test'
+  return `${label(tool.tool)}: ${fmtNum(n)} of ${plural(split.total, 'session')} that changed source files ` +
+    `(${fmtShare(n / split.total)}) ${what} in the period. A source change is an edit-tool write or an in-place shell edit ` +
+    'of a file that is not documentation or data.'
+}
 
 const list = (items: readonly string[]) => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
 const commits = (n: number) => `${fmtNum(n)} ${n === 1 ? 'commit' : 'commits'}`
-
 /** "13 of 59 sessions that changed source files never tested", or why a tool has no such figure. */
 export function untestedText(tool: VerifiedTool) {
   if (tool.untested_sessions == null) return 'sessions that never tested: not reported'
@@ -78,9 +118,9 @@ export function verifiedFinding(body: VerifiedBody, label: Label) {
   const untested = untestedSessions(body, label)
   if (!s.commits) return untested ? `No agent commit in this period; ${untested}.` : 'No agent commit in this period.'
   const names = s.checked_tools.length && s.checked_tools.length <= 2 ? `${list(s.checked_tools.map(label))} ` : ''
-  const own = s.own_unseen_share == null ? '' : ` (${fmtShare(s.own_unseen_share)} counting only the committing agent's own work)`
+  const own = s.own_unseen_share == null ? '' : ` (${fmtShare(s.own_unseen_share)} with the committing agent's own edits and tests alone)`
   const noChange = s.no_change ?? 0
-  const main = !s.classified ? `None of the ${commits(s.commits)} in this period can be checked`
+  const main = !s.classified ? `None of the ${commits(s.commits)} in this period is classified`
     : noChange >= s.classified
       ? `None of the ${fmtNum(s.classified)} ${names}${s.classified === 1 ? 'commit' : 'commits'} that can be checked followed a source change`
       : `${fmtNum(s.unseen ?? 0)} of the ${fmtNum(s.classified)} ${names}commits that can be checked (${fmtShare(s.unseen_share)}) ` +
@@ -89,11 +129,16 @@ export function verifiedFinding(body: VerifiedBody, label: Label) {
   const unchanged = s.classified && noChange && noChange < s.classified && noChange * 2 >= s.classified
     ? ` ${fmtNum(noChange)} of the ${fmtNum(s.classified)} checked commits followed no source change.` : ''
   const more = s.classified && s.unchecked
-    ? ` ${fmtNum(s.unchecked)} more ${s.unchecked === 1 ? 'commit' : 'commits'} could not be checked because the tool did not record what ${s.unchecked === 1 ? 'it' : 'they'} changed.`
+    ? ` ${fmtNum(s.unchecked)} more ${s.unchecked === 1 ? 'commit is' : 'commits are'} not classified: the tool did not record what ${s.unchecked === 1 ? 'it' : 'they'} changed.`
     : ''
-  const why = !s.classified ? ' because the tool did not record what they changed' : ''
+  const why = !s.classified ? ' (the tool did not record what they changed)' : ''
   const failed = s.failed ? ` ${commits(s.failed)} followed a failing test run with no source change in between.` : ''
-  const one = s.one_session.map(tool => ` Most of ${label(tool)}'s commits come from one session.`).join('')
+  const one = s.one_session.map(name => {
+    const row = body.tools.find(tool => tool.tool === name)
+    return row?.commits && row.top_session_commits != null
+      ? ` ${fmtNum(row.top_session_commits)} of ${label(name)}'s ${commits(row.commits)} come from one session.`
+      : ` Most of ${label(name)}'s commits come from one session.`
+  }).join('')
   return `${main}${untested ? `${why}, and ${untested}` : why}.${unchanged}${more}${failed}${one}`
 }
 

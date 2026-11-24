@@ -1,25 +1,44 @@
 import { For, Show, untrack } from 'solid-js'
+import type { JSX } from '@solidjs/web'
 import { fmtNum, fmtShare, stamp } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
+import { Tooltip } from '../../ui/Tooltip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { NOT_REPORTED, toolLabel, type Label } from './insightsModel'
-import { SEGMENTS, passMissingText, shareText, untestedText, verifiedFinding, verifiedHero, type VerifiedBody, type VerifiedTool } from './verifiedModel'
+import {
+  SEGMENTS, passMissingText, segmentHover, segmentText, sessionHover, sessionSplit, shareText, untestedText, verifiedFinding,
+  verifiedHero, type VerifiedBody, type VerifiedTool,
+} from './verifiedModel'
 import styles from './Insights.module.css'
 import own from './VerifiedCommits.module.css'
 
 const PASS_TOOLS = 'Copilot CLI and the Copilot app'
+/** A segment narrower than this share keeps its value for screen readers and in the line under the bar. */
+const WIDE = 0.1
 
-/** Per tool: one 100% bar of its commits by what the last test run saw; a tool without command text says so instead. */
+/** One mark of an HTML bar: its value written on it (visually hidden when the mark is too narrow), its detail on hover. */
+function Mark(props: { class: string; style?: JSX.CSSProperties; text: string; hover: string; wide: boolean; attrs: Record<string, string> }) {
+  return <span class={`${props.class} ${own.mark}`} style={props.style} {...props.attrs}>
+    <Tooltip label={props.text} text={props.hover} class={own.hit} onClick={() => {}}>
+      <span class={props.wide ? undefined : own.clip}>{props.text}</span>
+    </Tooltip>
+  </span>
+}
+
+const width = (part: number, whole: number) => whole ? `${(part / whole * 100).toFixed(2)}%` : '0%'
+
+/** Per tool: one stacked bar of its commits by class, with each class's count and share written and on hover. */
 function CommitBars(props: { body: VerifiedBody; label: Label }) {
   const shown = () => props.body.tools.filter(tool => tool.commits !== 0)
   const idle = () => props.body.tools.filter(tool => tool.commits === 0)
-  const width = (tool: VerifiedTool, n: number | null) => tool.commits && n ? `${(n / tool.commits * 100).toFixed(2)}%` : '0%'
+  const parts = (tool: VerifiedTool) => SEGMENTS.filter(segment => segment.count(tool))
   return <>
+    <h3 class={styles.subhead}>Agent commits per tool, by what test runs saw before each commit (commits; share of the tool's commits)</h3>
     <ul class={styles.legend}>
       <For each={SEGMENTS}>{segment => <li><span class={`${styles.swatch} ${own[segment.id]}`} />{segment.label}</li>}</For>
     </ul>
     <Show when={shown().length} fallback={<p class={styles.note}>No agent commit in this period.</p>}>
-      <ol class={styles.bars} aria-label="Agent commits per tool by what the last test run saw">
+      <ol class={styles.bars} aria-label="Agent commits per tool by what test runs saw before each commit">
         <For each={shown()}>{tool => <li class={styles.barRow} data-tool={tool.tool}>
           <span class={styles.barName}>{props.label(tool.tool)} · {tool.commits == null ? `${NOT_REPORTED} commits` : `${fmtNum(tool.commits)} commits`}
             <small data-share>{shareText(tool)}</small>
@@ -27,16 +46,20 @@ function CommitBars(props: { body: VerifiedBody; label: Label }) {
           </span>
           <span class={styles.barTrack}>
             <Show when={tool.commits != null} fallback={<span class={own.missing} data-missing>commits not reported: command text not kept</span>}>
-              <span class={styles.split} role="img" aria-label={`${props.label(tool.tool)}: ` + SEGMENTS.map(segment =>
+              <span class={own.stack} role="group" aria-label={`${props.label(tool.tool)}: ` + SEGMENTS.map(segment =>
                 `${segment.label} ${segment.count(tool) == null ? NOT_REPORTED : fmtNum(segment.count(tool))}`).join(', ')}>
-                <For each={SEGMENTS.filter(segment => segment.count(tool))}>{segment => {
+                <For each={parts(tool)}>{segment => {
                   const n = segment.count(tool) ?? 0
-                  return <span class={own[segment.id]} data-segment={segment.id} style={{ 'inline-size': width(tool, n) }}
-                    title={`${segment.label}: ${fmtNum(n)}, ${fmtShare(n / (tool.commits ?? 1))} of all commits`} />
+                  return <Mark class={own[segment.id]} attrs={{ 'data-segment': segment.id }} style={{ 'inline-size': width(n, tool.commits ?? 0) }}
+                    wide={n / (tool.commits || 1) >= WIDE} text={segmentText(tool, n)} hover={segmentHover(tool, segment, props.label)} />
                 }}</For>
               </span>
+              <ul class={own.values} data-values>
+                <For each={parts(tool)}>{segment => <li>
+                  <span class={`${styles.swatch} ${own[segment.id]}`} />{segment.label} {segmentText(tool, segment.count(tool) ?? 0)}
+                </li>}</For>
+              </ul>
             </Show>
-            <span class={own.untested} data-untested>{untestedText(tool)}</span>
           </span>
         </li>}</For>
       </ol>
@@ -44,7 +67,37 @@ function CommitBars(props: { body: VerifiedBody; label: Label }) {
     <Show when={idle().length}>
       <p class={styles.note}>No commit in this period by {idle().map(tool => props.label(tool.tool)).join(', ')}.</p>
     </Show>
+    <SessionBars body={props.body} label={props.label} />
   </>
+}
+
+/** Per tool: the sessions that changed source files, split by whether a recognised test ran in them. */
+function SessionBars(props: { body: VerifiedBody; label: Label }) {
+  const rows = () => props.body.tools
+  return <Show when={rows().length}>
+    <h3 class={styles.subhead}>Sessions that changed source files, per tool, by whether a recognised test ran (sessions; share)</h3>
+    <ul class={styles.legend}>
+      <li><span class={`${styles.swatch} ${own.tested}`} />Ran a recognised test</li>
+      <li><span class={`${styles.swatch} ${own.untestedPart}`} />Ran no recognised test</li>
+    </ul>
+    <ol class={styles.bars} aria-label="Sessions that changed source files, per tool, by whether a recognised test ran">
+      <For each={rows()}>{tool => <li class={styles.barRow} data-sessions-tool={tool.tool}>
+        <span class={styles.barName}>{props.label(tool.tool)}
+          <small>{tool.edit_sessions == null ? NOT_REPORTED : `${fmtNum(tool.edit_sessions)} sessions changed source files`}</small></span>
+        <span class={styles.barTrack}>
+          <Show when={sessionSplit(tool)}>{split => <span class={own.stack} role="group" aria-label={untestedText(tool)}>
+            <Show when={split().tested}><Mark class={own.tested} attrs={{ 'data-part': 'tested' }}
+              style={{ 'inline-size': width(split().tested, split().total) }} wide={split().tested / split().total >= WIDE}
+              text={`${fmtNum(split().tested)} · ${fmtShare(split().tested / split().total)}`} hover={sessionHover(tool, 'tested', props.label)} /></Show>
+            <Show when={split().untested}><Mark class={own.untestedPart} attrs={{ 'data-part': 'untested' }}
+              style={{ 'inline-size': width(split().untested, split().total) }} wide={split().untested / split().total >= WIDE}
+              text={`${fmtNum(split().untested)} · ${fmtShare(split().untested / split().total)}`} hover={sessionHover(tool, 'untested', props.label)} /></Show>
+          </span>}</Show>
+          <span class={own.untested} data-untested>{untestedText(tool)}</span>
+        </span>
+      </li>}</For>
+    </ol>
+  </Show>
 }
 
 type Row = Record<string, unknown>

@@ -1,11 +1,29 @@
-/* Verified before commit: one 100% bar per tool, tested on the left, untested in warning colours, unclassified hatched. */
-.passed { background: var(--color-success); }
+/* Verified before commit: one stacked 100% bar per tool by commit class, and one bar per tool of the sessions that
+   changed source files. Fills are light enough to carry the written values; only a recorded pass is green. */
+.passed { background: color-mix(in srgb, var(--color-success) 55%, var(--color-surface)); }
 /* Tested, result not recorded: neutral, so that only a recorded pass reads as green. */
-.unreported { background: var(--color-muted); }
-.failed { background: var(--color-chart-1); }
-.changed_after { background: var(--color-warning); }
-.never_tested { background: var(--color-danger); }
+.unreported { background: color-mix(in srgb, var(--color-muted) 40%, var(--color-surface)); }
+.failed { background: color-mix(in srgb, var(--color-chart-1) 55%, var(--color-surface)); }
+.changed_after { background: color-mix(in srgb, var(--color-chart-4) 55%, var(--color-surface)); }
+.never_tested { background: color-mix(in srgb, var(--color-chart-2) 55%, var(--color-surface)); }
 .no_change { background: var(--color-border); }
-.unclassified { background: repeating-linear-gradient(45deg, var(--color-muted) 0 2px, var(--color-raised) 2px 6px); }
+.unclassified { background: repeating-linear-gradient(45deg, var(--color-border) 0 2px, var(--color-raised) 2px 6px); }
+.tested { background: color-mix(in srgb, var(--color-chart-3) 55%, var(--color-surface)); }
+.untestedPart { background: color-mix(in srgb, var(--color-chart-2) 55%, var(--color-surface)); }
 .untested { color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .missing { color: var(--color-muted); font-style: italic; }
+.stack { position: relative; display: flex; block-size: var(--space-5); border-radius: var(--radius-sm); overflow: hidden; background: var(--color-raised); }
+.stack > span { display: block; block-size: 100%; min-inline-size: 0; }
+/* A mark holds a button that fills it: its value on the mark, its detail on hover or focus. */
+.mark > span { display: flex; inline-size: 100%; block-size: 100%; }
+.hit {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: center; inline-size: 100%; block-size: 100%;
+  overflow: hidden; white-space: nowrap; font-size: var(--text-xs); color: var(--color-text); cursor: default;
+  font-variant-numeric: tabular-nums;
+}
+.hit:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: -2px; }
+.clip { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.values {
+  display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin: 0; padding: 0; list-style: none;
+  color: var(--color-muted); font-variant-numeric: tabular-nums;
+}

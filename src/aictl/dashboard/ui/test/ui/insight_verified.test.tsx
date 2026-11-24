@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import VerifiedCommits from '../../src/panels/insights/VerifiedCommits'
-import { passMissingText, shareText, untestedText, verifiedFinding, verifiedHero, type VerifiedBody, type VerifiedTool } from '../../src/panels/insights/verifiedModel'
+import {
+  SEGMENTS, passMissingText, segmentHover, segmentText, sessionHover, sessionSplit, shareText, untestedText, verifiedFinding, verifiedHero,
+  type VerifiedBody, type VerifiedTool,
+} from '../../src/panels/insights/verifiedModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { drawerPatch, nextAddress } from '../../src/shell/viewState'
 import { createBoxes } from '../../src/ui/Box'
@@ -78,8 +81,8 @@ beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '',
 describe('INS-11 · Verified before commit', () => {
   it('states the share of checked commits no test run saw, the own-agent share and the untested sessions', () => {
     expect(verifiedFinding(only, label)).toBe('215 of the 411 Copilot CLI commits that can be checked (52%) were made after ' +
-      "source changes no test run had seen (41% counting only the committing agent's own work), and 13 of the 59 Copilot CLI " +
-      'sessions that changed source files never ran a recognised test. 95 more commits could not be checked because the tool did not ' +
+      "source changes no test run had seen (41% with the committing agent's own edits and tests alone), and 13 of the 59 Copilot CLI " +
+      'sessions that changed source files never ran a recognised test. 95 more commits are not classified: the tool did not ' +
       'record what they changed.')
     expect(verifiedHero(only)).toEqual({ value: '52%',
       label: 'of classified agent commits were made after source changes no test run saw (215 of 411)' })
@@ -88,12 +91,12 @@ describe('INS-11 · Verified before commit', () => {
   it('adds failing runs and one-session tools, and names no tool when several are pooled', () => {
     const text = verifiedFinding(fleet, label)
     expect(text).toMatch(/^218 of the 421 Copilot CLI and Claude Code commits that can be checked \(52%\)/)
-    expect(text).toContain(' 236 more commits could not be checked')
+    expect(text).toContain(' 236 more commits are not classified: the tool did not record what they changed.')
     expect(text).toContain(' 2 commits followed a failing test run with no source change in between.')
     // Untested sessions per tool, so that no tool is credited with another tool's sessions.
     expect(text).toContain('and 13 of the 59 Copilot CLI sessions, 22 of the 23 Copilot app sessions and 2 of the 6 Claude Code ' +
       'sessions that changed source files never ran a recognised test.')
-    expect(text).toMatch(/ Most of Copilot app's commits come from one session\.$/)
+    expect(text).toMatch(/ 116 of Copilot app's 141 commits come from one session\.$/)
     const three = { ...fleet, summary: { ...fleet.summary, checked_tools: ['copilot-cli', 'claude-code', 'copilot-vscode'] } } as VerifiedBody
     expect(verifiedFinding(three, label)).toMatch(/^218 of the 421 commits that can be checked/)
   })
@@ -110,14 +113,29 @@ describe('INS-11 · Verified before commit', () => {
     const unchecked = { ...base, tools: [app], sessions: [], summary: { ...summary, commits: 141, classified: 0, unseen: null,
       unseen_share: null, own_unseen: null, own_unseen_share: null, unchecked: 141, edit_sessions: 23, untested_sessions: 22,
       checked_tools: [], not_classified: ['copilot-desktop'], one_session: ['copilot-desktop'] } } as unknown as VerifiedBody
-    expect(verifiedFinding(unchecked, label)).toBe('None of the 141 commits in this period can be checked because the tool did not ' +
-      "record what they changed, and 22 of the 23 Copilot app sessions that changed source files never ran a recognised test. Most of Copilot app's " +
-      'commits come from one session.')
+    expect(verifiedFinding(unchecked, label)).toBe('None of the 141 commits in this period is classified (the tool did not ' +
+      "record what they changed), and 22 of the 23 Copilot app sessions that changed source files never ran a recognised test. 116 of " +
+      "Copilot app's 141 commits come from one session.")
     expect(verifiedHero(unchecked)).toBeUndefined()
     const quiet = { ...base, tools: [tool({ tool: 'copilot-cli', commits: 0, edit_sessions: 2, untested_sessions: 2 })], sessions: [],
       summary: { ...summary, commits: 0, classified: 0, unseen: null, unseen_share: null, own_unseen: null, own_unseen_share: null,
         unchecked: 0, edit_sessions: 2, untested_sessions: 2, checked_tools: [] } } as unknown as VerifiedBody
     expect(verifiedFinding(quiet, label)).toBe('No agent commit in this period; 2 of the 2 Copilot CLI sessions that changed source files never ran a recognised test.')
+  })
+
+  it('builds the hover of a commit segment and of a session part from the figures and the rule', () => {
+    const changed = SEGMENTS.find(segment => segment.id === 'changed_after')!
+    expect(segmentText(cli, 211)).toBe('211 · 42%')
+    expect(segmentHover(cli, changed, label)).toBe('Copilot CLI · Changed after last test: 211 of 506 commits (42%); 51% of the 411 ' +
+      'classified commits. Rule: a test run came before the commit, and a source file changed after it.')
+    const unclassified = SEGMENTS.find(segment => segment.id === 'unclassified')!
+    expect(segmentHover(cli, unclassified, label)).toContain('Not classified: 95 of 506 commits (19%) (edits not recorded 95, file unknown 0). Rule: ')
+    expect(sessionSplit(cli)).toEqual({ tested: 46, untested: 13, total: 59 })
+    expect(sessionSplit(codex)).toBeNull()
+    expect(sessionHover(cli, 'untested', label)).toBe('Copilot CLI: 13 of 59 sessions that changed source files (22%) ran no ' +
+      'recognised test in the period. A source change is an edit-tool write or an in-place shell edit of a file that is not ' +
+      'documentation or data.')
+    for (const text of [verifiedFinding(fleet, label), verifiedHero(fleet)!.label]) expect(text).not.toMatch(/only|should|problem|risk|bad|good/i)
   })
 
   it('draws a 100% bar per tool, with a pass segment only where the tool records one, and opens a session', () => {
@@ -129,12 +147,22 @@ describe('INS-11 · Verified before commit', () => {
     const row = box.querySelector('[data-tool="copilot-cli"]')!
     expect(row.textContent).toContain('copilot-cli · 506 commits')
     expect(row.querySelector('[data-share]')!.textContent).toBe('52% no test saw (own agent 41%) · 215 of 411 classified')
-    expect(row.querySelector('[data-untested]')!.textContent).toBe('13 of 59 sessions that changed source files never tested')
     const segments = [...row.querySelectorAll('[data-segment]')]
     expect(segments.map(segment => segment.getAttribute('data-segment'))).toEqual(
       ['unreported', 'changed_after', 'never_tested', 'no_change', 'unclassified'])
-    expect(segments[1].getAttribute('title')).toBe('Changed after last test: 211, 42% of all commits')
+    expect(segments[1].querySelector('button')!.textContent).toBe('211 · 42%')
+    expect(segments[1].querySelector('[role="tooltip"]')!.textContent).toBe(segmentHover(cli, SEGMENTS[3], tool => tool))
     expect(segments[1].getAttribute('style')).toContain('inline-size: 41.70%')
+    // Every class with commits is written under the bar too, the narrow ones included.
+    expect([...row.querySelectorAll('[data-values] li')].map(li => li.textContent)).toEqual(['Tested, result not recorded 190 · 38%',
+      'Changed after last test 211 · 42%', 'Never tested 4 · 1%', 'No code change 6 · 1%', 'Not classified 95 · 19%'])
+    // The sessions that changed source files have their own bar per tool.
+    const sessionsRow = box.querySelector('[data-sessions-tool="copilot-cli"]')!
+    expect(sessionsRow.querySelector('[data-untested]')!.textContent).toBe('13 of 59 sessions that changed source files never tested')
+    expect(sessionsRow.querySelector('[data-part="tested"] button')!.textContent).toBe('46 · 78%')
+    expect(sessionsRow.querySelector('[data-part="untested"] button')!.textContent).toBe('13 · 22%')
+    expect(sessionsRow.querySelector('[data-part="untested"] [role="tooltip"]')!.textContent).toBe(sessionHover(cli, 'untested', tool => tool))
+    expect(box.querySelector('[data-sessions-tool="codex-cli"] [data-untested]')!.textContent).toBe('sessions that never tested: not reported')
     const claudeRow = box.querySelector('[data-tool="claude-code"]')!
     expect(claudeRow.querySelector('[data-pass]')!.textContent).toBe('pass not recorded by this tool')
     expect(claudeRow.querySelector('[data-segment="passed"]')).toBeNull()
@@ -142,7 +170,7 @@ describe('INS-11 · Verified before commit', () => {
     expect(box.querySelector('[data-tool="copilot-desktop"] [data-share]')!.textContent).toBe('not classified: edits not recorded')
     const text = box.querySelector('[data-tool="codex-cli"]')!
     expect(text.querySelector('[data-missing]')!.textContent).toBe('commits not reported: command text not kept')
-    expect(text.querySelector('[role="img"]')).toBeNull()
+    expect(text.querySelector('[role="group"]')).toBeNull()
     const sessions = host.querySelector<HTMLDetailsElement>('[data-sessions]')!
     sessions.open = true
     flush()
