@@ -104,13 +104,17 @@ export function ProjectPicker(props: { ctx: PanelContext }) {
                   · {fmtN(repo().members.length)} folders · {facts(repo())}</span></span>
                 <span class={styles.projectPath}>{repo().root}</span>
               </label>
-              <ul class={styles.projectMembers} aria-label={`Folders of ${repo().name}`}>
-                <For each={repo().members} keyed={member => member.project}>{member =>
-                  <li class={styles.projectMember} title={`${member().project}\n${member().evidence}`}>
-                    <span>{member().project}</span>
-                    <span class={styles.projectFacts}>{facts(member())} · {member().evidence}</span>
-                  </li>}</For>
-              </ul>
+              {/* Folded: a repository can hold dozens of worktrees, and the list must stay scannable. */}
+              <details class={styles.projectMembers}>
+                <summary>{fmtN(repo().members.length)} folders and why each belongs</summary>
+                <ul aria-label={`Folders of ${repo().name}`}>
+                  <For each={repo().members} keyed={member => member.project}>{member =>
+                    <li class={styles.projectMember} title={`${member().project}\n${member().evidence}`}>
+                      <span>{member().project}</span>
+                      <span class={styles.projectFacts}>{facts(member())} · {member().evidence}</span>
+                    </li>}</For>
+                </ul>
+              </details>
             </li>}</For>
           </ul>
         </Show>
@@ -149,7 +153,7 @@ export function ProjectChips(props: { ctx: PanelContext; applies: boolean }) {
     <div class={styles.projectChips} role="status" aria-label="Project filter">
       <For each={ctx.filters().repos}>{repo => chip('repo', repo)}</For>
       <For each={ctx.filters().projects}>{project => chip('project', project)}</For>
-      <span class={styles.projectNote}>{props.applies ? 'Every figure on this screen is for the chosen projects only.'
+      <span class={styles.projectNote}>{props.applies ? 'Every figure read from history on this screen is for the chosen projects only; the runtime counts are marked where they are not.'
         : 'This screen is not per project: the project filter does not apply here.'}</span>
     </div>
   </Show>

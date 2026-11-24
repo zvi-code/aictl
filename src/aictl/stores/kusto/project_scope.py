@@ -22,16 +22,9 @@ from __future__ import annotations
 import re
 
 PARAMETER = "restrict_projects"
-# The comparison key of a project value, as ingesters._common.project_key makes it: a Windows path folds
-# case and separators, and a trailing separator never counts. The parameter holds the keys.
-KEY_FUNCTION = (
-    "let aictl_project_key = (p:string) {\n"
-    "    let t = trim(@'\\s+', p);\n"
-    "    let k = iff(t matches regex @'^[A-Za-z]:[\\\\/]' or t startswith @'\\\\',\n"
-    "        trim_end(@'/+', tolower(replace_string(t, '\\\\', '/'))), trim_end(@'/+', t));\n"
-    "    iff(isempty(k), t, k)\n"
-    "};"
-)
+# The parameter holds the exact stored values to keep: an exact match on the key column lets the
+# cluster use its index (a function over every row's key made a large view read run past its timeout).
+# The caller lists every stored spelling of a chosen project (dashboard/project_filter.py).
 
 # Tables whose `project` key column is the row's project_path, or the repository root for memory.
 PROJECT_TABLES = (
@@ -62,17 +55,17 @@ def restricted_query(text: str) -> str:
     body = text[match.end():].strip().rstrip(";")
     code = _TEXT.sub(" ", body)
     used = {table for table in (*PROJECT_TABLES, *SESSION_TABLES) if re.search(rf"\b{table}\b", code)}
-    lets = [KEY_FUNCTION]
+    lets = []
     if used & set(SESSION_TABLES):
         # Read before `sessions` is shadowed below; the same rows either way.
         lets.append(
-            f"let {_SESSIONS} = sessions | where aictl_project_key(['project']) in ({PARAMETER})"
+            f"let {_SESSIONS} = sessions | where ['project'] in ({PARAMETER})"
             " | extend _gone=column_ifexists('_deleted', false)"
             " | summarize arg_max(_v, _gone) by ['project'], node_id, session_id"
             " | where not(coalesce(_gone, false)) | distinct node_id, session_id;")
     for table in PROJECT_TABLES:
         if table in used:
-            lets.append(f"let {table} = {table} | where aictl_project_key(['project']) in ({PARAMETER});")
+            lets.append(f"let {table} = {table} | where ['project'] in ({PARAMETER});")
     for table in SESSION_TABLES:
         if table in used:
             lets.append(f"let {table} = {table} | join kind=leftsemi {_SESSIONS} on node_id, session_id;")

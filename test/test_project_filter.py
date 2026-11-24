@@ -82,7 +82,7 @@ def test_every_view_can_be_restricted_and_keeps_the_tombstone_rule():
 
 def test_a_restricted_view_reads_only_project_tables_through_the_restriction():
     text = restricted_query(_query("insights.pause_tax"))
-    assert "let requests = requests | where aictl_project_key(['project']) in (restrict_projects);" in text
+    assert "let requests = requests | where ['project'] in (restrict_projects);" in text
     # Tables the view does not read are not touched.
     assert "let sessions" not in text
     commits = restricted_query(_query("sessions.commits"))

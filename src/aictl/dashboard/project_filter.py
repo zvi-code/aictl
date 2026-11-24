@@ -51,10 +51,25 @@ def requested_repos(params: dict[str, list[str]]) -> tuple[str, ...]:
     return requested_projects(params, "repo")
 
 
-def project_keys(projects: tuple[str, ...]) -> dict[str, list[str]]:
-    """The reader parameter for *projects*: a view compares each row's project by its key, so every
-    spelling of a chosen folder counts (``project_key``)."""
-    return {PARAMETER: sorted({project_key(p) for p in projects})}
+def project_keys(values: tuple[str, ...]) -> dict[str, list[str]]:
+    """The reader parameter: the exact stored values a view keeps (stores/kusto/project_scope.py)."""
+    return {PARAMETER: list(values)}
+
+
+def _folds(path: str) -> bool:
+    """Whether other spellings of *path* count as the same project: a Windows path folds case and separators."""
+    return project_key(path) != path.rstrip("/")
+
+
+def spellings(base: Any, projects: tuple[str, ...]) -> tuple[str, ...]:
+    """Every stored spelling of *projects*: each value, with and without a trailing separator, and for a
+    Windows path every value the store holds under the same ``project_key`` (one read of the project list)."""
+    values = {v for p in projects for v in (p, p.rstrip("/\\"), p.rstrip("/\\") + "/") if v}
+    if any(_folds(p) for p in projects):
+        keys = {project_key(p) for p in projects}
+        stored = base.read("projects.catalog", {"limit": CATALOG_LIMIT}).rows
+        values |= {r["project_path"] for r in stored if r["row_type"] == "project" and project_key(r["project_path"]) in keys}
+    return tuple(sorted(values))
 
 
 @dataclass(frozen=True)
@@ -62,16 +77,18 @@ class ProjectReader:
     """A history reader that reads every view for the chosen projects only.
 
     Equal for the same reader and projects, so the caches keyed by reader keep one entry per choice.
+    *values* are the stored spellings of *projects* that the views keep.
     """
 
     base: Any
     projects: tuple[str, ...]
+    values: tuple[str, ...]
 
     def read(self, view: str, params) -> ReadResult:
-        return self.base.read(view, {**params, **project_keys(self.projects)})
+        return self.base.read(view, {**params, **project_keys(self.values)})
 
     def __getattr__(self, name: str) -> Any:
-        if name.startswith("__") or name in ("base", "projects"):
+        if name.startswith("__") or name in ("base", "projects", "values"):
             raise AttributeError(name)
         return getattr(self.base, name)
 
@@ -85,7 +102,10 @@ def restrict(reader: Any, projects: tuple[str, ...]) -> Any:
     base = unrestricted(reader)
     if not projects or not has_history(base):
         return reader
-    return ProjectReader(base, tuple(projects))
+    projects = tuple(projects)
+    if isinstance(reader, ProjectReader) and reader.projects == projects:
+        return reader
+    return ProjectReader(base, projects, spellings(base, projects))
 
 
 def scoped(history: HistoryScope, projects: tuple[str, ...]) -> HistoryScope:

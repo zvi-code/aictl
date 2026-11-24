@@ -104,5 +104,5 @@ def query_block(history: Any, view: str, params: Mapping[str, Any]) -> dict:
 
     settings = reader_feature(history.reader, "connection_info")
     if isinstance(history.reader, ProjectReader):
-        params = {**params, **project_keys(history.reader.projects)}
+        params = {**params, **project_keys(history.reader.values)}
     return {"view": view, "kql": filled_query(view, params), "kusto_url": kusto_base_url(settings)}

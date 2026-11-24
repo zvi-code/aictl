@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { TopicRuntimeAgent } from '../data/contract.gen'
-import { RANGES } from '../data/filters'
+import { chosenCount, RANGES } from '../data/filters'
 import DockScreen from '../panels/DockScreen'
 import { overviewA } from '../panels/overview/a'
 import { overviewB } from '../panels/overview/b'
@@ -42,12 +42,13 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
             {unlinkedText(data().unlinked)}: {data().unlinkedTools.map(([tool, n]) => `${toolLabel(tool)} ${n}`).join(' · ')}
           </p>
         </Show>
-        <small>Runtime counts are independent of history filters.</small>
+        <small>Runtime counts are independent of history filters{chosenCount(ctx.filters()) ? ' and of the project filter' : ''}.</small>
       </section>}</Show>
       <Show when={reported()}>{sample => <section class={styles.runtime} aria-label="Reported monitored sessions">
         <h2>Reported runtime · {scopeLabel(ctx.scope(), ctx.nodeId())}</h2>
         <p><strong>{sample().count.toLocaleString()}</strong> monitored {sample().count === 1 ? 'session' : 'sessions'}</p>
-        <small>{sample().hosts} reporting {sample().hosts === 1 ? 'node' : 'nodes'} · independent of history filters.</small>
+        <small>{sample().hosts} reporting {sample().hosts === 1 ? 'node' : 'nodes'} · independent of history filters
+          {chosenCount(ctx.filters()) ? ' and of the project filter: node reports carry no project' : ''}.</small>
       </section>}</Show>
       <section class={styles.historyStatus} aria-label="Selected history">
         <h2>{scopeLabel(ctx.scope(), ctx.nodeId())} · {period()} history</h2>
