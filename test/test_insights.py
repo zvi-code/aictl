@@ -294,7 +294,8 @@ def test_context_carry_multiplies_result_bytes_by_later_requests_of_the_same_age
     assert names["Bash"]["carried_bytes"] == 300 and names["Bash"]["avg_later_requests"] == 3
     assert names["Read"]["output_bytes"] == 70 and names["Read"]["carried_bytes"] == 70
     assert [row["tool_name"] for row in body["tool_names"]] == ["Bash", "Read"]
-    assert body["tools"] == [{"tool": "claude-code", "calls": 4, "reported": 3, "output_bytes": 170, "carried_bytes": 370}]
+    assert [{key: value for key, value in tool.items() if key != "repos"} for tool in body["tools"]] == [
+        {"tool": "claude-code", "calls": 4, "reported": 3, "output_bytes": 170, "carried_bytes": 370}]
     assert body["summary"]["carried_bytes"] == 370 and body["summary"]["top"]["tool_name"] == "Bash"
     assert body["sessions"][0]["session_id"] == "s1" and body["sessions"][0]["carried_bytes"] == 370
 
@@ -878,7 +879,8 @@ def test_each_card_route_answers_on_its_own_and_one_failure_stays_in_its_card(mo
         assert body["card"] == card and body["range"] == {"since": 10.0, "until": 20.0}
         assert body["data_range"] == {"first_ts": 5.0, "last_ts": 15.0} and body["computed_at"] == 25.0
         assert body["sessions"] == [] and body["query"]["kql"].startswith("// aictl view insights.")
-    assert {view for view, _ in reader.calls} == set(insights.CARDS.values())
+    # Every card also reads the screen's order of repositories (cached: one query for the screen).
+    assert {view for view, _ in reader.calls} == {*insights.CARDS.values(), "insights.repo_rank"}
     assert all(params["since"] == 10.0 and params["until"] == 20.0 for _, params in reader.calls)
     assert board_routes.handle_get("/api/board/insights/pause", "since=20&until=10", None, None, now=30.0)[0] == 400
 

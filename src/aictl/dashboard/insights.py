@@ -88,6 +88,94 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
 """
 
 
+# ── Repositories: one order and one colour each for the whole screen, and the split of a card's bars ──
+# insights.repo_rank ranks the repositories of the period by the list-price cost of their requests. Every card answer
+# carries the first REPO_COLOURS of them as repo_order (the colour of a repository is its position) and the rest
+# summed as repo_others. A card's view splits its bars by the same ranking (the <repository rank> block it carries) in
+# rows of row_type 'repo_split' with the columns tool, split_key (the bar within the card: a tool name, a program,
+# ...; '' when the bar is the tool itself), repo (a ranked root; '' is every other repository, summed) and the bar's
+# measures under the names the bar's own row uses. Its shape calls attach_repos() on each bar. To split one more card:
+# add those rows to its view, add the card to REPO_SPLIT_CARDS, take repo_order in its shape and call attach_repos.
+REPO_COLOURS = 8
+# The cards whose shape takes repo_order as a second argument: shape(rows, repo_order).
+REPO_SPLIT_CARDS = frozenset({"carry", "time"})
+
+
+def repo_order(history: HistoryScope, params: dict) -> dict:
+    """The repositories of the period in rank order (root, name, cost, requests, sessions) and every other one summed.
+
+    Read through the reader's cache, so the cards of one screen make one query. A failed read gives no order: every
+    segment is then "other repositories", and the bars stay whole."""
+    try:
+        rows = history.read("insights.repo_rank", limit=ROW_LIMIT, since=params["since"], until=params["until"])
+    except Exception:  # noqa: BLE001 - the cards still show their bars without a colour per repository
+        return {"repo_order": [], "repo_others": None}
+    ranked = sorted(_of(rows, "repo"), key=lambda row: _n(row.get("rank")))[:REPO_COLOURS]
+    other = next(iter(_of(rows, "other")), None)
+    return {
+        "repo_order": [{"repo": row.get("repo"), "name": row.get("name") or _project_name(row.get("repo")),
+                        "cost_usd": _n(row.get("cost_usd")), "requests": _int(row.get("requests")),
+                        "sessions": _int(row.get("sessions"))} for row in ranked if row.get("repo")],
+        "repo_others": {"repos": _int(other.get("repos")), "cost_usd": _n(other.get("cost_usd")),
+                        "requests": _int(other.get("requests")), "sessions": _int(other.get("sessions"))} if other else None,
+    }
+
+
+def repo_splits(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
+    """A card's repo_split rows by bar: (tool, split_key) -> its rows, one per repository ('' for every other one)."""
+    found: dict[tuple[str, str], list[dict]] = {}
+    for row in _of(rows, "repo_split"):
+        found.setdefault((str(row.get("tool") or ""), str(row.get("split_key") or "")), []).append(row)
+    return found
+
+
+def repo_totals(rows: list[dict], measures: tuple[str, ...]) -> dict[str, dict[str, float]]:
+    """Per repository, the sum of each measure over split rows that cover the whole (the bars per tool, say)."""
+    totals: dict[str, dict[str, float]] = {}
+    for row in rows:
+        mine = totals.setdefault(str(row.get("repo") or ""), dict.fromkeys(measures, 0.0))
+        for measure in measures:
+            mine[measure] += _n(row.get(measure))
+    return totals
+
+
+def attach_repos(bar: dict, rows: list[dict], measures: tuple[str, ...], order: list[dict],
+                 totals: dict[str, dict[str, float]] | None = None) -> dict:
+    """Put on *bar* its segments per repository: ``repos`` = [{repo, name, <measure>: value, share: {measure: share of
+    this bar}, of_repo: {measure: share of the repository's own total, or None}}], in repo_order order with every other
+    repository last (repo '', name None). The segments of a measure sum to the bar's own value of it; a measure the
+    bar does not report (None) is None in every segment. A bar with no measure reported has no segments.
+
+    Only an additive measure (a count, a sum) may be split; a median or a percentile is not (the bar stays whole)."""
+    ranked = [str(item["repo"]) for item in order]
+    names = {str(item["repo"]): item.get("name") for item in order}
+    sums: dict[str, dict[str, float]] = {}
+    for row in rows:
+        repo = str(row.get("repo") or "")
+        # A root the view ranked but the screen's order does not hold (the two were read at different times) is "other".
+        key = repo if repo in names else ""
+        mine = sums.setdefault(key, dict.fromkeys(measures, 0.0))
+        for measure in measures:
+            mine[measure] += _n(row.get(measure))
+    reported = [measure for measure in measures if bar.get(measure) is not None]
+    whole = {measure: sum(values[measure] for values in sums.values()) for measure in reported}
+    segments = []
+    for repo in [*ranked, ""]:
+        values = sums.get(repo)
+        if not reported or values is None or not any(values[measure] for measure in reported):
+            continue
+        own = (totals or {}).get(repo)
+        segments.append({
+            "repo": repo, "name": names.get(repo),
+            **{measure: values[measure] if measure in reported else None for measure in measures},
+            "share": {measure: _ratio(values[measure], whole[measure]) if measure in reported else None for measure in measures},
+            "of_repo": {measure: _ratio(values[measure], own[measure]) if measure in reported and own else None
+                        for measure in measures},
+        })
+    bar["repos"] = segments
+    return bar
+
+
 def _n(value: Any) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
@@ -230,8 +318,12 @@ def _unpriced(cells: list[dict]) -> int:
     return sum(cell["requests"] - cell["priced"] for cell in cells)
 
 
-def context_carry(rows: list[dict]) -> dict:
-    """Per tool name: calls, result bytes, later requests and bytes carried (an upper bound)."""
+CARRY_MEASURES = ("output_bytes", "carried_bytes")
+
+
+def context_carry(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per tool name: calls, result bytes, later requests and bytes carried (an upper bound); each bar per tool name
+    and per tool split by repository."""
     names = sorted(_of(rows, "tool_name"), key=lambda row: -_n(row.get("carried_bytes")))
     tool_names = [{
         "tool": row.get("tool"), "tool_name": row.get("tool_name"), "calls": _int(row.get("calls")),
@@ -243,6 +335,14 @@ def context_carry(rows: list[dict]) -> dict:
         "output_bytes": _int(row.get("output_bytes")) if _int(row.get("reported")) else None,
         "carried_bytes": _n(row.get("carried_bytes")) if _int(row.get("reported")) else None,
     } for row in sorted(_of(rows, "tool"), key=lambda row: -_n(row.get("carried_bytes")))]
+    splits = repo_splits(rows)
+    # The bars per tool cover every call with a size: each repository's own total is the sum of its segments there.
+    totals = repo_totals([row for (_tool, key), found in splits.items() if not key for row in found], CARRY_MEASURES)
+    for row in tool_names:
+        attach_repos(row, splits.get((str(row["tool"] or ""), str(row["tool_name"] or "")), []), CARRY_MEASURES,
+                     order or [], totals)
+    for row in tools:
+        attach_repos(row, splits.get((str(row["tool"] or ""), ""), []), CARRY_MEASURES, order or [], totals)
     produced = sum(_n(tool["output_bytes"]) for tool in tools)
     carried = sum(_n(tool["carried_bytes"]) for tool in tools)
     top = tool_names[0] if tool_names else None
@@ -368,8 +468,14 @@ def _timed(value: Any, timed: int) -> float | None:
     return _n(value) if timed else None
 
 
-def time_split(rows: list[dict]) -> dict:
+TIME_MEASURES = ("time_ms", "model_ms", "tool_ms")
+
+
+def time_split(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per tool: summed request time (of which thinking) and summed tool-call time; per program: calls and time.
+
+    Each tool's summed time (time_ms = model + tool calls) and each program row's summed time are split by repository;
+    the tool's split by kind (thinking, rest of the request, tool calls) stays on its own bar.
 
     A row with no duration, or one over 24 hours (a recording error), is not summed and is counted apart. A tool
     that records reasoning tokens gets them with the output tokens of the same requests: Copilot records no
@@ -406,6 +512,17 @@ def time_split(rows: list[dict]) -> dict:
         "failure_share": _ratio(_n(row.get("failures")), _n(row.get("calls"))),
     } for row in _of(rows, "program")]
     programs.sort(key=lambda row: (-_n(row["duration_ms"]), row["group"] or "", row["program"] or ""))
+    splits = repo_splits(rows)
+    tool_split = [{**row, "time_ms": _n(row.get("model_ms")) + _n(row.get("tool_ms"))}
+                  for (_tool, key), found in splits.items() if not key for row in found]
+    totals = repo_totals(tool_split, TIME_MEASURES)
+    for tool in tools:
+        timed = [value for value in (tool["model_ms"], tool["tool_ms"]) if value is not None]
+        tool["time_ms"] = sum(timed) if timed else None
+        attach_repos(tool, [row for row in tool_split if row.get("tool") == tool["tool"]], TIME_MEASURES, order or [], totals)
+    for row in programs:
+        # Only the programs shown are split, so a repository's own total of program time is not known.
+        attach_repos(row, splits.get(("", f"{row['group']}:{row['program'] or ''}"), []), ("duration_ms",), order or [])
     named = [row for row in programs if row["group"] == "program"]
     model_ms = [tool["model_ms"] for tool in tools if tool["model_ms"] is not None]
     thinking = [tool["thinking_ms"] for tool in tools if tool["thinking_ms"] is not None]
@@ -967,7 +1084,7 @@ def _model_lead(tools: list[dict]) -> dict | None:
     return {"kind": "requests", "tool": busiest["tool"], "requests": busiest["requests"]} if busiest else None
 
 
-SHAPES: dict[str, Callable[[list[dict]], dict]] = {
+SHAPES: dict[str, Callable[..., dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
     "time": time_split, "context": context_weight, "orientation": orientation, "fixed": fixed_context,
     "problems": problem_sessions,
@@ -1122,9 +1239,10 @@ def insight(card: str, filters: Filters, now: float | None = None, *, history: H
     rows = READS[card](history, params)
     meta = next(iter(_of(rows, "meta")), {})
     node = {} if history.node is None else {"all_nodes": False, "requested_node": history.node}
-    shape = SHAPES[card](rows)
+    repos = repo_order(history, params)
+    shape = SHAPES[card](rows, repos["repo_order"]) if card in REPO_SPLIT_CARDS else SHAPES[card](rows)
     return 200, {
-        "card": card, "view": view,
+        "card": card, "view": view, **repos,
         "range": {"since": filters.since, "until": filters.until},
         "data_range": {"first_ts": meta.get("first_ts"), "last_ts": meta.get("last_ts")},
         "computed_at": _cost(meta.get("computed_at")) or (time.time() if now is None else now),

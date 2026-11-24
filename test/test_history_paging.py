@@ -277,19 +277,22 @@ BOUNDED = {
     "insights.context_weight": "one row per tool and context bucket, per tool, 10 sessions and one meta row",
     "insights.fixed_context": "one row per tool and kind, per tool, 10 skills, 10 files, 10 sessions and one meta row",
     "insights.problem_sessions": "one row per tool and signal, per tool, 10 pairs, 10 projects, 10 sessions and one meta row",
-    "insights.context_carry": "the 25 tool names that carry most, one row per tool, 10 sessions and one meta row",
+    "insights.context_carry": "the 25 tool names that carry most, one row per tool, 10 sessions, one meta row and at most 9 repository "
+                             "rows per tool name and per tool",
     "insights.orientation": "10 projects, one row per tool, 10 sessions and one meta row",
     "insights.pause_tax": "one row per tool and pause bucket, per tool, 10 sessions, 10 projects, one reach row, one row "
                           "per tool, long-pause bucket and cause, 10 tools and programs of long pauses and one meta row",
     "insights.rereads": "two rows per tool, 10 sessions and one meta row",
     "insights.subagents": "two rows per tool, 10 sessions and one meta row",
-    "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions and one meta row",
+    "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions, one meta row and at most 9 repository "
+                          "rows per tool and per program row",
     "insights.work_per_instruction": "per tool, a coverage row per tool, one row per tool and bin (at most 26 weeks, or "
                                      "months), 10 sessions and one meta row",
     "insights.verified_commits": "one row per tool, 10 sessions and one meta row",
     "insights.model_report": "per tool, model and effort, 3 failing tool names per model, 3 sessions per tool and one meta row",
     "insights.changes": "one row per repository, 15 reworked files, 10 sessions, at most 32 time bins and a meta row",
     "insights.durations": "one row per repository, 20 tools and programs, 15 models, 10 sessions, a total row and a meta row",
+    "insights.repo_rank": "the 8 ranked repositories, one row for every other repository and one meta row",
     "insights.repositories": "per repository: one row, a row per model, 3 sessions and at most 9 time bins; one meta row",
     "insights.flows": "one row per pair of step kinds, 10 cycles, per tool, per outcome and last step, 10 first and 10 last "
                       "paths, 20 projects, 20 sessions and one meta row",
