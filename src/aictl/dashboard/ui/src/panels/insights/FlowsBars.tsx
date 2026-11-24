@@ -6,8 +6,11 @@ import styles from './FlowsBars.module.css'
  * A titled chart of horizontal bars on one linear scale: the name and its counts on the left, the bar, and the value
  * written beside it. Every bar part and tick carries its own hover text (an SVG title); the row carries one too.
  */
-export function BarChart(props: { title: string; axis: string; rows: readonly BarRow[]; legend?: BarLegend; data: string; empty?: string }) {
-  const top = () => barTop(props.rows)
+export function BarChart(props: { title: string; axis: string; rows: readonly BarRow[]; legend?: BarLegend; data: string; empty?: string
+  /** A fixed top of the scale (1 for shares); else the largest row. */
+  top?: number
+}) {
+  const top = () => props.top ?? barTop(props.rows)
   return <figure class={styles.figure} data-chart={props.data}>
     <figcaption class={styles.title}>{props.title}</figcaption>
     <Show when={props.rows.length} fallback={<p class={styles.empty}>{props.empty ?? 'Nothing to draw in this period.'}</p>}>

@@ -9,7 +9,9 @@ import { kqlCoverage, kqlFinding, kqlHero, type KqlBody } from '../../src/panels
 import Mcp from '../../src/panels/insights/Mcp'
 import { mcpCoverage, mcpFinding, mcpHero, type McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
-import { skillsCoverage, skillsFinding, skillsHero, type SkillsBody } from '../../src/panels/insights/skillsModel'
+import {
+  afterHover, listingRows, skillCostHover, skillsCoverage, skillsFinding, skillsHero, type SkillsBody,
+} from '../../src/panels/insights/skillsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -133,35 +135,49 @@ const skills = {
 } as unknown as SkillsBody
 
 describe('INS-21 · Skills', () => {
-  it('states the costliest skill with what followed it, and the skills listed and never used', () => {
-    expect(skillsFinding(skills, label)).toBe('The skill kql ran in 142 turns of 142 sessions in 6 projects; those turns cost $1,316 at ' +
-      "list price (31% of the period's cost). After it, in the same turn, 97% of its uses edited a file, 0% ran tests and 1% committed. " +
-      'Claude Code listed 118 skills to the model; 114 were never used, and their listing took 163 k tokens (estimated from size) over ' +
-      'the sessions that listed them.')
-    expect(skillsHero(skills)).toEqual({ value: '31%', label: "of the period's cost was in turns that ran kql" })
+  it('states the uses, skills and sessions, and the skills listed and not used, without a conclusion', () => {
+    expect(skillsFinding(skills, label)).toBe('927 skill uses of 30 skills in 286 sessions (Copilot CLI, Claude Code). Claude Code ' +
+      'listed 118 skills to the model in 25 sessions; 114 of them were not used in the period; their listing took an estimated ' +
+      '163 k tokens over the sessions that listed them.')
+    expect(skillsHero(skills)).toEqual({ value: '927', label: 'skill uses in 286 sessions' })
   })
 
-  it('leads with no skill when none has enough uses, and says which tools report listings', () => {
+  it('says when no skill has enough uses, and which tools report listings', () => {
     const few = { ...skills, skills: [], summary: { ...skills.summary, top: null, listed: 0, unused: 0, unused_tokens: null } } as SkillsBody
-    expect(skillsFinding(few, label)).toBe('927 skill uses in this period, but no skill has 5 uses in 3 sessions: too few to compare.')
-    expect(skillsHero(few)).toBeUndefined()
-    expect(skillsCoverage(skills, label)).toBe('Only Claude Code reports which skills are listed to the model; for other tools, listed ' +
-      'and never used cannot be measured. Skill uses come from Copilot CLI, Claude Code. Too small to compare: 1 skill with fewer than ' +
+    expect(skillsFinding(few, label)).toBe('927 skill uses of 30 skills in 286 sessions (Copilot CLI, Claude Code). No skill has 5 ' +
+      'uses in 3 sessions, the least the card compares.')
+    expect(skillsCoverage(skills, label)).toBe('Claude Code reports which skills are listed to the model; for other tools, listed ' +
+      'and not used is not measured. Skill uses come from Copilot CLI, Claude Code. Too small to compare: 1 skill with fewer than ' +
       '5 uses or 3 sessions; 1 project with fewer than 5 uses.')
   })
 
-  it('draws a bar per skill with what followed it, the unused listings and the projects, and opens a session', () => {
+  it('builds the hover text of a turn cost, of what followed a use and of a listing', () => {
+    expect(skillCostHover(skills, skill)).toBe("kql: 142 turns, 608.0 M tokens, $1,316 at list price, 31% of the period's $4,211. " +
+      'Turns of different skills can overlap; their costs do not add up.')
+    expect(afterHover(skill, 'after_edit')).toBe('kql: 138 of 142 uses with a recorded turn were followed by an edit in the same ' +
+      'turn (97%)')
+    expect(listingRows(skills, label)[0].parts[1].hover).toBe('Claude Code: 114 of 118 listed skills not used (97%), 163 k listing tokens')
+  })
+
+  it('draws uses, turn cost, what followed, listings, unused skills, projects and tools, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Skills {...props(context({ data: skills, status: 'ready', error: null }, opened))} />)
     const box = host.querySelector('[data-box="insight-skills"]')!
-    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('31%')
-    const row = box.querySelector('[data-skill="kql"]')!
-    expect(row.textContent).toContain('142 uses · 142 sessions · 6 projects')
-    expect(row.textContent).toContain('$1,316 (31%)')
-    expect(row.textContent).toContain('then edit 97% · test 0% · commit 1%')
-    expect(box.querySelector('[data-skill="rare"]')).toBeNull()
-    expect(box.querySelector('[data-unused]')!.textContent).toContain('never-used24 sessions · 7.2 k tokens')
-    expect(box.querySelector('[data-projects]')!.textContent).toContain('alpha386 uses of 12 skills · 117 sessions')
+    const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
+    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('927')
+    expect(value('uses')).toEqual(['142 uses'])
+    expect(box.querySelector('[data-chart="uses"] [data-row="kql"]')!.textContent).toContain('142 sessions · 6 projects')
+    expect(box.querySelector('[data-chart="uses"] [data-row="rare"]')).toBeNull()
+    expect(value('cost')).toEqual(['$1,316 (31%)'])
+    expect(box.querySelector('[data-chart="cost"] rect title')!.textContent).toContain('608.0 M tokens')
+    expect(value('after_edit')).toEqual(['97%'])
+    expect(value('after_test')).toEqual(['0%'])
+    expect(value('after_commit')).toEqual(['1%'])
+    expect(box.querySelector('[data-chart="after_edit"]')!.textContent).toContain('linear scale from 0 to 100%')
+    expect(value('listings')).toEqual(['4 used · 114 not used'])
+    expect(value('unused')).toEqual(['7.2 k tokens'])
+    expect(value('projects')).toEqual(['386 uses'])
+    expect(value('tools')).toEqual(['927 uses'])
     const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-skill'))
     open!.click()
     expect(opened).toEqual(['s-skill:flow'])

@@ -1,58 +1,44 @@
-import { For, Show, untrack } from 'solid-js'
-import { fmtN, fmtNum, fmtShare, projectName } from '../../design/format'
+import { For, untrack } from 'solid-js'
+import { fmtN, fmtNum, projectName } from '../../design/format'
+import { BarChart } from './FlowsBars'
+import { axisText, barTop } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { money, plural, share, toolLabel, type Label } from './insightsModel'
-import { skillsCoverage, skillsFinding, skillsHero, type SkillRow, type SkillsBody } from './skillsModel'
+import { money, share, toolLabel, type Label } from './insightsModel'
+import {
+  AFTER, AFTER_LABELS, afterRows, countAxis, listingLegend, listingRows, skillCostRows, skillProjectRows, skillsCoverage, skillsFinding,
+  skillsHero, skillToolRows, skillUseRows, unusedRows, type SkillRow, type SkillsBody,
+} from './skillsModel'
 import styles from './Insights.module.css'
 
-const SHOWN = 8
-
-/** Per skill: the cost of the turns it ran in as a bar, with uses, sessions and what followed it in the same turn. */
-function SkillBars(props: { body: SkillsBody }) {
-  const largest = () => Math.max(0, ...props.body.skills.map(item => item.cost_usd ?? 0))
-  return <section class={styles.flow} data-skills>
-    <h3 class={styles.subhead}>Skills by the cost of the turns they ran in</h3>
-    <Show when={props.body.skills.length} fallback={<p class={styles.note}>No skill with 5 uses in 3 sessions.</p>}>
-      <ul class={styles.bars}>
-        <For each={props.body.skills.slice(0, SHOWN)}>{item => <li class={styles.barRow} data-skill={item.name}>
-          <span class={styles.barName}>{item.name}<small>{plural(item.uses, 'use')} · {plural(item.sessions, 'session')} · {plural(item.projects, 'project')}</small></span>
-          <span class={styles.barTrack}>
-            <span class={styles.bar} title={`${item.name}: ${plural(item.turns, 'turn')}, ${fmtN(item.turn_tokens ?? 0)} tokens, ` +
-              `${money(item.cost_usd)} at list price`}>
-              <span class={`${styles.fill} ${styles.carried}`}
-                style={{ 'inline-size': `${largest() ? Math.max(2, (item.cost_usd ?? 0) / largest() * 100) : 0}%` }} />
-              {money(item.cost_usd)} ({share(item.cost_share)})
-            </span>
-            <span class={styles.splitText}>then edit {fmtShare(item.after_edit)} · test {fmtShare(item.after_test)} · commit {fmtShare(item.after_commit)}</span>
-          </span>
-        </li>}</For>
-      </ul>
-    </Show>
-  </section>
-}
-
-function Lists(props: { body: SkillsBody }) {
-  return <div class={styles.lists}>
-    <section>
-      <h3 class={styles.subhead}>Listed and never used</h3>
-      <Show when={props.body.unused.length} fallback={<p class={styles.note}>No listed skill went unused, or no tool reports listings.</p>}>
-        <ol class={styles.rankList} data-unused>
-          <For each={props.body.unused.slice(0, 6)}>{item => <li>
-            <span>{item.name}</span><span>{plural(item.sessions, 'session')} · {fmtN(item.list_tokens)} tokens</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>By project</h3>
-      <Show when={props.body.projects.length} fallback={<p class={styles.note}>No project with 5 skill uses.</p>}>
-        <ol class={styles.rankList} data-projects>
-          <For each={props.body.projects.slice(0, 8)}>{row => <li>
-            <span>{projectName(row.project)}</span>
-            <span>{plural(row.uses, 'use')} of {plural(row.skills, 'skill')} · {plural(row.sessions, 'session')}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-  </div>
+function Visual(props: { body: SkillsBody; label: Label }) {
+  const empty = 'No skill with 5 uses in 3 sessions.'
+  return <>
+    <div class={styles.lists}>
+      <BarChart data="uses" title="Uses per skill" rows={skillUseRows(props.body, props.label)} axis={countAxis(skillUseRows(props.body, props.label), 'uses')} empty={empty} />
+      <BarChart data="cost" title="List price of the turns each skill ran in (share of the period's cost)" rows={skillCostRows(props.body)}
+        axis={axisText('list price of the turns', money(barTop(skillCostRows(props.body))))} empty={empty} />
+    </div>
+    <h3 class={styles.subhead}>What followed a use in the same turn (share of the skill's uses with a recorded turn)</h3>
+    <div class={styles.lists} data-after>
+      <For each={AFTER}>{after => <BarChart data={after} title={AFTER_LABELS[after]} rows={afterRows(props.body, after)} top={1}
+        axis={axisText('share of uses', '100%')} empty={empty} />}</For>
+    </div>
+    <div class={styles.lists}>
+      <BarChart data="listings" title="Skills listed to the model, used and not used (skills)" rows={listingRows(props.body, props.label)}
+        legend={listingLegend} axis={countAxis(listingRows(props.body, props.label), 'listed skills')}
+        empty="No tool reported a skill listing in this period." />
+      <BarChart data="unused" title="Listed and not used: listing tokens per skill" rows={unusedRows(props.body, props.label)}
+        axis={axisText('listing tokens (estimated from size)', fmtN(barTop(unusedRows(props.body, props.label))))}
+        empty="No listed skill went unused, or no tool reports listings." />
+    </div>
+    <div class={styles.lists}>
+      <BarChart data="projects" title="Skill uses per project" rows={skillProjectRows(props.body)}
+        axis={countAxis(skillProjectRows(props.body), 'uses')} empty="No project with 5 skill uses." />
+      <BarChart data="tools" title="Skill uses per tool" rows={skillToolRows(props.body, props.label)}
+        axis={countAxis(skillToolRows(props.body, props.label), 'uses')} empty="No skill use in this period." />
+    </div>
+    <p class={styles.note} data-coverage>{skillsCoverage(props.body, props.label)}</p>
+  </>
 }
 
 type Row = Record<string, unknown>
@@ -68,19 +54,16 @@ export default function Skills(props: CardProps) {
   return <InsightCard<SkillsBody> {...props} card="skills" title="Skills" tab="flow"
     hero={skillsHero}
     finding={body => skillsFinding(body, label)}
-    visual={body => <>
-      <SkillBars body={body} />
-      <Lists body={body} />
-      <p class={styles.note} data-coverage>{skillsCoverage(body, label)}</p>
-    </>}
+    visual={body => <Visual body={body} label={label} />}
     note={'A use is a skill_uses record in the period, any trigger (the agent invoked it, the person ran it, or the tool loaded ' +
       'it). A turn is the person\'s instruction the use belongs to; its tokens and list price are those of the requests of that ' +
       'turn in the period, each turn once per skill. A Copilot CLI turn is often a whole session, so the turns of different skills ' +
       'overlap and their costs do not add up. After a use: an edit (edit tools, create), a test run (the stored test-run flag) or a ' +
-      'commit (git commit) of the same session and turn, after the use. Listed and never used: the skills a session\'s main agent ' +
-      'was told of in the period, each once per session; tokens are estimated from size and counted once per session that listed ' +
-      'the skill. Too small to compare: a skill with fewer than 5 uses or 3 sessions, a project with fewer than 5 uses. A ' +
-      'project is the last folder of the working folder. Cost is list price, not a bill.'}
+      'commit (git commit) of the same session and turn, after the use; the share is over the uses with a recorded turn, and one ' +
+      'use can be followed by more than one. Listed and not used: the skills a session\'s main agent was told of in the period, ' +
+      'each once per session; tokens are estimated from size and counted once per session that listed the skill. Too small to ' +
+      'compare: a skill with fewer than 5 uses or 3 sessions, a project with fewer than 5 uses. A project is the last folder of ' +
+      'the working folder. Cost is list price, not a bill.'}
     table={{
       label: 'Skills',
       rows: body => [...body.skills.map(item => skillRow(item, false)), ...body.small_skills.map(item => skillRow(item, true))],
@@ -95,3 +78,4 @@ export default function Skills(props: CardProps) {
       numberField('uses', 'Skill uses', fmtNum),
       textField('skills', 'Skills', row => Array.isArray(row.skills) ? row.skills.join(', ') : '')]} />
 }
+

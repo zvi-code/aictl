@@ -1,6 +1,7 @@
-// ─── Skills — the payload of /api/board/insights/skills and the finding it states ─
-// A skill with fewer than 5 uses or 3 sessions is too small to compare: it is listed apart and never leads.
-import { fmtN, fmtNum } from '../../design/format'
+// ─── Skills — the payload of /api/board/insights/skills, the sentence it states and the rows of its charts ─
+// A skill with fewer than 5 uses or 3 sessions is too small to compare: it is listed apart and gets no bar.
+import { fmtN, fmtNum, projectName } from '../../design/format'
+import { axisText, barTop, type BarLegend, type BarRow } from './flowBarModel'
 import { money, plural, share, type Base, type Hero, type Label } from './insightsModel'
 
 type Num = number | null
@@ -20,31 +21,126 @@ export type SkillsBody = Base<'skills'> & {
   }
 }
 
-/** The skill whose turns cost most, what followed it, and the skills listed and never used. */
+const SHOWN = 8
+const ratio = (part: number, whole: number) => whole ? part / whole : null
+
+/** The uses, skills and sessions of the period, and the skills listed to the model and not used: counts only. */
 export function skillsFinding(body: SkillsBody, label: Label) {
   const s = body.summary
   if (!s.uses && !s.listed) return 'No skill was used or listed in this period.'
-  const top = s.top
-  const lead = top
-    ? `The skill ${top.name} ran in ${plural(top.turns, 'turn')} of ${plural(top.sessions, 'session')} in ${plural(top.projects, 'project')}; ` +
-      `those turns cost ${money(top.cost_usd)} at list price (${share(top.cost_share)} of the period's cost). After it, in the same turn, ` +
-      `${share(top.after_edit)} of its uses edited a file, ${share(top.after_test)} ran tests and ${share(top.after_commit)} committed.`
-    : s.uses ? `${plural(s.uses, 'skill use')} in this period, but no skill has 5 uses in 3 sessions: too few to compare.` : ''
-  const unused = s.listed
-    ? ` ${s.listing_tools.map(label).join(', ')} listed ${plural(s.listed, 'skill')} to the model; ${fmtNum(s.unused)} were never used, ` +
-      `and their listing took ${fmtN(s.unused_tokens ?? 0)} tokens (estimated from size) over the sessions that listed them.`
+  const uses = s.uses ? `${plural(s.uses, 'skill use')} of ${plural(s.skills, 'skill')} in ${plural(s.sessions, 'session')}` +
+    (s.use_tools.length ? ` (${s.use_tools.map(label).join(', ')}).` : '.') +
+    (body.skills.length ? '' : ' No skill has 5 uses in 3 sessions, the least the card compares.') : 'No skill use in this period.'
+  const listed = s.listed
+    ? ` ${s.listing_tools.map(label).join(', ')} listed ${plural(s.listed, 'skill')} to the model in ${plural(s.listed_sessions, 'session')}; ` +
+      `${fmtNum(s.unused)} of them were not used in the period; their listing took an estimated ${fmtN(s.unused_tokens ?? 0)} tokens ` +
+      'over the sessions that listed them.'
     : ''
-  return (lead + unused).trim()
+  return (uses + listed).trim()
 }
 
-export const skillsHero = (body: SkillsBody): Hero | undefined => body.summary.top?.cost_share != null
-  ? { value: share(body.summary.top.cost_share), label: `of the period's cost was in turns that ran ${body.summary.top.name}` } : undefined
+export const skillsHero = (body: SkillsBody): Hero | undefined => body.summary.uses
+  ? { value: fmtNum(body.summary.uses), label: `skill uses in ${plural(body.summary.sessions, 'session')}` } : undefined
+
+/** Per skill: its uses, with sessions and projects. */
+export function skillUseRows(body: SkillsBody, label: Label): BarRow[] {
+  return body.skills.slice(0, SHOWN).map(item => {
+    const hover = `${item.name}: ${plural(item.uses, 'use')} in ${plural(item.sessions, 'session')} of ${plural(item.projects, 'project')}` +
+      (item.tools.length ? `, from ${item.tools.map(label).join(', ')}` : '') + `; ${fmtNum(item.with_turn)} of the uses belong to a recorded turn`
+    return { key: item.name, name: item.name, sub: `${plural(item.sessions, 'session')} · ${plural(item.projects, 'project')}`,
+      parts: [{ value: item.uses, tone: 'c1', hover }], text: plural(item.uses, 'use'), hover }
+  })
+}
+
+/** Hover text of a skill's turn cost: turns, tokens, list price and its share of the period's cost. */
+export function skillCostHover(body: SkillsBody, item: SkillRow) {
+  return `${item.name}: ${plural(item.turns, 'turn')}, ${item.turn_tokens == null ? 'tokens not reported' : `${fmtN(item.turn_tokens)} tokens`}, ` +
+    `${money(item.cost_usd)} at list price, ${share(item.cost_share)} of the period's ${money(body.summary.cost_usd)}. ` +
+    'Turns of different skills can overlap; their costs do not add up.'
+}
+
+/** Per skill: the list price of the turns it ran in. */
+export function skillCostRows(body: SkillsBody): BarRow[] {
+  return body.skills.slice(0, SHOWN).map(item => {
+    const hover = skillCostHover(body, item)
+    return { key: item.name, name: item.name, sub: plural(item.turns, 'turn'), parts: [{ value: item.cost_usd ?? 0, tone: 'c2', hover }],
+      text: `${money(item.cost_usd)} (${share(item.cost_share)})`, hover }
+  })
+}
+
+export type After = 'after_edit' | 'after_test' | 'after_commit'
+export const AFTER: After[] = ['after_edit', 'after_test', 'after_commit']
+export const AFTER_LABELS: Record<After, string> = { after_edit: 'Then edited a file', after_test: 'Then ran tests', after_commit: 'Then committed' }
+const AFTER_VERB: Record<After, string> = { after_edit: 'an edit', after_test: 'a test run', after_commit: 'a commit' }
+const AFTER_TONE = { after_edit: 'c1', after_test: 'c3', after_commit: 'c4' } as const
+
+/** Hover text of what followed a skill's uses: the count, its share and the uses with a recorded turn. */
+export function afterHover(item: SkillRow, after: After) {
+  const value = item[after]
+  const count = value == null ? null : Math.round(value * item.with_turn)
+  return value == null ? `${item.name}: no use with a recorded turn` : `${item.name}: ${fmtNum(count)} of ${plural(item.with_turn, 'use')} with a ` +
+    `recorded turn were followed by ${AFTER_VERB[after]} in the same turn (${share(value)})`
+}
+
+/** Per skill: the share of its uses followed by an edit, a test run or a commit, on a 0 to 100% scale. */
+export function afterRows(body: SkillsBody, after: After): BarRow[] {
+  return body.skills.slice(0, SHOWN).map(item => {
+    const hover = afterHover(item, after)
+    return { key: item.name, name: item.name, parts: [{ value: item[after] ?? 0, tone: AFTER_TONE[after], hover }], text: share(item[after]), hover }
+  })
+}
+
+export const listingLegend: BarLegend = [{ tone: 'c3', label: 'Used in the period' }, { tone: 'muted', label: 'Listed, not used' }]
+
+/** Per tool that reports listings: the skills listed to the model, split into used and not used. */
+export function listingRows(body: SkillsBody, label: Label): BarRow[] {
+  return body.listings.map(item => {
+    const used = Math.max(0, item.listed - item.unused)
+    const hover = `${label(item.tool)}: ${plural(item.listed, 'skill')} listed to the model in ${plural(item.sessions, 'session')}; ` +
+      `${fmtNum(used)} used, ${fmtNum(item.unused)} not used in the period. Listing tokens ${fmtN(item.list_tokens)}, of which ` +
+      `${fmtN(item.unused_tokens)} for the skills not used (estimated from size, once per session that listed the skill)`
+    return { key: item.tool, name: label(item.tool), sub: plural(item.sessions, 'session'),
+      parts: [{ value: used, tone: 'c3', hover: `${label(item.tool)}: ${fmtNum(used)} of ${plural(item.listed, 'listed skill')} used (${share(ratio(used, item.listed))})` },
+        { value: item.unused, tone: 'muted', hover: `${label(item.tool)}: ${fmtNum(item.unused)} of ${plural(item.listed, 'listed skill')} not used ` +
+          `(${share(ratio(item.unused, item.listed))}), ${fmtN(item.unused_tokens)} listing tokens` }],
+      text: `${fmtNum(used)} used · ${fmtNum(item.unused)} not used`, hover }
+  })
+}
+
+/** The skills listed and not used, by the tokens their listing took. */
+export function unusedRows(body: SkillsBody, label: Label): BarRow[] {
+  return body.unused.slice(0, SHOWN).map(item => {
+    const hover = `${item.name} (${label(item.tool)}): listed in ${plural(item.sessions, 'session')} and not used; listing tokens ` +
+      `${fmtN(item.list_tokens)} (estimated from size, once per session)`
+    return { key: `${item.tool}:${item.name}`, name: item.name, sub: plural(item.sessions, 'session'),
+      parts: [{ value: item.list_tokens, tone: 'muted', hover }], text: `${fmtN(item.list_tokens)} tokens`, hover }
+  })
+}
+
+/** Per project with 5 or more uses, and per tool: the skill uses. */
+export function skillProjectRows(body: SkillsBody): BarRow[] {
+  return body.projects.slice(0, SHOWN).map(row => {
+    const name = projectName(row.project)
+    const hover = `${name}: ${plural(row.uses, 'skill use')} of ${plural(row.skills, 'skill')} in ${plural(row.sessions, 'session')}`
+    return { key: row.project, name, sub: `${plural(row.skills, 'skill')} · ${plural(row.sessions, 'session')}`,
+      parts: [{ value: row.uses, tone: 'c1', hover }], text: plural(row.uses, 'use'), hover }
+  })
+}
+export function skillToolRows(body: SkillsBody, label: Label): BarRow[] {
+  return body.tools.map(row => {
+    const hover = `${label(row.tool)}: ${plural(row.uses, 'skill use')} of ${plural(row.skills, 'skill')} in ${plural(row.sessions, 'session')}, ` +
+      `${fmtNum(row.with_turn)} with a recorded turn`
+    return { key: row.tool, name: label(row.tool), sub: `${plural(row.skills, 'skill')} · ${plural(row.sessions, 'session')}`,
+      parts: [{ value: row.uses, tone: 'c1', hover }], text: plural(row.uses, 'use'), hover }
+  })
+}
+export const countAxis = (rows: BarRow[], unit: string) => axisText(unit, fmtNum(barTop(rows)))
 
 /** Which tools report skill uses and listings, and the groups too small to compare, in one line. */
 export function skillsCoverage(body: SkillsBody, label: Label) {
   const s = body.summary
-  const listing = `Only ${s.listing_tools.map(label).join(', ')} reports which skills are listed to the model; ` +
-    'for other tools, listed and never used cannot be measured.'
+  const listing = `${s.listing_tools.map(label).join(', ')} reports which skills are listed to the model; for other tools, ` +
+    'listed and not used is not measured.'
   const uses = s.use_tools.length ? ` Skill uses come from ${s.use_tools.map(label).join(', ')}.` : ''
   const small = [
     s.small_skills ? `${plural(s.small_skills, 'skill')} with fewer than 5 uses or 3 sessions` : '',
