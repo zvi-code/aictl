@@ -12,6 +12,7 @@ from ..stores import UnresolvedObservationsError, has_history
 from ..stores.base import StoreError
 from .board_filters import BoardRequestError, parse_filters
 from .board_projection import compute_board
+from .board_sections import SECTIONS, Abandoned, Selection, compute_section
 from .history_scope import ScopeError, label, parse_scope
 from .project_filter import scoped
 from .projection_utils import safe_reason
@@ -202,6 +203,121 @@ def _refresh_quietly(key: tuple, build) -> None:
         _refresh(key, build)
     except Exception:  # noqa: BLE001 - the earlier answer stays in use until it is too old
         logger.debug("Dashboard history refresh failed", exc_info=True)
+
+
+# The selections whose sections are being read or were read last, and the one each page reads now.
+_selections: dict[tuple, Selection] = {}
+_viewers: dict[str, Selection] = {}
+_latest_selection: dict[tuple, tuple] = {}
+_MAX_VIEWERS = 64
+
+
+def read_section(store, query: str, now: float | None = None) -> bytes:
+    """``GET /api/history/board/section``: one section of a node or fleet board (``board_sections``).
+
+    The sections of one selection share its reads for as long as an answer of the single board is
+    reused (its TTL), and a range that follows the clock answers from the window read last on the same
+    rule. ``viewer`` names the page and lane asking: when it moves to another selection, the one it
+    left starts no more reads unless another page still reads it.
+    """
+    params = parse_qs(query, keep_blank_values=True)
+    scope = parse_scope(params)
+    if scope.kind == "local":
+        raise BoardRequestError("Board sections answer a node or the fleet; this node's board comes from the live stream")
+    section = params.get("section", [""])
+    if len(section) != 1 or section[0] not in SECTIONS:
+        raise BoardRequestError("section must be one of " + "|".join(SECTIONS))
+    section = section[0]
+    viewer = params.get("viewer", [""])[0][:80]
+    now = time.time() if now is None else now
+    filters = parse_filters(query, now)
+    span = filters.until - filters.since
+    if span > 31 * 86400:
+        raise ScopeError("Node history supports a time range of up to 31 days", 422, "history_limit")
+    history = scoped(HistoryScope.local(store), filters.projects)
+    if not has_history(history.reader):
+        raise ScopeError("Node history requires a shared history store", 422, "unsupported_scope")
+    history = HistoryScope(history.reader, scope.node, qualified=True)
+    history.require_reader()
+    selection = _selection_for(store, filters, history, scope, now, viewer)
+    try:
+        fields = compute_section(selection, section)
+    except Abandoned as exc:
+        raise ScopeError(str(exc), 409, "superseded") from exc
+    except StoreError as exc:
+        raise ScopeError(str(exc), 503, "query_failed") from exc
+    top = {path.split(".")[0] for path in SECTIONS[section].paths}
+    return json.dumps({
+        "node_scope": {"kind": scope.kind, "node_id": label(scope.node) if scope.node is not None else None},
+        "section": section,
+        "generated_at": selection.now,
+        "fields": {name: value for name, value in fields.items() if name in top},
+    }).encode("utf-8")
+
+
+def _selection_for(store, filters, history, scope, now: float, viewer: str) -> Selection:
+    span = filters.until - filters.since
+    ttl = 120 if span > 86400 else 45
+    key = (history.reader, history.node, scope, filters)
+    rolling = (history.reader, history.node, scope, replace(filters, since=0.0, until=0.0), round(span))
+    follows_clock = 0 <= now - filters.until < _ROLLING_S
+
+    def reusable() -> Selection | None:
+        found = _selections.get(key)
+        if found is not None and not found.abandoned and time.monotonic() - found.created < ttl:
+            return found
+        latest = _latest_selection.get(rolling) if follows_clock else None
+        earlier = _selections.get(latest) if latest is not None and latest != key else None
+        if earlier is None or earlier.abandoned:
+            return None
+        # The window before this one is being read, or was read a moment ago: it answers this request too.
+        behind = filters.until - earlier.filters.until
+        age = time.monotonic() - earlier.created
+        rest = max(ttl, (earlier.cost or 0.0) * (1.0 + _REST_FACTOR))
+        return earlier if 0 <= behind and (earlier.cost is None or (behind < rest and age < rest)) else None
+
+    with _lock:
+        selection = reusable()
+    if selection is None:
+        made = Selection(store, filters, history, now)
+        with _lock:
+            selection = reusable()
+            if selection is None:
+                selection = _selections[key] = made
+                if follows_clock:
+                    _latest_selection[rolling] = key
+                while len(_selections) > _CACHE_KEYS:
+                    _selections.pop(next(iter(_selections)))
+                while len(_latest_selection) > _CACHE_KEYS:
+                    _latest_selection.pop(next(iter(_latest_selection)))
+    if viewer:
+        with _lock:
+            left = _viewers.pop(viewer, None)
+            _viewers[viewer] = selection
+            selection.viewers.add(viewer)
+            while len(_viewers) > _MAX_VIEWERS:
+                _viewers.pop(next(iter(_viewers)))
+            if left is not None and left is not selection:
+                left.viewers.discard(viewer)
+                if not left.viewers:
+                    left.abandon()
+    return selection
+
+
+def serve_section(handler, query: str) -> None:
+    try:
+        body = read_section(handler.server.store, query)
+    except BoardRequestError as exc:
+        handler._json_response({"error": str(exc)}, status=400)
+    except ScopeError as exc:
+        handler._json_response({"error": str(exc), "reason": exc.reason}, status=exc.status)
+    except UnresolvedObservationsError as exc:
+        handler._json_response(exc.to_dict(), status=409)
+    except Exception:
+        logger.exception("Could not read a board section")
+        handler._json_response({"error": "Could not read the board section"}, status=503)
+    else:
+        handler._json_response_raw(body)
 
 
 def serve(handler, query: str) -> None:

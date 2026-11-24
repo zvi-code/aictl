@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-board-section.schema.json",
+  "title": "DetailBoardSection",
+  "description": "One section of a node or fleet board: the board fields this section answers, read by its own request. The fields of every section of one selection, joined key by key, make the board of /api/history/board.",
+  "type": "object",
+  "properties": {
+    "node_scope": {
+      "$ref": "board-node-scope.schema.json"
+    },
+    "section": {
+      "type": "string",
+      "description": "The section answered, as asked."
+    },
+    "generated_at": {
+      "$ref": "board-generated-at.schema.json"
+    },
+    "fields": {
+      "type": "object",
+      "description": "The section's board fields with the values of /api/history/board. A field split between sections (kpis, kpis.spark, series) holds only this section's keys.",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "node_scope",
+    "section",
+    "generated_at",
+    "fields"
+  ],
+  "additionalProperties": false
+}

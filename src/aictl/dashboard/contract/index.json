@@ -87,6 +87,7 @@
     "/api/events": "detail-events.schema.json",
     "/api/events/count": "detail-events-count.schema.json",
     "/api/history/board": "detail-board-history.schema.json",
+    "/api/history/board/section": "detail-board-section.schema.json",
     "/api/hooks-status": "detail-hooks-status.schema.json",
     "/api/otel-status": "detail-otel-status.schema.json",
     "/api/samples": "detail-samples.schema.json",

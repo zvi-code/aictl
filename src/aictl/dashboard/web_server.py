@@ -49,6 +49,7 @@ GET_ROUTES = {
     "/api/live/capabilities": "capabilities",
     "/api/live/stream": "stream",
     "/api/history/board": "history_board",
+    "/api/history/board/section": "history_section",
     "/api/copilot-sessions": "_serve_copilot_sessions",
     "/api/copilot-sessions/{id}": "_serve_copilot_sessions",
     "/api/copilot-sessions/{id}/artifacts": "_serve_copilot_sessions",
@@ -204,6 +205,11 @@ class _DashboardHandler(SessionRoutes, SettingsRoutes, MetricsRoutes, RequestMet
             from .history_board import serve
 
             serve(self, url.query)
+            return
+        if endpoint == "history_section":
+            from .history_board import serve_section
+
+            serve_section(self, url.query)
             return
         if path.startswith("/api/") and path != "/api/board/nodes":
             from .history_scope import ScopeError, identity_parts, parse_scope
