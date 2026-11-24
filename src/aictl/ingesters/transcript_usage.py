@@ -133,7 +133,7 @@ _CODEX_FILE_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 READER_VERSIONS: dict[str, int] = {
     "claude-transcript": 2,  # projects/**/<session>.jsonl and subagents: ClaudeAccumulator, ClaudeFacts
     "codex-rollout": 1,  # sessions/**/rollout-*.jsonl[.zst]: CodexAccumulator
-    "copilot-events": 2,  # session-state/<id>/events.jsonl: CopilotAccumulator, CopilotFacts
+    "copilot-events": 3,  # session-state/<id>/events.jsonl: CopilotAccumulator, CopilotFacts
     "copilot-store": 1,  # session-store.db assistant_usage_events: CopilotStoreReader
     # session-store.db sessions, turns, forge_trajectory_events of sessions with no events.jsonl: CopilotStoreContent
     "copilot-store-content": 1,
@@ -148,6 +148,8 @@ READER_VERSIONS: dict[str, int] = {
     # response_id, Copilot api_call_id), and calls, tool calls, steps, links and prompts name their turn
     # (prompt_id); Copilot turns are session_turns rows keyed by interactionId. Version 3 of
     # vscode-chat-session: each chat request is a session_turns row keyed by its requestId (prompt_id).
+    # Version 3 of copilot-events: the skills a system prompt lists inside its <tools> section are stored
+    # as skills (one item each), not as part of the other system prompt.
 }
 # The order in which the tools' backlogs share the bytes of a poll: Copilot CLI and the Copilot app
 # (one session folder), VS Code, Claude Code, then Codex.

@@ -21,7 +21,8 @@ they are sent again. A full list (``isInitial``) is a reset of its kind.
 
 Copilot CLI writes its whole system prompt in ``system.message``. It is split into
 the repository instruction files it holds (``instruction_file``, matched as in
-loaded_files), the ``<available_skills>`` section (``skills``, one item per skill),
+loaded_files), the ``<available_skills>`` list, which is a section of its own or inside ``<tools>``
+(``skills``, one item per skill),
 custom agent instructions (``custom_agents``) and the other top-level sections
 (``system_prompt_other``). A new system prompt replaces the earlier one: a reset.
 
@@ -150,6 +151,7 @@ def claude_attachment(attachment: object) -> list[Item]:
 
 _OPEN_TAG = re.compile(r"^<([A-Za-z_][\w-]*)(?:\s[^>]*)?>", re.M)
 _SKILL_BLOCK = re.compile(r"<skill>(.*?)</skill>", re.S)
+_SKILL_LIST = re.compile(r"<available_skills>.*?</available_skills>", re.S)
 _SKILL_NAME = re.compile(r"<name>\s*(.*?)\s*</name>", re.S)
 UNTAGGED = "untagged text"
 
@@ -198,15 +200,21 @@ def copilot_system_prompt(content: str, git_root: str, extra: list[str] | tuple[
     for i, (tag, start, end) in enumerate(sections):
         size = _size(content[start:end])
         covered += size
-        if tag == "available_skills":
-            body = content[start:end]
+        # The skills list is a section of its own in some versions and inside ``<tools>`` in others.
+        listing = content[start:end] if tag == "available_skills" else _SKILL_LIST.search(content[start:end])
+        if listing is not None and not isinstance(listing, str):
+            listing = listing.group(0)
+        if listing:
             skills = 0
-            for block in _SKILL_BLOCK.finditer(body):
+            for block in _SKILL_BLOCK.finditer(listing):
                 name = _SKILL_NAME.search(block.group(1))
                 out.append(Item(SKILLS, name.group(1) if name else f"skill {skills + 1}", _size(block.group(0))))
                 skills += _size(block.group(0))
-            if size - skills > 0:
-                other[tag] = other.get(tag, 0) + size - skills
+            # The text around the skills (the list's own tags, and the rest of the section that holds the list).
+            if _size(listing) - skills > 0:
+                other["available_skills"] = other.get("available_skills", 0) + _size(listing) - skills
+            if size - _size(listing) > 0:
+                other[tag] = other.get(tag, 0) + size - _size(listing)
         elif tag in ("custom_instruction", "agent_instructions"):
             kind = CUSTOM_AGENTS if tag == "agent_instructions" else INSTRUCTION_FILE
             paths = owners.get(i) or []

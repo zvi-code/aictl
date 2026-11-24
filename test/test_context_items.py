@@ -347,6 +347,22 @@ class TestCopilotSections:
         # Every character is counted once.
         assert sum(i.chars for i in out) == len(content)
 
+    def test_the_skills_listed_inside_the_tools_section_are_skills_not_other_system_prompt(self, tmp_path):
+        # The CLI writes <available_skills> inside <tools>. Read as part of that section, 42 skills of a real prompt
+        # were filed under "other system prompt" and the store said the tool lists no skills.
+        skill = "<skill>\n  <name>{}</name>\n  <description>does things</description>\n  <location>/x</location>\n</skill>\n"
+        listing = "<available_skills>\n" + skill.format("one") + skill.format("two") + "</available_skills>"
+        tools = "<tools>\n" + "t" * 400 + "\n" + listing + "\nmore about tools\n</tools>"
+        content = "You are the GitHub Copilot CLI.\n" + tools + "\n<session_context>\nabc\n</session_context>\n"
+        out = copilot_system_prompt(content, str(_repo(tmp_path)))
+        by = {(i.kind, i.name): i.chars for i in out[1:]}
+        assert {name: chars for (kind, name), chars in by.items() if kind == "skills"} == {
+            "one": len(skill.format("one")) - 1, "two": len(skill.format("two")) - 1}
+        skills = sum(chars for (kind, _), chars in by.items() if kind == "skills")
+        assert by[("system_prompt_other", "available_skills")] == len(listing) - skills
+        assert by[("system_prompt_other", "tools")] == len(tools) - len(listing)
+        assert sum(i.chars for i in out) == len(content)  # every character is counted once
+
     def _events(self, tmp_path, *, shutdown: bool) -> None:
         repo = _repo(tmp_path)
         lines = [
