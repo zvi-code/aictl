@@ -7,7 +7,7 @@ import {
 import Kql from '../../src/panels/insights/Kql'
 import { kqlCoverage, kqlFinding, kqlHero, type KqlBody } from '../../src/panels/insights/kqlModel'
 import Mcp from '../../src/panels/insights/Mcp'
-import { mcpCoverage, mcpFinding, mcpHero, type McpBody } from '../../src/panels/insights/mcpModel'
+import { callHover, mcpCoverage, mcpFinding, mcpHero, timeHover, type McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
 import {
   afterHover, listingRows, skillCostHover, skillsCoverage, skillsFinding, skillsHero, type SkillsBody,
@@ -201,25 +201,39 @@ const mcpBody = {
 } as unknown as McpBody
 
 describe('INS-22 · MCP servers', () => {
-  it('states the time and bytes of MCP calls, the server that took most and the listings never called', () => {
-    expect(mcpFinding(mcpBody, label)).toBe('2,251 MCP calls (3% of all tool calls) took 1.4 h (1% of all tool time); their results ' +
-      'were sent again with later requests up to 430 MB. The server that took most, kusto, took 35 min in 650 calls of 13 sessions ' +
-      'in 48 projects: median 27 ms, 95th percentile 4.7 s, 4% failed. Claude Code listed tools of 1 server to the model, 1 of them ' +
-      'never called; listings in sessions that did not call the server took 5.0 k tokens (estimated from size).')
-    expect(mcpHero(mcpBody)).toEqual({ value: '1.4 h', label: 'of tool time in MCP calls, 1% of all' })
-    expect(mcpCoverage(mcpBody, label)).toContain('Too small to compare: 1 server with fewer than 20 calls or 3 sessions; 1 project')
+  it('states the calls, failures, time and bytes of MCP calls and the listings not called, without a conclusion', () => {
+    expect(mcpFinding(mcpBody, label)).toBe('2,251 MCP calls to 13 servers (3% of 75,731 tool calls), 53 failed. Tool time 1.4 h ' +
+      '(1% of all tool time). Results 3 MB; carried with later requests up to 430 MB (upper bound). Claude Code listed tools of ' +
+      '1 server to the model; 1 of them not called in any session that listed them. Listings in sessions that did not call the ' +
+      'server: an estimated 5.0 k tokens.')
+    expect(mcpHero(mcpBody)).toEqual({ value: '1.4 h', label: 'MCP tool time in 2,251 calls, 1% of all tool time' })
+    expect(mcpCoverage(mcpBody, label)).toContain('Too small to compare (in the data table): 1 server with fewer than 20 calls or ' +
+      '3 sessions; 1 project')
   })
 
-  it('draws a bar per server that has enough calls, the listings and the projects, and opens a session', () => {
+  it('builds the hover text of the calls and the call time of a server', () => {
+    expect(callHover('kusto', server)).toBe('kusto: 650 calls in 13 sessions of 48 projects; 29 failed (4%)')
+    expect(timeHover('kusto', server)).toBe('kusto: median 27 ms, 95th percentile 4.7 s over the calls with a recorded duration; ' +
+      'tool time 35 min in 650 calls')
+  })
+
+  it('draws calls, time, bytes, server tools, listings and projects for the servers with enough calls, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Mcp {...props(context({ data: mcpBody, status: 'ready', error: null }, opened))} />)
     const box = host.querySelector('[data-box="insight-mcp"]')!
-    const row = box.querySelector('[data-server="kusto"]')!
-    expect(row.textContent).toContain('650 calls · 13 sessions · 48 projects')
-    expect(row.textContent).toContain('4% failed · 67.6 KB returned · carried 25.9 MB')
-    expect(box.querySelector('[data-server="rare"]')).toBeNull()
-    expect(box.querySelector('[data-listed]')!.textContent).toContain('called in 0 of 24 sessions')
-    expect(box.querySelector('[data-projects]')!.textContent).toContain('alpha600 calls to 2 servers')
+    const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
+    expect(value('calls')).toEqual(['650 calls · 29 failed (4%)'])
+    expect(box.querySelector('[data-chart="calls"] [data-row="kusto"]')!.textContent).toContain('13 sessions · 48 projects')
+    expect(box.querySelector('[data-chart="calls"] rect[data-part="bad"] title')!.textContent).toBe('kusto: 29 of 650 calls failed (4%)')
+    expect(box.querySelector('[data-row="rare"]')).toBeNull()
+    expect(value('time')).toEqual(['median 27 ms · p95 4.7 s'])
+    expect(box.querySelector('[data-chart="time"] [data-tick] title')!.textContent).toBe('kusto: 95th percentile 4.7 s')
+    expect(value('sum')).toEqual(['35 min'])
+    expect(value('returned')).toEqual(['67.6 KB'])
+    expect(value('carried')).toEqual(['25.9 MB'])
+    expect(value('server-tools')).toEqual(['650 calls · 29 failed (4%) · median 27 ms · p95 4.7 s'])
+    expect(value('listed')).toEqual(['called in 0 of 24 sessions · 5.0 k tokens unused'])
+    expect(value('projects')).toEqual(['600 calls · 20 failed (3%)'])
     const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-mcp'))
     open!.click()
     expect(opened).toEqual(['s-mcp:tools'])

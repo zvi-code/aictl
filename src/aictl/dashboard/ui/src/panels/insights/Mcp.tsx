@@ -1,59 +1,45 @@
-import { For, Show, untrack } from 'solid-js'
-import { fmtN, fmtNum, projectName } from '../../design/format'
+import { untrack } from 'solid-js'
+import { fmtNum, projectName } from '../../design/format'
+import { BarChart } from './FlowsBars'
+import { axisText, barTop, type BarRow } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { bytes, hours, millis, plural, share, toolLabel, type Label } from './insightsModel'
-import { mcpCoverage, mcpFinding, mcpHero, type McpBody, type McpServer } from './mcpModel'
+import { bytes, hours, millis, share, toolLabel, type Label } from './insightsModel'
+import {
+  callLegend, listedLegend, listedRows, mcpCoverage, mcpFinding, mcpHero, mcpProjectRows, serverBytesRows, serverCallRows, serverSumRows,
+  serverTimeRows, toolCallRows, type McpBody, type McpServer,
+} from './mcpModel'
 import styles from './Insights.module.css'
 
-const SHOWN = 8
+const calls = (rows: BarRow[]) => axisText('calls', fmtNum(barTop(rows)))
 
-/** Per server: its tool time as a bar, with calls, sessions, failures, latency and bytes carried. */
-function ServerBars(props: { body: McpBody }) {
-  const largest = () => Math.max(0, ...props.body.servers.map(item => item.sum_ms ?? 0))
-  return <section class={styles.flow} data-servers>
-    <h3 class={styles.subhead}>Servers by tool time</h3>
-    <Show when={props.body.servers.length} fallback={<p class={styles.note}>No server with 20 calls in 3 sessions.</p>}>
-      <ul class={styles.bars}>
-        <For each={props.body.servers.slice(0, SHOWN)}>{item => <li class={styles.barRow} data-server={item.server}>
-          <span class={styles.barName}>{item.server}<small>{plural(item.calls, 'call')} · {plural(item.sessions, 'session')} · {plural(item.projects, 'project')}</small></span>
-          <span class={styles.barTrack}>
-            <span class={styles.bar} title={`${item.server}: ${hours(item.sum_ms)} in ${plural(item.calls, 'call')}, median ` +
-              `${millis(item.p50_ms)}, 95th percentile ${millis(item.p95_ms)}`}>
-              <span class={`${styles.fill} ${styles.produced}`}
-                style={{ 'inline-size': `${largest() ? Math.max(2, (item.sum_ms ?? 0) / largest() * 100) : 0}%` }} />
-              {hours(item.sum_ms)} · median {millis(item.p50_ms)} · p95 {millis(item.p95_ms)}
-            </span>
-            <span class={styles.splitText}>{share(item.failure_share)} failed · {bytes(item.output_bytes)} returned · carried {bytes(item.carried_bytes)}</span>
-          </span>
-        </li>}</For>
-      </ul>
-    </Show>
-  </section>
-}
-
-function Lists(props: { body: McpBody }) {
-  return <div class={styles.lists}>
-    <section>
-      <h3 class={styles.subhead}>Listed and not called</h3>
-      <Show when={props.body.listed.length} fallback={<p class={styles.note}>No MCP tool listing recorded in this period.</p>}>
-        <ol class={styles.rankList} data-listed>
-          <For each={props.body.listed.slice(0, 6)}>{item => <li>
-            <span>{item.server} <small>{plural(item.listed_tools, 'tool')}</small></span>
-            <span>called in {fmtNum(item.called_sessions)} of {plural(item.sessions, 'session')} · {fmtN(item.unused_tokens)} tokens unused</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>By project</h3>
-      <Show when={props.body.projects.length} fallback={<p class={styles.note}>No project with 20 MCP calls.</p>}>
-        <ol class={styles.rankList} data-projects>
-          <For each={props.body.projects.slice(0, 8)}>{row => <li>
-            <span>{projectName(row.project)}</span>
-            <span>{plural(row.calls, 'call')} to {plural(row.servers, 'server')} · {plural(row.sessions, 'session')} · {hours(row.sum_ms)}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-  </div>
+function Visual(props: { body: McpBody; label: Label }) {
+  const empty = 'No server with 20 calls in 3 sessions.'
+  return <>
+    <BarChart data="calls" title="Calls per server, succeeded and failed" rows={serverCallRows(props.body)} legend={callLegend}
+      axis={calls(serverCallRows(props.body))} empty={empty} />
+    <div class={styles.lists}>
+      <BarChart data="time" title="Call time per server: median (bar) and 95th percentile (mark)" rows={serverTimeRows(props.body)}
+        axis={axisText('time per call', millis(barTop(serverTimeRows(props.body))))} empty={empty} />
+      <BarChart data="sum" title="Tool time per server (sum of call durations)" rows={serverSumRows(props.body)}
+        axis={axisText('summed tool time', hours(barTop(serverSumRows(props.body))))} empty={empty} />
+    </div>
+    <div class={styles.lists}>
+      <BarChart data="returned" title="Result bytes returned per server" rows={serverBytesRows(props.body, 'output_bytes')}
+        axis={axisText('bytes', bytes(barTop(serverBytesRows(props.body, 'output_bytes'))))} empty={empty} />
+      <BarChart data="carried" title="Bytes carried with later requests per server (upper bound)" rows={serverBytesRows(props.body, 'carried_bytes')}
+        axis={axisText('bytes', bytes(barTop(serverBytesRows(props.body, 'carried_bytes'))))} empty={empty} />
+    </div>
+    <BarChart data="server-tools" title="Calls per server tool, succeeded and failed" rows={toolCallRows(props.body)} legend={callLegend}
+      axis={calls(toolCallRows(props.body))} empty="No server tool with 20 calls in 3 sessions." />
+    <div class={styles.lists}>
+      <BarChart data="listed" title="Sessions that listed a server's tools, by whether they called it" rows={listedRows(props.body, props.label)}
+        legend={listedLegend} axis={axisText('sessions', fmtNum(barTop(listedRows(props.body, props.label))))}
+        empty="No MCP tool listing recorded in this period." />
+      <BarChart data="projects" title="MCP calls per project, succeeded and failed" rows={mcpProjectRows(props.body)}
+        axis={calls(mcpProjectRows(props.body))} empty="No project with 20 MCP calls." />
+    </div>
+    <p class={styles.note} data-coverage>{mcpCoverage(props.body, props.label)}</p>
+  </>
 }
 
 type Row = Record<string, unknown>
@@ -74,11 +60,7 @@ export default function Mcp(props: CardProps) {
   return <InsightCard<McpBody> {...props} card="mcp" title="MCP servers" tab="tools"
     hero={mcpHero}
     finding={body => mcpFinding(body, label)}
-    visual={body => <>
-      <ServerBars body={body} />
-      <Lists body={body} />
-      <p class={styles.note} data-coverage>{mcpCoverage(body, label)}</p>
-    </>}
+    visual={body => <Visual body={body} label={label} />}
     note={'An MCP call is a tool call with a stored MCP server, or a name mcp__<server>__<tool>. Tool time is the calls\' ' +
       'duration as the tool recorded it; median and 95th percentile are over the calls with a duration. Failed is the stored ' +
       'failure flag. Carried is the measure of the card Context carry: a result is sent again with every later request of the ' +
@@ -102,3 +84,4 @@ export default function Mcp(props: CardProps) {
       numberField('calls', 'MCP calls', fmtNum), numberField('failures', 'Failed', fmtNum), numberField('servers', 'Servers', fmtNum),
       numberField('sum_ms', 'Tool time', value => hours(value)), numberField('output_bytes', 'Returned', value => bytes(value))]} />
 }
+
