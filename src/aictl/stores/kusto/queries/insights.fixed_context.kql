@@ -12,7 +12,19 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // A skill is used when skill_uses holds a call of it by the same tool in the period, any trigger (the agent
 // invoked it, the user ran it, or the tool loaded its body into the context).
 // A file is the last segment of the item's path; an instruction block with no file is 'custom instruction (no file)'.
+// Split by repository (rows repo_split): each tool's bar and each kind on it, by the repository of the session (the
+// repository rank block).
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
 // skill_uses_current holds the current row of each key per hour of its time (event_hour); only the keys with
 // two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
@@ -69,8 +81,98 @@ let per_session = materialize(fixed
     | summarize started=min(ts), tool=take_any(tool), tokens=sum(tokens), estimated=max(estimated),
                 skills=countif(['kind'] == 'skills') by node_id, session_id
     | where started >= since and started < until);
-let in_period = fixed
-    | join kind=inner (per_session | project node_id, session_id) on node_id, session_id;
+// The requests of the period, for the repository rank only, read as insights.repo_rank reads them.
+let rank_requests = requests_secs
+    | where all_nodes or node_id == requested_node
+    | where ts >= since and ts < until
+    | project node_id, session_id, cost_usd;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
+// The repository of each session of the period, and its items with it.
+let period_repo = materialize(per_session | project node_id, session_id | invoke repo_of());
+let in_period = materialize(fixed
+    | join kind=inner period_repo on node_id, session_id);
+// Per session and kind: tokens and items (the kind rows and their split per repository).
+let session_kinds = materialize(in_period
+    | summarize tokens=sum(tokens), items=count(), estimated=max(estimated) by node_id, session_id, tool, ['kind'], repo);
 let used = skill_uses_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
@@ -84,8 +186,7 @@ let listed = materialize(in_period
     | lookup kind=leftouter (used | project tool, name, uses) on tool, name
     | extend uses=coalesce(uses, 0));
 union
-    (in_period
-        | summarize tokens=sum(tokens), items=count(), estimated=max(estimated) by node_id, session_id, tool, ['kind']
+    (session_kinds
         | summarize sessions=count(), p50_tokens=percentile(tokens, 50), sum_tokens=sum(tokens), p50_items=percentile(items, 50),
                     estimated=max(estimated) by tool, ['kind']
         | extend row_type='kind'),
@@ -112,6 +213,16 @@ union
         | order by sum_tokens desc, file asc
         | take 10
         | extend row_type='file'),
+    // Split by repository, by the repository of the session; the 8 ranked repositories, the rest as ''. Per tool
+    // (split_key ''): sessions and tokens; per tool and kind (kind:<kind>): sessions and tokens. The skill listing, the
+    // skills and the files are not split: those splits cost more cluster time than the rest of the view.
+    (per_session
+        | lookup kind=inner period_repo on node_id, session_id
+        | summarize sessions=count(), sum_tokens=sum(tokens) by tool, repo
+        | project row_type='repo_split', tool, split_key='', repo, sessions, sum_tokens),
+    (session_kinds
+        | summarize sessions=count(), sum_tokens=sum(tokens) by tool, ['kind'], repo
+        | project row_type='repo_split', tool, split_key=strcat('kind:', ['kind']), repo, sessions, sum_tokens),
     (per_session
         | order by tokens desc, node_id asc, session_id asc
         | take 10

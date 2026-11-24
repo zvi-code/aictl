@@ -313,7 +313,7 @@ _VIEWS = {
     "insights.rereads": (
         _TIME,
         "row_type tool node_id session_id files reads repeat_reads files_5plus most_reads sized repeat_bytes unmatched "
-        "all_reads first_ts last_ts computed_at",
+        "all_reads first_ts last_ts computed_at split_key repo",
     ),
     "insights.time_split": (
         _TIME,
@@ -324,17 +324,17 @@ _VIEWS = {
     "insights.context_weight": (
         _TIME,
         "row_type tool bucket node_id session_id requests priced cost_usd reported p50_context p90_context small small_priced "
-        "small_cost first_ts last_ts computed_at",
+        "small_cost first_ts last_ts computed_at split_key repo",
     ),
     "insights.orientation": (
         _TIME,
         "row_type project_path tools tool node_id session_id sessions edited no_project p50_requests p50_cost priced "
-        "before_cost never never_requests never_priced never_cost requests before_priced first_ts last_ts computed_at",
+        "before_cost never never_requests never_priced never_cost requests before_priced first_ts last_ts computed_at split_key repo",
     ),
     "insights.fixed_context": (
         _TIME,
         "row_type tool kind name file node_id session_id sessions p50_tokens p90_tokens sum_tokens p50_items p50_skills "
-        "estimated listed used uses unused_tokens triggers loads avg_tokens max_tokens tokens skills first_ts last_ts computed_at",
+        "estimated listed used uses unused_tokens triggers loads avg_tokens max_tokens tokens skills first_ts last_ts computed_at split_key repo",
     ),
     "insights.problem_sessions": (
         _TIME,

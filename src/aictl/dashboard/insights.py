@@ -512,8 +512,14 @@ def after_failure(rows: list[dict], order: list[dict] | None = None) -> dict:
     }
 
 
-def rereads(rows: list[dict]) -> dict:
-    """Per tool: reads of a file the same session and agent already read, files read 5 times or more, bytes again."""
+REREAD_MEASURES = ("reads", "repeat_reads", "files", "files_5plus", "repeat_bytes")
+
+
+def rereads(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per tool: reads of a file the same session and agent already read, files read 5 times or more, bytes again.
+
+    Each tool's reads, reads again, files, files read 5 times or more and bytes again are split by repository; the
+    most reads of one file (a maximum) is not."""
     coverage = {row.get("tool"): row for row in _of(rows, "coverage")}
     tools = []
     for row in _of(rows, "tool"):
@@ -525,6 +531,10 @@ def rereads(rows: list[dict]) -> dict:
             "unmatched": _int(coverage.get(row.get("tool"), {}).get("unmatched")),
         })
     tools.sort(key=lambda tool: -tool["repeat_reads"])
+    splits = [row for (_tool, key), found in repo_splits(rows).items() if not key for row in found]
+    totals = repo_totals(splits, REREAD_MEASURES)
+    for tool in tools:
+        attach_repos(tool, [row for row in splits if row.get("tool") == tool["tool"]], REREAD_MEASURES, order or [], totals)
     reads = sum(tool["reads"] for tool in tools)
     again = sum(tool["repeat_reads"] for tool in tools)
     sized = [tool["repeat_bytes"] for tool in tools if tool["repeat_bytes"] is not None]
@@ -619,8 +629,20 @@ def time_split(rows: list[dict], order: list[dict] | None = None) -> dict:
     }
 
 
-def context_weight(rows: list[dict]) -> dict:
-    """Per tool and context bucket: requests and cost; per tool: median and 90th percentile context, and small steps."""
+CONTEXT_MEASURES = ("requests", "cost_usd")
+
+
+def _renamed(rows: list[dict], names: dict[str, str]) -> list[dict]:
+    """Split rows with their measures under the names a bar uses (requests -> reported, say)."""
+    return [{**row, **{new: row.get(old) for old, new in names.items()}} for row in rows]
+
+
+def context_weight(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per tool and context bucket: requests and cost; per tool: median and 90th percentile context, and small steps.
+
+    Each bucket cell (requests, cost_usd), each tool's whole bar (reported, cost_usd: the sum of its cells) and each
+    tool's small steps (small_requests, small_cost_usd) are split by repository; the percentiles are not (a median does
+    not add up)."""
     cells = {(row.get("tool"), row.get("bucket")): row for row in _of(rows, "bucket")}
     tools = []
     for row in sorted(_of(rows, "tool"), key=lambda row: str(row.get("tool") or "")):
@@ -647,6 +669,22 @@ def context_weight(rows: list[dict]) -> dict:
             "small_cost_usd": None if not reported or cost is None or (small and not small_priced) else _n(row.get("small_cost")),
         })
     tools.sort(key=lambda tool: (-_n(tool["cost_usd"]), -tool["requests"]))
+    splits = repo_splits(rows)
+    # The bucket cells cover every request with token counts: a repository's own total is the sum of its cells.
+    cell_rows = [row for (_tool, key), found in splits.items() if key.startswith("bucket:") for row in found]
+    totals = repo_totals(cell_rows, CONTEXT_MEASURES)
+    as_tool, as_small = {"requests": "reported"}, {"requests": "small_requests", "cost_usd": "small_cost_usd"}
+    for tool in tools:
+        name = str(tool["tool"] or "")
+        for cell in tool["buckets"]:
+            attach_repos(cell, splits.get((name, f"bucket:{cell['bucket']}"), []), CONTEXT_MEASURES, order or [], totals)
+        attach_repos(tool, _renamed([row for row in cell_rows if str(row.get("tool") or "") == name], as_tool),
+                     ("reported", "cost_usd"), order or [], {repo: {"reported": own["requests"], "cost_usd": own["cost_usd"]}
+                                                            for repo, own in totals.items()})
+        tool["small_repos"] = attach_repos({"small_requests": tool["small_requests"], "small_cost_usd": tool["small_cost_usd"]},
+                                           _renamed(splits.get((name, "small"), []), as_small), ("small_requests", "small_cost_usd"),
+                                           order or [], {repo: {"small_requests": own["requests"], "small_cost_usd": own["cost_usd"]}
+                                                         for repo, own in totals.items()})["repos"]
     counted = [tool for tool in tools if tool["reported"]]
     priced = [tool for tool in counted if tool["cost_usd"] is not None]
     reported = sum(tool["reported"] for tool in counted)
@@ -674,8 +712,14 @@ def context_weight(rows: list[dict]) -> dict:
     }
 
 
-def orientation(rows: list[dict]) -> dict:
-    """Per project: sessions that edit, median main-agent requests and cost before the first edit; per tool: the rest."""
+ORIENTATION_MEASURES = ("sessions", "edited", "never", "never_requests", "never_cost_usd")
+
+
+def orientation(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per project: sessions that edit, median main-agent requests and cost before the first edit; per tool: the rest.
+
+    Each tool's bar (sessions, with an edit, with none, and their requests and cost) is split by repository; the
+    per-project medians are not (a median does not add up)."""
     projects = [{
         "project_path": row.get("project_path"), "sessions": _int(row.get("sessions")),
         "tools": sorted(str(tool) for tool in (row.get("tools") or []) if tool),
@@ -695,7 +739,12 @@ def orientation(rows: list[dict]) -> dict:
             "never_cost_usd": _n(row.get("never_cost")) if _int(row.get("never_priced")) or not never_requests else None,
         })
     tools.sort(key=lambda tool: -tool["sessions"])
-    never_costs = [tool["never_cost_usd"] for tool in tools if tool["never"] and tool["never_cost_usd"] is not None]
+    splits = _renamed([row for (_tool, key), found in repo_splits(rows).items() if not key for row in found],
+                      {"never_cost": "never_cost_usd"})
+    totals = repo_totals(splits, ORIENTATION_MEASURES)
+    for tool in tools:
+        attach_repos(tool, [row for row in splits if row.get("tool") == tool["tool"]], ORIENTATION_MEASURES, order or [], totals)
+    never_costs =[tool["never_cost_usd"] for tool in tools if tool["never"] and tool["never_cost_usd"] is not None]
     sessions = []
     for row in _sessions(rows, ("requests", "before_priced", "before_cost")):
         priced = _int(row.pop("before_priced"))
@@ -717,10 +766,21 @@ def orientation(rows: list[dict]) -> dict:
     }
 
 
-def fixed_context(rows: list[dict]) -> dict:
+def _average_part(rows: list[dict], sessions: int) -> list[dict]:
+    """Split rows with avg_tokens = the repository's tokens over all the bar's sessions: the repository's part of the
+    average, so the parts of a bar sum to the bar's average."""
+    return [{**row, "avg_tokens": _n(row.get("sum_tokens")) / sessions if sessions else None} for row in rows]
+
+
+def fixed_context(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per tool: the fixed context of its sessions by kind; the skills listed against those used; the heaviest files.
 
     A kind no session of a tool reports is not reported (None), and so is the skill listing of a tool that has uses only.
+
+    Split by repository: each tool's bar and each kind on it (sessions; avg_tokens, where a repository's part is its
+    tokens over all the tool's sessions, so the parts sum to the average). A repository's own total (of_repo) is not
+    given: the averages of different tools do not add up. The medians are not split, and neither are the skill listing,
+    the skills and the files (their split costs more cluster time than the rest of the view).
     """
     kinds = {(row.get("tool"), row.get("kind")): row for row in _of(rows, "kind")}
     tools = []
@@ -765,6 +825,13 @@ def fixed_context(rows: list[dict]) -> dict:
                      "loads": _int(row.get("loads")), "avg_tokens": _cost(row.get("avg_tokens")),
                      "max_tokens": _cost(row.get("max_tokens")), "tokens": _n(row.get("sum_tokens"))}
                     for row in _of(rows, "file")), key=lambda row: (-row["tokens"], str(row["file"])))
+    splits = repo_splits(rows)
+    for tool in tools:
+        name = str(tool["tool"] or "")
+        attach_repos(tool, _average_part(splits.get((name, ""), []), tool["sessions"]), ("sessions", "avg_tokens"), order or [])
+        for cell in tool["kinds"]:
+            attach_repos(cell, _average_part(splits.get((name, f"kind:{cell['kind']}"), []), tool["sessions"]),
+                         ("sessions", "avg_tokens"), order or [])
     listed = [row for row in skills if row["listed"] is not None]
     count = sum(row["listed"] for row in listed)
     never = sum(row["listed"] - row["used"] for row in listed)
@@ -782,6 +849,10 @@ def fixed_context(rows: list[dict]) -> dict:
         },
         "sessions": sorted(_sessions(rows, ("tokens", "skills")), key=lambda row: -_n(row["tokens"])),
     }
+
+
+# The context cards whose bars are split by repository (their shapes take repo_order as a second argument).
+REPO_SPLIT_CARDS = REPO_SPLIT_CARDS | {"context", "orientation", "fixed", "rereads"}
 
 
 def _project_name(path: Any) -> str | None:

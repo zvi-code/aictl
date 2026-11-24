@@ -389,6 +389,11 @@ UNPRUNED: dict[tuple[str, str], tuple[str, str]] = {
     ("insights.verified_commits", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.orientation", "requests"): ("ALL_HOURS", ALL_HOURS),
     ("insights.orientation", "tool_invocations"): ("ALL_HOURS", ALL_HOURS),
+    # The context cards read sessions for the repository of each session (the <repository map> block).
+    ("insights.orientation", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.context_weight", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.fixed_context", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.rereads", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.problem_sessions", "context_events"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.problem_sessions", "session_outcomes"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.problem_sessions", "session_turns"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),

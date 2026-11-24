@@ -677,7 +677,7 @@ def test_fixed_context_counts_each_item_once_as_of_its_last_reset(kusto_store):
     assert (claude["skills"]["sessions"], claude["skills"]["avg_tokens"]) == (2, pytest.approx(400.0))
     assert claude["memory_file"]["avg_tokens"] == pytest.approx(525.0) and claude["memory_file"]["estimated"] is True
     assert (claude["tools_listed"]["sessions"], claude["tools_listed"]["session_share"]) == (1, pytest.approx(0.5))
-    assert claude["mcp_instructions"] == {"kind": "mcp_instructions", "reported": False, "sessions": None,
+    assert claude["mcp_instructions"] == {"repos": [], "kind": "mcp_instructions", "reported": False, "sessions": None,
                                           "session_share": None, "p50_tokens": None, "avg_tokens": None,
                                           "p50_items": None, "estimated": False}
     copilot = {cell["kind"]: cell for cell in tools["copilot-cli"]["kinds"]}

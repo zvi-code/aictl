@@ -5,6 +5,8 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // request of 0 tokens. A small step: a request with token counts, under 150 output tokens and no
 // thinking time recorded (a source that does not report thinking records none). A project is the last folder of the
 // request's project path; the project rows are the five with the highest cost in requests of 200k tokens or more.
+// Split by repository (rows repo_split): each bucket cell and each tool's small steps, by the repository of the
+// request's session (the repository rank block).
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // requests_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
@@ -31,6 +33,95 @@ let reqs = materialize(requests_secs
                          context < 200000, '100_200k', context < 500000, '200_500k', 'over_500k'),
              small=isnotnull(context) and isnotnull(output_tokens) and output_tokens < 150 and coalesce(thinking_ms, 0.0) == 0
     | project node_id, session_id, ts, tool, context, bucket, small, cost_usd, project_path);
+let rank_requests = reqs | project node_id, session_id, cost_usd;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
+// Summed per session first: one repository lookup per session, bucket and tool, not per request.
+let bucket_repo = materialize(reqs
+    | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), small=countif(small),
+                small_priced=countif(small and isnotnull(cost_usd)), small_cost=sumif(cost_usd, small)
+          by node_id, session_id, tool, bucket
+    | invoke repo_of()
+    | summarize requests=sum(requests), priced=sum(priced), sum_cost=sum(sum_cost), small=sum(small),
+                small_priced=sum(small_priced), small_cost=sum(small_cost) by tool, bucket, repo);
 union
     (reqs
         | where isnotempty(bucket)
@@ -56,6 +147,15 @@ union
                     sessions=count_distinct(strcat(node_id, '|', session_id)) by project_name
         | top 5 by sum_cost desc
         | extend row_type='project'),
+    // Split by repository: each bucket cell (split_key bucket:<bucket>: requests, cost) and each tool's small steps
+    // (split_key small: requests, cost), by the repository of the request's session; the 8 ranked, the rest as ''.
+    (bucket_repo
+        | where isnotempty(bucket)
+        | project row_type='repo_split', tool, split_key=strcat('bucket:', bucket), repo, requests, priced, sum_cost),
+    (bucket_repo
+        | summarize requests=sum(small), priced=sum(small_priced), sum_cost=sum(small_cost) by tool, repo
+        | where requests > 0
+        | project row_type='repo_split', tool, split_key='small', repo, requests, priced, sum_cost),
     (reqs
         | summarize first_ts=min(ts), last_ts=max(ts)
         | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
