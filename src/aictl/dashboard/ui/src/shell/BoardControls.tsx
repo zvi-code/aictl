@@ -7,9 +7,8 @@ import { Popover } from '../ui/Popover'
 import styles from './Shell.module.css'
 
 export function BoardControls(props: {
-  ctx: PanelContext; find: (element: HTMLInputElement) => void; clear: () => void
+  ctx: PanelContext; clear: () => void
   text: string; search: (text: string) => void
-  rail: boolean; toggleRail: () => void
 }) {
   const ctx = untrack(() => props.ctx)
   const options = () => ctx.board('options')
@@ -30,15 +29,11 @@ export function BoardControls(props: {
   }
   return <>
     <div class={styles.filters} role="group" aria-label="Overview filters">
-      <button class={styles.iconButton} type="button" aria-label="Sections" title={props.rail ? 'Hide the section list' : 'Show the section list'}
-        aria-controls="overview-sections" aria-expanded={props.rail ? 'true' : 'false'} onClick={() => props.toggleRail()}>
-        <Icon glyph="menu" /></button>
       <label class={styles.search}><Icon glyph="search" /><span class={styles.srOnly}>Find</span>
-        <input ref={props.find} type="search" value={props.text} placeholder="Find agents, prompts, files, tools"
-          onInput={event => props.search(event.currentTarget.value)} /><kbd aria-hidden="true">/</kbd></label>
+        <input type="search" value={props.text} placeholder="Find agents, prompts, files, tools"
+          onInput={event => props.search(event.currentTarget.value)} /></label>
       <span class={styles.toolTrigger} data-active={ctx.tools() != null ? '' : undefined}>
-        <Popover label={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`} title="Filter tools" glyph="tools"
-          text={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`}>
+        <Popover label={`Tool: ${ctx.tools() == null ? 'All' : ctx.tools()!.length || 'None'}`} title="Filter tools" glyph="tools">
           <div class={styles.controls}>
             <button type="button" class={styles.secondary} onClick={() => ctx.navigate({ tools: null })}>All tools</button>
             <button type="button" class={styles.secondary} onClick={() => ctx.navigate({ tools: '' })}>No tools</button>
@@ -54,8 +49,9 @@ export function BoardControls(props: {
       {/* The project filter is in the top bar: it applies to every screen, not to the board only. */}
       {(() => {
         const rows = () => options()?.models ?? []
-        return <label class={styles.filter} data-active={ctx.filters().model !== 'all' ? '' : undefined}>
-          <span>Model</span>
+        return <label class={styles.iconFilter} data-active={ctx.filters().model !== 'all' ? '' : undefined}
+          title={`Model: ${ctx.filters().model === 'all' ? 'All' : ctx.filters().model}`}>
+          <Icon glyph="bot" /><span class={styles.srOnly}>Model</span>
           <select value={ctx.filters().model}
             onChange={event => ctx.navigate({ model: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
             <option value="all">All</option>
@@ -63,13 +59,15 @@ export function BoardControls(props: {
               <option value={ctx.filters().model}>{ctx.filters().model}</option>
             </Show>
             <For each={rows()} keyed={row => row.id}>{row => <option value={row().id} title={modelReportedAs(row(), toolLabel)}>{row().id}</option>}</For>
-          </select><Icon glyph="down" small /></label>
+          </select></label>
       })()}
-      <label class={styles.filter} data-active={ctx.filters().status !== 'all' ? '' : undefined}><span>Status</span>
+      <label class={styles.iconFilter} data-active={ctx.filters().status !== 'all' ? '' : undefined}
+        title={`Status: ${STATUSES.find(([id]) => id === ctx.filters().status)?.[1] ?? ctx.filters().status}`}>
+        <Icon glyph="live" /><span class={styles.srOnly}>Status</span>
         <select value={ctx.filters().status}
           onChange={event => ctx.navigate({ status: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
           <For each={STATUSES}>{([id, label]) => <option value={id}>{label}</option>}</For>
-        </select><Icon glyph="down" small /></label>
+        </select></label>
       <Show when={ctx.filters().sel}>
         <span class={styles.chip}>Time selected: {date(ctx.filters().sel?.since)} to {date(ctx.filters().sel?.until)}
           <button class={styles.chipClose} type="button" aria-label="Clear time selection" title="Clear time selection" onClick={() => ctx.select(null)}>

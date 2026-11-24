@@ -115,8 +115,6 @@ settings('SET-01/02/03/12: the keyboard selects pivots and rows, and tool values
   await expect(findings).toBeChecked();
   await findings.press('Home');
   await tool.focus();
-  await page.keyboard.press('/');
-  await expect(search).toBeFocused();
   await search.fill('settings.local');
   await expect(page.getByRole('button', { name: 'Inspect Effort' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Inspect Model', exact: true })).toHaveCount(0);

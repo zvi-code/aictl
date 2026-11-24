@@ -25,7 +25,7 @@ function controls(search: string, board: Record<string, unknown> = {}) {
   } as unknown as PanelContext
   const view = mount(() => <>
     <div data-top><PeriodPicker ctx={ctx} custom={false} setCustom={() => {}} resolved={board.range as { since: number } | undefined} /></div>
-    <div data-board><BoardControls ctx={ctx} find={() => {}} clear={() => {}} text="" search={() => {}} rail={false} toggleRail={() => {}} /></div>
+    <div data-board><BoardControls ctx={ctx} clear={() => {}} text="" search={() => {}} /></div>
   </>)
   unmount = view.dispose
   const select = view.host.querySelector<HTMLSelectElement>('[data-top] [data-period] select')!

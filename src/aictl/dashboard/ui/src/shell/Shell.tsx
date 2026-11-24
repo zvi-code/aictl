@@ -24,7 +24,7 @@ import { Palette, type PaletteCommand, type SessionLookup } from './Palette'
 import { PeriodPicker } from './PeriodPicker'
 import { ProjectChips, ProjectPicker } from './ProjectPicker'
 import { sectionSummary } from './railSummary'
-import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored, typing } from './viewState'
+import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored } from './viewState'
 import '../design/tokens.css'
 import styles from './Shell.module.css'
 
@@ -56,7 +56,6 @@ const posted = (value: object): RequestInit => ({
 })
 
 type Theme = 'light' | 'dark'
-type Density = 'compact' | 'comfortable'
 type Decision = { title: string; lead: string; command: string; label: string; apply(): Promise<string> }
 
 function Shell(props: { client: LiveClient; startedAt: number; notice?: string }) {
@@ -73,11 +72,9 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   const [paused, setPaused] = createSignal(false)
   const [revision, bump] = createSignal(0)
   const [theme, setTheme] = createSignal<Theme>(stored('aictl-theme', ['light', 'dark'], 'light'))
-  const [density, setDensity] = createSignal<Density>(stored('aictl-shell-density', ['compact', 'comfortable'], 'compact'))
   const [rail, setRail] = createSignal(stored('aictl-shell-rail', ['open', 'closed'], 'closed') === 'open')
   const [order, setOrder] = createSignal(sections.board.map(section => section.id))
   const [palette, setPalette] = createSignal(false)
-  const [shortcuts, setShortcuts] = createSignal(false)
   const [custom, setCustom] = createSignal(false)
   const [decision, setDecision] = createSignal<Decision>()
   const [pending, setPending] = createSignal(false)
@@ -96,7 +93,6 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   let landOnFlow = !location.search && !location.hash
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
   let findTimer: ReturnType<typeof setTimeout> | undefined
-  let find: HTMLInputElement | undefined
   let drawerReturn: HTMLElement | undefined
 
   const go = (target: string, replace = false, boardDrawers?: readonly DrawerEntry[]) => {
@@ -234,7 +230,6 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   // A pasted or restored board address with a range the board cannot show is corrected in place.
   createEffect(() => screen() === 'board' ? boardRangePatch(search()) : undefined, patch => { if (patch) go(nextAddress(patch), true) })
   createEffect(theme, value => { document.documentElement.dataset.theme = value; remember('aictl-theme', value) })
-  createEffect(density, value => { document.documentElement.dataset.density = value; remember('aictl-shell-density', value) })
   createEffect(rail, value => remember('aictl-shell-rail', value ? 'open' : 'closed'))
   const transport = createMemo(() => boardLiveRequest(filters(), tools(), screen(), startedAt))
   createEffect(() => [scope(), transport().query, transport().history, paused()] as const, ([current]) => {
@@ -269,13 +264,11 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
       navigate(toolsToParams([...current]))
     } })),
     { id: 'theme', label: `Use ${theme() === 'light' ? 'dark' : 'light'} theme`, run: () => setTheme(theme() === 'light' ? 'dark' : 'light') },
-    { id: 'density', label: `Use ${density() === 'compact' ? 'comfortable' : 'compact'} density`, run: () => setDensity(density() === 'compact' ? 'comfortable' : 'compact') },
     ...screen() === 'settings' ? [] : [{ id: 'layout', label: 'Edit layout', run: () => {
       const edit = () => document.querySelector<HTMLButtonElement>('[data-edit-layout]')?.click()
       const browse = document.querySelector<HTMLButtonElement>('[data-browse-panels]')
       if (browse) { browse.click(); requestAnimationFrame(edit) } else edit()
     } }],
-    { id: 'shortcuts', label: 'Show keyboard shortcuts', run: () => setShortcuts(true) },
     ...agents().slice(0, 100).map(agent => ({ id: `agent-${agent.id}`, label: `Open agent: ${agent.title}`, run: () => ctx.openAgent(agent.id) })),
   ]
   // Any stored session by name, id or text, not only the agents of the current window.
@@ -320,24 +313,11 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
     if (event.defaultPrevented) return
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k' && !decision() && !custom()) {
       event.preventDefault()
-      setShortcuts(false)
       setPalette(value => !value)
       return
     }
     if (document.querySelector('dialog[open], :popover-open')) return
-    if (event.key === 'Escape' && stack().length) { back(); return }
-    if (typing(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
-    if (event.key === '/' && screen() === 'board') { event.preventDefault(); find?.focus() }
-    else if (event.key === '?') { event.preventDefault(); setShortcuts(true) }
-    else if (event.key.toLowerCase() === 's') { event.preventDefault(); changeScreen('settings') }
-    else if (screen() === 'board' && /^[1-9]$/.test(event.key)) {
-      const section = sectionList().filter(section => section.id !== 'top')[Number(event.key) - 1]
-      if (section) { event.preventDefault(); jump(section.id) }
-    } else if (screen() === 'board' && (event.key === '[' || event.key === ']')) {
-      const list = sectionList(), index = list.findIndex(section => query().hash === `#sec-${section.id}`)
-      const next = Math.max(0, Math.min(list.length - 1, (index < 0 ? 0 : index) + (event.key === ']' ? 1 : -1)))
-      if (list[next]) { event.preventDefault(); jump(list[next].id) }
-    }
+    if (event.key === 'Escape' && stack().length) back()
   }
   window.addEventListener('popstate', onPop)
   window.addEventListener('hashchange', onHash)
@@ -415,21 +395,23 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
     <Tooltip class={styles.iconButton} label="Dark theme" pressed={theme() === 'dark'}
       text={theme() === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}
       onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')}><Icon glyph={theme() === 'dark' ? 'sun' : 'moon'} /></Tooltip>
-    <Tooltip class={styles.iconButton} label="Comfortable density" pressed={density() === 'comfortable'}
-      text={density() === 'comfortable' ? 'Use compact rows' : 'Use comfortable rows'}
-      onClick={() => setDensity(old => old === 'comfortable' ? 'compact' : 'comfortable')}><Icon glyph="density" /></Tooltip>
-    <Tooltip class={styles.iconButton} label="Shortcuts" text="Keyboard shortcuts (?)" onClick={() => setShortcuts(true)}><Icon glyph="keys" /></Tooltip>
     <button class={styles.commandButton} type="button" aria-keyshortcuts="Control+K Meta+K" title="Commands (Ctrl K)"
       onClick={() => setPalette(true)}>
-      <Icon glyph="search" /><span class={styles.srOnly}>Commands</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+      <Icon glyph="command" /><span class={styles.srOnly}>Commands</span></button>
   </div>
   // The board's search and filters sit in the middle of the top row, so the page below starts with its content.
   const center = <Show when={screen() === 'board'}>
-    <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} text={findText()} search={searchFor}
-      rail={rail()} toggleRail={() => setRail(old => !old)} />
+    <BoardControls ctx={ctx} clear={clear} text={findText()} search={searchFor} />
   </Show>
-  return <AppShell title="aictl" actions={actions} center={center}
-    navigation={<nav class={styles.screens} aria-label="Screens"><For each={places}>{place =>
+  // The section list of Overview opens from the top-left corner, where it stays while the page scrolls.
+  const lead = <Show when={screen() === 'board'}>
+    <button class={styles.iconButton} type="button" aria-label="Sections" title={rail() ? 'Hide the section list' : 'Show the section list'}
+      aria-controls="overview-sections" aria-expanded={rail() ? 'true' : 'false'} onClick={() => setRail(old => !old)}>
+      <Icon glyph="menu" /></button>
+  </Show>
+  return <AppShell title="aictl" actions={actions} center={center} lead={lead}
+    home={{ open: () => { if (screen() !== 'board') changeScreen('board') }, current: screen() === 'board', label: 'Overview' }}
+    navigation={<nav class={styles.screens} aria-label="Screens"><For each={places.filter(place => place.id !== 'board')}>{place =>
       <button class={styles.screen} type="button" aria-current={place.holds.includes(screen()) ? 'page' : undefined}
         onClick={() => { if (!place.holds.includes(screen())) changeScreen(place.id) }}>
         <Icon glyph={screenGlyphs[place.id]} />{screenNames[place.id]}</button>}</For></nav>}>
@@ -478,16 +460,6 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
       </Loading>
     </Show>
     <Palette open={palette()} close={() => setPalette(false)} commands={commands} sessions={sessionLookup} />
-    <Dialog title="Keyboard shortcuts" open={shortcuts()} onClose={() => setShortcuts(false)}>
-      <dl class={styles.sources}>
-        <dt>Ctrl/Cmd+K</dt><dd>Open the command palette</dd>
-        <dt>/</dt><dd>Focus Find</dd>
-        <dt>1–9, [ and ]</dt><dd>Jump to Overview sections</dd>
-        <dt>S</dt><dd>Open Settings</dd>
-        <dt>?</dt><dd>Open this list</dd>
-        <dt>Escape</dt><dd>Close the current menu or detail</dd>
-      </dl>
-    </Dialog>
     <Dialog title={decision()?.title ?? 'Confirm action'} open={Boolean(decision())} onClose={cancel}
       blockClose={pending()} actions={<>
         <button class={styles.secondary} type="button" disabled={pending()} onClick={cancel}>Cancel</button>

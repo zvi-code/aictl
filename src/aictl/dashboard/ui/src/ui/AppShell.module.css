@@ -22,12 +22,14 @@
   border-block-end: var(--border-size) solid var(--color-border);
 }
 .title { font-size: var(--text-lg); }
+.home { composes: focus from "./control.module.css"; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.home[aria-current="page"] { cursor: default; }
 /* The middle takes the room between the navigation and the actions; empty, it still pushes the actions to the end.
    It is never narrower than its content: with too little room the header wraps it onto a second row. */
 .center { flex: 1 1 0; display: flex; justify-content: center; }
 /* Below this width the three groups do not fit one row: the middle goes under the navigation and the actions, which
    stay together on the first row. */
-@media (max-width: 102rem) {
+@media (max-width: 76rem) {
   .center { order: 1; flex-basis: 100%; }
   .center:empty { display: none; }
 }

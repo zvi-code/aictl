@@ -1,5 +1,4 @@
 :global(body) { margin: 0; background: var(--color-page); }
-:global(:root[data-density="compact"]) { --row-size: calc(var(--control-size) - var(--space-2)); }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
 .headerControls { flex-wrap: nowrap; justify-content: flex-end; gap: var(--space-2); }
 .status {
@@ -68,15 +67,6 @@
   color: var(--color-muted);
   font-weight: inherit;
 }
-.commandButton kbd, .search kbd {
-  margin-inline-start: auto;
-  padding: 0 var(--space-2);
-  border: var(--border-size) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-muted);
-  font: var(--text-xs)/1.5 var(--font-mono);
-}
 
 /* The board's search and filters, in the middle of the top row. */
 .filters {
@@ -116,6 +106,25 @@
 .filter[data-active] select { color: inherit; }
 .filter select option { background: var(--color-surface); color: var(--color-text); }
 .filter svg { pointer-events: none; }
+/* A filter drawn as its icon alone: the menu covers the icon, the choice is in the hover and in the selected look. */
+.iconFilter {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--control-size);
+  block-size: var(--control-size);
+  border: var(--border-size) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-muted);
+}
+.iconFilter:hover { border-color: var(--color-border); color: var(--color-text); }
+.iconFilter:focus-within { outline: var(--focus-size) solid var(--color-focus); outline-offset: var(--space-1); }
+.iconFilter[data-active] { border-color: var(--color-selected); background: var(--color-selected); color: var(--color-selected-text); }
+.iconFilter select { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; opacity: 0; cursor: pointer; }
+.iconFilter svg { pointer-events: none; }
 .search { flex: 1 1 var(--panel-sm); min-inline-size: calc(var(--panel-sm) / 2); max-inline-size: var(--panel-lg); }
 .search input { flex: 1 1 0; inline-size: 0; }
 .search input { flex: 1; cursor: text; font-weight: inherit; }

@@ -34,7 +34,7 @@
   --control-size: 2rem;
   --control-size-sm: 1.625rem;
   --icon-size-sm: .875rem;
-  --row-size: 2rem;
+  --row-size: calc(var(--control-size) - var(--space-2));
   --panel-sm: 10rem;
   --panel-md: 16rem;
   --panel-lg: 24rem;

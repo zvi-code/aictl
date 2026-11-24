@@ -8,7 +8,7 @@
 .workspace h2 { font-size: var(--text-xl); }
 .workspace h3 { font-size: var(--text-lg); }
 .workspace h4 { font-size: var(--text-md); }
-.workspace :is(code, kbd) { font-family: var(--font-mono); }
+.workspace code { font-family: var(--font-mono); }
 .stack { display: grid; gap: var(--space-5); min-inline-size: 0; }
 .stack > * { min-inline-size: 0; }
 .panel, .evidence {
@@ -41,7 +41,6 @@
 .control:has(textarea) { flex-direction: column; align-items: stretch; }
 .search { flex: 1 1 var(--overlay-sm); }
 .search input { flex: 1; min-inline-size: 0; }
-.search kbd { color: var(--color-muted); font-size: var(--text-xs); }
 .control :is(select, textarea), .search input, .button, .link {
   color: var(--color-text);
   border: var(--border-size) solid var(--color-border);

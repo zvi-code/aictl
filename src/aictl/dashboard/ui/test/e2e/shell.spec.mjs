@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-11-20T00:21:24Z'));
 });
 
-test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overview panels', async ({ page, snapshotReplay, capture }) => {
+test('SHL-01 and BRD-01/02/07: sections and recorded Overview panels', async ({ page, snapshotReplay, capture }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await goToBoard(page, snapshotReplay);
   for (const section of board.tree) {
@@ -19,25 +19,14 @@ test('SHL-01 and BRD-01/02/07: sections, keyboard navigation and recorded Overvi
   await expect(page.locator('#p-tokens canvas')).toBeInViewport({ ratio: 0.99 });
   await expect(page.locator('#p-cacheRate canvas')).toBeInViewport({ ratio: 0.99 });
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
-  await page.keyboard.press('2');
   await expect(page.locator('#p-attention').getByRole('heading', { name: 'Needs you now' })).toBeVisible();
-  await page.keyboard.press('1');
-  await expect(page).toHaveURL(/#sec-usage$/);
+  await page.goto(page.url().replace(/#.*$/, '') + '#sec-usage');
   await expect(page.locator('#p-tokens canvas')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cache read', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Cache read', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Cache read', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await page.getByRole('button', { name: 'Show data table' }).click();
   await expect(page.getByRole('table', { name: 'Tokens, cached and not cached data' })).toBeVisible();
-  await page.keyboard.press(']');
-  await expect(page).toHaveURL(/#sec-agents$/);
-  await page.keyboard.press('[');
-  await expect(page).toHaveURL(/#sec-usage$/);
-  await page.keyboard.press('/');
-  await expect(page.getByRole('searchbox', { name: 'Find' })).toBeFocused();
-  // Test the screen shortcut, without entering a search the tape does not contain.
-  await page.getByRole('searchbox', { name: 'Find' }).dispatchEvent('keydown', { key: 's', bubbles: true });
-  await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   const sections = page.getByRole('button', { name: 'Sections', exact: true });
   await sections.click();
   await page.getByRole('navigation', { name: 'Overview sections' }).getByRole('link', { name: 'Agents', exact: true }).press('Enter');
@@ -207,7 +196,7 @@ test('SHL-03/04: provenance, pause, refresh, time and filter URLs', async ({ pag
   const request = page.waitForRequest('**/api/live/stream?**');
   await page.getByRole('button', { name: 'Refresh' }).click();
   await request;
-  await page.keyboard.press('1');
+  await page.goto(page.url().replace(/#.*$/, '') + '#sec-usage');
   const bucket = page.locator('#p-tokens').getByRole('button', { name: 'Select chart bucket' });
   await bucket.press('ArrowRight');
   await bucket.press('Enter');
@@ -249,11 +238,9 @@ test('SHL-05: restore geometry and preferences, re-add panels and reset invalid 
   await page.getByRole('menuitem', { name: 'Taller' }).press('Enter');
   await expect(panel).toHaveCSS('min-block-size', '384px');
   await page.getByRole('button', { name: 'Dark theme' }).click();
-  await page.getByRole('button', { name: 'Comfortable density' }).click();
   await page.reload();
   await expect(panel).toHaveCSS('min-block-size', '384px');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('html')).toHaveAttribute('data-density', 'comfortable');
   await edit.press('Enter');
   await page.getByLabel('Move Overview summary to section').selectOption('sessions');
   await expect(page.locator('#sec-sessions #p-kpis')).toBeVisible();
@@ -272,7 +259,7 @@ test('SHL-05: restore geometry and preferences, re-add panels and reset invalid 
   await expect(page.locator('#sec-top #p-kpis')).toBeVisible();
 });
 
-test('SHL-06: palette keyboard, focus return, recent commands and shortcut dialog', async ({ page, snapshotReplay }) => {
+test('SHL-06: palette keyboard, focus return, recent commands', async ({ page, snapshotReplay }) => {
   await goToBoard(page, snapshotReplay);
   const commands = page.getByRole('button', { name: 'Commands', exact: true });
   await commands.focus();
@@ -292,11 +279,6 @@ test('SHL-06: palette keyboard, focus return, recent commands and shortcut dialo
   await commands.click();
   await expect(palette.getByRole('option', { name: /theme.*Recent/ })).toBeVisible();
   await input.press('Escape');
-  await page.keyboard.press('?');
-  const shortcuts = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
-  await expect(shortcuts).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(shortcuts).toBeHidden();
 });
 
 test('SHL-07: Stop confirms before posting and reports partial results', async ({ page, snapshotReplay }) => {

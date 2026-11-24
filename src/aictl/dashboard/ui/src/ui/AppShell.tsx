@@ -4,6 +4,10 @@ import styles from './AppShell.module.css'
 
 export function AppShell(props: {
   title: string
+  /** What sits before the title, in the top-left corner. */
+  lead?: JSX.Element
+  /** Makes the title a button: the way to the first screen. `current` marks it as the screen shown. */
+  home?: { open: () => void; current: boolean; label: string }
   navigation?: JSX.Element
   /** What sits in the middle of the top row, between the navigation and the actions: the screen's own search and filters. */
   center?: JSX.Element
@@ -21,7 +25,12 @@ export function AppShell(props: {
   return <div class={styles.shell} ref={shell}>
     <a class={styles.skip} href={`#${main}`}>Skip to main content</a>
     <header class={styles.header} ref={header => headerSize.observe(header)}>
-      <strong class={styles.title}>{props.title}</strong>
+      {props.lead}
+      {props.home
+        ? <button type="button" class={styles.home} title={props.home.label} aria-label={props.home.label}
+            aria-current={props.home.current ? 'page' : undefined} onClick={() => props.home!.open()}>
+            <strong class={styles.title}>{props.title}</strong></button>
+        : <strong class={styles.title}>{props.title}</strong>}
       {props.navigation}
       <div class={styles.center}>{props.center}</div>
       <div class={styles.actions}>{props.actions}</div>

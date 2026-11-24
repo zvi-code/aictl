@@ -36,7 +36,3 @@ export function stored<T extends string>(key: string, allowed: readonly T[], fal
 export function remember(key: string, value: string) {
   try { localStorage.setItem(key, value) } catch { /* The current session still works. */ }
 }
-
-export function typing(target: EventTarget | null) {
-  return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName))
-}

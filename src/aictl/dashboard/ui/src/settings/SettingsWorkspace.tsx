@@ -15,17 +15,12 @@ import styles from './Settings.module.css'
 export default function SettingsWorkspace(props: { ctx: PanelContext; config: TopicConfigurationFile }) {
   const config = () => props.config
   const w = untrack(() => workspaceState(props.ctx, config))
-  let search: HTMLInputElement | undefined
   createEffect(() => true, () => {
-    const shortcuts = (event: KeyboardEvent) => {
+    const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && w.inspector() && !document.querySelector('dialog[open]')) w.close()
-      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || document.querySelector('dialog[open]')) return
-      if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.matches('input, textarea, select'))) return
-      event.preventDefault()
-      search?.focus()
     }
-    window.addEventListener('keydown', shortcuts)
-    return () => window.removeEventListener('keydown', shortcuts)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   })
 
   return <div class={`${styles.workspace} ${styles.stack}`} role="region" aria-label="Settings workspace">
@@ -43,9 +38,8 @@ export default function SettingsWorkspace(props: { ctx: PanelContext; config: To
         onChange={view => w.change({ view: view as Pivot })} />
       <label class={styles.search}>
         <span class={styles.visuallyHidden}>Find a setting, value, key or file</span>
-        <input ref={search} type="search" value={w.query()} placeholder="Find a setting, value, key or file"
+        <input type="search" value={w.query()} placeholder="Find a setting, value, key or file"
           onInput={event => w.setQuery(event.currentTarget.value)} />
-        <kbd aria-hidden="true">/</kbd>
       </label>
       <button type="button" aria-pressed={w.nonDefault() ? 'true' : 'false'} onClick={() => w.setNonDefault(value => !value)}>Only non-default</button>
       <button type="button" aria-pressed={w.risky() ? 'true' : 'false'} onClick={() => w.setRisky(value => !value)}>Only risky</button>
