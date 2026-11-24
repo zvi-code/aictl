@@ -300,7 +300,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(subBox.querySelector('[data-few]')?.textContent).toBe('codex-cli: 3 requests, too few to compare.')
     // Failures: a stacked bar of what followed each failed call, a segment per outcome and one for no next call.
     const flow = card(host, 'failures')
-    const outcomes = flow.querySelector('[data-chart="failure-outcomes"] [data-row="claude-code"]')!
+    const outcomes = flow.querySelector('[data-chart="failure-next"] [data-row="claude-code"]')!
     expect([...outcomes.querySelectorAll('[data-part] button')].map(part => part.textContent))
       .toEqual(['1,233', '400', '300', '2,000', '1,000', '67'])
     expect(outcomes.querySelector('[data-part="identical_failed"] [role="tooltip"]')!.textContent).toBe('claude-code, identical call, ' +
@@ -308,11 +308,10 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
       'name and same target (command, path or URL), and it failed.')
     expect(outcomes.querySelector('[data-part="last"] [role="tooltip"]')!.textContent).toBe('claude-code, no next call: 67 failed ' +
       'calls (1% of 5,000 failed calls) were the last call of their agent in the period.')
-    expect(flow.querySelector('[data-chart="failure-calls"] [data-total]')!.textContent).toBe('5,000 · 56%')
+    expect(flow.querySelector('[data-chart="failure-calls"] [data-total]')!.textContent).toBe('5,000 · 56% of calls')
     expect(flow.querySelector('[data-chart="failure-runs"] [role="tooltip"]')!.textContent).toBe('claude-code: 71 runs of 3 or more ' +
       'failed calls in a row by one agent, 245 calls in them (5% of 5,000 failed calls); the longest 8 calls.')
-    expect(card(host, 'failures').querySelector('[data-hero]')!.textContent).toBe('71runs of 3 or more failed calls in a row, among ' +
-      '5,000 failed tool calls in the period')
+    expect(card(host, 'failures').querySelector('[data-hero]')!.textContent).toBe('5,000failed tool calls in the period, every tool')
     // Rereads: bytes not reported stays not reported.
     const reads = card(host, 'rereads').querySelector('[data-chart="reread-reads"] [data-row="copilot-cli"]')!
     expect([...reads.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['58', '42'])

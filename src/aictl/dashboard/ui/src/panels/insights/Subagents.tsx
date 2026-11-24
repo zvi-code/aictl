@@ -17,7 +17,7 @@ function Visual(props: { body: SubagentBody; label: Label; mode: ColourMode; set
   const repo = () => split() && props.mode === 'repo'
   const rows = (of: 'cost' | 'requests') => repo() ? sideRepoRows(props.body, props.label, of) : sideRows(props.body, props.label, of)
   return <>
-    <ColourBy parts="Main agent / subagents" value={repo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
+    <ColourMode parts="Main agent / subagents" value={repo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
     <Show when={repo()} fallback={<ul class={bars.legend} aria-label="Main agent and subagents: colours of the bar segments" data-side-legend>
       <For each={SIDE_LEGEND}>{item => <li><span class={`${bars.swatch} ${bars[`t${item.tone}`]}`} />{item.label}</li>}</For>
     </ul>}>
