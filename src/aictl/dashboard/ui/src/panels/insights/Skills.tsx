@@ -27,9 +27,10 @@ function Visual(props: { body: SkillsBody; label: Label }) {
     </div>
     <section class={styles.group} data-after>
       <h2>What followed a use in the same turn</h2>
+      <p class={styles.note} data-after-axis>{axisText("share of the skill's uses with a turn", '100%') + by()} One scale for the three charts.</p>
       <div class={styles.narrow}>
         <For each={AFTER}>{after => <BarChart data={after} title={AFTER_LABELS[after]} rows={afterRows(props.body, after)} top={1}
-          axis={axisText("share of the skill's uses with a turn", '100%') + by()} empty={empty} />}</For>
+          axis="" empty={empty} />}</For>
       </div>
     </section>
     <div class={styles.columns}>

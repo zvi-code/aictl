@@ -175,7 +175,7 @@ describe('INS-21 · Skills', () => {
     expect(value('after_edit')).toEqual(['97%'])
     expect(value('after_test')).toEqual(['0%'])
     expect(value('after_commit')).toEqual(['1%'])
-    expect(box.querySelector('[data-chart="after_edit"]')!.textContent).toContain('linear scale from 0 to 100%')
+    expect(box.querySelector('[data-after-axis]')!.textContent).toContain('linear scale from 0 to 100%')
     expect(value('listings')).toEqual(['4 used · 114 not used'])
     expect(value('unused')).toEqual(['7.2 k tokens'])
     expect(value('projects')).toEqual(['386 uses'])

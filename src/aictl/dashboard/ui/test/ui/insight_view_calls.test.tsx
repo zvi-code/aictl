@@ -329,6 +329,9 @@ describe('INS-V-C · Skills', () => {
     expect(repos(svgRow(box, 'unused', 'claude-code:never-used'))).toEqual(['1'])
     expect(repos(svgRow(box, 'tools', 'claude-code'))).toEqual(['0', '1'])
     expect(repos(svgRow(box, 'projects', '/src/app'))).toEqual(['0'])
+    // One axis line for the three charts of what followed a use.
+    expect(box.querySelector('[data-after-axis]')!.textContent).toBe("Bar length: share of the skill's uses with a turn, linear scale " +
+      'from 0 to 100%. A segment per repository. One scale for the three charts.')
     // The listings are not split: neutral tones, not repository colours.
     expect(parts(svgRow(box, 'listings', 'claude-code'))).toEqual(['ink', 'muted'])
     dispose()
