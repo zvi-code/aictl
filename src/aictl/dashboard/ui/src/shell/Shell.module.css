@@ -1,17 +1,6 @@
 :global(body) { margin: 0; background: var(--color-page); }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
 .headerControls { flex-wrap: nowrap; justify-content: flex-end; gap: var(--space-2); }
-.status {
-  display: inline-flex;
-  flex: 0 1 auto;
-  align-items: center;
-  gap: var(--space-3);
-  min-inline-size: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  font-size: var(--text-sm);
-}
-.status > :not(.live) { flex: none; }
 @media (max-width: 48rem) {
   .headerControls { display: contents; }
 }
@@ -34,28 +23,39 @@
 .part:hover:not(:disabled) { color: var(--color-text); }
 .part[aria-current="page"], .part[aria-current="page"]:hover { background: var(--color-selected); color: var(--color-selected-text); }
 
-.live {
-  display: block;
-  flex: 0 1 auto;
-  min-inline-size: 0;
-  padding-inline-start: var(--space-3);
-  color: var(--color-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.live::before {
-  content: "";
-  display: inline-block;
-  vertical-align: middle;
-  inline-size: var(--space-4);
-  block-size: var(--space-4);
-  margin-inline-end: var(--space-3);
+/* One mark for the scope: the number of nodes that report, a turning ring while history is still read. */
+.scopeStatus { composes: iconButton focus from "../ui/control.module.css"; }
+.scopeCount {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-inline-size: calc(var(--space-6) + var(--space-2));
+  block-size: calc(var(--space-6) + var(--space-2));
+  padding-inline: var(--space-2);
   border-radius: var(--radius-pill);
-  background: var(--color-muted);
+  background: var(--color-success);
+  color: var(--color-on-accent);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
-.live[data-tone="live"]::before { background: var(--color-success); box-shadow: 0 0 0 var(--space-1) var(--color-hover); }
-.live[data-tone="warning"]::before { background: var(--color-warning); }
+.scopeCount[data-tone="warning"] { background: var(--color-warning); }
+.scopeCount[data-tone="idle"] { background: var(--color-muted); }
+.scopeCount[data-reading]::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--space-2) * -1);
+  border: var(--space-1) solid var(--color-border);
+  border-block-start-color: var(--color-warning);
+  border-radius: var(--radius-pill);
+  animation: scopeReading 1.2s linear infinite;
+}
+@keyframes scopeReading { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .scopeCount[data-reading]::after { animation: none; border-style: dashed; }
+}
 .divider { flex: none; inline-size: var(--border-size); block-size: var(--space-6); margin-inline: var(--space-2); background: var(--color-border); }
 .commandButton {
   composes: button focus from "../ui/control.module.css";
@@ -213,9 +213,6 @@
 }
 .popup form { margin-block: var(--space-4); }
 .popup .controls { gap: var(--space-2); }
-.sources { margin: var(--space-3) 0; }
-.sources dt { font-weight: var(--weight-strong); }
-.sources dd { margin: 0 0 var(--space-3); color: var(--color-muted); overflow-wrap: anywhere; }
 .choice { display: flex; align-items: center; gap: var(--space-3); padding-block: var(--space-2); }
 .form { display: grid; justify-items: start; gap: var(--space-4); }
 .form label { display: grid; gap: var(--space-2); color: var(--color-muted); font-size: var(--text-sm); }
@@ -276,26 +273,3 @@
 .projectFacts { color: var(--color-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .projectEntry:has(input:checked) .projectPath, .projectEntry:has(input:checked) .projectFacts { color: inherit; }
 .projectChips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-block-end: var(--space-3); }
-.historyNotice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-4);
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-surface);
-  color: var(--color-text);
-  border: var(--border-size) solid var(--color-border);
-  border-inline-start: calc(var(--border-size) * 4) solid var(--color-warning);
-  border-radius: var(--radius-sm);
-}
-.link {
-  composes: focus from "../ui/control.module.css";
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--color-accent);
-  text-decoration: underline;
-  cursor: pointer;
-  font: inherit;
-}

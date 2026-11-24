@@ -12,4 +12,5 @@
   color: var(--color-text);
   box-shadow: var(--elevation-1);
   font: var(--text-sm)/var(--leading-normal) var(--font-ui);
+  white-space: pre-line;
 }

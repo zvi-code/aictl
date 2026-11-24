@@ -185,10 +185,7 @@ test('SHL-01/02: legacy session URL, manual node scope and Back', async ({ page,
 
 test('SHL-03/04: provenance, pause, refresh, time and filter URLs', async ({ page, snapshotReplay }) => {
   await goToBoard(page, snapshotReplay);
-  await page.getByRole('button', { name: 'Source status' }).click();
-  await expect(page.getByText('Local configuration', { exact: true })).toBeVisible();
-  await expect(page.getByText('Native output', { exact: true })).toBeVisible();
-  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-scope-status]')).toBeVisible();
   await page.getByRole('button', { name: 'Pause live' }).click();
   await expect(page.getByText('This node · Live paused')).toBeVisible();
   await expect(page.locator('#p-kpis [data-status=stale]')).toBeVisible();

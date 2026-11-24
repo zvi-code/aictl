@@ -14,16 +14,16 @@ import type { Command, NodeScope, PanelContext } from '../panels/types'
 import { AppShell } from '../ui/AppShell'
 import { Dialog } from '../ui/Dialog'
 import { Icon, type Glyph } from '../ui/Icon'
-import { Freshness, PanelState } from '../ui/PanelState'
-import { Popover } from '../ui/Popover'
+import { PanelState } from '../ui/PanelState'
 import { Tooltip } from '../ui/Tooltip'
 import { BoardControls } from './BoardControls'
 import type { DrawerEntry } from './drawerTypes'
-import { NodePicker, scopeLabel } from './NodePicker'
+import { NodePicker } from './NodePicker'
 import { Palette, type PaletteCommand, type SessionLookup } from './Palette'
 import { PeriodPicker } from './PeriodPicker'
 import { ProjectChips, ProjectPicker } from './ProjectPicker'
 import { sectionSummary } from './railSummary'
+import { ScopeStatus } from './ScopeStatus'
 import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored } from './viewState'
 import '../design/tokens.css'
 import styles from './Shell.module.css'
@@ -344,8 +344,8 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
     const health = topic(client, 'runtime.health', 'local')
     return health && 'pipeline' in health ? health.pipeline.stream : undefined
   }
+  // This node's live link in words. Reported nodes have none: their state is the status each of them reports.
   const liveStatus = () => {
-    if (scope() !== 'local') return 'Node reports and scoped history; no local values substituted'
     if (paused()) return 'Live paused'
     if (client.status.error) return client.store.meta.ready ? 'Live disconnected — last received data' : 'Live source unavailable'
     if (!client.status.connected || !client.store.meta.ready) return 'Waiting for live sources'
@@ -356,32 +356,10 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   }
   const liveTone = () => {
     const status = liveStatus()
-    return status === 'Live connected' ? 'live' : status === 'Live paused' || scope() !== 'local' || status.startsWith('Waiting') ? 'idle' : 'warning'
+    return status === 'Live connected' ? 'live' : status === 'Live paused' || status.startsWith('Waiting') ? 'idle' : 'warning'
   }
   const actions = <div class={`${styles.controls} ${styles.headerControls}`}>
-    <span class={styles.status}>
-      {/* The node picker beside it names the scope. For reported nodes the sentence is on hover only: it never
-          changes, and written out it pushed the top row onto a second line. */}
-      <span class={styles.live} data-tone={liveTone()} role="status" data-live-status
-        title={`${scopeLabel(scope(), nodeId())} · ${liveStatus()}`}
-        aria-label={`${scopeLabel(scope(), nodeId())} · ${liveStatus()}`}>
-        {scope() === 'local' ? liveStatus() : ''}</span>
-      <Show when={scope() === 'local' && liveStatus() === 'Collector snapshot is stale'}>
-        <Freshness compact updatedAt={stream()?.snapshot_ts} />
-      </Show>
-    </span>
-    <Popover label="Source status" title="Data sources" glyph="sources">
-      <Show when={scope() === 'local'} fallback={<p>Uses reported data for {scopeLabel(scope(), nodeId())}.</p>}>
-        <dl class={styles.sources}>
-          <For each={['Runtime', 'Historical', 'Local configuration', 'Native output']}>{(label, i) => <div>
-            <dt>{label}</dt><dd>{String(at(client.store.meta.capabilities, `source_policy.${['agent_state', 'historical_sessions', 'configured_on_disk', 'native_output'][i()]}`) ?? 'Not available from this source')}</dd>
-          </div>}</For>
-        </dl>
-        <For each={sourceRows()}>{status => <p>{'topic' in status ? status.topic : 'component' in status ? status.component : status.producer}
-          {' — '}{'error' in status && status.error ? status.error : 'stale' in status && status.stale ? 'Stale' :
-            'ready' in status ? status.ready ? 'Ready' : 'Waiting' : 'Reported'}</p>}</For>
-      </Show>
-    </Popover>
+    <ScopeStatus ctx={ctx} live={scope() === 'local' ? { text: liveStatus(), tone: liveTone() } : undefined} />
     <Show when={projectScreen()}>
       <PeriodPicker ctx={ctx} custom={custom()} setCustom={setCustom} resolved={screen() === 'board' ? ctx.board('range', true) : undefined} />
       <ProjectPicker ctx={ctx} />

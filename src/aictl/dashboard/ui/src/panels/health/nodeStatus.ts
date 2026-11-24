@@ -91,3 +91,24 @@ export function noticeText(s: ReadingSummary) {
   const where = s.nodes === 1 ? 'on this node' : `on ${fmtNum(s.reading)} of ${fmtNum(s.nodes)} nodes`
   return `History is still being read ${where}: ${fmtNum(s.complete)} of ${fmtNum(s.files)} files; figures are incomplete`
 }
+
+/** This node's live link, in words and as a tone: only the local scope has one. */
+export type LiveLink = { text: string; tone: 'live' | 'idle' | 'warning' }
+export type ScopeBadge = { count: string; tone: 'ok' | 'idle' | 'warning'; reading: boolean; lines: string[] }
+
+/** The top row's status mark: the nodes of the scope that report now, whether any still reads its history, and the
+    live link. A node that stopped reporting is counted out and named on hover; the mark warns when none reports. */
+export function scopeBadge(rows: readonly StatusRow[] | undefined, where: string, live?: LiveLink): ScopeBadge {
+  const known = (rows ?? []).filter(row => row.status !== 'none')
+  const reporting = known.filter(row => row.status !== 'stale' && row.status !== 'unknown').length
+  const summary = readingSummary(rows)
+  const nodes = !rows ? 'node status not received yet'
+    : reporting === known.length ? `${fmtNum(reporting)} ${reporting === 1 ? 'node reports' : 'nodes report'}`
+      : `${fmtNum(reporting)} of ${fmtNum(known.length)} nodes report`
+  return {
+    count: rows ? fmtNum(reporting) : '',
+    tone: live?.tone === 'warning' || (rows && !reporting) ? 'warning' : !rows || live?.tone === 'idle' ? 'idle' : 'ok',
+    reading: Boolean(summary),
+    lines: [`${where}: ${nodes}.`, ...summary ? [noticeText(summary) + '.'] : [], ...live ? [live.text + '.'] : []],
+  }
+}

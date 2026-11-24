@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { flush } from 'solid-js'
 import type { PanelContext } from '../../src/panels/types'
 import { NodeStatusTable } from '../../src/panels/health/Nodes'
-import { noticeText, readingSummary, statusPath, type StatusRow } from '../../src/panels/health/nodeStatus'
-import { HistoryNotice } from '../../src/shell/Overview'
+import { noticeText, readingSummary, scopeBadge, statusPath, type StatusRow } from '../../src/panels/health/nodeStatus'
+import { ScopeStatus } from '../../src/shell/ScopeStatus'
 import { bodyRows, installDom, layoutHeaders, mount } from './dom'
 
 const NOW = 1_800_000_000
@@ -92,19 +92,34 @@ describe('node status', () => {
     dispose()
   })
 
-  it('puts a notice on the board while a node reads history, linking to Health, and none when all are done', () => {
+  it('says in the top row badge how many nodes report, that history is still read, and the live link', () => {
+    expect(scopeBadge(fleet, 'All nodes')).toEqual({ count: '3', tone: 'ok', reading: true, lines: [
+      'All nodes: 3 of 4 nodes report.',
+      'History is still being read on 2 of 4 nodes: 274 of 4,032 files; figures are incomplete.'] })
+    expect(scopeBadge([row('mac', 'reported', false)], 'This node', { text: 'Live connected', tone: 'live' })).toEqual({
+      count: '1', tone: 'ok', reading: false, lines: ['This node: 1 node reports.', 'Live connected.'] })
+    expect(scopeBadge([row('mac', 'reported', false)], 'This node', { text: 'Live paused', tone: 'idle' }).tone).toBe('idle')
+    expect(scopeBadge([row('gone', 'stale', false)], 'All nodes')).toMatchObject({ count: '0', tone: 'warning' })
+    expect(scopeBadge(undefined, 'All nodes')).toEqual({ count: '', tone: 'idle', reading: false,
+      lines: ['All nodes: node status not received yet.'] })
+  })
+
+  it('draws the badge with the count, the sentences on hover, and opens Health on a click', () => {
     const asked: string[] = []
     const { ctx, navigations } = context(fleet, asked)
-    const { host, dispose } = mount(() => <HistoryNotice ctx={ctx} />)
-    const notice = host.querySelector('[data-history-notice]')!
-    expect(notice.textContent).toContain('History is still being read on 2 of 4 nodes: 274 of 4,032 files; figures are incomplete')
+    const { host, dispose } = mount(() => <ScopeStatus ctx={ctx} />)
+    const mark = host.querySelector<HTMLElement>('[data-scope-status]')!
+    expect(mark.textContent).toBe('3')
+    expect(mark.dataset.tone).toBe('ok')
+    expect(mark.hasAttribute('data-reading')).toBe(true)
+    expect(host.querySelector('[role="tooltip"]')!.textContent).toBe(
+      'All nodes: 3 of 4 nodes report.\nHistory is still being read on 2 of 4 nodes: 274 of 4,032 files; figures are incomplete.')
     expect(asked).toContain('/api/board/nodes?view=status&scope=fleet')
-    notice.querySelector('button')!.click()
+    host.querySelector('button')!.click()
     expect(navigations).toEqual([{ screen: 'health' }])
     dispose()
-    const done = context([row('mac', 'reported', false)]).ctx
-    const after = mount(() => <HistoryNotice ctx={done} />)
-    expect(after.host.querySelector('[data-history-notice]')).toBeNull()
-    after.dispose()
+    const done = mount(() => <ScopeStatus ctx={context([row('mac', 'reported', false)]).ctx} />)
+    expect(done.host.querySelector('[data-scope-status]')!.hasAttribute('data-reading')).toBe(false)
+    done.dispose()
   })
 })

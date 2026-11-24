@@ -11,30 +11,9 @@ import { runtimeSummary } from '../data/runtimeAgents'
 import type { PanelContext } from '../panels/types'
 import { Meter } from '../ui/Meter'
 import { scopeLabel } from './NodePicker'
-import { noticeText, readingSummary, statusPath, statusRows } from '../panels/health/nodeStatus'
 import styles from './Shell.module.css'
 
 const definitions = [...overviewA, ...overviewB]
-const NOTICE_REFRESH_MS = 60000
-
-/** While a node in scope still reads its session history, the board's figures are partial: say so, with figures. */
-export function HistoryNotice(props: { ctx: PanelContext }) {
-  const ctx = untrack(() => props.ctx)
-  const path = createMemo(() => statusPath(ctx.scope(), ctx.nodeId()))
-  const status = untrack(() => ctx.detail<unknown>(path))
-  createEffect(path, key => {
-    if (!key) return
-    const timer = setInterval(() => { if (!document.hidden) status.retry() }, NOTICE_REFRESH_MS)
-    return () => clearInterval(timer)
-  })
-  const summary = createMemo(() => readingSummary(statusRows(status()?.data)))
-  return <Show when={summary()}>{s =>
-    <p class={styles.historyNotice} role="status" data-history-notice>
-      <span>{noticeText(s())}.</span>
-      <button type="button" class={styles.link} onClick={() => ctx.navigate({ screen: 'health' })}>Show progress in Health</button>
-    </p>}
-  </Show>
-}
 
 function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
   const ctx = untrack(() => props.ctx)
@@ -100,7 +79,6 @@ export default function Overview(props: { ctx: PanelContext; order: (order: stri
   createEffect(entered, value => { if (value) setBrowse(true) })
   const showDock = () => browse() || entered()
   return <div data-screen="board" class={styles.overview}>
-    <HistoryNotice ctx={props.ctx} />
     <Show when={showDock()} fallback={<HistoryStart ctx={props.ctx} browse={() => setBrowse(true)} />}>
       <DockScreen screen="board" definitions={definitions} heading={<h1>Overview</h1>} ctx={props.ctx} order={props.order}
         shown={def => shownInScope(def, props.ctx.scope())} />
