@@ -317,7 +317,8 @@ _VIEWS = {
     "insights.time_split": (
         _TIME,
         "row_type tool group program node_id session_id requests calls timed duration_ms overlong overlong_ms "
-        "thinking_reported thinking_ms p50_ms p95_ms failures tool_ms model_ms first_ts last_ts computed_at",
+        "thinking_reported thinking_ms reasoning_reported reasoning_tokens reasoning_output_tokens p50_ms p95_ms failures "
+        "tool_ms model_ms first_ts last_ts computed_at",
     ),
     "insights.context_weight": (
         _TIME,

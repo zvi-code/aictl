@@ -371,7 +371,10 @@ def _timed(value: Any, timed: int) -> float | None:
 def time_split(rows: list[dict]) -> dict:
     """Per tool: summed request time (of which thinking) and summed tool-call time; per program: calls and time.
 
-    A row with no duration, or one over 24 hours (a recording error), is not summed and is counted apart.
+    A row with no duration, or one over 24 hours (a recording error), is not summed and is counted apart. A tool
+    that records reasoning tokens gets them with the output tokens of the same requests: Copilot records no
+    thinking time, so this is what it reports about thinking. The share is stated only where reasoning tokens are
+    part of the output tokens (never more than them).
     """
     model = {row.get("tool"): row for row in _of(rows, "model")}
     calls = {row.get("tool"): row for row in _of(rows, "calls")}
@@ -380,6 +383,8 @@ def time_split(rows: list[dict]) -> dict:
         m, c = model.get(tool, {}), calls.get(tool, {})
         requests, timed, reported = _int(m.get("requests")), _int(m.get("timed")), _int(m.get("thinking_reported"))
         made, called = _int(c.get("calls")), _int(c.get("timed"))
+        reasoned = _int(m.get("reasoning_reported"))
+        reasoning, reasoned_output = _n(m.get("reasoning_tokens")), _n(m.get("reasoning_output_tokens"))
         tools.append({
             "tool": tool, "requests": requests, "untimed_requests": requests - timed - _int(m.get("overlong")),
             "overlong_requests": _int(m.get("overlong")),
@@ -387,6 +392,9 @@ def time_split(rows: list[dict]) -> dict:
             "calls": made, "untimed_calls": made - called - _int(c.get("overlong")), "overlong_calls": _int(c.get("overlong")),
             "overlong_ms": _n(m.get("overlong_ms")) + _n(c.get("overlong_ms")),
             "tool_ms": _timed(c.get("duration_ms"), called),
+            "reasoning_requests": reasoned, "reasoning_tokens": int(reasoning) if reasoned else None,
+            "reasoning_output_tokens": int(reasoned_output) if reasoned else None,
+            "reasoning_share": _ratio(reasoning, reasoned_output) if reasoned and reasoning <= reasoned_output else None,
         })
     tools.sort(key=lambda tool: -(_n(tool["model_ms"]) + _n(tool["tool_ms"])))
     programs = [{

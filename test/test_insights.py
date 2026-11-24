@@ -578,6 +578,22 @@ def _kql_list(view: str, name: str) -> set[str]:
     return set(re.findall(r"'([^']*)'", body.group(1)))
 
 
+def test_time_split_gives_reasoning_tokens_where_a_tool_records_them_instead_of_thinking_time(kusto_store):
+    # Copilot records no thinking time. It records reasoning tokens per request: those, against the output tokens of
+    # the same requests, are what the card can say about its thinking.
+    s = kusto_store
+    _request(s, "g1", 10.0, session="s2", tool="copilot-cli", duration_ms=500.0, output_tokens=1000, thinking_tokens=400)
+    _request(s, "g2", 11.0, session="s2", tool="copilot-cli", duration_ms=500.0, output_tokens=600, thinking_tokens=0)
+    _request(s, "g3", 12.0, session="s2", tool="copilot-cli", duration_ms=500.0, output_tokens=5000)  # not recorded
+    _request(s, "t1", 13.0, duration_ms=1000.0, thinking_ms=400.0, output_tokens=300)  # thinking time, no token count
+    tools = {tool["tool"]: tool for tool in _card(s, "time")["tools"]}
+    copilot, claude = tools["copilot-cli"], tools["claude-code"]
+    assert copilot["thinking_ms"] is None
+    assert (copilot["reasoning_requests"], copilot["reasoning_tokens"], copilot["reasoning_output_tokens"]) == (2, 400, 1600)
+    assert copilot["reasoning_share"] == pytest.approx(0.25)
+    assert (claude["reasoning_requests"], claude["reasoning_tokens"], claude["reasoning_share"]) == (0, None, None)
+
+
 def test_time_split_names_command_tools_and_shell_words_by_the_python_rules():
     from aictl.dashboard import shell_program
     from aictl.dashboard.board_projection import _COMMAND_TOOL_RE

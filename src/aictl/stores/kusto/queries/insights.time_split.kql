@@ -38,12 +38,13 @@ let ShellWords = dynamic(['for', 'foreach', 'if', 'then', 'else', 'elif', 'fi', 
 let reqs = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
-    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, duration_ms, thinking_ms
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, duration_ms, thinking_ms,
+              output_tokens, thinking_tokens
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
     | extend overlong=coalesce(duration_ms > Day, false)
     | project node_id, session_id, ts, tool, overlong, raw_ms=duration_ms, duration_ms=iff(overlong, real(null), duration_ms),
-              thinking_ms);
+              thinking_ms, output_tokens, thinking_tokens);
 let calls = materialize(tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
@@ -74,7 +75,11 @@ union
     (reqs
         | summarize requests=count(), timed=countif(isnotnull(duration_ms)), duration_ms=sum(duration_ms),
                     overlong=countif(overlong), overlong_ms=sum(iff(overlong, raw_ms, 0.0)),
-                    thinking_reported=countif(isnotnull(thinking_ms)), thinking_ms=sum(thinking_ms) by tool
+                    thinking_reported=countif(isnotnull(thinking_ms)), thinking_ms=sum(thinking_ms),
+                    // A tool that records no thinking time may record reasoning tokens: those, and the output
+                    // tokens of the same requests, say how much of the output was reasoning.
+                    reasoning_reported=countif(isnotnull(thinking_tokens)), reasoning_tokens=sum(thinking_tokens),
+                    reasoning_output_tokens=sumif(output_tokens, isnotnull(thinking_tokens)) by tool
         | extend row_type='model'),
     (calls
         | summarize calls=count(), timed=countif(isnotnull(duration_ms)), duration_ms=sum(duration_ms),
