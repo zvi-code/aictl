@@ -17,6 +17,11 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // the first argument of execute(...). Shape: the text with string, number, timespan and datetime literals replaced by ?
 // and white space joined, compared by hash; a snippet of the shape is at most 160 characters. A failure kind is read
 // from the stored error summary (failed calls only). A large result is 100 KB or more returned into the context.
+// Split by repository (rows repo_split): each bar by the repository of the run's session, the 8 ranked repositories
+// each, every other one summed as repo ''. Runs and failed runs per route (split_key route:<route>), per failure kind
+// (failure:<kind>), per kind and verb (kind:<kind>:<verb>), per cluster and database shown (target:<cluster>:<database>),
+// per shape shown (shape:<shape_key>) and per project shown (project:<name>); the result bytes of each large run
+// (large:<fact_key>). The view reads the requests of the period only to rank the repositories.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
@@ -107,30 +112,125 @@ let runs = materialize(calls
              large=coalesce(output_bytes, 0) >= 100000
     | project node_id, session_id, fact_key, ts, tool, route, failed, failure, duration_ms, output_bytes, large, project_name,
               run_kind, verb, change, cluster, database, shape_key, snippet=substring(shape, 0, 160), text);
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let rank_requests = requests_secs
+    | where all_nodes or node_id == requested_node
+    | where ts >= since and ts < until
+    | project node_id, session_id, cost_usd;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
 // The grouped rows are made in one pass over the runs (mv-expand): each leg over a materialized table cost as much as
 // reading it again.
+let grouped = materialize(runs
+    | extend row_type=pack_array('kind', 'failure', 'target', 'project', 'session', 'meta', 'shape', 'tool')
+    | mv-expand row_type to typeof(string)
+    | where (row_type != 'failure' or failed) and (row_type != 'shape' or isnotempty(shape_key))
+    | extend k1=case(row_type == 'kind', run_kind, row_type == 'failure', failure, row_type == 'target', cluster,
+                     row_type == 'project', project_name, row_type == 'session', node_id, row_type == 'shape', shape_key,
+                     row_type == 'tool', tool, ''),
+             k2=case(row_type == 'kind', verb, row_type == 'target', database, row_type == 'session', session_id, '')
+    | summarize runs=count(), sessions=dcount(strcat(node_id, '/', session_id)), failures=countif(failed), changes=countif(change),
+                large=countif(large), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes), large_bytes=sumif(output_bytes, large),
+                with_text=countif(run_kind != 'unknown'), any_tool=take_any(tool), any_project=take_any(project_name),
+                snippet=take_any(snippet), any_kind=take_any(run_kind), any_verb=take_any(verb), first_ts=min(ts), last_ts=max(ts)
+          by row_type, k1, k2
+    | sort by row_type asc, runs desc, k1 asc, k2 asc
+    | extend rank=row_number(1, prev(row_type) != row_type)
+    | where row_type in ('kind', 'failure', 'meta', 'tool') or (row_type == 'project' and rank <= 20)
+        or (row_type in ('target', 'shape') and rank <= 15) or (row_type == 'session' and rank <= 10));
 union
     (calls
         | summarize runs=countif(route != 'mention'), unrecognised=countif(route == 'mention'), mcp=countif(route == 'mcp'),
                     cli=countif(route == 'cli'), script=countif(route == 'script') by tool
         | extend row_type='coverage'),
-    (runs
-        | extend row_type=pack_array('kind', 'failure', 'target', 'project', 'session', 'meta', 'shape', 'tool')
-        | mv-expand row_type to typeof(string)
-        | where (row_type != 'failure' or failed) and (row_type != 'shape' or isnotempty(shape_key))
-        | extend k1=case(row_type == 'kind', run_kind, row_type == 'failure', failure, row_type == 'target', cluster,
-                         row_type == 'project', project_name, row_type == 'session', node_id, row_type == 'shape', shape_key,
-                         row_type == 'tool', tool, ''),
-                 k2=case(row_type == 'kind', verb, row_type == 'target', database, row_type == 'session', session_id, '')
-        | summarize runs=count(), sessions=dcount(strcat(node_id, '/', session_id)), failures=countif(failed), changes=countif(change),
-                    large=countif(large), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes), large_bytes=sumif(output_bytes, large),
-                    with_text=countif(run_kind != 'unknown'), any_tool=take_any(tool), any_project=take_any(project_name),
-                    snippet=take_any(snippet), any_kind=take_any(run_kind), any_verb=take_any(verb), first_ts=min(ts), last_ts=max(ts)
-              by row_type, k1, k2
-        | sort by row_type asc, runs desc, k1 asc, k2 asc
-        | extend rank=row_number(1, prev(row_type) != row_type)
-        | where row_type in ('kind', 'failure', 'meta', 'tool') or (row_type == 'project' and rank <= 20)
-            or (row_type in ('target', 'shape') and rank <= 15) or (row_type == 'session' and rank <= 10)
+    (grouped
         | extend run_kind=case(row_type == 'kind', k1, row_type == 'shape', any_kind, ''),
                  verb=case(row_type == 'kind', k2, row_type == 'shape', any_verb, ''),
                  failure=iff(row_type == 'failure', k1, ''), cluster=iff(row_type == 'target', k1, ''),
@@ -152,6 +252,29 @@ union
         | where large
         | top 10 by output_bytes desc
         | project node_id, session_id, fact_key, ts, tool, route, run_kind, verb, output_bytes, snippet, text, project_name
-        | extend row_type='large')
-| order by row_type asc, runs desc
+        | extend row_type='large'),
+    // Summed per session first: one repository lookup per session and bar, not per run.
+    (union
+        (runs
+            | extend split_type=pack_array('route', 'failure', 'kind', 'target', 'shape', 'project')
+            | mv-expand split_type to typeof(string)
+            | where (split_type != 'failure' or failed) and (split_type != 'shape' or isnotempty(shape_key))
+            | extend k1=case(split_type == 'route', route, split_type == 'failure', failure, split_type == 'kind', run_kind,
+                             split_type == 'target', cluster, split_type == 'shape', shape_key, project_name),
+                     k2=case(split_type == 'kind', verb, split_type == 'target', database, '')
+            | summarize runs=count(), failures=countif(failed) by node_id, session_id, split_type, k1, k2
+            | join kind=leftouter (grouped | where row_type in ('target', 'shape', 'project') | project split_type=row_type, k1, k2,
+                                   shown=true) on split_type, k1, k2
+            | where split_type in ('route', 'failure', 'kind') or coalesce(shown, false)
+            | project node_id, session_id, split_key=strcat(split_type, ':', k1, iff(split_type in ('kind', 'target'), strcat(':', k2), '')),
+                      runs, failures),
+        (runs
+            | where large
+            | top 10 by output_bytes desc
+            | project node_id, session_id, split_key=strcat('large:', fact_key), output_bytes)
+        | invoke repo_of()
+        | summarize runs=sum(runs), failures=sum(failures), output_bytes=sum(output_bytes) by split_key, repo
+        | extend row_type='repo_split', tool='')
+// The split rows sort last, so that the row limit never drops a bar for them.
+| order by row_type == 'repo_split' asc, row_type asc, runs desc
 | take row_limit

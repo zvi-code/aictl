@@ -96,7 +96,7 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
 REPO_COLOURS = 8
 # The cards whose shape takes repo_order as a second argument: shape(rows, repo_order).
 REPO_SPLIT_CARDS = frozenset({"carry", "time", "pause", "subagents", "failures", "problems", "flows", "autonomy", "verified",
-                              "durations", "changes"})
+                              "durations", "changes", "skills", "mcp", "kql"})
 
 
 def repo_order(history: HistoryScope, params: dict) -> dict:

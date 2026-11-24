@@ -9,6 +9,11 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // session, as its newest record, not removed, recorded in the period; a server listed in a session and not called
 // in it counts its listing tokens there (estimated from size). Only tools that record their tool listings count
 // here (Claude Code). A project is the last folder of the working folder.
+// Split by repository (rows repo_split): each bar by the repository of the session, the 8 ranked repositories each,
+// every other one summed as repo ''. Per server (split_key server:<server>): calls, failures, summed duration, result
+// bytes and bytes carried; per server tool (server_tool:<server>:<tool>) and per project (project:<name>): calls and
+// failures (a project also its duration and result bytes); per listed server (listed:<server>): the sessions that
+// listed it, those that called it and the listing tokens of those that did not. Medians and percentiles are not split.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
 // tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
@@ -66,18 +71,104 @@ let requests_secs = union (requests_current_rows | where dedup_key !in (requests
 let reqs = requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
-    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, cost_usd
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
-    | project node_id, session_id, agent_id, ts;
+    | project node_id, session_id, agent_id, ts, cost_usd;
 // Per call, its later requests: those of its session and agent in the period after its time (a request at the same
 // time comes before the call it made). The times of each agent's requests are compared with the call's in one array.
-let request_times = reqs | summarize times=make_list(ts) by node_id, session_id, agent_id;
-let carried = materialize(calls
-    | lookup kind=leftouter request_times on node_id, session_id, agent_id
+let request_times = materialize(reqs
+    | summarize times=make_list(ts), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id, agent_id);
+// Per session, server tool and project: the calls with their figures and bytes carried, for the bars and their split.
+let call_rows = materialize(calls
+    | lookup kind=leftouter (request_times | project-away cost_usd) on node_id, session_id, agent_id
     | extend later=iff(isnull(times), 0, toint(array_sum(series_greater(times, ts))))
-    | summarize carried_bytes=sum(todouble(output_bytes) * later) by server, server_tool);
-let listed = materialize(session_context_items_secs | where (isempty(agent_id) or agent_id == session_id) and ['kind'] == 'tools_listed' | extend entry=name
+    | summarize calls=count(), failures=countif(failed), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
+                carried_bytes=sum(todouble(output_bytes) * later) by node_id, session_id, server, server_tool, project_name);
+let carried = call_rows | summarize carried_bytes=sum(carried_bytes) by server, server_tool;
+// The rank reads the requests of the period from the request times (their cost summed per agent: the same sum per session).
+let rank_requests = request_times | project node_id, session_id, cost_usd;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
+let listed_sessions = materialize(session_context_items_secs | where (isempty(agent_id) or agent_id == session_id) and ['kind'] == 'tools_listed' | extend entry=name
     | invoke context_items_expanded()
     | where (all_nodes or node_id == requested_node) and name startswith_cs 'mcp__'
     | project ['project'], node_id, session_id, agent_id, ['kind'], name, tokens, removed, _v, ts, tool, entry
@@ -87,33 +178,35 @@ let listed = materialize(session_context_items_secs | where (isempty(agent_id) o
     | extend server=extract(@'^mcp__(.+?)__', 1, name)
     | summarize list_tokens=sum(coalesce(tokens, 0)), listed_tools=count(), tool=take_any(tool) by node_id, session_id, server
     | join kind=leftouter (calls | summarize called=count() by node_id, session_id, server) on node_id, session_id, server
+    | project node_id, session_id, server, list_tokens, listed_tools, tool, called);
+let listed = materialize(listed_sessions
     | summarize sessions=count(), called_sessions=countif(called > 0), list_tokens=sum(list_tokens),
                 unused_tokens=sumif(list_tokens, isnull(called)), listed_tools=max(listed_tools), tool=take_any(tool) by server);
+let shown_servers = materialize(calls
+    | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
+                failures=countif(failed), timed=countif(duration_ms > 0), p50_ms=percentile(duration_ms, 50),
+                p95_ms=percentile(duration_ms, 95), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
+                sized=countif(isnotnull(output_bytes)), tools=make_set(tool), server_tools=dcount(server_tool) by server
+    | lookup kind=leftouter (carried | summarize carried_bytes=sum(carried_bytes) by server) on server
+    | top 25 by calls desc);
+let shown_server_tools = materialize(calls
+    | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
+                failures=countif(failed), timed=countif(duration_ms > 0), p50_ms=percentile(duration_ms, 50),
+                p95_ms=percentile(duration_ms, 95), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
+                sized=countif(isnotnull(output_bytes)) by server, server_tool
+    | lookup kind=leftouter carried on server, server_tool
+    | top 40 by calls desc);
+let shown_projects = materialize(calls
+    | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), servers=dcount(server),
+                failures=countif(failed), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes) by project_name
+    | top 20 by calls desc);
 union
-    (calls
-        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
-                    failures=countif(failed), timed=countif(duration_ms > 0), p50_ms=percentile(duration_ms, 50),
-                    p95_ms=percentile(duration_ms, 95), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
-                    sized=countif(isnotnull(output_bytes)), tools=make_set(tool), server_tools=dcount(server_tool) by server
-        | lookup kind=leftouter (carried | summarize carried_bytes=sum(carried_bytes) by server) on server
-        | top 25 by calls desc
-        | extend row_type='server'),
-    (calls
-        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
-                    failures=countif(failed), timed=countif(duration_ms > 0), p50_ms=percentile(duration_ms, 50),
-                    p95_ms=percentile(duration_ms, 95), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
-                    sized=countif(isnotnull(output_bytes)) by server, server_tool
-        | lookup kind=leftouter carried on server, server_tool
-        | top 40 by calls desc
-        | extend row_type='server_tool'),
+    (shown_servers | extend row_type='server'),
+    (shown_server_tools | extend row_type='server_tool'),
     (listed
         | top 200 by unused_tokens desc
         | extend row_type='listed'),
-    (calls
-        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), servers=dcount(server),
-                    failures=countif(failed), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes) by project_name
-        | top 20 by calls desc
-        | extend row_type='project'),
+    (shown_projects | extend row_type='project'),
     (calls
         | summarize calls=count(), failures=countif(failed), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
                     servers=dcount(server), tool=take_any(tool), project_name=take_any(project_name) by node_id, session_id
@@ -122,6 +215,32 @@ union
     (all_calls
         | summarize calls=count(), mcp_calls=countif(is_mcp),
                     sum_ms=sum(duration_ms), output_bytes=sum(output_bytes), first_ts=min(ts), last_ts=max(ts)
-        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
-| order by row_type asc, calls desc
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000),
+    // Summed per session first: one repository lookup per session and bar, not per call. The card shows 25 listed
+    // servers, those with the most unused listing tokens. The bars shown are kept by a semi join: an 'in' over a
+    // subquery cost twice the CPU here.
+    (union
+        // The bars per server, server tool and project in one pass over the call rows (mv-expand).
+        (call_rows
+            | extend split_type=pack_array('server', 'server_tool', 'project')
+            | mv-expand split_type to typeof(string)
+            | summarize calls=sum(calls), failures=sum(failures), sum_ms=sum(sum_ms), output_bytes=sum(output_bytes),
+                        carried_bytes=sum(carried_bytes)
+                  by node_id, session_id, split_key=case(split_type == 'server', strcat('server:', server),
+                                                         split_type == 'server_tool', strcat('server_tool:', server, ':', server_tool),
+                                                         strcat('project:', project_name))
+            | join kind=leftsemi (union (shown_servers | project split_key=strcat('server:', server)),
+                    (shown_server_tools | project split_key=strcat('server_tool:', server, ':', server_tool)),
+                    (shown_projects | project split_key=strcat('project:', project_name))) on split_key),
+        (listed_sessions
+            | join kind=leftsemi (listed | top 25 by unused_tokens desc | project server) on server
+            | summarize sessions=count(), called_sessions=countif(called > 0), unused_tokens=sumif(list_tokens, isnull(called))
+                  by node_id, session_id, split_key=strcat('listed:', server))
+        | invoke repo_of()
+        | summarize calls=sum(calls), failures=sum(failures), sum_ms=sum(sum_ms), output_bytes=sum(output_bytes),
+                    carried_bytes=sum(carried_bytes), sessions=sum(sessions), called_sessions=sum(called_sessions),
+                    unused_tokens=sum(unused_tokens) by split_key, repo
+        | extend row_type='repo_split', tool='')
+// The split rows sort last, so that the row limit never drops a bar for them.
+| order by row_type == 'repo_split' asc, row_type asc, calls desc
 | take row_limit

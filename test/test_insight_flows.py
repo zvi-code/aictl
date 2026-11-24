@@ -41,6 +41,11 @@ def _request(store, key, ts, *, session, cost=1.0, tool="copilot-cli", project=A
                  project_path=project, project=project, input_tokens=10, **values)
 
 
+def _bare(items):
+    """The items without their split by repository (test_insight_repo_tools.py tests it)."""
+    return [{key: value for key, value in item.items() if key != "repos"} for item in items]
+
+
 READ = {"name": "view", "kind": "file", "target": "src/a.py"}
 SEARCH = {"name": "rg", "kind": "query", "target": "needle"}
 
@@ -238,7 +243,7 @@ def test_skills_count_uses_turns_and_what_follows_in_the_same_turn(kusto_store):
     assert every["review"]["tools"] == ["claude-code", "copilot-cli"] and every["review"]["uses"] == 2
     # 3 uses in 2 sessions is too few to compare: no skill drives the finding.
     assert body["skills"] == [] and body["summary"]["small_skills"] == 2 and body["summary"]["top"] is None
-    assert body["unused"] == [{"tool": "claude-code", "name": "never-used", "sessions": 1, "list_tokens": 300}]
+    assert _bare(body["unused"]) == [{"tool": "claude-code", "name": "never-used", "sessions": 1, "list_tokens": 300}]
     assert body["listings"] == [{"tool": "claude-code", "listed": 2, "unused": 1, "sessions": 1, "list_tokens": 400,
                                  "unused_tokens": 300}]
     assert {tool["tool"]: tool["uses"] for tool in body["tools"]} == {"copilot-cli": 4, "claude-code": 1}
@@ -307,7 +312,7 @@ def test_mcp_counts_calls_failures_durations_and_bytes_carried_per_server(kusto_
     assert kusto["tools"] == ["claude-code", "copilot-cli"] and kusto["calls_by_tool"][0]["tool_name"] == "query"
     # 3 calls in 2 sessions: too few to give a failure share.
     assert kusto["failure_share"] is None and body["servers"] == [] and body["summary"]["small_servers"] == 2
-    assert body["listed"] == [{"server": "docs", "tool": "claude-code", "sessions": 1, "called_sessions": 0, "list_tokens": 100,
+    assert _bare(body["listed"]) == [{"server": "docs", "tool": "claude-code", "sessions": 1, "called_sessions": 0, "list_tokens": 100,
                                "unused_tokens": 100, "listed_tools": 2},
                               {"server": "kusto", "tool": "claude-code", "sessions": 1, "called_sessions": 1, "list_tokens": 40,
                                "unused_tokens": 0, "listed_tools": 1}]
@@ -393,7 +398,7 @@ def test_kql_recognises_runs_and_classifies_queries_and_management_commands(kust
     assert summary["change_verbs"] == ["create", "drop"]
     targets = {(item["cluster"], item["database"]): item["runs"] for item in body["targets"]}
     assert targets == {("help.kusto.windows.net", "Samples"): 5, ("help.kusto.windows.net", None): 1, ("x.kusto.windows.net", "mydb"): 1}
-    assert body["failure_kinds"] == [{"failure": "syntax", "runs": 1}]
+    assert _bare(body["failure_kinds"]) == [{"failure": "syntax", "runs": 1}]
     assert body["large"][0]["output_bytes"] == 200_000 and body["large"][0]["kind"] == "query"
     assert body["large"][0]["text"] == "Events | summarize count() by bin(ts, 1h)"
 
@@ -422,7 +427,7 @@ def test_kql_shape_applies_the_evidence_rule():
     assert (summary["enough"], summary["failure_share"], summary["top_failure"], summary["top_shape"]) == (False, None, None, None)
     assert summary["small_projects"] == ["beta"] and summary["unrecognised"] == 7
     enough = insights_flows.kql([_kql_meta(40, 5), *rows[1:]])
-    assert enough["summary"]["failure_share"] == 0.1 and enough["summary"]["top_failure"] == {"failure": "syntax", "runs": 4}
+    assert enough["summary"]["failure_share"] == 0.1 and _bare([enough["summary"]["top_failure"]]) == [{"failure": "syntax", "runs": 4}]
     assert [item["project"] for item in enough["projects"]] == ["alpha"]
 
 

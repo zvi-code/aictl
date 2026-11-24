@@ -50,6 +50,12 @@ def _path(text: Any) -> list[str]:
     return [step for step in str(text or "").split(" > ") if step]
 
 
+def _per_bar(rows: list[dict], measures: tuple[str, ...], whole: float | None) -> list[dict]:
+    """Split rows whose *measures* are counts, as their part of a bar that is a share or a mean (count / *whole*): the
+    segments then sum to the bar. With no whole the bar is not stated, and neither are its segments."""
+    return [{**row, **{measure: _n(row.get(measure)) / whole if whole else 0.0 for measure in measures}} for row in rows]
+
+
 def flows(rows: list[dict], order: list[dict] | None = None) -> dict:
     """What follows what, where sessions stop, the paths they start and end on, and the cycles they repeat.
 
@@ -225,9 +231,19 @@ def _names(value: Any) -> list[str]:
     return sorted(str(item) for item in (value or []))
 
 
-def skills(rows: list[dict]) -> dict:
+SKILL_MEASURES = ("uses", "cost_usd", "after_edit", "after_test", "after_commit")
+AFTER_MEASURES = ("after_edit", "after_test", "after_commit")
+
+
+def skills(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per skill: uses, sessions, projects, the cost of the turns it ran in and what followed it in the same turn;
-    the skills listed to the model and never used, with the tokens their listing took."""
+    the skills listed to the model and never used, with the tokens their listing took.
+
+    Each bar is split by repository (``repos``, see insights.attach_repos): per skill its uses, turn cost and the share
+    of its uses with a turn followed by an edit, a test run or a commit (a segment is the repository's followed uses
+    over all the skill's uses with a turn, so the segments sum to the share); per unused skill its listing tokens; per
+    project and per tool its uses. The skills listed per tool are distinct skills, not split."""
+    from .insights import attach_repos, repo_splits, repo_totals
     meta = next(iter(_of(rows, "meta")), {})
     total_cost = _cost(meta)
     found, small = [], []
@@ -274,6 +290,18 @@ def skills(rows: list[dict]) -> dict:
                  "project_name": row.get("project_name") or None, "uses": _int(row.get("uses")),
                  "skills": _names(row.get("skill_names"))} for row in _of(rows, "session") if row.get("session_id")]
     sessions.sort(key=lambda row: -row["uses"])
+    splits = repo_splits(rows)
+    # The bars per tool cover every use: each repository's own total of uses is the sum of its segments there.
+    totals = repo_totals([row for (_tool, key), found_rows in splits.items() if not key for row in found_rows], SKILL_MEASURES)
+    for item in [*found, *small]:
+        mine = splits.get(("", f"skill:{item['name']}"), [])
+        attach_repos(item, _per_bar(mine, AFTER_MEASURES, item["with_turn"]), SKILL_MEASURES, order or [], totals)
+    for item in unused:
+        attach_repos(item, splits.get((str(item["tool"] or ""), f"unused:{item['name']}"), []), ("list_tokens",), order or [])
+    for item in projects + small_projects:
+        attach_repos(item, splits.get(("", f"project:{item['project']}"), []), ("uses",), order or [], totals)
+    for item in tools:
+        attach_repos(item, splits.get((str(item["tool"] or ""), ""), []), ("uses",), order or [], totals)
     return {"skills": found, "small_skills": small, "unused": unused, "listings": listings, "tools": tools,
             "projects": projects, "summary": summary, "sessions": sessions}
 
@@ -299,9 +327,20 @@ def _mcp_figures(row: dict) -> dict:
     }
 
 
-def mcp(rows: list[dict]) -> dict:
+MCP_MEASURES = ("calls", "failures", "sum_ms", "output_bytes", "carried_bytes")
+MCP_PROJECT_MEASURES = ("calls", "failures", "sum_ms", "output_bytes")
+LISTED_MEASURES = ("sessions", "called_sessions", "unused_tokens")
+
+
+def mcp(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per MCP server and per tool of a server: calls, sessions, projects, failures, duration, result bytes and bytes
-    carried; the servers whose tools were listed to the model in sessions that never called them."""
+    carried; the servers whose tools were listed to the model in sessions that never called them.
+
+    Each bar is split by repository (``repos``, see insights.attach_repos): per server its calls, failures, summed
+    duration, result bytes and bytes carried; per server tool its calls and failures; per project its calls, failures,
+    duration and result bytes; per listed server its sessions, those that called it and the unused listing tokens.
+    Medians and percentiles are not split."""
+    from .insights import attach_repos, repo_splits
     per_tool: dict[str, list[dict]] = {}
     for row in _of(rows, "server_tool"):
         per_tool.setdefault(str(row.get("server")), []).append({"tool_name": row.get("server_tool"), **_mcp_figures(row)})
@@ -347,6 +386,16 @@ def mcp(rows: list[dict]) -> dict:
                  "failures": _int(row.get("failures")), "servers": _int(row.get("servers")), "sum_ms": _n(row.get("sum_ms")),
                  "output_bytes": _num(row.get("output_bytes"))} for row in _of(rows, "session") if row.get("session_id")]
     sessions.sort(key=lambda row: -row["calls"])
+    splits = repo_splits(rows)
+    for item in every:
+        attach_repos(item, splits.get(("", f"server:{item['server']}"), []), MCP_MEASURES, order or [])
+        for tool in item["calls_by_tool"]:
+            attach_repos(tool, splits.get(("", f"server_tool:{item['server']}:{tool['tool_name']}"), []), ("calls", "failures"),
+                         order or [])
+    for item in projects + small_projects:
+        attach_repos(item, splits.get(("", f"project:{item['project']}"), []), MCP_PROJECT_MEASURES, order or [])
+    for item in listed[:SHOWN_LISTED]:
+        attach_repos(item, splits.get(("", f"listed:{item['server']}"), []), LISTED_MEASURES, order or [])
     return {"servers": servers, "small_servers": small, "listed": listed[:SHOWN_LISTED], "projects": projects, "summary": summary,
             "sessions": sessions}
 
@@ -367,9 +416,18 @@ def _figures(row: dict) -> dict:
             "output_bytes": _int(row.get("output_bytes"))}
 
 
-def kql(rows: list[dict]) -> dict:
+KQL_MEASURES = ("runs", "failures")
+ROUTES = ("mcp", "cli", "script")
+
+
+def kql(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Kusto queries and management commands the agents ran: by kind and verb, failure kind, cluster and database,
-    project, the same query shape run again, and the results of 100 KB or more brought into the context."""
+    project, the same query shape run again, and the results of 100 KB or more brought into the context.
+
+    Each bar is split by repository (``repos``, see insights.attach_repos): runs and failed runs per route (``routes``),
+    failure kind, kind and verb, cluster and database, shape and project; the result bytes of each large run. The part
+    of a shape's runs in sessions that ran it 3 times or more is not split."""
+    from .insights import attach_repos, repo_splits
     with_text = {row.get("tool"): _int(row.get("with_text")) for row in _of(rows, "tool")}
     coverage = sorted(({"tool": row.get("tool"), "runs": _int(row.get("runs")), "unrecognised": _int(row.get("unrecognised")),
                         "mcp": _int(row.get("mcp")), "cli": _int(row.get("cli")), "script": _int(row.get("script")),
@@ -397,10 +455,13 @@ def kql(rows: list[dict]) -> dict:
     for row in _of(rows, "project"):
         item = {"project": str(row.get("project_name") or ""), **_figures(row)}
         (projects if item["runs"] >= MIN_KQL_PROJECT_RUNS else small_projects).append(item)
-    large = [{"session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"), "ts": _num(row.get("ts")),
-              "route": row.get("route"), "kind": row.get("run_kind"), "verb": row.get("verb") or None,
-              "output_bytes": _int(row.get("output_bytes")), "snippet": row.get("snippet"), "text": row.get("text"),
-              "project_name": row.get("project_name") or None} for row in _of(rows, "large")]
+    splits = repo_splits(rows)
+    large = [attach_repos({"session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"),
+                           "ts": _num(row.get("ts")), "route": row.get("route"), "kind": row.get("run_kind"),
+                           "verb": row.get("verb") or None, "output_bytes": _int(row.get("output_bytes")),
+                           "snippet": row.get("snippet"), "text": row.get("text"), "project_name": row.get("project_name") or None},
+                          splits.get(("", f"large:{row.get('fact_key') or ''}"), []), ("output_bytes",), order or [])
+             for row in _of(rows, "large")]
     large.sort(key=lambda item: -item["output_bytes"])
     meta = next(iter(_of(rows, "meta")), {})
     total = _figures(meta)
@@ -420,5 +481,19 @@ def kql(rows: list[dict]) -> dict:
                  "project_name": row.get("project_name") or None, **_figures(row)}
                 for row in _of(rows, "session") if row.get("session_id")]
     sessions.sort(key=lambda row: -row["runs"])
+    routes = [attach_repos({"route": route, "runs": summary["routes"][route]}, splits.get(("", f"route:{route}"), []), ("runs",),
+                           order or []) for route in ROUTES]
+    for item in failure_kinds:
+        attach_repos(item, splits.get(("", f"failure:{item['failure']}"), []), ("runs",), order or [])
+    for item in kinds:
+        attach_repos(item, splits.get(("", f"kind:{item['kind']}:{item['verb'] or ''}"), []), KQL_MEASURES, order or [])
+    for item in targets:
+        attach_repos(item, splits.get(("", f"target:{item['cluster'] or ''}:{item['database'] or ''}"), []), KQL_MEASURES,
+                     order or [])
+    for item in shapes:
+        attach_repos(item, splits.get(("", f"shape:{item['shape_key']}"), []), KQL_MEASURES, order or [])
+    for item in projects:
+        attach_repos(item, splits.get(("", f"project:{item['project']}"), []), KQL_MEASURES, order or [])
     return {"coverage": coverage, "kinds": kinds, "failure_kinds": failure_kinds, "targets": targets, "shapes": shapes,
-            "projects": sorted(projects, key=lambda item: -item["runs"]), "large": large, "summary": summary, "sessions": sessions}
+            "projects": sorted(projects, key=lambda item: -item["runs"]), "large": large, "summary": summary, "sessions": sessions,
+            "routes": routes}
