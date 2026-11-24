@@ -455,7 +455,9 @@ class TestSearch:
         by_tokens = search_sessions(db, query=query({"sort": ["tokens"], "order": ["desc"], "limit": ["1"]}))
         assert (by_tokens["total"], [r["id"] for r in by_tokens["rows"]]) == (3, ["s-old"])
         assert [r["id"] for r in search_sessions(db, query=query({"min_tokens": ["50"]}))["rows"]] == ["s-old"]
-        assert [r["id"] for r in search_sessions(db, query=query({"project": ["beta"]}))["rows"]] == ["s-mid"]
+        # `project` is the page's project filter: the route restricts the history read (test_project_filter.py),
+        # so the finder's query has no project of its own.
+        assert query({"project": ["beta"]}) == query({})
         assert [r["id"] for r in search_sessions(db, query=query({"name": ["prompt"]}))["rows"]] == ["s-mid", "s-old"]
         assert [r["id"] for r in search_sessions(db, query=query({"model": ["claude-sonnet-4-5"]}))["rows"]] == ["s-old"]
         none = search_sessions(db, query=query({"status": ["running"]}))

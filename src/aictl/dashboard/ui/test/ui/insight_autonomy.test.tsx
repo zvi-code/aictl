@@ -49,7 +49,7 @@ const label = (tool: string) => tool
 
 function context(state: DetailState<unknown> | undefined, opened: string[] = []) {
   return {
-    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined,
+    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [] }),
     openAgent(id: string, tab = 'flow') { opened.push(`${id}:${tab}`) },
     detail: (path: () => string | undefined) => Object.assign(() => path() ? state : undefined, { retry() {} }),
   } as unknown as PanelContext

@@ -172,7 +172,7 @@ def _scope_params(history: HistoryScope, filters: Filters, now: float) -> dict:
     params: dict[str, Any] = {"since": filters.since, "until": filters.until}
     if filters.tools is not None:
         params |= {"restrict_tools": True, "requested_tools": stored_ids_for(filters.tools)}
-    if filters.project or filters.model or filters.q or filters.status != "all":
+    if filters.projects or filters.model or filters.q or filters.status != "all":
         from .artifact_details import _detail_scope
 
         params |= {k: v for k, v in _detail_scope(history, filters, now).items() if k in ("restrict_sessions", "session_keys")}

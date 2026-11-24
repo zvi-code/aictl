@@ -64,19 +64,20 @@ export function BoardControls(props: {
           </Show>
         </Popover>
       </span>
-      <For each={['project', 'model'] as const}>{key => {
-        const rows = () => options()?.[key === 'project' ? 'projects' : 'models'] ?? []
-        return <label class={styles.filter} data-active={ctx.filters()[key] !== 'all' ? '' : undefined}>
-          <span>{key === 'project' ? 'Project' : 'Model'}</span>
-          <select value={ctx.filters()[key]}
-            onChange={event => ctx.navigate({ [key]: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
+      {/* The project filter is in the top bar: it applies to every screen, not to the board only. */}
+      {(() => {
+        const rows = () => options()?.models ?? []
+        return <label class={styles.filter} data-active={ctx.filters().model !== 'all' ? '' : undefined}>
+          <span>Model</span>
+          <select value={ctx.filters().model}
+            onChange={event => ctx.navigate({ model: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>
             <option value="all">All</option>
-            <Show when={ctx.filters()[key] !== 'all' && !rows().some(row => row.id === ctx.filters()[key])}>
-              <option value={ctx.filters()[key]}>{ctx.filters()[key]}</option>
+            <Show when={ctx.filters().model !== 'all' && !rows().some(row => row.id === ctx.filters().model)}>
+              <option value={ctx.filters().model}>{ctx.filters().model}</option>
             </Show>
             <For each={rows()} keyed={row => row.id}>{row => <option value={row().id} title={modelReportedAs(row(), toolLabel)}>{row().id}</option>}</For>
           </select><Icon glyph="down" small /></label>
-      }}</For>
+      })()}
       <label class={styles.filter} data-active={ctx.filters().status !== 'all' ? '' : undefined}><span>Status</span>
         <select value={ctx.filters().status}
           onChange={event => ctx.navigate({ status: event.currentTarget.value === 'all' ? null : event.currentTarget.value })}>

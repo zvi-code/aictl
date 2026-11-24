@@ -16,7 +16,7 @@ const auditCache = createResourceCache<string, DetailContextAudit>({
 function useSources(ctx: PanelProps['ctx']) {
   const [poll, setPoll] = createSignal(0)
   const local = () => ctx.scope() === 'local'
-  const project = () => ctx.filters().project
+  const project = () => ctx.filters().projects.length === 1 ? ctx.filters().projects[0] : 'all'
   const path = createMemo(() => {
     if (!local()) return
     const query = new URLSearchParams({ nowait: '1' })

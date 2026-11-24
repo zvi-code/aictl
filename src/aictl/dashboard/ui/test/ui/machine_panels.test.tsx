@@ -24,7 +24,7 @@ export function boardContext(scope: 'local' | 'fleet', routes: Record<string, un
   }, { retry() {} })
   const ctx = {
     scope: () => scope, nodeId: () => null, tools: () => null, paused: () => false, revision: () => 0,
-    filters: () => ({ project: 'all' }), refresh() {}, copy() {}, navigate() {}, openAgent, openDetail() {},
+    filters: () => ({ projects: [] }), refresh() {}, copy() {}, navigate() {}, openAgent, openDetail() {},
     metadata: (key: string) => units[key], board: (key: string) => board[key], detail,
     read: (source: { field?: string }) => source.field && board[source.field] !== undefined
       ? { state: 'ready', value: board[source.field] } : { state: 'unavailable' },

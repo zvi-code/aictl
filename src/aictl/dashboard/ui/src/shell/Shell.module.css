@@ -224,3 +224,31 @@
   border-radius: var(--radius-md);
   box-shadow: var(--elevation-2);
 }
+
+/* The project filter of the whole page: the picker in the top bar and the chips on every screen. */
+.button[data-active] { background: var(--color-selected); color: var(--color-selected-text); }
+.projectPopup { inline-size: min(var(--overlay-md), calc(100vw - var(--space-6))); }
+.projectPopup .search { display: flex; inline-size: 100%; box-sizing: border-box; margin-block-end: var(--space-3); }
+.projectNote { margin: var(--space-2) 0; color: var(--color-muted); font-size: var(--text-sm); }
+.projectList { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.projectEntry {
+  composes: focus from "../ui/control.module.css";
+  display: grid;
+  inline-size: 100%;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-size) solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.projectEntry:hover { background: var(--color-hover); }
+.projectEntry[aria-pressed="true"], .projectEntry[aria-pressed="true"]:hover { background: var(--color-selected); color: var(--color-selected-text); }
+.projectName { font-weight: var(--weight-strong); }
+.projectPath { overflow: hidden; color: var(--color-muted); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.projectFacts { color: var(--color-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.projectEntry[aria-pressed="true"] .projectPath, .projectEntry[aria-pressed="true"] .projectFacts { color: inherit; }
+.projectChips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-block-end: var(--space-3); }

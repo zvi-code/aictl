@@ -188,9 +188,6 @@ export default function Sessions(props: PanelProps) {
             <For each={Object.entries(NAME_LABELS)}>{entry => <option value={entry[0]}>{entry[1]}</option>}</For>
           </select>
         </label>
-        <label>Project contains
-          <input class={styles.field} value={state().project} onChange={event => change({ project: event.currentTarget.value.trim() })} />
-        </label>
         <label>Model
           <input class={styles.field} value={state().model} list="finder-models"
             onChange={event => change({ model: event.currentTarget.value.trim() })} />

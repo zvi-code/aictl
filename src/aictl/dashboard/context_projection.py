@@ -618,11 +618,16 @@ def _context_daily_empty(now: float) -> dict:
     return {"days": days, "since": first, "models": [], "rows": []}
 
 
-def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, now: float | None = None) -> dict:
-    """Everything ``GET /api/board/context`` returns. Token counts are estimates at four characters per token."""
+def compute_context(db: Any, store: Any, tools: tuple[str, ...] | None = None, now: float | None = None, *,
+                    projects: tuple[str, ...] = ()) -> dict:
+    """Everything ``GET /api/board/context`` returns. Token counts are estimates at four characters per token.
+
+    *projects* narrows what the history shows (the daily use by model); the tools' files are this machine's."""
+    from .project_filter import scoped
+
     now = time.time() if now is None else now
     snapshot = getattr(store, "snapshot", None)
-    history = HistoryScope.local(db)
+    history = scoped(HistoryScope.local(db), projects)
     from .queryable_context import context_snapshot
 
     try:
@@ -720,14 +725,17 @@ def context_bytes(db: Any, store: Any, query: str, now: float | None = None) -> 
     """The answer for ``/api/board/context``, kept for each snapshot version. ``tool`` is as on ``/api/board``."""
     qs = parse_qs(query, keep_blank_values=True)
     tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
+    from .board_filters import _projects
+
+    projects = _projects(qs)
     version = (getattr(store, "version", None), int((time.time() if now is None else now) / MEMO_TTL_S))
-    key = (id(store), version, tools)
+    key = (id(store), version, tools, projects)
     if version is not None:
         with _context_lock:
             body = _context_memo.get(key)
         if body is not None:
             return body
-    body = json.dumps(compute_context(db, store, tools, now)).encode("utf-8")
+    body = json.dumps(compute_context(db, store, tools, now, projects=projects)).encode("utf-8")
     if version is not None:
         with _context_lock:
             _context_memo[key] = body

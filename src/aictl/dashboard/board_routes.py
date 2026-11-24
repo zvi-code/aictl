@@ -11,12 +11,13 @@ from urllib.parse import parse_qs, urlparse
 
 from ..stores.base import StoreError
 from ..tool_scope import normalize_selection
-from .artifact_details import error_detail, file_detail, file_excerpt, prompt_detail, skill_detail, tool_detail
-from .board_filters import BoardRequestError, parse_filters
 from . import insights
+from .artifact_details import error_detail, file_detail, file_excerpt, prompt_detail, skill_detail, tool_detail
+from .board_filters import BoardRequestError, _projects, parse_filters
 from .history_scope import ScopeError, identity_parts, parse_scope
 from .http_request import _local_request
 from .live import stream as live_stream
+from .project_filter import scoped
 from .projection_utils import _as_number
 from .projections.history import (
     HistoryScope,
@@ -37,7 +38,8 @@ def handle_get(
 
     try:
         scope = parse_scope(qs)
-        history = HistoryScope.local(store)
+        # The project filter of the whole page: every route below reads only the chosen projects.
+        history = scoped(HistoryScope.local(store), _projects(qs))
         if scope.kind != "local":
             from .scoped_history import route
 
@@ -63,6 +65,10 @@ def handle_get(
                 )
             except ValueError as exc:
                 status, payload = 400, {"error": str(exc)}
+        elif path == "/api/board/projects":
+            from .project_filter import catalog
+
+            status, payload = 200, catalog(history)
         elif path in memory_views.ROUTES:
             status, payload = memory_views.handle(path, one, db, history, now)
         elif path == "/api/board/agent":
@@ -235,6 +241,9 @@ class BoardRoutes:
 
         try:
             body = context_bytes(self._db, self.server.store, urlparse(self.path).query)
+        except BoardRequestError as exc:
+            self._json_response({"error": str(exc)}, status=400)
+            return
         except UnresolvedObservationsError as exc:
             self._json_response(exc.to_dict(), status=409)
             return

@@ -1,0 +1,12 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+// Every project the store holds sessions for, in any period: the exact value the project filter matches
+// (the `project` key of a session row), how many sessions ran there, and when the last one was active.
+sessions
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'], node_id, session_id
+| where not(coalesce(_deleted, false)) and isnotempty(['project'])
+| extend active_ts=max_of(coalesce(last_activity_at, 0.0), coalesce(ended_at, 0.0), coalesce(started_at, 0.0))
+| summarize sessions=count(), last_ts=max(active_ts), nodes=dcount(node_id) by project_path=['project']
+| extend last_ts=iff(last_ts > 0, last_ts, real(null))
+| order by last_ts desc nulls last, project_path asc
+| take row_limit

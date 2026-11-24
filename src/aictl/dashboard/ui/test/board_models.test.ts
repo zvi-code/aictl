@@ -22,8 +22,8 @@ describe('canonicalModelId', () => {
 describe('filters in the URL', () => {
   it('round trips every filter', () => {
     const f = parseFilters('?range=7d&project=alpha&model=m&status=failed&q=retry&sel=100-200&tools=a,b');
-    expect(f).toMatchObject({ range: { id: '7d' }, project: 'alpha', model: 'm', status: 'failed', q: 'retry', sel: { since: 100, until: 200 } });
-    expect(filtersToParams(f)).toMatchObject({ range: '7d', project: 'alpha', model: 'm', status: 'failed', q: 'retry', sel: '100-200' });
+    expect(f).toMatchObject({ range: { id: '7d' }, projects: ['alpha'], model: 'm', status: 'failed', q: 'retry', sel: { since: 100, until: 200 } });
+    expect(filtersToParams(f)).toMatchObject({ range: '7d', project: ['alpha'], model: 'm', status: 'failed', q: 'retry', sel: '100-200' });
   });
   it('leaves the default out of the URL and ignores unknown values', () => {
     const f = parseFilters('?range=live&status=nonsense&sel=9-1');

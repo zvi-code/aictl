@@ -575,7 +575,7 @@ def finder_query(qs: dict[str, list[str]], *, max_limit: int = SEARCH_MAX_LIMIT,
     limit = whole("limit", SEARCH_DEFAULT_LIMIT, max_limit) or SEARCH_DEFAULT_LIMIT
     return SessionQuery(
         q=one("q"), tools=stored_ids_for(tools) if tools is not None else None, since=since, until=until,
-        project=one("project"), model=one("model"), status=choice("status", FINDER_STATUSES),
+        model=one("model"), status=choice("status", FINDER_STATUSES),
         name_source=choice("name", NAME_SOURCES), errors=errors in ("1", "true"),
         min_tokens=whole("min_tokens", 0, 2**53), min_cost=number("min_cost") or 0.0,
         sort=choice("sort", FINDER_SORTS, "last_activity"), ascending=choice("order", ("asc", "desc"), "desc") == "asc",

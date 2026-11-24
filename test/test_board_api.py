@@ -37,6 +37,7 @@ from aictl.dashboard.board_projection import compute_board, coverage_rows, find_
 from aictl.dashboard.projection_utils import mask_secrets
 from aictl.dashboard.session_details import agent_detail
 from aictl.data.model_pricing import cost_usd, request_cost_usd
+from aictl.stores.kusto.tables import TABLES
 
 DAY = 86400.0
 SONNET = "claude-sonnet-4-5"
@@ -50,6 +51,14 @@ def _insert(conn, table: str, **values) -> None:
         "file_history": ("content",), "files": ("content",),
     }.get(table, ())
     text = {key: values.pop(key) for key in text_fields if key in values}
+    # The writer files a row under its project_path, or its session's (session_facts.py); the project
+    # filter reads that key.
+    if "project" not in values and "project" in dict(TABLES[table].columns):
+        if values.get("project_path"):
+            values["project"] = values["project_path"]
+        elif table not in ("files", "file_history") and values.get("session_id"):
+            values["project"] = next((r.get("project_path", "") for r in conn.facts.rows.get("sessions", ())
+                                      if r.get("session_id") == values["session_id"]), "")
     row = conn.facts.insert(table, **values)
     if text:
         # agents_text is keyed by (session, agent), as session_facts writes it: an agent id is unique
@@ -59,6 +68,8 @@ def _insert(conn, table: str, **values) -> None:
         retained = {k: row[k] for k in fields}
         if table == "agents":
             retained["ts"] = row.get("started_at", 0)
+        if table in ("agents", "tool_invocations") and row.get("project"):
+            retained["project"] = row["project"]
         conn.facts.insert(table + "_text", **retained, **text)
 
 
@@ -256,6 +267,8 @@ def db(kusto_store):
 
 
 def _filters(**kw) -> Filters:
+    if "project" in kw:
+        kw["projects"] = (kw.pop("project"),)
     return Filters(**{"since": NOW - 7 * DAY, "until": NOW, **kw})
 
 
@@ -617,10 +630,19 @@ class TestFilters:
         assert self._ids(payload) == {"looper", "waiter"}
 
     def test_options_ignore_the_filters(self, db):
-        payload = _board(db, tools=("codex-cli",), project="/p/gamma")
+        payload = _board(db, tools=("codex-cli",), model=GPT)
         assert {t["id"] for t in payload["options"]["tools"]} == {"claude-code", "copilot-vscode", "codex-cli"}
         assert {p["id"] for p in payload["options"]["projects"]} == {"/p/alpha", "/p/beta", "/p/gamma"}
-        assert payload["scope"] == {"shown_agents": 1, "shown_sessions": 1, "all_agents": 6}
+        assert payload["scope"]["all_agents"] == 6
+
+    def test_the_project_filter_scopes_the_whole_board_options_included(self, db):
+        # The project filter is the page's scope, like the node scope: the board, its menus and its
+        # "of all" count hold only the chosen projects' rows (project_filter.py).
+        payload = _board(db, tools=("codex-cli",), project="/p/gamma")
+        assert {p["id"] for p in payload["options"]["projects"]} == {"/p/gamma"}
+        assert {t["id"] for t in payload["options"]["tools"]} <= {"claude-code", "copilot-vscode", "codex-cli"}
+        assert payload["scope"]["shown_agents"] == 1 and payload["scope"]["shown_sessions"] == 1
+        assert payload["scope"]["all_agents"] == len(_board(db, project="/p/gamma")["agents"])
 
     def test_cpu_and_memory_follow_only_tool_and_time(self, db):
         unfiltered = _board(db)["series"]
@@ -650,7 +672,8 @@ class TestFilters:
 
     def test_parse(self):
         f = parse_filters("since=10&until=20&tool=a,b&project=x&model=m&status=active&q=hi&buckets=5", 100.0)
-        assert (f.since, f.until, f.tools, f.project, f.model, f.status, f.q, f.buckets) == (10.0, 20.0, ("a", "b"), "x", "m", "active", "hi", 5)
+        assert (f.since, f.until, f.tools, f.projects, f.model, f.status, f.q, f.buckets) == (10.0, 20.0, ("a", "b"), ("x",), "m", "active", "hi", 5)
+        assert parse_filters("project=/b&project=/a&project=/b", 100.0).projects == ("/a", "/b")
         assert parse_filters("", 100.0).until == 100.0
         assert parse_filters("buckets=9999", 100.0).buckets == board_filters.MAX_BUCKETS
 

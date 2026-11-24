@@ -53,7 +53,7 @@ it('matches Windows runtime project spellings without folding POSIX case or tool
     liveEntity('runtime.agent', 'posix', { tool: 'copilot-cli', project: '/home/user/Example', status: 'running' }),
     liveEntity('runtime.agent', 'unc', { tool: 'copilot-cli', project: '\\\\server\\share\\Example', status: 'running' }),
   ]);
-  const select = (project: string, tools?: string[]) => overlay([], { project }, tools).map(agent => agent.id);
+  const select = (project: string, tools?: string[]) => overlay([], { projects: [project] }, tools).map(agent => agent.id);
   expect(select('C:/PROJECTS/EXAMPLE', ['copilot-vscode'])).toEqual(['windows']);
   expect(select('file:///C%3A/Projects/Example/', ['copilot-vscode'])).toEqual(['windows']);
   expect(select('/home/user/example')).toEqual([]);

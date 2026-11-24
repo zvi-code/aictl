@@ -22,7 +22,7 @@ export function statusText<T>(status: T, endReason: unknown): T | string {
 
 function matchesAgent(agent: Agent, filters: Partial<Filters>, tools: string[] | null) {
   if (!isStoredToolSelected(agent.tool, tools)) return false;
-  if (filters?.project && filters.project !== 'all' && projectKey(filters.project) !== projectKey(agent.project)) return false;
+  if (filters?.projects?.length && !filters.projects.some(project => projectKey(project) === projectKey(agent.project))) return false;
   if (filters?.model && filters.model !== 'all' && !agent.models?.some(model => canonicalModelId(model) === canonicalModelId(filters.model))) return false;
   if (!matchesStatus(agent, filters?.status)) return false;
   const q = filters?.q?.toLowerCase();

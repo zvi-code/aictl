@@ -15,7 +15,7 @@ const request = (patch: Partial<FinderState>, offset = 0) => Object.fromEntries(
 describe('finder URL state', () => {
   it('round-trips every filter, the custom range and the order through the URL', () => {
     const full = state({
-      q: 'fix parser', status: 'inferred', tools: ['claude-code', 'codex-cli'], project: 'aictl', model: 'gpt-5',
+      q: 'fix parser', status: 'inferred', tools: ['claude-code', 'codex-cli'], model: 'gpt-5',
       name: 'user', errors: true, minTokens: 5000, minCost: 1.5, range: 'custom', since: 1_700_000_000,
       until: 1_700_086_400, sort: 'cost', order: 'asc',
     })
@@ -33,7 +33,8 @@ describe('finder URL state', () => {
 
   it('takes the board filters as first values only while the URL has no finder key', () => {
     const board = { filters: parseFilters('?project=/p/a&model=opus&status=running&range=24h'), tools: ['codex-cli'] }
-    expect(parseFinder('?project=/p/a', board)).toEqual(state({ project: '/p/a', model: 'opus', status: 'running', tools: ['codex-cli'] }))
+    // The project is not a finder value: the page's project filter applies to the finder's request (withProjects).
+    expect(parseFinder('?project=/p/a', board)).toEqual(state({ model: 'opus', status: 'running', tools: ['codex-cli'] }))
     // The board's 24 h range never narrows the finder: it searches all history.
     expect(parseFinder('', board).range).toBe('all')
     expect(parseFinder('?fsort=tokens', board)).toEqual(state({ sort: 'tokens' }))
@@ -50,10 +51,10 @@ describe('filter to request mapping', () => {
   it('sends only the filters in use, with the sort and the page', () => {
     expect(request({}, 100)).toEqual({ sort: 'last_activity', order: 'desc', limit: '50', offset: '100' })
     expect(request({
-      q: '  widget ', tools: ['claude-code'], project: 'aictl', model: 'opus', status: 'not_imported', name: 'tool',
+      q: '  widget ', tools: ['claude-code'], model: 'opus', status: 'not_imported', name: 'tool',
       errors: true, minTokens: 1000.7, minCost: 0.25, sort: 'tool_calls', order: 'asc',
     })).toEqual({
-      q: 'widget', tool: 'claude-code', project: 'aictl', model: 'opus', status: 'not_imported', name: 'tool', errors: '1',
+      q: 'widget', tool: 'claude-code', model: 'opus', status: 'not_imported', name: 'tool', errors: '1',
       min_tokens: '1000', min_cost: '0.25', sort: 'tool_calls', order: 'asc', limit: '50', offset: '0',
     })
     expect(request({ tools: [] }).tool).toBe('')

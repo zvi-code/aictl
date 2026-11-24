@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, untrack } from 'solid-js'
 import type { BoardFields, DetailResponses, LiveTopicData, TopicSourceStatus } from '../data/contract.gen'
 import { createResourceCache } from '../data/resource'
-import { boardQuery, windowOf, type Screen } from '../data/filters'
+import { boardQuery, windowOf, withProjects, type Screen } from '../data/filters'
 import type { DetailState, PanelContext, Read, Row, Source } from './types'
 
 export function object(value: unknown): Row | undefined {
@@ -83,8 +83,13 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     if (!response.ok) throw new Error(response.status === 403 ? 'aictl may not read this file.' : `Could not read the file (HTTP ${response.status}).`)
     return response.text()
   } })
+  // Every panel's own route carries the project filter of the page, whichever helper built its path.
   const detail: PanelContext['detail'] = <T>(path: () => string | undefined, format?: 'text') => {
-    const state = useRead(format === 'text' ? textCache : detailCache, path, ctx.revision)
+    const scoped = () => {
+      const value = path()
+      return value && withProjects(value, ctx.filters().projects)
+    }
+    const state = useRead(format === 'text' ? textCache : detailCache, scoped, ctx.revision)
     return Object.assign(() => state() as DetailState<T> | undefined, { retry: state.retry })
   }
   const catalog = detail<unknown[]>(() => {
@@ -193,7 +198,7 @@ export function detailRead<T>(resource: DetailState<T> | undefined, value: unkno
 export function detailPath(ctx: PanelContext, route: string, query = new URLSearchParams()) {
   if (ctx.scope() !== 'local') query.set('scope', ctx.scope())
   if (ctx.scope() === 'node') query.set('node_id', ctx.nodeId() ?? '')
-  return query.size ? `${route}?${query}` : route
+  return withProjects(query.size ? `${route}?${query}` : route, ctx.filters().projects)
 }
 
 export function scopeConfirmed(ctx: PanelContext, scope: BoardFields['node_scope'] | undefined) {

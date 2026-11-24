@@ -1,10 +1,12 @@
 // ─── Session finder state — kept in the URL under its own keys ─────
 // The finder has its own time range, "all history" by default, because the board's
 // 24 h default would hide most sessions. Its keys start with `f` so they never change
-// the board: fq, fstatus, ftools, fproject, fmodel, fname, ferrors, fmin_tokens,
+// the board: fq, fstatus, ftools, fmodel, fname, ferrors, fmin_tokens,
 // fmin_cost, frange (with fsince and funtil for a custom range), fsort, forder.
-// While the URL has none of them, the board's tool, project, model and status filters
+// While the URL has none of them, the board's tool, model and status filters
 // give the finder its first values; after the first change the finder's keys rule.
+// The finder has no project of its own: the page's project filter applies to it as to every
+// panel (its request carries `project`, see withProjects).
 import type { DetailSessions } from '../../data/contract.gen'
 import type { Filters } from '../../data/filters'
 import type { UrlPatch } from '../../data/urlState'
@@ -20,7 +22,6 @@ export type FinderState = {
   q: string
   status: FinderStatus
   tools: string[] | null
-  project: string
   model: string
   name: NameSource
   errors: boolean
@@ -55,11 +56,11 @@ export const SORT_COLUMNS: Record<string, FinderSort> = {
   last_activity_at: 'last_activity', started_at: 'started', duration: 'duration', tokens: 'tokens', cost_usd: 'cost',
   tool_calls: 'tool_calls',
 }
-const KEYS = ['fq', 'fstatus', 'ftools', 'fproject', 'fmodel', 'fname', 'ferrors', 'fmin_tokens', 'fmin_cost', 'frange',
+const KEYS = ['fq', 'fstatus', 'ftools', 'fmodel', 'fname', 'ferrors', 'fmin_tokens', 'fmin_cost', 'frange',
   'fsince', 'funtil', 'fsort', 'forder'] as const
 
 export const DEFAULT_FINDER: FinderState = {
-  q: '', status: '', tools: null, project: '', model: '', name: '', errors: false, minTokens: 0, minCost: 0,
+  q: '', status: '', tools: null, model: '', name: '', errors: false, minTokens: 0, minCost: 0,
   range: 'all', sort: 'last_activity', order: 'desc',
 }
 
@@ -78,7 +79,6 @@ export function parseFinder(search: string, board?: { filters?: Filters; tools?:
     return {
       ...DEFAULT_FINDER,
       tools: board?.tools ? [...board.tools] : null,
-      project: filters && filters.project !== 'all' ? filters.project : '',
       model: filters && filters.model !== 'all' ? filters.model : '',
       status: filters?.status === 'running' || filters?.status === 'active' ? 'running'
         : filters?.status === 'ended' ? 'ended' : '',
@@ -91,7 +91,6 @@ export function parseFinder(search: string, board?: { filters?: Filters; tools?:
     q: q.get('fq') ?? '',
     status: pick(q.get('fstatus'), ['running', 'ended', 'inferred', 'importing', 'not_imported'], ''),
     tools: q.has('ftools') ? (q.get('ftools') ?? '').split(',').filter(Boolean) : null,
-    project: q.get('fproject') ?? '',
     model: q.get('fmodel') ?? '',
     name: pick(q.get('fname'), ['user', 'tool', 'prompt', 'none'], ''),
     errors: q.get('ferrors') === '1',
@@ -111,7 +110,6 @@ export function finderToParams(state: FinderState): UrlPatch {
     fq: state.q || null,
     fstatus: state.status || null,
     ftools: state.tools === null ? null : state.tools.join(','),
-    fproject: state.project || null,
     fmodel: state.model || null,
     fname: state.name || null,
     ferrors: state.errors ? '1' : null,
@@ -139,7 +137,6 @@ export function finderRequest(state: FinderState, nowS: number, offset: number, 
   const query = new URLSearchParams()
   if (state.q.trim()) query.set('q', state.q.trim())
   if (state.tools) query.set('tool', state.tools.join(','))
-  if (state.project.trim()) query.set('project', state.project.trim())
   if (state.model.trim()) query.set('model', state.model.trim())
   if (state.status) query.set('status', state.status)
   if (state.name) query.set('name', state.name)
@@ -175,7 +172,6 @@ export function finderChips(state: FinderState, toolLabel: (id: string) => strin
     chips.push({ key: 'tools', label: 'Tool', value: state.tools.length ? state.tools.map(toolLabel).join(', ') : 'None',
       clear: { tools: null } })
   }
-  if (state.project.trim()) chips.push({ key: 'project', label: 'Project', value: state.project.trim(), clear: { project: '' } })
   if (state.model.trim()) chips.push({ key: 'model', label: 'Model', value: state.model.trim(), clear: { model: '' } })
   if (state.name) chips.push({ key: 'name_source', label: 'Name', value: NAME_LABELS[state.name], clear: { name: '' } })
   if (state.errors) chips.push({ key: 'errors', label: 'Errors', value: 'Has errors', clear: { errors: false } })
@@ -205,7 +201,7 @@ export function emptyReason(state: FinderState, page: Pick<FinderPage, 'total' |
       return `The ${chip.label} filter (${chip.value}) excludes all ${count.toLocaleString()} sessions that match the other filters.`
     }
   }
-  const early = chips.filter(chip => ['q', 'tools', 'project', 'range'].includes(chip.key))
+  const early = chips.filter(chip => ['q', 'tools', 'range'].includes(chip.key))
   if (early.length) {
     return `No session matches ${early.map(chip => `${chip.label}: ${chip.value}`).join(' and ')}.` +
       (chips.length > early.length ? ' The other filters were not checked.' : '')

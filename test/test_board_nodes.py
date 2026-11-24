@@ -321,6 +321,9 @@ def history(monkeypatch, kusto_store):
         schema = TABLES[table]
         canonical = {k: v for k, v in fields.items() if k in dict(schema.columns)}
         canonical.update(node_id=node, _v=f"2026-01-{version:02d}")
+        # Every row of the session is filed under its folder, as the writer files it (session_facts.py).
+        if "session_id" in dict(schema.columns) and "project" in dict(schema.columns):
+            canonical.setdefault("project", "/shared")
         if schema.tombstone:
             canonical[schema.tombstone] = deleted
         if "dedup_key" in dict(schema.columns):

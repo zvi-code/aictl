@@ -39,7 +39,8 @@ class Filters:
     since: float
     until: float
     tools: tuple[str, ...] | None = None
-    project: str = ""
+    # The exact project values chosen (project_filter.py); () is every project.
+    projects: tuple[str, ...] = ()
     model: str = ""
     status: str = "all"
     q: str = ""
@@ -47,7 +48,8 @@ class Filters:
     runtime_statuses: tuple[tuple[str, str], ...] | None = None
 
     def matches_project(self, path: str | None) -> bool:
-        return not self.project or project_key(path) == project_key(self.project)
+        """Whether a folder is one of the chosen projects (exact, in each spelling of one path)."""
+        return not self.projects or project_key(path) in {project_key(p) for p in self.projects}
 
     @property
     def bucket_s(self) -> float:
@@ -64,7 +66,7 @@ class Filters:
 
     @property
     def narrowed(self) -> bool:
-        return self.tools is not None or bool(self.project or self.model or self.q) or self.status != "all"
+        return self.tools is not None or bool(self.projects or self.model or self.q) or self.status != "all"
 
 
 def parse_filters(query: str, now: float) -> Filters:
@@ -103,12 +105,21 @@ def parse_filters(query: str, now: float) -> Filters:
         since=since,
         until=until,
         tools=tools,
-        project=one("project"),
+        projects=_projects(qs),
         model=one("model"),
         status=status,
         q=one("q")[:200],
         buckets=min(buckets, MAX_BUCKETS),
     )
+
+
+def _projects(qs: dict[str, list[str]]) -> tuple[str, ...]:
+    from .project_filter import ProjectFilterError, requested_projects
+
+    try:
+        return requested_projects(qs)
+    except ProjectFilterError as exc:
+        raise BoardRequestError(str(exc)) from exc
 
 
 def _detail_filters(now: float) -> Filters:

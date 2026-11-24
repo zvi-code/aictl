@@ -63,9 +63,11 @@ def filled_query(view: str, params: Mapping[str, Any]) -> str:
     *params* are the values the panel passed to the reader, ``limit`` included: the
     reader asks for one row more than ``limit`` to see whether the result was cut.
     """
+    from ..stores.kusto.project_scope import PARAMETER, restricted_query
     from ..stores.kusto.reader import _query
 
-    text = _query(view)
+    # A read for chosen projects ran the view inside their restriction (project_scope.py).
+    text = restricted_query(_query(view)) if PARAMETER in params else _query(view)
     match = _DECLARE.match(text)
     if match is None:
         raise ValueError(f"{view} declares no query parameters")
@@ -98,5 +100,9 @@ def kusto_base_url(settings: Any) -> str | None:
 
 def query_block(history: Any, view: str, params: Mapping[str, Any]) -> dict:
     """What a panel shows under "Show query": the filled KQL and where to open it."""
+    from .project_filter import ProjectReader, project_keys
+
     settings = reader_feature(history.reader, "connection_info")
+    if isinstance(history.reader, ProjectReader):
+        params = {**params, **project_keys(history.reader.projects)}
     return {"view": view, "kql": filled_query(view, params), "kusto_url": kusto_base_url(settings)}

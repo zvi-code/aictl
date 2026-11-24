@@ -62,7 +62,7 @@ const fleet = {
 
 function context(state: DetailState<unknown> | undefined, opened: string[] = []) {
   const ctx = {
-    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined,
+    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [] }),
     openAgent(id: string, tab = 'flow') {
       opened.push(`${id}:${tab}`)
       history.pushState(null, '', nextAddress(drawerPatch({ type: 'agent', id, tab })))

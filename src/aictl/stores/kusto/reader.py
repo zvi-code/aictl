@@ -20,6 +20,8 @@ from typing import Any
 
 from ..base import ReadResult, StoreError, UnknownViewError
 from .client import QUERY_TIMEOUT, query_memory_error, retrying
+from .project_scope import PARAMETER as PROJECT_PARAMETER
+from .project_scope import restricted_query
 from .query_cpu import _cpu_ticks
 
 _SCOPE = "all_nodes requested_node requested_project"
@@ -34,6 +36,7 @@ _VIEWS = {
     "analytics.tools": (f"{_TIME} restrict_tools requested_tools", "row_type hidden count tool_name cli_tool avg_ms p95_ms error_count"),
     "analytics.profiles": (_TIME, "session_id tool project_path model started_at input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd request_count tool_call_count tokens_source tokens_quality cost_quality"),
     "health.nodes": ("requested_project requested_node", "node_id samples last_sample"),
+    "projects.catalog": ("all_nodes requested_node", "project_path sessions last_ts nodes"),
     "health.totals": ("all_nodes requested_node", "table rows earliest_ts latest_ts files_total_bytes files_total_tokens"),
     "health.sample_buckets": ("", "start"),
     "health.sample_count": ("since until null_timestamp", "rows"),
@@ -427,6 +430,7 @@ _PARAMETER_TYPES = {
     "search_terms": list,
     "calendar_days": list,
     "pids": tuple,
+    PROJECT_PARAMETER: list,
 }
 _MAX_ROWS = 20_000
 # Each page of these views runs the whole query again, so one large page costs much less
@@ -524,6 +528,11 @@ def _parameter(name: str, value: Any) -> str:
 @lru_cache
 def _query(view: str) -> str:
     return files(__package__).joinpath("queries", view + ".kql").read_text(encoding="utf-8").strip()
+
+
+@lru_cache
+def _restricted(view: str) -> str:
+    return restricted_query(_query(view))
 
 
 class KustoReader:
@@ -633,7 +642,10 @@ class KustoReader:
             raise UnknownViewError(f"Unknown Kusto view {view!r}")
         names, _ = _VIEWS[view]
         allowed = names.split()
-        if unexpected := params.keys() - {*allowed, "limit"}:
+        # Any view can be read for chosen projects only (project_scope.py); None reads every project.
+        if params.get(PROJECT_PARAMETER, ()) is None:
+            params = {key: value for key, value in params.items() if key != PROJECT_PARAMETER}
+        if unexpected := params.keys() - {*allowed, "limit", PROJECT_PARAMETER}:
             raise ValueError(f"{view}: unexpected parameters: {', '.join(sorted(unexpected))}")
         limit = params.get("limit", 100)
         most = _VIEW_MAX_ROWS.get(view, _MAX_ROWS)
@@ -653,12 +665,13 @@ class KustoReader:
         for key, value in bound.items():
             props.set_parameter(key, value)
 
+        restricted = PROJECT_PARAMETER in bound
         ttl = _CACHE_TTL_S.get(view)
         if ttl is None:
-            return self._execute(view, props, limit)
-        return self._cached_read(view, tuple(sorted(bound.items())), ttl, props, limit)
+            return self._execute(view, props, limit, restricted)
+        return self._cached_read(view, tuple(sorted(bound.items())), ttl, props, limit, restricted)
 
-    def _cached_read(self, view: str, bound: tuple, ttl: float, props, limit: int) -> ReadResult:
+    def _cached_read(self, view: str, bound: tuple, ttl: float, props, limit: int, restricted: bool = False) -> ReadResult:
         key = (view, bound)
 
         def stale(entry: _CachedRead, now: float) -> ReadResult | None:
@@ -688,7 +701,7 @@ class KustoReader:
 
         entry = entry or _CachedRead()
         try:
-            result = self._execute(view, props, limit)
+            result = self._execute(view, props, limit, restricted)
         except BaseException as exc:  # noqa: BLE001 - resolve waiters even if the leader is interrupted
             now = time.monotonic()
             if isinstance(exc, StoreError):
@@ -712,12 +725,12 @@ class KustoReader:
                 del self._inflight[key]
         return deepcopy(pending.result())
 
-    def _execute(self, view: str, props, limit: int) -> ReadResult:
+    def _execute(self, view: str, props, limit: int, restricted: bool = False) -> ReadResult:
         start = time.monotonic()
         error = None
         returned = ticks = 0
         try:
-            text = _query(view)
+            text = _restricted(view) if restricted else _query(view)
 
             def execute():
                 props.client_request_id = f"aictl.{view};{uuid.uuid4()}"

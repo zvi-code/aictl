@@ -680,13 +680,19 @@ class _Board:
             meta_tool = meta.get("tool") or ""
             self.session_tool[sid] = meta_tool if not is_unattributed(meta_tool) else tool_seen.get(sid, meta_tool)
             path = meta.get("project_path") or project_seen.get(sid, "")
-            self.session_project[sid] = path if self.history.qualified else project_root(path)
+            # This node's board names a session by its repository, unless projects are chosen: the
+            # filter is on the exact folders, and the board then names each session by its own.
+            self.session_project[sid] = path if self._exact_projects else project_root(path)
         for c in self.cells:
             self.session_tool.setdefault(c.sid, c.tool)
             self.session_project.setdefault(c.sid, c.project)
             if is_unattributed(c.tool):
                 c.tool = self.session_tool[c.sid]
-            c.project = (c.project if self.history.qualified else project_root(c.project)) or self.session_project[c.sid]
+            c.project = (c.project if self._exact_projects else project_root(c.project)) or self.session_project[c.sid]
+
+    @property
+    def _exact_projects(self) -> bool:
+        return self.history.qualified or bool(self.f.projects)
 
     def _price_cells(self) -> None:
         tiered: dict[str, int] = {}
@@ -2668,6 +2674,19 @@ def _skills_section(board: _Board, skill_rows: list[tuple], turns: _Turns) -> li
              **({} if _is_reported_history(board.conn) else _skill_file(row["name"], row["projects"]))} for row in out]
 
 
+def _in_projects(row: dict, projects: tuple[str, ...]) -> bool:
+    """files.inventory's own project rule: the file is filed under the project, or lies in its folder."""
+    def fold(path: str, windows: bool) -> str:
+        return (path.lower().replace("\\", "/") if windows else path).rstrip("/")
+
+    for project in projects:
+        key = project_key(project)
+        windows = bool(PureWindowsPath(key).drive)
+        if fold(str(row.get("project") or ""), windows) == key or fold(str(row.get("path") or ""), windows).startswith(key + "/"):
+            return True
+    return False
+
+
 def _memory_files(board: _Board) -> list[dict]:
     """Every memory and instruction file that exists, each with its category.
 
@@ -2677,10 +2696,14 @@ def _memory_files(board: _Board) -> list[dict]:
     """
     selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
     fields = ("path", "tool", "scope", "tokens", "last_changed", "category", "mtime")
-    folded = bool(board.f.project and PureWindowsPath(project_key(board.f.project)).drive)
-    rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ())
-            for r in board.history.read("files.inventory", inventory_mode="memory",
-                                        project_path_key=project_key(board.f.project), fold_project=folded)]
+    # One chosen project is matched in the query; several are matched here by the same rule.
+    one = board.f.projects[0] if len(board.f.projects) == 1 else ""
+    folded = bool(one and PureWindowsPath(project_key(one)).drive)
+    found = board.history.read("files.inventory", inventory_mode="memory", project_path_key=project_key(one),
+                               fold_project=folded)
+    if len(board.f.projects) > 1:
+        found = [r for r in found if _in_projects(r, board.f.projects)]
+    rows = [tuple(r[k] for k in fields) + ((r["node_id"],) if board.history.qualified else ()) for r in found]
     rows = [r for r in rows if selected is None or r[1] in selected]
     if not rows:
         return []
@@ -2774,7 +2797,7 @@ def _processes(board: _Board) -> list[dict]:
             placeholder = placeholder_of.get(pid, (None, None))
             if board.narrowed and board.f.status != "all" and sid not in board.scope:
                 continue
-            if board.f.project and (sid is None or not board.f.matches_project(board.session_project.get(sid))):
+            if board.f.projects and (sid is None or not board.f.matches_project(board.session_project.get(sid))):
                 continue
             out.append(
                 {
@@ -3090,7 +3113,7 @@ def coverage_rows(facts: dict[str, set[str]], tool_ids: list[str]) -> list[dict]
 
 
 def _source_rows(history: HistoryScope, memo_key: str) -> list[tuple]:
-    key = (memo_key, id(history.reader), history.node)
+    key = (memo_key, history.reader, history.node)
     with _facts_lock:
         cached = _sources_memo.get(key)
         if cached and time.monotonic() - cached[0] < FACTS_TTL_S:
@@ -3230,7 +3253,9 @@ def compute_board(
     store failure in one leaves its fields out of the board and names them here with the
     reason. Without it, any failed read fails the whole board.
     """
-    history = history or HistoryScope.local(db)
+    from .project_filter import scoped
+
+    history = scoped(history or HistoryScope.local(db), filters.projects)
     now = time.time() if now is None else now
     history.require_reader()
     from types import SimpleNamespace

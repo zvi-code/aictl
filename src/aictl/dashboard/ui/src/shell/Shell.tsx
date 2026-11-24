@@ -21,6 +21,7 @@ import { BoardControls } from './BoardControls'
 import type { DrawerEntry } from './drawerTypes'
 import { NodePicker, scopeLabel } from './NodePicker'
 import { Palette, type PaletteCommand, type SessionLookup } from './Palette'
+import { ProjectChips, ProjectPicker } from './ProjectPicker'
 import { sectionSummary } from './railSummary'
 import { clearDrawer, drawerPatch, nextAddress, readDrawer, remember, stored, typing } from './viewState'
 import '../design/tokens.css'
@@ -339,6 +340,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     const hash = location.hash
     if (hash.startsWith('#sec-')) requestAnimationFrame(() => { if (hash === location.hash) scroll(hash.slice(5)) })
   }
+  // The screens whose data is per project. Health (this daemon and the store) and Settings (tool
+  // configuration on disk) are not: the chosen projects stay in the address but do not apply there.
+  const projectScreen = () => screen() === 'board' || screen() === 'insights'
   const sourceRows = createMemo(() => scope() === 'local' ? statuses(client) : [])
   const stream = () => {
     const health = topic(client, 'runtime.health', 'local')
@@ -378,6 +382,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
             'ready' in status ? status.ready ? 'Ready' : 'Waiting' : 'Reported'}</p>}</For>
       </Show>
     </Popover>
+    <Show when={projectScreen()}><ProjectPicker ctx={ctx} /></Show>
     <NodePicker scope={scope()} nodeId={nodeId()} select={selectScope} />
     <span class={styles.divider} aria-hidden="true" />
     <Tooltip class={styles.iconButton} label={paused() ? 'Resume live' : 'Pause live'} disabled={scope() !== 'local'}
@@ -413,6 +418,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
           </nav>
         </Show>
         <div class={styles.canvas}>
+        <ProjectChips ctx={ctx} applies={projectScreen()} />
         <Show when={screen() === 'board'}>
           <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} custom={custom()} setCustom={setCustom} text={findText()} search={searchFor}
             rail={rail()} toggleRail={() => setRail(old => !old)} />

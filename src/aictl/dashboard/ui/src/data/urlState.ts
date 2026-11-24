@@ -6,7 +6,8 @@
 
 export type TimeWindow = { since: number; until: number; buckets?: number };
 export type Range = { id: string; since?: number; until?: number };
-export type UrlPatch = Record<string, string | number | null | undefined>;
+/** A list value writes the key once per entry (`?project=/a&project=/b`); an empty list removes it. */
+export type UrlPatch = Record<string, string | number | readonly string[] | null | undefined>;
 
 export function parseUrlState(search: string) {
   const q = new URLSearchParams(search || '');
@@ -34,6 +35,7 @@ export function mergeSearch(search: string, patch: UrlPatch) {
   const q = new URLSearchParams(search || '');
   for (const [k, v] of Object.entries(patch)) {
     if (v === null || v === undefined) q.delete(k);
+    else if (Array.isArray(v)) { q.delete(k); for (const item of v) q.append(k, item); }
     else q.set(k, String(v));
   }
   const s = q.toString().replace(/%2C/g, ',');

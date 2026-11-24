@@ -72,7 +72,15 @@ export function rowAction(def: PanelDef, ctx: PanelContext, row: Row) {
     }
     // A value the source did not report ("Model not reported") is a label, not a value to filter by.
     if (row[`${action.field}_reported`] === false) continue
-    return { label: action.label, run: () => ctx.navigate({ [action.filter]: ctx.filters()[action.filter] === id ? null : id }) }
+    if (action.filter === 'project') {
+      // The page's project filter: a row chooses its project, and a chosen row clears it.
+      return { label: action.label, run: () => {
+        const chosen = ctx.filters().projects
+        ctx.navigate({ project: chosen.includes(id) ? chosen.filter(p => p !== id) : [id] })
+      } }
+    }
+    const key = action.filter
+    return { label: action.label, run: () => ctx.navigate({ [key]: ctx.filters()[key] === id ? null : id }) }
   }
 }
 

@@ -305,7 +305,8 @@ def test_the_request_maps_onto_the_query():
     found = finder_query(qs(q=" widget ", tool="claude-code", project="aictl", model="gpt-5", status="inferred",
                             name="user", errors="1", min_tokens="1000", min_cost="0.5", sort="cost", order="asc",
                             since="10", until="20", limit="50", offset="100"))
-    assert found == SessionQuery(q="widget", tools=found.tools, since=10.0, until=20.0, project="aictl", model="gpt-5",
+    # `project` is the page's project filter, applied to the history read (project_filter.py), not a finder field.
+    assert found == SessionQuery(q="widget", tools=found.tools, since=10.0, until=20.0, model="gpt-5",
                                  status="inferred", name_source="user", errors=True, min_tokens=1000, min_cost=0.5,
                                  sort="cost", ascending=True, limit=50, offset=100)
     assert "claude-code" in found.tools

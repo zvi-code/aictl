@@ -154,6 +154,10 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 if len(cache) > 6:
                     cache.pop(next(iter(cache)))
                 return status, body
+        if endpoint == "projects":
+            from .project_filter import catalog
+
+            return result(200, catalog(history))
         if endpoint == "session/records":
             node, raw = parse_identity(one("session_id"), scope)
             part = one("part")

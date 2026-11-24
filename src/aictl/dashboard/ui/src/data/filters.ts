@@ -1,6 +1,8 @@
 // ─── Board filters — time and filters live in the URL ─────────────
 // Keys: range (with since and until for custom), tools (shared with every other
 // screen), project, model, status, q, and sel (a selected time, "since-until").
+// `project` is the project filter of the whole interface: one key per chosen project, its exact
+// stored value (`?project=/src/a&project=/src/b`). Every per-project request carries it (withProjects).
 import { parseUrlState, rangeToParams, type Range, type TimeWindow, type UrlPatch } from './urlState';
 
 export type Screen = 'board' | 'health' | 'insights' | 'index' | 'settings';
@@ -51,7 +53,7 @@ export function parseFilters(search: string) {
   const status = q.get('status');
   return {
     range,
-    project: q.get('project') || 'all',
+    projects: readProjects(q),
     model: q.get('model') || 'all',
     status: status && STATUS_IDS.has(status) ? status : 'all',
     q: q.get('q') || '',
@@ -70,7 +72,7 @@ export function boardRangePatch(search: string): UrlPatch | undefined {
 export function filtersToParams(f: Filters) {
   return {
     ...rangeToParams(f.range.id === DEFAULT_RANGE ? { id: 'live' } : f.range),
-    project: f.project && f.project !== 'all' ? f.project : null,
+    project: f.projects.length ? f.projects : null,
     model: f.model && f.model !== 'all' ? f.model : null,
     status: f.status && f.status !== 'all' ? f.status : null,
     q: f.q ? f.q : null,
@@ -96,7 +98,7 @@ export function boardQuery(filters: Filters, tools: Tools, win: TimeWindow) {
   p.set('until', String(win.until));
   if (win.buckets) p.set('buckets', String(win.buckets));
   if (tools) p.set('tool', tools.length ? tools.join(',') : '-');
-  if (filters.project !== 'all') p.set('project', filters.project);
+  for (const project of filters.projects) p.append('project', project);
   if (filters.model !== 'all') p.set('model', filters.model);
   if (filters.status !== 'all') p.set('status', filters.status);
   if (filters.q.trim()) p.set('q', filters.q.trim());
@@ -104,9 +106,29 @@ export function boardQuery(filters: Filters, tools: Tools, win: TimeWindow) {
 }
 
 export function canClear(f: Filters, tools: Tools) {
-  return !!(tools || f.project !== 'all' || f.model !== 'all' || f.status !== 'all' || f.sel || f.q);
+  return !!(tools || f.projects.length || f.model !== 'all' || f.status !== 'all' || f.sel || f.q);
 }
-export const clearedFilters = (f: Filters): Filters => ({ ...f, project: 'all', model: 'all', status: 'all', sel: null, q: '' });
+export const clearedFilters = (f: Filters): Filters => ({ ...f, projects: [], model: 'all', status: 'all', sel: null, q: '' });
+
+/** The chosen projects of an address: each once, in a stable order; none means every project. */
+export function readProjects(q: URLSearchParams): string[] {
+  return [...new Set(q.getAll('project').map(value => value.trim()).filter(value => value && value !== 'all'))].sort();
+}
+
+// Routes whose data is not per project: the picker's own list, node reports, actions.
+const UNFILTERED = ['/api/board/projects', '/api/board/nodes', '/api/board/action'];
+
+/** *path* with the chosen projects, for a route of per-project data. Other routes, and a path that already
+ * names projects, are returned as they are. */
+export function withProjects(path: string, projects: readonly string[]): string {
+  if (!projects.length || !(path.startsWith('/api/board/') || path.startsWith('/api/history/')) ||
+      UNFILTERED.some(route => path === route || path.startsWith(route + '?'))) return path;
+  const [route, search = ''] = path.split('?', 2);
+  const query = new URLSearchParams(search);
+  if (query.has('project')) return path;
+  for (const project of projects) query.append('project', project);
+  return `${route}?${query}`;
+}
 
 /** The hover of a Model menu entry: the spellings the tools stored under this canonical id,
  * or undefined when every tool stored the id itself. */

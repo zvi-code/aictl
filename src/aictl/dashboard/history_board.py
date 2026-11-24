@@ -13,6 +13,7 @@ from ..stores.base import StoreError
 from .board_filters import BoardRequestError, parse_filters
 from .board_projection import compute_board
 from .history_scope import ScopeError, label, parse_scope
+from .project_filter import scoped
 from .projection_utils import safe_reason
 from .projections.history import HistoryScope
 
@@ -55,7 +56,7 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
     filters = parse_filters(query, now)
     local = scope.kind == "local"
     span = filters.until - filters.since
-    history = HistoryScope.local(store)
+    history = scoped(HistoryScope.local(store), filters.projects)
     if not local:
         if span > 31 * 86400:
             raise ScopeError("Node history supports a time range of up to 31 days", 422, "history_limit")
