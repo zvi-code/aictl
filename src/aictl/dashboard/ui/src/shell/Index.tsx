@@ -44,11 +44,12 @@ function Comparison(props: { title: string; rows: Compare[]; note: string; label
     text('tool', 'Tool', row => label(row.tool)),
     num('on_disk', 'On disk', row => row.on_disk), num('stored', 'Stored', row => row.stored),
     num('matched', 'In both', row => row.matched),
-    num('not_stored', 'On disk, not stored', row => row.comparable ? notStored(row) : null),
-    num('open', 'Of those, not read yet or unreadable', row => row.comparable ? openGap(row) : null),
-    num('only_stored', 'Stored, not on disk', row => row.comparable ? onlyStored(row) : null),
+    { ...num<Compare>('not_stored', 'Not stored', row => row.comparable ? notStored(row) : null), title: 'On disk, not stored' },
+    { ...num<Compare>('open', 'Not read yet', row => row.comparable ? openGap(row) : null),
+      title: 'Of the sessions not stored: not read yet or unreadable' },
+    { ...num<Compare>('only_stored', 'Only stored', row => row.comparable ? onlyStored(row) : null), title: 'Stored, not on disk' },
     num('files', 'Session files', row => row.files), num('bytes', 'Size on disk', row => row.bytes, size),
-    text('reason', 'Not compared because', row => row.reason || ''),
+    text('reason', 'Why not compared', row => row.reason || '', { hint: row => row.reason || undefined }),
   ]
   const gaps = () => props.rows.filter(row => row.comparable && (notStored(row) || onlyStored(row)))
   return <section class={styles.section} aria-labelledby={props.id}>
@@ -72,8 +73,8 @@ function Comparison(props: { title: string; rows: Compare[]; note: string; label
 function Locations(props: { rows: Location[]; label: Label; title: string; id: string; note?: string }) {
   const label = untrack(() => props.label)
   const fields: Field<Location>[] = [
-    text('tool', 'Tool', row => label(row.tool)), text('kind', 'Kind', row => row.kind),
-    folder('path', 'Folder', row => row.path), text('exists', 'Exists', row => yesNo(row.exists)),
+    folder('path', 'Folder', row => row.path), text('tool', 'Tool', row => label(row.tool)),
+    text('kind', 'Kind', row => row.kind), text('exists', 'Exists', row => yesNo(row.exists)),
     num('files', 'Files', row => row.files), num('bytes', 'Size', row => row.bytes, size),
     num('sessions', 'Sessions', row => row.sessions),
     ...STATES.map(([key, label]) => num<Location>(key, label, row => row.states[key])),
@@ -118,7 +119,7 @@ function Databases(props: { rows: Database[] }) {
 function Homes(props: { rows: Home[]; label: Label }) {
   const label = untrack(() => props.label)
   const fields: Field<Home>[] = [
-    text('tool', 'Tool', row => label(row.tool)), folder('path', 'Folder', row => row.path),
+    folder('path', 'Folder', row => row.path), text('tool', 'Tool', row => label(row.tool)),
     text('exists', 'Exists', row => yesNo(row.exists)), text('found_by', 'Named by', row => row.found_by.join(', ')),
     folder('session_folder', 'Session folder', row => row.session_folder),
     text('session_exists', 'Session folder exists', row => row.session_folder ? yesNo(row.session_folder_exists) : ''),
@@ -159,8 +160,8 @@ function Context(props: { rows: ContextFolder[]; label: Label }) {
   const [open, setOpen] = createSignal<string>()
   const key = (row: ContextFolder) => `${row.category}|${row.tool}|${row.path}`
   const fields: Field<ContextFolder>[] = [
-    text('category', 'Kind', row => row.category), text('tool', 'Tool', row => label(row.tool)),
-    text('scope', 'Scope', row => row.scope), folder('path', 'Folder', row => row.path),
+    folder('path', 'Folder', row => row.path), text('category', 'Kind', row => row.category),
+    text('tool', 'Tool', row => label(row.tool)), text('scope', 'Scope', row => row.scope),
     text('exists', 'Exists', row => yesNo(row.exists)), num('files', 'Files', row => row.files),
     num('bytes', 'Size', row => row.bytes, size), time('newest', 'Newest', row => row.newest),
     text('pattern', 'Path catalog pattern', row => row.pattern),
