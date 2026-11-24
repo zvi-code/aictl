@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import Flows from '../../src/panels/insights/Flows'
 import { flowsFinding, flowsHero, tooSmall, type FlowsBody } from '../../src/panels/insights/flowsModel'
+import Mcp from '../../src/panels/insights/Mcp'
+import { mcpCoverage, mcpFinding, mcpHero, type McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
 import { skillsCoverage, skillsFinding, skillsHero, type SkillsBody } from '../../src/panels/insights/skillsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -136,6 +138,48 @@ describe('INS-21 · Skills', () => {
     const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-skill'))
     open!.click()
     expect(opened).toEqual(['s-skill:flow'])
+    dispose()
+  })
+})
+
+const fig = { calls: 650, sessions: 13, projects: 48, failures: 29, failure_share: 29 / 650, enough: true, p50_ms: 27, p95_ms: 4661,
+  sum_ms: 2_098_216, output_bytes: 67_558, carried_bytes: 25_855_767 }
+const server = { ...fig, server: 'kusto', tools: ['claude-code'], server_tools: 2, calls_by_tool: [{ ...fig, tool_name: 'query' }] }
+const mcpBody = {
+  ...base, card: 'mcp', view: 'insights.mcp', query: query('insights.mcp'),
+  servers: [server], small_servers: [{ ...server, server: 'rare', calls: 4, sessions: 2, enough: false, failure_share: null }],
+  listed: [{ server: 'docs', tool: 'claude-code', sessions: 24, called_sessions: 0, list_tokens: 4990, unused_tokens: 4990, listed_tools: 16 }],
+  projects: [{ project: '/work/alpha', calls: 600, sessions: 10, servers: 2, failures: 20, sum_ms: 1_800_000, output_bytes: 60_000 }],
+  summary: { calls: 2251, all_calls: 75_731, call_share: 2251 / 75_731, sum_ms: 5_070_000, time_share: 0.0128, output_bytes: 3_000_000,
+    carried_bytes: 430_000_000, failures: 53, servers: 13, top: server, listing_tools: ['claude-code'], listed_servers: 1, never_called: 1, unused_tokens: 4990,
+    small_servers: 1, small_projects: ['beta'] },
+  sessions: [{ session_id: 's-mcp', node_id: 'n', tool: 'claude-code', project_name: 'alpha', calls: 300, failures: 3, servers: 2,
+    sum_ms: 60_000, output_bytes: 1000 }],
+} as unknown as McpBody
+
+describe('INS-22 · MCP servers', () => {
+  it('states the time and bytes of MCP calls, the server that took most and the listings never called', () => {
+    expect(mcpFinding(mcpBody, label)).toBe('2,251 MCP calls (3% of all tool calls) took 1.4 h (1% of all tool time); their results ' +
+      'were sent again with later requests up to 430 MB. The server that took most, kusto, took 35 min in 650 calls of 13 sessions ' +
+      'in 48 projects: median 27 ms, 95th percentile 4.7 s, 4% failed. Claude Code listed tools of 1 server to the model, 1 of them ' +
+      'never called; listings in sessions that did not call the server took 5.0 k tokens (estimated from size).')
+    expect(mcpHero(mcpBody)).toEqual({ value: '1.4 h', label: 'of tool time in MCP calls, 1% of all' })
+    expect(mcpCoverage(mcpBody, label)).toContain('Too small to compare: 1 server with fewer than 20 calls or 3 sessions; 1 project')
+  })
+
+  it('draws a bar per server that has enough calls, the listings and the projects, and opens a session', () => {
+    const opened: string[] = []
+    const { host, dispose } = mount(() => <Mcp {...props(context({ data: mcpBody, status: 'ready', error: null }, opened))} />)
+    const box = host.querySelector('[data-box="insight-mcp"]')!
+    const row = box.querySelector('[data-server="kusto"]')!
+    expect(row.textContent).toContain('650 calls · 13 sessions · 48 projects')
+    expect(row.textContent).toContain('4% failed · 67.6 KB returned · carried 25.9 MB')
+    expect(box.querySelector('[data-server="rare"]')).toBeNull()
+    expect(box.querySelector('[data-listed]')!.textContent).toContain('called in 0 of 24 sessions')
+    expect(box.querySelector('[data-projects]')!.textContent).toContain('alpha600 calls to 2 servers')
+    const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-mcp'))
+    open!.click()
+    expect(opened).toEqual(['s-mcp:tools'])
     dispose()
   })
 })

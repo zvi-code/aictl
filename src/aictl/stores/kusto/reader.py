@@ -361,6 +361,12 @@ _VIEWS = {
         "priced cost_usd tool list_tokens listed unused unused_tokens skills project_name top_skill skill_names node_id "
         "session_id first_ts last_ts computed_at",
     ),
+    "insights.mcp": (
+        _TIME,
+        "row_type server server_tool calls sessions projects failures timed p50_ms p95_ms sum_ms output_bytes "
+        "sized tools server_tools carried_bytes called_sessions list_tokens unused_tokens listed_tools tool "
+        "project_name servers node_id session_id mcp_calls first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -463,6 +469,7 @@ _CACHE_TTL_S = {
     "insights.model_report": _INSIGHT_TTL_S,
     "insights.flows": _INSIGHT_TTL_S,
     "insights.skills": _INSIGHT_TTL_S,
+    "insights.mcp": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }

@@ -289,6 +289,7 @@ BOUNDED = {
     "insights.flows": "one row per pair of step kinds, 10 cycles, per tool, per outcome and last step, 10 first and 10 last "
                       "paths, 20 projects, 20 sessions and one meta row",
     "insights.skills": "25 skills, 10 unused listed skills, per tool, 20 projects, 10 sessions and one meta row",
+    "insights.mcp": "25 servers, 40 server tools, 200 listed servers, 20 projects, 10 sessions and one meta row",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",
     "prompts.titles": "one row per agent of the board's sessions",

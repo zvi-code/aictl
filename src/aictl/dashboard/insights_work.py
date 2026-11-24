@@ -217,3 +217,76 @@ def skills(rows: list[dict]) -> dict:
     sessions.sort(key=lambda row: -row["uses"])
     return {"skills": found, "small_skills": small, "unused": unused, "listings": listings, "tools": tools,
             "projects": projects, "summary": summary, "sessions": sessions}
+
+
+# MCP: a server or server tool with fewer calls or sessions than these is too small to compare.
+MIN_MCP_CALLS = 20
+MIN_MCP_SESSIONS = 3
+MIN_MCP_PROJECT_CALLS = 20
+SHOWN_LISTED = 25
+
+
+def _mcp_figures(row: dict) -> dict:
+    calls, timed, sized = _int(row.get("calls")), _int(row.get("timed")), _int(row.get("sized"))
+    sessions = _int(row.get("sessions"))
+    enough = calls >= MIN_MCP_CALLS and sessions >= MIN_MCP_SESSIONS
+    return {
+        "calls": calls, "sessions": sessions, "projects": _int(row.get("projects")), "failures": _int(row.get("failures")),
+        "failure_share": _ratio(_n(row.get("failures")), calls) if enough else None, "enough": enough,
+        "p50_ms": _num(row.get("p50_ms")) if timed else None, "p95_ms": _num(row.get("p95_ms")) if timed else None,
+        "sum_ms": _n(row.get("sum_ms")) if timed else None,
+        "output_bytes": _int(row.get("output_bytes")) if sized else None,
+        "carried_bytes": _num(row.get("carried_bytes")) if sized else None,
+    }
+
+
+def mcp(rows: list[dict]) -> dict:
+    """Per MCP server and per tool of a server: calls, sessions, projects, failures, duration, result bytes and bytes
+    carried; the servers whose tools were listed to the model in sessions that never called them."""
+    per_tool: dict[str, list[dict]] = {}
+    for row in _of(rows, "server_tool"):
+        per_tool.setdefault(str(row.get("server")), []).append({"tool_name": row.get("server_tool"), **_mcp_figures(row)})
+    servers, small = [], []
+    for row in _of(rows, "server"):
+        name = str(row.get("server"))
+        item = {"server": name, "tools": _names(row.get("tools")), "server_tools": _int(row.get("server_tools")),
+                **_mcp_figures(row),
+                "calls_by_tool": sorted(per_tool.get(name, []), key=lambda tool: -tool["calls"])}
+        (servers if item["enough"] else small).append(item)
+    servers.sort(key=lambda item: (-_n(item["sum_ms"]), -item["calls"]))
+    small.sort(key=lambda item: -item["calls"])
+    listed = [{"server": row.get("server"), "tool": row.get("tool"), "sessions": _int(row.get("sessions")),
+               "called_sessions": _int(row.get("called_sessions")), "list_tokens": _int(row.get("list_tokens")),
+               "unused_tokens": _int(row.get("unused_tokens")), "listed_tools": _int(row.get("listed_tools"))}
+              for row in _of(rows, "listed")]
+    listed.sort(key=lambda item: -item["unused_tokens"])
+    projects, small_projects = [], []
+    for row in _of(rows, "project"):
+        item = {"project": str(row.get("project_name") or ""), "calls": _int(row.get("calls")), "sessions": _int(row.get("sessions")),
+                "servers": _int(row.get("servers")), "failures": _int(row.get("failures")), "sum_ms": _n(row.get("sum_ms")),
+                "output_bytes": _int(row.get("output_bytes"))}
+        (projects if item["calls"] >= MIN_MCP_PROJECT_CALLS else small_projects).append(item)
+    projects.sort(key=lambda item: (-item["calls"], item["project"]))
+    meta = next(iter(_of(rows, "meta")), {})
+    every = servers + small
+    calls = sum(item["calls"] for item in every)
+    sum_ms = sum(_n(item["sum_ms"]) for item in every)
+    carried = [item["carried_bytes"] for item in every if item["carried_bytes"] is not None]
+    summary = {
+        "calls": calls, "all_calls": _int(meta.get("calls")), "call_share": _ratio(calls, _n(meta.get("calls"))),
+        "sum_ms": sum_ms if every else None, "time_share": _ratio(sum_ms, _n(meta.get("sum_ms"))) if every else None,
+        "output_bytes": sum(_n(item["output_bytes"]) for item in every) if every else None,
+        "carried_bytes": sum(carried) if carried else None,
+        "failures": sum(item["failures"] for item in every), "servers": len(every),
+        "top": servers[0] if servers else None, "listing_tools": list(LISTING_TOOLS),
+        "listed_servers": len(listed), "never_called": sum(1 for item in listed if not item["called_sessions"]),
+        "unused_tokens": sum(item["unused_tokens"] for item in listed) if listed else None,
+        "small_servers": len(small), "small_projects": sorted(item["project"] for item in small_projects),
+    }
+    sessions = [{"session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"),
+                 "project_name": row.get("project_name") or None, "calls": _int(row.get("calls")),
+                 "failures": _int(row.get("failures")), "servers": _int(row.get("servers")), "sum_ms": _n(row.get("sum_ms")),
+                 "output_bytes": _num(row.get("output_bytes"))} for row in _of(rows, "session") if row.get("session_id")]
+    sessions.sort(key=lambda row: -row["calls"])
+    return {"servers": servers, "small_servers": small, "listed": listed[:SHOWN_LISTED], "projects": projects, "summary": summary,
+            "sessions": sessions}

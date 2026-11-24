@@ -263,6 +263,74 @@ def test_skills_shape_applies_the_evidence_rule():
     assert body["summary"]["unused_tokens"] is None and body["summary"]["listing_tools"] == ["claude-code"]
 
 
+# ─── MCP servers ───────────────────────────────────────────────────────────────
+
+
+def _mcp_call(store, key, ts, server, tool_name, *, session, project=ALPHA, tool="copilot-cli", **values):
+    _call(store, key, ts, f"mcp__{server}__{tool_name}", session=session, tool=tool, kind="other", project=project,
+          mcp_server=server, mcp_tool=tool_name, **values)
+
+
+def _seed_mcp(s, project=ALPHA, prefix=""):
+    p = prefix
+    # m1: two kusto query calls (one failed) and a docs fetch; two requests after the first call, one after the second.
+    _request(s, f"{p}m1r0", 5.0, session=f"{p}m1", project=project)
+    _mcp_call(s, f"{p}m1a", 10.0, "kusto", "query", session=f"{p}m1", duration_ms=100.0, output_bytes=1000, project=project)
+    _request(s, f"{p}m1r1", 15.0, session=f"{p}m1", project=project)
+    _mcp_call(s, f"{p}m1b", 20.0, "kusto", "query", session=f"{p}m1", duration_ms=300.0, output_bytes=10, failed=True,
+              is_error=True, project=project)
+    _request(s, f"{p}m1r2", 25.0, session=f"{p}m1", project=project)
+    _mcp_call(s, f"{p}m1c", 30.0, "docs", "fetch", session=f"{p}m1", duration_ms=50.0, output_bytes=500, project=project)
+    # A deleted call and a plain read do not count; the read counts in all calls.
+    _mcp_call(s, f"{p}m1d", 40.0, "kusto", "query", session=f"{p}m1", duration_ms=9000.0, project=project)
+    s.insert("tool_invocations", dedup_key=f"{p}m1d", ts=40.0, session_id=f"{p}m1", agent_id="", tool="copilot-cli",
+             tool_name="mcp__kusto__query", source="transcript", project=project, _deleted=True, _v=NEWER)
+    _call(s, f"{p}m1e", 45.0, "view", session=f"{p}m1", kind="file", target="a", duration_ms=10.0, project=project)
+    # c1: Claude Code lists kusto and docs tools and calls only kusto.
+    for name, tokens in (("mcp__kusto__query", 40), ("mcp__docs__fetch", 70), ("mcp__docs__search", 30), ("Read", 500)):
+        s.insert("session_context_items", session_id=f"{p}c1", agent_id="", kind="tools_listed", name=name, ts=5.0, path="",
+                 chars=tokens * 4, tokens=tokens, estimated=True, removed=False, tool="claude-code", project=project)
+    _mcp_call(s, f"{p}c1a", 10.0, "kusto", "query", session=f"{p}c1", tool="claude-code", duration_ms=200.0, output_bytes=40,
+              project=project)
+
+
+def test_mcp_counts_calls_failures_durations_and_bytes_carried_per_server(kusto_store):
+    _seed_mcp(kusto_store)
+    body = _card(kusto_store, "mcp")
+    servers = {item["server"]: item for item in body["servers"] + body["small_servers"]}
+    kusto = servers["kusto"]
+    assert (kusto["calls"], kusto["sessions"], kusto["failures"], kusto["sum_ms"], kusto["output_bytes"]) == (3, 2, 1, 600.0, 1050)
+    # Carried as insights.context_carry counts it: 1000 bytes x 2 later requests, 10 x 1; the Claude call has none after it.
+    assert kusto["carried_bytes"] == 2010.0
+    assert kusto["tools"] == ["claude-code", "copilot-cli"] and kusto["calls_by_tool"][0]["tool_name"] == "query"
+    # 3 calls in 2 sessions: too few to give a failure share.
+    assert kusto["failure_share"] is None and body["servers"] == [] and body["summary"]["small_servers"] == 2
+    assert body["listed"] == [{"server": "docs", "tool": "claude-code", "sessions": 1, "called_sessions": 0, "list_tokens": 100,
+                               "unused_tokens": 100, "listed_tools": 2},
+                              {"server": "kusto", "tool": "claude-code", "sessions": 1, "called_sessions": 1, "list_tokens": 40,
+                               "unused_tokens": 0, "listed_tools": 1}]
+    summary = body["summary"]
+    assert (summary["calls"], summary["all_calls"], summary["sum_ms"]) == (4, 5, 650.0)
+    assert summary["time_share"] == pytest.approx(650 / 660) and summary["never_called"] == 1 and summary["unused_tokens"] == 100
+    assert summary["listed_servers"] == 2
+
+
+def _server_row(server, calls, sessions, sum_ms, **values):
+    return {"row_type": "server", "server": server, "calls": calls, "sessions": sessions, "projects": 1, "failures": calls // 10,
+            "timed": calls, "p50_ms": 100.0, "p95_ms": 900.0, "sum_ms": sum_ms, "output_bytes": 1000, "sized": calls,
+            "carried_bytes": 5000.0, "tools": ["copilot-cli"], "server_tools": 3, **values}
+
+
+def test_mcp_shape_applies_the_evidence_rule():
+    rows = [_server_row("big", 1000, 13, 3_600_000.0), _server_row("slow", 19, 5, 9_000_000.0),
+            {"row_type": "meta", "calls": 10_000, "sum_ms": 36_000_000.0, "first_ts": 1.0, "last_ts": 2.0, "computed_at": 3.0}]
+    body = insights_work.mcp(rows)
+    # 19 calls never lead, however slow.
+    assert [item["server"] for item in body["servers"]] == ["big"] and body["summary"]["top"]["server"] == "big"
+    assert body["servers"][0]["failure_share"] == pytest.approx(0.1) and body["small_servers"][0]["failure_share"] is None
+    assert body["summary"]["call_share"] == pytest.approx(0.1019) and body["summary"]["unused_tokens"] is None
+
+
 # ─── The project filter, for every card of this file ───────────────────────────
 
 
@@ -272,7 +340,7 @@ def _get(store, path, **params):
     return json.loads(body)
 
 
-SEEDS = {"flows": _seed_flows, "skills": _seed_skills}
+SEEDS = {"flows": _seed_flows, "skills": _seed_skills, "mcp": _seed_mcp}
 
 
 @pytest.mark.parametrize("card", sorted(SEEDS))
