@@ -137,7 +137,8 @@ class TestHandlerIndependence:
         assert line in source, "the line this test breaks is gone: point it at the payload parse"
         script.write_text(source.replace(line, "    1 / 0\n"))
         proc = subprocess.run(
-            [sys.executable, "-I", "-S", str(script)], input=b"{}", capture_output=True, timeout=10, check=False
+            [sys.executable, "-I", "-S", str(script), "--port", str(_free_port())], input=b"{}",
+            capture_output=True, timeout=10, check=False,
         )
         assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
 
@@ -503,7 +504,8 @@ class TestWrapPassThrough:
         assert _outcome(_wrapped("kill -TERM $$", _free_port()), b"")[0] == 128 + 15
 
     def test_an_unreadable_command_gives_127_and_a_missing_shell_falls_back(self):
-        base = [sys.executable, "-I", "-S", _WRAP_HANDLER, "--sh", "/nonexistent/sh", "--wrap-b64"]
+        base = [sys.executable, "-I", "-S", _WRAP_HANDLER, "--port", str(_free_port()), "--sh", "/nonexistent/sh",
+                "--wrap-b64"]
         assert subprocess.run([*base, "!!"], input=b"", capture_output=True, timeout=20).returncode == 127
         b64 = hook_removal.base64.b64encode(b"exit 5").decode()
         assert subprocess.run([*base, b64], input=b"", capture_output=True, timeout=20).returncode == 5
@@ -737,3 +739,20 @@ class TestWrapCommand:
         sink = hook_removal._Sink(dry_run=False)
         assert hook_removal.remove_from_hook_file(settings, sink) == 0
         assert settings.read_text(encoding="utf-8") == before
+
+
+def test_no_test_runs_the_handler_without_a_port_of_its_own():
+    """The handler posts to port 8484 when no --port is given: the port of the daemon on the machine
+    that runs the tests. A test that ran the wrapper without --port stored one hook call with no
+    event and no session in the real store at every run. Every argument list in a test that runs
+    the handler must name a port."""
+    found = []
+    for path in sorted(Path(__file__).parent.glob("test_*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.List):
+                continue
+            text = ast.unparse(node)
+            runs_handler = ("hook_handler" in text or "_WRAP_HANDLER" in text) and "'-I'" in text
+            if runs_handler and "'--port'" not in text:
+                found.append(f"{path.name}:{node.lineno}")
+    assert not found, f"the hook handler is run without --port at {found}"

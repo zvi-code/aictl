@@ -332,6 +332,8 @@ class RequestRow:
     thinking_blocks: int | None = None  # visible thinking blocks
     thinking_redacted: int | None = None  # redacted or encrypted blocks: counted, never stored
     thinking_tokens: int | None = None  # reasoning tokens, where the tool reports them
+    # The tool's own id of the model call where it is neither of the provider's ids (Copilot apiCallId).
+    api_call_id: str = ""
 
 
 @dataclass(slots=True)
@@ -351,7 +353,6 @@ class ToolInvocationRow:
 
     ts: float
     session_id: str = ""
-    request_id: int = 0
     tool: str = ""
     tool_name: str = ""
     project_path: str = ""
@@ -405,6 +406,7 @@ class SessionPromptRow:
     agent_id: str = ""
     text: str = ""
     prompt_file: str = ""
+    prompt_id: str = ""  # the turn the prompt opens: session_turns.prompt_id ('' when the source has none)
 
 
 @dataclass(slots=True)
@@ -419,6 +421,10 @@ class SkillUseRow:
     project_path: str = ""
     agent_id: str = ""
     trigger: str = ""
+    # The tool call that used the skill (tool_invocations.source_event_id), '' when the use was no
+    # tool call (a slash command) or the source does not say; and the turn it ran in.
+    tool_call_id: str = ""
+    prompt_id: str = ""
 
 
 @dataclass(slots=True)
@@ -686,6 +692,7 @@ class SessionStepRow:
     system_tokens: int | None = None
     conversation_tokens: int | None = None
     tool_tokens: int | None = None
+    prompt_id: str = ""  # the person's turn (Copilot interactionId): session_turns.prompt_id
 
 
 _STEP_FIELDS = tuple(k for k in SessionStepRow.__dataclass_fields__ if k != "text")
@@ -712,11 +719,13 @@ class TurnRequestLink:
     basis: str = ""
     tool: str = "copilot-cli"
     project_path: str = ""
+    prompt_id: str = ""  # the person's turn (Copilot interactionId): session_turns.prompt_id
 
 
 @dataclass(slots=True)
 class SessionTurnRow:
-    """One user turn of a Claude Code session: one ``promptId``. Counts include the turn's subagents."""
+    """One user turn of a session: a Claude Code ``promptId``, a Copilot ``interactionId``. Counts include the
+    turn's subagents."""
 
     session_id: str
     prompt_id: str

@@ -33,7 +33,7 @@ COMPATIBLE_SINCE = 7
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "5d1fbf57a77e326a61103cc98ffd17a927a1191e2404aa6a877cbe1160934530"
+FINGERPRINT = "ee9035857d1dc3d8990630e4ad043bb0180c36ded914bd564443d4c1e4847e4a"
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,11 @@ CHANGES: tuple[Change, ...] = (
         "OTELPayloads.ChunkNo and ChunkCount long. A column cannot change its type in place, and rows of the old "
         "types cannot be read by the views of this layout. tool_invocations: is_test_run, test_label, failed and "
         "is_edit, what the board's Testing, Errors and Loops panels read of a call, set at ingest. session_prompts, "
-        "skill_uses and file_write_events: a current view each, like requests and tool_invocations.",
+        "skill_uses and file_write_events: a current view each, like requests and tool_invocations. agents_text and "
+        "session_turns: a tombstone column _deleted. New columns: requests.api_call_id, session_steps.prompt_id, "
+        "turn_request_links.prompt_id, session_prompts.prompt_id, skill_uses.tool_call_id and prompt_id, "
+        "session_commits.basis, source_event_id, agent_id and prompt_id, sessions.merged_into (set on tombstones only). "
+        "tool_invocations.request_id (long, always 0) is dropped.",
         breaks=True,
     ),
 )

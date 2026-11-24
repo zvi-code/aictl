@@ -28,7 +28,7 @@ LINK_COLUMNS = frozenset({
     "session_id", "agent_id", "parent_agent_id", "request_id", "request_key", "response_id", "prompt_id",
     "step_key", "tool_call_id", "tool_use_id", "parent_tool_use_id", "source_event_id", "event_key",
     "trace_id", "turn_id", "root_session_id", "root_turn_id", "resumed_from", "blob_hash", "text_hash",
-    "before_hash", "after_hash", "list_id", "call_id",
+    "before_hash", "after_hash", "list_id", "call_id", "round_id", "api_call_id", "merged_into",
     "SessionId", "AgentId", "ParentAgentId", "PromptId", "ToolCallId", "RequestId", "ResponseId", "TraceID",
     "SourceRowKey",
 })

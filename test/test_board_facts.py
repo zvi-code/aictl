@@ -16,7 +16,7 @@ import pytest
 from aictl.ingesters.call_facts import apply_patch_files, command_head, edit_line_counts, target_of
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
 from aictl.monitoring import tool_telemetry as tt
-from aictl.records import AgentRow, FileWriteRow, RequestRow, ToolInvocationRow
+from aictl.records import AgentRow, FileWriteRow, RequestRow, SessionRow, ToolInvocationRow
 from aictl.session_facts import SessionFacts
 from aictl.state_file import StateFile
 from aictl.stores.base import StoreError
@@ -420,6 +420,7 @@ class TestSupersededRows:
         assert count(db, "requests") == 1
 
     def test_team_scan_keeps_a_stored_role(self, db):
+        db.session(SessionRow(SESSION, "claude-code", project_path="/x"))
         db.write(_agent_facts())
         db.agents([AgentRow(agent_id="abc", session_id=SESSION, tool="claude-code", input_tokens=5)])
         row = rows(db, "agents", "task", "input_tokens")[0]
@@ -1242,6 +1243,7 @@ class TestMetadataCapture:
         assert not current(meta_db.writer, "agents_text")
 
     def test_team_scan_prompt_is_not_stored(self, meta_db):
+        meta_db.session(SessionRow(SESSION, "claude-code", project_path="/x"))
         meta_db.agents([AgentRow(agent_id="x", session_id=SESSION, task="first prompt text")])
         assert rows(meta_db, "agents", "task") == [{"task": ""}]
 

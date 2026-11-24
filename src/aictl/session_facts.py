@@ -43,6 +43,13 @@ _FAMILIES = {
 }
 
 
+def _child_row(kind: str, data: dict):
+    """A held child row read back from the restart state."""
+    from .records import AgentRow, SessionTurnRow
+
+    return (AgentRow if kind == "agents" else SessionTurnRow)(**data)
+
+
 # Values a write row lacks: another report of the same write may fill them.
 _UNSET = ("", None, 0, "{}")
 
@@ -92,6 +99,11 @@ class SessionFacts:
         self._versions: OrderedDict = OrderedDict()
         # The file_blobs hashes this process has stored.
         self._blobs: OrderedDict = OrderedDict()
+        # A session's child rows (agents, agents_text, session_turns) are filed under the project of
+        # the session row. Rows of a session this node holds no row of yet wait here, by session id;
+        # _filed holds what each written child row was filed under, so it moves with its session.
+        self._waiting_children: OrderedDict = OrderedDict()
+        self._filed: OrderedDict = OrderedDict()
         self.event_listener = None
         if state is not None:
             try:
@@ -104,6 +116,8 @@ class SessionFacts:
                     self._restored_agents.add(tuple(key))
                 for counts, waiting in saved.get("otel_calls", []):
                     self._otel_calls[tuple(counts)] = waiting
+                for sid, rows in saved.get("waiting_children", []):
+                    self._waiting_children[sid] = [(kind, _child_row(kind, row)) for kind, row in rows]
             except (OSError, ValueError, TypeError):
                 log.warning("Could not load session restart state", exc_info=True)
 
@@ -116,7 +130,9 @@ class SessionFacts:
                                     # gives after a restart (a call's agent id, no end) must merge with the
                                     # stored one, not replace its end, status and label.
                                     "agents": [[list(key), row] for key, row in
-                                               list(self._agents.items())[-AGENTS_KEPT_ACROSS_RESTART:]]})
+                                               list(self._agents.items())[-AGENTS_KEPT_ACROSS_RESTART:]],
+                                    "waiting_children": [[sid, [[kind, asdict(row)] for kind, row in rows]]
+                                                         for sid, rows in self._waiting_children.items()]})
                 self._dirty = False
 
     @staticmethod
@@ -157,10 +173,71 @@ class SessionFacts:
                 self._retire_projects("sessions", "session_id", self._sessions, {
                     sid: entry["row"] for sid, entry in staged.items()
                 }, previous_row=lambda entry: entry["row"])
+            moved = {sid: (self._sessions[sid]["row"]["project_path"] if sid in self._sessions else None,
+                           entry["row"]["project_path"]) for sid, entry in staged.items()}
             for sid, entry in staged.items():
                 self._remember(self._sessions, sid, entry)
             if staged:
                 self._dirty = True
+            for sid, (before, after) in moved.items():
+                if before is not None and before != after:
+                    self._move_children(sid, before, after)
+                if sid in self._waiting_children:
+                    self._release_children(sid)
+
+    def _hold_child(self, sid: str, kind: str, row) -> None:
+        """Keep a child row of a session this node holds no row of: it is written under that
+        session's project when the session row comes (never under a guessed one)."""
+        self._waiting_children.setdefault(sid, []).append((kind, row))
+        self._waiting_children.move_to_end(sid)
+        self._dirty = True
+        if len(self._waiting_children) > _LIMIT:
+            _, rows = self._waiting_children.popitem(last=False)
+            log.warning("%d child rows of a session with no session row are left out", len(rows))
+
+    def _release_children(self, sid: str) -> None:
+        rows = self._waiting_children.pop(sid, [])
+        self._dirty = True
+        agents = [row for kind, row in rows if kind == "agents"]
+        turns = [row for kind, row in rows if kind == "turns"]
+        if agents:
+            self.agents(agents)
+        if turns:
+            self._turns(turns)
+
+    def _file(self, table: str, key: tuple, project: str, row: dict) -> None:
+        self._remember(self._filed, (table, *key), (project, row))
+
+    def _move_children(self, sid: str, before: str, after: str) -> None:
+        """The session's row moved from project *before* to *after*: so do its child rows, each
+        with a tombstone under the old project, as the session row itself."""
+        moved: dict[str, list[tuple[tuple, dict]]] = {}
+        for filed_key, (project, row) in list(self._filed.items()):
+            table, *key = filed_key
+            if key[0] == sid and project == before:
+                moved.setdefault(table, []).append((tuple(key), row))
+        for table, items in moved.items():
+            if table == "agents":
+                items = [(key, self._agents.get(key, row)) for key, row in items]
+            self.writer.delete(table, [dict(row, project=before) for _, row in items])
+            self.writer.upsert(table, [dict(row, project=after) for _, row in items])
+            for key, row in items:
+                self._file(table, key, after, row)
+
+    def _turns(self, rows) -> None:
+        """session_turns rows, under the project of their session row."""
+        values = []
+        with self._lock:
+            for row in rows:
+                if row.session_id not in self._sessions:
+                    self._hold_child(row.session_id, "turns", row)
+                    continue
+                project = self.project_for(row.session_id)
+                data = asdict(row)
+                self._file("session_turns", (row.session_id, row.prompt_id), project, data)
+                values.append(dict(data, project=project))
+        if values:
+            self.writer.append("session_turns", values)
 
     def _gated(self, row: SessionRow) -> SessionRow:
         """A name made from prompt text is stored only while the store keeps text."""
@@ -206,17 +283,21 @@ class SessionFacts:
     def retire(self, sessions: Iterable[tuple[str, str]]) -> None:
         """Delete session rows that stand for another session, such as a monitor row for a bound process.
 
-        Takes ``(session_id, project)``; the project of the row already written wins.
+        Takes ``(session_id, project)`` or ``(session_id, project, merged_into)``; the project of the
+        row already written wins. ``merged_into`` is the session that holds the deleted one's
+        processes now: the tombstone keeps it, so rows that name the deleted id (events,
+        session_processes) still find their session by a key.
         """
         with self._lock:
             gone = []
-            for sid, project in sessions:
+            for sid, project, *into in sessions:
                 entry = self._sessions.pop(sid, None)
                 if entry is not None:
                     project = entry["row"]["project_path"]
                     self._dirty = True
                 # The tombstone is the last row written, when this node holds it.
-                gone.append(dict(entry["row"] if entry else {}, project=project, session_id=sid))
+                gone.append(dict(entry["row"] if entry else {}, project=project, session_id=sid,
+                                 merged_into=(into[0] if into else "") or ""))
             if gone:
                 self.writer.delete("sessions", gone)
 
@@ -501,7 +582,8 @@ class SessionFacts:
                         if data[name] is None:
                             data[name] = prior[name]
                     for name in ("project_path", "agent_id", "finish_reason", "duration_ms", "ttft_ms",
-                                 "request_id", "response_id", "effort", "prompt_id", "attribution_mcp_server",
+                                 "request_id", "response_id", "api_call_id", "effort", "prompt_id",
+                                 "attribution_mcp_server",
                                  "attribution_skill", "requested_model"):
                         data[name] = data[name] or prior[name]
                     if data["model"] in ("", "unknown"):
@@ -530,6 +612,9 @@ class SessionFacts:
                 if not row.session_id or not row.agent_id:
                     log.debug("An agent row without a session or agent id is not stored")
                     continue
+                if row.session_id not in self._sessions:
+                    self._hold_child(row.session_id, "agents", row)
+                    continue
                 data = asdict(row)
                 task = data.pop("task")
                 data["model"] = canonical_model_id(data["model"])
@@ -556,12 +641,14 @@ class SessionFacts:
                 if task and self.allows_text(ts):
                     task = self.spill("agents_text", f"{row.session_id}/{row.agent_id}", "task", task, ts=ts,
                                       session_id=row.session_id, project=project)
-                    text.append(dict(session_id=row.session_id, agent_id=row.agent_id, task=task, project=project,
-                                     ts=ts))
+                    text_row = dict(session_id=row.session_id, agent_id=row.agent_id, task=task, ts=ts)
+                    self._file("agents_text", key, project, text_row)
+                    text.append(dict(text_row, project=project))
             if staged:
                 self.writer.upsert("agents", [dict(data, project=project) for data, project in staged.values()])
-                for key, (data, _) in staged.items():
+                for key, (data, project) in staged.items():
                     self._remember(self._agents, key, data)
+                    self._file("agents", key, project, data)
                     self._restored_agents.discard(key)
                 self._dirty = True
             if text:
@@ -574,6 +661,11 @@ class SessionFacts:
         with self._lock:
             gone = []
             for sid, agent_id in keys:
+                if sid in self._waiting_children:
+                    # A row still waiting for its session row is dropped before it is ever written.
+                    self._waiting_children[sid] = [
+                        (kind, row) for kind, row in self._waiting_children[sid]
+                        if not (kind == "agents" and row.agent_id == agent_id)]
                 prior = self._agents.pop((sid, agent_id), None) or {}
                 gone.append(dict(prior, project=self.project_for(sid), session_id=sid, agent_id=agent_id))
             if gone:
@@ -732,6 +824,9 @@ class SessionFacts:
         for attr, table in _FAMILIES.items():
             rows = getattr(facts, attr)
             if not rows or (only is not None and attr != only):
+                continue
+            if attr == "turns":
+                self._turns(rows)
                 continue
             values = []
             for row in rows:

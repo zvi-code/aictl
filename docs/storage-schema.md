@@ -30,7 +30,7 @@ session files again. The migrations that layouts 1 to 3 named were removed with 
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 | 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran under, with the reported fields in detail; sessions written before have none. |
 | 6 | yes | | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: such a node is reset. |
-| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. A column cannot change its type in place: a node of layout 6 or older is reset. |
+| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. `agents_text` and `session_turns` get a tombstone column `_deleted`. New columns: `requests.api_call_id`, `session_steps.prompt_id`, `turn_request_links.prompt_id`, `session_prompts.prompt_id`, `skill_uses.tool_call_id` and `prompt_id`, `session_commits.basis`, `source_event_id`, `agent_id` and `prompt_id`, `sessions.merged_into` (set on tombstones only); the `request_id` column of `tool_invocations` (`long`, always 0) is dropped. A column cannot change its type in place: a node of layout 6 or older is reset. |
 
 ### The `schema_version` registry
 
@@ -359,13 +359,14 @@ alone). Join after the dedup of both sides, and ignore `project`: a relation nev
 An empty value on the left means "no link" (for `agent_id`, the main agent). Cardinality is
 left to right: `N:1` many rows refer to one row, `1:1` at most one row on each side, `N:M`
 the right side is not unique (a pid is reused, so add a time condition).
+`sessions.project_path` is the project key itself: `projects` is not written by current code.
 `test/test_storage_relations.py` checks that every column named here exists with the same
 type on both sides, and that every link column of a table is listed here or below.
 
 | table | columns | refers to | cardinality |
 |---|---|---|---|
 | `sessions` | `resumed_from` | `sessions.session_id` | N:1 |
-| `sessions` | `project_path` | `projects.path` | N:1 |
+| `sessions` | `merged_into` | `sessions.session_id` | N:1 |
 | `agents` | `session_id` | `sessions.session_id` | N:1 |
 | `agents` | `session_id`, `parent_agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `agents` | `session_id`, `parent_tool_use_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | 1:1 |
@@ -373,6 +374,7 @@ type on both sides, and that every link column of a table is listed here or belo
 | `session_turns` | `session_id` | `sessions.session_id` | N:1 |
 | `session_prompts` | `session_id` | `sessions.session_id` | N:1 |
 | `session_prompts` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_prompts` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `requests` | `session_id` | `sessions.session_id` | N:1 |
 | `requests` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `requests` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
@@ -388,12 +390,16 @@ type on both sides, and that every link column of a table is listed here or belo
 | `session_steps` | `session_id`, `parent_agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `session_steps` | `session_id`, `tool_call_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
 | `session_steps` | `trace_id` | `otel_trace_sessions.trace_id` | N:1 |
+| `session_steps` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
+| `session_steps` | `round_id` | `requests.api_call_id` | N:1 |
+| `session_steps` | `request_id` | `requests.request_id` | N:1 |
 | `session_step_text` | `step_key` | `session_steps.step_key` | 1:1 |
 | `session_step_text` | `session_id` | `sessions.session_id` | N:1 |
 | `turn_request_links` | `request_key` | `requests.dedup_key` | 1:1 |
 | `turn_request_links` | `session_id` | `sessions.session_id` | N:1 |
 | `turn_request_links` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `turn_request_links` | `root_session_id` | `sessions.session_id` | N:1 |
+| `turn_request_links` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `session_thinking` | `session_id` | `sessions.session_id` | N:1 |
 | `session_thinking` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `session_thinking` | `request_key` | `requests.dedup_key` | N:1 |
@@ -411,11 +417,14 @@ type on both sides, and that every link column of a table is listed here or belo
 | `session_context_items` | `session_id` | `sessions.session_id` | N:1 |
 | `session_context_items` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `session_commits` | `session_id` | `sessions.session_id` | N:1 |
+| `session_commits` | `session_id`, `source_event_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
+| `session_commits` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_commits` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `session_processes` | `session_id` | `sessions.session_id` | N:1 |
-| `session_processes` | `pid` | `processes.pid` | N:M |
-| `process_snapshots` | `pid` | `processes.pid` | N:M |
 | `skill_uses` | `session_id` | `sessions.session_id` | N:1 |
 | `skill_uses` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `skill_uses` | `session_id`, `tool_call_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | 1:1 |
+| `skill_uses` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `context_events` | `session_id` | `sessions.session_id` | N:1 |
 | `context_events` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `context_events` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
@@ -474,12 +483,12 @@ Columns named like a link that refer to no stored row, and why:
 
 | table | column | why |
 |---|---|---|
-| `tool_invocations` | `request_id` | a number of an older aictl, always 0; the model call is `request_key` |
-| `session_steps` | `request_id` | the provider's request id of a Copilot round; `requests` does not store it |
 | `session_steps` | `turn_id` | a Copilot turn counter that starts again in each interaction: not unique in a session |
 | `turn_request_links` | `turn_id` | the same counter as `session_steps.turn_id` |
 | `turn_request_links` | `root_turn_id` | the same counter, of the root session |
 | `OTELPayloads` | `SourceRowKey` | the `RowKey` of the row in `SourceTable`, which names the table |
+| `session_processes` | `pid` | an operating-system pid: `processes` is not written by current code, and a pid is reused, so a process is found only with a time condition |
+| `process_snapshots` | `pid` | not a process: a number made from the tool name, one sample series per tool; join on `tool` and time |
 
 The tables under "Observation tables of an older aictl" are not in these lists: no current
 code writes or reads them.
@@ -626,6 +635,7 @@ Sessions with `title_source` `prompt` lose the title when text is not kept.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `_deleted` | bool | Tombstone flag: true on a delete row, which carries only the key columns |
 | `resumed_from` | string | The session this one was resumed or forked from, as the tool recorded it; "" otherwise |
+| `merged_into` | string | Only on a tombstone: the session that now holds the deleted session's processes (the tool's own session a monitor session was bound to, or the monitor session it was merged into). `events` and `session_processes` rows that name the deleted id find their session through it; "" otherwise |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 
 ### session_usage
@@ -719,6 +729,10 @@ Git commits made in a session's folder while the session ran.
 | `author_email` | string | Commit author email; "" for a commit read from a `git commit` output |
 | `ts` | datetime | Commit time, UTC; for a commit read from a `git commit` output, the time of the call's result |
 | `subject` | string | First line of the commit message; from a `git commit` output only while text is kept |
+| `basis` | string | How the commit was tied to the session: `output` (a shell call of the session printed it) or `window` (git log of the session's folder within its time window: by time, not a key) |
+| `source_event_id` | string | With `output`: the `tool_invocations.source_event_id` of the shell call that printed the commit |
+| `agent_id` | string | With `output`: the agent that ran that call ("" for the main agent) |
+| `prompt_id` | string | With `output`: the turn that call ran in; joins `session_turns.prompt_id` |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -759,7 +773,7 @@ The main agent has no row here. Other tables name it with `agent_id` "".
 | `parent_tool_use_id` | string | The tool call that started it: the `source_event_id` of a `tool_invocations` row of the same session |
 | `resolved_model` | string | The model it ran on |
 | `status` | string | `async_launched`, `running`, `completed` or `failed` |
-| `project` | string | Part of the key. The `project_path` of the agent's session row |
+| `project` | string | Part of the key. The `project_path` of the agent's session row; the row is written only once that session row is known, and moves (a tombstone under the old project) when it changes |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `cwd` | string | The folder the agent's own lines carry (a subagent can run in another worktree) |
@@ -775,7 +789,7 @@ The prompt each subagent was given. Text.
 
 - Key: `project`, `node_id`, `session_id`, `agent_id`
 - Version column: `_v`
-- Tombstone column: none
+- Tombstone column: `_deleted`
 - Ingestion: `streaming`
 - Retention class: `text` (default 365d)
 - Written by: `session_facts.py` (`agents`), only while text is kept
@@ -784,19 +798,20 @@ The prompt each subagent was given. Text.
 |---|---|---|
 | `agent_id` | string | The subagent |
 | `task` | string | The prompt the subagent was given; a value over `large_payload_bytes` is a preview, see `text_payloads` |
-| `project` | string | Part of the key. The `project_path` of the agent's session row |
+| `project` | string | Part of the key. The `project_path` of the agent's session row; the row is written only once that session row is known, and moves (a tombstone under the old project) when it changes |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `ts` | datetime | Start of the agent, else its end, else the write time, UTC |
 | `session_id` | string | The session |
+| `_deleted` | bool | Tombstone flag: true on a delete row, written when the session's project changes |
 
 ### session_turns
 
-One row per user turn of a Claude Code session (one `promptId`), its subagents included.
+One row per user turn of a session, its subagents included: a Claude Code `promptId`, a Copilot CLI `interactionId`, a VS Code chat `requestId`.
 
 - Key: `project`, `node_id`, `session_id`, `prompt_id`
 - Version column: `_v`
-- Tombstone column: none
+- Tombstone column: `_deleted`
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`write`), from `ingesters/call_facts.py`
@@ -827,9 +842,10 @@ One row per user turn of a Claude Code session (one `promptId`), its subagents i
 | `thinking_blocks` | long | Thinking blocks, summed |
 | `thinking_redacted` | long | Redacted thinking blocks, summed |
 | `thinking_ms` | real | Thinking time in ms, summed |
-| `project` | string | Part of the key. The turn's `project_path` |
+| `project` | string | Part of the key. The `project_path` of the turn's session row (not the turn's own folder), written only once that session row is known; the row moves (a tombstone under the old project) when it changes |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
+| `_deleted` | bool | Tombstone flag: true on a delete row, written when the session's project changes |
 
 ### session_outcomes
 
@@ -929,6 +945,7 @@ One row per prompt given to an agent.
 | `project_path` | string | Working folder |
 | `text` | string | The prompt text, redacted and bounded; "" when text is not kept or older than the `prompt` period |
 | `prompt_file` | string | The command or prompt file the prompt came from, when there is one |
+| `prompt_id` | string | The turn the prompt opens (a subagent's prompt: the turn it runs in): Claude Code `promptId`, Copilot CLI `interactionId`, VS Code chat `requestId`; joins `session_turns.prompt_id`; '' when the source has none |
 | `project` | string | Part of the key. The row's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1252,14 +1269,14 @@ A call reported by OTel and read again from the transcript is stored once. The t
 | `error_type` | string | Error type of a failed call |
 | `http_status` | long | HTTP status of a failed call |
 | `source` | string | `transcript` for a call read from the tool's session file; otherwise the reporting source, for example `otel` |
-| `prompt_id` | string | Claude Code `promptId` of the turn; joins `session_turns.prompt_id` |
+| `prompt_id` | string | The turn: Claude Code `promptId`, Copilot CLI `interactionId` of the person's message the call answers, VS Code chat `requestId`; joins `session_turns.prompt_id` |
 | `ttft_ms` | real | Time to first token in ms |
 | `tool_tokens` | long | Tokens of tool definitions sent, where the source reports them; null when not reported |
 | `max_prompt_tokens` | long | Prompt token limit, where the source reports it; null when not reported |
 | `request_bytes` | long | Size of the request, where the source reports it; null when not reported |
 | `available_tools` | long | Number of tools offered to the model, where the source reports it; null when not reported |
-| `request_id` | string | The provider's request id, when the source names it |
-| `response_id` | string | The provider's response or message id, which a transcript names too |
+| `request_id` | string | The provider's request id, when the source names it: Claude Code `requestId`, Copilot `requestId` (else `providerCallId`) as `session_steps.request_id` stores it |
+| `response_id` | string | The provider's response or message id, which a transcript names too: Claude Code `message.id`, Copilot `messageId` of the reply |
 | `turn_index` | long | The user turn of the session (1 = the first); null when unknown |
 | `effort` | string | Reasoning effort the tool asked for |
 | `thinking_ms` | real | Claude Code `thinkingDurationMs`, the longest a line of the call reported |
@@ -1270,6 +1287,7 @@ A call reported by OTel and read again from the transcript is stored once. The t
 | `thinking_blocks` | long | Number of visible thinking blocks |
 | `thinking_redacted` | long | Number of redacted or encrypted thinking blocks; counted, never stored |
 | `thinking_tokens` | long | Reasoning tokens, where the tool reports them |
+| `api_call_id` | string | Copilot `apiCallId` of the call, as `session_steps.round_id` stores it; '' for other tools |
 | `project` | string | Part of the key. The call's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1299,6 +1317,7 @@ Which turn of a Copilot CLI session each model call belongs to. Never a second c
 | `basis` | string | How the link was found: `explicit_turn`, `api_call_id`, `open_turn`, `spawn_tool`, `checkpoint`, `unknown_agent` or `unattributed` |
 | `tool` | string | `copilot-cli` |
 | `project_path` | string | Working folder |
+| `prompt_id` | string | The person's turn (Copilot `interactionId`) open when the call was made; joins `session_turns.prompt_id` |
 | `project` | string | Part of the key. The row's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1324,7 +1343,6 @@ One row per tool call, without its text.
 | `dedup_key` | string | Key of the call: from the source's call id (for example the `tool_use_id`), else the embedded time, else the arguments |
 | `ts` | datetime | When the call started, UTC |
 | `session_id` | string | The session |
-| `request_id` | long | Always 0 in current code: no reader sets it. Use `request_key` |
 | `tool` | string | Tool id of the AI tool |
 | `tool_name` | string | Name of the tool that was called, for example `Bash`, `Read`, `mcp__<server>__<tool>` |
 | `project_path` | string | Working folder |
@@ -1355,8 +1373,8 @@ One row per tool call, without its text.
 | `error_summary` | string | A failed call's error message, redacted, short; only while text is kept |
 | `interrupted` | bool | Claude Code `toolUseResult.interrupted` |
 | `turn_index` | long | The user turn of the session (1 = the first); null when unknown |
-| `prompt_id` | string | Claude Code `promptId` of the turn; joins `session_turns.prompt_id` |
-| `request_key` | string | `dedup_key` of the `requests` row of the model call that asked for this call |
+| `prompt_id` | string | The turn: Claude Code `promptId`, Copilot CLI `interactionId`, VS Code chat `requestId`; joins `session_turns.prompt_id` |
+| `request_key` | string | `dedup_key` of the `requests` row of the model call that asked for this call (Copilot CLI: by the `apiCallId` of the message that requested it; VS Code chat: the chat request's row) |
 | `is_test_run` | bool | True when the call runs tests by the board's rule: a command tool whose whole command line first runs a test runner (`board_projection.is_command_tool`, `shell_program.is_test_run`). Set at ingest from the full command, also when the command text is not kept |
 | `test_label` | string | The Testing panel's row of a test run: `shell_program.run_label` of `target`, one line, at most 80 characters; "" when the call is no test run or `target` holds no command |
 | `failed` | bool | True when the call failed in the board's sense: a test run when `is_error` is set or `exit_code` is neither 0 nor null, any other call when `is_error` is set |
@@ -1452,6 +1470,8 @@ One row per use of a skill.
 | `project_path` | string | Working folder |
 | `name` | string | Skill name |
 | `trigger` | string | How the skill was started as the reader saw it, for example `user` or `agent-invoked` |
+| `tool_call_id` | string | The tool call that used the skill (`tool_invocations.source_event_id`): Claude Code's Skill call, a VS Code chat tool call; "" for a slash command and for Copilot CLI, whose `skill.invoked` names no call |
+| `prompt_id` | string | The turn the skill was used in; joins `session_turns.prompt_id` |
 | `project` | string | Part of the key. The row's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1604,6 +1624,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `system_tokens` | long | System part of the context |
 | `conversation_tokens` | long | Conversation part of the context |
 | `tool_tokens` | long | Tool part of the context |
+| `prompt_id` | string | The person's turn the step belongs to (Copilot `interactionId`); joins `session_turns.prompt_id` |
 | `project` | string | Part of the key. The step's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -2197,7 +2218,7 @@ The first 9 columns are the Collector's, in its order and casing. The rest are a
 | `ResourceAttributes` | dynamic | Resource attributes |
 | `LogsAttributes` | dynamic | Record attributes plus scope.name and scope.version |
 | `EventName` | string | aictl: eventName, else attribute event.name, else attribute name |
-| `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id |
+| `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id, else conversation.id (Codex) |
 | `Tool` | string | aictl: the tool id resolved from resource service.name |
 | `Model` | string | aictl: attribute model, gen_ai.request.model or gen_ai.response.model |
 | `MachineId` | string | aictl: resource host.id, else host.name, else the receiving host |
@@ -2271,7 +2292,7 @@ The first 9 columns are the Collector's, in its order and casing. The rest are a
 | `StartTime` | datetime | aictl: start of the aggregation interval; null when not sent, UTC |
 | `Temporality` | string | aictl: Delta, Cumulative or empty |
 | `Monotonic` | bool | aictl: whether a Sum is monotonic; null for other types |
-| `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id |
+| `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id, else conversation.id (Codex) |
 | `Tool` | string | aictl: the tool id resolved from resource service.name |
 | `Model` | string | aictl: attribute model, gen_ai.request.model or gen_ai.response.model |
 | `MachineId` | string | aictl: resource host.id, else host.name, else the receiving host |
@@ -2325,7 +2346,7 @@ The first 13 columns are the Collector's, in its order and casing. The rest are 
 | `Links` | dynamic | Span links: TraceID, SpanID, TraceState, SpanLinkAttributes |
 | `SpanStatusMessage` | string | Status message |
 | `DurationMs` | long | aictl: EndTime minus StartTime in milliseconds; null when a time is missing |
-| `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id |
+| `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id, else conversation.id (Codex) |
 | `Tool` | string | aictl: the tool id resolved from resource service.name |
 | `Model` | string | aictl: attribute model, gen_ai.request.model or gen_ai.response.model |
 | `MachineId` | string | aictl: resource host.id, else host.name, else the receiving host |
@@ -2797,7 +2818,7 @@ A node creates this table only when the database already has it. Its stored func
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `tool_invocations.dedup_key` has the same name |
 | `ts` | datetime | meaning not established: no current aictl code writes this table; `tool_invocations.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `tool_invocations.session_id` has the same name |
-| `request_id` | long | meaning not established: no current aictl code writes this table; `tool_invocations.request_id` has the same name |
+| `request_id` | long | meaning not established: no current aictl code writes this table; a column of the same name that `tool_invocations` once had was always 0 |
 | `tool` | string | meaning not established: no current aictl code writes this table; `tool_invocations.tool` has the same name |
 | `tool_name` | string | meaning not established: no current aictl code writes this table; `tool_invocations.tool_name` has the same name |
 | `project_path` | string | meaning not established: no current aictl code writes this table; `tool_invocations.project_path` has the same name |

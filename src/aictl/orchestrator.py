@@ -1338,7 +1338,7 @@ class SnapshotPersistence:
                         if isinstance(detail.get("launch"), dict):
                             launches.append(launch_flags_event(native, tool, detail["launch"], ts))
                     if kind == "session_bound":
-                        retired.append((sid, project))
+                        retired.append((sid, project, native))
                         previous = detail.get("previous_native_session_id") or ""
                         if previous and previous != native:
                             before = dict(detail, native_started_at=detail.get("previous_native_started_at") or 0.0)
@@ -1354,7 +1354,7 @@ class SnapshotPersistence:
                     links.append((sid, ev_pid, tool, ts, "lead", project))
                 elif kind == "session_merged":
                     # Another monitor session of the same process family holds these processes now.
-                    retired.append((sid, project))
+                    retired.append((sid, project, native or str(detail.get("into") or "")))
                 elif kind == "session_end":
                     reason = detail.get("end_reason") or session_lifecycle.IDLE
                     if native:

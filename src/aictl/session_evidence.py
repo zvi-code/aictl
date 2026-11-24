@@ -84,7 +84,8 @@ class SessionEvidence:
         if rows:
             project = project_root(cwd)
             self.writer.append("session_commits", [
-                dict(row, session_id=sid, project=project) for row in rows
+                # Found by the session's time window in git, not by a call of the session.
+                dict(row, session_id=sid, project=project, basis=row.get("basis") or "window") for row in rows
             ])
 
     def memory(self, sid, project_hash, phase, ts, cwd) -> int:

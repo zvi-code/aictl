@@ -11,11 +11,13 @@ import time
 from core_store_fakes import current
 
 from aictl.ingesters.call_facts import CopilotFacts, FactBuffer, stored_input
+from aictl.records import SessionRow
 from aictl.session_facts import SessionFacts
 from aictl.stores.testing import MemoryWriter
 from aictl.tool_calls import ToolCalls
 
 T = time.time() - 600
+PROJECT = "/work/exporter"
 
 
 def at(seconds: float) -> str:
@@ -34,12 +36,15 @@ def usage(seconds: float, api: str, model: str, finish: str, agent: str = "") ->
 
 def read(events: list[dict], *, keep_text: bool = True) -> MemoryWriter:
     writer = MemoryWriter()
-    buf = FactBuffer(SessionFacts(writer, keeps_text=lambda: keep_text),
-                     tool_calls=ToolCalls(writer, keeps_text=lambda: keep_text))
+    facts = SessionFacts(writer, keeps_text=lambda: keep_text)
+    buf = FactBuffer(facts, tool_calls=ToolCalls(writer, keeps_text=lambda: keep_text))
     cop = CopilotFacts("cp-session", buf)
     for obj in events:
         cop.feed(obj)
     buf.flush()
+    # The session row comes from another reader, here after the file's rows: rows that belong
+    # under the session's project wait for it.
+    facts.session(SessionRow("cp-session", "copilot-cli", project_path=PROJECT, started_at=T))
     return writer
 
 
@@ -142,6 +147,7 @@ def test_an_agent_row_written_after_a_restart_keeps_the_stored_end(tmp_path):
 
     writer = MemoryWriter()
     first = SessionFacts(writer, state=StateFile(tmp_path / "sessions.json"))
+    first.session(SessionRow("cp-session", "copilot-cli", project_path=PROJECT, started_at=T))
     first.agents([AgentRow(agent_id="agent-c", session_id="cp-session", tool="copilot-cli", model="claude-opus-5-5",
                            started_at=T, ended_at=T + 18, completed=1, status="completed",
                            description="Check the exporter", parent_tool_use_id="call-c", observed_at=T + 18)])

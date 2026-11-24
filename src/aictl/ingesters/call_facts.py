@@ -63,6 +63,7 @@ from ._common import claude_line_finishes, coerce_ts, decode_file_uri, project_r
 from .session_outcomes import TRANSCRIPT as TRANSCRIPT_PART
 from .session_outcomes import _add_unique, digest_text, file_key
 from .transcript_steps import CopilotSteps, redact_step_text
+from .transcript_steps import _api_id as step_api_id, _label as step_label
 
 if TYPE_CHECKING:
     from .. import records as fact_rows
@@ -634,7 +635,8 @@ _COMMIT_LINE = re.compile(r"^\[(?P<branch>[^\]\n]+?)(?: \(root-commit\))? (?P<sh
 _GIT_COMMIT = re.compile(r"(?:^|[\s;&|(])git(?:\s+-C\s+\S+|\s+-c\s+\S+)*\s+commit\b")
 
 
-def commits_of(command: Any, output: Any, *, session_id: str, cwd: str, ts: float, keep_text: bool) -> list[dict]:
+def commits_of(command: Any, output: Any, *, session_id: str, cwd: str, ts: float, keep_text: bool,
+               call_id: str = "", agent_id: str = "", prompt_id: str = "") -> list[dict]:
     """The commits a successful shell call that ran ``git commit`` reports making: each
     ``[branch sha] subject`` line of its output, a session_commits row under the repository that
     holds *cwd* (a worktree's repository). Nothing is read from git and nothing is inferred from
@@ -646,7 +648,10 @@ def commits_of(command: Any, output: Any, *, session_id: str, cwd: str, ts: floa
     rows = []
     for m in _COMMIT_LINE.finditer(output):
         rows.append({"session_id": session_id, "sha": m["sha"], "author_name": "", "author_email": "", "ts": ts,
-                     "subject": _redact(m["subject"][:300]) if keep_text else "", "project_path": project})
+                     "subject": _redact(m["subject"][:300]) if keep_text else "", "project_path": project,
+                     # The shell call that printed the commit: a key, not a time window.
+                     "basis": "output", "source_event_id": call_id[:120], "agent_id": agent_id,
+                     "prompt_id": prompt_id})
     return rows
 
 
@@ -1286,6 +1291,8 @@ class ClaudeFacts:
                 finish_reason=str(msg.get("stop_reason") or ""),
                 prompt_id=prompt_id,
                 turn_index=turn_index,
+                request_id=req_id[:200],
+                response_id=msg_id[:200],
                 effort=str(obj.get("effort") or "")[:20],
                 thinking_ms=thought[3] or None,
                 attribution_mcp_server=str(obj.get("attributionMcpServer") or "")[:200],
@@ -1495,6 +1502,7 @@ class ClaudeFacts:
                 project_path=cwd,
                 text=_redact(text[:PROMPT_MAX_CHARS]) if self.keep_text else "",
                 prompt_file=prompt_file,
+                prompt_id=str(obj.get("promptId") or "")[:200],
             )
         )
 
@@ -1547,7 +1555,9 @@ class ClaudeFacts:
         if command is not None and _text_of(msg.get("content")).lstrip().startswith("Base directory for this skill:"):
             self._skill(command[0], sid, command[1], "user", ts, agent_id, cwd)
 
-    def _skill(self, key: str, sid: str, name: str, trigger: str, ts: float, agent_id: str, cwd: str) -> None:
+    def _skill(self, key: str, sid: str, name: str, trigger: str, ts: float, agent_id: str, cwd: str, *,
+               tool_call_id: str = "") -> None:
+        turn = self._turn(sid, agent_id)
         self.buffer.add_skill(
             fact_rows.SkillUseRow(
                 dedup_key=fact_rows._dedup_key("claude-skill", key),
@@ -1558,6 +1568,8 @@ class ClaudeFacts:
                 project_path=cwd,
                 name=name,
                 trigger=trigger,
+                tool_call_id=tool_call_id[:120],
+                prompt_id=turn.prompt_id if turn else "",
             )
         )
 
@@ -1608,7 +1620,7 @@ class ClaudeFacts:
             self._message_last_block[message_id] = max(self._message_last_block.get(message_id, 0.0), ts)
             self.buffer.add_tool(row)
             if name == "Skill" and isinstance(args.get("skill"), str):
-                self._skill(tool_id, sid, args["skill"], "agent-invoked", ts, agent_id, cwd)
+                self._skill(tool_id, sid, args["skill"], "agent-invoked", ts, agent_id, cwd, tool_call_id=tool_id)
             elif name == "TodoWrite":
                 self._todos(sid, args, ts, agent_id, cwd)
             elif name in ("TaskCreate", "TaskUpdate"):
@@ -1656,7 +1668,8 @@ class ClaudeFacts:
                 result = obj.get("toolUseResult")
                 stdout = result.get("stdout") if isinstance(result, dict) else text
                 for commit in commits_of(args.get("command"), stdout, session_id=row.session_id, cwd=cwd, ts=ts,
-                                         keep_text=self.keep_text):
+                                         keep_text=self.keep_text, call_id=row.source_event_id,
+                                         agent_id=row.agent_id, prompt_id=row.prompt_id):
                     self.buffer.add_commit(commit)
             if row.tool_name in _CLAUDE_WRITE_TOOLS:
                 self._file_edit(row, cwd, args, obj.get("toolUseResult"), ts)
@@ -1866,6 +1879,12 @@ class CopilotFacts:
         # The interactionId of the person's current turn, and the hash of each agent's last feature flag set.
         self.interaction = ""
         self._flag_sets: dict[str, str] = {}
+        # The apiCallId of the model call that asked for each tool call (assistant.message toolRequests),
+        # and the turn row of each interactionId.
+        self._tool_api: dict[str, str] = {}
+        self._api_tools: dict[str, list[str]] = {}
+        self._tool_rows: dict[str, fact_rows.ToolInvocationRow] = {}
+        self._turn_rows: dict[str, fact_rows.SessionTurnRow] = {}
 
     def reset(self) -> None:
         """The file was rewritten and is read again from the start, so counting starts over."""
@@ -1907,6 +1926,7 @@ class CopilotFacts:
         elif kind == "assistant.message":
             if data.get("model"):
                 self.model = str(data["model"])
+            self._message(data)
             self._thinking(data, ts, agent_id)
         elif kind == "session.usage_record":
             usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
@@ -1933,6 +1953,7 @@ class CopilotFacts:
         elif kind == "user.message":
             if not agent_id:
                 self.turn += 1
+                self._open_turn(data, ts)
             self._prompt(data, ts, agent_id, event_id)
         elif kind == "session.mode_changed" and data.get("newMode"):
             if (part := self._outcome(ts)) is not None:
@@ -2163,15 +2184,80 @@ class CopilotFacts:
                 turn_index=self._turn_index(),
                 effort=str(usage.get("reasoningEffort") or "")[:20],
                 thinking_tokens=to_count(usage.get("reasoningTokens")),
+                # The ids as session_steps stores them (round_id, request_id), so the two join.
+                request_id=step_label(usage.get("requestId") or usage.get("providerCallId")),
+                api_call_id=step_api_id(usage.get("apiCallId")),
+                prompt_id=self.interaction,
             )
         )
         self.buffer.add_request(request)
+        self._give_request_key(step_api_id(usage.get("apiCallId")), key)
+        if (turn := self._turn_rows.get(self.interaction)) is not None:
+            turn.request_count += 1
+            turn.input_tokens += billable
+            turn.output_tokens += out
+            turn.cache_read_tokens += read
+            turn.cache_creation_tokens += write
+            self._touch_turn(turn, ts)
         if usage.get("apiCallId"):
-            self._calls_by_api[str(usage["apiCallId"])] = [request, 0, 0, 0, key]
+            self._calls_by_api[step_api_id(usage.get("apiCallId")) or str(usage["apiCallId"])] = [request, 0, 0, 0, key]
             while len(self._calls_by_api) > 256:
                 self._calls_by_api.pop(next(iter(self._calls_by_api)))
         if self.steps and link is not None:
             self.steps.link_request(link, key, usage.get("apiCallId"))
+
+    def _message(self, data: dict) -> None:
+        """An assistant message names the model call it is the reply of (apiCallId) and the tool calls
+        that call asked for: each tool call gets the call's request key, the call its message id."""
+        api = step_api_id(data.get("apiCallId"))
+        if not api:
+            return
+        for req in data.get("toolRequests") if isinstance(data.get("toolRequests"), list) else ():
+            if isinstance(req, dict) and req.get("toolCallId"):
+                self._tool_api[str(req["toolCallId"])] = api
+                self._api_tools.setdefault(api, []).append(str(req["toolCallId"]))
+                while len(self._tool_api) > 4096:
+                    self._tool_api.pop(next(iter(self._tool_api)))
+                while len(self._api_tools) > 1024:
+                    self._api_tools.pop(next(iter(self._api_tools)))
+        call = self._calls_by_api.get(api)
+        if call is not None:
+            self._give_request_key(api, call[4])
+        message = step_label(data.get("messageId"))
+        if call is not None and call[0] is not None and message and call[0].response_id != message:
+            call[0] = replace(call[0], response_id=message)
+            self.buffer.add_request(call[0])
+
+    def _request_key_of(self, tool_call_id: str) -> str:
+        call = self._calls_by_api.get(self._tool_api.get(tool_call_id, ""))
+        return call[4] if call else ""
+
+    def _give_request_key(self, api: str, key: str) -> None:
+        """Tool calls read before their model call's usage record or message get its key now."""
+        if not api:
+            return
+        for call_id in self._api_tools.get(api, ()):
+            row = self._tool_rows.get(call_id)
+            if row is not None and not row.request_key:
+                row.request_key = key
+                if call_id not in self._running:
+                    self.buffer.add_tool(row)
+
+    def _open_turn(self, data: dict, ts: float) -> None:
+        """A person's message opens a turn, keyed by its interactionId (Copilot's own turn id)."""
+        if not self.interaction or self.interaction in self._turn_rows:
+            return
+        origin = str(data.get("source") or "")[:40]
+        turn = fact_rows.SessionTurnRow(session_id=self.sid, prompt_id=self.interaction, ts=ts, turn_index=self.turn,
+                                        tool="copilot-cli", project_path=self.cwd, origin=origin or "human")
+        self._turn_rows[self.interaction] = turn
+        self._touch_turn(turn, ts)
+
+    def _touch_turn(self, turn: fact_rows.SessionTurnRow, ts: float) -> None:
+        if ts:
+            turn.ts = min(t for t in (turn.ts, ts) if t)
+            turn.ended_at = max(turn.ended_at, ts)
+        self.buffer.mark("turns", (turn.session_id, turn.prompt_id), turn)
 
     def _thinking(self, data: dict, ts: float, agent_id: str) -> None:
         """A message's reasoning: ``reasoningText`` is visible; ``reasoningOpaque`` and encrypted blocks are counted only."""
@@ -2181,7 +2267,7 @@ class CopilotFacts:
         hidden = len(encrypted) or (1 if data.get("reasoningOpaque") or data.get("encryptedContent") else 0)
         if not text and not hidden:
             return
-        api = str(data.get("apiCallId") or "")
+        api = step_api_id(data.get("apiCallId")) or str(data.get("apiCallId") or "")
         call = self._calls_by_api.get(api) if api else None
         key = call[4] if call else ""
         if call is not None:
@@ -2311,6 +2397,8 @@ class CopilotFacts:
                 tool="copilot-cli",
                 project_path=self.cwd,
                 text=_redact(text[:PROMPT_MAX_CHARS]) if self.keep_text else "",
+                # A subagent's prompt belongs to the person's turn it runs in, like its calls.
+                prompt_id=self.interaction if agent_id else str(data.get("interactionId") or "")[:200],
             )
         )
 
@@ -2367,6 +2455,8 @@ class CopilotFacts:
                 project_path=self.cwd,
                 name=name,
                 trigger=str(data.get("trigger") or ""),
+                # skill.invoked names no tool call; it runs in the person's current turn.
+                prompt_id=self.interaction,
             )
         )
 
@@ -2491,8 +2581,16 @@ class CopilotFacts:
             mcp_tool=server_tool,
             **found,
             turn_index=self._turn_index(),
+            prompt_id=self.interaction,
+            request_key=self._request_key_of(call_id),
         )
         self._running[call_id] = row
+        self._tool_rows[call_id] = row
+        while len(self._tool_rows) > 4096:
+            self._tool_rows.pop(next(iter(self._tool_rows)))
+        if (turn := self._turn_rows.get(self.interaction)) is not None:
+            turn.tool_call_count += 1
+            self._touch_turn(turn, ts)
         self.buffer.add_tool(row)
         if name in COPILOT_MEMORY_TOOLS or name in COPILOT_CONTEXT_EVENT_TOOLS:
             self._memory_args[call_id] = args
@@ -2518,7 +2616,10 @@ class CopilotFacts:
                 tool="copilot-cli",
                 project_path=self.cwd,
                 source_event_id=call_id,
+                prompt_id=self.interaction,
+                request_key=self._request_key_of(call_id),
             )
+            self._tool_rows[call_id] = row
         else:
             row.duration_ms = max(0.0, (ts - row.ts) * 1000)
         shell = data.get("shellExecution") if isinstance(data.get("shellExecution"), dict) else {}
@@ -2544,7 +2645,8 @@ class CopilotFacts:
         command = self._commands.pop(call_id, None)
         if command is not None and not failed:
             output = result.get("content") if isinstance(result, dict) else result
-            for commit in commits_of(command, output, session_id=self.sid, cwd=self.cwd, ts=ts, keep_text=self.keep_text):
+            for commit in commits_of(command, output, session_id=self.sid, cwd=self.cwd, ts=ts, keep_text=self.keep_text,
+                                     call_id=call_id, agent_id=row.agent_id, prompt_id=row.prompt_id):
                 self.buffer.add_commit(commit)
         viewed = self._views.pop(call_id, "")
         if viewed and not failed:
@@ -2954,6 +3056,8 @@ class VSCodeChatFacts:
         self.keep_text = _keep_text(buffer.store)
         self._requests: list[dict] = []
         self._elapsed: dict[int, float] = {}
+        # Each chat request is a person's turn, keyed by its requestId.
+        self._turns: dict[str, fact_rows.SessionTurnRow] = {}
 
     def feed(self, obj: dict) -> None:
         path = obj.get("k")
@@ -2995,6 +3099,7 @@ class VSCodeChatFacts:
         self._requests.append({"id": str(req.get("requestId") or index), "ts": coerce_ts(req.get("timestamp")),
                                "model": req.get("modelId"), "turn": index + 1})
         slot = self._requests[index]
+        self._open_turn(slot, req)
         if not req.get("isSystemInitiated"):
             self._prompt(req, slot)
         self._request_outcome(req, slot)
@@ -3002,6 +3107,21 @@ class VSCodeChatFacts:
         if req.get("result") is not None:
             self._elapsed[index] = to_float(req.get("elapsedMs"))
             self._turn_result(slot, req["result"], index)
+
+    def _open_turn(self, slot: dict, req: dict) -> None:
+        turn = self._turns.get(slot["id"])
+        if turn is None:
+            turn = self._turns[slot["id"]] = fact_rows.SessionTurnRow(
+                session_id=self.sid, prompt_id=slot["id"], ts=slot["ts"], turn_index=slot["turn"],
+                tool="copilot-vscode", project_path=self.project_path,
+                origin="system" if req.get("isSystemInitiated") else "human")
+        self._touch_turn(turn, slot["ts"])
+
+    def _touch_turn(self, turn: fact_rows.SessionTurnRow, ts: float) -> None:
+        if ts:
+            turn.ts = min(t for t in (turn.ts, ts) if t)
+            turn.ended_at = max(turn.ended_at, ts)
+        self.buffer.mark("turns", (turn.session_id, turn.prompt_id), turn)
 
     def _outcome(self, ts: float) -> dict | None:
         book = self.buffer.book
@@ -3047,6 +3167,7 @@ class VSCodeChatFacts:
                 project_path=self.project_path,
                 text=_redact(text[:PROMPT_MAX_CHARS]) if self.keep_text else "",
                 prompt_file=prompt_file,
+                prompt_id=slot["id"],
             )
         )
 
@@ -3074,11 +3195,18 @@ class VSCodeChatFacts:
                 duration_ms=to_float(timings.get("totalElapsed")) or self._elapsed.get(index, 0.0),
                 ttft_ms=to_float(timings.get("firstProgress")),
                 turn_index=slot.get("turn"),
+                prompt_id=slot["id"],
                 thinking_chars=sum(slot.get("thinking", {}).values()),
                 thinking_blocks=len(slot.get("thinking", {})),
                 thinking_redacted=0,
             )
         )
+        if (turn := self._turns.get(slot["id"])) is not None and not slot.get("counted"):
+            slot["counted"] = True
+            turn.request_count += 1
+            turn.input_tokens += tokens_in
+            turn.output_tokens += tokens_out
+            self._touch_turn(turn, slot["ts"])
 
     def _response_parts(self, slot: dict, parts: Any) -> None:
         if not isinstance(parts, list):
@@ -3151,8 +3279,16 @@ class VSCodeChatFacts:
                 mcp_tool=server_tool,
                 **found,
                 turn_index=slot.get("turn"),
+                prompt_id=slot["id"],
+                # The chat request's one model-call row (written when its result reports tokens).
+                request_key=fact_rows._dedup_key("vscode-chat-turn", self.sid, slot["id"]),
             )
         )
+        tools_seen = slot.setdefault("tools", set())
+        if call_id not in tools_seen and (turn := self._turns.get(slot["id"])) is not None:
+            tools_seen.add(call_id)
+            turn.tool_call_count += 1
+            self._touch_turn(turn, slot["ts"])
         # "Reading skill [name](file:///.../name/SKILL.md?vscodeLinkType=skill)"
         link = _VSCODE_SKILL_LINK.search(shown) if isinstance(shown, str) and kind != 0 else None
         if link:
@@ -3165,6 +3301,8 @@ class VSCodeChatFacts:
                     project_path=self.project_path,
                     name=skill_of_path(link.group(2)) or link.group(1),
                     trigger="agent-invoked",
+                    tool_call_id=call_id[:120],
+                    prompt_id=slot["id"],
                 )
             )
 

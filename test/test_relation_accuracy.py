@@ -34,7 +34,7 @@ from aictl.ingesters.transcript_usage import (
     resumed_claude_sessions,
 )
 from aictl.ingesters.vscode_chat_logs import VSCodeChatLogsIngester
-from aictl.records import AgentRow
+from aictl.records import AgentRow, SessionRow
 from aictl.session_facts import SessionFacts
 from aictl.state_file import StateFile
 from aictl.stores.testing import FixtureReader, MemoryWriter
@@ -344,6 +344,7 @@ def resolver(rows):
 
 def test_the_same_agent_id_in_two_sessions_is_two_agents(tmp_path):
     db = Facts()
+    db.sessions([(SessionRow(sid, "claude-code", project_path="/work/repo"), 0, False) for sid in (A, C)])
     db.agents([AgentRow(agent_id="dup", session_id=A, tool="claude-code", started_at=NOW - 10),
                AgentRow(agent_id="dup", session_id=C, tool="claude-code", started_at=NOW - 5)])
     assert set(agents(db)) == {(A, "dup"), (C, "dup")}
@@ -378,6 +379,20 @@ def test_a_worktree_subagent_keeps_its_own_folder_and_branch(tmp_path):
     assert (agent["cwd"], agent["git_branch"], agent["worktree_path"]) == (tree, "worktree-agent-w1", tree)
 
 
+def test_a_claude_call_keeps_its_provider_ids_and_a_prompt_names_its_turn(tmp_path):
+    """requests.request_id/response_id are the transcript's requestId and message id (OTel names the
+    same ids), and session_prompts.prompt_id is the turn's promptId."""
+    projects = tmp_path / "projects"
+    two_sessions(projects)
+    db = Facts()
+    ingester(db, projects).poll()
+    rows = [r for r in requests(db).values() if r["session_id"] == A and not r["agent_id"]]
+    assert rows and all(r["response_id"] and r["request_id"] == f"req-{r['response_id']}" for r in rows)
+    prompts = [r for r in current(db.writer, "session_prompts") if r["session_id"] == A and not r["agent_id"]]
+    turns = {(r["session_id"], r["prompt_id"]) for r in current(db.writer, "session_turns")}
+    assert prompts and all((A, r["prompt_id"]) in turns for r in prompts)
+
+
 # ── completion is what the latest observation says ────────────────────
 
 
@@ -407,6 +422,7 @@ def test_a_subagent_is_completed_only_after_its_final_reply(tmp_path):
 
 def test_an_older_observation_never_overrides_a_newer_one():
     db = Facts()
+    db.session(SessionRow(A, "claude-code", project_path="/work/repo"))
     db.agents([AgentRow(agent_id="z", session_id=A, completed=0, observed_at=NOW - 10)])
     db.agents([AgentRow(agent_id="z", session_id=A, completed=1, ended_at=NOW - 50, observed_at=NOW - 50)])
     assert agents(db)[(A, "z")]["completed"] == 0

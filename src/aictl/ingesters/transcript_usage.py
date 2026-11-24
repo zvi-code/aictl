@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -127,20 +128,26 @@ PENDING_CONFIRM_MAX_AGE_S = 6 * 3600.0
 # Version 1: the first recorded version. A position saved before versions existed counts as 0,
 # so every file is read again once: an older aictl stored no prompt and no digest text older than
 # 14 days, and no session file was read again after its reader learnt more.
+_CODEX_FILE_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
 READER_VERSIONS: dict[str, int] = {
-    "claude-transcript": 1,  # projects/**/<session>.jsonl and subagents: ClaudeAccumulator, ClaudeFacts
+    "claude-transcript": 2,  # projects/**/<session>.jsonl and subagents: ClaudeAccumulator, ClaudeFacts
     "codex-rollout": 1,  # sessions/**/rollout-*.jsonl[.zst]: CodexAccumulator
-    "copilot-events": 1,  # session-state/<id>/events.jsonl: CopilotAccumulator, CopilotFacts
+    "copilot-events": 2,  # session-state/<id>/events.jsonl: CopilotAccumulator, CopilotFacts
     "copilot-store": 1,  # session-store.db assistant_usage_events: CopilotStoreReader
     # session-store.db sessions, turns, forge_trajectory_events of sessions with no events.jsonl: CopilotStoreContent
     "copilot-store-content": 1,
     # Version 2 of both VS Code kinds: a request whose source does not report the cached part of the
     # prompt is stored with no cost (cost_usd null), not priced as all uncached input.
     "vscode-debug-log": 2,  # GitHub.copilot-chat/debug-logs/<id>/*.jsonl: VSCodeDebugLogAccumulator, VSCodeDebugFacts
-    "vscode-chat-session": 2,  # chatSessions/<id>.jsonl: VSCodeChatSessionAccumulator, VSCodeChatFacts
+    "vscode-chat-session": 3,  # chatSessions/<id>.jsonl: VSCodeChatSessionAccumulator, VSCodeChatFacts
     # Claude workflows/wf_*.json, Copilot session.db todos and session-store.db checkpoints:
     # session_outcomes.MetadataReaders. Small files, read again at once, not paced.
     "session-metadata": 1,
+    # Version 2 of claude-transcript and copilot-events: a model call keeps its provider ids (request_id,
+    # response_id, Copilot api_call_id), and calls, tool calls, steps, links and prompts name their turn
+    # (prompt_id); Copilot turns are session_turns rows keyed by interactionId. Version 3 of
+    # vscode-chat-session: each chat request is a session_turns row keyed by its requestId (prompt_id).
 }
 # The order in which the tools' backlogs share the bytes of a poll: Copilot CLI and the Copilot app
 # (one session folder), VS Code, Claude Code, then Codex.
@@ -2356,7 +2363,12 @@ class TranscriptUsageIngester:
         if tool == "claude-code":
             # A workflow's agents are one folder deeper: <session>/subagents/workflows/<run>/agent-x.jsonl.
             return _claude_session_id(path)
-        return session_files.logical_path(path).stem
+        stem = session_files.logical_path(path).stem
+        if tool == "codex-cli" and (found := _CODEX_FILE_ID.search(stem)):
+            # rollout-<time>-<uuid>: the session is the uuid, as the rollout's own session_meta names it
+            # (a sub-agent's rollout counts under its root thread, which the file name does not give).
+            return found.group(0)
+        return stem
 
     def _vscode_dirs(self) -> tuple[list[Path], list[Path]]:
         """``workspaceStorage`` folders, then the folders of chats that had no folder open."""

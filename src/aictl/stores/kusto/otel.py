@@ -57,7 +57,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from ...dashboard.otel_receiver import _SESSION_ID_KEYS, CONVERSATION_ID_KEY, _resolve_tool
+from ...dashboard.otel_receiver import _SESSION_ID_KEYS, CODEX_CONVERSATION_KEY, CONVERSATION_ID_KEY, _resolve_tool
 from ...records import _EVENT_TEXT_KEYS, _EVENT_TEXT_MAX_CHARS
 from .ingest import sound_line
 
@@ -111,7 +111,8 @@ def _cols(*spec: tuple[str, str, str]) -> tuple[Column, ...]:
 
 
 _AICTL_IDENTITY = (
-    ("SessionId", "string", "aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id"),
+    ("SessionId", "string",
+     "aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id, else conversation.id (Codex)"),
     ("Tool", "string", "aictl: the tool id resolved from resource service.name"),
 )
 _AICTL_MODEL = (("Model", "string", "aictl: attribute model, gen_ai.request.model or gen_ai.response.model"),)
@@ -1002,7 +1003,7 @@ def _session_id(attrs: dict, resource: dict) -> str:
             if val:
                 return val
     for source in (attrs, resource):
-        val = _text(source.get(CONVERSATION_ID_KEY))
+        val = _text(source.get(CONVERSATION_ID_KEY)) or _text(source.get(CODEX_CONVERSATION_KEY))
         if val:
             return val
     return ""

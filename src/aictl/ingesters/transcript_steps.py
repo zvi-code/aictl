@@ -125,6 +125,8 @@ class CopilotSteps:
         self.spawn_roots: dict[str, str] = {}
         self.api_turns: dict[tuple[str, str], str] = {}
         self.waiting: dict[tuple[str, str], deque[TurnRequestLink]] = {}
+        # The interactionId of the person's current turn: each step and link names it.
+        self.interaction = ""
 
     def _only_open(self, agent: str) -> str:
         turns = self.open_turns.get(agent)
@@ -142,7 +144,8 @@ class CopilotSteps:
         agent = _label(raw_agent) or self.children.get(_label(parent), "")
         local = ""
         if obj.get("checkpoint") is True:
-            return TurnRequestLink(request_key="", ts=ts, session_id=self.sid, agent_id=agent, basis="checkpoint", project_path=cwd)
+            return TurnRequestLink(request_key="", ts=ts, session_id=self.sid, agent_id=agent, basis="checkpoint", project_path=cwd,
+                                   prompt_id=self.interaction)
         if not agent and (raw_agent or parent):
             basis = "unknown_agent"
         elif local := _label(data.get("turnId") or usage.get("turnId")):
@@ -157,7 +160,7 @@ class CopilotSteps:
         return TurnRequestLink(
             request_key="", ts=ts, session_id=self.sid, agent_id=agent, turn_id=local,
             root_session_id=self.sid if root else "", root_turn_id=root,
-            basis="spawn_tool" if root and not local else basis, project_path=cwd,
+            basis="spawn_tool" if root and not local else basis, project_path=cwd, prompt_id=self.interaction,
         )
 
     def link_request(self, link: TurnRequestLink, request_key: str, api_id: Any) -> None:
@@ -198,6 +201,8 @@ class CopilotSteps:
             return
         agent = _label(obj.get("agentId")) or _label(data.get("agentId"))
         parent_call = _label(data.get("parentToolCallId"))
+        if source == "user.message" and not agent and data.get("interactionId"):
+            self.interaction = _label(data.get("interactionId"))
         is_agent_event = source.startswith("subagent.")
         if not agent and not is_agent_event:
             agent = self.children.get(parent_call, "")
@@ -224,7 +229,8 @@ class CopilotSteps:
                 fields["text_status"] = "omitted"
             self.add(SessionStepRow(
                 step_key=key, ts=ts, session_id=self.sid, tool="copilot-cli", project_path=cwd,
-                source=source, source_order=self.order, kind=kind, phase=phase, **(links | fields),
+                source=source, source_order=self.order, kind=kind, phase=phase, prompt_id=self.interaction,
+                **(links | fields),
             ))
 
         if source == "user.message":

@@ -914,6 +914,8 @@ _SESSION_ID_KEYS = ("session.id", "sessionId", "session_id")
 # belongs to with this attribute: Copilot CLI and Copilot Chat set it to their
 # session id. Metrics do not carry it (it would split every series per session).
 CONVERSATION_ID_KEY = "gen_ai.conversation.id"
+# Codex names its session (the conversation, the rollout's session id) with this attribute instead.
+CODEX_CONVERSATION_KEY = "conversation.id"
 # At most this many traces are remembered for their session.
 _MAX_TRACES = 20_000
 
@@ -922,7 +924,7 @@ def _promote_conversation_id(attrs: dict) -> None:
     """``gen_ai.conversation.id`` is the session id when no session attribute names one."""
     if attrs.get("session_id"):
         return
-    val = attrs.get(CONVERSATION_ID_KEY)
+    val = attrs.get(CONVERSATION_ID_KEY) or attrs.get(CODEX_CONVERSATION_KEY)
     if isinstance(val, str) and val:
         attrs["session_id"] = val
 

@@ -1,5 +1,5 @@
 {
- "fingerprint": "5d1fbf57a77e326a61103cc98ffd17a927a1191e2404aa6a877cbe1160934530",
+ "fingerprint": "ee9035857d1dc3d8990630e4ad043bb0180c36ded914bd564443d4c1e4847e4a",
  "tables": {
   "OTELLogs": [
    [
@@ -975,6 +975,10 @@
    [
     "session_id",
     "string"
+   ],
+   [
+    "_deleted",
+    "bool"
    ]
   ],
   "context_events": [
@@ -3045,6 +3049,10 @@
     "long"
    ],
    [
+    "api_call_id",
+    "string"
+   ],
+   [
     "project",
     "string"
    ],
@@ -3322,6 +3330,22 @@
    ],
    [
     "subject",
+    "string"
+   ],
+   [
+    "basis",
+    "string"
+   ],
+   [
+    "source_event_id",
+    "string"
+   ],
+   [
+    "agent_id",
+    "string"
+   ],
+   [
+    "prompt_id",
     "string"
    ],
    [
@@ -4107,6 +4131,10 @@
     "string"
    ],
    [
+    "prompt_id",
+    "string"
+   ],
+   [
     "project",
     "string"
    ],
@@ -4443,6 +4471,10 @@
     "long"
    ],
    [
+    "prompt_id",
+    "string"
+   ],
+   [
     "project",
     "string"
    ],
@@ -4633,6 +4665,10 @@
    [
     "_v",
     "datetime"
+   ],
+   [
+    "_deleted",
+    "bool"
    ]
   ],
   "session_usage": [
@@ -5045,6 +5081,10 @@
     "string"
    ],
    [
+    "merged_into",
+    "string"
+   ],
+   [
     "rowid",
     "long"
    ]
@@ -5222,6 +5262,14 @@
    ],
    [
     "trigger",
+    "string"
+   ],
+   [
+    "tool_call_id",
+    "string"
+   ],
+   [
+    "prompt_id",
     "string"
    ],
    [
@@ -5629,10 +5677,6 @@
    [
     "session_id",
     "string"
-   ],
-   [
-    "request_id",
-    "long"
    ],
    [
     "tool",
@@ -6156,6 +6200,10 @@
    ],
    [
     "project_path",
+    "string"
+   ],
+   [
+    "prompt_id",
     "string"
    ],
    [

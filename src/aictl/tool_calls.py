@@ -105,7 +105,7 @@ class ToolCalls:
             is_error=max(row.is_error, previous.get("is_error", 0)),
         )
         for field in ("project_path", "source_event_id", "agent_id", "confirm", "duration_ms",
-                      "confirm_wait_ms", "pid", "request_id", "prompt_id", "request_key", "error_summary"):
+                      "confirm_wait_ms", "pid", "prompt_id", "request_key", "error_summary"):
             metadata[field] = getattr(row, field) or previous.get(field, getattr(row, field))
         for field in ("exit_code", "input_bytes", "output_bytes", "turn_index", "interrupted"):
             value = getattr(row, field)
