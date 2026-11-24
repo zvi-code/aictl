@@ -367,6 +367,12 @@ _VIEWS = {
         "sized tools server_tools carried_bytes called_sessions list_tokens unused_tokens listed_tools tool "
         "project_name servers node_id session_id mcp_calls first_ts last_ts computed_at",
     ),
+    "insights.kql": (
+        _TIME,
+        "row_type tool runs unrecognised mcp cli script with_text sessions failures changes large sum_ms "
+        "output_bytes large_bytes snippet first_ts last_ts run_kind verb failure cluster database shape_key "
+        "project_name node_id session_id fact_key ts route text computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -470,6 +476,7 @@ _CACHE_TTL_S = {
     "insights.flows": _INSIGHT_TTL_S,
     "insights.skills": _INSIGHT_TTL_S,
     "insights.mcp": _INSIGHT_TTL_S,
+    "insights.kql": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }

@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import Flows from '../../src/panels/insights/Flows'
 import { flowsFinding, flowsHero, tooSmall, type FlowsBody } from '../../src/panels/insights/flowsModel'
+import Kql from '../../src/panels/insights/Kql'
+import { kqlCoverage, kqlFinding, kqlHero, type KqlBody } from '../../src/panels/insights/kqlModel'
 import Mcp from '../../src/panels/insights/Mcp'
 import { mcpCoverage, mcpFinding, mcpHero, type McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
@@ -180,6 +182,62 @@ describe('INS-22 · MCP servers', () => {
     const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-mcp'))
     open!.click()
     expect(opened).toEqual(['s-mcp:tools'])
+    dispose()
+  })
+})
+
+const figures = { runs: 3, sessions: 1, failures: 1, changes: 0, large: 0, sum_ms: 300, output_bytes: 3000 }
+const shape = { ...figures, shape_key: 'a', snippet: 'StormEvents | where State == ? | take ?', kind: 'query', verb: null,
+  most_in_session: 3, repeated_sessions: 1, repeat_runs: 3 }
+const kqlBody = {
+  ...base, card: 'kql', view: 'insights.kql', query: query('insights.kql'),
+  coverage: [{ tool: 'copilot-cli', runs: 40, unrecognised: 6, mcp: 30, cli: 5, script: 5, with_text: 38 }],
+  kinds: [{ ...figures, runs: 30, kind: 'query', verb: null, change: false },
+    { ...figures, runs: 6, changes: 6, kind: 'management', verb: 'create', change: true },
+    { ...figures, runs: 4, kind: 'management', verb: 'show', change: false }],
+  failure_kinds: [{ failure: 'syntax', runs: 3 }, { failure: 'auth', runs: 1 }],
+  targets: [{ ...figures, runs: 35, changes: 6, cluster: 'help.kusto.windows.net', database: 'Samples' }],
+  shapes: [shape],
+  projects: [{ ...figures, runs: 40, project: '/work/alpha' }],
+  large: [{ session_id: 's-big', node_id: 'n', tool: 'copilot-cli', ts: 1, route: 'mcp', kind: 'query', verb: null, output_bytes: 250_000,
+    snippet: 'Events | take ?', text: 'Events | take 100000', project_name: 'alpha' }],
+  summary: { runs: 40, sessions: 5, failures: 4, changes: 6, large: 1, sum_ms: 7_200_000, output_bytes: 900_000, enough: true,
+    failure_share: 0.1, large_bytes: 250_000, with_text: 38, top_failure: { failure: 'syntax', runs: 3 }, change_verbs: ['create'],
+    top_shape: shape, repeated: shape, unrecognised: 6, routes: { mcp: 30, cli: 5, script: 5 }, small_projects: [] },
+  sessions: [{ session_id: 's-kql', node_id: 'n', tool: 'copilot-cli', project_name: 'alpha', ...figures }],
+} as unknown as KqlBody
+
+describe('INS-23 · Kusto queries', () => {
+  it('states the runs, the changes of schema or data, the failure kind, the repeats, the large results and the blind spot', () => {
+    expect(kqlFinding(kqlBody)).toBe('The agents ran Kusto 40 times in 5 sessions, taking 2 h. 6 runs changed schema or data (.create). ' +
+      '10% failed, most often syntax error (3). One query shape was run 3 times in 1 session that ran it 3 times or more. 1 result ' +
+      'of 100 KB or more brought 250 KB into the context. 6 command lines named kusto or kql but were not recognised as a run.')
+    expect(kqlHero(kqlBody)).toEqual({ value: '6', label: 'Kusto runs changed schema or data, of 40 runs' })
+    expect(kqlCoverage(kqlBody, label)).toBe('Recognised: 30 through an MCP tool, 5 by a Kusto command line, 5 by a script with an ' +
+      'inline query; 38 with query text kept. Not recognised (named kusto or kql): Copilot CLI 6.')
+  })
+
+  it('states no finding for too few runs but still shows the blind spot', () => {
+    const few = { ...kqlBody, summary: { ...kqlBody.summary, runs: 9, sessions: 2, enough: false, unrecognised: 9459 } } as KqlBody
+    expect(kqlFinding(few)).toBe('Only 9 recognised Kusto runs in 2 sessions: too few to compare (the card needs 20 in 3 sessions). ' +
+      '9,459 command lines named kusto or kql but were not recognised as a run.')
+    expect(kqlHero(few)).toBeUndefined()
+  })
+
+  it('draws kinds, shapes, targets, failures and projects, shows the full text of a large result on expand, and opens a session', () => {
+    const opened: string[] = []
+    const { host, dispose } = mount(() => <Kql {...props(context({ data: kqlBody, status: 'ready', error: null }, opened))} />)
+    const box = host.querySelector('[data-box="insight-kql"]')!
+    expect(box.querySelector('[data-kind=".create"]')!.textContent).toContain('changes schema or data')
+    expect(box.querySelector('[data-shapes]')!.textContent).toContain('StormEvents | where State == ? | take ?3 runs · 1 session · up to 3 in one session')
+    expect(box.querySelector('[data-targets]')!.textContent).toContain('help.kusto.windows.net · Samples35 runs · 6 changes')
+    expect(box.querySelector('[data-failures]')!.textContent).toContain('syntax error3 runs')
+    const large = box.querySelector('[data-large] details')!
+    expect(large.textContent).toContain('250 KB · query')
+    expect(large.textContent).toContain('Events | take 100000')
+    const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-kql'))
+    open!.click()
+    expect(opened).toEqual(['s-kql:tools'])
     dispose()
   })
 })

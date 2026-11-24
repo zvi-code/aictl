@@ -290,3 +290,76 @@ def mcp(rows: list[dict]) -> dict:
     sessions.sort(key=lambda row: -row["calls"])
     return {"servers": servers, "small_servers": small, "listed": listed[:SHOWN_LISTED], "projects": projects, "summary": summary,
             "sessions": sessions}
+
+
+# Kusto runs: the period needs this many runs in this many sessions before it states a finding or a failure share; a
+# project needs MIN_KQL_PROJECT_RUNS; a shape repeated in a session counts from REPEAT_RUNS runs.
+MIN_KQL_RUNS = 20
+MIN_KQL_SESSIONS = 3
+MIN_KQL_PROJECT_RUNS = 5
+REPEAT_RUNS = 3
+LARGE_RESULT_BYTES = 100_000
+FAILURE_KINDS = ("syntax", "not_found", "auth", "throttled", "timeout", "limits", "network", "other", "not_recorded")
+
+
+def _figures(row: dict) -> dict:
+    return {"runs": _int(row.get("runs")), "sessions": _int(row.get("sessions")), "failures": _int(row.get("failures")),
+            "changes": _int(row.get("changes")), "large": _int(row.get("large")), "sum_ms": _n(row.get("sum_ms")),
+            "output_bytes": _int(row.get("output_bytes"))}
+
+
+def kql(rows: list[dict]) -> dict:
+    """Kusto queries and management commands the agents ran: by kind and verb, failure kind, cluster and database,
+    project, the same query shape run again, and the results of 100 KB or more brought into the context."""
+    with_text = {row.get("tool"): _int(row.get("with_text")) for row in _of(rows, "tool")}
+    coverage = sorted(({"tool": row.get("tool"), "runs": _int(row.get("runs")), "unrecognised": _int(row.get("unrecognised")),
+                        "mcp": _int(row.get("mcp")), "cli": _int(row.get("cli")), "script": _int(row.get("script")),
+                        "with_text": with_text.get(row.get("tool"), 0)} for row in _of(rows, "coverage")),
+                      key=lambda item: (-item["runs"], -item["unrecognised"]))
+    kinds = sorted(({"kind": row.get("run_kind"), "verb": row.get("verb") or None, **_figures(row),
+                     "change": _int(row.get("changes")) > 0} for row in _of(rows, "kind")),
+                   key=lambda item: -item["runs"])
+    failures = {str(row.get("failure")): _int(row.get("runs")) for row in _of(rows, "failure")}
+    failure_kinds = [{"failure": kind, "runs": failures[kind]} for kind in FAILURE_KINDS if failures.get(kind)]
+    failure_kinds.sort(key=lambda item: -item["runs"])
+    targets = [{"cluster": row.get("cluster") or None, "database": row.get("database") or None, **_figures(row)}
+               for row in _of(rows, "target")]
+    repeats: dict[str, dict] = {}
+    for row in _of(rows, "repeat"):
+        item = repeats.setdefault(str(row.get("shape_key")), {"most_in_session": 0, "repeated_sessions": 0, "repeat_runs": 0})
+        item["most_in_session"] = max(item["most_in_session"], _int(row.get("runs")))
+        item["repeated_sessions"] += 1
+        item["repeat_runs"] += _int(row.get("runs"))
+    shapes = sorted(({"shape_key": row.get("shape_key"), "snippet": row.get("snippet"), "kind": row.get("run_kind"),
+                      "verb": row.get("verb") or None, **_figures(row),
+                      **repeats.get(str(row.get("shape_key")), {"most_in_session": None, "repeated_sessions": 0, "repeat_runs": 0})}
+                     for row in _of(rows, "shape")), key=lambda item: -item["runs"])
+    projects, small_projects = [], []
+    for row in _of(rows, "project"):
+        item = {"project": str(row.get("project_name") or ""), **_figures(row)}
+        (projects if item["runs"] >= MIN_KQL_PROJECT_RUNS else small_projects).append(item)
+    large = [{"session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"), "ts": _num(row.get("ts")),
+              "route": row.get("route"), "kind": row.get("run_kind"), "verb": row.get("verb") or None,
+              "output_bytes": _int(row.get("output_bytes")), "snippet": row.get("snippet"), "text": row.get("text"),
+              "project_name": row.get("project_name") or None} for row in _of(rows, "large")]
+    large.sort(key=lambda item: -item["output_bytes"])
+    meta = next(iter(_of(rows, "meta")), {})
+    total = _figures(meta)
+    enough = total["runs"] >= MIN_KQL_RUNS and total["sessions"] >= MIN_KQL_SESSIONS
+    repeated = max((item for item in shapes if item["repeat_runs"]), key=lambda item: item["repeat_runs"], default=None)
+    unrecognised = sum(item["unrecognised"] for item in coverage)
+    summary = {
+        **total, "enough": enough, "failure_share": _ratio(total["failures"], total["runs"]) if enough else None,
+        "large_bytes": _int(meta.get("large_bytes")), "with_text": _int(meta.get("with_text")),
+        "top_failure": failure_kinds[0] if failure_kinds and enough else None,
+        "change_verbs": sorted({str(item["verb"]) for item in kinds if item["change"] and item["verb"]}),
+        "top_shape": shapes[0] if shapes and enough else None, "repeated": repeated if enough else None,
+        "unrecognised": unrecognised, "routes": {route: sum(item[route] for item in coverage) for route in ("mcp", "cli", "script")},
+        "small_projects": sorted(item["project"] for item in small_projects),
+    }
+    sessions = [{"session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"),
+                 "project_name": row.get("project_name") or None, **_figures(row)}
+                for row in _of(rows, "session") if row.get("session_id")]
+    sessions.sort(key=lambda row: -row["runs"])
+    return {"coverage": coverage, "kinds": kinds, "failure_kinds": failure_kinds, "targets": targets, "shapes": shapes,
+            "projects": sorted(projects, key=lambda item: -item["runs"]), "large": large, "summary": summary, "sessions": sessions}

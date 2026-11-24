@@ -331,6 +331,99 @@ def test_mcp_shape_applies_the_evidence_rule():
     assert body["summary"]["call_share"] == pytest.approx(0.1019) and body["summary"]["unused_tokens"] is None
 
 
+# ─── Kusto runs ────────────────────────────────────────────────────────────────
+
+
+def _kusto_mcp(store, key, ts, args, *, session, project=ALPHA, **values):
+    _mcp_call(store, key, ts, "kusto", "kusto_query", session=session, project=project, **values)
+    store.insert("tool_invocations_text", dedup_key=key, project=project, input=json.dumps(args), target="")
+
+
+def _shell_text(store, key, ts, line, *, session, project=ALPHA, tool="copilot-cli", **values):
+    _call(store, key, ts, "bash", session=session, tool=tool, kind="command", target=line, command_name=line.split()[0],
+          project=project, **values)
+    store.insert("tool_invocations_text", dedup_key=key, project=project, input=json.dumps({"command": line}), target=line)
+
+
+CLUSTER = "https://help.kusto.windows.net"
+
+
+def _seed_kql(s, project=ALPHA, prefix=""):
+    p = prefix
+    # q1: the same query with three different literals (one shape, 3 runs in one session); the last failed on syntax.
+    for i, (state, n) in enumerate((("TEXAS", 10), ("OHIO", 20), ("IOWA", 5))):
+        _kusto_mcp(s, f"{p}q1-{i}", 10.0 + i, {"query": f"StormEvents | where State == '{state}' | take {n}", "cluster": CLUSTER,
+                                               "database": "Samples"}, session=f"{p}q1", project=project, duration_ms=100.0,
+                   output_bytes=1000, **({"failed": True, "is_error": True, "error_summary": "Syntax error: SYN0002 bad"}
+                                         if i == 2 else {}))
+    # q2: a management command that changes schema and one that reads.
+    _kusto_mcp(s, f"{p}q2-a", 10.0, {"command": ".create table Logs (ts:datetime, msg:string)", "cluster": CLUSTER,
+                                     "database": "Samples"}, session=f"{p}q2", project=project, duration_ms=50.0)
+    _kusto_mcp(s, f"{p}q2-b", 11.0, {"query": "  .show tables", "cluster": CLUSTER, "database": "Samples"}, session=f"{p}q2",
+               project=project, duration_ms=20.0)
+    # q3: Kusto.Cli drops a table; a script queries through KustoClient and brings 200 KB back.
+    _shell_text(s, f"{p}q3-a", 10.0, f'Kusto.Cli.exe "{CLUSTER}/Samples;Fed=true" -execute:".drop table Old"', session=f"{p}q3",
+                project=project)
+    _shell_text(s, f"{p}q3-b", 20.0, "python -c \"from azure.kusto.data import KustoClient; c = KustoClient('https://x.kusto.windows.net'); "
+                "c.execute('mydb', 'Events | summarize count() by bin(ts, 1h)')\"", session=f"{p}q3", project=project,
+                output_bytes=200_000)
+    # Not runs: az kusto cluster show manages the Azure resource, grep only searches; both are counted as not recognised.
+    _shell_text(s, f"{p}q3-c", 30.0, "az kusto cluster show -n c -g g", session=f"{p}q3", project=project)
+    _shell_text(s, f"{p}q3-d", 40.0, "grep -rn kusto src", session=f"{p}q3", project=project)
+    # A run after the period and a deleted run.
+    _kusto_mcp(s, f"{p}q4", 150_000.0, {"query": "T | take 1"}, session=f"{p}q4", project=project)
+    _kusto_mcp(s, f"{p}q5", 50.0, {"query": ".drop table X"}, session=f"{p}q1", project=project)
+    s.insert("tool_invocations", dedup_key=f"{p}q5", ts=50.0, session_id=f"{p}q1", agent_id="", tool="copilot-cli",
+             tool_name="mcp__kusto__kusto_query", source="transcript", project=project, _deleted=True, _v=NEWER)
+
+
+def test_kql_recognises_runs_and_classifies_queries_and_management_commands(kusto_store):
+    _seed_kql(kusto_store)
+    body = _card(kusto_store, "kql")
+    coverage = {item["tool"]: item for item in body["coverage"]}["copilot-cli"]
+    assert (coverage["runs"], coverage["mcp"], coverage["cli"], coverage["script"], coverage["unrecognised"]) == (7, 5, 1, 1, 2)
+    kinds = {(item["kind"], item["verb"]): item for item in body["kinds"]}
+    assert kinds[("query", None)]["runs"] == 4
+    assert kinds[("management", "create")]["change"] is True and kinds[("management", "drop")]["change"] is True
+    assert kinds[("management", "show")]["change"] is False
+    summary = body["summary"]
+    assert (summary["runs"], summary["changes"], summary["failures"], summary["large"]) == (7, 2, 1, 1)
+    assert summary["change_verbs"] == ["create", "drop"]
+    targets = {(item["cluster"], item["database"]): item["runs"] for item in body["targets"]}
+    assert targets == {("help.kusto.windows.net", "Samples"): 5, ("help.kusto.windows.net", None): 1, ("x.kusto.windows.net", "mydb"): 1}
+    assert body["failure_kinds"] == [{"failure": "syntax", "runs": 1}]
+    assert body["large"][0]["output_bytes"] == 200_000 and body["large"][0]["kind"] == "query"
+    assert body["large"][0]["text"] == "Events | summarize count() by bin(ts, 1h)"
+
+
+def test_kql_normalises_literals_into_one_shape_and_counts_repeats(kusto_store):
+    _seed_kql(kusto_store)
+    shapes = {item["snippet"]: item for item in _card(kusto_store, "kql")["shapes"]}
+    storm = shapes["StormEvents | where State == ? | take ?"]
+    assert (storm["runs"], storm["sessions"], storm["failures"], storm["most_in_session"], storm["repeated_sessions"]) == (3, 1, 1, 3, 1)
+    assert "Events | summarize count() by bin(ts, ?)" in shapes and ".create table Logs (ts:datetime, msg:string)" in shapes
+
+
+def _kql_meta(runs, sessions, **values):
+    return {"row_type": "meta", "runs": runs, "sessions": sessions, "failures": 4, "changes": 3, "large": 1, "sum_ms": 1000.0,
+            "output_bytes": 5000, "large_bytes": 200_000, "first_ts": 1.0, "last_ts": 2.0, "computed_at": 3.0, **values}
+
+
+def test_kql_shape_applies_the_evidence_rule():
+    rows = [_kql_meta(19, 5), {"row_type": "failure", "failure": "syntax", "runs": 4},
+            {"row_type": "shape", "shape_key": "a", "snippet": "T | take ?", "run_kind": "query", "runs": 10, "sessions": 2},
+            {"row_type": "project", "project_name": "alpha", "runs": 15, "sessions": 4},
+            {"row_type": "project", "project_name": "beta", "runs": 4, "sessions": 1},
+            {"row_type": "coverage", "tool": "copilot-cli", "runs": 19, "unrecognised": 7, "mcp": 19, "cli": 0, "script": 0}]
+    summary = insights_work.kql(rows)["summary"]
+    # 19 runs: no finding, no failure share, no top failure or shape.
+    assert (summary["enough"], summary["failure_share"], summary["top_failure"], summary["top_shape"]) == (False, None, None, None)
+    assert summary["small_projects"] == ["beta"] and summary["unrecognised"] == 7
+    enough = insights_work.kql([_kql_meta(40, 5), *rows[1:]])
+    assert enough["summary"]["failure_share"] == 0.1 and enough["summary"]["top_failure"] == {"failure": "syntax", "runs": 4}
+    assert [item["project"] for item in enough["projects"]] == ["alpha"]
+
+
 # ─── The project filter, for every card of this file ───────────────────────────
 
 
@@ -340,7 +433,7 @@ def _get(store, path, **params):
     return json.loads(body)
 
 
-SEEDS = {"flows": _seed_flows, "skills": _seed_skills, "mcp": _seed_mcp}
+SEEDS = {"flows": _seed_flows, "skills": _seed_skills, "mcp": _seed_mcp, "kql": _seed_kql}
 
 
 @pytest.mark.parametrize("card", sorted(SEEDS))

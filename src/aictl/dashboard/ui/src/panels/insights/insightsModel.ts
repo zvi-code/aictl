@@ -11,6 +11,7 @@ import type { ModelBody } from './modelReportModel'
 import type { FlowsBody } from './flowsModel'
 import type { SkillsBody } from './skillsModel'
 import type { McpBody } from './mcpModel'
+import type { KqlBody } from './kqlModel'
 
 export type { QueryBlock }
 export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
@@ -18,6 +19,7 @@ export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 
   | 'flows'
   | 'skills'
   | 'mcp'
+  | 'kql'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -140,6 +142,7 @@ export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | R
   | FlowsBody
   | SkillsBody
   | McpBody
+  | KqlBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',

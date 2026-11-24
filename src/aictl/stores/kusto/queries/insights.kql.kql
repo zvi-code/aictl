@@ -1,0 +1,157 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Kusto queries and management commands the agents ran, however they ran them. A run is recognised from the call:
+//   mcp     an MCP tool whose server or tool name contains kusto, kql or adx (query text from its arguments: query,
+//           csl, kql, command, text)
+//   cli     a command line that runs Kusto.Cli, kusto-cli, kql, az kusto query or az kusto script as a program (az kusto
+//           cluster and database commands manage the Azure resource and run no KQL; query text after -execute:,
+//           --query, -q)
+//   script  a command line, not a text tool (grep, rg, sed, cat, ...), that names a Kusto cluster URL and a Kusto
+//           client (KustoClient, azure.kusto, Kusto.Data, execute_query, execute_mgmt, Invoke-KustoQuery): the query
+//           text is the first quoted string that starts with a dot command or reads like a query (Name | operator)
+// The text is the call's stored arguments (tool_invocations_text), else its stored command line. Command lines that
+// name kusto or kql and are none of these are counted as not recognised, so the blind spot shows.
+// A run is a management command when its text starts with a dot; one whose verb is create, alter, drop, ingest, set,
+// append, delete, purge, rename, move, replace, clear, attach, detach or update changes schema or data (a change);
+// .show and the rest read. A run with no text is of unknown kind. Cluster: the host of a *.kusto.* URL in the text,
+// else an argument named cluster; database: an argument named database, -database:, --database, Initial Catalog= or
+// the first argument of execute(...). Shape: the text with string, number, timespan and datetime literals replaced by ?
+// and white space joined, compared by hash; a snippet of the shape is at most 160 characters. A failure kind is read
+// from the stored error summary (failed calls only). A large result is 100 KB or more returned into the context.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let KustoName = @'(?i)kusto|kql|adx|dataexplorer';
+// The program starts the command line or a part of it (after ; & | or an opening bracket); a path before it is allowed.
+let CliRe = @'(?i)(?:^|[;&|(]\s*)(?:[^\s;&|(]*[/\\])?(?:kusto\.cli(?:\.exe)?|kusto-cli|kql(?:\.exe)?|az\s+kusto\s+(?:query|script))(?:\s|$)';
+let ClusterRe = @'(?i)https?://([a-z0-9-]+(?:\.[a-z0-9-]+)*\.kusto\.(?:windows\.net|fabric\.microsoft\.com|data\.microsoft\.com|chinacloudapi\.cn|usgovcloudapi\.net))';
+let ClientRe = @'(?i)KustoClient|azure\.kusto|Kusto\.Data|execute_query|execute_mgmt|Invoke-KustoQuery|KustoConnectionStringBuilder';
+let TextTools = dynamic(['grep', 'egrep', 'rg', 'sed', 'awk', 'cat', 'head', 'tail', 'less', 'wc', 'ls', 'find', 'echo', 'printf', 'git', 'diff', 'code', 'vim', 'nano']);
+let ChangeVerbs = dynamic(['create', 'create-or-alter', 'create-merge', 'create-async', 'alter', 'alter-merge', 'drop', 'ingest', 'set',
+    'append', 'set-or-append', 'set-or-replace', 'delete', 'purge', 'rename', 'move', 'replace', 'clear', 'attach', 'detach', 'update']);
+let calls = materialize(tool_invocations_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, tool_name, target_kind, target, command_name,
+              mcp_server, mcp_tool, failed, duration_ms, output_bytes, error_summary, project_path
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    // Every form below holds the word kusto or kql: a term test first keeps the regular expressions to those rows.
+    | extend is_mcp=isnotempty(mcp_server) or tool_name startswith_cs 'mcp__',
+             named=target_kind == 'command' and target has_any ('kusto', 'kql')
+    | where named or is_mcp
+    | extend route=case(
+        is_mcp and (mcp_server matches regex KustoName or mcp_tool matches regex KustoName or tool_name matches regex KustoName), 'mcp',
+        named and target matches regex CliRe, 'cli',
+        named and not(command_name in (TextTools)) and target matches regex ClusterRe and target matches regex ClientRe, 'script',
+        named, 'mention',
+        '')
+    | where isnotempty(route)
+    | project ['project'], node_id, fact_key, ts, session_id, tool, route, target, failed=coalesce(failed, false), duration_ms,
+              output_bytes, error_summary, project_name=coalesce(extract(@'([^/\\]+)[/\\]*$', 1, project_path), ''));
+let texts = union isfuzzy=true
+    (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, input:string)[]),
+    (tool_invocations_text | project ['project'], node_id, dedup_key, _v, input)
+    | where all_nodes or node_id == requested_node
+    | where dedup_key in ((calls | where route != 'mention' | project fact_key))
+    | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
+    | project ['project'], node_id, fact_key=dedup_key, input;
+let runs = materialize(calls
+    | where route != 'mention'
+    | lookup kind=leftouter texts on ['project'], node_id, fact_key
+    | extend args=parse_json(iff(input startswith '{', input, '{}'))
+    | extend line=coalesce(tostring(args.command), tostring(args.cmd), iff(input startswith '{', '', input), target)
+    | extend text=case(
+        route == 'mcp', coalesce(tostring(args.query), tostring(args.csl), tostring(args.kql), tostring(args.command),
+                                 tostring(args.text), tostring(args.queryText)),
+        route == 'cli', coalesce(extract(@'(?i)-execute:\s*"([^"]+)"', 1, line), extract(@"(?i)-execute:\s*'([^']+)'", 1, line),
+                                 extract(@'(?i)--query\s+"([^"]+)"', 1, line), extract(@"(?i)--query\s+'([^']+)'", 1, line),
+                                 extract(@'(?i)\s-q\s+"([^"]+)"', 1, line), ''),
+        coalesce(extract(@'["'']\s*(\.[a-z][a-z-]*\s[^"'']*)["'']', 1, line),
+                 extract(@'["'']\s*([A-Za-z_][\w.]*\s*\|\s*(?:where|take|limit|summarize|project|count|extend|join|top|order|sort|distinct|union|render)\b[^"'']*)["'']', 1, line),
+                 ''))
+    | extend text=trim(@'\s+', text)
+    | extend run_kind=case(isempty(text), 'unknown', text startswith '.', 'management', 'query'),
+             verb=iff(text startswith '.', tolower(extract(@'^\.\s*([A-Za-z][A-Za-z-]*)', 1, text)), '')
+    | extend change=run_kind == 'management' and verb in (ChangeVerbs),
+             cluster=tolower(coalesce(extract(ClusterRe, 1, line), extract(ClusterRe, 1, text),
+                                       extract(@'^(?:https?://)?([^/;:\s]+)', 1, coalesce(tostring(args.cluster),
+                                           tostring(args.clusterUrl), tostring(args.cluster_url))))),
+             database=coalesce(tostring(args.database), tostring(args.db),
+                               extract(@'(?i)-database:\s*"?([\w.-]+)', 1, line), extract(@'(?i)--database\s+"?([\w.-]+)', 1, line),
+                               extract(@'(?i)Initial Catalog=([\w.-]+)', 1, line),
+                               extract(@'(?i)execute(?:_query|_mgmt)?\(\s*["'']([\w.-]+)["'']\s*,', 1, line)),
+             shape=replace_regex(replace_regex(replace_regex(replace_regex(replace_regex(text,
+                 @'(?:@?"(?:[^"\\]|\\.)*"|@?''(?:[^''\\]|\\.)*'')', '?'),
+                 @'\b(?:datetime|todatetime|timespan)\s*\([^)]*\)', 'datetime(?)'),
+                 @'\b\d+(?:\.\d+)?(?:d|h|m|s|ms|tick|microsecond|millisecond|second|minute|hour|day)?\b', '?'),
+                 @'\s+', ' '), @'^\s+|\s+$', '')
+    | extend shape_key=iff(isempty(shape), '', substring(hash_sha256(shape), 0, 16)),
+             failure=case(not(failed), '',
+                 isempty(error_summary), 'not_recorded',
+                 error_summary matches regex @'(?i)\bSYN\d|syntax error', 'syntax',
+                 error_summary matches regex @'(?i)\b401\b|\b403\b|unauthori[sz]ed|forbidden|AADSTS|credential|login', 'auth',
+                 error_summary matches regex @'(?i)\b429\b|throttl|too many requests', 'throttled',
+                 error_summary matches regex @'(?i)timed? ?out|timeout', 'timeout',
+                 error_summary matches regex @'(?i)E_QUERY_RESULT_SET_TOO_LARGE|E_RUNAWAY_QUERY|E_LOW_MEMORY|partial query failure|exceeded|memory', 'limits',
+                 error_summary matches regex @'(?i)\bSEM\d|semantic error|failed to resolve|could not be found|does not exist|not found|unknown (?:table|column|function|database)', 'not_found',
+                 error_summary matches regex @'(?i)connection|could not resolve|name or service|ECONN|network|ssl', 'network',
+                 'other'),
+             large=coalesce(output_bytes, 0) >= 100000
+    | project node_id, session_id, fact_key, ts, tool, route, failed, failure, duration_ms, output_bytes, large, project_name,
+              run_kind, verb, change, cluster, database, shape_key, snippet=substring(shape, 0, 160), text);
+// The grouped rows are made in one pass over the runs (mv-expand): each leg over a materialized table cost as much as
+// reading it again.
+union
+    (calls
+        | summarize runs=countif(route != 'mention'), unrecognised=countif(route == 'mention'), mcp=countif(route == 'mcp'),
+                    cli=countif(route == 'cli'), script=countif(route == 'script') by tool
+        | extend row_type='coverage'),
+    (runs
+        | extend row_type=pack_array('kind', 'failure', 'target', 'project', 'session', 'meta', 'shape', 'tool')
+        | mv-expand row_type to typeof(string)
+        | where (row_type != 'failure' or failed) and (row_type != 'shape' or isnotempty(shape_key))
+        | extend k1=case(row_type == 'kind', run_kind, row_type == 'failure', failure, row_type == 'target', cluster,
+                         row_type == 'project', project_name, row_type == 'session', node_id, row_type == 'shape', shape_key,
+                         row_type == 'tool', tool, ''),
+                 k2=case(row_type == 'kind', verb, row_type == 'target', database, row_type == 'session', session_id, '')
+        | summarize runs=count(), sessions=dcount(strcat(node_id, '/', session_id)), failures=countif(failed), changes=countif(change),
+                    large=countif(large), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes), large_bytes=sumif(output_bytes, large),
+                    with_text=countif(run_kind != 'unknown'), any_tool=take_any(tool), any_project=take_any(project_name),
+                    snippet=take_any(snippet), any_kind=take_any(run_kind), any_verb=take_any(verb), first_ts=min(ts), last_ts=max(ts)
+              by row_type, k1, k2
+        | sort by row_type asc, runs desc, k1 asc, k2 asc
+        | extend rank=row_number(1, prev(row_type) != row_type)
+        | where row_type in ('kind', 'failure', 'meta', 'tool') or (row_type == 'project' and rank <= 20)
+            or (row_type in ('target', 'shape') and rank <= 15) or (row_type == 'session' and rank <= 10)
+        | extend run_kind=case(row_type == 'kind', k1, row_type == 'shape', any_kind, ''),
+                 verb=case(row_type == 'kind', k2, row_type == 'shape', any_verb, ''),
+                 failure=iff(row_type == 'failure', k1, ''), cluster=iff(row_type == 'target', k1, ''),
+                 database=iff(row_type == 'target', k2, ''), shape_key=iff(row_type == 'shape', k1, ''),
+                 snippet=iff(row_type == 'shape', snippet, ''),
+                 project_name=case(row_type == 'project', k1, row_type == 'session', any_project, ''),
+                 node_id=iff(row_type == 'session', k1, ''), session_id=iff(row_type == 'session', k2, ''),
+                 tool=case(row_type == 'tool', k1, row_type == 'session', any_tool, ''),
+                 computed_at=iff(row_type == 'meta', todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000, real(null))
+        | project-away k1, k2, rank, any_tool, any_project, any_kind, any_verb),
+    // The same shape run 3 or more times in one session: the 50 largest such repeats.
+    (runs
+        | where isnotempty(shape_key)
+        | summarize runs=count(), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes) by shape_key, node_id, session_id
+        | where runs >= 3
+        | top 50 by runs desc
+        | extend row_type='repeat'),
+    (runs
+        | where large
+        | top 10 by output_bytes desc
+        | project node_id, session_id, fact_key, ts, tool, route, run_kind, verb, output_bytes, snippet, text, project_name
+        | extend row_type='large')
+| order by row_type asc, runs desc
+| take row_limit
