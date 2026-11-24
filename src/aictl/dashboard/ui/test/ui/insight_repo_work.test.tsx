@@ -236,13 +236,19 @@ const verified = {
 } as unknown as VerifiedBody
 
 describe('INS-RW · Verified before commit split by repository', () => {
-  it('keeps the bars by class and by test, and adds a commit bar and a session bar by repository', () => {
+  it('colours by what test runs saw, or by repository with the legend once and a commit and a session bar per tool', () => {
+    const own = mount(() => <VerifiedCommits {...props(ready(verified))} />)
+    expect(own.host.querySelector('[data-repo-legend]')).toBeNull()
+    expect([...own.host.querySelectorAll('[data-tool="claude-code"] [data-segment]')].map(part => part.getAttribute('data-segment')))
+      .toEqual(['unreported', 'never_tested', 'unclassified'])
+    expect(own.host.querySelector('[data-chart="verified-commits-repos"]')).toBeNull()
+    own.dispose()
+    history.replaceState(null, '', '/?screen=insights&range=all&view=verified&by=repo')
     const { host, dispose } = mount(() => <VerifiedCommits {...props(ready(verified))} />)
     const box = host.querySelector('#insight-verified')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect([...box.querySelectorAll('[data-tool="claude-code"] [data-segment]')].map(part => part.getAttribute('data-segment')))
-      .toEqual(['unreported', 'never_tested', 'unclassified'])
+    expect(box.querySelector('[data-tool="claude-code"]')).toBeNull()
     const commits = box.querySelector('[data-chart="verified-commits-repos"] [data-row="claude-code"]')!
     expect([...commits.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1'])
     expect([...commits.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['7 commits', '3 commits'])
@@ -259,12 +265,14 @@ describe('INS-RW · Verified before commit split by repository', () => {
   })
 
   it('draws no bar by repository for a tool with commits not reported, nor without a split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=verified&by=repo')
     const missing = { ...verified, tools: [{ ...verifiedTool, commits: null, repos: [], session_repos: [] }] } as unknown as VerifiedBody
     const one = mount(() => <VerifiedCommits {...props(ready(missing))} />)
     expect(one.host.querySelector('[data-chart="verified-commits-repos"]')).toBeNull()
     one.dispose()
     const { host, dispose } = mount(() => <VerifiedCommits {...props(ready(unsplit(verified)))} />)
     const box = host.querySelector('#insight-verified')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="verified-commits-repos"]')).toBeNull()
     expect(box.querySelector('[data-chart="verified-sessions-repos"]')).toBeNull()

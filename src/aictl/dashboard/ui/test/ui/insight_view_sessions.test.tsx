@@ -15,6 +15,8 @@ import type { ProblemBody } from '../../src/panels/insights/insightsModel'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { pairBlank, pairGrid, problemLine, projectGrid, signalToolGrid } from '../../src/panels/insights/problemsModel'
 import type { RepoRef, RepoSegment } from '../../src/panels/insights/repoSplit'
+import VerifiedCommits from '../../src/panels/insights/VerifiedCommits'
+import { verifiedLine, type VerifiedBody } from '../../src/panels/insights/verifiedModel'
 import type { ChangeBody } from '../../src/panels/insights/workModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -316,6 +318,81 @@ describe('What the agents changed view', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelectorAll('[data-chart="files"] [data-bar]').length).toBe(2)
     expect(box.querySelectorAll('[data-chart="commits"] [data-column] rect').length).toBe(2)
+    dispose()
+  })
+})
+
+// ─── Verified before commit ─────────────────────────────────────────────────────────────────────────────────────
+const verifiedTool = (tool: string, values: Record<string, unknown>) => ({
+  tool, commits: 10, passed: null, unreported: 4, failed: 1, changed_after: 2, never_tested: 2, no_change: 1, unknown_change: 0,
+  not_recorded: 0, by_subagent: 0, own_unseen: 3, commit_sessions: 4, top_session_commits: 4, edit_sessions: 8, untested_sessions: 3,
+  commands: 50, commands_with_text: 50, test_runs: 9, test_results: 0, remote_commits: 0, edits_no_file: 0, sessions_no_text: 0,
+  sessions_edits_unrecorded: 0, classified: 10, unseen: 4, checked: true, unseen_share: 0.4, own_unseen_share: 0.3, unchecked: 0,
+  pass_tool: false, ...values,
+})
+const verified = {
+  ...base, card: 'verified', view: 'insights.verified_commits', query: query('insights.verified_commits'), repo_order: order, sessions: [],
+  tools: [verifiedTool('claude-code', {
+    repos: split([['/src/shop', { commits: 6, unreported: 3, never_tested: 2, failed: 1 }], ['/src/blog', { commits: 4, unreported: 1, changed_after: 2, no_change: 1 }]]),
+    session_repos: split([['/src/shop', { edit_sessions: 5, untested_sessions: 2 }], ['/src/blog', { edit_sessions: 3, untested_sessions: 1 }]]) }),
+  verifiedTool('copilot-cli', { commits: 0, edit_sessions: 2, untested_sessions: 2, classified: 0, unseen: 0, unseen_share: null })],
+  summary: { commits: 10, classified: 10, unseen: 4, unseen_share: 0.4, own_unseen: 3, own_unseen_share: 0.3, changed_after: 2, never_tested: 2,
+    no_change: 1, failed: 1, passed: null, unchecked: 0, edit_sessions: 10, untested_sessions: 5, remote_commits: 0, sessions_no_text: 0,
+    checked_tools: ['claude-code'], not_reported: [], not_classified: [], one_session: [] },
+} as unknown as VerifiedBody
+
+describe('Verified before commit view', () => {
+  it('draws a 100% bar per tool by what test runs saw, in the order of the classes, with count and share written', () => {
+    const { host, dispose } = mount(() => <VerifiedCommits {...props(context(verified))} />)
+    const box = host.querySelector('#insight-verified')!
+    expect(box.querySelector('[data-finding]')!.textContent).toBe(verifiedLine(verified))
+    const row = box.querySelector('[data-chart="verified-commits"] [data-tool="claude-code"]')!
+    expect([...row.querySelectorAll('[data-segment]')].map(segment => segment.getAttribute('data-segment')))
+      .toEqual(['unreported', 'failed', 'changed_after', 'never_tested', 'no_change'])
+    expect(texts(row.querySelectorAll('[data-segment] button'))).toEqual(['4 · 40%', '1 · 10%', '2 · 20%', '2 · 20%', '1 · 10%'])
+    expect(box.querySelector('[data-chart="verified-commits"] [data-tool="copilot-cli"]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-chart="verified-sessions"] [data-sessions-tool="claude-code"] [data-part] button')))
+      .toEqual(['5 · 63%', '3 · 38%'])
+    dispose()
+  })
+
+  it('gives each kind of mark its exact figures on hover', () => {
+    const { host, dispose } = mount(() => <VerifiedCommits {...props(context(verified))} />)
+    const box = host.querySelector('#insight-verified')!
+    expect(box.querySelector('[data-segment="failed"] [role="tooltip"]')!.textContent).toBe('claude-code · Tested, failed: 1 of 10 commits ' +
+      '(10%); 10% of the 10 classified commits. Rule: a test run saw every source change before the commit, and the last such run ' +
+      'failed. The tool\'s commits come from 4 sessions; the largest has 4 commits.')
+    expect(box.querySelector('[data-sessions-tool="claude-code"] [data-part="untested"] [role="tooltip"]')!.textContent).toBe('claude-code: ' +
+      '3 of 8 sessions that changed source files (38%) ran no recognised test in the period. A source change is an edit-tool write or ' +
+      'an in-place shell edit of a file that is not documentation or data.')
+    dispose()
+  })
+
+  it('switches between what test runs saw and repository', () => {
+    const navigated: unknown[] = []
+    const { host, dispose } = mount(() => <VerifiedCommits {...props(context(verified, navigated))} />)
+    const box = host.querySelector('#insight-verified')!
+    option(box, 'Repository').click()
+    flush()
+    expect(box.querySelector('[data-chart="verified-commits"]')).toBeNull()
+    const commits = box.querySelector('[data-chart="verified-commits-repos"] [data-row="claude-code"]')!
+    expect([...commits.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1'])
+    expect(commits.querySelector('[data-part="repo:/src/blog"] [role="tooltip"]')!.textContent).toContain('By what test runs saw: ' +
+      'Tested, passed not reported · Tested, result not recorded 1 · Tested, failed not reported · Changed after last test 2')
+    expect([...box.querySelectorAll('[data-chart="verified-sessions-repos"] [data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['claude-code'])
+    option(box, 'What test runs saw').click()
+    flush()
+    expect(box.querySelector('[data-chart="verified-commits"]')).not.toBeNull()
+    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    dispose()
+  })
+
+  it('draws without a split and offers no switch', () => {
+    const { host, dispose } = mount(() => <VerifiedCommits {...props(context(unsplit(verified)))} />)
+    const box = host.querySelector('#insight-verified')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(box.querySelectorAll('[data-chart="verified-commits"] [data-segment]').length).toBe(5)
+    expect(box.querySelector('[data-idle]')!.textContent).toBe('No commit in this period by copilot-cli.')
     dispose()
   })
 })

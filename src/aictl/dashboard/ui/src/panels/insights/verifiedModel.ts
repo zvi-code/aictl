@@ -98,13 +98,6 @@ export function passMissingText(tool: VerifiedTool) {
   return tool.pass_tool ? 'no test run with a recorded result in this period' : 'pass not recorded by this tool'
 }
 
-/** Per tool, "13 of the 59 Copilot CLI sessions": only tools that report sessions that changed source files. */
-function untestedSessions(body: VerifiedBody, label: Label) {
-  const parts = body.tools.filter(tool => tool.untested_sessions != null && tool.edit_sessions)
-    .map(tool => `${fmtNum(tool.untested_sessions ?? 0)} of the ${fmtNum(tool.edit_sessions ?? 0)} ${label(tool.tool)} ${tool.edit_sessions === 1 ? 'session' : 'sessions'}`)
-  return parts.length ? `${list(parts)} that changed source files never ran a recognised test` : ''
-}
-
 /** The share on a tool's bar: commits no test run saw, or why there is none. */
 export function shareText(tool: VerifiedTool) {
   if (tool.commits == null) return 'commits not reported: command text not kept'
@@ -114,38 +107,27 @@ export function shareText(tool: VerifiedTool) {
   return `${fmtShare(tool.unseen_share)} no test saw${own} · ${fmtNum(tool.unseen)} of ${fmtNum(tool.classified)} classified`
 }
 
-export function verifiedFinding(body: VerifiedBody, label: Label) {
+/** The one line under the title: what is counted and classed, over what; no figure. */
+export function verifiedLine(body: VerifiedBody) {
+  if (!body.tools.length) return 'No agent commit and no session that changed source files in this period.'
+  return 'Agent commits of the period, each classed by the test runs its session recorded before it; sessions that changed ' +
+    'source files, by whether a test ran in them.'
+}
+
+/**
+ * The notes under the charts that keep a figure from being misread: sources that keep no command text (their commits
+ * cannot be seen), and tools whose commits come mostly from one session.
+ */
+export function verifiedNotes(body: VerifiedBody, label: Label): string[] {
   const s = body.summary
-  if (s.commits == null) {
-    return s.not_reported.length ? `The sources in this period keep no command text (${list(s.not_reported.map(label))}), so their commits cannot be seen.`
-      : 'No agent commit in this period.'
-  }
-  // Per tool: a total would credit the untested sessions of a tool that is not named to the tools that are.
-  const untested = untestedSessions(body, label)
-  if (!s.commits) return untested ? `No agent commit in this period; ${untested}.` : 'No agent commit in this period.'
-  const names = s.checked_tools.length && s.checked_tools.length <= 2 ? `${list(s.checked_tools.map(label))} ` : ''
-  const own = s.own_unseen_share == null ? '' : ` (${fmtShare(s.own_unseen_share)} with the committing agent's own edits and tests alone)`
-  const noChange = s.no_change ?? 0
-  const main = !s.classified ? `None of the ${commits(s.commits)} in this period is classified`
-    : noChange >= s.classified
-      ? `None of the ${fmtNum(s.classified)} ${names}${s.classified === 1 ? 'commit' : 'commits'} that can be checked followed a source change`
-      : `${fmtNum(s.unseen ?? 0)} of the ${fmtNum(s.classified)} ${names}commits that can be checked (${fmtShare(s.unseen_share)}) ` +
-        `were made after source changes no test run had seen${own}`
-  // When most checked commits followed no source change, the share rests on the few that did.
-  const unchanged = s.classified && noChange && noChange < s.classified && noChange * 2 >= s.classified
-    ? ` ${fmtNum(noChange)} of the ${fmtNum(s.classified)} checked commits followed no source change.` : ''
-  const more = s.classified && s.unchecked
-    ? ` ${fmtNum(s.unchecked)} more ${s.unchecked === 1 ? 'commit is' : 'commits are'} not classified: the tool did not record what ${s.unchecked === 1 ? 'it' : 'they'} changed.`
-    : ''
-  const why = !s.classified ? ' (the tool did not record what they changed)' : ''
-  const failed = s.failed ? ` ${commits(s.failed)} followed a failing test run with no source change in between.` : ''
-  const one = s.one_session.map(name => {
+  const hidden = s.not_reported.length
+    ? [`The sources of ${list(s.not_reported.map(label))} keep no command text in this period, so their commits cannot be seen.`] : []
+  return [...hidden, ...s.one_session.map(name => {
     const row = body.tools.find(tool => tool.tool === name)
     return row?.commits && row.top_session_commits != null
-      ? ` ${fmtNum(row.top_session_commits)} of ${label(name)}'s ${commits(row.commits)} come from one session.`
-      : ` Most of ${label(name)}'s commits come from one session.`
-  }).join('')
-  return `${main}${untested ? `${why}, and ${untested}` : why}.${unchanged}${more}${failed}${one}`
+      ? `${fmtNum(row.top_session_commits)} of ${label(name)}'s ${commits(row.commits)} come from one session.`
+      : `Most of ${label(name)}'s commits come from one session.`
+  })]
 }
 
 export function verifiedHero(body: VerifiedBody): Hero | undefined {
