@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { createRoot, flush } from 'solid-js'
+import { createRoot, createSignal, flush } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseFilters } from '../../src/data/filters'
 import { createLiveClient } from '../../src/data/live'
-import { panelData } from '../../src/panels/data'
+import { EARLIER_SELECTION, panelData, STAGE_POLL_MS } from '../../src/panels/data'
 import Kpis from '../../src/panels/overview/Kpis'
 import { overviewA } from '../../src/panels/overview/a'
 import type { PanelContext } from '../../src/panels/types'
@@ -152,5 +152,79 @@ describe('BOARD-STAGED-03 · a fleet board names the fields the server could not
       expect(host.textContent).not.toMatch(/vs before|period before|collected since/)
       dispose()
     } finally { fleet.dispose() }
+  })
+})
+
+describe('BOARD-STAGED-04 · a fleet board fills in from its stages and keeps the earlier selection on a change', () => {
+  const later = { ...kpis, tokens: 999_000 }
+  const scope = { kind: 'fleet', node_id: null }
+
+  function fleet(answer: (url: URL) => Promise<Response>) {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async path => {
+      const url = new URL(String(path), location.origin)
+      if (url.pathname === '/api/datapoints') return Response.json([])
+      return answer(url)
+    }))
+    const [range, setRange] = createSignal('24h')
+    const root = createRoot(dispose => {
+      const base = {
+        client: createLiveClient(), scope: () => 'fleet' as const, nodeId: () => null,
+        filters: () => parseFilters(`?range=${range()}`), tools: () => null, paused: () => false, startedAt: 86_400 * 10,
+        revision: () => 0, navigate() {}, jump() {}, select() {}, openAgent() {}, openDetail() {},
+        stopped: () => false, stopAgent() {}, runCommand() {}, copy() {}, refresh() {},
+      }
+      return { ctx: { ...base, ...panelData(base, () => 'board') } as PanelContext, dispose }
+    })
+    return { ...root, setRange }
+  }
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  it('shows the first stage as final, the fields to come as loading, then the rest', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    const board = fleet(async () => Response.json(++calls === 1
+      ? { node_scope: scope, generated_at: 1000, kpis, pending_fields: ['changes', 'loops'] }
+      : { node_scope: scope, generated_at: 1000, kpis, loops: [], changes: { files: [] } }))
+    try {
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'kpis' }).state).toBe('ready'))
+      expect(board.ctx.read({ field: 'loops' }).state).toBe('loading')
+      expect(board.ctx.read({ field: 'changes', path: 'files' }).state).toBe('loading')
+      expect(calls).toBe(1)
+      // Asking for the rest leaves the fields of the first stage as they are, not stale.
+      await vi.advanceTimersByTimeAsync(STAGE_POLL_MS)
+      expect(board.ctx.read({ field: 'kpis' }).state).toBe('ready')
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'loops' }).state).toBe('empty'))
+      expect(board.ctx.read({ field: 'changes', path: 'files' }).state).toBe('empty')
+      expect(calls).toBe(2)
+      // A complete board is not asked for again.
+      await vi.advanceTimersByTimeAsync(STAGE_POLL_MS * 3)
+      expect(calls).toBe(2)
+    } finally { board.dispose() }
+  })
+
+  it('keeps the earlier board on screen, marked as such, until the new range answers', async () => {
+    let release: (() => void) | undefined
+    let first = true
+    const board = fleet(() => {
+      if (first) {
+        first = false
+        return Promise.resolve(Response.json({ node_scope: scope, generated_at: 1000, kpis }))
+      }
+      return new Promise(resolve => {
+        release = () => resolve(Response.json({ node_scope: scope, generated_at: 2000, kpis: later }))
+      })
+    })
+    try {
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'kpis' }).state).toBe('ready'))
+      board.setRange('7d')
+      flush()
+      await vi.waitFor(() => expect(release).toBeDefined())
+      // Never blank, and never taken for a figure of the new range.
+      expect(board.ctx.read({ field: 'kpis', path: 'tokens' }))
+        .toMatchObject({ state: 'stale', value: 345_000, message: EARLIER_SELECTION })
+      release!()
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'kpis', path: 'tokens' }))
+        .toMatchObject({ state: 'ready', value: 999_000 }))
+    } finally { board.dispose() }
   })
 })

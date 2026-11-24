@@ -439,7 +439,11 @@ def history(monkeypatch, kusto_store):
         if not endpoint:
             from aictl.dashboard.history_board import read_board
 
-            return 200, json.loads(read_board(kusto_store, query, now=now))
+            board = json.loads(read_board(kusto_store, query, now=now))
+            if board.get("pending_fields"):
+                _finish_builds()
+                board = json.loads(read_board(kusto_store, query, now=now))
+            return 200, board
         path = endpoint if endpoint.startswith("/api/") else "/api/board" + endpoint
         status, body = board_routes.handle_get(path, query, db, kusto_store, now=now)
         return status, json.loads(body)
@@ -636,7 +640,7 @@ def test_history_errors_do_not_become_empty_or_local(monkeypatch, kusto_store):
     assert status == 503 and body["reason"] == "query_failed"
 
 
-def _serve_board(store, query):
+def _serve_once(store, query):
     from test_live_routes import handler
 
     from aictl.dashboard.history_board import serve
@@ -645,6 +649,22 @@ def _serve_board(store, query):
     req.server.store = store
     serve(req, query)
     return req.status, json.loads(req.wfile.getvalue())
+
+
+def _finish_builds():
+    for thread in threading.enumerate():
+        if thread.name == "history-board":
+            thread.join()
+
+
+def _serve_board(store, query):
+    """The complete board: an early stage is followed, once its read has finished, by the whole board."""
+    status, body = _serve_once(store, query)
+    if status == 200 and body.get("pending_fields"):
+        _finish_builds()
+        status, body = _serve_once(store, query)
+        assert "pending_fields" not in body
+    return status, body
 
 
 def test_scoped_board_answers_without_a_failed_optional_section(history, kusto_store, monkeypatch):
@@ -689,6 +709,43 @@ def test_scoped_board_answers_without_a_failed_call_row_read(history, kusto_stor
     assert board["field_errors"]["kpis"].endswith(reason)
     assert not {"tests", "tests_piped", "kpis", "agents", "loops"} & board.keys() and "tests" not in board["series"]
     assert len({r["id"] for r in board["prompts"]}) == 3 and board["by_model"]
+
+
+def test_scoped_board_answers_its_early_fields_before_a_slow_section(history, kusto_store, monkeypatch):
+    """The fleet board was one answer after every read; the page showed nothing for the whole read."""
+    from test_contract import validate_detail
+
+    from aictl.dashboard import board_projection, history_board
+
+    query = "scope=fleet&since=1000&until=2000&buckets=2"
+    _, whole = _serve_board(kusto_store, query)
+    for name in ("_cache", "_inflight", "_latest"):
+        monkeypatch.setattr(history_board, name, {})
+    release = threading.Event()
+    real = board_projection._changes_section
+
+    def slow_changes(board):
+        release.wait()
+        return real(board)
+
+    monkeypatch.setattr(board_projection, "_changes_section", slow_changes)
+    try:
+        status, first = _serve_once(kusto_store, query)
+        assert status == 200 and not release.is_set()
+        validate_detail("/api/history/board", first)
+        late = set(board_projection.LATE_FIELDS)
+        assert first["pending_fields"] == sorted(late)
+        # Every field of the first answer is final; a field still to come is absent, never 0.
+        assert not late & first.keys()
+        same = lambda board, leave: {k: v for k, v in board.items() if k not in leave | {"generated_at"}}
+        assert same(first, {"pending_fields"}) == same(whole, late)
+        # Asked again while the read goes on, the route answers the same stage at once.
+        assert _serve_once(kusto_store, query)[1] == first
+    finally:
+        release.set()
+    _finish_builds()
+    status, complete = _serve_once(kusto_store, query)
+    assert status == 200 and same(complete, set()) == same(whole, set())
 
 
 def test_scoped_board_still_fails_when_an_early_section_fails(history, kusto_store, monkeypatch):

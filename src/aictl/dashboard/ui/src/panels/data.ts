@@ -52,6 +52,12 @@ function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, ke
   return untrack(() => Object.assign(state, { retry }))
 }
 
+type HistoryBoard = DetailResponses['/api/history/board']
+/** How long a staged board waits before it asks for the fields still to come. */
+export const STAGE_POLL_MS = 1000
+/** What a panel says while it shows the board of the earlier range or filter. */
+export const EARLIER_SELECTION = 'from the earlier selection, while the new one is read'
+
 export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' | 'detail'>, screen: () => Screen) {
   const historyCache = createResourceCache({
     load: async (path, signal) => {
@@ -77,6 +83,26 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   }
   const remote = useRead(historyCache, () => path(false), ctx.revision)
   const whole = useRead(historyCache, () => ctx.filters().sel ? path(true) : undefined, ctx.revision)
+  // A board answered in stages names the fields still to come: ask again until none is.
+  createEffect(() => {
+    const state = remote()
+    return state?.status === 'ready' && state.data?.pending_fields?.length ? state.data : undefined
+  }, staged => {
+    if (!staged) return
+    const timer = setTimeout(() => remote.retry(), STAGE_POLL_MS)
+    return () => clearTimeout(timer)
+  })
+  // The board read last stays on screen, marked as the earlier selection, until the first answer
+  // for a new range or filter arrives: a change never blanks the board.
+  let shown: { key: string; data: HistoryBoard } | undefined
+  const board = createMemo(() => {
+    const state = remote(), key = path(false)
+    if (state?.data && key) shown = { key, data: state.data }
+    if (shown && key && shown.key !== key && (!state || state.status === 'loading')) {
+      return { state: { status: 'stale' as const, data: shown.data, error: null }, earlier: true }
+    }
+    return { state, earlier: false }
+  })
   const detailCache = createResourceCache({ load: (path, signal) => json<unknown>(path, { signal }) })
   const textCache = createResourceCache<string, unknown>({ load: async (path, signal) => {
     const response = await fetch(path, { signal })
@@ -106,19 +132,26 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     let value: unknown, rowKeys: readonly string[] | undefined
     let updatedAt: number | undefined
     let stale = ctx.paused(), pending = false, fault: string | undefined, fieldFault: string | undefined
+    let coming = false, note: string | undefined
     // A field the server names as failed, such as "kpis.prev", covers its own path and the paths under it.
     const fieldPath = 'field' in source ? [source.field, source.path].filter(Boolean).join('.') : ''
     const covers = (listed: string) => fieldPath === listed || fieldPath.startsWith(listed + '.')
     const failedField = (errors: Record<string, string> | undefined) =>
       Object.entries(errors ?? {}).find(([listed]) => covers(listed))?.[1]
     if ('field' in source && (ctx.scope() !== 'local' || (source.wholeRange && ctx.filters().sel))) {
-      const resource = source.wholeRange && ctx.filters().sel ? whole() : remote()
+      const shownBoard = board()
+      const wholeRange = source.wholeRange && ctx.filters().sel
+      const resource = wholeRange ? whole() : shownBoard.state
       value = at(at(resource?.data, source.field), source.path)
       updatedAt = resource?.data?.generated_at
       pending = !resource || resource.status === 'loading'
-      stale ||= resource?.status === 'stale' || resource?.status === 'refreshing'
+      // A stage of the board is final for the fields it has: asking for the rest does not make them stale.
+      const staged = Boolean(resource?.data?.pending_fields?.length)
+      stale ||= resource?.status === 'stale' || (resource?.status === 'refreshing' && !staged)
       if (resource?.error) fault = String(resource.error)
       fieldFault = failedField(resource?.data?.field_errors)
+      if (!wholeRange && shownBoard.earlier) note = EARLIER_SELECTION
+      else coming = (resource?.data?.pending_fields ?? []).some(covers)
     } else if (ctx.scope() !== 'local') {
       return { state: 'unavailable' }
     } else {
@@ -155,10 +188,12 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
       fault = relevant.flatMap(status => 'error' in status && status.error ? [status.error] : [])[0] ?? ctx.client.status.error?.message
       stale ||= Boolean(fault) || relevant.some(status => ('stale' in status && status.stale) || waiting(status))
     }
+    // A field the server is still reading says so, never 0.
+    if (value == null && coming) return { state: 'loading' }
     // A field the server could not read while the rest of the board was read shows its own reason.
     if (value == null && fieldFault) return { state: 'error', message: fieldFault }
-    if (value == null) return { state: fault ? 'error' : pending ? 'loading' : 'unavailable', message: fault }
-    if (stale) return { state: 'stale', value, rowKeys, updatedAt }
+    if (value == null) return { state: fault ? 'error' : pending ? 'loading' : 'unavailable', message: fault ?? note }
+    if (stale) return { state: 'stale', value, rowKeys, updatedAt, ...(note ? { message: note } : {}) }
     if (Array.isArray(value) && !value.length) return { state: 'empty', value, rowKeys, updatedAt }
     return { state: 'ready', value, rowKeys, updatedAt }
   }

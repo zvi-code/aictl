@@ -38,6 +38,11 @@
     "tool_labels": {"$ref": "board-tool-labels.schema.json"},
     "tools": {"$ref": "board-tools.schema.json"},
     "unpriced": {"$ref": "board-unpriced.schema.json"},
+    "pending_fields": {
+      "type": "array",
+      "description": "Board fields still being read: this answer is an early stage of the board; ask again for the rest. A field named here is absent, never 0; a dotted name is one key of a field.",
+      "items": {"type": "string"}
+    },
     "field_errors": {
       "type": "object",
       "description": "Board fields an optional section could not read, each with the reason. The fields named are absent; a dotted name is one key of a field.",

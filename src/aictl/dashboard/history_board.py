@@ -25,7 +25,7 @@ _PANEL_FIELDS = (
 )
 # Per key: (read at, body, complete). An incomplete answer lacks the fields of an optional section that failed.
 _cache: dict[tuple, tuple[float, bytes, bool]] = {}
-_inflight: dict[tuple, Future] = {}
+_inflight: dict[tuple, "_Build"] = {}
 _lock = threading.Lock()
 _CACHE_KEYS = 12
 # An answer older than its TTL is still returned at once, up to this age, while a new one is read.
@@ -69,23 +69,33 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
     rolling = (history.reader, history.node, scope, replace(filters, since=0.0, until=0.0), round(span), charts)
     follows_clock = 0 <= now - filters.until < _ROLLING_S
 
+    def body(fields: dict, field_errors: dict[str, str] | None, pending: list[str] | None = None) -> bytes:
+        payload = fields if charts else {name: fields[name] for name in _PANEL_FIELDS if name in fields}
+        if field_errors:
+            payload["field_errors"] = {
+                field: safe_reason(reason) or "History read failed" for field, reason in field_errors.items()}
+        if pending:
+            payload["pending_fields"] = pending
+        payload["node_scope"] = {"kind": scope.kind, "node_id": label(scope.node) if scope.node is not None else None}
+        return json.dumps(payload).encode("utf-8")
+
     def build() -> tuple[bytes, bool]:
         # Only the panels view leaves a failed optional section out; the charts need none.
         field_errors: dict[str, str] | None = None if charts else {}
+
+        def on_partial(fields: dict, pending: list[str]) -> None:
+            # The early fields are final: they answer requests for this key until the board is complete.
+            _stage(key, body(fields, field_errors, pending))
+
         try:
             fields = compute_board(store, filters, getattr(store, "snapshot", None) if local else None,
-                                   now, history=history, charts_only=charts, field_errors=field_errors)
+                                   now, history=history, charts_only=charts, field_errors=field_errors,
+                                   on_partial=None if charts else on_partial)
         except StoreError as exc:
             if local:
                 raise
             raise ScopeError(str(exc), 503, "query_failed") from exc
-        payload = fields if charts else {
-            name: fields[name] for name in _PANEL_FIELDS if name in fields or name not in field_errors}
-        if field_errors:
-            payload["field_errors"] = {
-                field: safe_reason(reason) or "History read failed" for field, reason in field_errors.items()}
-        payload["node_scope"] = {"kind": scope.kind, "node_id": label(scope.node) if scope.node is not None else None}
-        return json.dumps(payload).encode("utf-8"), not field_errors
+        return body(fields, field_errors), not field_errors
 
     def timed_build() -> tuple[bytes, bool]:
         started = time.monotonic()
@@ -119,7 +129,7 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
         else:
             return_pending = None
     if return_pending is not None:
-        return return_pending.result()
+        return return_pending.first()
     with _lock:
         hit = _cache.get(key)
         pending = _inflight.get(key)
@@ -128,26 +138,53 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
             return hit[1]
         if hit and hit[2] and age < _STALE_MAX_S:
             if pending is None:
-                _inflight[key] = Future()
+                _inflight[key] = _Build()
                 threading.Thread(target=_refresh_quietly, args=(key, timed_build), daemon=True,
                                  name="history-board").start()
             return hit[1]
         if pending is None:
-            _inflight[key] = Future()
-    if pending is not None:
-        return pending.result()
-    return _refresh(key, timed_build)
+            pending = _inflight[key] = _Build()
+            threading.Thread(target=_refresh_quietly, args=(key, timed_build), daemon=True,
+                             name="history-board").start()
+    # The first stage of the board when it is ready before the whole board; a later request for
+    # the same key gets the latest stage, then the complete board.
+    return pending.first()
+
+
+class _Build:
+    """One read of a board: its early fields once complete (``partial``), then its result."""
+
+    def __init__(self) -> None:
+        self.future: Future = Future()
+        self.partial: bytes | None = None
+        self.answered = threading.Event()
+
+    def first(self) -> bytes:
+        self.answered.wait()
+        if self.future.done() or self.partial is None:
+            return self.future.result()
+        return self.partial
+
+
+def _stage(key: tuple, body: bytes) -> None:
+    with _lock:
+        build = _inflight.get(key)
+        if build is not None:
+            build.partial = body
+            build.answered.set()
 
 
 def _refresh(key: tuple, build) -> bytes:
     with _lock:
-        future = _inflight[key]
+        pending = _inflight[key]
+    future = pending.future
     try:
         body, complete = build()
     except BaseException as exc:
         with _lock:
             _inflight.pop(key, None)
         future.set_exception(exc)
+        pending.answered.set()
         raise
     with _lock:
         _cache.pop(key, None)
@@ -156,6 +193,7 @@ def _refresh(key: tuple, build) -> bytes:
             _cache.pop(next(iter(_cache)))
         _inflight.pop(key, None)
     future.set_result(body)
+    pending.answered.set()
     return body
 
 
