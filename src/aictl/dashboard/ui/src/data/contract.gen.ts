@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 7052dd54519f637bbb78a4e853b86f510afa19c5203cb5abad1f4ce9242fe3ca
+// Schema digest: aa240ea814f5c1795f62f1c6c595a0ceef4e3e5960b62699f696580f3e8f50df
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1408,6 +1408,15 @@ export type DetailNodes = {
   fleet_available: boolean;
   generated_at: number;
   read_only: boolean;
+  view: "status";
+  rows: Array<NodeStatus>;
+  error: string | null;
+} | {
+  scope: string;
+  local_node: LocalNode;
+  fleet_available: boolean;
+  generated_at: number;
+  read_only: boolean;
   view: "identity";
   rows: Array<never>;
 } | {
@@ -1571,6 +1580,8 @@ export type DetailNodes = {
     table_inventory?: TableInventory | null;
   } | null;
   local_runtime?: HealthLocal;
+  node_status?: Array<NodeStatus>;
+  node_status_error?: string | null;
 } | {
   scope: string;
   local_node: LocalNode;
@@ -2780,6 +2791,89 @@ export type MachinePipeline = {
 export type NodeScope = {
   kind: string;
   node_id: string | null;
+};
+
+export type NodeStatus = {
+  node_id: string;
+  reported_at: number | null;
+  status: "reported" | "stale" | "unknown" | "none";
+  origin?: "store" | "live" | "none";
+  record: {
+    record_version?: number;
+    node_id: string;
+    version?: string;
+    state?: string;
+    layout?: {
+      version?: number | null;
+      data_epoch?: string | null;
+    } | null;
+    daemon_started_at?: number | null;
+    reported_at: number;
+    history?: {
+      state: "reading" | "done";
+      files: number;
+      complete: number;
+      reading: number;
+      waiting: number;
+      outside_window?: number;
+      unreadable?: number;
+      bytes?: number;
+      bytes_read?: number;
+      bytes_skipped?: number;
+      bytes_to_read?: number;
+      percent?: number | null;
+      rate_bps?: number | null;
+      eta_s?: number | null;
+      started_at?: number | null;
+      finished_at?: number | null;
+      computed_at?: number | null;
+      scan_ms?: number | null;
+      by_tool?: Array<{
+        tool: string;
+        files: number;
+        complete: number;
+        reading: number;
+        waiting: number;
+        outside_window?: number;
+        unreadable?: number;
+        bytes: number;
+        bytes_read: number;
+        bytes_skipped?: number;
+        bytes_to_read: number;
+      }>;
+    } | null;
+    readers?: Array<{
+      name: string;
+      label: string;
+      state: string;
+      last_poll_at?: number | null;
+      last_success_at?: number | null;
+      last_error?: string | null;
+      rows_total?: number | null;
+      progress?: Record<string, unknown> | null;
+    }>;
+    writer?: {
+      status?: string | null;
+      rows_queued?: number;
+      bytes_queued?: number;
+      in_flight?: number;
+      failures?: number;
+      rows_dropped?: number;
+      tables_failing?: Array<string>;
+      last_error?: string | null;
+      last_error_at?: number | null;
+    } | null;
+    tasks?: Array<{
+      name: string;
+      label: string;
+      state: string;
+      started_at?: number | null;
+      ended_at?: number | null;
+      progress?: string;
+      result?: string;
+      last_error?: string | null;
+    }>;
+  } | null;
 };
 
 export type OtelReceiverStatus = {

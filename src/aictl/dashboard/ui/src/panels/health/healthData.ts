@@ -7,6 +7,7 @@ import { createBoxes } from '../../ui/Box'
 import { confirmedBackend, confirmedFlows, type BackendView, type FlowsView } from './flowTrends'
 import { confirmedSeries, seriesPath, seriesWindow, type SeriesView, type TrendView } from './trendModel'
 import type { HealthWindow } from './windowFacts'
+import { statusPath, statusRows, type StatusRow } from './nodeStatus'
 
 const WINDOW_S = 86400
 const WINDOW_LABEL = 'last 24 h'
@@ -70,6 +71,25 @@ export function healthData(ctx: PanelContext) {
     const timer = setInterval(refresh, 30000)
     document.addEventListener('visibilitychange', refresh)
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh) }
+  })
+  // Every node's status record: in node and fleet scope part of the health answer (one read for all nodes),
+  // in local scope the serving daemon's own record.
+  const localStatusPath = createMemo(() => ctx.scope() === 'local' ? statusPath('local') : undefined)
+  const localStatus = untrack(() => ctx.detail<DetailNodes>(localStatusPath))
+  createEffect(localStatusPath, key => {
+    if (!key) return
+    const timer = setInterval(() => { if (!document.hidden) localStatus.retry() }, 30000)
+    return () => clearInterval(timer)
+  })
+  const nodeStatus = createMemo<{ rows?: StatusRow[]; error?: string | null; loading: boolean }>(() => {
+    if (ctx.scope() === 'local') {
+      const response = localStatus()
+      const body = response?.data as { error?: string | null } | undefined
+      return { rows: statusRows(response?.data), error: response?.error ? String(response.error) : body?.error ?? null,
+        loading: !response }
+    }
+    const value = report()
+    return { rows: value?.node_status, error: value?.node_status_error ?? null, loading: !value && !remote()?.error }
   })
   const projection = createMemo(() => {
     const scoped = report()
@@ -137,5 +157,5 @@ export function healthData(ctx: PanelContext) {
     return (live.value as TableInventory | undefined) ?? read().value?.store?.table_inventory
   })
   const readInventory = () => inventoryRead(inventory(), read())
-  return { now, read, inventory, readInventory, window, boxes }
+  return { now, read, inventory, readInventory, window, boxes, nodeStatus }
 }

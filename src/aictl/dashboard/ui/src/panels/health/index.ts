@@ -8,6 +8,9 @@ export const healthPanels: readonly PanelDef[] = [
   // HLT-01: Status, freshness and scope links need a derived summary.
   { ...common, id: 'healthHighlights', title: 'Health overview', kind: 'custom', sources: [live()], columns: [],
     defaultSize: 'medium', load: () => import('./Highlights') },
+  // HLT-12: One row per node with its status record; each row expands to its readers, tasks and writer.
+  { ...common, id: 'nodeStatus', title: 'Nodes and background work', kind: 'custom', sources: [{ route: '/api/board/nodes' }],
+    columns: [], defaultSize: 'large', load: () => import('./Nodes') },
   // HLT-02: Stage cards, policies, request and writer grids share one disclosure.
   { ...common, id: 'storeHealth', title: 'Store, capacity and requests', kind: 'custom',
     sources: [live('store'), live('pipeline')], columns: [], defaultSize: 'medium', load: () => import('./StoreHealth') },

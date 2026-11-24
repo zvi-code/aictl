@@ -262,3 +262,26 @@
 .projectFacts { color: var(--color-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .projectEntry:has(input:checked) .projectPath, .projectEntry:has(input:checked) .projectFacts { color: inherit; }
 .projectChips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-block-end: var(--space-3); }
+.historyNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: var(--border-size) solid var(--color-border);
+  border-inline-start: calc(var(--border-size) * 4) solid var(--color-warning);
+  border-radius: var(--radius-sm);
+}
+.link {
+  composes: focus from "../ui/control.module.css";
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
