@@ -19,6 +19,7 @@ export const RANGES = [
   { id: '24h', buckets: 24, bucket_s: 3600, label: '24 h' },
   { id: '7d', buckets: 14, bucket_s: 43200, label: '7 d' },
   { id: '30d', buckets: 30, bucket_s: 86400, label: '30 d' },
+  { id: '90d', buckets: 30, bucket_s: 259200, label: '90 d' },
 ];
 const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 const DEFAULT_RANGE = '24h';

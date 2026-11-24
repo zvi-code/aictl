@@ -59,8 +59,6 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
     span = filters.until - filters.since
     history = scoped(HistoryScope.local(store), filters.projects)
     if not local:
-        if span > 31 * 86400:
-            raise ScopeError("Node history supports a time range of up to 31 days", 422, "history_limit")
         if not has_history(history.reader):
             raise ScopeError("Node history requires a shared history store", 422, "unsupported_scope")
         history = HistoryScope(history.reader, scope.node, qualified=True)
@@ -231,9 +229,6 @@ def read_section(store, query: str, now: float | None = None) -> bytes:
     viewer = params.get("viewer", [""])[0][:80]
     now = time.time() if now is None else now
     filters = parse_filters(query, now)
-    span = filters.until - filters.since
-    if span > 31 * 86400:
-        raise ScopeError("Node history supports a time range of up to 31 days", 422, "history_limit")
     history = scoped(HistoryScope.local(store), filters.projects)
     if not has_history(history.reader):
         raise ScopeError("Node history requires a shared history store", 422, "unsupported_scope")
