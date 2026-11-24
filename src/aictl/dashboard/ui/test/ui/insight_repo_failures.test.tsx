@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import Subagents from '../../src/panels/insights/Subagents'
-import { sumRepos, type PauseBody, type SubagentBody } from '../../src/panels/insights/insightsModel'
+import AfterFailure from '../../src/panels/insights/AfterFailure'
+import { sumRepos, type FailureBody, type PauseBody, type SubagentBody } from '../../src/panels/insights/insightsModel'
 import { notSplitNote, OTHER, OTHER_REPOS, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -214,6 +215,56 @@ describe('INS-RS-F · Spend in subagents: bars split by repository', () => {
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="subagent-cost-repos"]')).toBeNull()
     expect(texts(box.querySelectorAll('[data-chart="subagent-sessions"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['cost'])
+    dispose()
+  })
+})
+
+// ─── After a failure ─────────────────────────────────────────────────────────────────────────────────────────────────
+const outcomes = { identical_failed: 10, identical_succeeded: 20, changed_failed: 5, changed_succeeded: 25, other_tool: 20 }
+const failWhole = { calls: 1000, failures: 100, last_failures: 20, streaks: 4, streak_calls: 15, ...outcomes }
+const failures = {
+  ...base, card: 'failures', repo_order: order, repo_others: others, sessions: [],
+  tools: [{
+    tool: 'claude-code', calls: 1000, failures: 100, last_failures: 20, outcomes, streaks: 4, streak_calls: 15, longest: 6,
+    repos: [
+      seg('/src/app', { calls: 700, failures: 70, last_failures: 14, streaks: 3, streak_calls: 11, identical_failed: 8, identical_succeeded: 14,
+        changed_failed: 4, changed_succeeded: 16, other_tool: 14 }, failWhole, { failures: 0.9, streaks: 1 }),
+      seg('', { calls: 300, failures: 30, last_failures: 6, streaks: 1, streak_calls: 4, identical_failed: 2, identical_succeeded: 6,
+        changed_failed: 1, changed_succeeded: 9, other_tool: 6 }, failWhole, { failures: 0.5, streaks: 1 }),
+    ],
+  }],
+  summary: { failures: 100, followed: 80, streaks: 4, streak_calls: 15, longest: 6, ...outcomes },
+} as unknown as FailureBody
+
+describe('INS-RS-F · After a failure: bars split by repository', () => {
+  it('keeps the bar by outcome, adds a row per outcome split by repository, and splits the failed calls and the runs', () => {
+    const { box, dispose } = draw(AfterFailure, 'failures', failures)
+    expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    expect(box.querySelectorAll('[data-chart="failure-outcomes"] [data-part]').length).toBe(6)
+    const chart = box.querySelector('[data-chart="failure-outcomes-repos"]')!
+    expect(texts(chart.querySelectorAll('[data-row]'), row => row.getAttribute('data-row'))).toEqual(['claude-code:identical_failed',
+      'claude-code:identical_succeeded', 'claude-code:changed_failed', 'claude-code:changed_succeeded', 'claude-code:other_tool', 'claude-code:last'])
+    const last = chart.querySelector('[data-row="claude-code:last"]')!
+    expect([repos(last), written(last)]).toEqual([['0', OTHER_TEXT], ['14', '6']])
+    expect(last.querySelector('[data-total]')!.textContent).toBe('20 failed calls')
+    const calls = box.querySelector('[data-chart="failure-calls"] [data-row="claude-code"]')!
+    expect([repos(calls), written(calls)]).toEqual([['0', OTHER_TEXT], ['70', '30']])
+    expect(tip(calls, 'repo:/src/app')).toBe('claude-code, failed calls — app (/src/app): 70 · 70% of this bar · 90% of app own failed ' +
+      'calls. claude-code: 100 failed calls of 1,000 tool calls in the period (10%).')
+    const runs = box.querySelector('[data-chart="failure-runs"] [data-row="claude-code"]')!
+    expect([repos(runs), written(runs)]).toEqual([['0', OTHER_TEXT], ['3', '1']])
+    expect(tip(runs, 'repo:')).toContain(notSplitNote('longest run'))
+    dispose()
+  })
+
+  it('draws the old bars when the answer carries no split', () => {
+    const plain = { ...failures, repo_order: [], repo_others: null,
+      tools: failures.tools.map(tool => ({ ...tool, repos: undefined })) } as unknown as FailureBody
+    const { box, dispose } = draw(AfterFailure, 'failures', plain)
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-chart="failure-outcomes-repos"]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-chart="failure-calls"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['failed'])
+    expect(texts(box.querySelectorAll('[data-chart="failure-runs"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['runs'])
     dispose()
   })
 })
