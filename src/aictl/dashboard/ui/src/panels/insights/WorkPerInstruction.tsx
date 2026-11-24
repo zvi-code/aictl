@@ -66,7 +66,7 @@ function Visual(props: { body: AutonomyBody; label: Label; mode: ColourMode; set
       <div class={styles.grid}>
         <PercentileStrip chart={runStrip(props.body, props.label)} />
         <div class={styles.waits}>
-          <ColourMode parts="Answer time" value={mode()} onChange={props.setMode} split={split()} />
+          <ColourBy parts="Answer time" value={mode()} onChange={props.setMode} split={split()} />
           <Show when={mode() === 'repo'}><RepoLegend split={props.body} other={hasOther(props.body.tools)} /></Show>
           <Bars name="autonomy-waits" title="Answered waits per tool" scale={mode() === 'repo' ? 'shared' : 'whole'}
             legend={mode() === 'repo' ? undefined : [{ label: 'Within 5 minutes', tone: 2 }, { label: 'After more than 5 minutes', tone: 1 }]}

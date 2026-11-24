@@ -44,7 +44,7 @@ function ModelCharts(props: { body: ModelBody; label: Label; ctx: PanelContext }
   const models = () => props.body.tools.flatMap(tool => tool.models)
   return <div class={styles.view}>
     <div class={styles.controls}>
-      <ColourMode parts="Token kind" value={mode()} onChange={setMode} split={split()} />
+      <ColourBy parts="Token kind" value={mode()} onChange={setMode} split={split()} />
       <Show when={shown() === 'repo'} fallback={<ul class={shared.legend} aria-label="Token kinds: colours of the token bars" data-token-legend>
         <For each={TOKEN_LEGEND}>{([id, text]) => <li><span class={shared.swatch} style={{ background: TOKEN_FILLS[id] }} />{text}</li>}</For>
       </ul>}>

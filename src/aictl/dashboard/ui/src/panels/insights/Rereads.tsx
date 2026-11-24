@@ -20,7 +20,7 @@ export default function Rereads(props: CardProps) {
       const repo = () => drawnBy(by(), rereadSplit(body)) === 'repo'
       const along = () => repo() ? '; a segment per repository' : ''
       return <div class={styles.charts}>
-        <ColourMode parts="First read / again" split={rereadSplit(body)} value={by()} onChange={setBy} />
+        <ColourBy parts="First read / again" split={rereadSplit(body)} value={by()} onChange={setBy} />
         {repo() ? <RepoLegend split={body} other={hasOther(body.tools)} /> : null}
         {repo()
           ? <Bars name="reread-reads-repos" title="File reads and reads again, by repository" rows={readRepoRows(body, label)}

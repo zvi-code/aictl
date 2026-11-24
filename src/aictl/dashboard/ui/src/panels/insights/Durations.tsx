@@ -47,7 +47,7 @@ function Visual(props: { body: DurationBody; mode: ColourMode; setMode: (mode: C
   const repo = () => mode() === 'repo'
   const shade = ' Each bar in its repository\'s colour; the lighter part is the second.'
   return <>
-    <ColourMode parts="Kind of time" value={mode()} onChange={props.setMode} split={split()} />
+    <ColourBy parts="Kind of time" value={mode()} onChange={props.setMode} split={split()} />
     <Show when={repo()}>
       <RepoLegend split={props.body} other={hasOther([...props.body.repos, ...props.body.tools, ...props.body.models])} />
     </Show>

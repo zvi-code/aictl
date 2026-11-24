@@ -41,7 +41,7 @@ function Visual(props: { body: KqlBody; label: Label; by: ColourMode; setBy: (va
   const other = () => [props.body.routes ?? [], props.body.failure_kinds, props.body.kinds, props.body.targets, props.body.shapes, props.body.projects,
     props.body.large].some(list => list.some(row => row.repos?.some(segment => !segment.repo)))
   return <div class={styles.charts}>
-    <ColourMode parts="Failed / kind" split={split()} value={props.by} onChange={props.setBy} />
+    <ColourBy parts="Failed / kind" split={split()} value={props.by} onChange={props.setBy} />
     {repo() ? <RepoLegend split={props.body} other={other()} /> : null}
     <div class={styles.columns}>
       <BarChart data="routes" title="Recognised runs by route" rows={routeRows(props.body, repo())} axis={runs(routeRows(props.body)) + along()}

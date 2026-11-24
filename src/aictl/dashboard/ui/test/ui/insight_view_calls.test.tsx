@@ -150,9 +150,9 @@ describe('INS-V-C · After a failure', () => {
   })
 
   it('switches every chart to the repository split, keeps it in the address, and shows the repository legend alone', () => {
-    const { box, dispose, navigated } = draw(AfterFailure, 'failures', failures)
+    const { box, dispose } = draw(AfterFailure, 'failures', failures)
     colourBy(box, 'Repository')
-    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
     expect(box.querySelector('[data-chart="failure-next"]')).toBeNull()
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
     expect(rows(box, 'failure-next-repos')).toEqual(['claude-code:identical_failed', 'claude-code:identical_succeeded',
@@ -171,7 +171,7 @@ describe('INS-V-C · After a failure', () => {
     expect([repos(runs), written(runs)]).toEqual([['0', OTHER_TEXT], ['3', '1']])
     expect(tip(runs, 'repo:')).toContain(notSplitNote('longest run'))
     colourBy(box, 'Next call')
-    expect(navigated.at(-1)).toEqual({ by: null })
+    expect(new URLSearchParams(location.search).get('by')).toBeNull()
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(rows(box, 'failure-next')).toEqual(['all', 'claude-code', 'codex'])
     dispose()
@@ -241,9 +241,9 @@ describe('INS-V-C · Repeated file reads', () => {
   })
 
   it('switches to reads and reads again by repository, and splits the bytes and the files', () => {
-    const { box, dispose, navigated } = draw(Rereads, 'rereads', rereads)
+    const { box, dispose } = draw(Rereads, 'rereads', rereads)
     colourBy(box, 'Repository')
-    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
     expect(box.querySelector('[data-chart="reread-reads"]')).toBeNull()
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
     expect(rows(box, 'reread-reads-repos')).toEqual(['claude-code:reads', 'claude-code:again'])
@@ -388,9 +388,9 @@ describe('INS-V-C · MCP servers', () => {
   })
 
   it('switches every split bar to repositories; the median time stays whole in a neutral tone', () => {
-    const { box, dispose, navigated } = draw(Mcp, 'mcp', mcp)
+    const { box, dispose } = draw(Mcp, 'mcp', mcp)
     colourBy(box, 'Repository')
-    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
     const kusto = svgRow(box, 'calls', 'kusto')
     expect([parts(kusto), repos(kusto)]).toEqual([['repo:/src/app', 'repo:'], ['0', OTHER_TEXT]])
@@ -464,9 +464,9 @@ describe('INS-V-C · Kusto queries', () => {
   })
 
   it('switches every split bar to repositories; a shape\'s repeated runs stay in its hover', () => {
-    const { box, dispose, navigated } = draw(Kql, 'kql', kql)
+    const { box, dispose } = draw(Kql, 'kql', kql)
     colourBy(box, 'Repository')
-    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
     expect(repos(svgRow(box, 'routes', 'mcp'))).toEqual(['0', '1'])
     expect(svgTip(svgRow(box, 'routes', 'mcp'), 'repo:/src/app')).toBe('MCP tool — app (/src/app): 25 runs · 83% of this bar. ' +

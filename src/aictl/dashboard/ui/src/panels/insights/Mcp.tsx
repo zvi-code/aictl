@@ -23,7 +23,7 @@ function Visual(props: { body: McpBody; label: Label; by: ColourMode; setBy: (va
   const legend = (own: BarLegend) => repo() ? undefined : own
   const other = () => [props.body.servers, props.body.projects, props.body.listed].some(list => list.some(row => row.repos?.some(segment => !segment.repo)))
   return <div class={styles.charts}>
-    <ColourMode parts="Succeeded / failed" split={split()} value={props.by} onChange={props.setBy} />
+    <ColourBy parts="Succeeded / failed" split={split()} value={props.by} onChange={props.setBy} />
     {repo() ? <RepoLegend split={props.body} other={other()} /> : null}
     <div class={styles.columns}>
       <BarChart data="calls" title="Calls per server" rows={serverCallRows(props.body, repo())} legend={legend(callLegend)}

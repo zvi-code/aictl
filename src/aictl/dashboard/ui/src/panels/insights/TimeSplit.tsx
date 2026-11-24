@@ -17,7 +17,7 @@ function Visual(props: { body: TimeBody; label: Label; mode: ColourMode; setMode
   const split = () => timeSplit(props.body)
   const repo = () => split() && props.mode === 'repo'
   return <>
-    <ColourMode parts="Kind of time" value={repo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
+    <ColourBy parts="Kind of time" value={repo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
     <Show when={repo()} fallback={<ul class={bars.legend} aria-label="Kinds of time: colours of the bar segments" data-kind-legend>
       <For each={KIND_LEGEND}>{item => <li><span class={`${bars.swatch} ${bars[`t${item.tone}`]}`} />{item.label}</li>}</For>
     </ul>}>

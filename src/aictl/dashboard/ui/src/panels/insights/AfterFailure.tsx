@@ -21,7 +21,7 @@ export default function AfterFailure(props: CardProps) {
     visual={body => {
       const repo = () => drawnBy(by(), failureSplit(body)) === 'repo'
       return <div class={styles.charts}>
-        <ColourMode parts="Next call" split={failureSplit(body)} value={by()} onChange={setBy} />
+        <ColourBy parts="Next call" split={failureSplit(body)} value={by()} onChange={setBy} />
         {repo() ? <RepoLegend split={body} other={hasOther(body.tools)} /> : null}
         {repo()
           ? <Bars name="failure-next-repos" title="Next call after a failed call, by repository" rows={nextRepoRows(body, label)}
