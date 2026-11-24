@@ -132,7 +132,7 @@ _VIEWS = {
     "tools.activity": (f"{_WINDOW} session_keys", f"{_BOARD_ID} g calls"),
     "tools.series": (
         f"{_WINDOW} session_keys",
-        "tool_name g calls failures max_duration timed durations input_bytes input_count output_bytes output_count",
+        "tool_name g calls failures max_duration timed tool_pct all_pct input_bytes input_count output_bytes output_count",
     ),
     "requests.latency": (
         f"{_WINDOW} session_keys requested_model", "node_id session_id model g durations firsts duration_count first_count",

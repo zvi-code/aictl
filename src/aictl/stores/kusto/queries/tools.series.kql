@@ -13,18 +13,28 @@ let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_k
         (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
     | where not(coalesce(_deleted, false))
     | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
-tool_invocations_secs
-| where all_nodes or node_id == requested_node
-| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-| summarize arg_max(_v, *) by ['project'], node_id, fact_key
-| where not(coalesce(column_ifexists('_deleted', false), false))
-| where ts between (since .. until) and not(tool_name startswith_cs 'permission:')
-| where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
-| extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
+// Durations are reduced to percentiles here: a list of every duration per tool and bucket was cut at
+// 20,000 values, and a 90-day bucket of a busy fleet holds more calls of one tool than that.
+let calls = materialize(tool_invocations_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(column_ifexists('_deleted', false), false))
+    | where ts between (since .. until) and not(tool_name startswith_cs 'permission:')
+    | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | project tool_name, g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid))), is_error, duration_ms,
+              input_bytes, output_bytes);
+let tool_percentiles = calls | where duration_ms > 0
+    | summarize tool_pct=percentiles_array(duration_ms, 50, 95) by tool_name;
+let all_percentiles = toscalar(calls | where duration_ms > 0 | summarize percentiles_array(duration_ms, 50, 95, 99));
+calls
 | summarize calls=count(), failures=countif(is_error != 0), max_duration=max(duration_ms),
-            timed=countif(duration_ms > 0), durations=make_list_if(duration_ms, duration_ms > 0, 20000),
+            timed=countif(duration_ms > 0),
             input_bytes=sum(input_bytes), input_count=countif(isnotnull(input_bytes)),
             output_bytes=sum(output_bytes), output_count=countif(isnotnull(output_bytes))
         by tool_name, g
+| join kind=leftouter tool_percentiles on tool_name
+| project tool_name, g, calls, failures, max_duration, timed, tool_pct, all_pct=all_percentiles,
+          input_bytes, input_count, output_bytes, output_count
 | order by tool_name asc, g asc
 | take row_limit

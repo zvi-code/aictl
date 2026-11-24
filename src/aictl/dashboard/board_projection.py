@@ -2052,6 +2052,13 @@ def _latency_row(what: str, values: list[float], count: Any = _UNSET, longest: f
     }
 
 
+def _latency_percentiles(what: str, percentiles: list, count: int, longest: float | None) -> dict:
+    """One row of the latency table from percentiles the store computed: [p50, p95, p99]."""
+    p50, p95, p99 = (list(percentiles) + [None, None, None])[:3]
+    return {"what": what, "count": count, "p50_ms": _ms(p50), "p95_ms": _ms(p95), "p99_ms": _ms(p99),
+            "max_ms": _ms(longest if count else None)}
+
+
 @dataclass
 class _Turns:
     count: int
@@ -2118,13 +2125,13 @@ def _tools_section(board: _Board) -> dict:
     stats: dict[str, dict] = {}
     longest = 0.0
     timed_total = 0
-    values: dict[str, list[float]] = defaultdict(list)
-    overall = []
+    # The view's percentiles of the timed calls: [p50, p95] per tool, [p50, p95, p99] of all tools.
+    percentiles: dict[str, list] = {}
+    overall: list = []
     for source in rows:
         name, g, count, errs, slowest, timed, in_sum, in_n, out_sum, out_n = (source[k] for k in fields)
-        durations = exact_values(source, "durations", "timed")
-        values[name].extend(durations)
-        overall.extend(durations)
+        percentiles[name] = source.get("tool_pct") or []
+        overall = source.get("all_pct") or overall
         b, s = board.b_of[g], board.s_of[g]
         row = stats.setdefault(
             name, {"calls": 0, "failed": 0, "max": 0.0, "timed": 0, "trend": [0] * SPARK_POINTS, "in": [0, 0], "out": [0, 0]}
@@ -2145,12 +2152,10 @@ def _tools_section(board: _Board) -> dict:
         longest = max(longest, slowest or 0.0)
         timed_total += timed
 
-    overall.sort()
-
     out = []
     servers = known_mcp_servers(stats)
     for name, row in sorted(stats.items(), key=lambda kv: (-kv[1]["calls"], kv[0]))[:MAX_LIST_ROWS]:
-        ordered = sorted(values.get(name, []))
+        p50, p95 = (percentiles.get(name) or [None, None])[:2]
         out.append(
             {
                 "name": name,
@@ -2158,9 +2163,9 @@ def _tools_section(board: _Board) -> dict:
                 "calls": row["calls"],
                 "failed": row["failed"],
                 "fail_rate": _ratio(row["failed"], row["calls"]),
-                "p50_ms": _ms(_percentile(ordered, 0.50)),
-                "p95_ms": _ms(_percentile(ordered, 0.95)),
-                "max_ms": _ms(row["max"]) if ordered else None,
+                "p50_ms": _ms(p50),
+                "p95_ms": _ms(p95),
+                "max_ms": _ms(row["max"]) if row["timed"] else None,
                 "mcp_server": mcp_server_of(name, servers),
                 "avg_input_bytes": round(row["in"][0] / row["in"][1]) if row["in"][1] else None,
                 "avg_output_bytes": round(row["out"][0] / row["out"][1]) if row["out"][1] else None,
@@ -2171,7 +2176,7 @@ def _tools_section(board: _Board) -> dict:
     return {
         "rows": out,
         "calls_by_name": {name: row["calls"] for name, row in stats.items()},
-        "durations": overall,
+        "percentiles": overall,
         "timed": timed_total,
         "longest": longest or None,
         "calls_bucket": calls_bucket,
@@ -3902,7 +3907,7 @@ def latency_part(board: _Board, latency: dict, tool_section: dict, turns: tuple[
             _reported(latency["first_count"], scope_tools, _NO_TTFT),
             latency["first_max"],
         ),
-        _latency_row("Tool call", tool_section["durations"], tool_section["timed"], tool_section["longest"]),
+        _latency_percentiles("Tool call", tool_section["percentiles"], tool_section["timed"], tool_section["longest"]),
         _latency_row("Whole turn", turn_info.lengths_ms, turn_info.count),
         _latency_row("Agent run", runs),
     ]}
