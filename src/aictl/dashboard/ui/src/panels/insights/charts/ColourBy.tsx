@@ -1,35 +1,35 @@
-// The switch above a view's charts: colour the bars by the view's own parts, or by repository. One encoding and one
-// legend at a time. The choice is kept in the address (`by=repo`; the view's own parts when absent).
-import { createSignal } from 'solid-js'
+// ─── "Colour by": one chart, two encodings ─
+// A view whose bars have parts of their own (main agent and subagents, thinking and tool calls) and also a split by
+// repository draws each bar once, coloured by one of the two. The choice is kept in the address (`by=repo`), so a link
+// opens the view as it was seen; without `by` the view colours by its own parts.
+import { createSignal, Show, type Accessor } from 'solid-js'
+import { writeUrl } from '../../../data/urlState'
 import { Segmented } from '../../../ui/Segmented'
-import type { PanelContext } from '../../types'
 import styles from './ColourBy.module.css'
 
-export type ColourMode = 'own' | 'repo'
+export type ColourMode = 'parts' | 'repo'
 
-/** The mode the address names: `by=repo` is the repository, anything else the view's own parts. */
+/** The URL value of the choice: `by=repo`, or no `by` for the view's own parts. */
 export function readColourBy(search: string): ColourMode {
-  return new URLSearchParams(search).get('by') === 'repo' ? 'repo' : 'own'
+  return new URLSearchParams(search || '').get('by') === 'repo' ? 'repo' : 'parts'
+}
+
+/** The view's choice, read once from the address and written back to it (replacing the entry, no history step). */
+export function useColourBy(): [Accessor<ColourMode>, (mode: ColourMode) => void] {
+  const [mode, setMode] = createSignal<ColourMode>(readColourBy(typeof location === 'undefined' ? '' : location.search))
+  return [mode, next => { setMode(next); writeUrl({ by: next === 'repo' ? 'repo' : null }) }]
 }
 
 /**
- * The mode of one view: read from the address when the view opens, written back on every change. The view is not
- * handed the address, so it reads `location.search` once and keeps the choice in a signal from then on.
+ * The switch above a view's charts: "Colour by: <parts> | Repository". Drawn only when the answer carries a split by
+ * repository (`split`); without one the view keeps its own parts and shows no switch.
  */
-export function colourByState(ctx: PanelContext) {
-  const [mode, setMode] = createSignal<ColourMode>(readColourBy(typeof location === 'undefined' ? '' : location.search))
-  const choose = (next: ColourMode) => {
-    setMode(next)
-    ctx.navigate({ by: next === 'repo' ? 'repo' : null })
-  }
-  return [mode, choose] as const
-}
-
-/** "Colour by: <own> | Repository", a real radio group of buttons. */
-export function ColourBy(props: { own: string; value: ColourMode; onChange: (mode: ColourMode) => void }) {
-  return <div class={styles.switch} data-colour-by={props.value}>
-    <span class={styles.label} aria-hidden="true">Colour by</span>
-    <Segmented label="Colour by" value={props.value} onChange={id => props.onChange(id === 'repo' ? 'repo' : 'own')}
-      options={[{ id: 'own', label: props.own }, { id: 'repo', label: 'Repository' }]} />
-  </div>
+export function ColourBy(props: { parts: string; value: ColourMode; onChange: (mode: ColourMode) => void; split: boolean }) {
+  return <Show when={props.split}>
+    <div class={styles.switch} data-colour-by={props.value}>
+      <span class={styles.label} aria-hidden="true">Colour by</span>
+      <Segmented label="Colour by" value={props.value} onChange={id => props.onChange(id === 'repo' ? 'repo' : 'parts')}
+        options={[{ id: 'parts', label: props.parts }, { id: 'repo', label: 'Repository' }]} />
+    </div>
+  </Show>
 }

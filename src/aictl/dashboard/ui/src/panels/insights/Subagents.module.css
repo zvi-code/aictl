@@ -1,0 +1,3 @@
+/* Spend in subagents: cost and requests side by side, the sessions under them at full width. */
+.grid { display: grid; gap: var(--space-6) var(--space-8); grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr)); align-items: start; }
+.wide { grid-column: 1 / -1; min-inline-size: 0; }

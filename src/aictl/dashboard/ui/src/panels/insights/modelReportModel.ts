@@ -336,7 +336,7 @@ const repoGrid = (parts: BarPart[]): GridPart[] => parts.map(part => ({
 }))
 
 /** The rows of a tool's grid: per model its requests, cost, failure share, tokens and thinking, coloured by `mode`. */
-export function modelGridRows(tool: ModelTool, label: string, mode: 'own' | 'repo', order: RepoRef[] | undefined): GridRow[] {
+export function modelGridRows(tool: ModelTool, label: string, mode: 'parts' | 'repo', order: RepoRef[] | undefined): GridRow[] {
   const top = modelTops(tool)
   return tool.models.map(model => {
     const split = mode === 'repo' && !!model.repos?.length

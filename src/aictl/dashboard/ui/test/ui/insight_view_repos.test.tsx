@@ -200,7 +200,7 @@ describe('Model report · a grid per tool, one switch between token kinds and re
     expect([...grid.querySelectorAll('[role="row"][data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['model-large', 'model-small'])
     expect([...grid.querySelectorAll('[data-row="model-small"] [data-value]')].map(value => value.textContent))
       .toEqual(['500 requests · 20 sessions', '$0.05', 'at least 8.0% of 2,000 calls', '10 k', 'thinking 3 s'])
-    expect(host.querySelector('[data-colour-by]')?.getAttribute('data-colour-by')).toBe('own')
+    expect(host.querySelector('[data-colour-by]')?.getAttribute('data-colour-by')).toBe('parts')
     expect(host.querySelector('[data-token-legend]')).not.toBeNull()
     expect(host.querySelector('[data-repo-legend]')).toBeNull()
     expect(segmentsOf(host, 'model-large', 'tokens')).toEqual(['input', 'write', 'read', 'output'])

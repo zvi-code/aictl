@@ -3,7 +3,7 @@ import { fmtN, fmtNum, fmtRate, fmtUsdEach } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
 import type { PanelContext } from '../types'
 import { BarGrid } from './charts/BarGrid'
-import { ColourBy, colourByState } from './charts/ColourBy'
+import { ColourBy, useColourBy } from './charts/ColourBy'
 import { Scatter } from './charts/Scatter'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { money, NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
@@ -38,13 +38,13 @@ const TOKEN_LEGEND: [TokenPart['id'], string][] = [['input', 'Input not from cac
  * beside it, a scatter of cost per priced request against failure share. One switch colours the bars by token kind or
  * by repository; one legend at a time. */
 function ModelCharts(props: { body: ModelBody; label: Label; ctx: PanelContext }) {
-  const [mode, setMode] = colourByState(untrack(() => props.ctx))
+  const [mode, setMode] = useColourBy()
   const split = () => modelsSplit(props.body)
-  const shown = () => split() ? mode() : 'own'
+  const shown = () => split() ? mode() : 'parts'
   const models = () => props.body.tools.flatMap(tool => tool.models)
   return <div class={styles.view}>
     <div class={styles.controls}>
-      <Show when={split()}><ColourBy own="Token kind" value={mode()} onChange={setMode} /></Show>
+      <ColourBy parts="Token kind" value={mode()} onChange={setMode} split={split()} />
       <Show when={shown() === 'repo'} fallback={<ul class={shared.legend} aria-label="Token kinds: colours of the token bars" data-token-legend>
         <For each={TOKEN_LEGEND}>{([id, text]) => <li><span class={shared.swatch} style={{ background: TOKEN_FILLS[id] }} />{text}</li>}</For>
       </ul>}>

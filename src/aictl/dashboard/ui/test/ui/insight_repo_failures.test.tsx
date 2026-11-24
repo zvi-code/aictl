@@ -183,11 +183,15 @@ const subagents = {
 } as unknown as SubagentBody
 
 describe('INS-RS-F · Spend in subagents: bars split by repository', () => {
-  it('keeps the bars by side and adds a row per tool and side split by repository', () => {
+  /** The view coloured by repository, as a link with `by=repo` opens it. */
+  const byRepo = () => history.replaceState(null, '', '/?screen=insights&range=all&view=subagents&by=repo')
+
+  it('coloured by repository, draws a row per tool and side split by repository; by side, the bar by side', () => {
+    byRepo()
     const { box, dispose } = draw(Subagents, 'subagents', subagents)
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect(texts(box.querySelectorAll('[data-chart="subagent-cost"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['main', 'subagents'])
-    const cost = box.querySelector('[data-chart="subagent-cost-repos"]')!
+    expect(box.querySelector('[data-side-legend]')).toBeNull()
+    const cost = box.querySelector('[data-chart="subagent-cost"]')!
     expect(texts(cost.querySelectorAll('[data-row]'), row => row.getAttribute('data-row'))).toEqual(['claude-code:main', 'claude-code:subagents'])
     const main = cost.querySelector('[data-row="claude-code:main"]')!
     expect([repos(main), written(main)]).toEqual([['0', '1'], ['$20.00', '$10.00']])
@@ -196,12 +200,18 @@ describe('INS-RS-F · Spend in subagents: bars split by repository', () => {
     expect(repos(sub)).toEqual(['0', OTHER_TEXT])
     expect(tip(sub, 'repo:/src/app')).toBe('claude-code, subagents, cost — app (/src/app): $15.00 · 75% of this bar · 40% of app own ' +
       'cost in subagents. claude-code, subagents (10 subagents): 100 requests (25% of 400; 100 priced), $20.00 at list price (40% of $50.00).')
-    const requests = box.querySelector('[data-chart="subagent-requests-repos"] [data-row="claude-code:main"]')!
+    const requests = box.querySelector('[data-chart="subagent-requests"] [data-row="claude-code:main"]')!
     expect(written(requests)).toEqual(['200', '100'])
     dispose()
+    history.replaceState(null, '', '/?screen=insights&range=all&view=subagents')
+    const sides = draw(Subagents, 'subagents', subagents)
+    expect(sides.box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(texts(sides.box.querySelectorAll('[data-chart="subagent-cost"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['main', 'subagents'])
+    sides.dispose()
   })
 
   it('colours a session bar by its repository', () => {
+    byRepo()
     const { box, dispose } = draw(Subagents, 'subagents', subagents)
     const row = box.querySelector('[data-chart="subagent-sessions"] [data-row="s-sub-0001-aaaa"]')!
     expect([repos(row), written(row)]).toEqual([['1'], ['$8.00']])
@@ -210,13 +220,15 @@ describe('INS-RS-F · Spend in subagents: bars split by repository', () => {
     dispose()
   })
 
-  it('draws the old bars when the answer carries no split', () => {
+  it('draws the bars by side, with no switch, when the answer carries no split', () => {
+    byRepo()
     const plain = { ...subagents, repo_order: [], repo_others: null,
       tools: subagents.tools.map(tool => ({ ...tool, main: { ...tool.main, repos: undefined }, subagents: { ...tool.subagents, repos: undefined } })),
       sessions: subagents.sessions.map(row => ({ ...row, repos: undefined })) } as unknown as SubagentBody
     const { box, dispose } = draw(Subagents, 'subagents', plain)
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect(box.querySelector('[data-chart="subagent-cost-repos"]')).toBeNull()
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-chart="subagent-cost"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['main', 'subagents'])
     expect(texts(box.querySelectorAll('[data-chart="subagent-sessions"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['cost'])
     dispose()
   })
