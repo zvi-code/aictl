@@ -4040,7 +4040,10 @@ class TestAgentTranscript:
         assert status == 200 and len(json.loads(body)["turns"]) == 3 and json.loads(body)["summary"]["omitted_events"] == 9
         status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&offset=8&limit=2")
         assert status == 200 and json.loads(body)["summary"]["offset"] == 8 and len(json.loads(body)["turns"]) == 2
-        assert _http(f"{server}/api/board/agent/flow?id=flow-s&offset=-1")[0] == 400
+        # Positions before the first read are negative: a flow read whole has none, so the window starts at 0.
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&offset=-5&limit=2")
+        assert status == 200 and json.loads(body)["summary"]["offset"] == 0 and json.loads(body)["summary"]["first_offset"] == 0
+        assert _http(f"{server}/api/board/agent/flow?id=flow-s&offset=soon")[0] == 400
         assert _http(f"{server}/api/board/agent/flow")[0] == 400
         assert _http(f"{server}/api/board/agent/flow?id=flow-s&since=soon")[0] == 400
         assert _http(f"{server}/api/board/agent/transcript?id=nobody")[0] == 404

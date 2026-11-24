@@ -118,6 +118,19 @@ def route(db, scope, path, query, params, now, *, reader=None):
             raise ScopeError(f"{name} must be an integer between 0 and {maximum}")
         return int(value)
 
+    def position(name):
+        """A flow position: older events, read on demand, have negative positions."""
+        value = one(name)
+        if not value:
+            return None
+        try:
+            result = int(value)
+        except ValueError:
+            raise ScopeError(f"Invalid {name}") from None
+        if abs(result) > 10**9:
+            raise ScopeError(f"{name} is out of range")
+        return result
+
     def selected():
         return normalize_selection(p for v in params["tool"] for p in v.split(",")) if "tool" in params else None
 
@@ -252,7 +265,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
                     raise ScopeError("whole must be 0 or 1")
                 status, body = flow_projection.agent_flow(
                     reported, aid, lo, hi, now=now, limit=integer("limit", flow_projection.FLOW_DEFAULT_EVENTS, flow_projection.MAX_FLOW_EVENTS),
-                    offset=integer("offset", None, 10**9), failed=failed == "1", history=history, whole=whole == "1",
+                    offset=position("offset"), failed=failed == "1", history=history, whole=whole == "1",
                     **{k: one(k) for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
                 )
                 return result(status, {**body, "node_id": label(node)})

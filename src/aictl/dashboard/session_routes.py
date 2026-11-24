@@ -105,8 +105,9 @@ class SessionRoutes:
         GET /api/board/agent/flow?id=<agent id>&since=<unix ts>&until=<unix ts>&limit=<events>&offset=<n>
         A subagent id gives that subagent's own steps; ``whole=1`` gives the whole session of its
         main agent. ``limit`` is how many events to
-        return: the newest, or those from position ``offset`` (0 is the oldest matching event).
-        The summary counts them all.
+        return: the newest, or those from position ``offset``. Positions count from where the flow's
+        first read started; older events, read on demand, have negative positions (see
+        ``summary.first_offset`` and ``summary.older_events``).
         """
         from .flow_projection import agent_flow
 
@@ -119,8 +120,8 @@ class SessionRoutes:
             since, until = self._qs_float_opt("since"), self._qs_float_opt("until")
             limit = int(self._qs_get("limit")) if self._qs_get("limit") else None
             offset = int(self._qs_get("offset")) if self._qs_get("offset") else None
-            if offset is not None and offset < 0:
-                raise ValueError("offset must not be negative")
+            if offset is not None and abs(offset) > 10**9:
+                raise ValueError("offset is out of range")
             if any(not math.isfinite(x) or x < 0 for x in (since, until) if x is not None):
                 raise ValueError("Time bounds must be finite Unix timestamps")
             if since is not None and until is not None and since >= until:
