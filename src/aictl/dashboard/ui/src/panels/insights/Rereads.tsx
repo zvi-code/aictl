@@ -3,8 +3,11 @@ import { fmtNum } from '../../design/format'
 import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  rereadHero, bytes, plural, rereadFilesHover, rereadFinding, rereadHover, share, toolLabel, type Label, type RereadBody,
+  rereadHero, bytes, plural, repoPartsWith, rereadFilesHover, rereadFilesRepoMore, rereadFinding, rereadHover, rereadRepoMore, rereadToolHover,
+  share, toolLabel, type Label, type RereadBody,
 } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther, notSplitNote } from './repoSplit'
 import styles from './Insights.module.css'
 
 function readRows(body: RereadBody, label: Label): BarRow[] {
@@ -19,23 +22,44 @@ function readRows(body: RereadBody, label: Label): BarRow[] {
   }))
 }
 
+/** Per tool: its reads (or its reads of a file already read) in a segment per repository; the split by first read is the bar above. */
+function repoReadRows(body: RereadBody, label: Label, of: 'reads' | 'again'): BarRow[] {
+  return body.tools.filter(tool => tool.repos?.length && (of === 'reads' || tool.repeat_reads)).map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: plural(tool.files, 'file'),
+    total: of === 'reads' ? plural(tool.reads, 'read') : `${plural(tool.repeat_reads, 'read')} again`,
+    parts: repoPartsWith(tool.repos, of === 'reads' ? 'reads' : 'repeat_reads', body.repo_order, value => plural(value, 'read'),
+      `${label(tool.tool)}, ${of === 'reads' ? 'file reads' : 'reads of a file already read'}`,
+      of === 'reads' ? 'file reads' : 'reads again', of === 'reads' ? rereadToolHover(tool, label) : rereadHover(tool, 'again', label), rereadRepoMore),
+  }))
+}
+
 function fileRows(body: RereadBody, label: Label): BarRow[] {
   return body.tools.map(tool => ({
     key: tool.tool, label: label(tool.tool), sub: `most reads of one file: ${fmtNum(tool.most_reads)}`,
     total: `${fmtNum(tool.files_5plus)} of ${plural(tool.files, 'file')}`,
-    parts: [{ key: 'files', label: 'files read 5 times or more', value: tool.files_5plus, tone: 1, text: fmtNum(tool.files_5plus),
-      hover: rereadFilesHover(tool, label) }],
+    parts: tool.repos?.length
+      ? repoPartsWith(tool.repos, 'files_5plus', body.repo_order, value => plural(value, 'file'), `${label(tool.tool)}, files read 5 times or more`,
+        'files read 5 times or more', `${rereadFilesHover(tool, label)} ${notSplitNote('maximum')}`, rereadFilesRepoMore)
+      : [{ key: 'files', label: 'files read 5 times or more', value: tool.files_5plus, tone: 1, text: fmtNum(tool.files_5plus),
+        hover: rereadFilesHover(tool, label) }],
   }))
 }
 
 function ReadBars(props: { body: RereadBody; label: Label }) {
   return <>
+    <RepoLegend split={props.body} other={hasOther(props.body.tools)} />
     <Bars name="reread-reads" title="File reads per tool: first reads and reads of a file already read" scale="whole"
       legend={[{ label: 'First read of a file by its agent', tone: 2 }, { label: 'Read again by the same agent', tone: 1 }]}
       axis="Bar: the tool's file reads with a recorded path (100%); segments: counts written on each."
       rows={readRows(props.body, props.label)} />
+    <Bars name="reread-reads-repos" title="File reads per tool, by repository"
+      axis="Length: file reads with a recorded path, one linear scale from 0; a segment per repository."
+      rows={repoReadRows(props.body, props.label, 'reads')} />
+    <Bars name="reread-again-repos" title="Reads of a file the same agent had already read, per tool, by repository"
+      axis="Length: reads again, one linear scale from 0; a segment per repository." rows={repoReadRows(props.body, props.label, 'again')} />
     <Bars name="reread-files" title="Files read 5 times or more by one agent, per tool"
-      axis="Length: number of files, linear from 0." rows={fileRows(props.body, props.label)} />
+      axis={`Length: number of files, linear from 0${props.body.tools.some(tool => tool.repos?.length) ? ', a segment per repository; ' +
+        'the most reads of one file is not split' : ''}.`} rows={fileRows(props.body, props.label)} />
     <Show when={props.body.summary.unmatched}>
       <p class={styles.note}>{fmtNum(props.body.summary.unmatched)} reads had no recorded path and are not compared.</p>
     </Show>

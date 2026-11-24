@@ -13,7 +13,8 @@ import type { FlowsBody } from './flowsModel'
 import type { SkillsBody } from './skillsModel'
 import type { McpBody } from './mcpModel'
 import type { KqlBody } from './kqlModel'
-import type { RepoSegment, RepoSplit } from './repoSplit'
+import { notSplitNote, repoParts, type RepoRef, type RepoSegment, type RepoSplit } from './repoSplit'
+import type { BarPart } from './Bars'
 import { sessionName } from './sessionName'
 
 export type { QueryBlock }
@@ -103,6 +104,8 @@ export type FailureBody = Base<'failures'> & {
 export type RereadTool = {
   tool: string; reads: number; repeat_reads: number; repeat_share: Num; files: number; files_5plus: number
   most_reads: number; repeat_bytes: Num; unmatched: number
+  /** Its parts per repository (reads, repeat_reads, files, files_5plus, repeat_bytes), repoSplit.ts; most_reads is not split. */
+  repos?: RepoSegment[]
 }
 export type RereadBody = Base<'rereads'> & {
   tools: RereadTool[]
@@ -131,10 +134,16 @@ export type TimeBody = Base<'time'> & {
   }
 }
 export type ContextBucket = 'under_50k' | '50_100k' | '100_200k' | '200_500k' | 'over_500k'
-export type ContextCell = { bucket: ContextBucket; requests: number; priced: number; cost_usd: Num; request_share: Num; cost_share: Num }
+export type ContextCell = {
+  bucket: ContextBucket; requests: number; priced: number; cost_usd: Num; request_share: Num; cost_share: Num
+  /** Its parts per repository (requests, cost_usd), repoSplit.ts. */
+  repos?: RepoSegment[]
+}
 export type ContextTool = {
   tool: string; requests: number; reported: number; p50_context: Num; p90_context: Num; cost_usd: Num; buckets: ContextCell[]
   heavy_requests: number; heavy_cost_usd: Num; small_requests: Num; small_cost_usd: Num
+  /** The whole bar per repository (reported, cost_usd), and the small steps per repository (small_requests, small_cost_usd). */
+  repos?: RepoSegment[]; small_repos?: RepoSegment[]
 }
 export type ContextBody = Base<'context'> & {
   tools: ContextTool[]
@@ -147,6 +156,8 @@ export type OrientationProject = { project_path: string; sessions: number; tools
 export type OrientationTool = {
   tool: string; sessions: number; edited: number; no_project: number; p50_requests: Num; never: number; never_requests: number
   never_cost_usd: Num
+  /** Its parts per repository (sessions, edited, never, never_requests, never_cost_usd), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
 export type OrientationBody = Base<'orientation'> & {
   projects: OrientationProject[]; tools: OrientationTool[]
@@ -155,9 +166,13 @@ export type OrientationBody = Base<'orientation'> & {
 export type FixedKind = 'instruction_file' | 'memory_file' | 'system_prompt_other' | 'skills' | 'mcp_instructions' | 'custom_agents' | 'tools_listed'
 export type FixedCell = {
   kind: FixedKind; reported: boolean; sessions: Num; session_share: Num; p50_tokens: Num; avg_tokens: Num; p50_items: Num; estimated: boolean
+  /** Its parts per repository (sessions, avg_tokens: the repository's tokens / all the tool's sessions), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
 export type FixedTool = {
   tool: string; sessions: number; p50_tokens: Num; p90_tokens: Num; avg_tokens: Num; p50_skills: Num; estimated: boolean; kinds: FixedCell[]
+  /** Its parts per repository (sessions, avg_tokens: the repository's tokens / all the tool's sessions), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
 export type FixedSkills = {
   tool: string; listed: Num; used: Num; listing_tokens: Num; unused_tokens: Num; uses: number; skills_used: number; triggers: string[]
@@ -511,6 +526,33 @@ export function rereadFinding(body: RereadBody) {
     (s.repeat_bytes == null ? 'the size of the repeated reads is not reported.' : `the repeated reads returned ${bytes(s.repeat_bytes)}.`)
 }
 
+/** A number a repository segment carries under `key`, or null when it carries none. */
+export const segmentValue = (segment: RepoSegment, key: string): Num => typeof segment[key] === 'number' ? segment[key] as number : null
+/**
+ * repoParts, with each segment's hover followed by `more(segment)` (that repository's figures the bar's length does not
+ * show), then by `detail`, the bar's own hover.
+ */
+export function repoPartsWith(segments: readonly RepoSegment[] | undefined, key: string, order: readonly RepoRef[] | undefined,
+  format: (value: number) => string, bar: string, measure: string, detail: string, more: (segment: RepoSegment) => string): BarPart[] {
+  return repoParts(segments, key, order, format, bar, measure).map(part => {
+    const segment = (segments ?? []).find(item => `repo:${item.repo}` === part.key)
+    return { ...part, hover: [part.hover, segment ? more(segment) : '', detail].filter(Boolean).join(' ') }
+  })
+}
+
+/** A repository's reads of one tool: its first reads and reads again, over how many files. */
+export function rereadRepoMore(segment: RepoSegment) {
+  const reads = segmentValue(segment, 'reads') ?? 0, again = segmentValue(segment, 'repeat_reads') ?? 0
+  return `First reads ${fmtNum(reads - again)}, read again ${fmtNum(again)}, over ${plural(segmentValue(segment, 'files') ?? 0, 'file')}; ` +
+    `${bytes(segmentValue(segment, 'repeat_bytes'))} returned again.`
+}
+/** The hover of a tool's whole reads, under its bar split by repository. */
+export const rereadToolHover = (tool: RereadTool, label: Label) =>
+  `${label(tool.tool)}: ${plural(tool.reads, 'read')} with a recorded path over ${plural(tool.files, 'file')}, ` +
+  `${fmtNum(tool.repeat_reads)} of them of a file the same agent had already read (${share(tool.repeat_share)}).`
+/** A repository's files read 5 times or more of one tool: out of how many files it read. */
+export const rereadFilesRepoMore = (segment: RepoSegment) => `Of ${plural(segmentValue(segment, 'files') ?? 0, 'file')} read in this repository.`
+
 /** The hover of a part of a tool's reads: first reads or reads again, their share of the tool's reads. */
 export function rereadHover(tool: RereadTool, part: 'first' | 'again', label: Label) {
   const n = part === 'first' ? tool.reads - tool.repeat_reads : tool.repeat_reads
@@ -623,6 +665,9 @@ export function smallStepHover(tool: ContextTool, label: Label) {
       `(${share(ratio(tool.small_requests, tool.reported))} of ${fmtNum(tool.reported)}), ${money(tool.small_cost_usd)} at list price.`
 }
 
+/** A repository's small steps of one tool: their cost. */
+export const smallRepoMore = (segment: RepoSegment) => `Their cost: ${money(segmentValue(segment, 'small_cost_usd'))} at list price.`
+
 export function orientationFinding(body: OrientationBody) {
   const s = body.summary
   const never = s.never ? ` ${fmtNum(s.never)} sessions recorded no edit; their main agents' requests cost ${money(s.never_cost_usd)}.` +
@@ -649,6 +694,17 @@ export function orientationToolHover(tool: OrientationTool, part: 'edited' | 'ne
   return `${label(tool.tool)}: ${fmtNum(tool.never)} of ${plural(tool.sessions, 'session')} (${share(ratio(tool.never, tool.sessions))}) ` +
     `recorded no edit; their main agents made ${plural(tool.never_requests, 'request')} costing ${money(tool.never_cost_usd)} at list price.`
 }
+
+/** A repository's sessions of one tool: with an edit, with none, and the requests and cost of those with none. */
+export function orientationRepoMore(segment: RepoSegment) {
+  const never = segmentValue(segment, 'never') ?? 0
+  return `Of them ${fmtNum(segmentValue(segment, 'edited') ?? 0)} recorded an edit and ${fmtNum(never)} no edit` +
+    (never ? `; the main agents of those with no edit made ${plural(segmentValue(segment, 'never_requests') ?? 0, 'request')} costing ` +
+      `${money(segmentValue(segment, 'never_cost_usd'))} at list price.` : '.')
+}
+/** A repository's sessions with no edit of one tool: how many, and their main agents' requests. */
+export const orientationNeverRepoMore = (segment: RepoSegment) =>
+  `${plural(segmentValue(segment, 'never') ?? 0, 'session')} with no edit, ${plural(segmentValue(segment, 'never_requests') ?? 0, 'request')} of their main agents.`
 
 /** A count and its noun: 1 session, 2 sessions. */
 export const plural = (n: number, noun: string) => `${fmtNum(n)} ${n === 1 ? noun : `${noun}s`}`
@@ -707,6 +763,16 @@ export function fixedListingHover(row: FixedSkills, part: 'used' | 'unused', lab
     : `${label(row.tool)}: listing of the ${count(row.listed == null || row.used == null ? null : row.listed - row.used)} skills listed and ` +
       `not used in the period, ${tokens(row.unused_tokens)} of ${tokens(row.listing_tokens)} (estimated).`
 }
+
+/** A repository's part of a tool's average fixed context: its sessions, and how the average is formed. */
+export const fixedRepoMore = (tool: FixedTool, segment: RepoSegment) =>
+  `${plural(segmentValue(segment, 'sessions') ?? 0, 'session')} in this repository; its tokens divided by all ` +
+  `${plural(tool.sessions, 'session')} of the tool, so the segments add up to the bar's average.`
+/** The hover of a tool's whole fixed context, under its bar split by repository. */
+export const fixedToolHover = (tool: FixedTool, label: Label) =>
+  `${label(tool.tool)}: average ${tokens(tool.avg_tokens)} per session over ${plural(tool.sessions, 'session')}` +
+  `${tool.estimated ? ' (estimated)' : ''}; median ${tokens(tool.p50_tokens)}, 90th percentile ${tokens(tool.p90_tokens)}. ${notSplitNote('median')}`
+export const NOT_SPLIT = 'Not split by repository.'
 
 export const SIGNAL_LABELS: Record<Signal, string> = {
   compaction: 'Repeated compaction', failure_streak: 'Failure streak', failed_delegation: 'Failed delegation',
