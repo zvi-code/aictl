@@ -11,6 +11,7 @@ session id its source carries. The fixtures use the tools' real field shapes.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime
@@ -265,6 +266,49 @@ def test_a_resumed_copy_under_another_project_folder(tmp_path):
     assert resumed_claude_sessions([projects]) == {B: A}
 
 
+def original_to_fork(projects: Path) -> Path:
+    folder = projects / "-work-repo"
+    write(folder / f"{A}.jsonl", [user(A, "first", 900), assistant(A, "a1", 890), assistant(A, "a2", 880)])
+    return folder
+
+
+def fork(folder: Path) -> None:
+    """B forks A: its file starts with A's lines rewritten to B's id, then adds its own call."""
+    time.sleep(0.01)  # B's file is created after A's, as a fork's always is
+    copied = [{**json.loads(line), "sessionId": B} for line in (folder / f"{A}.jsonl").read_text().splitlines()]
+    write(folder / f"{B}.jsonl", [*copied, user(B, "branch off", 500), assistant(B, "b1", 490)])
+
+
+@pytest.mark.parametrize("fork_first", [False, True])
+def test_a_forked_copy_with_the_new_id_leaves_each_call_with_the_session_that_made_it(tmp_path, fork_first):
+    """The call key holds no session, so the first file read used to decide: a re-read in the other order moved it."""
+    projects = tmp_path / "projects"
+    folder = original_to_fork(projects)
+    fork(folder)
+    if fork_first:
+        # B is read first: A was written last. (An mtime before a file's birth would move its birth.)
+        os.utime(folder / f"{A}.jsonl", (time.time() + 5, time.time() + 5))
+    db = Facts()
+    ingester(db, projects).poll()
+    assert sorted(r["session_id"] for r in requests(db).values()) == [A, A, B]
+    assert sessions(db)[B]["resumed_from"] == A
+
+
+def test_a_fork_read_after_a_restart_does_not_take_the_stored_calls(tmp_path):
+    projects = tmp_path / "projects"
+    folder = original_to_fork(projects)
+    first = Facts()
+    ingester(first, projects, checkpoint=StateFile(tmp_path / "transcript_usage.json")).poll()
+    fork(folder)
+    # A new process: it knows no call in memory, and A's file is unchanged since its read.
+    restarted = Facts(first.writer)
+    reader = ingester(restarted, projects, checkpoint=StateFile(tmp_path / "transcript_usage.json"))
+    reader._resume_before = time.time() + 60
+    reader.poll()
+    assert not any(A in str(p) for p in reader._offsets)
+    assert sorted(r["session_id"] for r in requests(restarted).values()) == [A, A, B]
+
+
 def test_a_copied_subagent_row_left_by_an_older_reader_is_deleted(tmp_path):
     projects = tmp_path / "projects"
     folder = original(projects)
@@ -412,6 +456,31 @@ def test_a_vscode_chat_with_no_known_session_keeps_its_own_id(tmp_path):
     target = message_facts(tmp_path, "vscode")
     assert VSCodeChatLogsIngester(tmp_path / "workspaceStorage", target).poll() >= 1
     assert {r["session_id"] for r in current(target.writer, "vscode_chat_messages")} == {"vs-real"}
+
+
+@pytest.mark.parametrize("logs_first", [True, False])
+@pytest.mark.parametrize("empty_debug_log", [False, True])
+def test_a_vscode_chat_is_one_session_whichever_reader_reads_it_first(tmp_path, logs_first, empty_debug_log):
+    """The chat-session reader owns the session row; the chat-log reader stores the messages under the same id.
+
+    The chat-log reader once wrote its own ``vscode-chat:<id>`` row beside it (68 chats on one machine), and
+    a debug log with no request took the session from its chat file, leaving its messages with no row."""
+    workspace = tmp_path / "vscode" / "workspaceStorage" / "ws1"
+    chat = workspace / "chatSessions" / "vs-real.jsonl"
+    chat.parent.mkdir(parents=True)
+    chat.write_text(json.dumps({"kind": 0, "v": {"sessionId": "vs-real", "creationDate": int(NOW * 1000), "requests": [
+        {"requestId": "r1", "timestamp": int(NOW * 1000), "message": {"text": "hi"}, "response": [{"value": "hello"}],
+         "modelId": "gpt-4o", "result": {"metadata": {"promptTokens": 10, "outputTokens": 5}}}]}}) + "\n", encoding="utf-8")
+    if empty_debug_log:
+        write(workspace / "GitHub.copilot-chat" / "debug-logs" / "vs-real" / "main.jsonl",
+              [{"type": "session_start", "ts": int(NOW * 1000)}])
+    db = Facts()
+    logs = VSCodeChatLogsIngester(workspace.parent, MessageFacts(db, CollectionStatus(db.writer), StateFile(tmp_path / "c.json")))
+    reader = ingester(db, tmp_path / "projects")
+    for step in ([logs.poll, reader.poll] if logs_first else [reader.poll, logs.poll]):
+        step()
+    assert {r["session_id"] for r in current(db.writer, "vscode_chat_messages")} == {"vs-real"}
+    assert [r["session_id"] for r in current(db.writer, "sessions")] == ["vs-real"]
 
 
 def test_a_cursor_message_belongs_to_its_chat_not_the_other_one_open(tmp_path):

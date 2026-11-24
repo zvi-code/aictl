@@ -621,7 +621,7 @@ class OtelReceiver:
                     input=_otel_tool_input(d),
                     result_summary=str(d.get("tool_response", d.get("result", "")))[:500],
                     source="otel",
-                    source_event_id=_otel_tool_event_id(d),
+                    source_event_id=_otel_tool_event_id(d, e.ts),
                 )
             )
         return invocations
@@ -891,19 +891,20 @@ def _otel_tool_input(d: dict) -> dict:
     return inp if isinstance(inp, dict) else {}
 
 
-def _otel_tool_event_id(d: dict) -> str:
-    """Best-effort stable id for a tool invocation, anchoring dedup.
+def _otel_tool_event_id(d: dict, ts: float) -> str:
+    """The id of a tool invocation, the key of its row.
 
-    Prefers a captured OTel span id; falls back to ``session:event.sequence``
-    (both present on Claude Code ``tool_result`` logs); else empty (dedup
-    falls back to value-based comparison).
+    The tool's own call id (``tool_use_id``, on every Claude Code ``tool_result`` log) first, then a
+    captured span id. ``event.sequence`` restarts with each process of a session, so two calls of one
+    session can carry the same number: without an id, the key is the session, the sequence and the
+    record's own time in milliseconds. Else empty (dedup compares the values).
     """
-    span_id = d.get("otel.span_id") or d.get("span_id")
-    if span_id:
-        return str(span_id)
+    for name in ("tool_use_id", "otel.span_id", "span_id"):
+        if value := d.get(name):
+            return str(value)
     seq = d.get("event.sequence")
     if seq not in (None, ""):
-        return f"{d.get('session_id', '')}:{seq}"
+        return f"{d.get('session_id', '')}:{seq}@{round(ts * 1000)}"
     return ""
 
 

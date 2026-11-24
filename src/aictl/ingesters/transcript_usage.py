@@ -608,6 +608,78 @@ def claude_resume_origin(path: Path, scan_lines: int = 5000) -> str:
     return ""
 
 
+def claude_call_mark(obj: dict) -> str:
+    """The model call a Claude Code line reports, as its message and request id; '' for a line without one."""
+    msg = obj.get("message")
+    msg_id = str(msg.get("id") or "") if isinstance(msg, dict) else ""
+    req_id = str(obj.get("requestId") or "")
+    return f"{msg_id}:{req_id}" if msg_id or req_id else ""
+
+
+def _born(path: Path) -> tuple[float, str]:
+    """The order in which Claude Code files were created: birth time, then name (a system without birth times uses the name)."""
+    try:
+        return (float(getattr(path.stat(), "st_birthtime", 0.0)), path.stem)
+    except OSError:
+        return (0.0, path.stem)
+
+
+class ClaudeCopies:
+    """Which session made each model call that Claude Code main files hold, by folder.
+
+    A fork (and some resumes) writes the earlier session's lines into the new file with the new
+    session's id: the copy differs from the original only in ``sessionId``, and need not be at the start
+    of the file. A call held under their own id by several main files of one folder is the session's
+    whose file was created first, whichever file is read first: the call's row is keyed by message and
+    request id, without the session, so it never moves to another session after it is stored. Each file
+    is read once and then from where the last read stopped (the files only grow); only call ids are kept.
+    """
+
+    def __init__(self) -> None:
+        self._read: dict[Path, int] = {}  # path -> bytes read
+        self._first: dict[Path, dict[str, tuple[tuple[float, str], str]]] = {}  # folder -> {call: (born, session)}
+
+    def refresh(self, folder: Path) -> None:
+        """Read what the main files of *folder* added since the last look."""
+        first = self._first.setdefault(folder, {})
+        for path in folder.glob("*.jsonl"):
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            done = self._read.get(path, 0)
+            if size < done:
+                done = 0
+            if size == done:
+                continue
+            born = _born(path)
+            try:
+                with open(path, "rb") as fh:
+                    fh.seek(done)
+                    for line in fh:
+                        if not line.endswith(b"\n"):
+                            break  # a line still being written: read it next time
+                        done += len(line)
+                        if b'"requestId"' not in line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(obj, dict) and obj.get("sessionId") == path.stem and (call := claude_call_mark(obj)):
+                            held = first.get(call)
+                            if held is None or born < held[0]:
+                                first[call] = (born, path.stem)
+            except OSError:
+                continue
+            self._read[path] = done
+
+    def owner(self, path: Path, call: str) -> str:
+        """The session that made *call*, which the main file *path* holds under its own id."""
+        held = self._first.get(path.parent, {}).get(call) if call else None
+        return held[1] if held else path.stem
+
+
 def resumed_claude_sessions(projects_dirs: Iterable[Path]) -> dict[str, str]:
     """{session: the session it replays} for every resumed or forked Claude Code session found."""
     found = {}
@@ -1297,6 +1369,7 @@ class TranscriptUsageIngester:
         self._store = CopilotStoreReader(self.copilot_state.parent, self.facts)
         self.facts.surface = self._store.surface
         self._claude_facts = ClaudeFacts(self.facts)
+        self._claude_copies = ClaudeCopies()
         self._rewind_seen: dict[Path, int] = {}
         self._vscode_debug_facts: dict[Path, VSCodeDebugFacts] = {}
         self._vscode_chat_facts: dict[Path, VSCodeChatFacts] = {}
@@ -1812,8 +1885,12 @@ class TranscriptUsageIngester:
             # Claude Code keeps its file checkpoint backups beside projects/, in file-history/<session>/.
             self._claude_facts.history_dir = claude_roots[path].parent / "file-history"
             own = copied = False
+            if main and sid == path.stem:
+                self._claude_copies.refresh(path.parent)
             for obj in read(path, _CLAUDE_RECORD_TYPES):
                 owner = claude_line_session(obj, sid)
+                if owner == sid and main and sid == path.stem:
+                    owner = self._claude_copies.owner(path, claude_call_mark(obj))
                 if owner != sid:
                     # A copy of another session's line (resume or fork): its facts come from that
                     # session's own file. The copy only says where this session came from.
@@ -1930,8 +2007,10 @@ class TranscriptUsageIngester:
             sid = path.stem
             chat_facts = self._chat_facts_for(path, sid)
             # The debug log has per-request numbers for such a session, so the
-            # chat file only adds its prompts.
-            has_debug_usage = sid in self._debug_logs.sessions
+            # chat file only adds its prompts. A debug log with no request and no
+            # turn leaves the session to its chat file, or it would have no row.
+            debug = self._debug_logs.sessions.get(sid)
+            has_debug_usage = debug is not None and bool(debug.models or debug.turns)
             named = ""
             for obj in chat_lines(path):
                 chat_facts.feed(obj)

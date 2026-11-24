@@ -349,8 +349,25 @@ def test_extract_tool_invocations_from_otel_tool_result():
     assert inv.input.get("full_command") == "git status"
     # result_summary comes from tool_response, newlines preserved but clipped.
     assert "clean" in inv.result_summary
-    # source_event_id anchors dedup: session:event.sequence when no span id.
-    assert inv.source_event_id == "otel-tool-sess:18"
+    # Without a call id: the session, the sequence and the record's time (ms).
+    assert inv.source_event_id == "otel-tool-sess:18@1700000000000"
+
+
+def test_an_otel_tool_call_is_keyed_by_its_call_id_not_its_restarting_sequence():
+    """event.sequence restarts with each process of a session: two calls once shared one key, and the later
+    one moved the stored row's time by hours."""
+    receiver = OtelReceiver()
+    invs = []
+    for call_id, ts_nano in (("toolu_first", "1700000000000000000"), ("toolu_second", "1700050000000000000")):
+        body = _make_otlp_logs("tool_result", ts_nano=ts_nano, attrs={
+            "tool_name": "Bash", "success": "true", "session.id": "s", "event.sequence": "7", "tool_use_id": call_id})
+        invs += receiver.extract_tool_invocations(receiver.parse_logs(body))
+    assert [i.source_event_id for i in invs] == ["toolu_first", "toolu_second"]
+    without_id = [
+        receiver.extract_tool_invocations(receiver.parse_logs(_make_otlp_logs("tool_result", ts_nano=ts_nano, attrs={
+            "tool_name": "Bash", "success": "true", "session.id": "s", "event.sequence": "7"})))[0].source_event_id
+        for ts_nano in ("1700000000000000000", "1700050000000000000")]
+    assert len(set(without_id)) == 2
 
 
 def test_extract_tool_invocations_ignores_tool_decision():
@@ -526,7 +543,7 @@ def test_tool_invocations_persisted_via_logs_endpoint(otel_server):
     row = rows[0]
     assert row["tool_name"] == "Read"
     assert row["source"] == "otel"
-    assert row["source_event_id"] == "otel-persist-sess:42"
+    assert row["source_event_id"].startswith("otel-persist-sess:42@")
     text, = [r for _, table, batch in operations if table == "tool_invocations_text" for r in batch]
     assert text["dedup_key"] == row["dedup_key"]
     assert "/tmp/x.py" in text["input"]
