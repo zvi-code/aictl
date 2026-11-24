@@ -5,7 +5,10 @@ import type { CardProps } from '../../src/panels/insights/InsightCard'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import Subagents from '../../src/panels/insights/Subagents'
 import AfterFailure from '../../src/panels/insights/AfterFailure'
-import { sumRepos, type FailureBody, type PauseBody, type SubagentBody } from '../../src/panels/insights/insightsModel'
+import ProblemSessions from '../../src/panels/insights/ProblemSessions'
+import {
+  problemCountRepos, sumRepos, type FailureBody, type PauseBody, type ProblemBody, type SubagentBody,
+} from '../../src/panels/insights/insightsModel'
 import { notSplitNote, OTHER, OTHER_REPOS, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -265,6 +268,67 @@ describe('INS-RS-F · After a failure: bars split by repository', () => {
     expect(box.querySelector('[data-chart="failure-outcomes-repos"]')).toBeNull()
     expect(texts(box.querySelectorAll('[data-chart="failure-calls"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['failed'])
     expect(texts(box.querySelectorAll('[data-chart="failure-runs"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['runs'])
+    dispose()
+  })
+})
+
+// ─── Problem sessions ────────────────────────────────────────────────────────────────────────────────────────────────
+const probWhole = { sessions: 40, flagged: 10, multi: 4, cost_usd: 80, flagged_cost_usd: 20 }
+const problems = {
+  ...base, card: 'problems', repo_order: order, repo_others: others, sessions: [],
+  tools: [{
+    tool: 'claude-code', sessions: 40, reports: true, flagged: 10, multi: 4, flagged_cost_usd: 20, cost_usd: 80,
+    signals: [
+      { signal: 'compaction', reported: true, sessions: 6, share: 0.15, cost_usd: 12,
+        repos: [seg('/src/app', { sessions: 5, cost_usd: 10 }, { sessions: 6, cost_usd: 12 }, { sessions: 0.2 }),
+          seg('/src/docs', { sessions: 1, cost_usd: 2 }, { sessions: 6, cost_usd: 12 })] },
+      { signal: 'api_error', reported: false, sessions: null, share: null, cost_usd: null, repos: [] },
+    ],
+    repos: [seg('/src/app', { sessions: 30, flagged: 8, multi: 3, cost_usd: 60, flagged_cost_usd: 16 }, probWhole),
+      seg('', { sessions: 10, flagged: 2, multi: 1, cost_usd: 20, flagged_cost_usd: 4 }, probWhole)],
+  }],
+  signals: [],
+  pairs: [{ signals: ['compaction', 'failure_streak'], sessions: 4, cost_usd: 10,
+    repos: [seg('/src/app', { sessions: 3, cost_usd: 6 }, { sessions: 4, cost_usd: 10 }), seg('/src/docs', { sessions: 1, cost_usd: 4 }, { sessions: 4, cost_usd: 10 })] }],
+  projects: [],
+  summary: { sessions: 40, flagged: 10, flagged_share: 0.25, multi: 4, flagged_cost_usd: 20, not_reporting: [] },
+} as unknown as ProblemBody
+
+describe('INS-RS-F · Problem sessions: bars split by repository', () => {
+  it('derives none, one and two or more per repository from sessions, flagged and multi', () => {
+    const split = problemCountRepos(problems.tools[0])
+    expect((['none', 'one', 'multi'] as const).map(part => split[part].map(row => [row.repo, row.sessions, row.share.sessions])))
+      .toEqual([[['/src/app', 22, 22 / 30], ['', 8, 8 / 30]], [['/src/app', 5, 5 / 6], ['', 1, 1 / 6]], [['/src/app', 3, 0.75], ['', 1, 0.25]]])
+  })
+
+  it('keeps the bar by number of signals, adds a row per count split by repository, and splits the signals and the pairs', () => {
+    const { box, dispose } = draw(ProblemSessions, 'problems', problems)
+    expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    expect(texts(box.querySelectorAll('[data-chart="problem-counts"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['multi', 'one', 'none'])
+    const counts = box.querySelector('[data-chart="problem-counts-repos"]')!
+    expect(texts(counts.querySelectorAll('[data-row]'), row => row.getAttribute('data-row'))).toEqual(['claude-code:multi', 'claude-code:one', 'claude-code:none'])
+    const none = counts.querySelector('[data-row="claude-code:none"]')!
+    expect([repos(none), written(none)]).toEqual([['0', OTHER_TEXT], ['22', '8']])
+    expect(tip(none, 'repo:/src/app')).toBe('claude-code, sessions with no signal — app (/src/app): 22 · 73% of this bar. claude-code: 30 ' +
+      'sessions with no signal, 75% of its 40 sessions.')
+    const signals = box.querySelector('[data-chart="problem-signals-claude-code"]')!
+    const compaction = signals.querySelector('[data-row="compaction"]')!
+    expect([repos(compaction), written(compaction)]).toEqual([['0', '1'], ['5', '1']])
+    expect(tip(compaction, 'repo:/src/app')).toMatch(/^claude-code, repeated compaction — app \(\/src\/app\): 5 · 83% of this bar · 20% of app own sessions with this signal\. claude-code, repeated compaction: 6 of 40 sessions/)
+    expect(signals.querySelectorAll('[data-row="api_error"] [data-part]').length).toBe(0)
+    expect(repos(box.querySelector('[data-chart="problem-pairs"] [data-row]')!)).toEqual(['0', '1'])
+    dispose()
+  })
+
+  it('draws the old bars when the answer carries no split', () => {
+    const plain = { ...problems, repo_order: [], repo_others: null,
+      tools: problems.tools.map(tool => ({ ...tool, repos: undefined, signals: tool.signals.map(cell => ({ ...cell, repos: undefined })) })),
+      pairs: problems.pairs.map(pair => ({ ...pair, repos: undefined })) } as unknown as ProblemBody
+    const { box, dispose } = draw(ProblemSessions, 'problems', plain)
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-chart="problem-counts-repos"]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-chart="problem-signals-claude-code"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['compaction'])
+    expect(texts(box.querySelectorAll('[data-chart="problem-pairs"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['sessions'])
     dispose()
   })
 })

@@ -752,6 +752,24 @@ export function problemCounts(tool: ProblemTool) {
   const flagged = tool.flagged ?? 0, multi = tool.multi ?? 0
   return { none: Math.max(0, tool.sessions - flagged), one: Math.max(0, flagged - multi), multi }
 }
+/**
+ * A tool's sessions with no, one, and two or more signals, per repository: sessions − flagged, flagged − multi and multi
+ * of each repository's segment, under the measure `sessions`, with their share of each bar. A share of the repository's
+ * own sessions is not given: the answer gives the parts' shares of their own totals only.
+ */
+export function problemCountRepos(tool: ProblemTool): Record<'none' | 'one' | 'multi', RepoSegment[]> {
+  const num = (value: unknown) => typeof value === 'number' ? value : 0
+  const part = (read: (segment: RepoSegment) => number) => {
+    const rows = (tool.repos ?? []).map(segment => ({ repo: segment.repo, name: segment.name, sessions: Math.max(0, read(segment)) }))
+    const whole = rows.reduce((sum, row) => sum + row.sessions, 0)
+    return rows.map((row): RepoSegment => ({ ...row, share: { sessions: whole > 0 ? row.sessions / whole : null }, of_repo: { sessions: null } }))
+  }
+  return {
+    none: part(segment => num(segment.sessions) - num(segment.flagged)),
+    one: part(segment => num(segment.flagged) - num(segment.multi)),
+    multi: part(segment => num(segment.multi)),
+  }
+}
 export function problemCountHover(tool: ProblemTool, part: 'none' | 'one' | 'multi', label: Label) {
   const n = problemCounts(tool)[part]
   const what = part === 'none' ? 'no signal' : part === 'one' ? 'exactly one signal' : 'two or more signals'

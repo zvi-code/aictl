@@ -4,22 +4,41 @@ import { Bars, type BarRow } from './Bars'
 import { EVIDENCE } from './evidence'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  money, plural, problemCellHover, problemCountHover, problemCounts, problemFinding, problemHero, problemPairHover, problemSignalHover,
-  share, SIGNAL_LABELS, SIGNALS, toolLabel,
+  money, plural, problemCellHover, problemCountHover, problemCountRepos, problemCounts, problemFinding, problemHero, problemPairHover,
+  problemSignalHover, share, SIGNAL_LABELS, SIGNALS, toolLabel,
   type Label, type ProblemBody, type ProblemTool, type Signal,
 } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther, repoParts } from './repoSplit'
 import styles from './Insights.module.css'
 
 const SIGNAL_TONE: Record<Signal, number> = { compaction: 0, failure_streak: 8, failed_delegation: 1, api_error: 3, open_todos: 2, hook_failure: 5 }
 
-/** One tool: the sessions each signal flags, a signal it does not record named as such. */
-function signalRows(tool: ProblemTool, label: Label): BarRow[] {
+/** One tool: the sessions each signal flags (a segment per repository where the answer splits it), a signal it does not record named as such. */
+function signalRows(body: ProblemBody, tool: ProblemTool, label: Label): BarRow[] {
   return tool.signals.map(cell => ({
     key: cell.signal, label: SIGNAL_LABELS[cell.signal],
     total: cell.reported ? `${fmtNum(cell.sessions ?? 0)} · ${share(cell.share)}` : 'not recorded by this tool',
-    parts: cell.reported ? [{ key: cell.signal, label: 'sessions', value: cell.sessions, tone: SIGNAL_TONE[cell.signal],
-      text: fmtNum(cell.sessions ?? 0), hover: problemSignalHover(tool, cell, label) }] : [],
+    parts: !cell.reported ? [] : cell.repos?.length
+      ? repoParts(cell.repos, 'sessions', body.repo_order, fmtNum, `${label(tool.tool)}, ${SIGNAL_LABELS[cell.signal].toLowerCase()}`,
+        'sessions with this signal', problemSignalHover(tool, cell, label))
+      : [{ key: cell.signal, label: 'sessions', value: cell.sessions, tone: SIGNAL_TONE[cell.signal],
+        text: fmtNum(cell.sessions ?? 0), hover: problemSignalHover(tool, cell, label) }],
   }))
+}
+
+const COUNT_NAMES = { multi: 'two or more signals', one: 'one signal', none: 'no signal' } as const
+
+/** Per tool, its sessions with two or more, one and no signal, each a row split by repository; the bar above splits them by count. */
+function countRepoRows(body: ProblemBody, label: Label): BarRow[] {
+  return body.tools.filter(tool => tool.reports && tool.repos?.length).flatMap(tool => {
+    const split = problemCountRepos(tool), n = problemCounts(tool)
+    return (['multi', 'one', 'none'] as const).map(part => ({
+      key: `${tool.tool}:${part}`, label: `${label(tool.tool)}: ${COUNT_NAMES[part]}`, total: plural(n[part], 'session'),
+      parts: repoParts(split[part], 'sessions', body.repo_order, fmtNum, `${label(tool.tool)}, sessions with ${COUNT_NAMES[part]}`, 'sessions',
+        problemCountHover(tool, part, label)),
+    })).filter(row => row.parts.length)
+  })
 }
 
 /** Per tool, its sessions by how many signals they recorded. */
@@ -41,8 +60,11 @@ function pairRows(body: ProblemBody): BarRow[] {
   return body.pairs.map(pair => ({
     key: pair.signals.join('+'), label: `${SIGNAL_LABELS[pair.signals[0]]} + ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()}`,
     total: `${plural(pair.sessions, 'session')} · ${money(pair.cost_usd)}`,
-    parts: [{ key: 'sessions', label: 'sessions with both', value: pair.sessions, tone: 1, text: fmtNum(pair.sessions),
-      hover: problemPairHover(pair, body.summary.flagged) }],
+    parts: pair.repos?.length ? repoParts(pair.repos, 'sessions', body.repo_order, fmtNum,
+      `${SIGNAL_LABELS[pair.signals[0]]} + ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()}`, 'sessions with both signals',
+      problemPairHover(pair, body.summary.flagged))
+      : [{ key: 'sessions', label: 'sessions with both', value: pair.sessions, tone: 1, text: fmtNum(pair.sessions),
+        hover: problemPairHover(pair, body.summary.flagged) }],
   }))
 }
 
@@ -112,7 +134,8 @@ function SignalGrid(props: { body: ProblemBody; label: Label }) {
     </Show>
     <Show when={props.body.pairs.length} fallback={<p class={styles.note}>No session recorded two signals in this period.</p>}>
       <Bars name="problem-pairs" title="Two signals in the same session"
-        axis="Length: sessions that recorded both signals, linear from 0; beside it their cost at list price."
+        axis={`Length: sessions that recorded both signals, linear from 0${props.body.pairs.some(pair => pair.repos?.length)
+          ? ', a segment per repository' : ''}; beside it their cost at list price.`}
         rows={pairRows(props.body)} />
     </Show>
   </>
@@ -127,16 +150,21 @@ export default function ProblemSessions(props: CardProps) {
     hero={problemHero}
     finding={body => problemFinding(body, label)}
     visual={body => <>
+      <RepoLegend split={body} other={hasOther([...body.tools, ...body.tools.flatMap(tool => tool.signals), ...body.pairs])} />
       <Show when={countRows(body, label).length}>
         <Bars name="problem-counts" title="Sessions by number of signals recorded, per tool" scale="whole"
           legend={[{ label: 'Two or more signals', tone: 8 }, { label: 'One signal', tone: 5 }, { label: 'No signal', tone: 7 }]}
           axis="Bar: the tool's sessions in the period (100%); segments: sessions with two or more, one or no signal."
           rows={countRows(body, label)} />
+        <Bars name="problem-counts-repos" title="Sessions per tool by number of signals recorded, by repository"
+          axis="Length: sessions, one linear scale from 0 for every row; a segment per repository."
+          rows={countRepoRows(body, label)} />
       </Show>
       <For each={body.tools.filter(tool => tool.reports)}>{tool => <Bars name={`problem-signals-${tool.tool}`}
         title={`${label(tool.tool)}: sessions per signal`}
-        axis={`Length: sessions that recorded the signal, linear from 0; beside it the count and its share of the tool's ${plural(tool.sessions, 'session')}.`}
-        rows={signalRows(tool, label)} />}</For>
+        axis={`Length: sessions that recorded the signal, linear from 0${tool.signals.some(cell => cell.repos?.length) ? ', a segment per ' +
+          'repository' : ''}; beside it the count and its share of the tool's ${plural(tool.sessions, 'session')}.`}
+        rows={signalRows(body, tool, label)} />}</For>
       <h3 class={styles.subhead}>Signals per project</h3>
       <SignalGrid body={body} label={label} />
     </>}
