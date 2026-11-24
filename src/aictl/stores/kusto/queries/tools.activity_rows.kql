@@ -9,6 +9,17 @@ let cursor_row = parse_json(after_row);
 // empty for the others.
 let wants_summary = kind_filter == 'failures';
 let wants_input = kind_filter == 'loops';
+// A test run, as a superset of the board's rule (is_command_tool and shell_program.is_test_run):
+// the tool name looks like a command tool, and the command without its quotes names a test
+// runner (TEST_RUNNERS) as a whole word or as the last part of a path, or a program of
+// TEST_SUBCOMMANDS followed by the word `test`. The board applies the exact rule to the calls
+// this returns; test_board_api's superset test checks this against shell_program.
+let command_tool = (name:string) {
+    name matches regex @"(?i)bash|shell|terminal|powershell|exec_?command|run_?command|execute_?command"
+};
+let names_runner = (t:string) {
+    replace_regex(tolower(t), @"['""]", '') matches regex @"(^|[\s;&|()/\\])((pytest|vitest|jest|tox|ctest|unittest|mocha|playwright|nox)(\.(exe|cmd|bat|com|ps1))?|(npm|pnpm|yarn|bun|go|cargo|make|dotnet|mvn|gradle|gradlew|deno|swift|mix)(\.(exe|cmd|bat|com|ps1))?(?:[\s()]|<<-?\s*[a-z_][\w-]*)+test)($|[\s;&|()<>\\])"
+};
 let raw_calls = () { tool_invocations
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
@@ -21,7 +32,8 @@ let eligible = (t:real, n:string, s:string, name:string, error:long, confirmatio
              kind_filter == 'pending', confirmation == 'pending',
              kind_filter == 'failures', error == 1 and not(name startswith_cs 'permission:'),
              kind_filter == 'loops', not(name startswith_cs 'permission:'),
-             kind_filter == 'tests')
+             kind_filter == 'tests', command_tool(name),
+             false)
 };
 let retained = () { union isfuzzy=true
     (datatable(['project']:string, node_id:string, dedup_key:string, _v:datetime, input:string, result_summary:string, target:string, _deleted:bool)[]),
@@ -30,19 +42,18 @@ let retained = () { union isfuzzy=true
     | where all_nodes or node_id == requested_node
 };
 // A test run has a test-like target in some version, in the call or in its retained text.
-let text_tests = retained() | where kind_filter == 'tests' and (target contains 'test' or target contains 'jest' or target contains 'tox')
+let text_tests = retained() | where kind_filter == 'tests' and names_runner(target)
     | distinct dedup_key;
 // Select possible keys, then apply the same filters to the winning versions.
 let keys = raw_calls()
     | where eligible(ts,node_id,session_id,tool_name,is_error,confirm)
     | extend inline_target=column_ifexists('target', '')
-    | where kind_filter != 'tests' or inline_target contains 'test' or inline_target contains 'jest'
-        or inline_target contains 'tox' or fact_key in (text_tests)
+    | where kind_filter != 'tests' or names_runner(inline_target) or fact_key in (text_tests)
     | distinct fact_key;
 let calls = materialize(raw_calls()
     | where fact_key in (keys)
     | extend deleted=column_ifexists('_deleted', false), target=column_ifexists('target', '')
-    | extend inline_test=kind_filter == 'tests' and (target contains 'test' or target contains 'jest' or target contains 'tox')
+    | extend inline_test=kind_filter == 'tests' and names_runner(target)
     | summarize arg_max(_v, deleted, id, ts, session_id, agent_id, tool_name, is_error, exit_code, duration_ms,
                           confirm, confirm_wait_ms, inline_test, dedup_key) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and eligible(ts,node_id,session_id,tool_name,is_error,confirm)
@@ -51,11 +62,33 @@ let calls = materialize(raw_calls()
 let call_text = () { retained() | where dedup_key in (calls | project dedup_key) };
 let test_targets = call_text()
     | where kind_filter == 'tests'
-    | extend has_target=isnotempty(target), is_test=target contains 'test' or target contains 'jest' or target contains 'tox'
+    | extend has_target=isnotempty(target), is_test=names_runner(target)
     | summarize arg_max(_v, _deleted, has_target, is_test) by ['project'], node_id, dedup_key
     | where not(coalesce(_deleted, false))
     | project ['project'], node_id, fact_key=dedup_key, has_target, is_test;
-let page = materialize(calls
+// The loop finder (find_loops) reads the calls of one agent in order. A loop is made of failing
+// calls (an error, or a nonzero exit) and edits; any other call ends it, and so does a run of
+// such calls: of each run only its first call is returned. The edit test is a superset of the
+// board's is_edit_tool, so a call the board does not read as an edit is still returned. Of a run
+// of edits that succeed, the finder uses only the first (where the loop starts): a plain edit,
+// one whose name is a plain word that is surely not a server tool, is returned only when the
+// call before it is not one.
+let streamed = union
+    (calls | where kind_filter != 'loops'),
+    (calls | where kind_filter == 'loops'
+        | extend agent_part=iff(isempty(agent_id) or agent_id == session_id, '', agent_id),
+                 failing=coalesce(is_error, 0) != 0 or (isnotnull(exit_code) and exit_code != 0),
+                 edit=tool_name matches regex @"(?i)edit|write|patch|replace|create_?file|insert"
+        | extend relevant=failing or edit,
+                 plain_edit=edit and not(failing) and tool_name matches regex @"^[A-Za-z0-9_]+$"
+                     and not(tool_name startswith_cs 'mcp_')
+        | sort by node_id asc, session_id asc, agent_part asc, ts asc, id asc nulls first, fact_key asc, ['project'] asc
+        | extend stream_start=row_number(1, prev(node_id) != node_id or prev(session_id) != session_id
+                                            or prev(agent_part) != agent_part) == 1
+        | extend keep=stream_start or (relevant and not(plain_edit and prev(plain_edit))) or (not(relevant) and prev(relevant))
+        | where keep
+        | project-away agent_part, failing, edit, relevant, plain_edit, stream_start, keep);
+let page = materialize(streamed
     | lookup kind=leftouter test_targets on ['project'], node_id, fact_key
     | where kind_filter != 'tests' or iff(has_target, is_test, inline_test)
     | where isempty(after_row) or case(

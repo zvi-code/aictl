@@ -1,5 +1,9 @@
 import json
+import random
+import re
+from pathlib import Path
 from types import SimpleNamespace
+
 import pytest
 
 from aictl.dashboard.board_filters import Filters
@@ -20,6 +24,8 @@ from aictl.dashboard.scoped_history import _reported_machine
 from aictl.stores import Store
 from aictl.stores.base import ReadResult, StoreError
 from aictl.stores.kusto.maintenance import _logical_sample_count
+
+QUERIES = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "kusto" / "queries"
 
 
 def test_runtime_averages_per_node_before_summing(kusto_store):
@@ -172,6 +178,100 @@ def test_activity_rows_return_only_the_text_each_kind_uses(kusto_store):
     assert [(row["target"], row["result_summary"]) for row in failures] == [("pytest bad", "out")]
 
 
+def _call_stream(n_quiet: int) -> list[tuple]:
+    """One agent's calls: (key, tool, target, is_error, exit_code). A loop of three failing test runs
+    after edits, and a failing call repeated three times, with *n_quiet* successful reads between them."""
+    calls = [("e1", "Edit", "a.py", 0, None), ("t1", "Bash", "pytest x", 0, 1),
+             ("e2", "Write", "a.py", 0, None), ("e2b", "MultiEdit", "b.py", 0, None), ("e2c", "Edit", "c.py", 0, None),
+             ("t2", "Bash", "pytest x", 0, 1),
+             ("e3", "Edit", "a.py", 0, None), ("t3", "Bash", "pytest x", 0, 1)]
+    calls += [(f"q{i}", "Read", f"f{i}.py", 0, 0) for i in range(n_quiet)]
+    calls += [(f"f{i}", "Bash", "ls /missing", 1, 2) for i in range(3)]
+    calls += [(f"r{i}", "Grep", "test", 0, 0) for i in range(n_quiet)]
+    return calls
+
+
+@pytest.mark.parametrize("n_quiet", [2, 40])
+def test_loop_search_reads_the_calls_a_loop_can_hold_not_every_call(kusto_store, n_quiet):
+    """Found on real data: the loop search read every call of its sessions (99,178 rows for 26 sessions
+    in 30 days). A run of calls that cannot be in a loop now costs one row, and the loops found are the same."""
+    from aictl.dashboard.board_projection import _Call, find_loops
+
+    seed = kusto_store.insert
+    reader = kusto_store.history_store.reader
+    calls = _call_stream(n_quiet)
+    for i, (key, tool, target, error, exit_code) in enumerate(calls):
+        seed("tool_invocations", dedup_key=key, id=i, ts=100.0 + i, session_id="s", tool_name=tool, is_error=error,
+             exit_code=exit_code)
+        seed("tool_invocations_text", dedup_key=key, target=target, input=f"in {target}")
+    rows = reader.read("tools.activity_rows", {"since": 99.0, "until": 1000.0, "kind_filter": "loops", "limit": 1000}).rows
+    # The edit loop's 3 test runs and the first edit before each, 3 failing calls, and one call for each
+    # run of reads around them: the edits after the first of a run are left out.
+    assert len(rows) == 11
+    every = [_Call(100.0 + i, tool, target if error or exit_code else "", error, exit_code)
+             for i, (_k, tool, target, error, exit_code) in enumerate(calls)]
+    returned = [_Call(r["ts"], r["tool_name"], r["target"], r["is_error"], r["exit_code"]) for r in rows]
+    found = [{k: v for k, v in loop.items() if k != "at_end"} for loop in find_loops(every)]
+    assert [{k: v for k, v in loop.items() if k != "at_end"} for loop in find_loops(returned)] == found
+    assert [loop["at_end"] for loop in find_loops(returned)] == [loop["at_end"] for loop in find_loops(every)]
+    assert len(found) == 2
+
+
+def test_test_run_read_leaves_out_commands_that_only_mention_tests(kusto_store):
+    """Found on real data: 33,044 rows were read for 4,259 test runs, most of them searches and edits of test files."""
+    seed = kusto_store.insert
+    reader = kusto_store.history_store.reader
+    commands = [("Bash", "cd app && pytest -q"), ("Bash", "npm 'test'"), ("Bash", "npx playwright test"),
+                ("Bash", "grep -n foo test/test_x.py"), ("Bash", "sed -n 1,9p tests/conftest.py"),
+                ("Edit", "test/test_x.py"), ("Read", "pytest.ini")]
+    for i, (tool, target) in enumerate(commands):
+        seed("tool_invocations", dedup_key=f"c{i}", id=i, ts=100.0 + i, session_id="s", tool_name=tool)
+        seed("tool_invocations_text", dedup_key=f"c{i}", target=target)
+    rows = reader.read("tools.activity_rows", {"since": 99.0, "until": 1000.0, "kind_filter": "tests", "limit": 100}).rows
+    assert [row["target"] for row in rows] == [target for _tool, target in commands[:3]]
+
+
+def _kql_regex(name: str) -> re.Pattern:
+    text = (QUERIES / "tools.activity_rows.kql").read_text()
+    body = text[text.index(f"let {name} ="):]
+    return re.compile(re.search(r'matches regex @"((?:[^"]|"")*)"', body).group(1).replace('""', '"'))
+
+
+_TEST_COMMANDS = [
+    "pytest", "PYTEST -q", "cd a && pytest test/x.py", "A=1 B=2 pytest", "timeout 600 pytest -x", "npx vitest run",
+    "npx -y jest", "uv run pytest", "poetry run tox -e py", "python -m pytest", "python3 -m unittest discover",
+    "$PY -m pytest", "/usr/local/bin/pytest", "C:\\tools\\pytest.exe -q", "bash -c 'cd x && pytest'",
+    "sh -c \"npm test\"", "cmd /c npm test", "pwsh -Command 'dotnet test'", "npm \"test\"", "npm te''st",
+    "py\"test\"", "go test ./...", "cargo test --release", "make test", "./gradlew test", "gradlew.bat test",
+    "mvn test", "yarn test --ci", "bun test", "deno test", "swift test", "mix test", "ctest -j4", "mocha spec",
+    "nox -s tests", "npx playwright test", "playwright test", "env CI=1 pytest", "sudo pytest", "time pytest",
+    "nohup pytest &", "V=$(mktemp -d)pytest", "pytest<<EOF\nx\nEOF", "pytest|tail -3", "pytest;echo",
+    "  pytest\t-q", "pushd x; pytest; popd", "timeout -k 5 60 npx vitest",
+]
+
+
+def test_kql_test_run_filter_keeps_every_command_the_board_counts():
+    """tools.activity_rows narrows the test runs in the cluster by a superset of the board's rule."""
+    from aictl.dashboard.board_projection import _COMMAND_TOOL_RE, is_command_tool, is_test_command
+
+    runner, tool = _kql_regex("names_runner"), _kql_regex("command_tool")
+    assert tool.pattern == _COMMAND_TOOL_RE.pattern
+    rng = random.Random(7)
+    words = ["pytest", "npm", "test", "TEST", "cd", "x", "&&", "&", ";", "|", "||", "'", '"', "-q", "/a/", "\\",
+             "timeout", "5", "python", "python3", "-m", "uv", "run", "npx", "env", "A=1", "(", ")", "make", "go", "\n",
+             "jest", "tox", "<<", "<<EOF", "EOF", "bash", "-c", "cmd", "/c", "pwsh", "-Command", "@'", "'@", "$X",
+             "V=$(a)", "sudo", "{", "}", "if", "then", "fi", ".exe", "vitest", "playwright", "mocha", "nox",
+             "unittest", "ctest", "$(", "`", ">", "2>&1", "<"]
+    generated = ["".join(rng.choice(words) + rng.choice(["", " ", " ", "\t", "\n"]) for _ in range(rng.randint(1, 9)))
+                 for _ in range(30000)]
+    counted = [c for c in _TEST_COMMANDS + generated if is_test_command(c)]
+    assert len(counted) > len(_TEST_COMMANDS)
+    assert set(_TEST_COMMANDS) <= set(counted)
+    missed = [c for c in counted if not runner.search(c.replace('"', "").replace("'", "").lower())]
+    assert missed == []
+    assert is_command_tool("Bash") and tool.search("run_in_terminal") and not tool.search("Edit")
+
+
 def test_full_session_event_page_resolves_winners_before_selecting_text(kusto_store):
     seed = kusto_store.insert
     reader = kusto_store.history_store.reader
@@ -204,8 +304,9 @@ def test_complete_history_continues_across_equal_keys_and_nulls(kusto_store, vie
     for project in ("p", "q"):
         for i, stamp in enumerate((100.125, 100.125, None)):
             seed("files", project=project, path=f"/file{i}", last_changed=stamp, meta=project)
+            # Failing calls: the loop search returns every one (it leaves out runs of calls that cannot be in a loop).
             seed("tool_invocations", project=project, id=1, ts=100.00000023841858, tool_name=f"{project}{i}",
-                 session_id="s", dedup_key=f"k{i}")
+                 session_id="s", dedup_key=f"k{i}", is_error=1)
     seed("files", node_id="another-node", path="/other-node")
     history = HistoryScope(kusto_store.history_store.reader, kusto_store.facts.node)
     expected = history.read(view, **params, limit=10)
