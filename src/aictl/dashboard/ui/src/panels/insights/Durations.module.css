@@ -1,0 +1,2 @@
+/* Where session time goes: the charts per repository, tool and model in two columns, each ranking beside its percentile strip. */
+.grid { display: grid; gap: var(--space-6) var(--space-8); grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr)); align-items: start; }

@@ -1,18 +1,22 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtHours, fmtNum, fmtShare } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { Bars as SplitBars } from './Bars'
+import { Bars } from './Bars'
+import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { PercentileStrip } from './charts/PercentileStrip'
+import {
+  durationLine, durationSplit, firstChangeStrip, MODEL_TOOL_LEGEND, modelRankRows, modelStrip, modelToolRows, SESSION_LEGEND,
+  sessionStrip, sessionTimeRows, toolRankRows, toolStrip,
+} from './durationsModel'
 import { share, toolLabel } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
 import { hasOther } from './repoSplit'
-import { Bars, Ranges } from './WorkCharts'
 import {
-  durationFinding, durationFirstChangeRange, durationHero, durationModelToolChart, durationSessionRange, durationWorkChart, markRepos,
-  medianNote, MIN_TIMED_SESSIONS, modelRange, modelTimeChart, SHOWN, smallText, span, splitRows, toolRange, toolTimeChart, TOOLS_SHOWN,
-  withNote, type BarChart, type DurationBody, type DurationRepo, type RangeChart,
+  durationHero, MIN_TIMED_SESSIONS, SHOWN, smallText, span, TOOLS_SHOWN, type DurationBody, type DurationRepo,
 } from './workModel'
 import styles from './Insights.module.css'
 import own from './Work.module.css'
+import view from './Durations.module.css'
 
 const hours = (value: number | null) => value == null ? 'not reported' : fmtHours(value)
 
@@ -37,38 +41,40 @@ function RepoFacts(props: { repo: DurationRepo }) {
   </div>
 }
 
-/** A chart of summed time per tool or model: split by repository where the server split it, else as before. */
-function TimeBars(props: { chart: BarChart; items: readonly { repos?: DurationBody['tools'][number]['repos'] }[]; order: DurationBody['repo_order'] }) {
-  const rows = () => splitRows(props.chart, props.items, 'total_ms', props.order, fmtHours, 'summed time', medianNote(props.order))
-  return <Show when={rows()} fallback={<Bars chart={props.chart} />}>{split => <SplitBars name={props.chart.id} title={props.chart.title}
-    axis={`${props.chart.axis} A segment per repository.`} rows={split()} />}</Show>
-}
-
-function Visual(props: { body: DurationBody }) {
-  const order = () => props.body.repo_order
-  // Charts whose rows are the first repositories: each row marked with its repository's colour.
-  const marked = (chart: BarChart): BarChart => ({ ...chart, rows: markRepos(chart.rows, props.body.repos.slice(0, SHOWN), order()) })
-  const markedRange = (chart: RangeChart): RangeChart => ({ ...chart, rows: markRepos(chart.rows, props.body.repos.slice(0, SHOWN), order()) })
+function Visual(props: { body: DurationBody; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+  const split = () => durationSplit(props.body)
+  const mode = (): ColourMode => split() && props.mode === 'repo' ? 'repo' : 'parts'
+  const repo = () => mode() === 'repo'
+  const shade = ' Each bar in its repository\'s colour; the lighter part is the second.'
   return <>
-    <RepoLegend split={props.body} other={hasOther([...props.body.repos, ...props.body.tools, ...props.body.models])} />
-    <Bars chart={marked(durationWorkChart(props.body))} />
-    <Ranges chart={markedRange(durationSessionRange(props.body))} />
-    <Ranges chart={markedRange(durationFirstChangeRange(props.body))} />
-    <Bars chart={marked(durationModelToolChart(props.body))} />
+    <ColourBy parts="Kind of time" value={mode()} onChange={props.setMode} split={split()} />
+    <Show when={repo()}>
+      <RepoLegend split={props.body} other={hasOther([...props.body.repos, ...props.body.tools, ...props.body.models])} />
+    </Show>
+    <div class={view.grid}>
+      <Bars name="work" title="Working and waiting time per repository (hours)" legend={repo() ? undefined : SESSION_LEGEND}
+        axis={`Length: hours, one linear scale from 0 for every bar.${repo() ? `${shade} First: working; second: waiting.` : ''}`}
+        rows={sessionTimeRows(props.body, mode())} />
+      <Bars name="model-tool" title="Model and tool-call time per repository (hours)" legend={repo() ? undefined : MODEL_TOOL_LEGEND}
+        axis={`Length: summed hours, one linear scale from 0.${repo() ? `${shade} First: model requests; second: tool calls.` : ''}`}
+        rows={modelToolRows(props.body, mode())} />
+      <PercentileStrip chart={sessionStrip(props.body, mode())} />
+      <PercentileStrip chart={firstChangeStrip(props.body, mode())} />
+      <Show when={props.body.tools.length}>
+        <Bars name="tools" title="Tools and programs by summed call time (hours)" rows={toolRankRows(props.body, mode())}
+          axis={`Length: hours, linear from 0.${repo() ? ' A segment per repository.' : ''}`} />
+        <PercentileStrip chart={toolStrip(props.body)} />
+      </Show>
+      <Show when={props.body.models.length}>
+        <Bars name="models" title="Models by summed request time (hours)" rows={modelRankRows(props.body, mode())}
+          axis={`Length: hours, linear from 0.${repo() ? ' A segment per repository.' : ''}`} />
+        <PercentileStrip chart={modelStrip(props.body)} />
+      </Show>
+    </div>
     <Show when={smallText(props.body.summary.small, `fewer than ${MIN_TIMED_SESSIONS} sessions with turn times`)}>{text =>
       <p class={styles.note} data-small-list>{text()}</p>}</Show>
-    <Show when={props.body.tools.length}>
-      <h3 class={styles.subhead}>Tools and programs</h3>
-      <TimeBars chart={toolTimeChart(props.body)} items={props.body.tools.slice(0, TOOLS_SHOWN)} order={order()} />
-      <Ranges chart={withNote(toolRange(props.body), medianNote(order()))} />
-      <Show when={props.body.tools.length > TOOLS_SHOWN}>
-        <p class={styles.note}>{fmtNum(props.body.tools.length - TOOLS_SHOWN)} more tools and programs not drawn.</p>
-      </Show>
-    </Show>
-    <Show when={props.body.models.length}>
-      <h3 class={styles.subhead}>Models</h3>
-      <TimeBars chart={modelTimeChart(props.body)} items={props.body.models} order={order()} />
-      <Ranges chart={withNote(modelRange(props.body), medianNote(order()))} />
+    <Show when={props.body.tools.length > TOOLS_SHOWN}>
+      <p class={styles.note}>{fmtNum(props.body.tools.length - TOOLS_SHOWN)} more tools and programs not drawn.</p>
     </Show>
     <h3 class={styles.subhead}>Each repository: every time figure</h3>
     <ol class={own.rows} aria-label="Session times per repository">
@@ -103,15 +109,16 @@ const NOTE = 'Agent working time is the sum of a session\'s turns that start in 
   'a 95th percentile needs 20 timed calls or requests. Charts show the first 15 repositories by working time and the first ' +
   '10 tools and programs by summed time. The card "Where the time goes" sums the same model and tool times per tool and ' +
   'lists programs; this card splits them by repository and adds working, waiting and first-change times. The page\'s ' +
-  'project, tool and model filters apply.'
+  'project, tool and model filters apply. Percentiles are of the whole row; they are not split by repository.'
 
 export default function Durations(props: CardProps) {
   untrack(() => props.ctx)
+  const [mode, setMode] = useColourBy()
   return <InsightCard<DurationBody> {...props} card="durations" tab="flow" filtered
     hero={durationHero}
-    finding={durationFinding}
+    finding={durationLine}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>
-      <Visual body={body} />
+      <Visual body={body} mode={mode()} setMode={setMode} />
     </Show>}
     note={NOTE}
     table={{

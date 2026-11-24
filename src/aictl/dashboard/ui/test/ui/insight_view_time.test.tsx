@@ -9,6 +9,9 @@ import type { SubagentBody, TimeBody } from '../../src/panels/insights/insightsM
 import { OTHER, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import { sessionRows, sideRepoRows, sideRows, subagentLine } from '../../src/panels/insights/subagentsModel'
 import { countedText, programStrip, timeLine } from '../../src/panels/insights/timeSplitModel'
+import Durations from '../../src/panels/insights/Durations'
+import { durationLine, sessionStrip, sessionTimeRows, toolStrip } from '../../src/panels/insights/durationsModel'
+import type { DurationBody } from '../../src/panels/insights/workModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -253,6 +256,96 @@ describe('INS-VIEW · Where the time goes', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(parts(box.querySelector('[data-chart="time-tools"] [data-row="tool-a"]')!)).toEqual(['thinking', 'model', 'tools'])
     expect(rows(box.querySelector('[data-chart="time-program-calls"]'))).toEqual(['program:make', 'waiting:'])
+    dispose()
+  })
+})
+
+// ─── Where session time goes ────────────────────────────────────────────────────────────────────────────────────────
+const sessionTimes = (scale: number) => ({
+  sessions: 20, timed: 20, walled: 18, changed: 12, waits: 40, requests: 1000, calls: 3000, model_ms: 8 * scale * H, tool_ms: 2 * scale * H,
+  agent_ms: 20 * scale * H, wait_ms: 5 * scale * H, p50_agent_ms: 600_000, p90_agent_ms: 2 * H, max_agent_ms: 4 * H, p50_wall_ms: 900_000,
+  p90_wall_ms: 2 * H, max_wall_ms: 10 * H, p50_first_change_ms: 120_000, p90_first_change_ms: 600_000,
+})
+const ownSplit = (repo: string, scale: number) =>
+  split([[repo, { agent_ms: 20 * scale * H, wait_ms: 5 * scale * H, model_ms: 8 * scale * H, tool_ms: 2 * scale * H }]])
+const durations = {
+  ...base, card: 'durations', view: 'insights.durations', query: query('insights.durations'), repo_order: order, repo_others: others,
+  repos: [
+    { ...sessionTimes(1), repo: '/w/alpha', name: 'alpha', kind: 'repository', agent_share: 0.8, small: false, repos: ownSplit('/w/alpha', 1) },
+    { ...sessionTimes(0.25), repo: '/x/notes', name: 'notes', kind: 'folder', agent_share: 0.2, small: true, timed: 3,
+      p50_agent_ms: null, p90_agent_ms: null, max_agent_ms: null, repos: ownSplit('', 0.25) },
+  ],
+  tools: [{ name: 'make', program: true, calls: 200, timed: 200, total_ms: 2 * H, p50_ms: 6_000, p95_ms: 120_000, failed: 4,
+    failed_share: 0.02, repo: '/w/alpha', repo_name: 'alpha', repo_ms: 1.5 * H, small: false,
+    repos: split([['/w/alpha', { total_ms: 1.5 * H }], ['/w/beta', { total_ms: 0.5 * H }]]) }],
+  models: [{ model: 'model-x', requests: 1000, timed: 1000, total_ms: 10 * H, p50_ms: 9_000, p95_ms: 60_000, small: false,
+    repos: split([['/w/alpha', { total_ms: 10 * H }]]) }],
+  sessions: [],
+  summary: { ...sessionTimes(1.25), agent_ms: 25 * H, model_ms: 10 * H, tool_ms: 2.5 * H, top: null, top_tool: null, slowest_tool: null,
+    slowest_model: null, small: ['notes'] },
+} as unknown as DurationBody
+
+describe('INS-VIEW · Where session time goes', () => {
+  it('says in one line what is measured, or why nothing is drawn', () => {
+    const { host, dispose } = mount(() => <Durations {...props(durations)} />)
+    expect(host.querySelector('#insight-durations [data-finding]')!.textContent).toBe('Agent working time and waiting time between ' +
+      'turns per repository (hours), and the duration of model requests and tool calls, summed and per call.')
+    expect(host.querySelector('#insight-durations [data-hero]')!.textContent).toBe('25 hof agent working time in 20 sessions with turn times')
+    dispose()
+    expect(durationLine({ ...durations, summary: { ...durations.summary, timed: 0, agent_ms: null } })).toBe('20 sessions in this ' +
+      'period, but no tool recorded when their turns started and ended, so working time is not reported.')
+  })
+
+  it('draws working and waiting as one bar per repository on one scale, and the per-session figures on a strip', () => {
+    const { host, dispose } = mount(() => <Durations {...props(durations)} />)
+    const box = host.querySelector('#insight-durations')!
+    const work = box.querySelector('[data-chart="work"]')
+    expect(rows(work)).toEqual(['alpha', 'notes'])
+    const alpha = work!.querySelector('[data-row="alpha"]')!
+    expect([parts(alpha), written(alpha), alpha.querySelector('[data-total]')!.textContent]).toEqual([['working', 'waiting'], ['20 h', '5 h'], '25 h'])
+    expect(work!.querySelector<HTMLElement>('[data-row="notes"] [role="group"]')!.style.inlineSize).toBe('25.00%')
+    expect(tip(alpha, '[data-part="waiting"]')).toBe('alpha, waiting for a person between turns: 5 h over 40 waits; from the end ' +
+      'of a turn to the next turn a person started.')
+    // Too few sessions: the bar is grey and its hover says why.
+    expect(sessionTimeRows(durations, 'parts')[1].parts.map(part => part.tone)).toEqual([7, 7])
+    expect(rows(box.querySelector('[data-chart="model-tool"]'))).toEqual(['alpha', 'notes'])
+    const strip = box.querySelector('[data-chart="session-range"] [data-row="alpha"]')!
+    expect([...strip.querySelectorAll('[data-mark]')].map(mark => mark.getAttribute('data-mark'))).toEqual(['p50', 'p90', 'max'])
+    expect(strip.querySelector<HTMLElement>('[data-mark="p90"]')!.style.insetInlineStart).toBe('50%')
+    expect(tip(strip, '[data-mark="max"]')).toBe('Longest: 4 h. alpha: agent working time per session over 20 sessions with turn ' +
+      'times; median 10 min, 90th percentile 2 h, longest 4 h.')
+    expect(box.querySelector('[data-chart="session-range"] [data-row="notes"]')!.hasAttribute('data-muted')).toBe(true)
+    expect(sessionStrip(durations, 'parts').end).toBe('4 h')
+    expect(toolStrip(durations).rows[0].marks.map(mark => mark.text)).toEqual(['6 s', '2 min'])
+    expect(rows(box.querySelector('[data-chart="tools"]'))).toEqual(['make'])
+    expect(rows(box.querySelector('[data-chart="model-range"]'))).toEqual(['model-x'])
+    dispose()
+  })
+
+  it('switches to the repositories: each repository row in its colour, waiting lighter, tools split by repository', () => {
+    const { host, dispose } = mount(() => <Durations {...props(durations)} />)
+    const box = host.querySelector('#insight-durations')!
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(colourBy(box, 'repo')).toContain('by=repo')
+    expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
+    expect(box.querySelector('[data-chart="work"] ul')).toBeNull()
+    const alpha = box.querySelector('[data-chart="work"] [data-row="alpha"]')!
+    expect([...alpha.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '0'])
+    expect(sessionTimeRows(durations, 'repo')[0].parts.map(part => part.light)).toEqual([false, true])
+    expect(box.querySelector('[data-chart="session-range"] [data-row="notes"] [data-repo-mark]')!.getAttribute('data-repo-mark')).toBe(String(OTHER))
+    expect([...box.querySelectorAll('[data-chart="tools"] [data-row="make"] [data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1'])
+    colourBy(box, 'parts')
+    expect(box.querySelector('[data-chart="work"] [data-row="alpha"] [data-part]')!.hasAttribute('data-repo')).toBe(false)
+    dispose()
+  })
+
+  it('draws without repos: no switch, the bars by kind', () => {
+    history.replaceState(null, '', '/?screen=insights&view=durations&by=repo')
+    const { host, dispose } = mount(() => <Durations {...props(unsplit(durations))} />)
+    const box = host.querySelector('#insight-durations')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(parts(box.querySelector('[data-chart="work"] [data-row="alpha"]')!)).toEqual(['working', 'waiting'])
+    expect(parts(box.querySelector('[data-chart="tools"] [data-row="make"]')!)).toEqual(['time'])
     dispose()
   })
 })

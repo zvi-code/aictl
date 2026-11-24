@@ -209,17 +209,17 @@ describe('Where session time goes', () => {
     const { host, dispose } = mount(() => <Durations {...props(ctx)} />)
     const box = host.querySelector('#insight-durations')!
     const work = box.querySelector('[data-chart="work"]')!
-    expect(work.querySelector('figcaption')!.textContent).toBe('Agent working time and waiting time per repository (hours)')
-    expect([...work.querySelectorAll('[data-bar="loop"] [data-value]')].map(value => value.textContent)).toEqual(['worked 20 h · 80%', 'waited 5 h'])
-    expect(work.querySelector('[data-bar="loop"] [role="tooltip"]')!.textContent).toMatch(/^loop: agent working time 20 h/)
+    expect(work.querySelector('figcaption span')!.textContent).toBe('Working and waiting time per repository (hours)')
+    expect([...work.querySelectorAll('[data-row="loop"] [data-part] button')].map(value => value.textContent)).toEqual(['20 h', '5 h'])
+    expect(work.querySelector('[data-row="loop"] [data-part="working"] [role="tooltip"]')!.textContent).toMatch(/^loop, agent working time: 20 h, 80% of/)
     const range = box.querySelector('[data-chart="session-range"]')!
-    expect(range.querySelector('[data-bar="loop"] [data-value]')!.textContent).toBe('median 10 min · 90th 1 h · longest 4 h')
-    expect(range.querySelector('[data-bar="loop"] [data-mid]')).not.toBeNull()
-    expect(range.querySelector('[data-bar="loop"] [data-max]')).not.toBeNull()
-    expect(range.querySelector('[data-bar="t"] [data-mid]')).toBeNull()
-    expect(box.querySelector('[data-chart="tools"] [data-bar="pytest"] [data-value]')!.textContent).toBe('1 h · 50%')
-    expect(box.querySelector('[data-chart="tool-range"] [data-bar="pytest"] [role="tooltip"]')!.textContent).toContain('95th percentile 1 min')
-    expect(box.querySelector('[data-chart="model-range"] [data-bar="gpt-5"] [data-value]')!.textContent).toBe('median 8 s · 95th 1 min 30 s')
+    expect(range.querySelector('[data-row="loop"] [data-text]')!.textContent).toBe('median 10 min · 90th 1 h · longest 4 h')
+    expect(range.querySelector('[data-row="loop"] [data-mark="p50"]')).not.toBeNull()
+    expect(range.querySelector('[data-row="loop"] [data-mark="max"]')).not.toBeNull()
+    expect(range.querySelector('[data-row="t"] [data-mark]')).toBeNull()
+    expect(box.querySelector('[data-chart="tools"] [data-row="pytest"] [data-total]')!.textContent).toBe('1 h · 50%')
+    expect(box.querySelector('[data-chart="tool-range"] [data-row="pytest"] [data-mark="p95"] [role="tooltip"]')!.textContent).toContain('95th percentile 1 min')
+    expect(box.querySelector('[data-chart="model-range"] [data-row="gpt-5"] [data-text]')!.textContent).toBe('median 8 s · 95th 1 min 30 s')
     expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 5 sessions with turn times): t.')
     const rows = [...box.querySelectorAll('[data-repo]')]
     expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['loop', 't'])

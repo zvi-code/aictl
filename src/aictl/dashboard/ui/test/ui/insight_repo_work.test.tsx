@@ -274,17 +274,18 @@ const durations = {
 } as unknown as DurationBody
 
 describe('INS-RW · Where session time goes split by repository', () => {
-  it('marks each repository row with its colour and splits the tool and model time by repository', () => {
+  it('coloured by repository, draws each repository row in its colour and splits the tool and model time by repository', () => {
+    history.replaceState(null, '', '/?screen=insights&view=durations&by=repo')
     const { host, dispose } = mount(() => <Durations {...props(ready(durations))} />)
     const box = host.querySelector('#insight-durations')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    // Working and waiting keep their colours; the row carries its repository's colour, and its hover says so.
+    // Working and waiting in the repository's colour, waiting lighter; the hover says which colour.
     const work = box.querySelector('[data-chart="work"]')!
-    expect([...work.querySelectorAll('[data-repo-mark]')].map(mark => mark.getAttribute('data-repo-mark'))).toEqual(['0', String(OTHER)])
-    expect(work.querySelector('[data-bar="app"] [role="tooltip"]')!.textContent)
+    expect([...work.querySelectorAll('[data-row] [data-part="working"]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', String(OTHER)])
+    expect(work.querySelector('[data-row="app"] [data-part="working"] [role="tooltip"]')!.textContent)
       .toMatch(/ Marked in the colour of app on every card: rank 1 by list-price cost\.$/)
-    expect(work.querySelector('[data-bar="scratch"] [role="tooltip"]')!.textContent)
+    expect(work.querySelector('[data-row="scratch"] [data-part="waiting"] [role="tooltip"]')!.textContent)
       .toMatch(/ Marked grey: not among the 8 repositories with the highest list-price cost\.$/)
     expect([...box.querySelectorAll('[data-chart="session-range"] [data-repo-mark]')].length).toBe(2)
     const tool = box.querySelector('[data-chart="tools"] [data-row="pytest"]')!
@@ -297,16 +298,18 @@ describe('INS-RW · Where session time goes split by repository', () => {
       'repository: the median of a whole is not the sum of the medians of its parts.')
     expect(box.querySelector('[data-chart="tools"] [data-axis]')!.textContent).toContain('A segment per repository.')
     expect([...box.querySelectorAll('[data-chart="models"] [data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0'])
-    expect(box.querySelector('[data-chart="tool-range"] [data-bar="pytest"] [role="tooltip"]')!.textContent).toContain('Not split by repository')
+    expect(box.querySelector('[data-chart="tool-range"] [data-row="pytest"] [data-mark="p50"] [role="tooltip"]')!.textContent).toContain('Not split by repository')
     dispose()
   })
 
-  it('draws the old bars without a split', () => {
+  it('draws the bars by kind, with no switch, without a split', () => {
+    history.replaceState(null, '', '/?screen=insights&view=durations&by=repo')
     const { host, dispose } = mount(() => <Durations {...props(ready(unsplit(durations)))} />)
     const box = host.querySelector('#insight-durations')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelector('[data-repo-mark]')).toBeNull()
-    expect(box.querySelector('[data-chart="tools"] [data-bar="pytest"] [data-value]')!.textContent).toBe('4 h · 200%')
+    expect(box.querySelector('[data-chart="tools"] [data-row="pytest"] [data-total]')!.textContent).toBe('4 h · 200%')
     expect(box.querySelector('[data-chart="tool-range"] [role="tooltip"]')!.textContent).not.toContain('Not split')
     dispose()
   })

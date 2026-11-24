@@ -6,9 +6,12 @@ import { OTHER } from './repoSplit'
 /**
  * One segment of a bar: its value sets its length, its text is written on it, its hover holds the figures behind it.
  * `repo`: the segment is one repository's part (repoSplit.ts), coloured by its colour index instead of `tone`, and its
- * text is written only where the segment is wide enough to hold it.
+ * text is written only where the segment is wide enough to hold it. `light`: drawn lighter than its colour (the second
+ * part of a bar whose parts share one colour, such as a repository's working and waiting time).
  */
-export type BarPart = { key: string; label: string; value: number | null; text: string; hover: string; tone: number; repo?: number }
+export type BarPart = {
+  key: string; label: string; value: number | null; text: string; hover: string; tone: number; repo?: number; light?: boolean
+}
 /** One bar: a label, the segments (one for a plain bar), and the value written beside it. */
 export type BarRow = { key: string; label: string; title?: string; sub?: string; parts: BarPart[]; total: string }
 export type LegendItem = { label: string; tone: number }
@@ -50,7 +53,7 @@ export function Bars(props: {
         <span class={styles.lane}>
           <span class={styles.stack} role="group" aria-label={`${row.label}: ${row.total}`} style={{ 'inline-size': `${length(row).toFixed(2)}%` }}>
             <For each={row.parts.filter(part => (part.value ?? 0) > 0)}>{part => <span
-              class={`${styles.part} ${part.repo == null ? toneClass(part.tone) : `${styles.repoPart} ${repoClass(part.repo)}`}`}
+              class={`${styles.part} ${part.repo == null ? toneClass(part.tone) : `${styles.repoPart} ${repoClass(part.repo)}`}${part.light ? ` ${styles.light}` : ''}`}
               style={{ 'flex-grow': String(+((part.value ?? 0) / amount(row) * 100).toFixed(4)) }} data-part={part.key}
               data-repo={part.repo == null ? undefined : String(part.repo)}>
               <Tooltip class={styles.partButton} label={`${row.label}, ${part.label}: ${part.text}`} text={part.hover}

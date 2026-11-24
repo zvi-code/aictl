@@ -52,3 +52,5 @@
 .r6 { background: color-mix(in srgb, var(--color-chart-7) 70%, var(--color-surface)); }
 .r7 { background: color-mix(in srgb, var(--color-chart-8) 70%, var(--color-surface)); }
 .rOther { background: var(--color-border); }
+/* A part drawn lighter than its colour: the surface laid over it, so its text stays at full contrast. */
+.light { background-image: linear-gradient(color-mix(in srgb, var(--color-surface) 55%, transparent), color-mix(in srgb, var(--color-surface) 55%, transparent)); }
