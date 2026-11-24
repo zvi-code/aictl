@@ -6,7 +6,7 @@ import { fmtHours, fmtLines, fmtMs, fmtNum, fmtShare, fmtUsd } from '../../desig
 import type { Base, Hero } from './insightsModel'
 
 type Num = number | null
-export type WorkCardId = 'repos' | 'durations'
+export type WorkCardId = 'repos' | 'durations' | 'changes'
 
 export type RepoSession = {
   session_id: string; node_id?: string | null; tool?: string | null; repo: string; cost_usd: Num; requests: number
@@ -32,7 +32,7 @@ export type RepoBody = Base<'repos'> & {
     cheapest_per_commit: RepoBrief | null; cost_per_commit: Num; small: string[]; folders: number
   }
 }
-export type WorkBody = RepoBody | DurationBody
+export type WorkBody = RepoBody | DurationBody | ChangeBody
 
 const usd = (value: Num) => value == null ? 'not reported' : fmtUsd(value)
 const plural = (n: number, one: string, many = `${one}s`) => `${fmtNum(n)} ${n === 1 ? one : many}`
@@ -133,3 +133,63 @@ export function durationFinding(body: DurationBody): string {
   if (slow?.p95_ms != null) text += ` The slowest model was ${slow.model ?? 'not reported'}: 1 request in 20 took over ${span(slow.p95_ms)}.`
   return text
 }
+
+// ─── Changes and commits ───────────────────────────────────────────────────────────────────────────────────────
+export const FILE_KINDS = [
+  { id: 'source', label: 'source' }, { id: 'tests', label: 'tests' }, { id: 'docs', label: 'docs' },
+  { id: 'config', label: 'config and data' }, { id: 'memory', label: 'memory and instructions' }, { id: 'other', label: 'other' },
+] as const
+export type FileKind = typeof FILE_KINDS[number]['id']
+export type ChangeRepo = {
+  repo: string; name: string; kind: 'repository' | 'folder'; sessions: number; change_sessions: number; commit_sessions: number
+  uncommitted_sessions: number; writes: number; committed_writes: number; committed_share: Num; files: number; files_share: Num
+  reworked: number; kinds: Record<FileKind, number>; lines_added: number; lines_removed: number; lines_unknown: number
+  commits: number; commit_days: number; cost_usd: Num; agent_ms: Num; cost_per_commit: Num; time_per_commit_ms: Num; small: boolean
+}
+export type ChangeBrief = Pick<ChangeRepo, 'repo' | 'name' | 'kind' | 'files' | 'files_share' | 'writes' | 'committed_writes'
+  | 'committed_share' | 'commits' | 'reworked' | 'cost_per_commit' | 'time_per_commit_ms' | 'change_sessions' | 'uncommitted_sessions'>
+export type ReworkedFile = { repo: string; repo_name: string; path: string; kind: string; writes: number; sessions: number; most_in_session: number }
+export type ChangeBody = Base<'changes'> & {
+  repos: ChangeRepo[]; files: ReworkedFile[]; bins: { start: number; commits: number; writes: number }[]
+  summary: {
+    repos: number; writes: number; files: number; committed_writes: number; committed_share: Num; commits: number
+    change_sessions: number; uncommitted_sessions: number; lines_added: number; lines_removed: number; reworked: number
+    kinds: Record<FileKind, number>; top: ChangeBrief | null; most_uncommitted: ChangeBrief | null
+    dearest_per_commit: ChangeBrief | null; cheapest_per_commit: ChangeBrief | null; top_file: ReworkedFile | null; small: string[]
+  }
+}
+
+export const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+
+export function changeHero(body: ChangeBody): Hero | undefined {
+  const s = body.summary
+  if (!s.writes || s.committed_share == null) return undefined
+  return { value: fmtShare(s.committed_share), label: `of ${plural(s.writes, 'file write')} by agents ended in a commit in the same session` }
+}
+
+/** The finding: how much was changed, what share was committed, where it was never committed, and what was redone. */
+export function changeFinding(body: ChangeBody): string {
+  const s = body.summary
+  if (!s.writes) {
+    return s.commits ? `Agents made ${plural(s.commits, 'commit')} but no file write is recorded in this period.`
+      : 'No agent changed a file or made a commit in this period.'
+  }
+  let text = `Agents changed ${plural(s.files, 'file')} (${plural(s.writes, 'write')}, ${fmtLines(s.lines_added, s.lines_removed)} lines) ` +
+    `in ${plural(s.change_sessions, 'session')}; ${fmtShare(s.committed_share ?? 0)} of the writes ended in a commit in the same session.`
+  if (s.top) text += ` ${repoName(s.top)} holds ${fmtShare(s.top.files_share ?? 0)} of the changed files.`
+  const open = s.most_uncommitted
+  if (open && open.writes > open.committed_writes) {
+    text += ` The most changes never committed are in ${repoName(open)}: ${plural(open.writes - open.committed_writes, 'write')}` +
+      `, ${plural(open.uncommitted_sessions, 'session')} changed files and made no commit.`
+  }
+  const file = s.top_file
+  if (s.reworked && file) {
+    text += ` ${plural(s.reworked, 'file')} were written again and again; the most, ${fileName(file.path)}, ` +
+      `${plural(file.writes, 'time')} in ${plural(file.sessions, 'session')}.`
+  }
+  return text
+}
+
+export const perCommit = (repo: Pick<ChangeRepo, 'cost_per_commit' | 'time_per_commit_ms' | 'commits'>) =>
+  repo.cost_per_commit == null ? `${fmtNum(repo.commits)} commits, too few for a cost per commit`
+    : `${fmtUsd(repo.cost_per_commit)} and ${repo.time_per_commit_ms == null ? 'working time not reported' : `${fmtMs(repo.time_per_commit_ms)} of working time`} per commit`

@@ -371,6 +371,8 @@ UNPRUNED: dict[tuple[str, str], tuple[str, str]] = {
     ("insights.model_report", "requests"): ("ALL_HOURS", ALL_HOURS),
     ("insights.model_report", "tool_invocations"): ("ALL_HOURS", ALL_HOURS),
     ("insights.repositories", "session_turns"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.changes", "session_turns"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.changes", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.durations", "session_turns"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.durations", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.repositories", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),

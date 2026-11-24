@@ -23,6 +23,7 @@ const cards = [
   lazy(() => import('../panels/insights/ProblemSessions')),
   lazy(() => import('../panels/insights/Repositories')),
   lazy(() => import('../panels/insights/Durations')),
+  lazy(() => import('../panels/insights/Changes')),
 ]
 
 /** What months of agent history show: one finding per card, each computed in the store for the chosen period. */

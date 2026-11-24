@@ -1,0 +1,192 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, restrict_tools:bool = false,
+    requested_tools:dynamic = dynamic([]), requested_models:dynamic = dynamic([]), step:real = 86400.0, row_limit:long);
+// What the agents changed, by repository. A session counts in the period when it made a model request or a tool call in
+// it; tools and models of the page's filters choose sessions as in insights.repositories.
+// A change is a file_write_events row of the period the agent made (a change the tool reports as made outside the
+// session is left out). Files are distinct paths per node. Reworked: a file written in 3 or more sessions of the period,
+// or 5 or more times in one session. Kind of file, by its path: memory or instructions (the row names a mechanism), test
+// (a tests/test/__tests__/spec folder, or a test_ / _test. / .test. / .spec. name), docs (.md .mdx .rst .txt .adoc, or a docs
+// folder), config (.json .jsonc .yaml .yml .toml .ini .cfg .conf .lock .env .xml .csproj .props, a dotfile, Dockerfile,
+// Makefile), source (a file with an extension of a programming, query, style or markup language listed below), else other.
+// A commit is a successful shell call that commits (as in insights.repositories). A change ended in a commit when the same
+// session made a commit at or after it; otherwise no agent shell of that session committed it.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// file_write_events_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let file_write_events_current_rows = file_write_events_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let file_write_events_crossed = file_write_events_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let file_write_events_secs = union (file_write_events_current_rows | where dedup_key !in (file_write_events_crossed)),
+        (file_write_events_current_rows | where dedup_key in (file_write_events_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_turns_secs = session_turns | extend ts = (ts - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+let Day = 86400.0;
+let CommitRe = @'(?i)(?:^|[\s;&|({"''])(?:[^\s;&|({"'']*[/\\])?git(?:\.exe)?["'']?(?:\s+-c\s+\S+|\s+--no-p\S*|\s+--(?:git-dir|work-tree)=\S+)*\s+commit(?:[\s"'';)]|$)';
+let PrintedRe = @'(?i)\b(?:echo|printf|grep|egrep|fgrep|rg|Write-Host|Write-Output|Select-String|findstr)\s+(?:-\S+\s+)*["'']?\s*$';
+// The canonical model id the page's model filter names (data/model_pricing.canonical_model_id).
+let canon = (m:string) { iff(tolower(trim(' ', m)) startswith 'claude-', replace_string(tolower(trim(' ', m)), '.', '-'), m) };
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+let reqs = materialize(requests_secs
+    | where all_nodes or node_id == requested_node
+    | where ts >= since and ts < until
+    | project node_id, session_id, ts, model=canon(model), cost_usd);
+let model_sessions = reqs
+    | where array_length(requested_models) > 0 and model in (requested_models)
+    | distinct node_id, session_id;
+let calls = materialize(tool_invocations_secs
+    | where all_nodes or node_id == requested_node
+    | where ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | extend line=iff(target_kind == 'command' and target contains 'commit', target, '')
+    | extend c1=iff(isnotempty(line), indexof_regex(line, CommitRe), -1)
+    | extend commit=c1 >= 0 and not(coalesce(failed, false)) and not(line has '--dry-run')
+        and not(substring(line, 0, c1 + 1) matches regex PrintedRe)
+    | project node_id, session_id, ts, commit);
+let active = union (reqs | project node_id, session_id), (calls | project node_id, session_id) | distinct node_id, session_id;
+let chosen = materialize(session_rows
+    | join kind=inner active on node_id, session_id
+    | where not(restrict_tools) or tool in (requested_tools)
+    | where array_length(requested_models) == 0 or strcat(node_id, '/', session_id) in (model_sessions | project strcat(node_id, '/', session_id))
+    | join kind=leftouter repo_map on node_id, path
+    | extend repo=iff(isnotempty(root), root, path), repository=coalesce(repository, false) or branch
+    | project node_id, session_id, tool, path, repo, repository, started_at);
+let commits = materialize(calls
+    | where commit
+    | join kind=inner (chosen | project node_id, session_id, repo) on node_id, session_id
+    | project node_id, session_id, repo, ts);
+let last_commit = commits | summarize last_commit=max(ts) by node_id, session_id;
+let writes = materialize(file_write_events_secs
+    | where all_nodes or node_id == requested_node
+    | where ts >= since and ts < until and actor != 'outside_session'
+    | join kind=inner (chosen | project node_id, session_id, repo) on node_id, session_id
+    | lookup kind=leftouter last_commit on node_id, session_id
+    | extend lower=tolower(replace_string(path, '\\', '/'))
+    | extend file_kind=case(
+        isnotempty(mechanism), 'memory',
+        lower matches regex @'(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|_test\.[^/]*$|\.(test|spec)\.[^/]*$', 'test',
+        lower matches regex @'\.(md|mdx|rst|txt|adoc)$|(^|/)docs?/', 'docs',
+        lower matches regex @'\.(json|jsonc|ya?ml|toml|ini|cfg|conf|lock|env|xml|csproj|props)$|(^|/)\.[^/]+$|(^|/)(dockerfile|makefile)$', 'config',
+        lower matches regex @'\.(py|pyi|ts|tsx|js|jsx|mjs|cjs|go|rs|java|kt|cs|fs|c|h|cc|cpp|hpp|m|swift|rb|php|scala|sh|bash|ps1|psm1|sql|kql|css|scss|html|vue|svelte|lua|r|dart|ex|exs)$', 'source',
+        'other')
+    | project node_id, session_id, repo, ts, path, file_kind, lines_added, lines_removed,
+              committed=isnotnull(last_commit) and ts <= last_commit);
+let file_sessions = materialize(writes
+    | summarize in_session=count() by node_id, path, session_id, repo, file_kind
+    | summarize writes=sum(in_session), sessions=count(), most_in_session=max(in_session), file_kind=take_any(file_kind), repo=take_any(repo)
+          by node_id, path);
+let turns = session_turns_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, prompt_id
+    | where not(coalesce(_deleted, false)) and ts >= since and ts < until
+    | summarize agent_s=sum(iff(ended_at > ts, min_of(ended_at - ts, Day), 0.0)) by node_id, session_id;
+let per_repo = chosen
+    | lookup kind=leftouter (reqs | summarize cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)), priced=countif(cost_usd > 0) by node_id, session_id)
+        on node_id, session_id
+    | lookup kind=leftouter turns on node_id, session_id
+    | lookup kind=leftouter (writes | summarize writes=count() by node_id, session_id) on node_id, session_id
+    | lookup kind=leftouter (commits | summarize commits=count() by node_id, session_id) on node_id, session_id
+    | summarize sessions=count(), change_sessions=countif(writes > 0), commit_sessions=countif(commits > 0),
+                uncommitted_sessions=countif(writes > 0 and isnull(commits)), cost_usd=sum(cost_usd), priced=sum(priced),
+                agent_s=sum(agent_s), repository=max(toint(repository)) by repo;
+union
+    (per_repo
+        | lookup kind=leftouter (writes
+            | summarize writes=count(), committed_writes=countif(committed), lines_added=sum(lines_added), lines_removed=sum(lines_removed),
+                        lines_unknown=countif(isnull(lines_added)) by repo) on repo
+        | lookup kind=leftouter (file_sessions
+            | summarize files=count(), reworked=countif(sessions >= 3 or most_in_session >= 5), source=countif(file_kind == 'source'),
+                        tests=countif(file_kind == 'test'), docs=countif(file_kind == 'docs'), config=countif(file_kind == 'config'),
+                        memory=countif(file_kind == 'memory'), other=countif(file_kind == 'other') by repo) on repo
+        | lookup kind=leftouter (commits | summarize commits=count(), commit_days=dcount(bin(ts, 86400.0)) by repo) on repo
+        | extend row_type='repo'),
+    (file_sessions
+        | where sessions >= 3 or most_in_session >= 5
+        | top 15 by writes desc
+        | project row_type='file', repo, path, file_kind, writes, sessions, most_in_session),
+    (writes
+        | summarize writes=count(), committed_writes=countif(committed), files=dcount(path) by node_id, session_id, repo
+        | top 10 by writes desc
+        | lookup kind=leftouter (chosen | project node_id, session_id, tool) on node_id, session_id
+        | lookup kind=leftouter (commits | summarize commits=count() by node_id, session_id) on node_id, session_id
+        | extend row_type='session', commits=coalesce(commits, 0)),
+    (union
+        (commits | project ts, commits=1, writes=0),
+        (writes | project ts, commits=0, writes=1)
+        | extend bin_start=max_of(since, 0.0) + floor((ts - max_of(since, 0.0)) / step, 1) * step
+        | summarize commits=sum(commits), writes=sum(writes) by bin_start
+        | extend row_type='bin'),
+    (union (reqs | project ts), (calls | project ts)
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, writes desc, repo asc
+| take row_limit

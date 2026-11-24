@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
+import Changes from '../../src/panels/insights/Changes'
 import Durations from '../../src/panels/insights/Durations'
 import Repositories from '../../src/panels/insights/Repositories'
 import {
-  durationFinding, durationHero, repoFinding, repoHero, smallText,
-  type DurationBody, type DurationRepo, type DurationTool, type Repo, type RepoBody, type SessionTimes,
+  changeFinding, changeHero, durationFinding, durationHero, repoFinding, repoHero, smallText,
+  type ChangeBody, type ChangeRepo, type DurationBody, type DurationRepo, type DurationTool, type Repo, type RepoBody, type SessionTimes,
 } from '../../src/panels/insights/workModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -149,6 +150,63 @@ describe('Where session time goes', () => {
     expect(rows[1].hasAttribute('data-small')).toBe(true)
     expect(rows[1].querySelector('summary')!.textContent).toContain('too few sessions for a median')
     expect(box.querySelector('[data-tool-name="pytest"]')!.textContent).toContain('1 h · median 4 s · p95 1 min')
+    dispose()
+  })
+})
+
+const kinds = { source: 40, tests: 10, docs: 5, config: 3, memory: 1, other: 0 }
+const changeRepo = (values: Partial<ChangeRepo> & { repo: string; name: string }): ChangeRepo => ({
+  kind: 'repository', sessions: 20, change_sessions: 15, commit_sessions: 5, uncommitted_sessions: 10, writes: 200, committed_writes: 150,
+  committed_share: 0.75, files: 59, files_share: 0.5, reworked: 4, kinds, lines_added: 3000, lines_removed: 800, lines_unknown: 0,
+  commits: 12, commit_days: 6, cost_usd: 120, agent_ms: 36_000_000, cost_per_commit: 10, time_per_commit_ms: 3_000_000, small: false,
+  ...values,
+})
+const svc = changeRepo({ repo: '/src/svc', name: 'svc' })
+const loop = changeRepo({ repo: '/src/loop', name: 'loop', writes: 300, committed_writes: 0, committed_share: 0, files: 40, files_share: 0.34,
+  commits: 0, commit_days: 0, cost_per_commit: null, time_per_commit_ms: null, uncommitted_sessions: 30, change_sessions: 30 })
+const tiny = changeRepo({ repo: '/tmp/t', name: 't', kind: 'folder', writes: 5, committed_writes: 0, committed_share: 0, files: 2,
+  files_share: 0.02, commits: 0, small: true })
+const changeBrief = (r: ChangeRepo) => ({ repo: r.repo, name: r.name, kind: r.kind, files: r.files, files_share: r.files_share, writes: r.writes,
+  committed_writes: r.committed_writes, committed_share: r.committed_share, commits: r.commits, reworked: r.reworked,
+  cost_per_commit: r.cost_per_commit, time_per_commit_ms: r.time_per_commit_ms, change_sessions: r.change_sessions,
+  uncommitted_sessions: r.uncommitted_sessions })
+const changes = {
+  ...base, card: 'changes', view: 'insights.changes', repos: [svc, loop, tiny],
+  files: [{ repo: '/src/loop', repo_name: 'loop', path: '/src/loop/docs/plan.md', kind: 'docs', writes: 90, sessions: 12, most_in_session: 20 }],
+  bins: [{ start: 1_700_000_000, commits: 4, writes: 100 }, { start: 1_700_086_400, commits: 8, writes: 405 }],
+  sessions: [],
+  summary: { repos: 3, writes: 505, files: 101, committed_writes: 150, committed_share: 150 / 505, commits: 12, change_sessions: 46,
+    uncommitted_sessions: 41, lines_added: 6000, lines_removed: 1600, reworked: 9, kinds, top: changeBrief(svc),
+    most_uncommitted: changeBrief(loop), dearest_per_commit: null, cheapest_per_commit: null,
+    top_file: { repo: '/src/loop', repo_name: 'loop', path: '/src/loop/docs/plan.md', kind: 'docs', writes: 90, sessions: 12, most_in_session: 20 },
+    small: ['t'] },
+} as unknown as ChangeBody
+
+describe('What the agents changed', () => {
+  it('states what was changed, the committed share, where changes were never committed and what was redone', () => {
+    expect(changeFinding(changes)).toBe('Agents changed 101 files (505 writes, +6.0 k −1.6 k lines) in 46 sessions; 30% of the writes ' +
+      'ended in a commit in the same session. svc holds 50% of the changed files. The most changes never committed are in loop: ' +
+      '300 writes, 30 sessions changed files and made no commit. 9 files were written again and again; the most, plan.md, 90 times ' +
+      'in 12 sessions.')
+    expect(changeHero(changes)).toEqual({ value: '30%', label: 'of 505 file writes by agents ended in a commit in the same session' })
+    const none = { ...changes, summary: { ...changes.summary, writes: 0, commits: 0, committed_share: null } } as ChangeBody
+    expect(changeFinding(none)).toBe('No agent changed a file or made a commit in this period.')
+    expect(changeHero(none)).toBeUndefined()
+  })
+
+  it('splits each repository\'s writes into committed and not, greys a small one, and points to the commit check', () => {
+    const ctx = context({ data: { ...changes, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
+    const { host, dispose } = mount(() => <Changes {...props(ctx)} />)
+    const box = host.querySelector('[data-box="insight-changes"]')!
+    const rows = [...box.querySelectorAll('[data-repo]')]
+    expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['svc', 'loop', 't'])
+    expect(rows[0].querySelector('summary')!.textContent).toContain('200 writes · 75% committed')
+    expect(rows[0].querySelector('summary')!.textContent).toContain('40 source · 10 tests · 5 docs · 3 config and data · 1 memory and instructions')
+    expect(rows[0].querySelector('[data-repo-detail]')!.textContent).toContain('Per commit$10.00 and 50 min of working time per commit')
+    expect(rows[1].querySelector('[data-repo-detail]')!.textContent).toContain('0 commits, too few for a cost per commit')
+    expect(rows[2].hasAttribute('data-small')).toBe(true)
+    expect(box.querySelector('[data-file="plan.md"]')!.textContent).toContain('90 writes in 12 sessions, at most 20 in one')
+    expect(box.textContent).toContain('see the card "Verified before commit"')
     dispose()
   })
 })

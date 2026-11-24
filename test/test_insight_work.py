@@ -231,3 +231,43 @@ def test_durations_follow_the_project_filter_and_the_node_scope(kusto_store):
     assert status == 200 and [repo["repo"] for repo in body["repos"]] == [SCRATCH]
     other = _card(kusto_store, "durations", node=OTHER, qualified=True)
     assert [(repo["repo"], repo["sessions"], repo["agent_ms"]) for repo in other["repos"]] == [(APP, 1, None)]
+
+
+def _more_writes(store):
+    # s1 writes before its commit (committed) and after it (not); s3 writes the file s1 and s2 wrote (a third session).
+    _write(store, "w4", "s1", APP, 150.0, "src/x.py")
+    _write(store, "w6", "s1", APP, 300.0, "README.md")
+    _write(store, "w5", "s3", SUB, 1500.0, "src/x.py")
+
+
+def test_changes_count_files_kinds_rework_and_what_ended_in_a_commit(kusto_store):
+    _seed(kusto_store)
+    _more_writes(kusto_store)
+    body = _card(kusto_store, "changes")
+    repos = _repos(body)
+    app = repos[APP]
+    assert (app["writes"], app["committed_writes"], app["files"], app["reworked"]) == (6, 1, 3, 1)
+    assert app["kinds"] == {"source": 1, "tests": 1, "docs": 1, "config": 0, "memory": 0, "other": 0}
+    assert (app["lines_added"], app["lines_removed"], app["lines_unknown"]) == (15, 5, 1)
+    assert (app["commits"], app["commit_days"], app["change_sessions"], app["uncommitted_sessions"]) == (1, 1, 3, 2)
+    assert app["small"] is True and app["cost_per_commit"] is None
+    assert repos[SCRATCH]["writes"] == 0 and repos[SCRATCH]["small"] is True
+    assert [(item["path"], item["writes"], item["sessions"], item["most_in_session"]) for item in body["files"]] == [("src/x.py", 4, 3, 2)]
+    assert [session["session_id"] for session in body["sessions"]][0] == "s2"
+    assert sum(item["commits"] for item in body["bins"]) == 1 and sum(item["writes"] for item in body["bins"]) == 6
+    summary = body["summary"]
+    assert (summary["writes"], summary["committed_writes"], summary["reworked"]) == (6, 1, 1)
+    # Every repository is too small: none leads the finding.
+    assert summary["top"] is None and summary["most_uncommitted"] is None and set(summary["small"]) == {"app", "scratch"}
+
+
+def test_changes_follow_the_project_filter_and_the_fleet_scope(kusto_store):
+    _seed(kusto_store)
+    status, raw = board_routes.handle_get("/api/board/insights/changes", urlencode({"since": 0, "until": 100_000, "project": WORKTREE}),
+                                          kusto_store, kusto_store, now=200_000.0)
+    body = json.loads(raw)
+    assert status == 200 and [(repo["repo"], repo["writes"]) for repo in body["repos"]] == [(APP, 3)]
+    fleet = _repos(_card(kusto_store, "changes", qualified=True))
+    assert fleet[APP]["sessions"] == 4 and fleet[APP]["commits"] == 1
+    assert insights_work.day_step_for(Filters(since=1000.0, until=1000.0 + 30 * 86400)) == 86400.0
+    assert insights_work.day_step_for(Filters(since=1000.0, until=1000.0 + 90 * 86400)) == 3 * 86400.0

@@ -33,6 +33,7 @@ MIN_CALLS = 20
 CARDS = {
     "repos": "insights.repositories",
     "durations": "insights.durations",
+    "changes": "insights.changes",
 }
 
 
@@ -71,6 +72,12 @@ def step_for(filters: Filters) -> float:
     """Width of a time bin: a week, or whole weeks so the period has at most 8 bins (all history: a year)."""
     span = filters.until - filters.since if filters.since > 0 else 365 * 86400.0
     return WEEK * max(1, math.ceil(span / (8 * WEEK)))
+
+
+def day_step_for(filters: Filters) -> float:
+    """Width of a time bin of the changes card: a day, or whole days so the period has at most 31 bins (all history: a year)."""
+    span = filters.until - filters.since if filters.since > 0 else 365 * 86400.0
+    return 86400.0 * max(1, math.ceil(span / (31 * 86400.0)))
 
 
 def filter_params(filters: Filters) -> dict:
@@ -230,17 +237,91 @@ def durations(rows: list[dict]) -> dict:
     return {"repos": repos, "tools": tools, "models": models, "summary": summary, "sessions": sessions}
 
 
+KINDS = ("source", "tests", "docs", "config", "memory", "other")
+# A repository with fewer file writes than this and fewer than MIN_COMMITS commits is too small to compare.
+MIN_WRITES = 20
+
+
+def changes(rows: list[dict]) -> dict:
+    """What the agents changed per repository: files, churn, rework, kinds of files, and what ended in a commit."""
+    repos = []
+    for row in _of(rows, "repo"):
+        repo = str(row.get("repo") or "")
+        writes, commits = _int(row.get("writes")), _int(row.get("commits"))
+        cost = _n(row.get("cost_usd")) if _int(row.get("priced")) else None
+        agent = _ms(row.get("agent_s"))
+        repos.append({
+            "repo": repo, "name": folder_name(repo), "kind": "repository" if _int(row.get("repository")) else "folder",
+            "sessions": _int(row.get("sessions")), "change_sessions": _int(row.get("change_sessions")),
+            "commit_sessions": _int(row.get("commit_sessions")), "uncommitted_sessions": _int(row.get("uncommitted_sessions")),
+            "writes": writes, "committed_writes": _int(row.get("committed_writes")),
+            "committed_share": _ratio(_n(row.get("committed_writes")), writes),
+            "files": _int(row.get("files")), "reworked": _int(row.get("reworked")),
+            "kinds": {kind: _int(row.get(kind)) for kind in KINDS},
+            "lines_added": _int(row.get("lines_added")), "lines_removed": _int(row.get("lines_removed")),
+            "lines_unknown": _int(row.get("lines_unknown")), "commits": commits, "commit_days": _int(row.get("commit_days")),
+            "cost_usd": cost, "agent_ms": agent if agent else None,
+            "cost_per_commit": _ratio(cost, commits) if commits >= MIN_COMMITS else None,
+            "time_per_commit_ms": _ratio(agent, commits) if commits >= MIN_COMMITS and agent else None,
+            "small": writes < MIN_WRITES and commits < MIN_COMMITS,
+        })
+    repos.sort(key=lambda repo: (-repo["files"], -repo["commits"], repo["repo"]))
+    files_total = sum(repo["files"] for repo in repos)
+    for repo in repos:
+        repo["files_share"] = _ratio(repo["files"], files_total)
+    files = sorted(({
+        "repo": row.get("repo"), "repo_name": folder_name(row.get("repo") or ""), "path": row.get("path"),
+        "kind": row.get("file_kind"), "writes": _int(row.get("writes")), "sessions": _int(row.get("sessions")),
+        "most_in_session": _int(row.get("most_in_session")),
+    } for row in _of(rows, "file")), key=lambda item: (-item["writes"], str(item["path"])))
+    bins = sorted(({"start": _n(row.get("bin_start")), "commits": _int(row.get("commits")), "writes": _int(row.get("writes"))}
+                   for row in _of(rows, "bin")), key=lambda item: item["start"])
+    compared = [repo for repo in repos if not repo["small"]]
+    writes = sum(repo["writes"] for repo in repos)
+    committed = sum(repo["committed_writes"] for repo in repos)
+    uncommitted = sorted((repo for repo in compared if repo["writes"] - repo["committed_writes"] > 0),
+                         key=lambda repo: -(repo["writes"] - repo["committed_writes"]))
+    per_commit = sorted((repo for repo in compared if repo["cost_per_commit"] is not None), key=lambda repo: -repo["cost_per_commit"])
+    brief = ("repo", "name", "kind", "files", "files_share", "writes", "committed_writes", "committed_share", "commits",
+             "reworked", "cost_per_commit", "time_per_commit_ms", "change_sessions", "uncommitted_sessions")
+    summary = {
+        "repos": len(repos), "writes": writes, "files": files_total, "committed_writes": committed,
+        "committed_share": _ratio(committed, writes), "commits": sum(repo["commits"] for repo in repos),
+        "change_sessions": sum(repo["change_sessions"] for repo in repos),
+        "uncommitted_sessions": sum(repo["uncommitted_sessions"] for repo in repos),
+        "lines_added": sum(repo["lines_added"] for repo in repos), "lines_removed": sum(repo["lines_removed"] for repo in repos),
+        "reworked": sum(repo["reworked"] for repo in repos),
+        "kinds": {kind: sum(repo["kinds"][kind] for repo in repos) for kind in KINDS},
+        "top": {key: compared[0][key] for key in brief} if compared and compared[0]["files"] else None,
+        "most_uncommitted": {key: uncommitted[0][key] for key in brief} if uncommitted else None,
+        "dearest_per_commit": {key: per_commit[0][key] for key in brief} if len(per_commit) > 1 else None,
+        "cheapest_per_commit": {key: per_commit[-1][key] for key in brief} if len(per_commit) > 1 else None,
+        "top_file": files[0] if files else None,
+        "small": [repo["name"] for repo in repos if repo["small"]],
+    }
+    sessions = [{
+        "session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"), "repo": row.get("repo"),
+        "writes": _int(row.get("writes")), "committed_writes": _int(row.get("committed_writes")), "files": _int(row.get("files")),
+        "commits": _int(row.get("commits")),
+    } for row in _of(rows, "session") if row.get("session_id")]
+    sessions.sort(key=lambda item: -item["writes"])
+    return {"repos": repos, "files": files, "bins": bins, "summary": summary, "sessions": sessions}
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "repos": repositories,
     "durations": durations,
+    "changes": changes,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "repos": lambda history, params: history.read("insights.repositories", limit=ROW_LIMIT, **params),
     "durations": lambda history, params: history.read("insights.durations", limit=ROW_LIMIT, **params),
+    "changes": lambda history, params: history.read("insights.changes", limit=ROW_LIMIT, **params),
 }
 # The parameters a work view takes besides the period: the page's tool and model filters, and the bin width.
 PARAMS: dict[str, Callable[[Filters], dict]] = {
     "repos": lambda filters: {**filter_params(filters), "step": step_for(filters)},
     "durations": filter_params,
+    "changes": lambda filters: {**filter_params(filters), "step": day_step_for(filters)},
 }

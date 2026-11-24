@@ -372,6 +372,12 @@ _VIEWS = {
         "walled p50_wall_s p90_wall_s max_wall_s changed p50_first_change_s p90_first_change_s repository program name total_ms "
         "p50_ms p95_ms failed repo_ms model node_id session_id tool wall_s first_change_s first_ts last_ts computed_at",
     ),
+    "insights.changes": (
+        f"{_TIME} restrict_tools requested_tools requested_models step",
+        "row_type repo sessions change_sessions commit_sessions uncommitted_sessions cost_usd priced agent_s repository writes "
+        "committed_writes lines_added lines_removed lines_unknown files reworked source tests docs config memory other commits "
+        "commit_days path file_kind most_in_session node_id session_id tool bin_start first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -476,6 +482,7 @@ _CACHE_TTL_S = {
     "insights.model_report": _INSIGHT_TTL_S,
     "insights.repositories": _INSIGHT_TTL_S,
     "insights.durations": _INSIGHT_TTL_S,
+    "insights.changes": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }
