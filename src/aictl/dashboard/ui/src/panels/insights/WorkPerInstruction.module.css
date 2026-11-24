@@ -1,17 +1,18 @@
-/* Work per instruction: one small multiple per tool on a shared log axis, a wait strip under each. */
-.lead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
-.wait { margin: 0; font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
-.wait span { color: var(--color-muted); }
-.multiples { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
-.tool { display: grid; gap: var(--space-1); min-inline-size: 0; }
-.tool h3 { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-medium); }
-.tool h3 small { color: var(--color-muted); font-weight: normal; }
-.range { stroke: var(--color-chart-1); stroke-width: 3; stroke-linecap: round; opacity: .35; }
-.trend { fill: none; stroke: var(--color-chart-1); stroke-width: 1.5; }
+/* Work per instruction: per tool, a run bar on one linear axis, a split bar of waits, and a small trend line. */
+.figures { display: grid; gap: var(--space-1); min-inline-size: 0; font-variant-numeric: tabular-nums; }
+.figures small { color: var(--color-muted); }
+.text { color: var(--color-text); }
+.track { position: relative; display: block; block-size: var(--space-4); max-inline-size: 28rem; }
+.track > span { position: absolute; inset-block: 0; inset-inline-start: 0; display: block; }
+.run { background: var(--color-chart-1); border-radius: var(--radius-sm); }
+.runAll { background: var(--color-muted); opacity: .6; border-radius: var(--radius-sm); }
+.track > .tail { inset-block: calc(50% - 1px); background: var(--color-chart-1); }
+.track > .tailAll { inset-block: calc(50% - 1px); background: var(--color-muted); }
+.split { display: flex; block-size: var(--space-4); max-inline-size: 28rem; border-radius: var(--radius-sm); overflow: hidden; background: var(--color-raised); }
+.split > span { display: block; block-size: 100%; flex-basis: 0; }
+.quick { background: var(--color-chart-3); }
+.slow { background: var(--color-chart-2); }
+.trendRow { display: grid; grid-template-columns: minmax(8rem, 13rem) 1fr; gap: var(--space-2) var(--space-4); align-items: center; font-size: var(--text-xs); min-inline-size: 0; }
+.line { fill: none; stroke: var(--color-chart-1); stroke-width: 1.5; }
 .dot { fill: var(--color-chart-1); }
-.hollow { fill: var(--color-surface); stroke: var(--color-chart-1); stroke-width: 1.5; }
-.faint { fill: var(--color-muted); opacity: .45; }
-.grid { stroke: var(--color-border-subtle); stroke-width: 1; }
-.strip { display: grid; gap: 1px; font-size: var(--text-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
-.strip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; background: var(--color-raised); }
 .silent { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }

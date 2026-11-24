@@ -2,8 +2,9 @@
 // The longest run of main-agent tool calls between two turns of a person, per tool and time bin, and how long
 // the person took to answer once the agent stopped. A figure the source does not report is null and reads
 // "not reported", never 0.
-import { dayLabel, fmtDur, fmtNum } from '../../design/format'
-import { NOT_REPORTED, plural, type Hero, type InsightBase, type Label } from './insightsModel'
+import { dayLabel, fmtDur, fmtNum, fmtShare } from '../../design/format'
+import { EVIDENCE } from './evidence'
+import { count, NOT_REPORTED, plural, type Hero, type InsightBase, type Label } from './insightsModel'
 
 type Num = number | null
 export type BinUnit = 'day' | 'week' | 'month'
@@ -25,11 +26,14 @@ export type AutonomyBody = InsightBase<'autonomy'> & {
   summary: { lead: string | null; sessions: number; multi_sessions: number; one_instruction: number; not_reported: string[] }
 }
 
-/** Below this many sessions with two or more instructions, a median is not shown as the lead or joined into a trend: with
- * fewer, the nearest-rank 90th percentile is the largest session. */
+/** Below this many sessions with two or more instructions, a tool's median of them is not shown: with fewer, the
+ * nearest-rank 90th percentile is the largest session. */
 export const MIN_MULTI = 10
-/** A wait median, a tool's or a bin's, is stated only over this many waits. */
+/** A wait median is stated only over this many waits. */
 export const MIN_WAITS = 10
+/** A bin is drawn in a trend only with this many sessions of 2 or more instructions, and a trend only with this many such bins. */
+export const MIN_TREND_SESSIONS = 5
+export const MIN_TREND_BINS = 3
 
 const calls = (value: Num) => value == null ? NOT_REPORTED : `${fmtNum(value)} ${value === 1 ? 'call' : 'calls'}`
 const names = (items: readonly string[]) => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
@@ -37,28 +41,82 @@ const names = (items: readonly string[]) => items.length < 2 ? items.join('') : 
 /** A bin starts at a UTC day, week or month: name the UTC day, whatever the viewer's zone. */
 export const binDay = (ts: number) => dayLabel(ts + new Date(ts * 1000).getTimezoneOffset() * 60)
 
-/** The tools with a measured session, then the tool picked (the lead when none is, or the pick has gone). */
+/** The tools with a measured session, the most sessions first; the first is the tool the card leads with. */
 export const measuredTools = (body: AutonomyBody) => body.tools.filter(tool => tool.sessions > 0)
-export function pickedTool(body: AutonomyBody, picked: string | undefined) {
-  const measured = measuredTools(body)
-  return measured.find(tool => tool.tool === picked) ?? measured.find(tool => tool.tool === body.summary.lead) ?? measured[0]
-}
+  .sort((a, b) => b.sessions - a.sessions || b.multi_sessions - a.multi_sessions)
+export const leadTool = (body: AutonomyBody): AutonomyTool | undefined => measuredTools(body)[0]
 
-/** The multi-instruction median is the lead only with enough sessions behind it. */
+/** The multi-instruction median is shown only with enough sessions behind it. */
 export const enoughMulti = (row: AutonomyFigures) => row.multi_sessions >= MIN_MULTI && row.p50_multi != null
 
 /** The wait median rests on enough waits. */
 export const enoughWaits = (row: AutonomyFigures) => row.p50_wait_s != null && row.waits >= MIN_WAITS
 
-/** "1 min 50 s · 304 of 1,008 over 5 min · 31 queued", not reported when the view gave no median, or too few waits. */
-export function waitFigure(row: AutonomyFigures) {
-  if (row.p50_wait_s == null) return NOT_REPORTED
-  if (!enoughWaits(row)) return `too few waits (n=${fmtNum(row.waits)}) · ${fmtNum(row.queued)} queued`
-  return `${fmtDur(row.p50_wait_s)} · ${fmtNum(row.over_5m ?? 0)} of ${fmtNum(row.waits)} over 5 min · ${fmtNum(row.queued)} queued`
+/** A tool's longest unattended run as its bar draws it: the median and 90th percentile of sessions with 2 or more
+ * instructions, or, with too few of those, of all sessions (drawn muted). Null when the tool reports neither. */
+export function runRange(tool: AutonomyTool): { p50: number; p90: number | null; all: boolean } | null {
+  if (enoughMulti(tool)) return { p50: tool.p50_multi!, p90: tool.p90_multi, all: false }
+  if (tool.p50_longest != null) return { p50: tool.p50_longest, p90: tool.p90_longest, all: true }
+  return null
 }
 
-/** A bin's wait: the median only when it rests on enough waits. */
-export const binWait = (row: AutonomyBin) => enoughWaits(row) ? fmtDur(row.p50_wait_s!) : '–'
+/** The end of the shared, linear run axis: the largest 90th percentile (or median) any bar draws. */
+export const runTop = (tools: readonly AutonomyTool[]) => Math.max(1, ...tools.map(tool => {
+  const run = runRange(tool)
+  return run ? Math.max(run.p50, run.p90 ?? 0) : 0
+}))
+
+/** "median 88 · 90th pct 286 tool calls in a row without you", written at the bar. */
+export function runText(tool: AutonomyTool) {
+  const run = runRange(tool)
+  if (!run) return NOT_REPORTED
+  const text = `median ${fmtNum(run.p50)} · 90th pct ${count(run.p90)} tool calls in a row without you`
+  return run.all ? `all sessions: ${text} (too few sessions with 2 or more instructions for their own median: ` +
+    `${fmtNum(tool.multi_sessions)}, ${fmtNum(MIN_MULTI)} needed)` : text
+}
+
+/** Tool calls per instruction, the average over the period; null with no instruction. */
+export const perInstruction = (tool: AutonomyTool) => tool.instructions ? tool.calls / tool.instructions : null
+
+/** "14.6 tool calls per instruction · 1,119 instructions in 32 sessions · 11 sessions ran on one instruction". */
+export function figuresText(tool: AutonomyTool) {
+  const per = perInstruction(tool)
+  return [
+    per == null ? null : `${fmtNum(per)} tool calls per instruction`,
+    `${plural(tool.instructions, 'instruction')} in ${plural(tool.sessions, 'session')}`,
+    `${plural(tool.one_instruction, 'session')} ran on one instruction`,
+    tool.delegated ? `${plural(tool.delegated, 'call')} started a subagent` : null,
+  ].filter(Boolean).join(' · ')
+}
+
+/** The answered waits split at 5 minutes: only when the tool reports waits and there are enough for a median. */
+export function waitSplit(tool: AutonomyTool): { under: number; over: number; share: number } | null {
+  if (!enoughWaits(tool) || tool.over_5m == null) return null
+  const over = tool.over_5m
+  return { under: Math.max(0, tool.waits - over), over, share: tool.over_5m_share ?? over / tool.waits }
+}
+
+/** The line written at the wait bar, or why there is no bar. */
+export function waitText(tool: AutonomyTool) {
+  if (tool.p50_wait_s == null) return NOT_REPORTED
+  if (!enoughWaits(tool)) return `only ${plural(tool.waits, 'wait')} measured, too few for a median (${fmtNum(MIN_WAITS)} needed)`
+  const split = waitSplit(tool)
+  const parts = split ? `${fmtNum(split.under)} answered within 5 min · ${fmtNum(split.over)} after more than 5 min ` +
+    `(${fmtShare(split.share)}) · ` : ''
+  return `${parts}median wait ${fmtDur(tool.p50_wait_s)}`
+}
+
+/** "38 instructions were typed while the agent was still working"; empty when the tool reports no waits at all. */
+export function queuedText(tool: AutonomyTool) {
+  if (tool.p50_wait_s == null && !tool.queued) return ''
+  return `${plural(tool.queued, 'instruction')} ${tool.queued === 1 ? 'was' : 'were'} typed while the agent was still working`
+}
+
+/** The bins of a tool a trend may use: a multi-instruction median over enough sessions, oldest first. */
+export const trendBins = (body: AutonomyBody, tool: string) => body.bins
+  .filter(row => row.tool === tool && row.p50_multi != null && row.multi_sessions >= MIN_TREND_SESSIONS)
+  .sort((a, b) => a.bin_ts - b.bin_ts)
+export const canTrend = (body: AutonomyBody, tool: string) => trendBins(body, tool).length >= MIN_TREND_BINS
 
 export function autonomyHero(body: AutonomyBody, tool: AutonomyTool | undefined, label: Label): Hero | undefined {
   if (!tool) return undefined
@@ -71,28 +129,28 @@ export function autonomyHero(body: AutonomyBody, tool: AutonomyTool | undefined,
     'sessions, which may be scripted' }
 }
 
-/** The change from the first to the last bin of a tool with enough multi-instruction sessions. It is stated as a change
- * only when every bin between with a median, enough sessions or not, moves the same way; otherwise as the range of those
- * bins, so a rise and fall does not read as a steady change. */
+/** The change over the bins a trend may use. It is stated as a change only when every one of them moves the same way;
+ * otherwise as their range, so a rise and fall does not read as a steady change. */
 export function trend(body: AutonomyBody, tool: string) {
   const unit = body.bin_unit ?? 'day'
-  const rows = body.bins.filter(row => row.tool === tool && row.p50_multi != null)
-  const usable = rows.filter(enoughMulti)
-  if (usable.length < 2) return `too few sessions per ${unit} to show a trend`
-  const first = usable[0], last = usable[usable.length - 1]
-  const span = rows.filter(row => row.bin_ts >= first.bin_ts && row.bin_ts <= last.bin_ts)
-  const values = span.map(row => row.p50_multi!)
+  const rows = trendBins(body, tool)
+  if (rows.length < MIN_TREND_BINS) return `too few sessions per ${unit} to show a trend`
+  const first = rows[0], last = rows[rows.length - 1]
+  const values = rows.map(row => row.p50_multi!)
   const when = (ts: number) => unit === 'day' ? `on ${binDay(ts)}` : `in the ${unit} starting ${binDay(ts)}`
-  const few = span.length > usable.length ? `; ${unit}s with fewer than ${MIN_MULTI} such sessions included` : ''
-  if (values.every(value => value === values[0])) return `the median stayed at ${calls(values[0])} in each ${unit}${few}`
+  if (values.every(value => value === values[0])) return `the median stayed at ${calls(values[0])} in each ${unit}`
   const steady = values.every((value, i) => i === 0 || value >= values[i - 1]) || values.every((value, i) => i === 0 || value <= values[i - 1])
   if (steady) return `the median went from ${calls(first.p50_multi)} ${when(first.bin_ts)} to ${calls(last.p50_multi)} ${when(last.bin_ts)}`
   return `the median per ${unit} ranged from ${calls(Math.min(...values))} to ${calls(Math.max(...values))} with no steady change ` +
-    `(${calls(first.p50_multi)} ${when(first.bin_ts)}, ${calls(last.p50_multi)} ${when(last.bin_ts)}${few})`
+    `(${calls(first.p50_multi)} ${when(first.bin_ts)}, ${calls(last.p50_multi)} ${when(last.bin_ts)})`
 }
 
 export function autonomyFinding(body: AutonomyBody, tool: AutonomyTool | undefined, label: Label) {
   if (!tool) {
+    // Every tool with sessions was below the card's evidence minimum: the card names them in one line.
+    if (body.summary.sessions > 0 && body.tools.every(row => !row.sessions)) {
+      return `Every tool had too few sessions in this period to compare (fewer than ${fmtNum(EVIDENCE.autonomy.minimum)} each).`
+    }
     const silent = body.summary.not_reported
     return silent.length && !body.tools.some(row => row.reported)
       ? `aictl reads no prompts for the tools in this period (${names(silent.map(label))}), so work per instruction is not reported.`
@@ -118,10 +176,3 @@ export function autonomyFinding(body: AutonomyBody, tool: AutonomyTool | undefin
  * of it was left out. */
 export const silence = (tool: AutonomyTool) => tool.reported ? 'no measured session (every session was left out)'
   : 'not reported (aictl does not read this tool\'s prompts)'
-
-/** The log scale of the small multiples: one axis for every tool, from 1 call to the largest 90th percentile. */
-export function logScale(bins: readonly AutonomyBin[], height: number) {
-  const top = Math.max(2, ...bins.map(row => Math.max(row.p90_multi ?? 0, row.p90_longest ?? 0, row.p50_longest ?? 0)))
-  const span = Math.log10(top)
-  return { top, y: (value: number) => height - (Math.log10(Math.max(1, value)) / span) * height }
-}

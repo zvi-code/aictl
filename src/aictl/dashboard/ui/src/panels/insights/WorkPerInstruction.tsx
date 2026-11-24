@@ -1,104 +1,134 @@
-import { createSignal, For, Show, untrack } from 'solid-js'
+import { For, Show, untrack } from 'solid-js'
 import { fmtDur, fmtNum, fmtShare, stamp } from '../../design/format'
-import { Segmented } from '../../ui/Segmented'
 import type { Field } from '../../ui/tableModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  autonomyFinding, autonomyHero, binDay, binWait, enoughMulti, logScale, measuredTools, MIN_MULTI, MIN_WAITS, pickedTool, silence,
-  waitFigure,
-  type AutonomyBin, type AutonomyBody, type AutonomyTool,
+  autonomyFinding, autonomyHero, binDay, canTrend, figuresText, leadTool, measuredTools, MIN_MULTI, MIN_TREND_BINS,
+  MIN_TREND_SESSIONS, MIN_WAITS, queuedText, runRange, runText, runTop, silence, trendBins, waitSplit, waitText,
+  type AutonomyBody, type AutonomyTool,
 } from './autonomyModel'
 import { NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
 import base from './Insights.module.css'
 import styles from './WorkPerInstruction.module.css'
 
-const W = 360, H = 92, TOP = 8, BOTTOM = 16, LEFT = 30, RIGHT = 6
-const PLOT = H - TOP - BOTTOM
+const pct = (value: number, top: number) => `${(Math.max(0, Math.min(1, value / top)) * 100).toFixed(1)}%`
 
-/** One tool: per bin, a p50–p90 bar with the multi-instruction median, the all-session median faint beside it. */
-function ToolRow(props: { tool: AutonomyTool; bins: AutonomyBin[]; at: number[]; scale: ReturnType<typeof logScale>; unit: string; label: Label }) {
-  const slot = () => (W - LEFT - RIGHT) / Math.max(1, props.at.length)
-  const x = (ts: number) => LEFT + (props.at.indexOf(ts) + 0.5) * slot()
-  const y = (value: number) => TOP + props.scale.y(value)
-  const ticks = () => [1, 10, 100, 1000, 10000].filter(tick => tick <= props.scale.top)
-  const joined = () => props.bins.filter(enoughMulti).map(row => `${x(row.bin_ts).toFixed(1)},${y(row.p50_multi!).toFixed(1)}`).join(' ')
-  const name = () => props.label(props.tool.tool)
-  return <li class={styles.tool} data-tool={props.tool.tool}>
-    <h3>{name()} <small>{plural(props.tool.sessions, 'session')} · {fmtNum(props.tool.multi_sessions)} with 2 or more instructions</small></h3>
-    <svg class={base.chart} style={{ 'max-inline-size': 'none' }} viewBox={`0 0 ${W} ${H}`} role="img"
-      aria-label={`${name()}: longest run of tool calls per ${props.unit}, median and 90th percentile, sessions with 2 or more instructions`}>
-      <For each={ticks()}>{tick => <g>
-        <line class={styles.grid} x1={LEFT} x2={W - RIGHT} y1={y(tick)} y2={y(tick)} />
-        <text class={base.muted} x={LEFT - 4} y={y(tick) + 3} text-anchor="end">{fmtNum(tick)}</text>
-      </g>}</For>
-      <polyline class={styles.trend} points={joined()} data-trend />
-      <For each={props.bins}>{row => {
-        const multi = () => row.p50_multi != null
-        return <g data-bin={row.bin_ts}>
-          <Show when={multi() && row.p90_multi != null}>
-            <line class={styles.range} x1={x(row.bin_ts)} x2={x(row.bin_ts)} y1={y(row.p50_multi!)} y2={y(row.p90_multi!)} />
+/** One tool on the shared linear axis: a bar to the median longest run, a thin line on to the 90th percentile. */
+function RunRow(props: { tool: AutonomyTool; top: number; label: Label }) {
+  const run = () => runRange(props.tool)
+  return <li class={base.barRow} data-run={props.tool.tool}>
+    <span class={base.barName}>{props.label(props.tool.tool)}
+      <small>{plural(props.tool.sessions, 'session')} · {fmtNum(props.tool.multi_sessions)} with 2 or more instructions</small></span>
+    <span class={styles.figures}>
+      <Show when={run()} fallback={<span class={styles.text}>{NOT_REPORTED}</span>}>{range => <>
+        <span class={styles.track} role="img" aria-label={runText(props.tool)}>
+          <span class={range().all ? styles.runAll : styles.run} style={{ 'inline-size': pct(range().p50, props.top) }} data-median />
+          <Show when={range().p90 != null && range().p90! > range().p50}>
+            <span class={range().all ? styles.tailAll : styles.tail} data-p90
+              style={{ 'inset-inline-start': pct(range().p50, props.top), 'inline-size': pct(range().p90! - range().p50, props.top) }} />
           </Show>
-          <Show when={row.p50_longest != null}>
-            <circle class={styles.faint} cx={x(row.bin_ts) + 5} cy={y(row.p50_longest!)} r={2.5} data-all />
-          </Show>
-          <Show when={multi()}>
-            <circle class={enoughMulti(row) ? styles.dot : styles.hollow} cx={x(row.bin_ts)} cy={y(row.p50_multi!)} r={3.5}
-              data-multi={enoughMulti(row) ? 'joined' : 'few'}>
-              <title>{`${binDay(row.bin_ts)}: median ${fmtNum(row.p50_multi)}, 90th percentile ${fmtNum(row.p90_multi)} calls over ` +
-                `${plural(row.multi_sessions, 'session')} with 2 or more instructions; all ${plural(row.sessions, 'session')}: ` +
-                `median ${fmtNum(row.p50_longest)}`}</title>
-            </circle>
-            <Show when={!enoughMulti(row)}>
-              <text class={base.muted} x={x(row.bin_ts)} y={y(row.p50_multi!) - 6} text-anchor="middle">n={fmtNum(row.multi_sessions)}</text>
-            </Show>
-          </Show>
-        </g>
-      }}</For>
-      <Show when={props.at.length}>
-        <text class={base.muted} x={LEFT} y={H - 3}>{binDay(props.at[0])}</text>
-        <text class={base.muted} x={W - RIGHT} y={H - 3} text-anchor="end">{binDay(props.at[props.at.length - 1])}</text>
-      </Show>
-    </svg>
-    <div class={styles.strip} data-waits style={{ 'grid-template-columns': `${LEFT / W * 100}% repeat(${props.at.length}, minmax(0, 1fr))` }}>
-      <span title="Median wait after the agent stopped, per bin">wait</span>
-      <For each={props.at}>{ts => {
-        const row = () => props.bins.find(bin => bin.bin_ts === ts)
-        return <span title={row() ? `${binDay(ts)}: ${waitFigure(row()!)}` : `${binDay(ts)}: no session`}>{row() ? binWait(row()!) : '–'}</span>
-      }}</For>
-    </div>
+        </span>
+        <span class={styles.text} data-run-text>{runText(props.tool)}</span>
+      </>}</Show>
+      <small data-figures>{figuresText(props.tool)}</small>
+    </span>
   </li>
 }
 
-function Multiples(props: { body: AutonomyBody; label: Label; picked: AutonomyTool | undefined; pick: (tool: string) => void }) {
+/** One tool's answered waits, split at 5 minutes, with the median wait and the queued instructions written out. */
+function WaitRow(props: { tool: AutonomyTool; label: Label }) {
+  const split = () => waitSplit(props.tool)
+  return <li class={base.barRow} data-wait={props.tool.tool}>
+    <span class={base.barName}>{props.label(props.tool.tool)}
+      <small>{plural(props.tool.waits, 'answered wait')}</small></span>
+    <span class={styles.figures}>
+      <Show when={split()}>{parts => <span class={styles.split} role="img" aria-label={waitText(props.tool)}>
+        <span class={styles.quick} style={{ 'flex-grow': parts().under }} data-under />
+        <span class={styles.slow} style={{ 'flex-grow': parts().over }} data-over />
+      </span>}</Show>
+      <span class={styles.text} data-wait-text>{waitText(props.tool)}</span>
+      <Show when={queuedText(props.tool)}>{text => <small data-queued>{text()}</small>}</Show>
+    </span>
+  </li>
+}
+
+const TW = 360, TH = 66, TTOP = 16, TBOTTOM = 14, TSIDE = 14
+const MAX_LABELS = 12
+
+/** A tool's median longest run per bin, from the bins with enough sessions only; every dot carries its value. */
+function TrendRow(props: { body: AutonomyBody; tool: AutonomyTool; label: Label }) {
+  const unit = () => props.body.bin_unit ?? 'bin'
+  const rows = () => trendBins(props.body, props.tool.tool)
+  const top = () => Math.max(1, ...rows().map(row => row.p50_multi!))
+  const first = () => rows()[0].bin_ts, last = () => rows()[rows().length - 1].bin_ts
+  const x = (ts: number) => TSIDE + (last() > first() ? (ts - first()) / (last() - first()) : 0.5) * (TW - 2 * TSIDE)
+  const y = (value: number) => TTOP + (1 - value / top()) * (TH - TTOP - TBOTTOM)
+  // With many bins, the first, last, lowest and highest carry the dots and values; the line still passes every bin.
+  const marked = () => {
+    const values = rows().map(row => row.p50_multi!)
+    if (values.length <= MAX_LABELS) return new Set(values.map((_, i) => i))
+    return new Set([0, values.length - 1, values.indexOf(Math.min(...values)), values.indexOf(Math.max(...values))])
+  }
+  return <li class={styles.trendRow} data-trend={props.tool.tool}>
+    <span class={base.barName}>{props.label(props.tool.tool)}</span>
+    <Show when={canTrend(props.body, props.tool.tool)} fallback={<span class={base.note} data-no-trend>
+      Too few sessions per {unit()} to draw a trend ({MIN_TREND_BINS} {unit()}s with {MIN_TREND_SESSIONS} or more sessions of 2 or more
+      {' '}instructions are needed).</span>}>
+      <svg class={base.chart} viewBox={`0 0 ${TW} ${TH}`} role="img"
+        aria-label={`${props.label(props.tool.tool)}: median longest run of tool calls per ${unit()}`}>
+        <line class={base.axis} x1={TSIDE} x2={TW - TSIDE} y1={y(0)} y2={y(0)} />
+        <polyline class={styles.line} points={rows().map(row => `${x(row.bin_ts).toFixed(1)},${y(row.p50_multi!).toFixed(1)}`).join(' ')} />
+        <For each={rows()}>{(row, i) => <Show when={marked().has(i())}>
+          <g data-point={row.bin_ts}>
+            <circle class={styles.dot} cx={x(row.bin_ts)} cy={y(row.p50_multi!)} r={3}>
+              <title>{`${binDay(row.bin_ts)}: median ${fmtNum(row.p50_multi)}, 90th percentile ${fmtNum(row.p90_multi)} tool calls ` +
+                `over ${plural(row.multi_sessions, 'session')} with 2 or more instructions`}</title>
+            </circle>
+            <text x={x(row.bin_ts)} y={y(row.p50_multi!) - 6} text-anchor="middle">{fmtNum(row.p50_multi)}</text>
+          </g>
+        </Show>}</For>
+        <text class={base.muted} x={TSIDE} y={TH - 2}>{binDay(first())}</text>
+        <text class={base.muted} x={TW - TSIDE} y={TH - 2} text-anchor="end">{binDay(last())}</text>
+      </svg>
+    </Show>
+  </li>
+}
+
+function Visual(props: { body: AutonomyBody; label: Label }) {
   const measured = () => measuredTools(props.body)
-  const at = () => [...new Set(props.body.bins.map(row => row.bin_ts))].sort((a, b) => a - b)
-  const scale = () => logScale(props.body.bins, PLOT)
+  const top = () => runTop(measured())
   const silent = () => props.body.tools.filter(tool => !tool.sessions)
   const start = () => Math.max(props.body.range.since, props.body.prompts_from ?? 0)
   return <>
-    <Show when={measured().length > 1}>
-      <div class={styles.lead}>Lead figure for
-        <Segmented label="Tool the lead figure and finding describe" value={props.picked?.tool ?? ''}
-          options={measured().map(tool => ({ id: tool.tool, label: props.label(tool.tool) }))} onChange={props.pick} />
-      </div>
-    </Show>
-    <Show when={props.picked}>{tool => <p class={styles.wait} data-wait>
-      <span>Median wait after the agent stopped ({props.label(tool().tool)}): </span>{waitFigure(tool())}</p>}</Show>
     <Show when={props.body.prompts_from != null && props.body.prompts_from > props.body.range.since}>
       <p class={base.note}>Prompts are stored from {stamp(props.body.prompts_from, true)}; no session before that can be read.</p>
     </Show>
-    <ul class={styles.multiples} aria-label={`Longest run of tool calls between a person's turns, per tool and ${props.body.bin_unit ?? 'bin'}`}>
-      <For each={measured()}>{tool => <ToolRow tool={tool} bins={props.body.bins.filter(row => row.tool === tool.tool)} at={at()}
-        scale={scale()} unit={props.body.bin_unit ?? 'bin'} label={props.label} />}</For>
-    </ul>
     <Show when={measured().length}>
-      <p class={base.note}>Dots: median of sessions with 2 or more instructions, bar to the 90th percentile, joined where a
-        {' '}{props.body.bin_unit ?? 'bin'} has {MIN_MULTI} or more; hollow with n= below that. Faint dot: median of all sessions. Log
-        {' '}scale, calls. Wait strip: the median wait where there are {MIN_WAITS} or more waits.{start() > 0 ? ` From ${stamp(start(), true)}.` : ''}</p>
+      <h3 class={base.subhead}>How far the agent gets without you</h3>
+      <ol class={base.bars} aria-label="Longest run of tool calls between your turns, per tool">
+        <For each={measured()}>{tool => <RunRow tool={tool} top={top()} label={props.label} />}</For>
+      </ol>
+      <p class={base.note}>Per session, the longest run of tool calls between two of your turns. Bar: the median of sessions with
+        {' '}2 or more instructions; thin line on to the 90th percentile; grey when a tool has fewer than {MIN_MULTI} such sessions
+        {' '}and all its sessions are used. One linear scale for every tool, 0 to {fmtNum(top())} tool calls.</p>
+      <h3 class={base.subhead}>Waiting for you</h3>
+      <ul class={base.legend}>
+        <li><span class={`${base.swatch} ${styles.quick}`} />Answered within 5 minutes</li>
+        <li><span class={`${base.swatch} ${styles.slow}`} />Answered after more than 5 minutes</li>
+      </ul>
+      <ol class={base.bars} aria-label="How long the agent waited for your answer, per tool">
+        <For each={measured()}>{tool => <WaitRow tool={tool} label={props.label} />}</For>
+      </ol>
+      <h3 class={base.subhead}>Median longest run per {props.body.bin_unit ?? 'bin'}</h3>
+      <ol class={base.bars} aria-label={`Median longest run of tool calls per ${props.body.bin_unit ?? 'bin'}, per tool`}>
+        <For each={measured()}>{tool => <TrendRow body={props.body} tool={tool} label={props.label} />}</For>
+      </ol>
+      <Show when={start() > 0}><p class={base.note}>From {stamp(start(), true)}.</p></Show>
     </Show>
     <For each={silent()}>{tool => <p class={styles.silent} data-silent={tool.tool}>{props.label(tool.tool)}: {silence(tool)}</p>}</For>
   </>
 }
+
 
 type Row = Record<string, unknown>
 
@@ -111,12 +141,10 @@ function figure(id: string, label: string, format: (value: number) => string): F
 export default function WorkPerInstruction(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  const [picked, setPicked] = createSignal<string>()
-  const tool = (body: AutonomyBody) => pickedTool(body, picked())
   return <InsightCard<AutonomyBody> {...props} card="autonomy" title="Work per instruction" tab="flow"
-    hero={body => autonomyHero(body, tool(body), label)}
-    finding={body => autonomyFinding(body, tool(body), label)}
-    visual={body => <Multiples body={body} label={label} picked={tool(body)} pick={setPicked} />}
+    hero={body => autonomyHero(body, leadTool(body), label)}
+    finding={body => autonomyFinding(body, leadTool(body), label)}
+    visual={body => <Visual body={body} label={label} />}
     note={'A person\'s turn is a prompt of the main agent, or the answer to a question the agent asked: a call named ask_user, ' +
       'askuser, ask_question, askuserquestion or vscode_askquestions (a fixed list; ask tools served by an MCP server are ordinary ' +
       'calls). An answer starts a new run but is not an instruction. Session-control commands (/compact, /autocompact, /model, ' +
@@ -127,7 +155,8 @@ export default function WorkPerInstruction(props: CardProps) {
       'and does not end a run. A session is left out as started by a script when its first prompt is a template, or when its first ' +
       '40 characters, with digits ignored, open 3 or more sessions; this also catches a person who opens sessions the same way. ' +
       'Automation with unique text still looks like a person, so single-instruction sessions may be scripted: the lead figure uses ' +
-      `sessions with 2 or more instructions and reads too few sessions under ${MIN_MULTI}. Where prompt text is not kept, templates cannot be ` +
+      `sessions with 2 or more instructions and reads too few sessions under ${MIN_MULTI}. A trend uses only the bins with ` +
+      `${MIN_TREND_SESSIONS} or more such sessions and is drawn only when there are ${MIN_TREND_BINS} of them. Where prompt text is not kept, templates cannot be ` +
       'recognised and the session counts as led by a person. Copilot sessions known only from the session store are left out (not ' +
       'comparable: the session store keeps shell commands only). A turn with no recorded call or reply is unread and is not ' +
       'counted (Copilot in VS Code turns outside its debug log); a run the log covers only in part can be undercounted. The agent ' +
