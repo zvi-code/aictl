@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 8afa92f6ba18369d0e9f77074b4aa610748cf6537db99e133ea00dab92778898
+// Schema digest: a7f631ac9705f94b49be49dbc25103e5612a57c4628655ad653380279632f4e3
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -409,7 +409,7 @@ export type BoardSeries = {
     tool: Array<number | null>;
     api: Array<number | null>;
   };
-  tests: {
+  tests?: {
     passed: Array<number | null>;
     failed: Array<number | null>;
   };
@@ -1061,6 +1061,7 @@ export type DetailBoardHistory = {
   tool_labels?: BoardToolLabels;
   tools?: BoardTools;
   unpriced?: BoardUnpriced;
+  pending_fields?: Array<string>;
   field_errors?: Record<string, string>;
 };
 
