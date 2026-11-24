@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..data.model_pricing import canonical_model_id
+from ..tool_scope import stored_ids_for
 from .board_filters import Filters
 from .projections.history import HistoryScope
 
@@ -84,7 +85,8 @@ def filter_params(filters: Filters) -> dict:
     """The page's tool and model filters, as the work views take them."""
     params: dict = {}
     if filters.tools is not None:
-        params |= {"restrict_tools": True, "requested_tools": list(filters.tools)}
+        # Every stored spelling of a chosen tool, as the other cards' session scope takes it (insights.session_scope).
+        params |= {"restrict_tools": True, "requested_tools": stored_ids_for(filters.tools)}
     if filters.model and filters.model != "all":
         params["requested_models"] = [canonical_model_id(filters.model)]
     return params

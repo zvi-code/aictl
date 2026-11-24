@@ -66,11 +66,10 @@ export function opens(ctx: PanelContext) {
           if (folders.length) ctx.navigate({ project: folders, repo: null, sel: null })
         }).catch(() => undefined)
       } } : undefined,
-    /** A coding tool (Claude Code, Copilot CLI): the page's coding tool filter set to it. A view that does not take
-     * the filter says so under its title (InsightCard). */
+    /** A coding tool (Claude Code, Copilot CLI): the page's coding tool filter set to it; every view shows its sessions. */
     product: (tool: string, name: string): Open | undefined => tool
       ? { label: `Set the coding tool filter to ${name}`, run: () => ctx.navigate(toolsToParams([tool])) } : undefined,
-    /** A model: the page's model filter set to it. A view that does not take the filter says so under its title. */
+    /** A model: the page's model filter set to it; every view shows the sessions that used it in the period. */
     model: (model: string): Open | undefined => model
       ? { label: `Set the model filter to ${model}`, run: () => ctx.navigate({ model }) } : undefined,
   }

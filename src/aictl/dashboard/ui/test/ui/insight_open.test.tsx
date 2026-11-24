@@ -19,8 +19,9 @@ import { PairedBars } from '../../src/panels/insights/charts/PairedBars'
 import { PercentileStrip } from '../../src/panels/insights/charts/PercentileStrip'
 import { Scatter } from '../../src/panels/insights/charts/Scatter'
 import { BarChart } from '../../src/panels/insights/FlowsBars'
+import { scopeText } from '../../src/panels/insights/InsightCard'
 import { RepoLegend } from '../../src/panels/insights/RepoLegend'
-import { INSIGHT_VIEWS, TOOL_FILTERED } from '../../src/panels/insights/views'
+import { INSIGHT_VIEWS } from '../../src/panels/insights/views'
 import Skills from '../../src/panels/insights/Skills'
 import type { SkillsBody } from '../../src/panels/insights/skillsModel'
 import { Bars as WorkBars, Ranges } from '../../src/panels/insights/WorkCharts'
@@ -180,25 +181,34 @@ const skills = {
   sessions: [{ session_id: 's-skill', node_id: 'n', tool: 'copilot-cli', project_name: 'alpha', uses: 7, skills: ['kql', 'review'] }],
 } as unknown as SkillsBody
 
-describe('INS-OPEN · a view the coding tool and model filters do not narrow', () => {
-  it('says so when one is set, and links the views that take the filter', () => {
-    const { ctx, went } = context({ data: skills, status: 'ready', error: null })
-    const filtered = { ...ctx, tools: () => ['copilot-cli'], filters: () => ({ projects: [], repos: [], model: 'all' }) } as unknown as PanelContext
-    const { host, dispose } = mount(() => <Skills ctx={filtered} since={base.range.since} until={base.range.until} />)
-    const note = host.querySelector('[data-unfiltered]')!
-    expect(note.textContent).toContain('The coding tool and model filters do not narrow this view')
-    expect([...note.querySelectorAll('[data-open]')].map(node => node.textContent)).toEqual(['Work by repository', 'Where session time goes',
-      'What the agents changed'])
-    note.querySelector<HTMLElement>('[data-open]')!.click()
-    expect(went.patches).toEqual([{ view: 'repos' }])
+describe('INS-OPEN · the coding tool and model filters narrow every view', () => {
+  const asked = (ctx: PanelContext) => {
+    const paths: string[] = []
+    const seen = { ...ctx, detail: (path: () => string | undefined) => { paths.push(path() ?? ''); return ctx.detail(path) } } as PanelContext
+    return { seen, paths }
+  }
+
+  it('sends the chosen tools and model with the request, and says what the view is narrowed to', () => {
+    const { ctx } = context({ data: skills, status: 'ready', error: null })
+    const { seen, paths } = asked({ ...ctx, tools: () => ['copilot-cli', 'claude-code'],
+      filters: () => ({ projects: [], repos: [], model: 'claude-opus-5-5' }) } as unknown as PanelContext)
+    const { host, dispose } = mount(() => <Skills ctx={seen} since={base.range.since} until={base.range.until} />)
+    expect(paths[0]).toContain('tool=copilot-cli%2Cclaude-code')
+    expect(paths[0]).toContain('model=claude-opus-5-5')
+    expect(host.querySelector('[data-scope]')!.textContent).toBe('Narrowed to the sessions of copilot-cli, claude-code, and to sessions ' +
+      'that made a request with claude-opus-5-5 in the period.')
     dispose()
   })
 
-  it('says nothing when neither filter is set', () => {
+  it('asks for no coding tool when none is chosen, and says nothing when neither filter is set', () => {
+    expect(scopeText([], 'all', String)).toBe('Narrowed to no coding tool (none is chosen).')
+    expect(scopeText(null, 'm-1', String)).toBe('Narrowed to sessions that made a request with m-1 in the period.')
+    expect(scopeText(null, 'all', String)).toBe('')
     const { ctx } = context({ data: skills, status: 'ready', error: null })
-    const open = { ...ctx, tools: () => null, filters: () => ({ projects: [], repos: [], model: 'all' }) } as unknown as PanelContext
-    const { host, dispose } = mount(() => <Skills ctx={open} since={base.range.since} until={base.range.until} />)
-    expect(host.querySelector('[data-unfiltered]')).toBeNull()
+    const { seen, paths } = asked({ ...ctx, filters: () => ({ projects: [], repos: [], model: 'all' }) } as unknown as PanelContext)
+    const { host, dispose } = mount(() => <Skills ctx={seen} since={base.range.since} until={base.range.until} />)
+    expect(paths[0]).not.toMatch(/tool=|model=/)
+    expect(host.querySelector('[data-scope]')).toBeNull()
     dispose()
   })
 })
@@ -303,9 +313,6 @@ describe('INS-OPEN · no view is drawn without openers', () => {
     const views = readdirSync(folder).filter(file => file.endsWith('.tsx') && file !== 'InsightCard.tsx' && /<InsightCard[<\s]/.test(source(file)))
     // One file per view of views.ts.
     expect(views).toHaveLength(INSIGHT_VIEWS.length)
-    // The views listed as taking the coding tool and model filters are the ones that pass them on, no more and no fewer.
-    expect(views.filter(file => /<InsightCard[^\n]*\sfiltered\b/.test(source(file))).map(file => /card="(\w+)"/.exec(source(file))![1]).sort())
-      .toEqual([...TOOL_FILTERED].sort())
     // A view that draws names as plain text is a dead end for the reader: a new view has to say what its names open.
     expect(views.filter(file => !/\bopens\(/.test(source(file)))).toEqual([])
   })

@@ -121,7 +121,7 @@ const NOTE = 'A session counts when it made a model request or a tool call in th
 export default function Repositories(props: CardProps) {
   const open = opens(untrack(() => props.ctx))
   const repo = { label: (row: Row) => open.repo(String(row.id ?? ''))?.label, run: (row: Row) => open.repo(String(row.id ?? ''))?.run() }
-  return <InsightCard<RepoBody> {...props} card="repos" tab="flow" filtered
+  return <InsightCard<RepoBody> {...props} card="repos" tab="flow"
     hero={repoHero}
     finding={body => body.summary.sessions ? REPOS_LINE : 'No agent session made a model request or a tool call in this period.'}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>

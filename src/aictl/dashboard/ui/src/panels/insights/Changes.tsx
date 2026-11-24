@@ -110,7 +110,7 @@ export default function Changes(props: CardProps) {
   const open = opens(untrack(() => props.ctx))
   const link: Links = { repo: open.repo, file: open.file }
   const [mode, setMode] = useColourBy()
-  return <InsightCard<ChangeBody> {...props} card="changes" tab="flow" filtered
+  return <InsightCard<ChangeBody> {...props} card="changes" tab="flow"
     hero={changeHero}
     finding={changeLine}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>

@@ -15,6 +15,9 @@ filed under a chosen project and is not deleted.
 Tables with no project (OTel, registry, configuration files, host samples, context lists) are
 not restricted: their rows belong to no project. ``memory_snapshots`` is filed under a repository
 root; a chosen project that is a repository root keeps its memory rows.
+
+The same function also restricts a view to the sessions of chosen coding tools and models
+(session_scope.py): one statement per table holds its project filter, then its session filter.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from __future__ import annotations
 import re
 
 from .current import current_names
+from .session_scope import MODELS_PARAMETER, SESSION_SCOPED, TOOLS_PARAMETER, chosen_sessions, filter_of
 
 PARAMETER = "restrict_projects"
 # The parameter holds the exact stored values to keep: an exact match on the key column lets the
@@ -49,30 +53,50 @@ _TEXT = re.compile(r"""@?"(?:\\.|[^"\\])*"|@?'(?:\\.|[^'\\])*'|//[^\n]*""")
 _SESSIONS = "aictl_project_sessions"
 
 
-def restricted_query(text: str) -> str:
-    """*text*, a view, run on only the rows of the projects named by the ``restrict_projects`` parameter."""
+def restricted_query(text: str, *, projects: bool = True, tools: bool = False, models: bool = False) -> str:
+    """*text*, a view, run on only the rows it is restricted to.
+
+    *projects*: the projects named by the ``restrict_projects`` parameter. *tools*, *models*: the sessions of the
+    coding tools and of the models named by ``scope_tools`` and ``scope_models`` (session_scope.py).
+    """
     match = _DECLARE.match(text)
     if match is None:
         raise ValueError("A view restricted to projects must start with its parameter declaration")
     names = match["names"].strip()
+    if models and not all(re.search(rf"\b{name}\s*:\s*real\b", names) for name in ("since", "until")):
+        raise ValueError("A view restricted to the sessions of a model must declare its period (since, until)")
+    added = [name for name, on in ((PARAMETER, projects), (TOOLS_PARAMETER, tools), (MODELS_PARAMETER, models)) if on]
     # Comments before the declaration move after it: the declaration starts the query.
-    declaration = f"declare query_parameters({names}{', ' if names else ''}{PARAMETER}:dynamic);{match['head'].rstrip()}"
+    declaration = (f"declare query_parameters({names}{', ' if names and added else ''}"
+                   f"{', '.join(f'{name}:dynamic' for name in added)});{match['head'].rstrip()}")
     body = text[match.end():].strip().rstrip(";")
     code = _TEXT.sub(" ", body)
-    used = {table for table in (*PROJECT_TABLES, *CURRENT_VIEWS, *SESSION_TABLES) if re.search(rf"\b{table}\b", code)}
+    by_session = tools or models
+    named = (*PROJECT_TABLES, *CURRENT_VIEWS, *SESSION_TABLES, *(sorted(SESSION_SCOPED) if by_session else ()))
+    used = {table for table in named if re.search(rf"\b{table}\b", code)}
+    in_projects = f" | where ['project'] in ({PARAMETER})" if projects else ""
     lets = []
-    if used & set(SESSION_TABLES):
+    if projects and used & set(SESSION_TABLES):
         # Read before `sessions` is shadowed below; the same rows either way.
         lets.append(
-            f"let {_SESSIONS} = sessions | where ['project'] in ({PARAMETER})"
+            f"let {_SESSIONS} = sessions{in_projects}"
             " | extend _gone=column_ifexists('_deleted', false)"
             " | summarize arg_max(_v, _gone) by ['project'], node_id, session_id"
             " | where not(coalesce(_gone, false)) | distinct node_id, session_id;")
-    for table in (*PROJECT_TABLES, *CURRENT_VIEWS):
-        if table in used:
-            lets.append(f"let {table} = {table} | where ['project'] in ({PARAMETER});")
-    for table in SESSION_TABLES:
-        if table in used:
-            lets.append(f"let {table} = {table} | join kind=leftsemi {_SESSIONS} on node_id, session_id;")
+    if by_session:
+        lets += chosen_sessions(tools=tools, models=models, projects=in_projects)
+    # One statement per table: its project filter, then its session filter.
+    for table in dict.fromkeys(named):
+        if table not in used:
+            continue
+        steps = ""
+        if projects and table in (*PROJECT_TABLES, *CURRENT_VIEWS):
+            steps += in_projects
+        elif projects and table in SESSION_TABLES:
+            steps += f" | join kind=leftsemi {_SESSIONS} on node_id, session_id"
+        if by_session and table in SESSION_SCOPED:
+            steps += filter_of(table)
+        if steps:
+            lets.append(f"let {table} = {table}{steps};")
     inner = "\n".join(lets)
     return f"{declaration}\nlet aictl_project_view = () {{\n{inner}\n{body}\n}};\naictl_project_view()"

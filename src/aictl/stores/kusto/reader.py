@@ -24,6 +24,8 @@ from .client import QUERY_TIMEOUT, query_memory_error, retrying
 from .project_scope import PARAMETER as PROJECT_PARAMETER
 from .project_scope import restricted_query
 from .query_cpu import _cpu_ticks
+from .session_scope import MODELS_PARAMETER, TOOLS_PARAMETER
+from .session_scope import PARAMETERS as SCOPE_PARAMETERS
 
 _SCOPE = "all_nodes requested_node requested_project"
 _EVENT = f"{_SCOPE} since until requested_tool requested_kinds requested_session raw_session"
@@ -493,6 +495,8 @@ _PARAMETER_TYPES = {
     "calendar_days": list,
     "pids": tuple,
     PROJECT_PARAMETER: list,
+    TOOLS_PARAMETER: list,
+    MODELS_PARAMETER: list,
 }
 _MAX_ROWS = 20_000
 # Each page of these views runs the whole query again, so one large page costs much less
@@ -646,8 +650,10 @@ def _query(view: str) -> str:
 
 
 @lru_cache
-def _restricted(view: str) -> str:
-    return restricted_query(_query(view))
+def _restricted(view: str, scope: tuple[bool, bool, bool] = (True, False, False)) -> str:
+    """The view's text run on the rows it is restricted to. *scope*: by projects, by coding tools, by models."""
+    projects, tools, models = scope
+    return restricted_query(_query(view), projects=projects, tools=tools, models=models)
 
 
 class KustoReader:
@@ -761,7 +767,10 @@ class KustoReader:
         # Any view can be read for chosen projects only (project_scope.py); None reads every project.
         if params.get(PROJECT_PARAMETER, ()) is None:
             params = {key: value for key, value in params.items() if key != PROJECT_PARAMETER}
-        if unexpected := params.keys() - {*allowed, "limit", PROJECT_PARAMETER}:
+        # Any view can be read for the sessions of chosen coding tools and models only (session_scope.py); None
+        # chooses every one, an empty list none.
+        params = {key: value for key, value in params.items() if key not in SCOPE_PARAMETERS or value is not None}
+        if unexpected := params.keys() - {*allowed, "limit", PROJECT_PARAMETER, *SCOPE_PARAMETERS}:
             raise ValueError(f"{view}: unexpected parameters: {', '.join(sorted(unexpected))}")
         limit = params.get("limit", 100)
         most = _VIEW_MAX_ROWS.get(view, _MAX_ROWS)
@@ -781,13 +790,15 @@ class KustoReader:
         for key, value in bound.items():
             props.set_parameter(key, value)
 
-        restricted = PROJECT_PARAMETER in bound
+        scope = (PROJECT_PARAMETER in bound, TOOLS_PARAMETER in bound, MODELS_PARAMETER in bound)
+        restricted = scope if any(scope) else False
         ttl = _CACHE_TTL_S.get(view)
         if ttl is None:
             return self._execute(view, props, limit, restricted)
         return self._cached_read(view, tuple(sorted(bound.items())), ttl, props, limit, restricted)
 
-    def _cached_read(self, view: str, bound: tuple, ttl: float, props, limit: int, restricted: bool = False) -> ReadResult:
+    def _cached_read(self, view: str, bound: tuple, ttl: float, props, limit: int,
+                     restricted: tuple[bool, bool, bool] | bool = False) -> ReadResult:
         key = (view, bound)
 
         def stale(entry: _CachedRead, now: float) -> ReadResult | None:
@@ -848,12 +859,12 @@ class KustoReader:
             queries, _failures, total, *_rest = self._view_timings.get(view) or (0, 0, 0.0)
         return total / queries if queries else 0.0
 
-    def _execute(self, view: str, props, limit: int, restricted: bool = False) -> ReadResult:
+    def _execute(self, view: str, props, limit: int, restricted: tuple[bool, bool, bool] | bool = False) -> ReadResult:
         start = time.monotonic()
         error = None
         returned = ticks = 0
         try:
-            text = _restricted(view) if restricted else _query(view)
+            text = _restricted(view, restricted) if restricted else _query(view)
 
             def execute():
                 props.client_request_id = f"aictl.{view};{uuid.uuid4()}"

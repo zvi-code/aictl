@@ -129,7 +129,7 @@ export default function Durations(props: CardProps) {
   const open = opens(ctx)
   const link = links(open)
   const [mode, setMode] = useColourBy()
-  return <InsightCard<DurationBody> {...props} card="durations" tab="flow" filtered
+  return <InsightCard<DurationBody> {...props} card="durations" tab="flow"
     hero={durationHero}
     finding={durationLine}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>

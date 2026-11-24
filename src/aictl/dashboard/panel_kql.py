@@ -65,9 +65,12 @@ def filled_query(view: str, params: Mapping[str, Any]) -> str:
     """
     from ..stores.kusto.project_scope import PARAMETER, restricted_query
     from ..stores.kusto.reader import _query
+    from ..stores.kusto.session_scope import MODELS_PARAMETER, TOOLS_PARAMETER
 
-    # A read for chosen projects ran the view inside their restriction (project_scope.py).
-    text = restricted_query(_query(view)) if PARAMETER in params else _query(view)
+    # A read for chosen projects, coding tools or models ran the view inside their restriction (project_scope.py).
+    params = {key: value for key, value in params.items() if key not in (TOOLS_PARAMETER, MODELS_PARAMETER) or value is not None}
+    scope = {"projects": PARAMETER in params, "tools": TOOLS_PARAMETER in params, "models": MODELS_PARAMETER in params}
+    text = restricted_query(_query(view), **scope) if any(scope.values()) else _query(view)
     match = _DECLARE.match(text)
     if match is None:
         raise ValueError(f"{view} declares no query parameters")

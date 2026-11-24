@@ -11,6 +11,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from ..data.model_pricing import canonical_model_id
+from ..stores.kusto.session_scope import MODELS_PARAMETER, TOOLS_PARAMETER
+from ..stores.kusto.session_scope import PARAMETERS as SCOPE_PARAMETERS
+from ..tool_scope import stored_ids_for
 from . import insights_flows, insights_work
 from .board_filters import Filters
 from .panel_kql import query_block
@@ -105,7 +109,8 @@ def repo_order(history: HistoryScope, params: dict) -> dict:
     Read through the reader's cache, so the cards of one screen make one query. A failed read gives no order: every
     segment is then "other repositories", and the bars stay whole."""
     try:
-        rows = history.read("insights.repo_rank", limit=ROW_LIMIT, since=params["since"], until=params["until"])
+        scope = {name: params[name] for name in SCOPE_PARAMETERS if name in params}
+        rows = history.read("insights.repo_rank", limit=ROW_LIMIT, since=params["since"], until=params["until"], **scope)
     except Exception:  # noqa: BLE001 - the cards still show their bars without a colour per repository
         return {"repo_order": [], "repo_others": None}
     ranked = sorted(_of(rows, "repo"), key=lambda row: _n(row.get("rank")))[:REPO_COLOURS]
@@ -1425,12 +1430,26 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
 }
 
 
+def session_scope(filters: Filters) -> dict:
+    """The sessions the page's coding tool and model filters choose, as the reader takes them: the sessions of the
+    chosen tools (none chosen: no session), and the sessions that made a request with the chosen model in the period."""
+    params: dict = {}
+    if filters.tools is not None:
+        params[TOOLS_PARAMETER] = stored_ids_for(filters.tools)
+    if filters.model and filters.model != "all":
+        params[MODELS_PARAMETER] = [canonical_model_id(filters.model)]
+    return params
+
+
 def insight(card: str, filters: Filters, now: float | None = None, *, history: HistoryScope) -> tuple[int, dict]:
     """One card: its figures for the board's period, the sessions to open, and the KQL that produced them."""
     if card not in CARDS:
         return 404, {"error": "No such insight"}
     view = CARDS[card]
-    params = {"since": filters.since, "until": filters.until, **insights_work.PARAMS.get(card, lambda _: {})(filters)}
+    # The work cards take the page's coding tool and model filters in their own views; every other card is read for
+    # the sessions the two filters choose (stores/kusto/session_scope.py), and its repository order with it.
+    own = insights_work.PARAMS.get(card)
+    params = {"since": filters.since, "until": filters.until, **(own(filters) if own else session_scope(filters))}
     rows = READS[card](history, params)
     meta = next(iter(_of(rows, "meta")), {})
     node = {} if history.node is None else {"all_nodes": False, "requested_node": history.node}

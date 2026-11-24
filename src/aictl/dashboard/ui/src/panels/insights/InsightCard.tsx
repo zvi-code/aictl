@@ -1,4 +1,4 @@
-import { createEffect, createMemo, For, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, Show, untrack } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import { stamp } from '../../design/format'
 import { kustoLink } from '../../drawer/kqlLink'
@@ -11,9 +11,9 @@ import type { PanelContext, Read } from '../types'
 import { learnToolLabels, toolLabel, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
 import { evidenceNote, fewText, withEvidence } from './evidence'
 import { sessionBranch, sessionHover, sessionName } from './sessionName'
-import { insightView, TOOL_FILTERED } from './views'
+import { insightView } from './views'
 import styles from './Insights.module.css'
-import { Name, opens, OpensContext } from './charts/Open'
+import { opens, OpensContext } from './charts/Open'
 
 export type CardProps = { ctx: PanelContext; since: number; until: number }
 
@@ -48,16 +48,15 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   note: string
   table: { label: string; fields: Field<Record<string, unknown>>[]; rows: (body: T) => Record<string, unknown>[] }
   sessionFields: Field<InsightSession>[]
-  /** The card's view takes the page's tool and model filters (the work cards). */
-  filtered?: boolean
 }) {
   const { ctx } = untrack(() => props)
   const title = untrack(() => insightView(props.card).title)
   const path = createMemo(() => {
     const query = new URLSearchParams({ since: String(props.since), until: String(props.until) })
-    const tools = props.filtered ? ctx.tools() : null
+    // Every view takes the page's coding tool and model filters: they choose sessions (scopeText).
+    const tools = ctx.tools()
     if (tools) query.set('tool', tools.length ? tools.join(',') : '-')
-    if (props.filtered && ctx.filters().model !== 'all') query.set('model', ctx.filters().model)
+    if (ctx.filters().model !== 'all') query.set('model', ctx.filters().model)
     return detailPath(ctx, `/api/board/insights/${props.card}`, query)
   })
   const read = untrack(() => ctx.detail<T>(path))
@@ -85,12 +84,7 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
     <h1 id={`insight-${props.card}-title`} data-insight={props.card}>{title}</h1>
     <States result={result} retry={read.retry}>
       <p class={styles.meta} data-period>{periodText(body())}</p>
-      {/* A coding tool or model filter the view's query does not take: said here, with the views that do take it. */}
-      <Show when={!props.filtered && (ctx.tools() != null || ctx.filters().model !== 'all')}>
-        <p class={styles.note} data-unfiltered>The coding tool and model filters do not narrow this view: it shows every tool and
-          model. They narrow <For each={TOOL_FILTERED}>{(id, i) => <>{i() ? ', ' : ''}<Name text={insightView(id).title}
-            open={{ label: `Open ${insightView(id).title} with the filter applied`, run: () => ctx.navigate({ view: id }) }} /></>}</For>.</p>
-      </Show>
+      <Show when={scopeText(ctx.tools(), ctx.filters().model, toolLabel)}>{text => <p class={styles.meta} data-scope>{text()}</p>}</Show>
       <Show when={props.hero?.(shown()!.body)}>{hero => <p class={styles.hero} data-hero>
         <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
       <p class={styles.finding} data-finding>{props.finding(shown()!.body)}</p>
@@ -120,6 +114,18 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
       </details>
     </States>
   </section>
+}
+
+/**
+ * What the coding tool and model filters narrow a view to, for the line under its period: they choose sessions, so a
+ * view narrowed to a model still shows the other models those sessions used. '' when neither is set.
+ */
+export function scopeText(tools: readonly string[] | null, model: string, label: (tool: string) => string) {
+  const parts = [
+    tools == null ? '' : tools.length ? `the sessions of ${tools.map(label).join(', ')}` : 'no coding tool (none is chosen)',
+    model && model !== 'all' ? `sessions that made a request with ${model} in the period` : '',
+  ].filter(Boolean)
+  return parts.length ? `Narrowed to ${parts.join(', and to ')}.` : ''
 }
 
 /** A numeric table column that shows a value the source does not report as not reported. */

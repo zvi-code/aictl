@@ -111,7 +111,7 @@ describe('PRJ-02 · Every screen sends the chosen projects', () => {
   it('Insights: each card asks for its figures for the chosen projects', () => {
     const requested: string[] = []
     const ctx = {
-      scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined,
+      scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, tools: () => null,
       filters: () => parseFilters(CHOSEN),
       detail: (path: () => string | undefined) => Object.assign(() => {
         const value = path()
