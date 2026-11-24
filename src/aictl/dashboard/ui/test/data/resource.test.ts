@@ -153,3 +153,57 @@ it('distinguishes an initial error from a failed refresh with usable same-key da
   expect(one.state).toMatchObject({ status: 'stale', data: '', error: new Error('Request failed: 503') })
   one.release()
 })
+
+it('shows a kept answer again without reading, until the token it was read for changes', async () => {
+  const { requests, pending, load } = fetchHarness()
+  const cache = createResourceCache({ load, fetch: requests, keepAnswers: true })
+  const first = cache.acquire('/section/a', 0)
+  pending[0].resolve(new Response('answer'))
+  await vi.waitFor(() => expect(first.state.status).toBe('ready'))
+  first.release()
+  // Another screen was open; the board comes back with the same refresh count.
+  const again = cache.acquire('/section/a', 0)
+  expect(again.state).toMatchObject({ status: 'ready', data: 'answer' })
+  expect(requests).toHaveBeenCalledTimes(1)
+  again.release()
+  // After a refresh the kept answer is shown while it is read again.
+  const refreshed = cache.acquire('/section/a', 1)
+  expect(refreshed.state).toMatchObject({ status: 'refreshing', data: 'answer' })
+  expect(requests).toHaveBeenCalledTimes(2)
+  refreshed.release()
+})
+
+it('keeps as many released answers as it is told to', async () => {
+  const { requests, pending, load } = fetchHarness()
+  const cache = createResourceCache({ load, fetch: requests, keepAnswers: true, idleKeys: 10 })
+  const keys = Array.from({ length: 8 }, (_, index) => `/section/${index}`)
+  const handles = keys.map(key => cache.acquire(key, 0))
+  pending.forEach((request, index) => request.resolve(new Response(`answer ${index}`)))
+  await vi.waitFor(() => expect(handles.every(handle => handle.state.status === 'ready')).toBe(true))
+  handles.forEach(handle => handle.release())
+  const back = keys.map(key => cache.acquire(key, 0))
+  expect(back.map(handle => handle.state.data)).toEqual(keys.map((_, index) => `answer ${index}`))
+  expect(requests).toHaveBeenCalledTimes(8)
+  back.forEach(handle => handle.release())
+})
+
+it('lets only a few released reads go on, and reads a stopped key again when it is wanted', async () => {
+  const { requests, pending, load } = fetchHarness()
+  const cache = createResourceCache({ load, fetch: requests, keepAnswers: true, idleKeys: 10 })
+  const keys = Array.from({ length: IDLE_KEYS + 2 }, (_, index) => `/section/${index}`)
+  // The first key has an answer and is being read again; the others have none yet.
+  const first = cache.acquire(keys[0], 0)
+  pending[0].resolve(new Response('answer'))
+  await vi.waitFor(() => expect(first.state.status).toBe('ready'))
+  void first.refetch(1)
+  const others = keys.slice(1).map(key => cache.acquire(key, 0))
+  first.release()
+  others.forEach(handle => handle.release())
+  // Released oldest first: the two oldest reads are stopped, IDLE_KEYS go on.
+  expect(pending.slice(1).map(request => request.signal?.aborted)).toEqual([true, true, ...Array(IDLE_KEYS).fill(false)])
+  const before = requests.mock.calls.length
+  const back = cache.acquire(keys[0], 1)
+  expect(back.state).toMatchObject({ status: 'refreshing', data: 'answer' })
+  expect(requests).toHaveBeenCalledTimes(before + 1)
+  back.release()
+})

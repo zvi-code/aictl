@@ -41,7 +41,7 @@ function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, as
   const [handle, setHandle] = createSignal<{ key: string; resource: ReturnType<typeof cache.acquire> }>()
   createEffect(key, path => {
     if (!path) { setHandle(undefined); return }
-    const resource = cache.acquire(path)
+    const resource = cache.acquire(path, untrack(revision))
     setHandle({ key: path, resource })
     return () => resource.release()
   })
@@ -49,7 +49,7 @@ function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, as
     const value = handle()
     return value?.key === key() ? value?.resource : undefined
   }
-  createEffect(revision, value => { if (value) void current()?.refetch() })
+  createEffect(revision, value => { if (value) void current()?.refetch(value) })
   const state = () => current()?.state
   const retry = () => untrack(() => { void current()?.refetch() })
   return untrack(() => Object.assign(state, { retry }))
@@ -110,12 +110,16 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   // needs it (``need``). The page names itself and the window it reads (``viewer``), so the server starts
   // no more reads for a selection this page moved away from.
   const viewer = Math.random().toString(36).slice(2, 12)
+  // The sections of the board last shown are kept while another screen is open: coming back shows them
+  // as they were and reads nothing, until Refresh or a new selection asks for other data.
   const sectionCache = createResourceCache({
     load: async (path, signal) => {
       const data = await json<SectionAnswer>(path, { signal })
       scopeCheck(path, data.node_scope)
       return data
     },
+    idleKeys: 2 * SECTION_IDS.length,
+    keepAnswers: true,
   })
   const sectionPath = (lane: Lane, id: SectionId) => {
     const filters = ctx.filters()
@@ -157,8 +161,10 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     const state = lanes[lane][id](), key = sectionPath(lane, id), slot = `${lane}:${id}`
     if (state?.data && key) shown.set(slot, { key, data: state.data })
     const before = shown.get(slot)
-    if (before && key && before.key !== key && (!state || state.status === 'loading')) {
-      return { state: { status: 'stale' as const, data: before.data, error: null }, earlier: true }
+    if (before && key && (!state || state.status === 'loading')) {
+      // The same selection read again (its kept answer was let go) shows what it showed, without the mark.
+      return before.key !== key ? { state: { status: 'stale' as const, data: before.data, error: null }, earlier: true }
+        : { state: { status: 'refreshing' as const, data: before.data, error: null }, earlier: false }
     }
     return { state, earlier: false }
   }

@@ -4,7 +4,7 @@
 // figures of the earlier selection on a change, and shows the reason and a retry where a section failed.
 import { createRoot, createSignal, flush } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { parseFilters } from '../../src/data/filters'
+import { parseFilters, type Screen } from '../../src/data/filters'
 import { createLiveClient } from '../../src/data/live'
 import DockScreen from '../../src/panels/DockScreen'
 import SECTION_PATHS from '../../src/panels/boardSections.json'
@@ -37,6 +37,7 @@ function fleet(respond: (url: URL) => Response | Promise<Response>) {
   }))
   const [range, setRange] = createSignal('24h')
   const [revision, setRevision] = createSignal(0)
+  const [screen, setScreen] = createSignal<Screen>('board')
   const root = createRoot(dispose => {
     const base = {
       client: createLiveClient(), scope: () => 'fleet' as const, nodeId: () => null,
@@ -44,10 +45,11 @@ function fleet(respond: (url: URL) => Response | Promise<Response>) {
       revision, navigate() {}, jump() {}, select() {}, openAgent() {}, openDetail() {},
       stopped: () => false, stopAgent() {}, runCommand() {}, copy() {}, refresh: () => setRevision(n => n + 1),
     }
-    return { ctx: { ...base, ...panelData(base, () => 'board') } as PanelContext, dispose }
+    return { ctx: { ...base, ...panelData(base, screen) } as PanelContext, dispose }
   })
   const sections = () => asked.map(url => url.searchParams.get('section'))
-  return { ...root, asked, sections, setRange: (value: string) => { setRange(value); flush() } }
+  return { ...root, asked, sections, setRange: (value: string) => { setRange(value); flush() },
+    setScreen: (value: Screen) => { setScreen(value); flush() } }
 }
 
 /** What a panel on screen does: it asks for its sources' sections until it is gone. */
@@ -145,6 +147,37 @@ describe('BOARD-SECTIONS-03 · a section no panel on screen needs is not asked f
       board.setRange('7d')
       await Promise.resolve()
       expect(board.sections()).toEqual(['loops'])
+    } finally { board.dispose() }
+  })
+
+  it('keeps the whole board while another screen is open, and reads it again only after Refresh', async () => {
+    // More sections than a cache keeps by default: every one of them must still be there on return.
+    const sources = ['loops', 'agents', 'projects', 'attention', 'options', 'kpis.running', 'kpis.p50_ms']
+      .map(name => name.includes('.') ? { field: name.split('.')[0], path: name.split('.')[1] } : { field: name }) as PanelDef['sources']
+    const board = fleet(url => answer(url, { loops: [], agents: [], projects: [], attention: [], options: {}, kpis: { running: 1, p50_ms: 2 } }))
+    try {
+      const gone = onScreen(board.ctx, sources)
+      flush()
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'loops' }).state).toBe('empty'))
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'kpis', path: 'running' }).value).toBe(1))
+      const asked = board.sections().length
+      expect(asked).toBeGreaterThan(4)
+      // The Thinking screen is opened: the board's panels are gone. Then the board is opened again.
+      gone()
+      board.setScreen('thinking')
+      board.setScreen('board')
+      const back = onScreen(board.ctx, sources)
+      flush()
+      expect(board.ctx.read({ field: 'loops' })).toEqual({ state: 'empty', value: [], updatedAt: 1000 })
+      expect(board.ctx.read({ field: 'kpis', path: 'running' }).value).toBe(1)
+      await Promise.resolve()
+      expect(board.sections().length).toBe(asked)
+      // Refresh reads every section on screen again, and shows the kept figures meanwhile.
+      board.ctx.refresh()
+      flush()
+      expect(board.ctx.read({ field: 'kpis', path: 'running' }).value).toBe(1)
+      await vi.waitFor(() => expect(board.sections().length).toBe(2 * asked))
+      back()
     } finally { board.dispose() }
   })
 
