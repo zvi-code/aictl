@@ -1,0 +1,1 @@
+import{mt as e}from"./index-CTU_-3v9.js";import{t}from"./OtelSections-DRI0x9oV.js";import{n}from"./DrawerView-Cx2ej4tm.js";function r(r){return e(n,{get read(){return r.detail},children:n=>e(t,{data:n})})}export{r as default};
