@@ -20,7 +20,7 @@ export function harness(routes: Routes, options: Options = {}) {
   const retried: string[] = []
   const ctx = {
     scope: () => options.scope ?? 'local', nodeId: () => null,
-    filters: () => ({ range: { id: '24h' }, projects: [], model: 'all', status: 'all', q: '', sel: undefined }),
+    filters: () => ({ range: { id: '24h' }, projects: [], repos: [], model: 'all', status: 'all', q: '', sel: undefined }),
     board: () => undefined, tools: () => undefined, startedAt: 1_800_000_000,
     copy: () => {},
     client: { status: { error: null }, store: { meta: { ready: true, orderedGap: false, capabilities: {} },

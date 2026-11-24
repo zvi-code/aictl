@@ -41,6 +41,8 @@ class Filters:
     tools: tuple[str, ...] | None = None
     # The exact project values chosen (project_filter.py); () is every project.
     projects: tuple[str, ...] = ()
+    # Chosen repositories by root folder, not yet resolved to their projects (project_filter.resolve).
+    repos: tuple[str, ...] = ()
     model: str = ""
     status: str = "all"
     q: str = ""
@@ -66,7 +68,7 @@ class Filters:
 
     @property
     def narrowed(self) -> bool:
-        return self.tools is not None or bool(self.projects or self.model or self.q) or self.status != "all"
+        return self.tools is not None or bool(self.projects or self.repos or self.model or self.q) or self.status != "all"
 
 
 def parse_filters(query: str, now: float) -> Filters:
@@ -106,6 +108,7 @@ def parse_filters(query: str, now: float) -> Filters:
         until=until,
         tools=tools,
         projects=_projects(qs),
+        repos=_projects(qs, "repo"),
         model=one("model"),
         status=status,
         q=one("q")[:200],
@@ -113,11 +116,11 @@ def parse_filters(query: str, now: float) -> Filters:
     )
 
 
-def _projects(qs: dict[str, list[str]]) -> tuple[str, ...]:
+def _projects(qs: dict[str, list[str]], key: str = "project") -> tuple[str, ...]:
     from .project_filter import ProjectFilterError, requested_projects
 
     try:
-        return requested_projects(qs)
+        return requested_projects(qs, key)
     except ProjectFilterError as exc:
         raise BoardRequestError(str(exc)) from exc
 

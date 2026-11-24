@@ -1,8 +1,10 @@
 // ─── Board filters — time and filters live in the URL ─────────────
 // Keys: range (with since and until for custom), tools (shared with every other
 // screen), project, model, status, q, and sel (a selected time, "since-until").
-// `project` is the project filter of the whole interface: one key per chosen project, its exact
-// stored value (`?project=/src/a&project=/src/b`). Every per-project request carries it (withProjects).
+// `project` and `repo` are the project filter of the whole interface: one `project` key per chosen
+// project, its exact stored value, and one `repo` key per chosen repository, its root folder
+// (`?project=/src/a&project=/src/b&repo=/src/aictl`). The server resolves a repository to its worktrees and
+// folders. Every per-project request carries both (withProjects).
 import { parseUrlState, rangeToParams, type Range, type TimeWindow, type UrlPatch } from './urlState';
 
 export type Screen = 'board' | 'health' | 'insights' | 'index' | 'settings';
@@ -54,6 +56,7 @@ export function parseFilters(search: string) {
   return {
     range,
     projects: readProjects(q),
+    repos: readProjects(q, 'repo'),
     model: q.get('model') || 'all',
     status: status && STATUS_IDS.has(status) ? status : 'all',
     q: q.get('q') || '',
@@ -73,6 +76,7 @@ export function filtersToParams(f: Filters) {
   return {
     ...rangeToParams(f.range.id === DEFAULT_RANGE ? { id: 'live' } : f.range),
     project: f.projects.length ? f.projects : null,
+    repo: f.repos.length ? f.repos : null,
     model: f.model && f.model !== 'all' ? f.model : null,
     status: f.status && f.status !== 'all' ? f.status : null,
     q: f.q ? f.q : null,
@@ -99,6 +103,7 @@ export function boardQuery(filters: Filters, tools: Tools, win: TimeWindow) {
   if (win.buckets) p.set('buckets', String(win.buckets));
   if (tools) p.set('tool', tools.length ? tools.join(',') : '-');
   for (const project of filters.projects) p.append('project', project);
+  for (const repo of filters.repos) p.append('repo', repo);
   if (filters.model !== 'all') p.set('model', filters.model);
   if (filters.status !== 'all') p.set('status', filters.status);
   if (filters.q.trim()) p.set('q', filters.q.trim());
@@ -106,27 +111,32 @@ export function boardQuery(filters: Filters, tools: Tools, win: TimeWindow) {
 }
 
 export function canClear(f: Filters, tools: Tools) {
-  return !!(tools || f.projects.length || f.model !== 'all' || f.status !== 'all' || f.sel || f.q);
+  return !!(tools || chosenCount(f) || f.model !== 'all' || f.status !== 'all' || f.sel || f.q);
 }
-export const clearedFilters = (f: Filters): Filters => ({ ...f, projects: [], model: 'all', status: 'all', sel: null, q: '' });
+export const clearedFilters = (f: Filters): Filters => ({ ...f, projects: [], repos: [], model: 'all', status: 'all', sel: null, q: '' });
 
-/** The chosen projects of an address: each once, in a stable order; none means every project. */
-export function readProjects(q: URLSearchParams): string[] {
-  return [...new Set(q.getAll('project').map(value => value.trim()).filter(value => value && value !== 'all'))].sort();
+/** The chosen projects (or repositories, `key` repo) of an address: each once, in a stable order; none means every project. */
+export function readProjects(q: URLSearchParams, key: 'project' | 'repo' = 'project'): string[] {
+  return [...new Set(q.getAll(key).map(value => value.trim()).filter(value => value && value !== 'all'))].sort();
 }
+
+/** What the project filter holds: exact projects and repositories. */
+export type ProjectChoice = { projects: readonly string[]; repos: readonly string[] };
+export const chosenCount = (choice: ProjectChoice) => choice.projects.length + choice.repos.length;
 
 // Routes whose data is not per project: the picker's own list, node reports, actions.
 const UNFILTERED = ['/api/board/projects', '/api/board/nodes', '/api/board/action'];
 
-/** *path* with the chosen projects, for a route of per-project data. Other routes, and a path that already
- * names projects, are returned as they are. */
-export function withProjects(path: string, projects: readonly string[]): string {
-  if (!projects.length || !(path.startsWith('/api/board/') || path.startsWith('/api/history/')) ||
+/** *path* with the chosen projects and repositories, for a route of per-project data. Other routes, and a path
+ * that already names projects, are returned as they are. */
+export function withProjects(path: string, choice: ProjectChoice): string {
+  if (!chosenCount(choice) || !(path.startsWith('/api/board/') || path.startsWith('/api/history/')) ||
       UNFILTERED.some(route => path === route || path.startsWith(route + '?'))) return path;
   const [route, search = ''] = path.split('?', 2);
   const query = new URLSearchParams(search);
-  if (query.has('project')) return path;
-  for (const project of projects) query.append('project', project);
+  if (query.has('project') || query.has('repo')) return path;
+  for (const project of choice.projects) query.append('project', project);
+  for (const repo of choice.repos) query.append('repo', repo);
   return `${route}?${query}`;
 }
 

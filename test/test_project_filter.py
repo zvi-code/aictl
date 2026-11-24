@@ -224,3 +224,120 @@ def test_the_picker_lists_every_project_of_the_scope_most_recent_first(stores):
 
 def test_the_catalog_view_is_registered():
     assert _VIEWS["projects.catalog"][0].split() == ["all_nodes", "requested_node"]
+
+
+# ─── Repositories: a repository and its worktrees and sub-folders as one choice ───
+
+REPO = "/work/repo"
+COMMITTED = "/work/repo-hotfix"       # a linked worktree outside the repository folder: a commit names the repository
+AGENT_TREE = "/work/repo-feature"     # an agent of a repository session worked in it as a worktree
+PATTERN = "/work/repo/.claude/worktrees/fix-1"
+SUB = "/work/repo/docs"
+LOOKALIKE = "/work/repo-tools"        # shares a prefix, holds no evidence: never grouped
+
+
+def _project(path, sessions=1, last_ts=1000.0):
+    return {"project": path, "name": path.rsplit("/", 1)[-1], "sessions": sessions, "last_ts": last_ts, "nodes": 1}
+
+
+def test_a_repository_groups_its_worktrees_and_folders_by_evidence_never_by_a_common_prefix():
+    from aictl.dashboard.project_filter import repositories
+
+    projects = [_project(p, last_ts=t) for p, t in [(REPO, 900.0), (COMMITTED, 950.0), (AGENT_TREE, 800.0),
+                                                     (PATTERN, 700.0), (SUB, 600.0), (LOOKALIKE, 990.0)]]
+    evidence = [
+        {"project_path": COMMITTED, "root": REPO, "evidence": "commit", "sessions": 2},
+        {"project_path": AGENT_TREE, "root": REPO, "evidence": "worktree", "sessions": 1},
+    ]
+    groups = repositories(projects, evidence, local=False)
+    assert [g["root"] for g in groups] == [REPO]
+    group = groups[0]
+    assert [m["project"] for m in group["members"]] == [REPO, COMMITTED, AGENT_TREE, PATTERN, SUB]
+    assert [m["evidence"].split(" ")[:2] for m in group["members"]] == [
+        ["the", "repository's"], ["a", "commit"], ["an", "agent"], ["a", "worktree"], ["a", "folder"]]
+    assert group["sessions"] == 5 and group["last_ts"] == 950.0
+    # A folder with no evidence is not grouped by its name, even when the store holds nothing else.
+    assert repositories([_project(REPO), _project(LOOKALIKE)], [], local=False) == []
+
+
+def test_a_worktree_of_a_worktree_belongs_to_the_first_repository():
+    from aictl.dashboard.project_filter import repositories
+
+    nested = "/work/repo-hotfix-2"
+    groups = repositories([_project(p) for p in (REPO, COMMITTED, nested)], [
+        {"project_path": COMMITTED, "root": REPO, "evidence": "commit", "sessions": 1},
+        {"project_path": nested, "root": COMMITTED, "evidence": "worktree", "sessions": 1},
+    ], local=False)
+    assert [m["project"] for m in groups[0]["members"]] == [REPO, COMMITTED, nested]
+
+
+def test_this_nodes_git_folders_group_a_linked_worktree_only_in_this_nodes_scope(tmp_path, monkeypatch):
+    from aictl.dashboard.project_filter import repositories
+    from aictl.ingesters import _common
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    repo, tree = tmp_path / "src" / "repo", tmp_path / "src" / "repo-wt"
+    (repo / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    tree.mkdir(parents=True)
+    (tree / ".git").write_text(f"gitdir: {repo}/.git/worktrees/wt\n")
+    _common._git_root.cache_clear()
+    try:
+        projects = [_project(str(repo)), _project(str(tree)), _project(str(repo / "web"))]
+        local = repositories(projects, [], local=True)
+        assert [m["project"] for m in local[0]["members"]] == [str(repo), str(tree), str(repo / "web")]
+        # Another node's paths are not looked up on this node's disk.
+        assert repositories(projects, [], local=False) == []
+    finally:
+        _common._git_root.cache_clear()
+
+
+def _repo_store(store, *, members=(REPO, COMMITTED, AGENT_TREE, LOOKALIKE)):
+    """Sessions in a repository, two of its worktrees and a look-alike folder, with the evidence the store keeps."""
+    for n, project in enumerate(members):
+        sid = f"r{n}"
+        _active(store, sid, project)
+        if project == COMMITTED:
+            store.insert("session_commits", session_id=sid, sha=f"abc{n}def", ts=NOW - 440, project=REPO)
+        if project == REPO:
+            store.insert("agents", session_id=sid, agent_id="sub", tool="claude-code", project=REPO,
+                         worktree_path=AGENT_TREE, started_at=NOW - 480)
+
+
+def test_the_picker_lists_the_repository_with_its_members(kusto_store):
+    _repo_store(kusto_store)
+    body = _get(kusto_store, "/api/board/projects")
+    assert {p["project"] for p in body["projects"]} == {REPO, COMMITTED, AGENT_TREE, LOOKALIKE}
+    assert [(r["root"], [m["project"] for m in r["members"]]) for r in body["repos"]] == [
+        (REPO, [REPO, AGENT_TREE, COMMITTED])]
+    why = {m["project"]: m["evidence"] for m in body["repos"][0]["members"]}
+    assert why[COMMITTED].startswith("a commit") and why[AGENT_TREE].startswith("an agent worked in it")
+
+
+def test_a_repository_filter_equals_the_figures_of_its_member_projects_only(kusto_tape, kusto_store):
+    _repo_store(kusto_store)
+    only = SeededStore(kusto_tape)
+    _repo_store(only, members=(REPO, COMMITTED, AGENT_TREE))
+    assert _get(kusto_store, "/api/board/sessions", repo=REPO)["total"] == _get(only, "/api/board/sessions")["total"] == 3
+    assert _get(kusto_store, "/api/board/sessions", repo=REPO, project=LOOKALIKE)["total"] == 4
+    window = {"since": NOW - 3600, "until": NOW, "buckets": 6}
+    filtered = compute_board(kusto_store, Filters(**window, repos=(REPO,)), None, NOW)
+    alone = compute_board(only, Filters(**window), None, NOW)
+    assert filtered["kpis"] == alone["kpis"]
+    assert {p["project"] for p in filtered["projects"]} == {REPO, COMMITTED, AGENT_TREE}
+    query = urlencode({**window, "scope": "fleet"})
+    fleet = json.loads(history_board.read_board(kusto_store, query + "&" + urlencode({"repo": REPO}), now=NOW))
+    assert fleet["kpis"] == json.loads(history_board.read_board(only, query, now=NOW))["kpis"]
+
+
+def test_the_route_helper_resolves_a_repository_into_project_keys(kusto_store):
+    from urllib.parse import parse_qs
+
+    from aictl.dashboard.project_filter import apply_request
+
+    _repo_store(kusto_store)
+    history, query = apply_request(HistoryScope.local(kusto_store), "since=1&" + urlencode({"repo": REPO, "q": "x"}))
+    assert history.reader.projects == (REPO, AGENT_TREE, COMMITTED)
+    assert parse_qs(query) == {"since": ["1"], "q": ["x"], "project": [REPO, AGENT_TREE, COMMITTED]}
+    # A repository the store holds no group for stands for its own folder.
+    history, _ = apply_request(HistoryScope.local(kusto_store), urlencode({"repo": "/work/new"}))
+    assert history.reader.projects == ("/work/new",)

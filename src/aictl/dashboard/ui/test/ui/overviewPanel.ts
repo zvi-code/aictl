@@ -12,7 +12,7 @@ export function panel(id: string, fake: Fake) {
     board: (name: string) => fake.board?.[name],
     metadata: () => undefined,
     scope: () => fake.scope ?? 'local', nodeId: () => null, tools: () => null, paused: () => false,
-    filters: () => ({ range: { id: '24h' }, projects: [], model: 'all', status: 'all', q: '', sel: null }),
+    filters: () => ({ range: { id: '24h' }, projects: [], repos: [], model: 'all', status: 'all', q: '', sel: null }),
     startedAt: 1_800_000_000,
     detail: () => Object.assign(() => fake.detail?.(), { retry() {} }),
     openDetail: (detail: unknown) => opened.push(detail), openAgent: (agent: string) => agents.push(agent),

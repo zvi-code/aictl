@@ -726,8 +726,10 @@ def context_bytes(db: Any, store: Any, query: str, now: float | None = None) -> 
     qs = parse_qs(query, keep_blank_values=True)
     tools = normalize_selection(part for raw in qs["tool"] for part in raw.split(",")) if "tool" in qs else None
     from .board_filters import _projects
+    from .project_filter import resolve
 
-    projects = _projects(qs)
+    repos = _projects(qs, "repo")
+    projects = resolve(HistoryScope.local(db), _projects(qs), repos) if repos else _projects(qs)
     version = (getattr(store, "version", None), int((time.time() if now is None else now) / MEMO_TTL_S))
     key = (id(store), version, tools, projects)
     if version is not None:

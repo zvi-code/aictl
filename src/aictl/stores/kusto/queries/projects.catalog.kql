@@ -1,12 +1,41 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
 // Every project the store holds sessions for, in any period: the exact value the project filter matches
 // (the `project` key of a session row), how many sessions ran there, and when the last one was active.
-sessions
-| where all_nodes or node_id == requested_node
-| summarize arg_max(_v, *) by ['project'], node_id, session_id
-| where not(coalesce(_deleted, false)) and isnotempty(['project'])
-| extend active_ts=max_of(coalesce(last_activity_at, 0.0), coalesce(ended_at, 0.0), coalesce(started_at, 0.0))
-| summarize sessions=count(), last_ts=max(active_ts), nodes=dcount(node_id) by project_path=['project']
-| extend last_ts=iff(last_ts > 0, last_ts, real(null))
-| order by last_ts desc nulls last, project_path asc
+// Then what the store knows of the repository that holds a project (row_type 'root'):
+// - commit: a commit a session made is filed under the root of the repository that holds the session's
+//   folder, as git names it (a linked worktree names its main repository; ingesters/call_facts.py);
+// - worktree: Claude Code records the worktree an agent of a session worked in; the worktree belongs to
+//   the repository the session ran in.
+let s = materialize(sessions
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false)) and isnotempty(['project'])
+    | project node_id, session_id, project_path=['project'],
+        active_ts=max_of(coalesce(last_activity_at, 0.0), coalesce(ended_at, 0.0), coalesce(started_at, 0.0)));
+let folders = s
+    | summarize sessions=count(), last_ts=max(active_ts), nodes=dcount(node_id) by project_path
+    | extend last_ts=iff(last_ts > 0, last_ts, real(null)), row_type='project', root='', evidence='';
+let commit_roots = session_commits
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+    | where not(coalesce(column_ifexists('_deleted', false), false)) and isnotempty(['project'])
+    | project node_id, session_id, root=['project']
+    | distinct node_id, session_id, root
+    | join kind=inner (s | project node_id, session_id, project_path) on node_id, session_id
+    | where root != project_path
+    | summarize sessions=dcount(strcat(node_id, '/', session_id)) by project_path, root
+    | extend row_type='root', evidence='commit';
+let worktree_roots = agents
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+    | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+    | project node_id, session_id, project_path=worktree_path
+    | distinct node_id, session_id, project_path
+    | join kind=inner (s | project node_id, session_id, root=project_path) on node_id, session_id
+    | where root != project_path
+    | summarize sessions=dcount(strcat(node_id, '/', session_id)) by project_path, root
+    | extend row_type='root', evidence='worktree';
+union folders, commit_roots, worktree_roots
+| order by row_type asc, last_ts desc nulls last, project_path asc, evidence asc, root asc
 | take row_limit
+| project row_type, project_path, sessions, last_ts, nodes, root, evidence

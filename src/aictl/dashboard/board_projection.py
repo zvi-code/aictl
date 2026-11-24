@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -3253,9 +3253,13 @@ def compute_board(
     store failure in one leaves its fields out of the board and names them here with the
     reason. Without it, any failed read fails the whole board.
     """
-    from .project_filter import scoped
+    from .project_filter import resolve, scoped
 
-    history = scoped(history or HistoryScope.local(db), filters.projects)
+    history = history or HistoryScope.local(db)
+    if filters.repos:
+        # The live board keeps the chosen repositories: their projects are read again with each board.
+        filters = replace(filters, projects=resolve(history, filters.projects, filters.repos), repos=())
+    history = scoped(history, filters.projects)
     now = time.time() if now is None else now
     history.require_reader()
     from types import SimpleNamespace

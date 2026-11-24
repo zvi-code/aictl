@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -13,11 +14,11 @@ from ..stores.base import StoreError
 from ..tool_scope import normalize_selection
 from . import insights
 from .artifact_details import error_detail, file_detail, file_excerpt, prompt_detail, skill_detail, tool_detail
-from .board_filters import BoardRequestError, _projects, parse_filters
+from .board_filters import BoardRequestError, parse_filters
 from .history_scope import ScopeError, identity_parts, parse_scope
 from .http_request import _local_request
 from .live import stream as live_stream
-from .project_filter import scoped
+from .project_filter import apply_request
 from .projection_utils import _as_number
 from .projections.history import (
     HistoryScope,
@@ -38,8 +39,14 @@ def handle_get(
 
     try:
         scope = parse_scope(qs)
-        # The project filter of the whole page: every route below reads only the chosen projects.
-        history = scoped(HistoryScope.local(store), _projects(qs))
+        # The project filter of the whole page: every route below reads only the chosen projects, and
+        # parses its filters from a query that names them (a chosen repository resolved to its projects).
+        history = HistoryScope.local(store)
+        if "project" in qs or "repo" in qs:
+            asked = history if scope.kind == "local" else HistoryScope(history.reader, scope.node, qualified=True)
+            narrowed, query = apply_request(asked, query)
+            qs = parse_qs(query, keep_blank_values=True)
+            history = replace(history, reader=narrowed.reader)
         if scope.kind != "local":
             from .scoped_history import route
 

@@ -14,7 +14,7 @@ export default function Hidden(props: { shell: DrawerProps }) {
   const ctx = untrack(() => props.shell.ctx)
   const local = () => ctx.scope() === 'local'
   // The audit reads one project's folder: it follows the project filter when exactly one project is chosen.
-  const project = () => ctx.filters().projects.length === 1 ? ctx.filters().projects[0] : undefined
+  const project = () => ctx.filters().projects.length === 1 && !ctx.filters().repos.length ? ctx.filters().projects[0] : undefined
   const target = () => local() ? path(ctx, '/api/context-audit', {
     nowait: 1, project: project(), tool: ctx.tools()?.length === 1 ? ctx.tools()?.[0] : undefined,
   }) : undefined

@@ -87,7 +87,7 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   const detail: PanelContext['detail'] = <T>(path: () => string | undefined, format?: 'text') => {
     const scoped = () => {
       const value = path()
-      return value && withProjects(value, ctx.filters().projects)
+      return value && withProjects(value, ctx.filters())
     }
     const state = useRead(format === 'text' ? textCache : detailCache, scoped, ctx.revision)
     return Object.assign(() => state() as DetailState<T> | undefined, { retry: state.retry })
@@ -198,7 +198,7 @@ export function detailRead<T>(resource: DetailState<T> | undefined, value: unkno
 export function detailPath(ctx: PanelContext, route: string, query = new URLSearchParams()) {
   if (ctx.scope() !== 'local') query.set('scope', ctx.scope())
   if (ctx.scope() === 'node') query.set('node_id', ctx.nodeId() ?? '')
-  return withProjects(query.size ? `${route}?${query}` : route, ctx.filters().projects)
+  return withProjects(query.size ? `${route}?${query}` : route, ctx.filters())
 }
 
 export function scopeConfirmed(ctx: PanelContext, scope: BoardFields['node_scope'] | undefined) {

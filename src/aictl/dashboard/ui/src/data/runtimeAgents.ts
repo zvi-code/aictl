@@ -22,7 +22,11 @@ export function statusText<T>(status: T, endReason: unknown): T | string {
 
 function matchesAgent(agent: Agent, filters: Partial<Filters>, tools: string[] | null) {
   if (!isStoredToolSelected(agent.tool, tools)) return false;
-  if (filters?.projects?.length && !filters.projects.some(project => projectKey(project) === projectKey(agent.project))) return false;
+  // A live agent of a chosen repository is one in its folder or below (the server resolves a repository's other
+  // worktrees for the recorded rows; a live agent not yet recorded is matched by its folder).
+  if ((filters?.projects?.length || filters?.repos?.length) &&
+      !filters.projects?.some(project => projectKey(project) === projectKey(agent.project)) &&
+      !filters.repos?.some(repo => projectKey(agent.project) === projectKey(repo) || projectKey(agent.project).startsWith(projectKey(repo) + '/'))) return false;
   if (filters?.model && filters.model !== 'all' && !agent.models?.some(model => canonicalModelId(model) === canonicalModelId(filters.model))) return false;
   if (!matchesStatus(agent, filters?.status)) return false;
   const q = filters?.q?.toLowerCase();
