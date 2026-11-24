@@ -48,7 +48,7 @@ const body: IndexBody = { generated_at: 1_700_000_000, scope: { kind: 'local', n
 
 function context(state: DetailState<unknown>, scope = 'local', asked: string[] = [], copied: string[] = []) {
   return {
-    scope: () => scope, nodeId: () => scope === 'node' ? 'win-box' : null, filters: () => ({ project: 'C:\\Work\\RepoA' }),
+    scope: () => scope, nodeId: () => scope === 'node' ? 'win-box' : null, filters: () => ({ projects: ['C:\\Work\\RepoA'] }),
     board: () => undefined, copy: (text: string) => copied.push(text),
     detail: (path: () => string | undefined) => Object.assign(() => { const p = path(); if (p) asked.push(p); return state },
       { retry() {} }),

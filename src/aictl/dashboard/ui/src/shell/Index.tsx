@@ -236,12 +236,8 @@ function NodeView(props: { node: IndexNode; label: Label; copy: (text: string) =
 /** Everything the daemon found and indexed: this node live, another node or the fleet from the store. */
 export default function Index(props: { ctx: PanelContext }) {
   const ctx = untrack(() => props.ctx)
-  const path = createMemo(() => {
-    const query = new URLSearchParams()
-    const project = ctx.filters().project
-    if (project && project !== 'all') query.append('project', project)
-    return detailPath(ctx, '/api/board/index', query)
-  })
+  // detailPath adds the chosen projects, as it does for every detail route.
+  const path = createMemo(() => detailPath(ctx, '/api/board/index'))
   const read = untrack(() => ctx.detail<IndexBody>(path))
   const body = () => {
     const value = read()?.data
