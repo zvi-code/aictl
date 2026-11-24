@@ -2,7 +2,8 @@
 // A row is one bar on a shared linear scale: its parts are stacked from 0, each with its own hover text; the value text
 // is written beside the bar. A tick marks a second figure of the same row on the same scale (a 95th percentile).
 
-export type BarTone = 'c1' | 'c2' | 'c3' | 'c4' | 'good' | 'bad' | 'muted'
+/** `ink` and `muted`: neutral tones for a bar that is never split by repository, beside bars in repository colours. */
+export type BarTone = 'c1' | 'c2' | 'c3' | 'c4' | 'good' | 'bad' | 'muted' | 'ink'
 /** `repo`: the part is one repository's share of the bar (repoSplit.ts), filled with that repository's colour instead of
  * `tone`; `key` names the part in the markup. */
 export type BarPart = { value: number; tone: BarTone; hover: string; repo?: number; key?: string }

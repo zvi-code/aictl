@@ -4,41 +4,49 @@ import { BarChart } from './FlowsBars'
 import { axisText, barTop } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { money, share, toolLabel, type Label } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
 import {
   AFTER, AFTER_LABELS, afterRows, countAxis, listingLegend, listingRows, skillCostRows, skillProjectRows, skillsCoverage, skillsFinding,
-  skillsHero, skillToolRows, skillUseRows, unusedRows, type SkillRow, type SkillsBody,
+  skillsHero, skillsMeasured, skillsSplit, skillToolRows, skillUseRows, unusedRows, type SkillRow, type SkillsBody,
 } from './skillsModel'
-import styles from './Insights.module.css'
+import styles from './CallsViews.module.css'
 
+/** Rankings side by side: uses and turn cost per skill; what followed a use; then listings, projects and tools. */
 function Visual(props: { body: SkillsBody; label: Label }) {
   const empty = 'No skill with 5 uses in 3 sessions.'
-  return <>
-    <div class={styles.lists}>
-      <BarChart data="uses" title="Uses per skill" rows={skillUseRows(props.body, props.label)} axis={countAxis(skillUseRows(props.body, props.label), 'uses')} empty={empty} />
-      <BarChart data="cost" title="List price of the turns each skill ran in (share of the period's cost)" rows={skillCostRows(props.body)}
-        axis={axisText('list price of the turns', money(barTop(skillCostRows(props.body))))} empty={empty} />
+  const split = () => skillsSplit(props.body)
+  const by = () => split() ? ' A segment per repository.' : ''
+  return <div class={styles.charts}>
+    {split() ? <RepoLegend split={props.body} other={[props.body.skills, props.body.unused, props.body.projects, props.body.tools]
+      .some(list => list.some(row => row.repos?.some(segment => !segment.repo)))} /> : null}
+    <div class={styles.columns}>
+      <BarChart data="uses" title="Uses per skill" rows={skillUseRows(props.body, props.label)}
+        axis={countAxis(skillUseRows(props.body, props.label), 'uses') + by()} empty={empty} />
+      <BarChart data="cost" title="List price of the turns each skill ran in" rows={skillCostRows(props.body)}
+        axis={`${axisText('list price', money(barTop(skillCostRows(props.body))))}${by()} Beside: share of the period's cost.`} empty={empty} />
     </div>
-    <h3 class={styles.subhead}>What followed a use in the same turn (share of the skill's uses with a recorded turn)</h3>
-    <div class={styles.lists} data-after>
-      <For each={AFTER}>{after => <BarChart data={after} title={AFTER_LABELS[after]} rows={afterRows(props.body, after)} top={1}
-        axis={axisText('share of uses', '100%')} empty={empty} />}</For>
-    </div>
-    <div class={styles.lists}>
-      <BarChart data="listings" title="Skills listed to the model, used and not used (skills)" rows={listingRows(props.body, props.label)}
-        legend={listingLegend} axis={countAxis(listingRows(props.body, props.label), 'listed skills')}
-        empty="No tool reported a skill listing in this period." />
-      <BarChart data="unused" title="Listed and not used: listing tokens per skill" rows={unusedRows(props.body, props.label)}
-        axis={axisText('listing tokens (estimated from size)', fmtN(barTop(unusedRows(props.body, props.label))))}
-        empty="No listed skill went unused, or no tool reports listings." />
-    </div>
-    <div class={styles.lists}>
+    <section class={styles.group} data-after>
+      <h2>What followed a use in the same turn</h2>
+      <div class={styles.narrow}>
+        <For each={AFTER}>{after => <BarChart data={after} title={AFTER_LABELS[after]} rows={afterRows(props.body, after)} top={1}
+          axis={axisText("share of the skill's uses with a turn", '100%') + by()} empty={empty} />}</For>
+      </div>
+    </section>
+    <div class={styles.columns}>
       <BarChart data="projects" title="Skill uses per project" rows={skillProjectRows(props.body)}
-        axis={countAxis(skillProjectRows(props.body), 'uses')} empty="No project with 5 skill uses." />
+        axis={countAxis(skillProjectRows(props.body), 'uses') + by()} empty="No project with 5 skill uses." />
       <BarChart data="tools" title="Skill uses per tool" rows={skillToolRows(props.body, props.label)}
-        axis={countAxis(skillToolRows(props.body, props.label), 'uses')} empty="No skill use in this period." />
+        axis={countAxis(skillToolRows(props.body, props.label), 'uses') + by()} empty="No skill use in this period." />
+      <BarChart data="unused" title="Listed, not used: listing tokens per skill" rows={unusedRows(props.body, props.label)}
+        axis={axisText('listing tokens, estimated from size', fmtN(barTop(unusedRows(props.body, props.label)))) + by()}
+        empty="No listed skill went unused, or no tool reports listings." />
+      <BarChart data="listings" title="Skills listed to the model, per tool" rows={listingRows(props.body, props.label)}
+        legend={listingLegend} axis={countAxis(listingRows(props.body, props.label), 'listed skills') + (split() ? ' Not split by repository.' : '')}
+        empty="No tool reported a skill listing in this period." />
     </div>
     <p class={styles.note} data-coverage>{skillsCoverage(props.body, props.label)}</p>
-  </>
+    <details class={styles.totals} data-totals><summary>Totals of the period</summary><p>{skillsFinding(props.body, props.label)}</p></details>
+  </div>
 }
 
 type Row = Record<string, unknown>
@@ -53,17 +61,18 @@ export default function Skills(props: CardProps) {
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   return <InsightCard<SkillsBody> {...props} card="skills" tab="flow"
     hero={skillsHero}
-    finding={body => skillsFinding(body, label)}
+    finding={() => skillsMeasured}
     visual={body => <Visual body={body} label={label} />}
     note={'A use is a skill_uses record in the period, any trigger (the agent invoked it, the person ran it, or the tool loaded ' +
       'it). A turn is the person\'s instruction the use belongs to; its tokens and list price are those of the requests of that ' +
       'turn in the period, each turn once per skill. A Copilot CLI turn is often a whole session, so the turns of different skills ' +
       'overlap and their costs do not add up. After a use: an edit (edit tools, create), a test run (the stored test-run flag) or a ' +
       'commit (git commit) of the same session and turn, after the use; the share is over the uses with a recorded turn, and one ' +
-      'use can be followed by more than one. Listed and not used: the skills a session\'s main agent was told of in the period, ' +
-      'each once per session; tokens are estimated from size and counted once per session that listed the skill. Too small to ' +
-      'compare: a skill with fewer than 5 uses or 3 sessions, a project with fewer than 5 uses. A project is the last folder of ' +
-      'the working folder. Cost is list price, not a bill.'}
+      'use can be followed by more than one. A repository\'s part of such a share is its followed uses over all of the skill\'s ' +
+      'uses with a turn, so the parts add up to the share. Listed and not used: the skills a session\'s main agent was told of in ' +
+      'the period, each once per session; tokens are estimated from size and counted once per session that listed the skill. Too ' +
+      'small to compare: a skill with fewer than 5 uses or 3 sessions, a project with fewer than 5 uses. A project is the last ' +
+      'folder of the working folder. Cost is list price, not a bill.'}
     table={{
       label: 'Skills',
       rows: body => [...body.skills.map(item => skillRow(item, false)), ...body.small_skills.map(item => skillRow(item, true))],
@@ -78,4 +87,3 @@ export default function Skills(props: CardProps) {
       numberField('uses', 'Skill uses', fmtNum),
       textField('skills', 'Skills', row => Array.isArray(row.skills) ? row.skills.join(', ') : '')]} />
 }
-

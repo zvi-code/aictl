@@ -7,6 +7,8 @@ import type { JSX } from '@solidjs/web'
 import { beforeEach, describe, expect, it } from 'vitest'
 import AfterFailure from '../../src/panels/insights/AfterFailure'
 import Rereads from '../../src/panels/insights/Rereads'
+import Skills from '../../src/panels/insights/Skills'
+import type { SkillsBody } from '../../src/panels/insights/skillsModel'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
 import type { FailureBody, RereadBody } from '../../src/panels/insights/insightsModel'
@@ -262,6 +264,81 @@ describe('INS-V-C · Repeated file reads', () => {
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(rows(box, 'reread-reads')).toEqual(['all', 'claude-code', 'copilot-cli'])
     expect(parts(box.querySelector('[data-chart="reread-files"] [data-row="claude-code"]')!)).toEqual(['files'])
+    dispose()
+  })
+})
+
+// ─── SVG bar charts (Skills, MCP servers, Kusto queries) ─────────────────────────────────────────────────────────────
+const svgRow = (box: Element, chart: string, row: string) => box.querySelector(`[data-chart="${chart}"] [data-row="${row}"]`)!
+const svgTip = (row: Element, part: string) => row.querySelector(`[data-part="${part}"] title`)!.textContent
+const values = (box: Element, chart: string) => texts(box.querySelectorAll(`[data-chart="${chart}"] [data-value]`), node => node.textContent)
+const charts = (box: Element) => texts(box.querySelectorAll('[data-chart]'), node => node.getAttribute('data-chart'))
+
+// ─── Skills ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+const skillWhole = { uses: 100, cost_usd: 50, after_edit: 0.6, after_test: 0.2, after_commit: 0.1 }
+const skill = { name: 'review', uses: 100, sessions: 40, projects: 3, tools: ['claude-code'], turns: 90, turn_tokens: 9_000_000, cost_usd: 50,
+  cost_share: 0.25, with_turn: 90, after_edit: 0.6, after_test: 0.2, after_commit: 0.1,
+  repos: [seg('/src/app', { uses: 70, cost_usd: 40, after_edit: 0.5, after_test: 0.2, after_commit: 0 }, skillWhole),
+    seg('', { uses: 30, cost_usd: 10, after_edit: 0.1, after_test: 0, after_commit: 0.1 }, skillWhole)] }
+const skills = {
+  ...base, card: 'skills', repo_order: order, repo_others: others, sessions: [],
+  skills: [skill, { ...skill, name: 'deploy', uses: 20, sessions: 10, cost_usd: 5, cost_share: 0.025, repos: [] }],
+  small_skills: [{ ...skill, name: 'rare', uses: 2, sessions: 2, repos: [] }],
+  unused: [{ tool: 'claude-code', name: 'never-used', sessions: 24, list_tokens: 7000,
+    repos: [seg('/src/docs', { list_tokens: 7000 }, { list_tokens: 7000 })] }],
+  listings: [{ tool: 'claude-code', listed: 40, unused: 30, sessions: 25, list_tokens: 20_000, unused_tokens: 15_000 }],
+  tools: [{ tool: 'claude-code', uses: 120, skills: 2, sessions: 50, with_turn: 110,
+    repos: [seg('/src/app', { uses: 80 }, { uses: 120 }), seg('/src/docs', { uses: 40 }, { uses: 120 })] }],
+  projects: [{ project: '/src/app', uses: 80, skills: 2, sessions: 30, repos: [seg('/src/app', { uses: 80 }, { uses: 80 })] }],
+  summary: { uses: 122, skills: 3, sessions: 50, cost_usd: 200, top: skill, use_tools: ['claude-code'], listing_tools: ['claude-code'],
+    listed: 40, unused: 30, unused_tokens: 15_000, listed_sessions: 25, small_skills: 1, small_projects: [] },
+} as unknown as SkillsBody
+
+describe('INS-V-C · Skills', () => {
+  it('states what is measured and draws the rankings side by side, uses per skill first', () => {
+    const { box, dispose } = draw(Skills, 'skills', skills)
+    expect(finding(box)).toBe('Skill uses (skill_uses records, any trigger) per skill, project and tool; the list price of the turns they ' +
+      'ran in; what followed in the same turn; skills listed to the model.')
+    expect(charts(box)).toEqual(['uses', 'cost', 'after_edit', 'after_test', 'after_commit', 'projects', 'tools', 'unused', 'listings'])
+    expect(rows(box, 'uses')).toEqual(['review', 'deploy'])
+    expect(values(box, 'uses')).toEqual(['100 uses', '20 uses'])
+    expect(box.querySelector('[data-totals] p')!.textContent).toMatch(/^122 skill uses of 3 skills in 50 sessions/)
+    // No switch: the bars have no parts of their own to colour by; the legend is the repositories', once.
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
+    dispose()
+  })
+
+  it('splits uses, turn cost, what followed, unused listings, projects and tools by repository', () => {
+    const { box, dispose } = draw(Skills, 'skills', skills)
+    const uses = svgRow(box, 'uses', 'review')
+    expect([parts(uses), repos(uses)]).toEqual([['repo:/src/app', 'repo:'], ['0', OTHER_TEXT]])
+    expect(svgTip(uses, 'repo:/src/app')).toBe('review — app (/src/app): 70 uses · 70% of this bar. review: 100 uses in 40 sessions of ' +
+      '3 projects, from claude-code; 90 of the uses belong to a recorded turn')
+    // A skill whose answer carries no segment keeps its plain bar.
+    expect(parts(svgRow(box, 'uses', 'deploy'))).toEqual(['c1'])
+    expect(svgTip(svgRow(box, 'cost', 'review'), 'repo:/src/app')).toMatch(/^review, turn cost — app \(\/src\/app\): \$40\.00 · 80% of this bar\. 70 uses in this repository\. review: 90 turns/)
+    const edit = svgRow(box, 'after_edit', 'review')
+    expect(repos(edit)).toEqual(['0', OTHER_TEXT])
+    expect(svgTip(edit, 'repo:')).toMatch(/^review, then edited a file — Other repositories \(every repository outside the 8 with the highest cost, summed\): 10% · 17% of this bar\. 30 uses in this repository\. review: 54 of 90 uses/)
+    expect(svgTip(svgRow(box, 'after_commit', 'review'), 'repo:')).toContain('10%')
+    expect(repos(svgRow(box, 'unused', 'claude-code:never-used'))).toEqual(['1'])
+    expect(repos(svgRow(box, 'tools', 'claude-code'))).toEqual(['0', '1'])
+    expect(repos(svgRow(box, 'projects', '/src/app'))).toEqual(['0'])
+    // The listings are not split: neutral tones, not repository colours.
+    expect(parts(svgRow(box, 'listings', 'claude-code'))).toEqual(['ink', 'muted'])
+    dispose()
+  })
+
+  it('draws plain bars and no legend when the answer carries no split', () => {
+    const strip = <T extends object>(list: T[]) => list.map(row => ({ ...row, repos: undefined }))
+    const plain = { ...skills, repo_order: [], repo_others: null, skills: strip(skills.skills), unused: strip(skills.unused),
+      tools: strip(skills.tools), projects: strip(skills.projects) } as unknown as SkillsBody
+    const { box, dispose } = draw(Skills, 'skills', plain)
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(parts(svgRow(box, 'uses', 'review'))).toEqual(['c1'])
+    expect(parts(svgRow(box, 'after_edit', 'review'))).toEqual(['c1'])
+    expect(values(box, 'after_edit')).toEqual(['60%', '60%'])
     dispose()
   })
 })

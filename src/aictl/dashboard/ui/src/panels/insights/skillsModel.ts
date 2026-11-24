@@ -2,19 +2,24 @@
 // A skill with fewer than 5 uses or 3 sessions is too small to compare: it is listed apart and gets no bar.
 import { fmtN, fmtNum, projectName } from '../../design/format'
 import { axisText, barTop, type BarLegend, type BarRow } from './flowBarModel'
-import { money, plural, share, type Base, type Hero, type Label } from './insightsModel'
+import { money, plural, segmentValue, share, type Base, type Hero, type Label } from './insightsModel'
+import { hasSplit, repoBarParts } from './repoBarParts'
+import type { RepoSegment } from './repoSplit'
 
 type Num = number | null
 export type SkillRow = {
   name: string; uses: number; sessions: number; projects: number; tools: string[]; turns: number; turn_tokens: Num
   cost_usd: Num; cost_share: Num; with_turn: number; after_edit: Num; after_test: Num; after_commit: Num
+  /** Its parts per repository (uses, cost_usd, after_edit, after_test, after_commit), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
+type Split = { repos?: RepoSegment[] }
 export type SkillsBody = Base<'skills'> & {
   skills: SkillRow[]; small_skills: SkillRow[]
-  unused: { tool: string; name: string; sessions: number; list_tokens: number }[]
+  unused: ({ tool: string; name: string; sessions: number; list_tokens: number } & Split)[]
   listings: { tool: string; listed: number; unused: number; sessions: number; list_tokens: number; unused_tokens: number }[]
-  tools: { tool: string; uses: number; skills: number; sessions: number; with_turn: number }[]
-  projects: { project: string; uses: number; skills: number; sessions: number }[]
+  tools: ({ tool: string; uses: number; skills: number; sessions: number; with_turn: number } & Split)[]
+  projects: ({ project: string; uses: number; skills: number; sessions: number } & Split)[]
   summary: {
     uses: number; skills: number; sessions: number; cost_usd: Num; top: SkillRow | null; use_tools: string[]; listing_tools: string[]
     listed: number; unused: number; unused_tokens: Num; listed_sessions: number; small_skills: number; small_projects: string[]
@@ -39,6 +44,13 @@ export function skillsFinding(body: SkillsBody, label: Label) {
   return (uses + listed).trim()
 }
 
+/** The line under the title: what is measured, in technical terms. */
+export const skillsMeasured = 'Skill uses (skill_uses records, any trigger) per skill, project and tool; the list price of the turns they ' +
+  'ran in; what followed in the same turn; skills listed to the model.'
+
+/** Whether the answer carries a repository split on any bar. */
+export const skillsSplit = (body: SkillsBody) => hasSplit(body.repo_order, body.skills, body.unused, body.projects, body.tools)
+
 export const skillsHero = (body: SkillsBody): Hero | undefined => body.summary.uses
   ? { value: fmtNum(body.summary.uses), label: `skill uses in ${plural(body.summary.sessions, 'session')}` } : undefined
 
@@ -48,7 +60,8 @@ export function skillUseRows(body: SkillsBody, label: Label): BarRow[] {
     const hover = `${item.name}: ${plural(item.uses, 'use')} in ${plural(item.sessions, 'session')} of ${plural(item.projects, 'project')}` +
       (item.tools.length ? `, from ${item.tools.map(label).join(', ')}` : '') + `; ${fmtNum(item.with_turn)} of the uses belong to a recorded turn`
     return { key: item.name, name: item.name, sub: `${plural(item.sessions, 'session')} · ${plural(item.projects, 'project')}`,
-      parts: [{ value: item.uses, tone: 'c1', hover }], text: plural(item.uses, 'use'), hover }
+      parts: item.repos?.length ? repoBarParts(body.repo_order, item.repos, 'uses', value => plural(value, 'use'), item.name, 'skill uses', hover)
+        : [{ value: item.uses, tone: 'c1', hover }], text: plural(item.uses, 'use'), hover }
   })
 }
 
@@ -63,7 +76,10 @@ export function skillCostHover(body: SkillsBody, item: SkillRow) {
 export function skillCostRows(body: SkillsBody): BarRow[] {
   return body.skills.slice(0, SHOWN).map(item => {
     const hover = skillCostHover(body, item)
-    return { key: item.name, name: item.name, sub: plural(item.turns, 'turn'), parts: [{ value: item.cost_usd ?? 0, tone: 'c2', hover }],
+    return { key: item.name, name: item.name, sub: plural(item.turns, 'turn'),
+      parts: item.repos?.length ? repoBarParts(body.repo_order, item.repos, 'cost_usd', value => money(value), `${item.name}, turn cost`,
+        'turn cost', hover, segment => `${plural(segmentValue(segment, 'uses') ?? 0, 'use')} in this repository.`)
+        : [{ value: item.cost_usd ?? 0, tone: 'c2', hover }],
       text: `${money(item.cost_usd)} (${share(item.cost_share)})`, hover }
   })
 }
@@ -86,11 +102,15 @@ export function afterHover(item: SkillRow, after: After) {
 export function afterRows(body: SkillsBody, after: After): BarRow[] {
   return body.skills.slice(0, SHOWN).map(item => {
     const hover = afterHover(item, after)
-    return { key: item.name, name: item.name, parts: [{ value: item[after] ?? 0, tone: AFTER_TONE[after], hover }], text: share(item[after]), hover }
+    return { key: item.name, name: item.name, sub: plural(item.with_turn, 'use') + ' with a turn',
+      parts: item.repos?.length ? repoBarParts(body.repo_order, item.repos, after, value => share(value), `${item.name}, ${AFTER_LABELS[after].toLowerCase()}`,
+        `share of uses followed by ${AFTER_VERB[after]}`, hover, segment => `${plural(segmentValue(segment, 'uses') ?? 0, 'use')} in this repository.`)
+        : [{ value: item[after] ?? 0, tone: AFTER_TONE[after], hover }], text: share(item[after]), hover }
   })
 }
 
-export const listingLegend: BarLegend = [{ tone: 'c3', label: 'Used in the period' }, { tone: 'muted', label: 'Listed, not used' }]
+/** Neutral tones: the listings are not split by repository, and are drawn beside bars in repository colours. */
+export const listingLegend: BarLegend = [{ tone: 'ink', label: 'Used in the period' }, { tone: 'muted', label: 'Listed, not used' }]
 
 /** Per tool that reports listings: the skills listed to the model, split into used and not used. */
 export function listingRows(body: SkillsBody, label: Label): BarRow[] {
@@ -100,7 +120,7 @@ export function listingRows(body: SkillsBody, label: Label): BarRow[] {
       `${fmtNum(used)} used, ${fmtNum(item.unused)} not used in the period. Listing tokens ${fmtN(item.list_tokens)}, of which ` +
       `${fmtN(item.unused_tokens)} for the skills not used (estimated from size, once per session that listed the skill)`
     return { key: item.tool, name: label(item.tool), sub: plural(item.sessions, 'session'),
-      parts: [{ value: used, tone: 'c3', hover: `${label(item.tool)}: ${fmtNum(used)} of ${plural(item.listed, 'listed skill')} used (${share(ratio(used, item.listed))})` },
+      parts: [{ value: used, tone: 'ink', hover: `${label(item.tool)}: ${fmtNum(used)} of ${plural(item.listed, 'listed skill')} used (${share(ratio(used, item.listed))})` },
         { value: item.unused, tone: 'muted', hover: `${label(item.tool)}: ${fmtNum(item.unused)} of ${plural(item.listed, 'listed skill')} not used ` +
           `(${share(ratio(item.unused, item.listed))}), ${fmtN(item.unused_tokens)} listing tokens` }],
       text: `${fmtNum(used)} used · ${fmtNum(item.unused)} not used`, hover }
@@ -113,7 +133,8 @@ export function unusedRows(body: SkillsBody, label: Label): BarRow[] {
     const hover = `${item.name} (${label(item.tool)}): listed in ${plural(item.sessions, 'session')} and not used; listing tokens ` +
       `${fmtN(item.list_tokens)} (estimated from size, once per session)`
     return { key: `${item.tool}:${item.name}`, name: item.name, sub: plural(item.sessions, 'session'),
-      parts: [{ value: item.list_tokens, tone: 'muted', hover }], text: `${fmtN(item.list_tokens)} tokens`, hover }
+      parts: item.repos?.length ? repoBarParts(body.repo_order, item.repos, 'list_tokens', value => `${fmtN(value)} tokens`, item.name,
+        'listing tokens', hover) : [{ value: item.list_tokens, tone: 'muted', hover }], text: `${fmtN(item.list_tokens)} tokens`, hover }
   })
 }
 
@@ -123,7 +144,8 @@ export function skillProjectRows(body: SkillsBody): BarRow[] {
     const name = projectName(row.project)
     const hover = `${name}: ${plural(row.uses, 'skill use')} of ${plural(row.skills, 'skill')} in ${plural(row.sessions, 'session')}`
     return { key: row.project, name, sub: `${plural(row.skills, 'skill')} · ${plural(row.sessions, 'session')}`,
-      parts: [{ value: row.uses, tone: 'c1', hover }], text: plural(row.uses, 'use'), hover }
+      parts: row.repos?.length ? repoBarParts(body.repo_order, row.repos, 'uses', value => plural(value, 'use'), name, 'skill uses', hover)
+        : [{ value: row.uses, tone: 'c1', hover }], text: plural(row.uses, 'use'), hover }
   })
 }
 export function skillToolRows(body: SkillsBody, label: Label): BarRow[] {
@@ -131,7 +153,8 @@ export function skillToolRows(body: SkillsBody, label: Label): BarRow[] {
     const hover = `${label(row.tool)}: ${plural(row.uses, 'skill use')} of ${plural(row.skills, 'skill')} in ${plural(row.sessions, 'session')}, ` +
       `${fmtNum(row.with_turn)} with a recorded turn`
     return { key: row.tool, name: label(row.tool), sub: `${plural(row.skills, 'skill')} · ${plural(row.sessions, 'session')}`,
-      parts: [{ value: row.uses, tone: 'c1', hover }], text: plural(row.uses, 'use'), hover }
+      parts: row.repos?.length ? repoBarParts(body.repo_order, row.repos, 'uses', value => plural(value, 'use'), label(row.tool), 'skill uses', hover)
+        : [{ value: row.uses, tone: 'c1', hover }], text: plural(row.uses, 'use'), hover }
   })
 }
 export const countAxis = (rows: BarRow[], unit: string) => axisText(unit, fmtNum(barTop(rows)))
