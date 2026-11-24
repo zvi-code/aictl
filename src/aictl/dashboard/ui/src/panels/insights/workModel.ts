@@ -511,21 +511,6 @@ export function changeHero(body: ChangeBody): Hero | undefined {
   return { value: fmtNum(s.files), label: `files changed by agents: ${plural(s.writes, 'file write')} in ${plural(s.change_sessions, 'session')}` }
 }
 
-/** What the card covers: writes, files and lines, what share a commit followed, commits, and the rewritten files. */
-export function changeFinding(body: ChangeBody): string {
-  const s = body.summary
-  if (!s.writes) {
-    return s.commits ? `Agents made ${plural(s.commits, 'commit')} but no file write is recorded in this period.`
-      : 'No agent changed a file or made a commit in this period.'
-  }
-  let text = `${plural(s.writes, 'file write')} by agents to ${plural(s.files, 'file')} (${fmtLines(s.lines_added, s.lines_removed)} lines) ` +
-    `in ${plural(s.change_sessions, 'session')} across ${places(s.repos)}.`
-  text += ` A commit of the same session followed ${fmtNum(s.committed_writes)} of the writes (${pct(s.committed_share)}); ` +
-    `${plural(s.commits, 'commit')} in all; ${plural(s.uncommitted_sessions, 'session')} changed files and made no commit.`
-  if (s.reworked) text += ` ${plural(s.reworked, 'file')} ${s.reworked === 1 ? 'was' : 'were'} written in 3 or more sessions or 5 or more times in one.`
-  return text
-}
-
 /** Distinct changed files per repository, with the share of all changed files. */
 export function changeFilesChart(body: ChangeBody): BarChart {
   const rows = active(body).map((repo): BarRow => ({
@@ -612,24 +597,6 @@ export function changeSessionsChart(body: ChangeBody): BarChart {
     axis: linear(plural(top[0] ?? 0, 'session')), tops: top, rows }
 }
 
-/** Spend and working time per commit, for the repositories with 3 or more commits; each bar on its own scale. */
-export function changePerCommitChart(body: ChangeBody): BarChart {
-  const rows = active(body).filter(repo => repo.cost_per_commit != null || repo.time_per_commit_ms != null).map((repo): BarRow => ({
-    key: repo.name, name: repo.name, sub: plural(repo.commits, 'commit'), small: repo.small,
-    tracks: [
-      { parts: [{ value: repo.cost_per_commit ?? 0, tone: repo.small ? 'muted' : 'c2', label: 'spend' }], text: `${usd(repo.cost_per_commit)} per commit` },
-      { parts: [{ value: repo.time_per_commit_ms ?? 0, tone: repo.small ? 'muted' : 'c3', label: 'working time' }],
-        text: `${span(repo.time_per_commit_ms)} per commit` },
-    ],
-    hover: `${repoName(repo)}: ${usd(repo.cost_usd)} at list price ÷ ${plural(repo.commits, 'commit')} = ${usd(repo.cost_per_commit)}; ` +
-      `agent working time ${hours(repo.agent_ms)} ÷ ${plural(repo.commits, 'commit')} = ${span(repo.time_per_commit_ms)}.`,
-  }))
-  const top = tops(rows)
-  return { id: 'per-commit', title: 'Spend and agent working time per commit (repositories with 3 or more commits)',
-    legend: [{ tone: 'c2', label: 'Spend at list price' }, { tone: 'c3', label: 'Agent working time' }],
-    axis: `Each bar on its own linear scale: spend 0 to ${fmtUsd(top[0] ?? 0)}, time 0 to ${fmtMs(top[1] ?? 0)}.`, tops: top, rows }
-}
-
 /** Commits, or file writes, per day (or longer bin) of the period. */
 export function changeBinChart(body: ChangeBody, what: 'commits' | 'writes'): ColumnChart {
   const width = binWidth(body.range, DAY, 31)
@@ -660,7 +627,3 @@ export function reworkedChart(body: ChangeBody): BarChart {
   return { id: 'reworked', title: 'Files written in 3 or more sessions, or 5 or more times in one (writes per file)', legend: [],
     axis: linear(plural(top[0] ?? 0, 'write')), tops: top, rows }
 }
-
-export const perCommit = (repo: Pick<ChangeRepo, 'cost_per_commit' | 'time_per_commit_ms' | 'commits'>) =>
-  repo.cost_per_commit == null ? `${fmtNum(repo.commits)} commits, too few for a cost per commit`
-    : `${fmtUsd(repo.cost_per_commit)} and ${repo.time_per_commit_ms == null ? 'working time not reported' : `${fmtMs(repo.time_per_commit_ms)} of working time`} per commit`

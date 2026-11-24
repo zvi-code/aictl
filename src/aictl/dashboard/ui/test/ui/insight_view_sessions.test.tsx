@@ -7,12 +7,15 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { flowLayout } from '../../src/panels/insights/charts/FlowDiagram'
 import { heatFill } from '../../src/panels/insights/charts/HeatGrid'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
+import Changes from '../../src/panels/insights/Changes'
+import { changeLine } from '../../src/panels/insights/changesModel'
 import Flows from '../../src/panels/insights/Flows'
 import { endingFlow, flowsFinding, transitionGrid, type FlowsBody } from '../../src/panels/insights/flowsModel'
 import type { ProblemBody } from '../../src/panels/insights/insightsModel'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { pairBlank, pairGrid, problemLine, projectGrid, signalToolGrid } from '../../src/panels/insights/problemsModel'
 import type { RepoRef, RepoSegment } from '../../src/panels/insights/repoSplit'
+import type { ChangeBody } from '../../src/panels/insights/workModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -32,10 +35,12 @@ function split(rows: [string, Record<string, number>][]): RepoSegment[] {
     share: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value / total[key]])),
     of_repo: Object.fromEntries(Object.keys(values).map(key => [key, null])) }))
 }
+/** Whether a value is a list of segments (repoSplit), not a view's own `repos` rows. */
+const segments = (value: unknown) => Array.isArray(value) && value.every(item => item && typeof item === 'object' && 'share' in item)
 /** A body as an older server answers it: no split, no ranking. */
 function unsplit<T>(body: T): T {
-  return JSON.parse(JSON.stringify(body, (key, value) => key === 'repos' || key === 'session_repos' || key === 'kind_repos' ? undefined
-    : key === 'repo_order' ? [] : value)) as T
+  return JSON.parse(JSON.stringify(body, (key, value) => (key === 'repos' || key === 'session_repos') && segments(value)
+    || key === 'kind_repos' ? undefined : key === 'repo_order' ? [] : value)) as T
 }
 function context(data: unknown, navigated: unknown[] = []) {
   const state: DetailState<unknown> = { data, status: 'ready', error: null }
@@ -233,6 +238,84 @@ describe('Problem sessions view', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelectorAll('[data-chart="problem-counts"] [data-row]').length).toBe(2)
     expect(box.querySelectorAll('[data-heat="problem-pairs"] [data-cell]').length).toBe(15)
+    dispose()
+  })
+})
+
+// ─── What the agents changed ────────────────────────────────────────────────────────────────────────────────────
+const kinds = (source: number, tests: number, docs: number) => ({ source, tests, docs, config: 0, memory: 0, other: 0 })
+const changeRepo = (repo: string, name: string, files: number, writes: number, commits: number, extra: Record<string, unknown> = {}) => ({
+  repo, name, kind: 'repository', sessions: 10, change_sessions: 8, commit_sessions: commits ? 4 : 0, uncommitted_sessions: commits ? 4 : 8,
+  writes, committed_writes: commits ? writes / 2 : 0, committed_share: commits ? 0.5 : 0, files, files_share: files / 30, reworked: 1,
+  kinds: kinds(files - 4, 3, 1), lines_added: 100, lines_removed: 20, lines_unknown: 0, commits, commit_days: commits ? 2 : 0,
+  cost_usd: 60, agent_ms: 3_600_000, cost_per_commit: commits >= 3 ? 60 / commits : null, time_per_commit_ms: commits >= 3 ? 3_600_000 / commits : null,
+  small: false, repos: split([[repo, { files, writes, committed_writes: commits ? writes / 2 : 0, commits }]]), ...extra,
+})
+const changes = {
+  ...base, card: 'changes', view: 'insights.changes', query: query('insights.changes'), repo_order: order, sessions: [],
+  repos: [changeRepo('/src/shop', 'shop', 20, 80, 6), changeRepo('/src/blog', 'blog', 10, 30, 1)],
+  files: [{ repo: '/src/shop', repo_name: 'shop', path: '/src/shop/app.ts', kind: 'source', writes: 12, sessions: 4, most_in_session: 5,
+    repos: split([['/src/shop', { writes: 12 }]]) }],
+  bins: [{ start: 1_700_000_000, commits: 3, writes: 50, repos: split([['/src/shop', { commits: 2, writes: 40 }], ['/src/blog', { commits: 1, writes: 10 }]]) },
+    { start: 1_700_086_400, commits: 4, writes: 60 }],
+  summary: { repos: 2, writes: 110, files: 30, committed_writes: 55, committed_share: 0.5, commits: 7, change_sessions: 16, uncommitted_sessions: 12,
+    lines_added: 200, lines_removed: 40, reworked: 1, kinds: kinds(22, 6, 2), top: null, most_uncommitted: null, dearest_per_commit: null,
+    cheapest_per_commit: null, top_file: null, small: [] },
+} as unknown as ChangeBody
+
+describe('What the agents changed view', () => {
+  it('draws the changed files per repository split by kind, in order, with files and share written beside', () => {
+    const { host, dispose } = mount(() => <Changes {...props(context(changes))} />)
+    const box = host.querySelector('#insight-changes')!
+    expect(box.querySelector('[data-finding]')!.textContent).toBe(changeLine(changes))
+    const rows = box.querySelectorAll('[data-chart="files"] [data-bar]')
+    expect([...rows].map(row => row.getAttribute('data-bar'))).toEqual(['shop', 'blog'])
+    expect(texts(box.querySelectorAll('[data-chart="files"] [data-value]'))).toEqual(['20 · 67%', '10 · 33%'])
+    expect([...rows[0].querySelectorAll('[data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['source', 'tests', 'docs', 'config and data', 'memory and instructions', 'other'])
+    expect(texts(box.querySelectorAll('[data-dots="per-commit"] [data-value]'))).toEqual(['$10.00', '10 min', 'fewer than 3 commits', ''])
+    dispose()
+  })
+
+  it('gives every kind of mark its exact figures on hover', () => {
+    const { host, dispose } = mount(() => <Changes {...props(context(changes))} />)
+    const box = host.querySelector('#insight-changes')!
+    expect(box.querySelector('[data-chart="files"] [data-bar="shop"] [role="tooltip"]')!.textContent).toBe('shop: 20 distinct files changed, ' +
+      '67% of 30; 80 writes, lines +100 −20; kinds: 16 source · 3 tests · 1 docs.')
+    expect(box.querySelector('[data-chart="kind-total"] [role="tooltip"]')!.textContent).toMatch(/^All repositories: 30 changed files: source 22 \(73%\)/)
+    expect(box.querySelector('[data-dots="per-commit"] [data-row="shop"] [data-dot="spend"]')!.getAttribute('title'))
+      .toBe('shop: $60.00 at list price ÷ 6 commits = $10.00.')
+    expect(box.querySelector('[data-dots="per-commit"] [data-row="blog"] [data-dot]')).toBeNull()
+    expect(box.querySelector('[data-chart="commits"] [data-column="1700000000"] rect title')!.textContent).toBe('Nov 14: 3 commits, 50 file writes.')
+    expect(box.querySelector('[data-chart="reworked"] [data-bar="app.ts"] [role="tooltip"]')!.textContent)
+      .toBe('/src/shop/app.ts (source, shop): 12 writes in 4 sessions, at most 5 in one session.')
+    dispose()
+  })
+
+  it('switches between kind of file and repository', () => {
+    const navigated: unknown[] = []
+    const { host, dispose } = mount(() => <Changes {...props(context(changes, navigated))} />)
+    const box = host.querySelector('#insight-changes')!
+    option(box, 'Repository').click()
+    flush()
+    expect([...box.querySelectorAll('[data-chart="files"] [data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1'])
+    expect(box.querySelector('[data-chart="files"] [data-bar="shop"] [role="tooltip"]')!.textContent)
+      .toContain('Marked in the colour of shop on every card: rank 1 by list-price cost.')
+    expect([...box.querySelectorAll('[data-chart="commits"] [data-column="1700000000"] rect')].map(rect => rect.getAttribute('data-repo'))).toEqual(['0', '1'])
+    expect(box.querySelector('[data-chart="kind-total"]')).toBeNull()
+    option(box, 'Kind of file and commit').click()
+    flush()
+    expect(box.querySelector('[data-chart="kind-total"]')).not.toBeNull()
+    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    dispose()
+  })
+
+  it('draws without a split and offers no switch', () => {
+    const { host, dispose } = mount(() => <Changes {...props(context(unsplit(changes)))} />)
+    const box = host.querySelector('#insight-changes')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(box.querySelectorAll('[data-chart="files"] [data-bar]').length).toBe(2)
+    expect(box.querySelectorAll('[data-chart="commits"] [data-column] rect').length).toBe(2)
     dispose()
   })
 })

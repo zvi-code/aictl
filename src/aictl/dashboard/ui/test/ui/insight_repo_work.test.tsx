@@ -364,7 +364,8 @@ const changes = {
 } as unknown as ChangeBody
 
 describe('INS-RW · What the agents changed split by repository', () => {
-  it('colours the files bar of each repository, splits kinds, rewritten files and bins by repository', () => {
+  it('coloured by repository: each repository bar in its colour, the kinds, rewritten files and bins split by repository', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=changes&by=repo')
     const { host, dispose } = mount(() => <Changes {...props(ready(changes))} />)
     const box = host.querySelector('#insight-changes')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
@@ -372,13 +373,12 @@ describe('INS-RW · What the agents changed split by repository', () => {
     const files = box.querySelector('[data-chart="files"]')!
     expect([...files.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', String(OTHER)])
     expect([...files.querySelectorAll('[data-value]')].map(value => value.textContent)).toEqual(['59 · 50%', '59 · 50%'])
-    for (const chart of ['repo-kinds', 'writes', 'sessions', 'per-commit']) {
+    for (const chart of ['files', 'writes', 'sessions']) {
       expect([...box.querySelectorAll(`[data-chart="${chart}"] [data-repo-mark]`)].map(mark => mark.getAttribute('data-repo-mark')), chart)
         .toEqual(['0', String(OTHER)])
+      expect([...box.querySelectorAll(`[data-chart="${chart}"] [data-bar="app"] [data-part]`)].length, chart).toBe(1)
     }
-    // The bars by kind of file within a repository keep their kind colours.
-    expect([...box.querySelectorAll('[data-chart="repo-kinds"] [data-bar="app"] [data-part]')].map(part => part.getAttribute('data-part')))
-      .toEqual(['source', 'tests', 'docs', 'config and data', 'memory and instructions', 'other'])
+    expect([...box.querySelectorAll('[data-dots="per-commit"] [data-swatch]')].length).toBe(2)
     const source = box.querySelector('[data-chart="kinds"] [data-row="source"]')!
     expect([...source.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1', String(OTHER)])
     expect([...source.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['30 files', '6 files', ''])
@@ -397,12 +397,26 @@ describe('INS-RW · What the agents changed split by repository', () => {
     dispose()
   })
 
-  it('draws the old bars and columns without a split', () => {
-    const { host, dispose } = mount(() => <Changes {...props(ready(unsplit(changes)))} />)
+  it('coloured by kind and commit: the files bar by kind, writes and sessions by their parts, one column per bin', () => {
+    const { host, dispose } = mount(() => <Changes {...props(ready(changes))} />)
     const box = host.querySelector('#insight-changes')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-repo-mark]')).toBeNull()
-    expect(box.querySelector('[data-chart="kinds"] [data-bar="source"]')).not.toBeNull()
+    expect([...box.querySelectorAll('[data-chart="files"] [data-bar="app"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['source', 'tests', 'docs', 'config and data', 'memory and instructions', 'other'])
+    expect(box.querySelectorAll('[data-chart="commits"] [data-column="1700000000"] rect').length).toBe(1)
+    expect(box.querySelector('[data-chart="reworked"] [data-bar="plan.md"]')).not.toBeNull()
+    dispose()
+  })
+
+  it('draws the bars and columns whole and offers no switch without a split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=changes&by=repo')
+    const { host, dispose } = mount(() => <Changes {...props(ready(unsplit(changes)))} />)
+    const box = host.querySelector('#insight-changes')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-repo-mark]')).toBeNull()
+    expect(box.querySelector('[data-chart="kind-total"] [data-bar="all"]')).not.toBeNull()
     expect(box.querySelectorAll('[data-chart="commits"] [data-column="1700000000"] rect').length).toBe(1)
     dispose()
   })

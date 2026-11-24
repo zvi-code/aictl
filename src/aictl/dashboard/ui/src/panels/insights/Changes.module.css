@@ -1,0 +1,2 @@
+/* What the agents changed at full width: the charts two abreast, each folding to one column when narrow. */
+.grid { display: grid; gap: var(--space-6) var(--space-7); grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr)); align-items: start; }

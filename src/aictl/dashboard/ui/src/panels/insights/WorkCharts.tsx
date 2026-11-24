@@ -95,9 +95,11 @@ export function Ranges(props: { chart: RangeChart }) {
 
 const W = 360, H = 132, TOP = 16, BOTTOM = 34, SIDE = 4
 
-/** Columns over time bins: the value on top of each, the bin's first day and a second figure under it. */
-export function Columns(props: { chart: ColumnChart }) {
-  const slot = () => (W - 2 * SIDE) / Math.max(1, props.chart.columns.length)
+/** Columns over time bins: the value on top of each, the bin's first day and a second figure under it. `wide`: drawn
+ * twice as wide, for a chart that has half a full-width view to itself. */
+export function Columns(props: { chart: ColumnChart; wide?: boolean }) {
+  const w = () => props.wide ? 2 * W : W
+  const slot = () => (w() - 2 * SIDE) / Math.max(1, props.chart.columns.length)
   const bar = () => Math.max(2, slot() * 0.7)
   const plot = H - TOP - BOTTOM
   // With many bins, every column keeps its value on hover, but only every k-th carries the day under it.
@@ -106,8 +108,8 @@ export function Columns(props: { chart: ColumnChart }) {
   return <Show when={props.chart.columns.length}>
     <figure class={own.figure} data-chart={props.chart.id}>
       <figcaption class={own.title}>{props.chart.title}</figcaption>
-      <svg class={styles.chart} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={props.chart.title}>
-        <line class={styles.axis} x1={SIDE} x2={W - SIDE} y1={H - BOTTOM} y2={H - BOTTOM} />
+      <svg class={props.wide ? `${styles.chart} ${own.wideChart}` : styles.chart} viewBox={`0 0 ${w()} ${H}`} role="img" aria-label={props.chart.title}>
+        <line class={styles.axis} x1={SIDE} x2={w() - SIDE} y1={H - BOTTOM} y2={H - BOTTOM} />
         <For each={props.chart.columns}>{(column, i) => {
           const height = () => props.chart.top > 0 ? column.value / props.chart.top * plot : 0
           const x = () => SIDE + i() * slot() + (slot() - bar()) / 2

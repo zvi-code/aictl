@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import Changes from '../../src/panels/insights/Changes'
+import { changeLine, filesByKind, kindTotal, perCommitDots } from '../../src/panels/insights/changesModel'
 import Durations from '../../src/panels/insights/Durations'
 import Repositories from '../../src/panels/insights/Repositories'
 import {
-  binUnit, binWidth, changeBinChart, changeFilesChart, changeFinding, changeHero, changeKindChart, changePerCommitChart, changeSessionsChart,
+  binUnit, binWidth, changeBinChart, changeFilesChart, changeHero, changeKindChart, changeSessionsChart,
   changeWritesChart, durationFinding, durationFirstChangeRange, durationHero, durationSessionRange, durationWorkChart, modelRange,
   modelTimeChart, repoBinChart, repoFinding, repoHero, repoModelChart, repoOutputChart, repoPerCommitChart, repoSpendChart,
   repoStartChart, reworkedChart, smallText, toolRange, toolTimeChart,
@@ -259,21 +260,26 @@ const changes = {
 } as unknown as ChangeBody
 
 describe('What the agents changed', () => {
-  it('states the writes, files and lines, what share a commit followed, and the files written again', () => {
-    expect(changeFinding(changes)).toBe('505 file writes by agents to 101 files (+6.0 k −1.6 k lines) in 46 sessions across 3 repositories ' +
-      'or folders. A commit of the same session followed 150 of the writes (30%); 12 commits in all; 41 sessions changed files and ' +
-      'made no commit. 9 files were written in 3 or more sessions or 5 or more times in one.')
+  it('says under the title what is counted, and leads with the changed files', () => {
+    expect(changeLine(changes)).toBe('File writes and git commits made by agents in the period, per repository or folder; a file is one ' +
+      'distinct path.')
     expect(changeHero(changes)).toEqual({ value: '101', label: 'files changed by agents: 505 file writes in 46 sessions' })
     const none = { ...changes, summary: { ...changes.summary, writes: 0, commits: 0, committed_share: null } } as ChangeBody
-    expect(changeFinding(none)).toBe('No agent changed a file or made a commit in this period.')
+    expect(changeLine(none)).toBe('No agent changed a file or made a commit in this period.')
     expect(changeHero(none)).toBeUndefined()
+    // The period's totals the old sentence stated are in the hover of the bar of all changed files.
+    expect(kindTotal(changes).rows[0].hover).toBe('All repositories: 59 changed files: source 40 (68%), tests 10 (17%), docs 5 (8%), ' +
+      'config and data 3 (5%), memory and instructions 1 (2%), other 0 (0%). 505 file writes in 46 sessions, lines +6.0 k −1.6 k; a ' +
+      'commit of the same session followed 150 (30%); 12 commits; 41 sessions changed files and made no commit; 9 files written in ' +
+      '3 or more sessions or 5 or more times in one.')
   })
 
-  it('builds the hover text of bars, stacked parts, columns and rewritten files from the figures behind them', () => {
+  it('builds the hover text of bars, stacked parts, dots, columns and rewritten files from the figures behind them', () => {
     const files = changeFilesChart(changes)
     expect(files.rows.map(row => row.tracks[0].text)).toEqual(['59 · 50%', '40 · 34%', '2 · 2%'])
     expect(files.rows[0].hover).toBe('svc: 59 distinct files changed, 50% of 101; 200 writes, lines +3.0 k −800; kinds: 40 source · ' +
       '10 tests · 5 docs · 3 config and data · 1 memory and instructions.')
+    expect(filesByKind(changes).rows[0].tracks[0].parts.map(part => part.value)).toEqual([40, 10, 5, 3, 1, 0])
     const kindRows = changeKindChart(changes).rows
     expect(kindRows[0].tracks[0].text).toBe('40 · 68%')
     expect(kindRows[0].hover).toBe('source: 40 files, 68% of 59 changed files. Kind by path: code, query, style and markup files by extension.')
@@ -282,10 +288,12 @@ describe('What the agents changed', () => {
     expect(writes.rows[0].hover).toBe('svc: 200 writes; a commit of the same session followed 150 (75%), none followed 50; 12 commits on ' +
       '6 days in 5 sessions.')
     expect(changeSessionsChart(changes).rows[0].tracks[0].text).toBe('5 · 10 · 5')
-    const perCommit = changePerCommitChart(changes)
-    expect(perCommit.rows.map(row => row.key)).toEqual(['svc'])
-    expect(perCommit.rows[0].tracks.map(track => track.text)).toEqual(['$10.00 per commit', '50 min per commit'])
-    expect(perCommit.rows[0].hover).toBe('svc: $120 at list price ÷ 12 commits = $10.00; agent working time 10 h ÷ 12 commits = 50 min.')
+    const dots = perCommitDots(changes, changes.repos, false)
+    expect(dots.rows.map(row => row.values.map(item => item.text))).toEqual([['$10.00', '50 min'], ['fewer than 3 commits', ''],
+      ['fewer than 3 commits', '']])
+    expect(dots.rows[0].values.map(item => item.hover)).toEqual(['svc: $120 at list price ÷ 12 commits = $10.00.',
+      'svc: agent working time 10 h ÷ 12 commits = 50 min.'])
+    expect(dots.rows[1].values[0].hover).toBe('loop: 0 commits, fewer than 3, so no figure per commit.')
     const commits = changeBinChart(changes, 'commits')
     expect(commits.title).toBe('Commits per day')
     expect(commits.columns.map(column => column.text)).toEqual(['4', '8'])
@@ -296,7 +304,7 @@ describe('What the agents changed', () => {
     expect(reworked.rows[0].hover).toBe('/src/loop/docs/plan.md (docs, loop): 90 writes in 12 sessions, at most 20 in one session.')
   })
 
-  it('draws titled charts with values and hovers, greys a small repository, and points to the commit check', () => {
+  it('draws titled charts with values and hovers, greys a small repository and names it under the charts', () => {
     const ctx = context({ data: { ...changes, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
     const { host, dispose } = mount(() => <Changes {...props(ctx)} />)
     const box = host.querySelector('#insight-changes')!
@@ -306,21 +314,16 @@ describe('What the agents changed', () => {
     expect(writes.querySelector('[data-bar="svc"] [data-value]')!.textContent).toBe('150 committed · 50 not')
     expect(writes.querySelector('[data-bar="svc"] [role="tooltip"]')!.textContent).toMatch(/^svc: 200 writes/)
     expect(writes.querySelector('[data-bar="t"]')!.hasAttribute('data-small')).toBe(true)
-    expect(box.querySelector('[data-chart="repo-kinds"] [data-bar="svc"] [data-value]')!.textContent)
-      .toBe('40 source · 10 tests · 5 docs · 3 config and data · 1 memory and instructions')
-    expect(box.querySelectorAll('[data-chart="repo-kinds"] [data-bar="svc"] [data-part]').length).toBe(6)
+    expect(box.querySelector('[data-chart="files"] [data-bar="svc"] [data-value]')!.textContent).toBe('59 · 50%')
+    expect(box.querySelectorAll('[data-chart="files"] [data-bar="svc"] [data-part]').length).toBe(6)
     const commits = box.querySelector('[data-chart="commits"]')!
     expect(commits.querySelector('svg')!.textContent).toContain('8')
     expect(commits.querySelector('[data-column] rect title')!.textContent).toBe('Nov 14: 4 commits, 100 file writes.')
     expect(box.querySelector('[data-chart="reworked"] [data-bar="plan.md"] [role="tooltip"]')!.textContent)
       .toBe('/src/loop/docs/plan.md (docs, loop): 90 writes in 12 sessions, at most 20 in one session.')
     expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 20 file writes and 3 commits): t.')
-    const rows = [...box.querySelectorAll('[data-repo]')]
-    expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['svc', 'loop', 't'])
-    expect(rows[0].querySelector('[data-repo-detail]')!.textContent).toContain('Per commit$10.00 and 50 min of working time per commit')
-    expect(rows[1].querySelector('[data-repo-detail]')!.textContent).toContain('0 commits, too few for a cost per commit')
-    expect(rows[2].hasAttribute('data-small')).toBe(true)
-    expect(box.textContent).toContain('see the card "Verified before commit"')
+    expect([...box.querySelectorAll('[data-dots="per-commit"] [data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['svc', 'loop', 't'])
+    expect(box.querySelector('[data-repo-detail]')).toBeNull()
     dispose()
   })
 })
