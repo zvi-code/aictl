@@ -89,14 +89,19 @@ def _transient(exc: BaseException) -> bool:
 
 
 def schema_cache_behind(exc: BaseException) -> bool:
-    """Whether streaming ingestion answered that a table the database has does not exist.
+    """Whether streaming ingestion answered from a table schema the database no longer has.
 
     Each engine node caches the schemas it streams into. For up to a minute and a half
     after ``.create-merge table`` a node may still answer HTTP 400
-    ``BadRequest_EntityNotFound`` for the new table; ``ensure_schema`` clears that cache,
-    and a request that still meets a stale node succeeds when repeated.
+    ``BadRequest_EntityNotFound`` for the new table. After a reset, which drops a table and
+    creates it again under the same name with other column types, a node that still holds
+    the dropped table's schema answers HTTP 409
+    ``StreamingIngestionMetadataConflictException`` (seen for about two minutes after a
+    reset to layout 7). ``ensure_schema`` clears that cache, and a request that still
+    meets a stale node succeeds when repeated.
     """
-    return "BadRequest_EntityNotFound" in _server_message(exc) or "BadRequest_EntityNotFound" in str(exc)
+    text = _server_message(exc) + str(exc)
+    return "BadRequest_EntityNotFound" in text or "StreamingIngestionMetadataConflictException" in text
 
 
 def retrying(

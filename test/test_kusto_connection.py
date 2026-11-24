@@ -145,6 +145,26 @@ def test_streaming_retries_the_same_payload_when_schema_is_not_visible(monkeypat
     assert json.loads(gzip.decompress(payloads[0])) == {"value": "a\nb"}
 
 
+def test_streaming_retries_when_a_node_still_holds_the_schema_of_a_table_a_reset_dropped(monkeypatch):
+    # A reset drops each table and creates it again under the same name with other column
+    # types; a node with the old schema refuses the rows with HTTP 409 until its cache is new.
+    monkeypatch.setattr(C, "RETRY_DELAYS_S", (0.0, 0.0))
+    payloads = []
+    original = FakeStreamingClient()
+
+    def send(database, table, stream, blob_url, fmt, props):
+        payloads.append(stream.read())
+        if len(payloads) < 3:
+            raise ApiError(409, True, "Table 'events' in database 'aictl' has a metadata conflict "
+                                      "(Kusto.DataNode.Exceptions.StreamingIngestionMetadataConflictException)")
+
+    monkeypatch.setattr(original, "execute_streaming_ingest", send)
+    StreamingIngester(KustoSettings("https://c.kusto.windows.net"), ingest_client=original).ingest(
+        "events", [{"value": "a"}]
+    )
+    assert len(payloads) == 3 and len(set(payloads)) == 1
+
+
 def test_ingestion_modes_do_not_change_payloads():
     settings = KustoSettings("https://c.kusto.windows.net", ingestion="streaming",
                              table_ingestion={"path_defs": "inline"})
