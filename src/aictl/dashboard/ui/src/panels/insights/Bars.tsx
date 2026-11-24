@@ -19,6 +19,8 @@ const toneClass = (tone: number) => styles[`t${((tone % TONES) + TONES) % TONES}
 export const repoClass = (colour: number) => colour === OTHER ? styles.rOther : styles[`r${colour}`]
 /** A repository segment narrower than this share of the lane shows its value on hover only. */
 const LABELLED = 0.12
+// A part's drawn length is its share of this sum, in percent: raw values that sum to less than 1 (a share, a
+// per-request figure) would leave part of the bar empty, because flex items grow only by the sum of their factors.
 const amount = (row: BarRow) => row.parts.reduce((sum, part) => sum + Math.max(0, part.value ?? 0), 0)
 
 /**
@@ -49,7 +51,7 @@ export function Bars(props: {
           <span class={styles.stack} role="group" aria-label={`${row.label}: ${row.total}`} style={{ 'inline-size': `${length(row).toFixed(2)}%` }}>
             <For each={row.parts.filter(part => (part.value ?? 0) > 0)}>{part => <span
               class={`${styles.part} ${part.repo == null ? toneClass(part.tone) : `${styles.repoPart} ${repoClass(part.repo)}`}`}
-              style={{ 'flex-grow': String(part.value) }} data-part={part.key}
+              style={{ 'flex-grow': String(+((part.value ?? 0) / amount(row) * 100).toFixed(4)) }} data-part={part.key}
               data-repo={part.repo == null ? undefined : String(part.repo)}>
               <Tooltip class={styles.partButton} label={`${row.label}, ${part.label}: ${part.text}`} text={part.hover}
                 onClick={() => undefined}><span class={styles.partText}>
