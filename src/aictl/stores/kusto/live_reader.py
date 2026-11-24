@@ -35,6 +35,13 @@ from .tables import TABLES, Table
 DELETED = "_deleted"
 NODE = "node_id"
 
+# Tables this node's daemon writes on a timer whether or not any AI tool is working: a change in
+# one of them alone does not make the feed poll fast. It is still published like any other change.
+BACKGROUND_TABLES = frozenset({
+    "metrics", "OTELMetrics", "system_snapshots", "process_snapshots", "data_quality_status",
+    "datapoint_catalog", "tool_invocation_coverage", "maintenance_state", "schema_version",
+})
+
 
 @dataclass(frozen=True)
 class ReaderConfig:
@@ -46,8 +53,8 @@ class ReaderConfig:
     query_timeout_s: float = 15.0
     preview_lookback_s: float = 120.0
     preview_interval_s: float = 2.0
-    schema_refresh_s: float = 60.0
-    policy_refresh_s: float = 300.0
+    schema_refresh_s: float = 600.0
+    policy_refresh_s: float = 600.0
     reconcile_interval_s: float = 300.0
     reconcile_partitions: int = 8
     subscriber_batches: int = 16
@@ -60,15 +67,28 @@ class ReaderConfig:
     tables_per_probe: int = 4
     probe_memory_bytes: int | None = None
     iterator_memory_bytes: int = 128 * 1024**2
+    # Per-row identity hints (key and winner pages per changed table). Off, the feed is a table
+    # invalidation feed: one query per poll captures the cursor, probes every table and previews
+    # the streaming tables, and the dashboard, which rebuilds from its views, gets the same signal.
+    row_hints: bool = False
+    # Table mode: the poll interval while nothing but background tables changes, and while the
+    # store is busy (a local write, or a change the probe saw in a table that is not background).
+    idle_poll_s: float = 12.0
+    busy_poll_s: float = 1.0
+    busy_window_s: float = 30.0
+    # A local write through queued ingestion becomes visible minutes after it is acknowledged.
+    queued_window_s: float = 300.0
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
-            if name == "probe_memory_bytes" and value is None:
+            if name == "probe_memory_bytes" and value is None or type(value) is bool:
                 continue
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.max_idle_s < self.min_poll_s:
             raise ValueError("max_idle_s must be at least min_poll_s")
+        if self.idle_poll_s < self.busy_poll_s:
+            raise ValueError("idle_poll_s must be at least busy_poll_s")
 
     @classmethod
     def from_env(cls) -> ReaderConfig:
@@ -101,6 +121,8 @@ class ReaderBatch:
     reason: str | None = None
     sequence: int = 0
     details: dict[str, Any] = field(default_factory=dict)
+    # Changes only to tables written on a timer (BACKGROUND_TABLES): nothing a session flow shows.
+    background: bool = False
 
 
 @dataclass(frozen=True)
@@ -308,6 +330,10 @@ class SharedKustoReader:
         self._dedup: OrderedDict[tuple[str, str], tuple[str, int]] = OrderedDict()
         self._dedup_bytes = 0
         self._idle_delay = self.config.min_poll_s
+        # Table mode: when the next probe and reconciliation are due, and until when the store is busy.
+        self._tick_next = 0.0
+        self._busy_until = 0.0
+        self._counts: dict[str, tuple[Any, ...]] = {}
         self._lock = threading.RLock()
         self._poll_lock = threading.Lock()
         self._subscriptions: set[ReaderSubscription] = set()
@@ -333,7 +359,9 @@ class SharedKustoReader:
                 else [],
                 "policy_check_pending": len(self._policies),
                 "policy_checked_at": dict(self._policy_checked_at),
-                "row_payload": "identity_and_scope_only",
+                "row_payload": "identity_and_scope_only" if self.config.row_hints else "none",
+                "mode": "row_hints" if self.config.row_hints else "tables",
+                "busy": time.monotonic() < self._busy_until,
                 "streaming_cursor_lag": "Cursor assignment may follow queryable streaming data by up to 60 seconds.",
                 "preview_is_checkpoint": False,
                 "cursor_guarantees": "Direct ingestion with ingestiontime enabled at original ingestion only.",
@@ -409,8 +437,29 @@ class SharedKustoReader:
                 active = bool(self._subscriptions)
             if active:
                 self.poll_once()
-            self._wake.wait(self._idle_delay if active else self.config.max_idle_s)
+            self._wake.wait(self._next_wait() if active else self.config.max_idle_s)
             self._wake.clear()
+
+    def _next_wait(self) -> float:
+        """Seconds until the next query is due. Row-hint mode polls on its own backoff."""
+        if self.config.row_hints or not self._ready or self._stale or self._cursor_retries:
+            return self._idle_delay
+        due = min(self._tick_next, self._reconcile_next, self._schema_next, self._policy_next)
+        return min(self.config.idle_poll_s, max(0.0, due - time.monotonic()))
+
+    def local_write(self, table: str) -> None:
+        """This process stored rows in *table*: poll at the busy pace until they are visible.
+
+        It does not publish anything or move a frontier; only a successful query does that.
+        """
+        if table in BACKGROUND_TABLES:
+            return
+        queued = self.settings.ingestion_mode(table) == "queued"
+        window = self.config.queued_window_s if queued else self.config.busy_window_s
+        with self._lock:
+            self._busy_until = max(self._busy_until, time.monotonic() + window)
+            self._tick_next = 0.0
+        self._wake.set()
 
     def close(self) -> None:
         with self._lock:
@@ -441,6 +490,7 @@ class SharedKustoReader:
                 changed_tables=tables,
                 reason=reason if reason is not None else status.reason,
                 sequence=self._sequence,
+                background=kind == "changes" and bool(tables) and set(tables) <= BACKGROUND_TABLES,
             )
             subscriptions = tuple(self._subscriptions)
             if self._emitted is not None:
@@ -648,13 +698,14 @@ class SharedKustoReader:
             for name in names:
                 if self._cursor_retries.pop(name, None) is not None:
                     recovered = True
-                if changed[name] and self._available[name].versioned:
+                if changed[name] and self._available[name].versioned and self.config.row_hints:
                     self._ranges.append(_Scan(name, "cursor", self._frontier[name], upper))
                 else:
                     self._frontier[name] = upper
                     if changed[name]:
                         raw_changed.append(name)
         if raw_changed:
+            self._saw_changes(raw_changed)
             self._publish("changes", tables=tuple(raw_changed))
         elif recovered or not all(changed.values()):
             self._publish("status")
@@ -935,6 +986,177 @@ class SharedKustoReader:
                 return True
         return False
 
+    # Table mode: one query per poll, and two rare ones (reconciliation, schema and policies).
+
+    def _saw_changes(self, tables: Iterable[str]) -> None:
+        if any(name not in BACKGROUND_TABLES for name in tables):
+            with self._lock:
+                self._busy_until = max(self._busy_until, time.monotonic() + self.config.busy_window_s)
+
+    def _streaming(self, name: str) -> bool:
+        try:
+            return self.settings.ingestion_mode(name) == "streaming"
+        except Exception:  # noqa: BLE001 - settings without per-table modes have no streaming tables
+            return False
+
+    def _tick_step(self) -> bool:
+        if time.monotonic() < self._tick_next:
+            return False
+        names = sorted(self._cursor_tables - self._cursor_retries.keys())
+        try:
+            self._probe_all(names)
+        except _QueryMemoryError:
+            # Too large for one query: capture the cursor alone and probe in groups this time.
+            upper, anchor = self._read_cursor()
+            with self._lock:
+                self._last_cursor, self._server_now = upper, anchor
+            for start in range(0, len(names), self.config.tables_per_probe):
+                self._detect(names[start:start + self.config.tables_per_probe], upper)
+        busy = time.monotonic() < self._busy_until
+        self._tick_next = time.monotonic() + (self.config.busy_poll_s if busy else self.config.idle_poll_s)
+        return True
+
+    def _probe_all(self, names: list[str]) -> None:
+        """Capture the cursor, probe every cursor table up to it and stamp the streaming tables' recent rows."""
+        node = node_predicate(self.settings.node_id)
+        arms = ["aictl_live_cursor=aictl_upper", "aictl_live_now=tostring(now())"]
+        for index, name in enumerate(names):
+            arms.append(
+                f"aictl_hit_{index}=isnotnull(toscalar({quote(name)} | where cursor_after({_text(self._frontier[name])})"
+                f" and cursor_before_or_at(aictl_upper) | where {node} | project hit=1 | take 1))"
+            )
+        previews = [name for name in names if self._streaming(name)]
+        for index, name in enumerate(previews):
+            # Streaming rows are queryable before their cursor is assigned (up to a minute later).
+            arms.append(
+                f"aictl_preview_{index}=toscalar({quote(name)} | where {node}"
+                f" | where isnull(ingestion_time()) or ingestion_time() >= ago({self.config.preview_lookback_s}s)"
+                " | summarize tostring(pack_array(count(), countif(isnull(ingestion_time())),"
+                " tostring(max(ingestion_time())))))"
+            )
+        rows = self._execute(
+            "let aictl_upper=cursor_current();\nprint " + ",\n".join(arms),
+            memory_bytes=self.config.probe_memory_bytes, operation="probe",
+        )
+        expected = {"aictl_live_cursor", "aictl_live_now", *(f"aictl_hit_{i}" for i in range(len(names))),
+                    *(f"aictl_preview_{i}" for i in range(len(previews)))}
+        if len(rows) != 1 or rows[0].keys() != expected or rows[0].get("aictl_live_cursor") is None:
+            raise ReaderQueryError("Incomplete or unexpected cursor probe result")
+        row = rows[0]
+        hits = [row[f"aictl_hit_{i}"] for i in range(len(names))]
+        if not all(isinstance(hit, bool) for hit in hits):
+            raise ReaderQueryError("Incomplete or unexpected cursor probe result")
+        stamps = {}
+        for index, name in enumerate(previews):
+            try:
+                stamp = json.loads(row[f"aictl_preview_{index}"])
+                stamps[name] = (int(stamp[0]), int(stamp[1]), str(stamp[2] or ""))
+            except (TypeError, ValueError, IndexError, KeyError) as exc:
+                raise ReaderQueryError("Invalid streaming preview stamp") from exc
+        upper = str(row["aictl_live_cursor"])
+        if not upper and any(self._frontier.values()):
+            raise ReaderQueryError("The database cursor was reset")
+        anchor = datetime.fromisoformat(str(row["aictl_live_now"]).replace("Z", "+00:00")).isoformat()
+        changed = [name for name, hit in zip(names, hits, strict=True) if hit]
+        with self._lock:
+            self._last_cursor, self._server_now = upper, anchor
+            for name in names:
+                self._frontier[name] = upper
+            for name, stamp in stamps.items():
+                previous = self._preview_stamps.get(name)
+                self._preview_stamps[name] = stamp
+                # New rows raise the count, the count without a cursor or the latest ingestion time;
+                # rows that only age out of the window lower the count and are not a change.
+                grew = stamp[0] > 0 if previous is None else (
+                    stamp[0] > previous[0] or stamp[1] > previous[1] or stamp[2] > previous[2])
+                if grew and name not in changed:
+                    changed.append(name)
+        if changed:
+            self._saw_changes(changed)
+            self._publish("changes", tables=tuple(sorted(changed)))
+
+    def _reconcile_all_step(self) -> bool:
+        """Physical deletion (retention, purges, dropped extents) and policy-less tables change no
+        cursor: count each table's rows (for a cursor table, those its frontier already covers)."""
+        assert self._available is not None
+        if time.monotonic() < self._reconcile_next:
+            return False
+        names = sorted(name for name in self._available if name not in self._cursor_retries)
+        node = node_predicate(self.settings.node_id)
+        arms = []
+        for index, name in enumerate(names):
+            covered = (f" | where cursor_before_or_at({_text(self._frontier[name])})"
+                       if name in self._cursor_tables else "")
+            arms.append(
+                f"aictl_count_{index}=toscalar({quote(name)} | where {node}{covered}"
+                " | summarize tostring(pack_array(count(), tostring(max(ingestion_time())))))"
+            )
+        if arms:
+            rows = self._execute("print " + ",\n".join(arms), operation="reconcile")
+            if len(rows) != 1 or rows[0].keys() != {f"aictl_count_{i}" for i in range(len(names))}:
+                raise ReaderQueryError("Missing reconciliation result")
+            changed = []
+            with self._lock:
+                for index, name in enumerate(names):
+                    try:
+                        value = json.loads(rows[0][f"aictl_count_{index}"])
+                        stamp = (int(value[0]), str(value[1] or ""))
+                    except (TypeError, ValueError, IndexError) as exc:
+                        raise ReaderQueryError("Invalid reconciliation result") from exc
+                    previous = self._counts.get(name)
+                    self._counts[name] = stamp
+                    # A cursor table's covered rows only change when rows are removed; a table
+                    # without cursors changes in any way.
+                    if previous is not None and previous != stamp:
+                        changed.append(name)
+                    self._last_reconcile_at[name] = time.time()
+            if changed:
+                self._publish("resync", tables=tuple(changed), reason="reconcile")
+        self._reconcile_next = time.monotonic() + self.config.reconcile_interval_s
+        return True
+
+    def _policy_all(self) -> None:
+        """Every table's ingestion-time policy in one read-only command."""
+        rows = self._execute(".show table * policy ingestiontime", management=True)
+        by_table: dict[str, Any] = {}
+        for row in rows:
+            entity = str(row.get("EntityName", ""))
+            by_table[entity.rpartition("].[")[2].rstrip("]")] = row.get("Policy")
+        names = list(self.table_names)
+        flipped = []
+        with self._lock:
+            for name in names:
+                policies = [by_table.get(table) for table in self._physical.get(name, (name,))]
+                parsed = [json.loads(p) if isinstance(p, str) else p for p in policies]
+                enabled = all(isinstance(p, dict) and p.get("IsEnabled") is True for p in parsed)
+                previous = self._policy_checked.get(name)
+                if enabled:
+                    self._cursor_tables.add(name)
+                    self._frontier.setdefault(name, self._last_cursor)
+                else:
+                    self._frontier.pop(name, None)
+                    self._cursor_retries.pop(name, None)
+                    self._cursor_tables.discard(name)
+                self._policy_checked[name] = enabled
+                self._policy_checked_at[name] = time.time()
+                if previous is not None and previous != enabled:
+                    flipped.append(name)
+            self._policies.clear()
+            self._policy_next = time.monotonic() + self.config.policy_refresh_s
+        for name in flipped:
+            self._counts.pop(name, None)
+            self._publish("resync", tables=(name,), reason="policy_changed")
+
+    def _table_refresh_step(self) -> bool:
+        now = time.monotonic()
+        if now >= self._schema_next:
+            self._discover()
+            return True
+        if now >= self._policy_next:
+            self._policy_all()
+            return True
+        return False
+
     def _reset(self) -> None:
         with self._lock:
             self._ready = self._seeded = False
@@ -953,6 +1175,8 @@ class SharedKustoReader:
             self._dedup_bytes = 0
             self._capture_next = self._preview_next = self._reconcile_next = 0.0
             self._schema_next = self._policy_next = 0.0
+            self._tick_next = 0.0
+            self._counts.clear()
         self._publish("resync", tables=self._requested, reason="reader_recovery")
 
     def poll_once(self) -> tuple[ReaderBatch, ...]:
@@ -970,13 +1194,22 @@ class SharedKustoReader:
                     elif not self._seeded:
                         self._seed()
                     elif self._policies:
-                        self._policy()
+                        if self.config.row_hints:
+                            self._policy()
+                        else:
+                            self._policy_all()
                     else:
                         if not self._ready:
                             with self._lock:
                                 self._ready = True
                                 self._reason = None
                             self._publish("status")
+                        if not self.config.row_hints:
+                            table_steps = (self._retry_cursor_step, self._tick_step, self._reconcile_all_step,
+                                           self._table_refresh_step)
+                            if not any(step() for step in table_steps):
+                                break
+                            continue
                         steps = (
                             self._cursor_step,
                             self._preview_step,
@@ -1035,6 +1268,18 @@ def _destination(settings: KustoSettings) -> tuple[str, str, str, str]:
     parts = urlsplit(engine_url(settings.cluster).rstrip("/"))
     cluster = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "", ""))
     return cluster, settings.database.casefold(), settings.auth_mode, settings.node_id
+
+
+def local_write(settings: KustoSettings, table: str) -> None:
+    """Wake the process's reader for this destination, if one runs, after rows were stored in *table*."""
+    try:
+        key = _destination(settings)
+    except Exception:  # noqa: BLE001 - a destination without an engine URL has no reader
+        return
+    with _readers_lock:
+        reader = _readers.get(key)
+    if reader is not None and not reader._closed:
+        reader.local_write(table)
 
 
 def shared_reader(

@@ -64,6 +64,25 @@ callback exposes `get(timeout)` for deterministic embedding and tests. Productio
 uses the worker thread; it must not call `poll_once()` on the runtime collector
 or an HTTP request thread.
 
+## Table mode (the default) and row-hint mode
+
+The dashboard rebuilds from its views and reads no row hints, so the reader runs in
+table mode unless `ReaderConfig(row_hints=True)`. Table mode publishes changed
+tables only, and sends one query per poll: it captures `cursor_current()`, probes
+every cursor table up to it and stamps the recent rows of streaming tables
+(count, count without a cursor, latest ingestion time) in a single `print`. A
+poll runs every `idle_poll_s` (12 s) while nothing but `BACKGROUND_TABLES`
+(metrics and other rows written on a timer) changes, and every `busy_poll_s`
+(1 s) for `busy_window_s` after the probe saw another table change, or after this
+process stored rows (`local_write`, called by the table ingester; queued
+ingestion keeps the busy pace for `queued_window_s`). Policies are read with one
+`.show table * policy ingestiontime`; reconciliation is one query that counts
+each table's rows a cursor frontier already covers, every
+`reconcile_interval_s`, and resyncs a table whose count changed. A batch whose
+changed tables are all background tables carries `background=True`; session
+flows are not read again for it. Row-hint mode keeps the key and winner pages
+described below.
+
 ## Bootstrap and incremental reads
 
 1. A new subscription immediately receives pending status.

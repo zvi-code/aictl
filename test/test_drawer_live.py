@@ -72,3 +72,29 @@ def test_open_agent_projects_once_and_removes_state_when_last_view_closes(monkey
         subscription.close()
         dashboard.close()
     assert hub.values("history.agent") == ()
+
+
+def test_changes_to_timer_written_tables_alone_do_not_read_a_flow_again():
+    """The flow of a session reads its records again only when a table it can show changed."""
+    from types import SimpleNamespace
+
+    hub = LiveHub()
+    dashboard = LiveDashboard(hub, None, None, health_provider=lambda: {}, compute=lambda *_args, **_kw: {})
+
+    def batch(kind, tables, background):
+        return SimpleNamespace(kind=kind, changed_tables=tables, background=background, frontier={}, ready=True,
+                               stale=False, reason=None, details={})
+
+    try:
+        flow, detail = ("flow", "a"), ("detail", "a")
+        before = dashboard._watch_generation(flow), dashboard._watch_generation(detail)
+        dashboard._on_batch(batch("changes", ("metrics",), True))
+        assert dashboard._watch_generation(flow) == before[0]
+        assert dashboard._watch_generation(detail) == before[1] + 1  # the detail view shows resource samples
+        dashboard._on_batch(batch("changes", ("metrics", "requests"), False))
+        assert dashboard._watch_generation(flow) == before[0] + 1
+        dashboard._on_batch(batch("resync", ("metrics",), False))
+        assert dashboard._watch_generation(flow) == before[0] + 2
+    finally:
+        dashboard.close()
+        hub.close()

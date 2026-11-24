@@ -233,6 +233,7 @@ def make_reader(sdk=None, **limits):
             "queries_per_poll": 1,
             "page_size": 2,
             "reconcile_partitions": 1,
+            "row_hints": True,
             **limits,
         }
     )
@@ -279,7 +280,7 @@ def test_idle_cursor_poll_skips_all_tables_and_active_probes_share_one_fixed_upp
         SETTINGS,
         client=sdk,
         tables={"sessions": TABLE, **{name: Table((), key=(), ingestion="inline") for name in sdk.empty_tables}},
-        config=ReaderConfig(queries_per_poll=1),
+        config=ReaderConfig(row_hints=True, queries_per_poll=1),
     )
     initialize(reader)
     sdk.queries.clear()
@@ -329,7 +330,7 @@ def test_failed_probe_retries_its_exact_range_without_advancing_or_reprobing_com
         client=sdk,
         tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("OTELLogs", "sessions"),
-        config=ReaderConfig(queries_per_poll=1, tables_per_probe=1),
+        config=ReaderConfig(row_hints=True, queries_per_poll=1, tables_per_probe=1),
     )
     initialize(reader)
     sdk.add("pending", "v1")
@@ -382,7 +383,7 @@ def test_memory_failure_splits_batch_backs_off_one_table_and_lets_others_pass_wa
         client=sdk,
         tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("OTELLogs", "sessions"),
-        config=ReaderConfig(queries_per_poll=1, min_poll_s=2, max_error_s=4, failures_before_resync=1),
+        config=ReaderConfig(row_hints=True, queries_per_poll=1, min_poll_s=2, max_error_s=4, failures_before_resync=1),
     )
     initialize(reader)
     sdk.add_raw()
@@ -601,7 +602,7 @@ def test_raw_otel_visibility_is_table_invalidation_not_invented_event_identity()
         client=sdk,
         tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("sessions", "OTELLogs"),
-        config=ReaderConfig(queries_per_poll=1, reconcile_partitions=1),
+        config=ReaderConfig(row_hints=True, queries_per_poll=1, reconcile_partitions=1),
     )
     initialize(reader)
     pending = sdk.add_raw(assigned=False, ingestion=None)
@@ -650,7 +651,7 @@ def test_shared_metadata_refresh_discovers_new_tables_and_explicitly_removes_dro
         client=sdk,
         tables={"sessions": TABLE, "OTELLogs": RAW},
         table_names=("sessions", "OTELLogs"),
-        config=ReaderConfig(queries_per_poll=1, reconcile_partitions=1),
+        config=ReaderConfig(row_hints=True, queries_per_poll=1, reconcile_partitions=1),
     )
     initialize(reader)
     assert reader.capabilities()["missing_tables"] == ["OTELLogs"]
@@ -823,7 +824,7 @@ def test_registry_normalizes_ingestion_endpoint_and_uses_one_idempotent_worker()
     ingest_settings = KustoSettings(
         "https://ingest-shared-reader.invalid", "SHARED-TEST", auth="none", ingestion="queued"
     )
-    config = ReaderConfig(min_poll_s=0.01, max_idle_s=0.1, queries_per_poll=1)
+    config = ReaderConfig(row_hints=True, min_poll_s=0.01, max_idle_s=0.1, queries_per_poll=1)
     reader = shared_reader(settings, table_names=("sessions",), config=config)
     sdk = FakeSDK()
     reader._client = sdk
@@ -920,7 +921,8 @@ def test_query_properties_bound_work_and_disable_stale_result_caching():
 def test_memory_override_is_applied_only_to_probes(monkeypatch):
     monkeypatch.setenv("AICTL_KUSTO_LIVE_PROBE_MEMORY_MIB", "256")
     sdk = FakeSDK()
-    reader = SharedKustoReader(SETTINGS, client=sdk, tables={"sessions": TABLE})
+    reader = SharedKustoReader(SETTINGS, client=sdk, tables={"sessions": TABLE},
+                               config=replace(ReaderConfig.from_env(), row_hints=True))
     initialize(reader)
     sdk.add("seen", "v2")
     detect(reader)

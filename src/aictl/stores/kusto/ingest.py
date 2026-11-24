@@ -429,9 +429,18 @@ class TableIngester:
 
     def ingest(self, table: str, rows: list[dict[str, Any]]) -> None:
         self.ingesters[self.settings.ingestion_mode(table)].ingest(self.physical(table), rows)
+        _wake_live_feed(self.settings, table)
 
     def ingest_lines(self, table: str, lines: list[str]) -> None:
         self.ingesters[self.settings.ingestion_mode(table)].ingest_lines(self.physical(table), lines)
+        _wake_live_feed(self.settings, table)
+
+
+def _wake_live_feed(settings: KustoSettings, table: str) -> None:
+    """Tell this process's change feed that rows were stored, so it polls at the busy pace."""
+    from .live_reader import local_write
+
+    local_write(settings, table)
 
     def wait_for_pending(self, table: str | None = None) -> None:
         queued = self.ingesters.get("queued")

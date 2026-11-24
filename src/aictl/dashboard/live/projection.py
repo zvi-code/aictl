@@ -224,6 +224,8 @@ class LiveDashboard:
         self._reader_stale = False
         self._reader_reason: str | None = "on_demand"
         self._generation = 0
+        # Changes to more than the tables written on a timer: the only ones a session flow can show.
+        self._activity_generation = 0
         self._reset_generation = 0
         self._baseline_allowed = False
         self._clients = 0
@@ -345,6 +347,8 @@ class LiveDashboard:
                 self._reset_generation += 1
             if batch.kind in {"bootstrap", "changes", "resync"}:
                 self._generation += 1
+                if not getattr(batch, "background", False):
+                    self._activity_generation += 1
                 for entry in self._scopes.values():
                     entry.dirty = True
                     if consumer_gap:
@@ -397,14 +401,13 @@ class LiveDashboard:
                     blocked = retains_unresolved_facts(self.db)
                     if not blocked and not self._baseline_allowed:
                         continue
-                    generation = self._generation
                     now = time.monotonic()
                     busy = len(self._agent_running)
                     candidates = [
                         watch for watch in self._agent_refs
                         if watch not in self._agent_running and (
                             (last := self._agent_refresh.get(watch)) is None
-                            or (last[0] != generation and now >= last[1])
+                            or (last[0] != self._watch_generation(watch) and now >= last[1])
                             or (self._poll_history and now >= last[1] + 4)
                         )
                     ]
@@ -418,9 +421,14 @@ class LiveDashboard:
                         busy += 1
                         launched.append(watch)
                 for watch in launched:
-                    pool.submit(self._refresh_agent, watch, generation, blocked)
+                    pool.submit(self._refresh_agent, watch, self._watch_generation(watch), blocked)
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
+
+    def _watch_generation(self, watch: tuple[str, str]) -> int:
+        """A flow or transcript shows no table written on a timer: a change to those alone does not
+        read it again. The detail view shows the session's resource samples too."""
+        return self._activity_generation if watch[0] in ("flow", "transcript") else self._generation
 
     def _refresh_agent(self, watch: tuple[str, str], generation: int, blocked: bool) -> None:
         started = time.monotonic()
