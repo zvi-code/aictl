@@ -41,7 +41,7 @@ const TOOLS: Record<string, [Record<string, unknown>, Record<string, unknown>]> 
   context: [{ tool: BIG, requests: 5000, reported: 5000 }, { tool: SMALL, requests: 9, reported: 9 }],
   orientation: [{ tool: BIG, sessions: 5484 }, { tool: SMALL, sessions: 2 }],
   fixed: [{ tool: BIG, sessions: 5484, p50_tokens: 12_000, kinds }, { tool: SMALL, sessions: 2, p50_tokens: 99_000, kinds }],
-  problems: [{ tool: BIG, sessions: 5484, reports: true, signals: signals(5484, 0.1) }, { tool: SMALL, sessions: 2, reports: true, signals: signals(2, 0.5) }],
+  problems: [{ tool: BIG, sessions: 5484, reports: true, flagged: 549, signals: signals(5484, 0.1) }, { tool: SMALL, sessions: 2, reports: true, signals: signals(2, 0.5) }],
   autonomy: [{ tool: BIG, sessions: 5484, reported: true }, { tool: SMALL, sessions: 2, reported: true }],
   verified: [{ tool: BIG, commits: 506 }, { tool: SMALL, commits: 2 }],
   models: [{ tool: BIG, requests: 50_000, sessions: 5484, models: [model(BIG, 'big-a', 4000, 0.1), model(BIG, 'big-b', 1400, 0.05),
@@ -79,7 +79,7 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
       listed: null } })
     expect(fixedFinding(fixed, label)).toContain(`${BIG} sessions carry a median 12 k tokens`)
     expect(fixedHero(fixed)?.label).toContain(BIG)
-    expect(problemFinding(shown<ProblemBody>('problems', { pairs: [], summary: { sessions: 5486, flagged: 549, flagged_share: 0.1, multi: 0,
+    expect(problemFinding(shown<ProblemBody>('problems', { pairs: [], projects: [], summary: { sessions: 5486, flagged: 549, flagged_share: 0.1, multi: 0,
       flagged_cost_usd: 1 } }), label)).toContain(`in ${BIG}`)
     expect(pauseFinding(shown<PauseBody>('pause', { summary: { tools: [BIG, SMALL], requests: 1000, cost_usd: 100, baseline_usd: 50 } }), label))
       .not.toContain(SMALL)
@@ -96,6 +96,7 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
     const body = {
       card: 'problems', view: 'insights.problem_sessions', range: { since: 0, until: 10 }, data_range: { first_ts: 1, last_ts: 2 }, computed_at: 3,
       query: { view: 'insights.problem_sessions', kql: 'x', kusto_url: null }, tools: TOOLS.problems, signals: [], pairs: [], projects: [],
+      other_projects: { sessions: 549, cost_usd: 1, signals: {} },
       summary: { sessions: 5486, flagged: 549, flagged_share: 0.1, multi: 0, flagged_cost_usd: 1, not_reporting: [] }, sessions: [],
     }
     const ctx = {
@@ -107,8 +108,7 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
     const { host, dispose } = mount(() => <ProblemSessions ctx={ctx} boxes={boxes} since={0} until={10} />)
     flush()
     const box = host.querySelector('[data-box="insight-problems"]')!
-    const heads = [...box.querySelectorAll('[role="table"] [data-head] [role="columnheader"]')].map(th => th.textContent)
-    expect(heads).toEqual(['Signal', `${BIG}5,484 sessions`])
+    expect(box.querySelector('[data-by-tool]')!.textContent).toBe(`By tool: ${BIG} 549 of 5,484 sessions (10%).`)
     expect(box.querySelector('[data-hero]')!.textContent).not.toContain(SMALL)
     expect(box.querySelector('[data-finding]')!.textContent).not.toContain(SMALL)
     expect(box.querySelector('[data-few]')!.textContent).toBe(`${SMALL}: 2 sessions, too few to compare.`)

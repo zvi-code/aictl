@@ -1,7 +1,9 @@
 import { For, Show, untrack } from 'solid-js'
-import { fmtNum } from '../../design/format'
+import { fmtNum, projectName } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { pauseHero, BUCKET_LABELS, money, pauseFinding, scaled, share, toolLabel, type Label, type PauseBody } from './insightsModel'
+import {
+  pauseHero, BUCKET_LABELS, money, pauseFinding, pauseProjects, plural, scaled, share, toolLabel, type Label, type PauseBody,
+} from './insightsModel'
 import styles from './Insights.module.css'
 
 const W = 300, H = 172, TOP = 34, BOTTOM = 36, SIDE = 6
@@ -37,6 +39,37 @@ function ToolChart(props: { tool: PauseBody['tools'][number]; index: number; lab
   </figure>
 }
 
+/** The extra cost of long pauses per project: the five that cost the most, the rest summed. */
+function ProjectBars(props: { body: PauseBody }) {
+  const split = () => pauseProjects(props.body)
+  const largest = () => Math.max(split().rest, ...split().top.map(row => row.extra))
+  const width = (value: number) => largest() > 0 ? `${(value / largest() * 100).toFixed(2)}%` : '0%'
+  return <Show when={split().top.length}>
+    <ol class={styles.bars} aria-label="Extra cost of pauses over 5 minutes per project" data-pause-projects>
+      <For each={split().top}>{row => <li class={styles.barRow}>
+        <span class={styles.barName} title={row.project}>{projectName(row.project)}<small>{plural(row.sessions, 'session')} · {plural(row.requests, 'request')}</small></span>
+        <span class={styles.barTrack}>
+          <span class={styles.split} role="img" aria-label={`${projectName(row.project)}: ${money(row.extra)} more after long pauses`}>
+            <span class={styles.s0} style={{ 'inline-size': width(row.extra) }} />
+          </span>
+          <span class={styles.splitText}>{money(row.extra)} more than without the pause</span>
+        </span>
+      </li>}</For>
+      <Show when={split().rest}>
+        <li class={styles.barRow} data-rest>
+          <span class={styles.barName}>Other projects<small>summed</small></span>
+          <span class={styles.barTrack}>
+            <span class={styles.split} role="img" aria-label={`Other projects: ${money(split().rest)} more after long pauses`}>
+              <span class={styles.unreported} style={{ 'inline-size': width(split().rest) }} />
+            </span>
+            <span class={styles.splitText}>{money(split().rest)} more than without the pause</span>
+          </span>
+        </li>
+      </Show>
+    </ol>
+  </Show>
+}
+
 type Row = Record<string, unknown>
 
 export default function PauseTax(props: CardProps) {
@@ -45,13 +78,18 @@ export default function PauseTax(props: CardProps) {
   return <InsightCard<PauseBody> {...props} card="pause" title="Pause tax" tab="flow"
     hero={pauseHero}
     finding={body => pauseFinding(body, label)}
-    visual={body => <div class={styles.flows}>
-      <For each={body.tools}>{(tool, i) => <ToolChart tool={tool} index={i()} label={label} />}</For>
-    </div>}
+    visual={body => <>
+      <ProjectBars body={body} />
+      <div class={styles.flows}>
+        <For each={body.tools}>{(tool, i) => <ToolChart tool={tool} index={i()} label={label} />}</For>
+      </div>
+    </>}
     note={'Pause: from the end of the previous request of the same session and agent to the start of this one. ' +
       'Only requests in the period count, so a session that started before it loses its first pause. Average cost per ' +
       'priced request; cost is list price, not a bill. "Cache not reported": the source writes no cache tokens, so its ' +
-      'costs cannot show a lapsed cache and it is left out of the finding.'}
+      'costs cannot show a lapsed cache and it is left out of the finding. Per project: the cost of its requests after a ' +
+      'pause of over 5 minutes less the same number at its tool\'s under-1-minute average; the five projects that cost the ' +
+      'most extra are drawn, every other project and the requests with no project are summed.'}
     table={{
       label: 'Pause tax by tool and pause',
       rows: body => body.tools.flatMap(tool => tool.buckets.map((cell): Row => ({

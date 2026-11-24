@@ -568,7 +568,14 @@ def test_problem_sessions_flag_each_signal_per_session_and_tool(kusto_store):
     assert [(row["signals"], row["sessions"]) for row in body["pairs"]] == [
         (["api_error", "compaction"], 1), (["api_error", "failure_streak"], 1), (["compaction", "failure_streak"], 1),
         (["failed_delegation", "hook_failure"], 1), (["failed_delegation", "open_todos"], 1), (["hook_failure", "open_todos"], 1)]
-    assert [(row["project"], row["sessions"], row["all_sessions"]) for row in body["projects"]] == [("beta", 2, 3), ("alpha", 1, 2)]
+    # Projects rank by the cost of their flagged sessions (the stake), each with its sessions per signal.
+    assert [(row["project"], row["sessions"], row["all_sessions"]) for row in body["projects"]] == [("alpha", 1, 2), ("beta", 2, 3)]
+    assert body["projects"][0]["signals"] == {"compaction": 1, "failure_streak": 1, "failed_delegation": 0, "api_error": 1,
+                                              "open_todos": 0, "hook_failure": 0}
+    assert body["projects"][1]["signals"] == {"compaction": 0, "failure_streak": 0, "failed_delegation": 2, "api_error": 0,
+                                              "open_todos": 1, "hook_failure": 1}
+    # Every flagged session is in a named project here, so the rest sums to nothing.
+    assert body["other_projects"]["sessions"] == 0 and set(body["other_projects"]["signals"].values()) == {0}
     assert body["summary"] == {"cost_usd": 7.5, "sessions": 6, "flagged": 3, "flagged_share": 0.5, "multi": 2,
                                "flagged_cost_usd": 2.5, "not_reporting": ["codex-cli"]}
     # The costliest session of the period, flagged or not.

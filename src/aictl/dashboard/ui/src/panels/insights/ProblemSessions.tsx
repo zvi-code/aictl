@@ -1,45 +1,74 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
+import { EVIDENCE } from './evidence'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  money, NOT_REPORTED, plural, problemFinding, problemHero, share, SIGNAL_LABELS, SIGNALS, toolLabel,
-  type Label, type ProblemBody, type SignalCell,
+  money, plural, problemFinding, problemHero, share, SIGNAL_LABELS, SIGNALS, toolLabel,
+  type Label, type ProblemBody, type Signal,
 } from './insightsModel'
 import styles from './Insights.module.css'
 
-/** The tint of a cell: the share of the tool's sessions it flags, as a mix of the danger colour into the surface. */
-const tint = (cell: SignalCell) => `color-mix(in srgb, var(--color-danger) ${Math.round(Math.min(1, cell.share ?? 0) * 50)}%, var(--color-surface))`
+/** The tint of a cell: the share of the project's sessions it flags, as a mix of the danger colour into the surface. */
+const tint = (share: number) => `color-mix(in srgb, var(--color-danger) ${Math.round(Math.min(1, share) * 50)}%, var(--color-surface))`
 
-/** Signals down, tools across: the sessions each signal flags, tinted by their share; a signal a tool cannot show is drawn as such. */
+/** A column of the grid: one project, or every other flagged session summed (no share, so no tint). */
+type Column = { id: string; name: string; title: string; sessions: number; all: number | null; cost: number | null; cells: Partial<Record<Signal, number>> }
+
+/** The projects the grid draws: those with the card's minimum of sessions; smaller ones are summed into the rest. */
+function columns(body: ProblemBody): { shown: Column[]; few: ProblemBody['projects'] } {
+  const least = EVIDENCE.problems.minimum
+  const shown = body.projects.filter(row => row.all_sessions >= least && row.signals)
+  const few = body.projects.filter(row => !shown.includes(row))
+  const other = body.other_projects
+  const rest: Column | null = other ? {
+    id: 'other', name: 'Other projects', title: 'Every other flagged session, and sessions with no project, summed',
+    sessions: other.sessions + few.reduce((sum, row) => sum + row.sessions, 0),
+    all: null, cost: other.cost_usd == null ? null : other.cost_usd + few.reduce((sum, row) => sum + (row.cost_usd ?? 0), 0),
+    cells: Object.fromEntries(SIGNALS.map(signal => [signal, (other.signals[signal] ?? 0) +
+      few.reduce((sum, row) => sum + (row.signals?.[signal] ?? 0), 0)])),
+  } : null
+  return {
+    shown: [...shown.map((row): Column => ({ id: row.project, name: projectName(row.project), title: row.project, sessions: row.sessions,
+      all: row.all_sessions, cost: row.cost_usd, cells: row.signals ?? {} })), ...(rest && rest.sessions > 0 ? [rest] : [])],
+    few,
+  }
+}
+
+/** Signals down, the projects whose flagged sessions cost the most across: the sessions each signal flags in each. */
 function SignalGrid(props: { body: ProblemBody; label: Label }) {
+  const split = () => columns(props.body)
   const tools = () => props.body.tools.filter(tool => tool.reports)
   return <>
     <div class={styles.gridScroll}>
-      {/* A chart laid out as a grid, not a data table: the data table below the card holds the same figures. */}
-      <div class={styles.signalGrid} role="table" aria-label="Sessions flagged per signal and tool"
-        style={{ 'grid-template-columns': `minmax(8rem, auto) repeat(${tools().length}, minmax(5.5rem, 1fr))` }}>
+      {/* A chart laid out as a grid, not a data table: the data table below the card holds the figures by tool. */}
+      <div class={styles.signalGrid} role="table" aria-label="Sessions flagged per signal and project"
+        style={{ 'grid-template-columns': `minmax(8rem, auto) repeat(${split().shown.length}, minmax(5.5rem, 1fr))` }}>
         <div role="row" class={styles.gridRow} data-head>
           <span role="columnheader" class={styles.gridHead}>Signal</span>
-          <For each={tools()}>{tool => <span role="columnheader" class={styles.gridHead}>{props.label(tool.tool)}
-            <small>{plural(tool.sessions, 'session')}</small></span>}</For>
+          <For each={split().shown}>{column => <span role="columnheader" class={styles.gridHead} title={column.title} data-column={column.id}>
+            {column.name}<small>{column.all == null ? `${plural(column.sessions, 'session')} flagged`
+              : `${fmtNum(column.sessions)} of ${plural(column.all, 'session')}`} · {money(column.cost)}</small></span>}</For>
         </div>
-        <For each={SIGNALS}>{(signal, i) => <div role="row" class={styles.gridRow} data-signal={signal}>
+        <For each={SIGNALS}>{signal => <div role="row" class={styles.gridRow} data-signal={signal}>
           <span role="rowheader" class={styles.gridHead}>{SIGNAL_LABELS[signal]}</span>
-          <For each={tools()}>{tool => {
-            const cell = () => tool.signals[i()]
-            return <Show when={cell().reported} fallback={<span role="cell" class={`${styles.gridCell} ${styles.unreportedCell}`}
-              data-cell="not-reported" title={`${props.label(tool.tool)} does not record ${SIGNAL_LABELS[signal].toLowerCase()}`}>
-              {NOT_REPORTED}</span>}>
-              <span role="cell" class={styles.gridCell} data-cell={cell().sessions} style={{ background: tint(cell()) }}
-                title={`${props.label(tool.tool)}: ${plural(cell().sessions ?? 0, 'session')}, ${share(cell().share)} of its sessions, ` +
-                  `${money(cell().cost_usd)} at list price`}>
-                <strong>{fmtNum(cell().sessions)}</strong><small>{share(cell().share)}</small>
-              </span>
-            </Show>
+          <For each={split().shown}>{column => {
+            const sessions = () => column.cells[signal] ?? 0
+            const part = () => column.all ? sessions() / column.all : null
+            return <span role="cell" class={styles.gridCell} data-cell={sessions()}
+              style={part() == null ? undefined : { background: tint(part()!) }}
+              title={`${column.name}: ${plural(sessions(), 'session')}` + (part() == null ? '' : `, ${share(part())} of its sessions`)}>
+              <strong>{fmtNum(sessions())}</strong><small>{part() == null ? '' : share(part())}</small>
+            </span>
           }}</For>
         </div>}</For>
       </div>
     </div>
+    <Show when={split().few.length}>
+      <p class={styles.note} data-few-projects>Summed into other projects, too few sessions to compare: {split().few.map(row =>
+        `${projectName(row.project)} (${plural(row.all_sessions, 'session')})`).join(', ')}.</p>
+    </Show>
+    <p class={styles.note} data-by-tool>By tool: {tools().map(tool => `${props.label(tool.tool)} ${fmtNum(tool.flagged)} of ` +
+      `${plural(tool.sessions, 'session')} (${share(tool.sessions ? (tool.flagged ?? 0) / tool.sessions : null)})`).join(' · ')}.</p>
     <Show when={props.body.summary.not_reporting.length}>
       <p class={styles.note}>No signal is recorded by {props.body.summary.not_reporting.map(props.label).join(', ')}; left out.</p>
     </Show>
@@ -51,17 +80,6 @@ function SignalGrid(props: { body: ProblemBody; label: Label }) {
             <For each={props.body.pairs}>{pair => <li>
               <span>{SIGNAL_LABELS[pair.signals[0]]} + {SIGNAL_LABELS[pair.signals[1]].toLowerCase()}</span>
               <span>{plural(pair.sessions, 'session')} · {money(pair.cost_usd)}</span>
-            </li>}</For>
-          </ol>
-        </Show>
-      </section>
-      <section>
-        <h3 class={styles.subhead}>Projects with the most flagged sessions</h3>
-        <Show when={props.body.projects.length} fallback={<p class={styles.note}>No flagged session has a project.</p>}>
-          <ol class={styles.rankList} data-projects>
-            <For each={props.body.projects}>{row => <li>
-              <span>{projectName(row.project)} <small>{row.tools.map(props.label).join(', ')}</small></span>
-              <span>{fmtNum(row.sessions)} of {plural(row.all_sessions, 'session')} · {money(row.cost_usd)}</span>
             </li>}</For>
           </ol>
         </Show>
@@ -87,7 +105,9 @@ export default function ProblemSessions(props: CardProps) {
       'cannot show a signal is not reported for it and left out of its share: only Claude Code records turns (API errors); ' +
       'Copilot VS Code records no compactions or hooks; Claude Code\'s recent sessions keep no todo count. The sessions of a ' +
       'tool are those with a request or a tool call in the period; cost is the list price of their requests in the period, ' +
-      'not a bill. A project is the last folder of the session\'s project path.'}
+      'not a bill. A project is the last folder of the session\'s project path. The grid shows the five projects whose ' +
+      'flagged sessions cost the most, each cell tinted by the share of the project\'s sessions it flags; every other flagged ' +
+      'session, and those with no project, is summed in one column. The data table below has the figures by tool.'}
     table={{
       label: 'Problem signals by tool',
       rows: body => body.tools.filter(tool => tool.reports).flatMap(tool => tool.signals.map((cell): Row => ({

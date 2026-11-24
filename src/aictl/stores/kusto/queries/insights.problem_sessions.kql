@@ -123,6 +123,14 @@ let per_session = materialize(active
     | lookup kind=leftouter (signal_rows | summarize signals=count(), names=make_set(signal) by node_id, session_id)
         on node_id, session_id
     | extend signals=coalesce(signals, 0));
+// The five projects whose flagged sessions cost the most (the card's stake), then the most flagged sessions.
+let projects = materialize(per_session
+    | where isnotempty(project_name)
+    | summarize all_sessions=count(), sessions=countif(signals > 0), tools=make_set(tool), priced=sumif(priced, signals > 0),
+                sum_cost=sumif(sum_cost, signals > 0) by project_name
+    | where sessions > 0
+    | order by sum_cost desc, sessions desc, project_name asc
+    | take 5);
 union
     (coverage
         | join kind=leftouter (signal_rows | summarize sessions=count(), priced=sum(priced), sum_cost=sum(sum_cost) by tool, signal)
@@ -142,14 +150,13 @@ union
         | order by sessions desc, signal asc, other asc
         | take 10
         | extend row_type='pair'),
-    (per_session
-        | where isnotempty(project_name)
-        | summarize all_sessions=count(), sessions=countif(signals > 0), tools=make_set(tool), priced=sumif(priced, signals > 0),
-                    sum_cost=sumif(sum_cost, signals > 0) by project_name
-        | where sessions > 0
-        | order by sessions desc, project_name asc
-        | take 10
+    (projects
         | extend row_type='project'),
+    (per_session
+        | where signals > 0 and project_name in ((projects | project project_name))
+        | mv-expand signal=names to typeof(string)
+        | summarize sessions=count(), priced=sum(priced), sum_cost=sum(sum_cost) by project_name, signal
+        | extend row_type='project_signal'),
     (per_session
         | where signals > 0
         | order by signals desc, sum_cost desc, node_id asc, session_id asc

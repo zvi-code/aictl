@@ -25,9 +25,10 @@ export type Base<C extends CardId> = {
 /** What every card's answer carries, for a card whose own types live in its own model file. */
 export type InsightBase<C extends CardId> = Base<C>
 export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
+export type PauseProject = { project: string | null; tool: string; requests: number; sessions: number; cost_usd: Num; extra_usd: Num }
 export type PauseBody = Base<'pause'> & {
-  tools: { tool: string; cache_reported: boolean; buckets: PauseCell[] }[]
-  summary: { tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[]; unpriced_requests?: number }
+  tools: { tool: string; cache_reported: boolean; buckets: PauseCell[] }[]; projects?: PauseProject[]
+  summary: { sessions?: number; tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[]; unpriced_requests?: number }
 }
 export type CarryName = { tool: string; tool_name: string; calls: number; output_bytes: number; carried_bytes: number; avg_later_requests: Num }
 export type CarryBody = Base<'carry'> & {
@@ -120,10 +121,14 @@ export type ProblemTool = {
   tool: string; sessions: number; reports: boolean; flagged: Num; multi: Num; flagged_cost_usd: Num; cost_usd: Num; signals: SignalCell[]
 }
 export type ProblemPair = { signals: [Signal, Signal]; sessions: number; cost_usd: Num }
-export type ProblemProject = { project: string; sessions: number; all_sessions: number; tools: string[]; cost_usd: Num }
+export type ProblemProject = {
+  project: string; sessions: number; all_sessions: number; tools: string[]; cost_usd: Num; signals?: Record<Signal, number>
+}
+/** Every flagged session outside the card's top projects (other projects and sessions with no project), summed. */
+export type ProblemOther = { sessions: number; cost_usd: Num; signals: Partial<Record<Signal, number>> }
 export type ProblemBody = Base<'problems'> & {
   tools: ProblemTool[]; signals: { signal: Signal; tools: string[]; sessions: Num; share: Num }[]
-  pairs: ProblemPair[]; projects: ProblemProject[]
+  pairs: ProblemPair[]; projects: ProblemProject[]; other_projects?: ProblemOther
   summary: { sessions: number; flagged: number; flagged_share: Num; multi: number; flagged_cost_usd: Num; not_reporting: string[] }
 }
 export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | RereadBody | TimeBody | ContextBody | OrientationBody | FixedBody
@@ -189,6 +194,20 @@ export function pauseFinding(body: PauseBody, label: Label) {
   const sentence = `${fmtNum(s.requests)} ${list(named.map(label))} requests followed a pause of over 5 minutes and cost ` +
     `${money(s.cost_usd)} at list price; the same number at each tool's under-1-minute average would cost ${money(s.baseline_usd)}.`
   return s.requests ? sentence + leftOut(s.unpriced_requests) : `No ${list(named.map(label))} request followed a pause of over 5 minutes in this period.`
+}
+
+/** The card's primary split: the projects whose long pauses cost the most extra, five at most, every other one summed. */
+export function pauseProjects(body: PauseBody, shown = 5) {
+  const named = new Map<string, { project: string; sessions: number; requests: number; extra: number }>()
+  for (const row of body.projects ?? []) {
+    if (!row.project || row.extra_usd == null || !body.tools.some(tool => tool.tool === row.tool)) continue
+    const found = named.get(row.project) ?? { project: row.project, sessions: 0, requests: 0, extra: 0 }
+    named.set(row.project, { ...found, sessions: found.sessions + row.sessions, requests: found.requests + row.requests,
+      extra: found.extra + row.extra_usd })
+  }
+  const top = [...named.values()].filter(row => row.extra > 0).sort((a, b) => b.extra - a.extra).slice(0, shown)
+  const rest = (body.summary.extra_usd ?? 0) - top.reduce((sum, row) => sum + row.extra, 0)
+  return { top, rest: rest > 0.005 ? rest : 0 }
 }
 
 export function carryFinding(body: CarryBody, label: Label) {
@@ -339,7 +358,12 @@ export function problemFinding(body: ProblemBody, label: Label) {
       `(${plural(pair.sessions, 'session')})` : '') + '.'
   const most = top ? ` The most frequent is ${SIGNAL_LABELS[top.cell.signal].toLowerCase()} in ${label(top.tool.tool)}: ` +
     `${plural(top.cell.sessions ?? 0, 'session')}, ${share(top.cell.share)} of its sessions.` : ''
-  return flagged + most
+  // Where the stake sits: the project whose flagged sessions cost the most.
+  const project = body.projects[0]
+  const where = project && project.cost_usd != null ? ` The costliest are in ${projectName(project.project)}: ` +
+    `${plural(project.sessions, 'flagged session')} costing ${money(project.cost_usd)}` +
+    (s.flagged_cost_usd ? ` (${share(project.cost_usd / s.flagged_cost_usd)} of the flagged cost).` : '.') : ''
+  return flagged + where + most
 }
 
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */

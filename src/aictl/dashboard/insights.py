@@ -568,10 +568,14 @@ def problem_sessions(rows: list[dict]) -> dict:
     pairs = sorted(({"signals": [row.get("signal"), row.get("other")], "sessions": _int(row.get("sessions")),
                      "cost_usd": _priced(row)} for row in _of(rows, "pair")),
                    key=lambda row: (-row["sessions"], row["signals"]))
+    # The card's primary split: the five projects whose flagged sessions cost the most, each with its sessions per signal.
+    cells = {(row.get("project_name"), row.get("signal")): row for row in _of(rows, "project_signal")}
     projects = sorted(({"project": row.get("project_name"), "sessions": _int(row.get("sessions")),
                         "all_sessions": _int(row.get("all_sessions")),
-                        "tools": sorted(str(tool) for tool in (row.get("tools") or []) if tool), "cost_usd": _priced(row)}
-                       for row in _of(rows, "project")), key=lambda row: (-row["sessions"], str(row["project"])))
+                        "tools": sorted(str(tool) for tool in (row.get("tools") or []) if tool), "cost_usd": _priced(row),
+                        "signals": {signal: _int(cells.get((row.get("project_name"), signal), {}).get("sessions"))
+                                    for signal in SIGNALS}}
+                       for row in _of(rows, "project")), key=lambda row: (-_n(row["cost_usd"]), -row["sessions"], str(row["project"])))
     sessions = []
     for row in _sessions(rows, ("signals", "names", "project_name", "priced", "cost_usd")):
         priced = _int(row.pop("priced"))
@@ -582,12 +586,17 @@ def problem_sessions(rows: list[dict]) -> dict:
     of = sum(tool["sessions"] for tool in counted)
     costs = [tool["flagged_cost_usd"] for tool in counted if tool["flagged_cost_usd"] is not None]
     every = [tool["cost_usd"] for tool in tools if tool["cost_usd"] is not None]
+    # Every other flagged session (other projects and sessions with no project), summed.
+    other = {"sessions": flagged - sum(row["sessions"] for row in projects),
+             "cost_usd": sum(costs) - sum(_n(row["cost_usd"]) for row in projects) if costs else None,
+             "signals": {total["signal"]: _int(total["sessions"]) - sum(row["signals"][total["signal"]] for row in projects)
+                         for total in totals if total["sessions"] is not None}}
     top = next(iter(_of(rows, "top_session")), None)
     top_session = {"session_id": top.get("session_id"), "node_id": top.get("node_id"), "tool": top.get("tool"),
                    "project": top.get("project_name") or None, "signals": _int(top.get("signals")),
                    "cost_usd": _cost(top.get("cost_usd"))} if top and top.get("session_id") and _int(top.get("priced")) else None
     return {
-        "tools": tools, "signals": totals, "pairs": pairs, "projects": projects, "top_session": top_session,
+        "tools": tools, "signals": totals, "pairs": pairs, "projects": projects, "other_projects": other, "top_session": top_session,
         "summary": {
             # The list-price cost of every session with a request or a tool call in the period: the period's total.
             "cost_usd": sum(every) if every else None,
