@@ -17,11 +17,9 @@ def test_session_evidence_search_is_scoped_paged_and_capture_aware(kusto_store):
         ("z", 100, "other", "message", "pytest not in scope", {}),
     ):
         db.insert("session_steps", step_key=key, ts=ts, session_id=sid, kind=kind,
-                  text_status="captured" if text else "not_reported", **fields)
-        if text:
-            db.insert("session_step_text", step_key=key, ts=ts, session_id=sid, text=text)
-    db.insert("session_step_text", step_key="c", ts=102, session_id="mine", node_id="another-node",
-              text="pytest not on this node")
+                  text_status="captured" if text else "not_reported", text=text or None, **fields)
+    db.insert("session_steps", step_key="c", ts=102, session_id="mine", node_id="another-node", kind="context",
+              text_status="captured", text="pytest not on this node")
     p = {"session_id": ["mine"], "q": ["pytest"], "limit": ["1"]}
     first = session_evidence(db, p)
     assert first["rows"][0]["turn_id"] == "turn" and first["has_more"]

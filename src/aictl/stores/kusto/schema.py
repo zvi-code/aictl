@@ -50,6 +50,11 @@ LEGACY_OWNED = frozenset({"aictl_information_schema"})
 RETIRED_TABLES = COMPANIONS | frozenset({
     "tool_invocation_coverage", "tool_invocation_sizes", "files_text", "projects", "tool_invocations_observations_text",
     "agents_observations_text",
+    # Merged into the table of their figures (one data point, one row): session_steps.text,
+    # events.full_detail, hook_calls.command/output/full_payload, memory_snapshots.content.
+    "session_step_text", "events_text", "hook_calls_text", "memory_snapshots_text",
+    # Read by a view, written by nothing.
+    "file_history_text", "processes",
 })
 NODE_TABLES = "node_tables"  # the registry step of the database-wide copy that made the node tables (layout 3)
 _TYPES = {
@@ -120,7 +125,7 @@ LEGACY_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
                 if column not in dict(TABLES[name].columns))
     for name in ("tool_invocations", "files", "file_history", "file_blobs", "metrics",
                  "system_snapshots", "process_snapshots", "tool_stats", "requests", "sessions", "agents", "events",
-                 "session_usage", "session_processes", "session_steps", "session_step_text", "turn_request_links",
+                 "session_usage", "session_processes", "session_steps", "turn_request_links",
                  "session_prompts", "skill_uses", "session_loaded_files", "session_context_items",
                  "context_events", "file_write_events", "hook_calls", "datapoint_catalog", "data_quality_status",
                  "copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_artifacts",

@@ -169,12 +169,12 @@ def test_a_reply_and_a_task_summary_are_kept_only_while_text_is_kept():
     ]
     kept = read(events)
     reply = [r for r in current(kept, "session_steps") if r["role"] == "assistant" and r["kind"] == "message"]
-    texts = {r["step_key"]: r["text"] for r in current(kept, "session_step_text")}
-    assert [texts[r["step_key"]] for r in reply] == ["The exporter sends to the local collector."]
+    assert [r["text"] for r in reply] == ["The exporter sends to the local collector."]
     assert [r["text"] for r in current(kept, "session_digests") if r["kind"] == "task_summary"] == [
         "Checked the exporter settings."]
     withheld = read(events, keep_text=False)
-    assert current(withheld, "session_step_text") == [] and current(withheld, "session_digests") == []
+    assert all(r["text"] is None for r in current(withheld, "session_steps"))
+    assert current(withheld, "session_digests") == []
     assert {r["text_status"] for r in current(withheld, "session_steps") if r["role"] == "assistant"} == {"withheld"}
 
 

@@ -34,7 +34,9 @@ let session_prompts_crossed = session_prompts_current_rows | summarize copies=co
 let session_prompts_secs = union (session_prompts_current_rows | where dedup_key !in (session_prompts_crossed)),
         (session_prompts_current_rows | where dedup_key in (session_prompts_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
     | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let session_step_text_secs = session_step_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// A step's text is a column of its own row (null while text is not kept).
+let session_step_text_secs = session_steps | where isnotnull(['text'])
+    | project step_key, session_id, ts = (ts - datetime(1970-01-01)) / 1s, ['text'], ['project'], node_id, _v;
 let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
 let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
 // tool_invocations_current holds the current row of each key per hour of its time (event_hour); only the keys with

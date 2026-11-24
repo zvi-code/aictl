@@ -48,14 +48,13 @@ AUTO_STREAMING_TABLES = frozenset(
      "OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"}
 )
 
-AUTO_STREAMING_STATE_TABLES = frozenset({"session_steps", "session_step_text", "turn_request_links"})
+AUTO_STREAMING_STATE_TABLES = frozenset({"session_steps", "turn_request_links"})
 
 # These tables hold state, unique-key upserts, or bootstrap data used immediately.
 AUTO_INLINE_TABLES = frozenset(
     {
         "schema_version",
         "tools",
-        "processes",
         "sessions",
         "session_processes",
         "session_commits",

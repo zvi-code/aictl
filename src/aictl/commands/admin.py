@@ -42,7 +42,12 @@ def _admin_settings(ctx):
 @click.option("--older-than-days", type=click.FloatRange(min=0), default=0, help="Only text older than this")
 @click.pass_context
 def trim_text(ctx, dry_run, older_than_days):
-    """Soft-delete text for this node. Keep metadata in separate tables."""
+    """Soft-delete this node's old text in its text tables.
+
+    Text that is a column of its row (a step's, event's, hook call's or memory snapshot's) is not
+    deleted: text older than the trim is no longer written, the session views hide step text older
+    than it, and stored text goes with its row's retention.
+    """
     from ..stores.kusto.maintenance import trim_text as trim
 
     settings = _admin_settings(ctx)

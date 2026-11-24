@@ -21,7 +21,7 @@ def test_steps_keep_replay_keys_and_apply_the_capture_floor():
     assert (row["turn_id"], row["context_tokens"], row["context_limit"], row["text_status"]) == (
         "turn", 0, None, "truncated",
     )
-    text, = current(writer, "session_step_text")  # a preview; the full text is in text_payloads
+    text = row  # the step's own row holds a preview; the full text is in text_payloads
     assert "preview of" in text["text"] and len(text["text"]) < STEP_TEXT_LIMIT
     assert "secretvalue" not in text["text"] and "\npytest" in text["text"]
     full = "".join(r["text"] for r in sorted(written(writer, "text_payloads"), key=lambda r: r["chunk_no"]))
@@ -29,16 +29,16 @@ def test_steps_keep_replay_keys_and_apply_the_capture_floor():
     writer.operations.clear()
     floor = ts + 1
     facts.write(CallFacts(steps=[SessionStepRow("event:1", ts, "s", "message", text="old")]))
-    assert not written(writer, "session_step_text")
     assert current(writer, "session_steps")[0]["text_status"] == "expired"
+    assert current(writer, "session_steps")[0]["text"] is None
 
 
 def test_metadata_capture_never_hands_off_session_step_text():
     writer = MemoryWriter()
     facts = SessionFacts(writer)
     facts.write(CallFacts(steps=[SessionStepRow("key", time.time(), "s", "agent_prompt", text="private")]))
-    assert current(writer, "session_steps")[0]["text_status"] == "withheld"
-    assert not written(writer, "session_step_text")
+    row, = current(writer, "session_steps")
+    assert row["text_status"] == "withheld" and row["text"] is None
 
 
 def test_cost_link_replay_reuses_the_request_key():

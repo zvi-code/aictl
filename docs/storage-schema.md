@@ -30,7 +30,7 @@ session files again. The migrations that layouts 1 to 3 named were removed with 
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 | 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran under, with the reported fields in detail; sessions written before have none. |
 | 6 | yes | | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: such a node is reset. |
-| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. `agents_text` and `session_turns` get a tombstone column `_deleted`. New columns: `requests.api_call_id`, `session_steps.prompt_id`, `turn_request_links.prompt_id`, `session_prompts.prompt_id`, `skill_uses.tool_call_id` and `prompt_id`, `session_commits.basis`, `source_event_id`, `agent_id` and `prompt_id`, `sessions.merged_into` (set on tombstones only); the `request_id` column of `tool_invocations` (`long`, always 0) is dropped. A column cannot change its type in place: a node of layout 6 or older is reset. The tables that nothing wrote or read back are removed: `tool_invocation_coverage`, `tool_invocation_sizes`, `files_text`, `projects`, and the `*_observations` and `*_observations_text` tables of an older aictl; a reset drops their node tables and stored functions, and nothing creates them again. |
+| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. `agents_text` and `session_turns` get a tombstone column `_deleted`. New columns: `requests.api_call_id`, `session_steps.prompt_id`, `turn_request_links.prompt_id`, `session_prompts.prompt_id`, `skill_uses.tool_call_id` and `prompt_id`, `session_commits.basis`, `source_event_id`, `agent_id` and `prompt_id`, `sessions.merged_into` (set on tombstones only); the `request_id` column of `tool_invocations` (`long`, always 0) is dropped. A column cannot change its type in place: a node of layout 6 or older is reset. The tables that nothing wrote or read back are removed: `tool_invocation_coverage`, `tool_invocation_sizes`, `files_text`, `projects`, and the `*_observations` and `*_observations_text` tables of an older aictl, `file_history_text` and `processes`; a reset drops their node tables and stored functions, and nothing creates them again. One data point is one row: `session_step_text`, `events_text`, `hook_calls_text` and `memory_snapshots_text` are gone; their text is `session_steps.text`, `events.full_detail`, `hook_calls.command`, `output` and `full_payload`, and `memory_snapshots.content`, null while text is not kept. |
 
 ### The `schema_version` registry
 
@@ -277,20 +277,21 @@ changes one. The defaults:
 
 | class | default | tables |
 |---|---|---|
-| `history` | 365d | `agents`, `agents_text`, `context_events`, `context_lists`, `file_write_events`, `otel_trace_sessions`, `requests`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_files`, `session_folders`, `session_loaded_files`, `session_outcomes`, `session_processes`, `session_sources`, `session_step_text`, `session_steps`, `session_turns`, `session_usage`, `sessions`, `skill_uses`, `tool_invocations`, `tool_invocations_text`, `turn_request_links` |
+| `history` | 365d | `agents`, `agents_text`, `context_events`, `context_lists`, `file_write_events`, `otel_trace_sessions`, `requests`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_files`, `session_folders`, `session_loaded_files`, `session_outcomes`, `session_processes`, `session_sources`, `session_steps`, `session_turns`, `session_usage`, `sessions`, `skill_uses`, `tool_invocations`, `tool_invocations_text`, `turn_request_links` |
 | `prompt` | 365d | `session_prompts` |
 | `thinking` | 365d | `session_thinking` |
 | `message` | 365d | `copilot_session_messages`, `cursor_session_messages`, `vscode_chat_messages` |
 | `text` | 365d | `session_digests` |
 | `file_text` | 365d | `file_blobs` |
 | `otel` | 365d | `OTELLogs`, `OTELMetrics`, `OTELPayloads`, `OTELTraces` |
-| `metrics` | 365d | `data_quality_status`, `datapoint_catalog`, `environment_vars`, `events`, `events_text`, `file_history`, `file_history_text`, `files`, `hook_calls`, `hook_calls_text`, `maintenance_state`, `memory_snapshots`, `memory_snapshots_text`, `metrics`, `path_defs`, `process_defs`, `process_snapshots`, `processes`, `schema_version`, `system_snapshots`, `tool_config`, `tool_stats`, `tools` |
+| `metrics` | 365d | `data_quality_status`, `datapoint_catalog`, `environment_vars`, `events`, `file_history`, `files`, `hook_calls`, `maintenance_state`, `memory_snapshots`, `metrics`, `path_defs`, `process_defs`, `process_snapshots`, `schema_version`, `system_snapshots`, `tool_config`, `tool_stats`, `tools` |
 | `large_payload` | 24h | `text_payloads` |
 
 A table is in a class by name in `tables.py`. The text table of a data point
-(`tool_invocations_text`, `agents_text`, `session_step_text`, `events_text`, `hook_calls_text`,
-`memory_snapshots_text`, `file_history_text`) has the class of its figures table, so text and
-figures are kept equally long. Otherwise a table that holds text is in `text`, a table of what
+(`tool_invocations_text`, `agents_text`) has the class of its figures table, so text and
+figures are kept equally long. The text of a step, an event, a hook call or a memory snapshot is
+a column of its own row (`session_steps.text`, `events.full_detail`, `hook_calls.command`,
+`output` and `full_payload`, `memory_snapshots.content`), null while text is not kept. Otherwise a table that holds text is in `text`, a table of what
 sessions did is in `history`, and the rest is in `metrics`. The class `tool_content` of an
 older aictl is gone: a config file that still sets it gets one warning and the line is ignored.
 
@@ -335,10 +336,8 @@ These rules are what the writers enforce (`session_facts.py`, `tool_calls.py`,
 - A transcript tool call replaces the hook and OTel rows of the same session up to its own
   time; those rows are deleted.
 - Text tables join their metadata table by key: `tool_invocations_text.dedup_key`,
-  `agents_text` by `session_id` and `agent_id`, `session_step_text.step_key`,
-  `events_text.source_key`, `hook_calls_text.call_id`, `memory_snapshots_text` by
-  `session_id`, `phase` and `path`. `text_payloads` joins by `source_table`, `source_key`
-  and `field`.
+  `agents_text` by `session_id` and `agent_id`. `text_payloads` joins by `source_table`,
+  `source_key` and `field`.
 - A `session_context_items` row whose `name` is `list:` followed by 32 hex digits is a
   pointer: it stands for the items of the `context_lists` rows of the same `node_id` whose
   `list_id` is the rest of the name. Each of those items takes the pointer's `session_id`,
@@ -389,8 +388,6 @@ type on both sides, and that every link column of a table is listed here or belo
 | `session_steps` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `session_steps` | `round_id` | `requests.api_call_id` | N:1 |
 | `session_steps` | `request_id` | `requests.request_id` | N:1 |
-| `session_step_text` | `step_key` | `session_steps.step_key` | 1:1 |
-| `session_step_text` | `session_id` | `sessions.session_id` | N:1 |
 | `turn_request_links` | `request_key` | `requests.dedup_key` | 1:1 |
 | `turn_request_links` | `session_id` | `sessions.session_id` | N:1 |
 | `turn_request_links` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
@@ -439,18 +436,14 @@ type on both sides, and that every link column of a table is listed here or belo
 | `hook_calls` | `session_id` | `sessions.session_id` | N:1 |
 | `hook_calls` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `hook_calls` | `session_id`, `tool_use_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
-| `hook_calls_text` | `call_id` | `hook_calls.call_id` | 1:1 |
 | `events` | `session_id` | `sessions.session_id` | N:1 |
-| `events_text` | `source_key` | `events.source_key` | 1:1 |
 | `metrics` | `session_id` | `sessions.session_id` | N:1 |
 | `file_history` | `session_id` | `sessions.session_id` | N:1 |
 | `file_history` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `file_history` | `session_id`, `source_event_id` | `context_events.session_id`, `context_events.message_id` | N:1 |
 | `file_history` | `blob_hash` | `file_blobs.hash` | N:1 |
-| `file_history_text` | `path`, `ts` | `file_history.path`, `file_history.ts` | 1:1 |
 | `files` | `blob_hash` | `file_blobs.hash` | N:1 |
 | `memory_snapshots` | `session_id` | `sessions.session_id` | N:1 |
-| `memory_snapshots_text` | `session_id`, `phase`, `path`, `sha` | `memory_snapshots.session_id`, `memory_snapshots.phase`, `memory_snapshots.path`, `memory_snapshots.sha` | 1:1 |
 | `otel_trace_sessions` | `session_id` | `sessions.session_id` | N:1 |
 | `OTELLogs` | `SessionId` | `sessions.session_id` | N:1 |
 | `OTELLogs` | `SessionId`, `AgentId` | `agents.session_id`, `agents.agent_id` | N:1 |
@@ -482,7 +475,7 @@ Columns named like a link that refer to no stored row, and why:
 | `turn_request_links` | `turn_id` | the same counter as `session_steps.turn_id` |
 | `turn_request_links` | `root_turn_id` | the same counter, of the root session |
 | `OTELPayloads` | `SourceRowKey` | the `RowKey` of the row in `SourceTable`, which names the table |
-| `session_processes` | `pid` | an operating-system pid: `processes` is not written by current code, and a pid is reused, so a process is found only with a time condition |
+| `session_processes` | `pid` | an operating-system pid: no table holds processes, and a pid is reused, so a process is found only with a time condition |
 | `process_snapshots` | `pid` | not a process: a number made from the tool name, one sample series per tool; join on `tool` and time |
 
 The tables under "Observation tables of an older aictl" are not in these lists: no current
@@ -1194,36 +1187,13 @@ The memory files of a session's project at a phase of the session.
 | `phase` | string | The phase of the session the snapshot was taken at |
 | `path` | string | Path of the memory file |
 | `sha` | string | SHA-256 of the content |
-| `content` | string | Not set here (null): the content is in `memory_snapshots_text` |
+| `content` | string | The file content; null while text is not kept |
 | `ts` | datetime | Time of the snapshot, UTC |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### memory_snapshots_text
-
-The content of the memory files of `memory_snapshots`. Text.
-
-- Key: `project`, `node_id`, `session_id`, `phase`, `path`, `sha`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `metrics` (default 365d)
-- Written by: `session_evidence.py` (`memory`), only while text is kept
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | The session |
-| `phase` | string | The phase |
-| `path` | string | Path of the memory file |
-| `sha` | string | SHA-256 of the content |
-| `content` | string | The file content |
-| `ts` | datetime | Time of the snapshot, UTC |
-| `project` | string | Part of the key. The root of the session's repository |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
 ## Tables: Model calls and tool calls
 
@@ -1566,7 +1536,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `role` | string | `user` or `assistant` on a message step |
 | `name` | string | A label: tool, skill, command or agent name; only names that look like identifiers |
 | `phase` | string | Phase of the step, for example `requested`, `started`, `failed`, `applied`, `loaded` |
-| `text_status` | string | "" when the text is in `session_step_text`; `omitted`, `truncated` (only a preview is kept), `expired` or `withheld` (text not kept) |
+| `text_status` | string | "" when the text is in `text`; `omitted`, `truncated` (only a preview is kept), `expired` or `withheld` (text not kept) |
 | `context_tokens` | long | Context tokens reported with the step |
 | `context_limit` | long | Context limit reported with the step |
 | `before_tokens` | long | Tokens before a compaction or truncation |
@@ -1579,29 +1549,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `conversation_tokens` | long | Conversation part of the context |
 | `tool_tokens` | long | Tool part of the context |
 | `prompt_id` | string | The person's turn the step belongs to (Copilot `interactionId`); joins `session_turns.prompt_id` |
-| `project` | string | Part of the key. The step's `project_path` |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
-| `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### session_step_text
-
-The text of session steps. Text.
-
-- Key: `project`, `node_id`, `step_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: `session_facts.py` (`write`), only while text is kept and newer than the `message` period
-
-| column | type | meaning |
-|---|---|---|
-| `step_key` | string | Joins `session_steps.step_key` |
-| `session_id` | string | The session |
-| `ts` | datetime | Time of the step, UTC |
-| `text` | string | The step's text, redacted, at most 32768 characters; a value over `large_payload_bytes` is a preview, see `text_payloads` |
+| `text` | string | The step's text, redacted, at most 32768 characters; a value over `large_payload_bytes` is a preview, see `text_payloads`; null while text is not kept or older than the `history` period |
 | `project` | string | Part of the key. The step's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1617,7 +1565,7 @@ The full text of large text values, in chunks. The row in the value's own table 
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `large_payload` (default 24h)
-- Written by: `session_facts.py` (`spill`), for values over `[storage] large_payload_bytes` (default 32768) in `agents_text`, `events_text`, `session_digests` and `session_step_text`
+- Written by: `session_facts.py` (`spill`), for values over `[storage] large_payload_bytes` (default 32768) in `agents_text`, `events.full_detail`, `session_digests` and `session_steps.text`
 
 | column | type | meaning |
 |---|---|---|
@@ -1720,7 +1668,7 @@ Messages of Cursor conversations. Text.
 
 ### events
 
-The event log: monitor events, hook events and OTel events, without their text.
+The event log: monitor events, hook events and OTel events, with their text in `full_detail` while text is kept.
 
 - Key: `project`, `node_id`, `source_key`
 - Version column: `_v`
@@ -1738,6 +1686,7 @@ The event log: monitor events, hook events and OTel events, without their text.
 | `pid` | long | Process id, when known |
 | `project_path` | string | `project_path`, `cwd` or `project` of the detail |
 | `detail` | dynamic | JSON detail with text removed: text keys become `<key>_chars` lengths, strings over 256 characters too |
+| `full_detail` | dynamic | The JSON detail with its text, when it has text and text is kept; a value over `large_payload_bytes` is a preview, see `text_payloads`; otherwise null |
 | `source_key` | string | Key of the event |
 | `seq` | long | A number from the hash of `source_key` |
 | `project` | string | Part of the key. `project_path` of the event |
@@ -1745,26 +1694,6 @@ The event log: monitor events, hook events and OTel events, without their text.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### events_text
-
-The full detail of events whose detail had text. Text.
-
-- Key: `project`, `node_id`, `source_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `metrics` (default 365d)
-- Written by: `session_facts.py` (`events`), only while text is kept
-
-| column | type | meaning |
-|---|---|---|
-| `source_key` | string | Joins `events.source_key` |
-| `detail` | dynamic | JSON detail with its text; a value over `large_payload_bytes` is a preview, see `text_payloads` |
-| `project` | string | Part of the key. As the `events` row |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | datetime | Time of the event, UTC |
 
 <a id="version-38-hook-calls"></a>
 
@@ -1801,7 +1730,10 @@ One row per hook call the aictl hook handler reports.
 | `permission_mode` | string | Permission mode |
 | `payload_bytes` | long | Bytes read from stdin |
 | `truncated` | bool | true when the payload was over 16 MiB |
-| `payload` | string | `{}` when the text is kept (the payload is then in `hook_calls_text`); otherwise the payload as JSON with its text removed |
+| `payload` | string | `{}` when the text is kept (the payload is then in `full_payload`); otherwise the payload as JSON with its text removed |
+| `command` | string | The wrapped command; null while text is not kept |
+| `output` | string | The wrapped command's stdout; null while text is not kept |
+| `full_payload` | string | The tool's payload as JSON; null while text is not kept |
 | `wrapped` | bool | true for a user hook run through `aictl hooks wrap` |
 | `command_hash` | string | First 16 hex digits of the SHA-256 of the wrapped command |
 | `exit_code` | long | Exit code of the wrapped command; null when not wrapped |
@@ -1815,28 +1747,6 @@ One row per hook call the aictl hook handler reports.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### hook_calls_text
-
-The text of hook calls: wrapped command, its output and the payload. Text, kept 24 hours by default.
-
-- Key: `project`, `node_id`, `call_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `metrics` (default 365d)
-- Written by: `session_facts.py` (`hook`), only while text is kept and newer than the `metrics` period
-
-| column | type | meaning |
-|---|---|---|
-| `call_id` | string | Joins `hook_calls.call_id` |
-| `command` | string | The wrapped command |
-| `output` | string | The wrapped command's stdout |
-| `payload` | string | The tool's payload as JSON |
-| `project` | string | Part of the key. As the `hook_calls` row |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | datetime | Time of the call, UTC |
 
 ### metrics
 
@@ -1900,7 +1810,7 @@ Host-wide totals and node settings, sampled by the daemon.
 | `capture_mode` | string | The capture mode: `full`, `metadata` or `off` |
 | `ingestion_mode` | string | The configured Kusto ingestion mode |
 | `retention_days` | long | Retention in days of `system_snapshots` as the code defines it by default |
-| `content_retention_days` | long | Retention in days of `session_step_text` as the code defines it by default |
+| `content_retention_days` | long | Retention in days of `session_steps` (its text included) as the code defines it by default |
 | `settings_captured_at` | datetime | Time the settings columns were captured, UTC |
 | `host_cpu_percent` | real | Average CPU percent over all cores of the host |
 | `host_memory_used_mb` | real | Used memory of the host in MB |
@@ -2104,26 +2014,6 @@ A row each time a tracked file has a new version: the file was first seen, its c
 | `lines_removed` | long | Lines removed since the rewind point (Copilot); null when not reported |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### file_history_text
-
-Defined for the text of file history snapshots. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `path`, `ts`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `queued`
-- Retention class: `metrics` (default 365d)
-- Written by: none in current code
-
-| column | type | meaning |
-|---|---|---|
-| `path` | string | meaning not established: no current aictl code writes this table |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `content` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
 ## Tables: OpenTelemetry
 
@@ -2496,36 +2386,6 @@ Defined for the tools aictl knows. No current aictl code writes it.
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### processes
-
-Defined for AI tool processes. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `source_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `metrics` (default 365d)
-- Written by: none in current code
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `pid` | long | meaning not established: no current aictl code writes this table |
-| `tool` | string | meaning not established: no current aictl code writes this table |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `cwd` | string | meaning not established: no current aictl code writes this table |
-| `cmdline` | string | meaning not established: no current aictl code writes this table |
-| `ppid` | long | meaning not established: no current aictl code writes this table |
-| `started_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `ended_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `exit_code` | long | meaning not established: no current aictl code writes this table |
-| `source` | string | meaning not established: no current aictl code writes this table |
-| `meta` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `source_key` | string | meaning not established: no current aictl code writes this table |
 
 ### tool_config
 

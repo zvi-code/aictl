@@ -53,3 +53,13 @@ def test_a_retired_table_is_owned_so_the_reset_drops_it_and_its_function_goes():
     assert ".drop function ['files_text'] ifexists" in commands
     assert ".drop function ['tool_invocation_coverage'] ifexists" in commands
     assert not any("create" in c and any(f"['{name}']" in c for name in RETIRED_TABLES) for c in commands)
+
+
+def test_a_trim_never_deletes_a_row_that_also_holds_figures():
+    from aictl.stores.kusto.maintenance import TEXT_COLUMNS, TRIM_TIMESTAMPS
+
+    # A trim deletes whole rows of TRIM_TIMESTAMPS tables; a row of one data point only loses its text.
+    assert TEXT_COLUMNS and not TEXT_COLUMNS.keys() & TRIM_TIMESTAMPS.keys()
+    for table, (time_column, text_columns) in TEXT_COLUMNS.items():
+        columns = dict(TABLES[table].columns)
+        assert columns[time_column] == "datetime" and set(text_columns) <= columns.keys(), table

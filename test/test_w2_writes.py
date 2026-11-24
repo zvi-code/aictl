@@ -79,7 +79,7 @@ def test_transcript_lifecycle_replay_without_queries(writer, tmp_path):
     assert tables["session_usage"][-1]["output_tokens"] == 3
     assert tables["requests"][0]["source"] == "transcript"
     assert len({r["rowid"] for r in tables["requests"]}) == 1
-    assert tables["session_step_text"][0]["text"] == "a prompt"
+    assert {r["text"] for r in tables["session_steps"] if r.get("text")} == {"a prompt"}
     assert len({r["step_key"] for r in tables["session_steps"] if r["kind"] == "message"}) == 1
 
 

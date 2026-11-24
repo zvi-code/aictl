@@ -90,7 +90,7 @@ class TestDigestStorage:
     def test_every_spill_key_names_its_session(self):
         facts = Facts()
         for sid in (SESSION, OTHER):
-            facts.spill("events_text", "same-key", "detail", "y" * 40_000, ts=iso_ts(10), session_id=sid)
+            facts.spill("events", "same-key", "full_detail", "y" * 40_000, ts=iso_ts(10), session_id=sid)
         keys = {r["source_key"] for r in table(facts, "text_payloads")}
         assert len(keys) == 2 and all(SESSION in k or OTHER in k for k in keys)
 

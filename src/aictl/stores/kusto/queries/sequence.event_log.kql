@@ -2,7 +2,9 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', since:re
     requested_tool:string='', requested_pid:long=0, requested_kinds:dynamic=dynamic([]), row_limit:long);
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let events_text_secs = events_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// An event's whole detail with its text is a column of its own row (null while text is not kept).
+let events_text_secs = events | where isnotnull(full_detail)
+    | project source_key, detail = full_detail, ['project'], node_id, _v, ts = (ts - datetime(1970-01-01)) / 1s;
 let raw_events = () { events_secs
     | where all_nodes or node_id == requested_node
     | extend event_key=iff(isempty(source_key),strcat(ts,':',tool,':',kind,':',seq),source_key),

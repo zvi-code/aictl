@@ -31,7 +31,6 @@ PROSE = ("invented question one", "invented answer one", "invented question two"
 CONTENT_TABLES = (
     "session_prompts",
     "session_steps",
-    "session_step_text",
     "tool_invocations",
     "tool_invocations_text",
     "context_events",
@@ -185,7 +184,7 @@ class TestDatabaseOnlySessions:
             ("user", "message"),
             ("user", "message"),
         ]
-        texts = {r["text"] for r in from_store(facts, "session_step_text", STORE_SID)}
+        texts = {r["text"] for r in from_store(facts, "session_steps", STORE_SID)}
         assert texts == {"invented question one", "invented answer one", "invented question two"}
         calls = sorted(from_store(facts, "tool_invocations", STORE_SID), key=lambda r: r["ts"])
         assert [(c["tool_name"], c["command_name"], c["exit_code"], c["is_error"], c["turn_index"]) for c in calls] == [
@@ -277,7 +276,7 @@ class TestDatabaseOnlySessions:
         facts = Facts(keeps_text=False)
         ingester(facts, tmp_path).poll()
         assert {p["text"] for p in from_store(facts, "session_prompts", STORE_SID)} == {""}
-        assert from_store(facts, "session_step_text", STORE_SID) == []
+        assert {s["text"] for s in from_store(facts, "session_steps", STORE_SID)} == {None}
         assert {s["text_status"] for s in from_store(facts, "session_steps", STORE_SID)} == {"withheld"}
         calls = from_store(facts, "tool_invocations", STORE_SID)
         assert sorted(c["command_name"] for c in calls) == ["curl", "make", "pytest"]

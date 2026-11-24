@@ -150,8 +150,8 @@ def test_artifact_diff_git_and_memory(history, tmp_path, monkeypatch):
         ("one", False), ("two", False), ("two", True)
     ]
     assert tables["session_commits"][0]["sha"] == "commit"
-    assert tables["memory_snapshots"][0]["content"] is None
-    assert tables["memory_snapshots_text"][0]["content"] == "private"
+    # One snapshot, one row: the content is a column of it.
+    assert tables["memory_snapshots"][0]["content"] == "private"
 
 
 def test_admin_watermark_blocks_queued_text_and_replay(history, tmp_path):
@@ -170,9 +170,10 @@ def test_admin_watermark_blocks_queued_text_and_replay(history, tmp_path):
     send("new", now + 1)
     writer.flush()
     tables = dict(client.ingestions)
-    for table, key in [("events_text", "source_key"), ("hook_calls_text", "call_id"),
-                       ("session_step_text", "step_key")]:
-        assert [row[key] for row in tables[table]] == ["new"]
+    # The rows stay; only the one written after the watermark keeps its text.
+    for table, key, text in [("events", "source_key", "full_detail"), ("hook_calls", "call_id", "command"),
+                             ("session_steps", "step_key", "text")]:
+        assert [row[key] for row in tables[table] if row.get(text) is not None] == ["new"], table
     assert len(tables["events"]) == len(tables["hook_calls"]) == len(tables["session_steps"]) == 3
 
 

@@ -3,7 +3,6 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', requeste
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let file_blobs_secs = file_blobs | extend created_at = (created_at - datetime(1970-01-01)) / 1s;
 let file_history_secs = file_history | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let file_history_text_secs = file_history_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
 // file_write_events_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
 let file_write_events_current_rows = file_write_events_current
@@ -57,20 +56,12 @@ let blobs = file_blobs_secs
     | summarize arg_max(_v, *) by ['project'],node_id,hash
     | where not(column_ifexists('_deleted',false)) and created_at <= until
     | project ['project'],node_id,blob_hash=hash,blob_content=content,found_blob=true;
-let texts = union isfuzzy=true
-    (datatable(['project']:string,node_id:string,path:string,ts:real,_v:datetime,content:string,_deleted:bool)[]),
-    (file_history_text_secs | project ['project'],node_id,path,ts,_v,content,_deleted=column_ifexists('_deleted',false))
-    | where keep_text and not(all_nodes) and node_id == requested_node and path == requested_path and ts <= until
-    | summarize arg_max(_v, *) by ['project'],node_id,path,ts
-    | where not(_deleted)
-    | project ['project'],node_id,path,ts,retained_content=content;
 union
     (edits | join kind=leftouter inputs on node_id,source_event_id
         | project row_type='edit',node_id,ts,session_id,detail=tostring(detail),source_event_id,input,key),
     (revisions | join kind=leftouter blobs on ['project'],node_id,blob_hash
-        | join kind=leftouter texts on ['project'],node_id,path,ts
         | project row_type='revision',node_id,ts,content=iff(coalesce(found_blob,false),blob_content,
-            coalesce(retained_content,column_ifexists('content',''))),found_blob)
+            column_ifexists('content','')),found_blob)
 | order by row_type asc,ts desc,node_id asc,key asc
 | take row_limit
 | project-away key

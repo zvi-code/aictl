@@ -91,28 +91,6 @@ _DEFINED = (
             ("project", "node_id", "tool"),
             "streaming",
         ),
-        "processes": Table(
-            (
-                ("id", "long"),
-                ("pid", "long"),
-                ("tool", "string"),
-                ("project_path", "string"),
-                ("cwd", "string"),
-                ("cmdline", "string"),
-                ("ppid", "long"),
-                ("started_at", "datetime"),
-                ("ended_at", "datetime"),
-                ("exit_code", "long"),
-                ("source", "string"),
-                ("meta", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-                ("source_key", "string"),
-            ),
-            ("project", "node_id", "source_key"),
-            "streaming",
-        ),
         "process_snapshots": Table(
             (
                 ("ts", "datetime"),
@@ -500,18 +478,6 @@ _DEFINED = (
                 ("conversation_tokens", "long"),
                 ("tool_tokens", "long"),
                 ("prompt_id", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "step_key"),
-            "streaming",
-        ),
-        "session_step_text": Table(
-            (
-                ("step_key", "string"),
-                ("session_id", "string"),
-                ("ts", "datetime"),
                 ("text", "string"),
                 ("project", "string"),
                 ("node_id", "string"),
@@ -519,7 +485,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "step_key"),
             "streaming",
-            retention_days=14,
         ),
         # One row per user turn of a Claude Code session (one promptId), its subagents included.
         "session_turns": Table(
@@ -783,19 +748,6 @@ _DEFINED = (
             ("project", "node_id", "path", "ts"),
             "queued",
         ),
-        "file_history_text": Table(
-            (
-                ("path", "string"),
-                ("ts", "datetime"),
-                ("content", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "path", "ts"),
-            "queued",
-            retention_days=14,
-        ),
         "file_write_events": Table(
             (
                 ("id", "long"),
@@ -1037,6 +989,7 @@ _DEFINED = (
                 ("pid", "long"),
                 ("project_path", "string"),
                 ("detail", "dynamic"),
+                ("full_detail", "dynamic"),
                 ("source_key", "string"),
                 ("seq", "long"),
                 ("project", "string"),
@@ -1045,13 +998,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "source_key"),
             "streaming",
-        ),
-        "events_text": Table(
-            (("source_key", "string"), ("detail", "dynamic"), ("project", "string"),
-             ("node_id", "string"), ("_v", "datetime"), ("ts", "datetime")),
-            ("project", "node_id", "source_key"),
-            "streaming",
-            retention_days=14,
         ),
         "hook_calls": Table(
             (
@@ -1076,6 +1022,9 @@ _DEFINED = (
                 ("payload_bytes", "long"),
                 ("truncated", "bool"),
                 ("payload", "string"),
+                ("command", "string"),
+                ("output", "string"),
+                ("full_payload", "string"),
                 ("wrapped", "bool"),
                 ("command_hash", "string"),
                 ("exit_code", "long"),
@@ -1090,21 +1039,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "call_id"),
             "streaming",
-        ),
-        "hook_calls_text": Table(
-            (
-                ("call_id", "string"),
-                ("command", "string"),
-                ("output", "string"),
-                ("payload", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-                ("ts", "datetime"),
-            ),
-            ("project", "node_id", "call_id"),
-            "streaming",
-            retention_days=14,
         ),
         "otel_trace_sessions": Table(
             (("trace_id", "string"), ("session_id", "string"), ("project", "string"),
@@ -1211,14 +1145,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "session_id", "phase", "path"),
             "streaming",
-        ),
-        "memory_snapshots_text": Table(
-            (("session_id", "string"), ("phase", "string"), ("path", "string"), ("sha", "string"),
-             ("content", "string"), ("ts", "datetime"), ("project", "string"), ("node_id", "string"),
-             ("_v", "datetime")),
-            ("project", "node_id", "session_id", "phase", "path", "sha"),
-            "streaming",
-            retention_days=14,
         ),
         "datapoint_catalog": Table(
             (
@@ -1564,7 +1490,7 @@ RETENTION_MAX_HOURS = 3650 * DAY
 # setting is left out (see validate_retention).
 RETIRED_RETENTION_CLASSES = MappingProxyType({
     "tool_content": "tool call and hook text is kept as long as its call: tool_invocations_text has the "
-                    "period of class history, hook_calls_text that of class metrics",
+                    "period of class history, hook_calls (its text included) that of class metrics",
 })
 _CLASS_TABLES = {
     "prompt": {"session_prompts"},
@@ -1576,9 +1502,7 @@ _CLASS_TABLES = {
 }
 # The text table of a data point -> the table of its figures, whose class it has.
 TEXT_OF = MappingProxyType({
-    "session_step_text": "session_steps", "tool_invocations_text": "tool_invocations", "agents_text": "agents",
-    "events_text": "events", "hook_calls_text": "hook_calls", "memory_snapshots_text": "memory_snapshots",
-    "file_history_text": "file_history",
+    "tool_invocations_text": "tool_invocations", "agents_text": "agents",
 })
 
 

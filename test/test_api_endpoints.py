@@ -728,9 +728,10 @@ def metadata_hook_server(tmp_path):
 
 
 def _hook_calls(writer) -> list[dict]:
+    # One hook call, one row: its text columns are empty while text is not kept.
     meta = {r["call_id"]: r for r in _hook_rows(writer, "hook_calls")}
-    text = {r["call_id"]: r for r in _hook_rows(writer, "hook_calls_text")}
-    return [dict(command="", output="") | row | text.get(key, {}) for key, row in meta.items()]
+    return [row | {"command": row.get("command") or "", "output": row.get("output") or "",
+                   "payload": row.get("full_payload") or row["payload"]} for row in meta.values()]
 
 
 class TestHookCallsTable:
@@ -769,7 +770,7 @@ class TestHookCallsTable:
         before = time.time()
         assert _post_json(f"{url}/api/hooks", self._v1(ts=call_ts))[0] == 200
         [r] = _hook_rows(writer, "hook_calls")
-        [text] = _hook_rows(writer, "hook_calls_text")
+        text = r | {"payload": r["full_payload"]}  # one hook call, one row
         assert r["call_id"] == "a" * 32
         assert r["ts"] == call_ts
         assert (text["call_id"], text["project"], text["ts"]) == (r["call_id"], "/work/repo", call_ts)
@@ -840,7 +841,7 @@ class TestHookCallsTable:
         }
         assert _post_json(f"{url}/api/hooks", body)[0] == 200
         [r] = _hook_rows(writer, "hook_calls")
-        [text] = _hook_rows(writer, "hook_calls_text")
+        text = r  # one hook call, one row
         assert (r["call_id"], r["project"]) == (text["call_id"], text["project"]) == ("d" * 32, "/work/repo")
         assert (r["wrapped"], r["exit_code"], r["duration_ms"], r["overhead_ms"]) == (1, 2, 12.5, 3.25)
         assert (r["stdout_bytes"], r["stderr_bytes"], r["decision"]) == (61, 4, "deny")
@@ -871,7 +872,7 @@ class TestHookCallsTable:
         body["aictl_hook"]["wrapped"] = {"command": "secret.sh --token X", "exit_code": 0, "stdout": "secret"}
         _post_json(f"{url}/api/hooks", self._v1(call_id="f" * 32, prompt="my secret prompt"))
         _post_json(f"{url}/api/hooks", body)
-        assert not _hook_rows(db, "hook_calls_text")
+        assert all(r.get("command") is None and r.get("full_payload") is None for r in _hook_rows(db, "hook_calls"))
         rows = _hook_calls(db)
         assert len(rows) == 2
         for r in rows:

@@ -798,7 +798,7 @@ class CollectionService:
                 "node_source": settings.node_id_source,
                 "ingestion_mode": settings.ingestion,
                 "retention_days": TABLES["system_snapshots"].retention_days,
-                "content_retention_days": TABLES["session_step_text"].retention_days,
+                "content_retention_days": TABLES["session_steps"].retention_days,
             }
 
             def flush_history():

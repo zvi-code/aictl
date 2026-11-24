@@ -434,9 +434,8 @@ def aictl_server(tmp_path_factory) -> ServerHandle:
     facts = Facts()
 
     def events(params):
-        text = {row["source_key"]: row["detail"] for row in facts.rows["events_text"]}
         rows = [
-            {"pid": 0, "session_id": "", **row, "detail": text.get(row["source_key"], row["detail"])}
+            {"pid": 0, "session_id": "", **row, "detail": row.get("full_detail") or row["detail"]}
             for row in facts.rows["events"]
             if (params.get("since") is None or row["ts"] >= params["since"])
             and (params.get("until") is None or row["ts"] <= params["until"])

@@ -93,17 +93,13 @@ class SessionEvidence:
         from .memory_snapshot import _iter_memory_files, _read_text, _sha256
 
         project = project_root(cwd)
-        keep = self.sessions.allows_text(ts, TABLE_RETENTION_CLASS["memory_snapshots_text"])
-        metadata, text = [], []
+        keep = self.sessions.allows_text(ts, TABLE_RETENTION_CLASS["memory_snapshots"])
+        # One snapshot of a file, one row: its content is a column, null while text is not kept.
+        rows = []
         for path, source in _iter_memory_files(project_hash):
             content = _read_text(source)
-            sha = _sha256(content)
-            row = dict(project=project, session_id=sid, phase=phase, path=path, sha=sha, ts=ts)
-            metadata.append(row)
-            if keep:
-                text.append(dict(row, content=content))
-        if metadata:
-            self.writer.upsert("memory_snapshots", metadata)
-        if text:
-            self.writer.upsert("memory_snapshots_text", text)
-        return len(metadata)
+            rows.append(dict(project=project, session_id=sid, phase=phase, path=path, sha=_sha256(content), ts=ts,
+                             content=content if keep else None))
+        if rows:
+            self.writer.upsert("memory_snapshots", rows)
+        return len(rows)

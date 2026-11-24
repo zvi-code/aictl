@@ -33,7 +33,7 @@ COMPATIBLE_SINCE = 7
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "ee9035857d1dc3d8990630e4ad043bb0180c36ded914bd564443d4c1e4847e4a"
+FINGERPRINT = "43222dba5e8f271fcc39ac564ec3ec32cc334b3b51c1bcafabba891a2f2d7ca8"
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,10 @@ CHANGES: tuple[Change, ...] = (
         "session_commits.basis, source_event_id, agent_id and prompt_id, sessions.merged_into (set on tombstones only). "
         "tool_invocations.request_id (long, always 0) is dropped. The tables that nothing wrote or read back are removed: "
         "tool_invocation_coverage, tool_invocation_sizes, files_text, projects, and the *_observations and "
-        "*_observations_text tables of an older aictl; a reset drops their node tables and stored functions.",
+        "*_observations_text tables of an older aictl, file_history_text and processes; a reset drops their node "
+        "tables and stored functions. One data point is one row: session_step_text, events_text, hook_calls_text "
+        "and memory_snapshots_text are gone, their text is session_steps.text, events.full_detail, "
+        "hook_calls.command, output and full_payload, and memory_snapshots.content, null while text is not kept.",
         breaks=True,
     ),
 )

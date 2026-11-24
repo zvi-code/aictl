@@ -49,7 +49,7 @@ class TestClasses:
             text: TABLE_RETENTION_CLASS[figures] for text, figures in TEXT_OF.items()}
         # Every text table named after a figures table is in TEXT_OF.
         paired = {name for name in TABLES if name.endswith("_text") and name.removesuffix("_text") in TABLES}
-        assert paired | {"session_step_text", "tool_invocations_text"} <= TEXT_OF.keys()
+        assert paired | {"tool_invocations_text"} <= TEXT_OF.keys()
         assert not RETIRED_RETENTION_CLASSES.keys() & RETENTION_DEFAULTS.keys()
 
     def test_every_table_has_exactly_one_class(self):

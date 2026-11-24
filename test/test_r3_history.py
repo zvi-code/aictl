@@ -126,7 +126,8 @@ def test_sequence_and_tool_pages_prune_keys_without_resurrecting_old_versions(ku
         seed(table, **dims, **{key: "visible"}, ts=120, session_id="s")
     seed("tool_invocations", dedup_key="deleted", ts=130, session_id="s", is_error=1)
     seed("tool_invocations", dedup_key="deleted", ts=130, session_id="s", _deleted=True, _v="2026-01-02")
-    seed("events_text", source_key="visible", detail='{"session_id":"retained","message":"kept"}')
+    seed("events", kind="hook:PostToolUse", source_key="visible", ts=120, session_id="s",
+         full_detail='{"session_id":"retained","message":"kept"}')
     seed("tool_invocations_text", dedup_key="visible", target="pytest", result_summary="kept")
     window = {"since": 99, "until": 200, "limit": 1}
     events = reader.read("sequence.event_log", window | {
@@ -280,13 +281,18 @@ def test_full_session_event_page_resolves_winners_before_selecting_text(kusto_st
         detail = '{"session_id":"wanted"}' if key in ("inline", "overridden") else "{}"
         seed("events", source_key=key, ts=100, kind=key, project="p", session_id=sid, detail=detail)
     seed("events", source_key="moved", ts=100, project="p", session_id="other", _v="2026-01-03")
+    # An event's text is a column of its own row; a newer version of the row carries newer text.
     for key in ("retained", "reassigned"):
-        seed("events_text", source_key=key, project="p", detail='{"session_id":"wanted"}')
-    for key in ("reassigned", "overridden"):
-        seed("events_text", source_key=key, project="p", detail='{"session_id":"other"}', _v="2026-01-03")
+        seed("events", source_key=key, ts=100, kind=key, project="p", session_id="other", detail="{}",
+             full_detail='{"session_id":"wanted"}')
+    for key, detail in (("reassigned", "{}"), ("overridden", '{"session_id":"wanted"}')):
+        seed("events", source_key=key, ts=100, kind=key, project="p", session_id="other", detail=detail,
+             full_detail='{"session_id":"other"}', _v="2026-01-03")
     # Identical keys in other projects and nodes cannot supply this event's text.
-    seed("events_text", source_key="direct", project="foreign", detail='{"note":"wrong project"}')
-    seed("events_text", source_key="direct", project="p", node_id="elsewhere", detail='{"note":"wrong node"}')
+    seed("events", source_key="direct", ts=100, kind="direct", project="foreign", session_id="other",
+         full_detail='{"note":"wrong project"}')
+    seed("events", source_key="direct", ts=100, kind="direct", project="p", node_id="elsewhere", session_id="other",
+         full_detail='{"note":"wrong node"}')
     page = reader.read("sequence.event_log", {"since": 0.0, "until": 1e10, "requested_session": "wanted", "limit": 4})
     assert not page.truncated
     assert {row["kind"]: json.loads(row["detail"]) for row in page.rows} == {

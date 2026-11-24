@@ -216,9 +216,9 @@ def test_schema_names_required_role_when_retention_is_denied():
             raise RuntimeError("Forbidden")
         return response()
 
-    with pytest.raises(StorePermissionError, match="Set retention for .*session_step_text__unattributed requires Table Admin"):
+    with pytest.raises(StorePermissionError, match="Set retention for .*session_steps__unattributed requires Table Admin"):
         ensure_schema(
-            SimpleNamespace(execute_mgmt=execute), "db", tables={"session_step_text": TABLES["session_step_text"]}
+            SimpleNamespace(execute_mgmt=execute), "db", tables={"session_steps": TABLES["session_steps"]}
         )
 
 
