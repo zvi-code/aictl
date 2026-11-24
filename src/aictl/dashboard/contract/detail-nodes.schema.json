@@ -11,6 +11,20 @@
         "fleet_available": {"type": "boolean"},
         "generated_at": {"type": "number"},
         "read_only": {"type": "boolean"},
+        "view": {"const": "status"},
+        "rows": {"type": "array", "items": {"$ref": "node-status.schema.json"}},
+        "error": {"type": ["string", "null"]}
+      },
+      "required": ["scope", "local_node", "fleet_available", "generated_at", "read_only", "view", "rows", "error"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "local_node": {"$ref": "local-node.schema.json"},
+        "fleet_available": {"type": "boolean"},
+        "generated_at": {"type": "number"},
+        "read_only": {"type": "boolean"},
         "view": {"const": "identity"},
         "rows": {"type": "array", "items": false}
       },
@@ -414,7 +428,9 @@
             {"type": "null"}
           ]
         },
-        "local_runtime": {"$ref": "health-local.schema.json"}
+        "local_runtime": {"$ref": "health-local.schema.json"},
+        "node_status": {"type": "array", "items": {"$ref": "node-status.schema.json"}},
+        "node_status_error": {"type": ["string", "null"]}
       },
       "required": [
         "scope",

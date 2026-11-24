@@ -232,10 +232,16 @@ def _complete_agent_meta(store, delay_s: float = BACKFILL_DELAY_S) -> None:
         return
     if delay_s:
         time.sleep(delay_s)
+    from ..node_status import TASKS
+
+    TASKS.begin("agent_meta", "subagent meta pass")
     try:
-        agent_meta_backfill.run(store, StateFile(store.restart_dir / "agent_meta_backfill.json"))
-    except Exception:
+        finished = agent_meta_backfill.run(store, StateFile(store.restart_dir / "agent_meta_backfill.json"))
+    except Exception as exc:
         log.exception("The subagent meta pass failed; it runs again on the next start")
+        TASKS.end("agent_meta", error=f"{type(exc).__name__}: {exc}")
+        return
+    TASKS.end("agent_meta", "finished" if finished else "stopped early; it runs again on the next start")
 
 
 def _record_poll_failure(ingester, name: str, exc: Exception) -> None:

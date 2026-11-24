@@ -192,6 +192,49 @@ def _local_health_row(runtime, node, now):
     }
 
 
+def _status_entry(node_id, reported_at, record, now, origin):
+    """One node's status row: its record, how old it is, and whether its daemon still reports."""
+    if record is None:
+        state = "none"
+    elif not isinstance(reported_at, (float, int)) or not math.isfinite(reported_at) or reported_at > now + 60:
+        state = "unknown"
+    else:
+        from ..node_status import STALE_AFTER_S
+
+        state = "stale" if now - reported_at > STALE_AFTER_S else "reported"
+    return {"node_id": node_id or "legacy", "reported_at": reported_at, "status": state, "origin": origin,
+            "record": record}
+
+
+def node_status_rows(reader, scope, node, local, now, *, local_status=None, fleet_available=True, known=()):
+    """Every node's status record in scope: one read of the store for all nodes, and this node's live record.
+
+    A node in *known* that publishes no record (an older aictl) has status "none". Returns (rows, error)."""
+    rows: dict[str, dict] = {}
+    error = None
+    if scope != "local" and fleet_available:
+        try:
+            result = reader.read("nodes.status", node_scope(node) | {"limit": MAX_NODES})
+        except StoreError as exc:
+            error = str(exc)
+        else:
+            for r in result.rows:
+                try:
+                    record = json.loads(r.get("text") or "null")
+                except ValueError:
+                    record = None
+                if isinstance(record, dict):
+                    rows[r["node_id"] or "legacy"] = _status_entry(r["node_id"], r.get("reported_at"), record, now, "store")
+    if local_status is not None and (scope != "node" or node == local):
+        record = local_status()
+        stored = rows.get(local)
+        if record is not None and (stored is None or (record.get("reported_at") or 0) >= (stored["reported_at"] or 0)):
+            rows[local] = _status_entry(local, record.get("reported_at"), record, now, "live")
+    for name in known:
+        rows.setdefault(name or "legacy", _status_entry(name, None, None, now, "none"))
+    return sorted(rows.values(), key=lambda r: r["node_id"])[:MAX_NODES], error
+
+
 def _session_view(reader, view, scope, p, sid, since, until, now):
     local = normalize_node_id(local_node_id())
     node = local if scope == "local" else None
@@ -233,7 +276,7 @@ def _session_view(reader, view, scope, p, sid, since, until, now):
 
 
 def node_view(db, query, *, reader: Reader | None = None, now=None, local_health=None,
-              shared_health=None, local_inventory=None):
+              shared_health=None, local_inventory=None, local_status=None):
     reader = reader if reader is not None else configured_reader(db)
     now = time.time() if now is None else now
     valid = {"view", "scope", "node_id", "session_id", "since", "until"}
@@ -242,7 +285,7 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
     p = {k: v[0] for k, v in query.items()}
     view, scope = p.get("view", "nodes"), p.get("scope", "local")
     if view not in ("identity", "nodes", "health", "runtime", "settings", "overview", "session", "series", "flows",
-                    "backend") or scope not in (
+                    "backend", "status") or scope not in (
         "local",
         "node",
         "fleet",
@@ -327,6 +370,12 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
             raise NodeViewError("Health history requires a Kusto store", 409)
         start, end, step = series_window(since, until)
         return {**out, **backend_usage(reader, start, end, step), "since": start, "until": end, "step": step}
+    if view == "status":
+        if scope != "local" and not fleet_available and not (scope == "node" and node == local):
+            raise NodeViewError("Fleet history requires a shared Kusto store", 409)
+        rows, error = node_status_rows(reader, scope, node, local, now, local_status=local_status,
+                                       fleet_available=fleet_available)
+        return {**out, "rows": rows, "error": error}
     if view == "nodes" and not fleet_available and (scope != "node" or node == local):
         return {**out, "rows": [{"node_id": local, "captured_at": None}]}
     if scope != "local" and not fleet_available and not (scope == "node" and node == local):
@@ -355,10 +404,13 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
             )
         if scope == "local" and local_health is not None:
             runtime = local_health()
+            status, _ = node_status_rows(reader, scope, node, local, now, local_status=local_status, known=(local,))
             return {
                 **out,
                 "local_runtime": runtime,
                 "rows": [_local_health_row(runtime, local, now)],
+                "node_status": status,
+                "node_status_error": None,
             }
     if view == "settings" and scope == "local":
         return {
@@ -428,8 +480,15 @@ def node_view(db, query, *, reader: Reader | None = None, now=None, local_health
             rows = [row if row.get("daemon_pid") is not None else row | {"active_processes": None} for row in rows]
         if node is not None and not rows:
             rows = [{"node_id": node, "captured_at": None}]
+        extra = {}
+        if not settings_view:
+            status, error = node_status_rows(reader, scope, node, local, now, local_status=local_status,
+                                             fleet_available=fleet_available,
+                                             known=[r["node_id"] for r in rows[:MAX_NODES]])
+            extra = {"node_status": status, "node_status_error": error}
         return {
             **out,
+            **extra,
             "rows": [
                 _fields(r, cols)
                 | {

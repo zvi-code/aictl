@@ -169,6 +169,7 @@ class BoardRoutes:
                 self._db, params, reader=reader, local_health=self._board_health,
                 shared_health=lambda: _cached_health_data(self._db, time.time(), reader),
                 local_inventory=lambda: agent_inventory(getattr(self.server.store, "live_hub", None), time.time()),
+                local_status=self._node_status,
             )
         except NodeViewError as exc:
             self._json_response({"error": str(exc)}, status=exc.status)
@@ -235,6 +236,10 @@ class BoardRoutes:
             self._json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
             return
         self._json_response_raw(body, status=status)
+
+    def _node_status(self) -> dict | None:
+        reporter = getattr(self.server, "node_status", None)
+        return reporter.record() if reporter is not None else None
 
     def _board_health(self) -> dict:
         from .runtime_health import compute_health

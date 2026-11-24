@@ -121,6 +121,7 @@
     "machine-monitor": "machine-monitor.schema.json",
     "machine-pipeline": "machine-pipeline.schema.json",
     "node-scope": "node-scope.schema.json",
+    "node-status": "node-status.schema.json",
     "otel-receiver-status": "otel-receiver-status.schema.json",
     "pending-confirmation": "pending-confirmation.schema.json",
     "query-cpu": "query-cpu.schema.json",

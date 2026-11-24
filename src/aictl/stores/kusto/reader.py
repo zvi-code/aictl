@@ -233,6 +233,7 @@ _VIEWS = {
                             "node_id tool session_id files size_bytes bytes_read complete reading waiting outside_window "
                             "newest oldest indexed_at sample_file"),
     "index.snapshot": ("all_nodes requested_node", "node_id computed_at text"),
+    "nodes.status": ("all_nodes requested_node", "node_id reported_at text"),
     "prompts.files": (f"{_TIME} restrict_sessions session_keys", "node_id session_id path project_path uses last_ts"),
     "requests.records": (
         f"{_SCOPE} requested_session example_limit",
@@ -440,7 +441,7 @@ _VIEW_MAX_ROWS = {"tools.activity_rows": 100_000}
 # Insights read months of rows: a short lifetime lets the screen and its retries share one answer.
 _INSIGHT_TTL_S = 120.0
 _CACHE_TTL_S = {
-    "health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0,
+    "health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0, "nodes.status": 5.0,
     "insights.pause_tax": _INSIGHT_TTL_S, "insights.context_carry": _INSIGHT_TTL_S, "insights.subagents": _INSIGHT_TTL_S,
     "insights.after_failure": _INSIGHT_TTL_S, "insights.rereads": _INSIGHT_TTL_S, "insights.time_split": _INSIGHT_TTL_S,
     "insights.context_weight": _INSIGHT_TTL_S, "insights.orientation": _INSIGHT_TTL_S, "insights.fixed_context": _INSIGHT_TTL_S,

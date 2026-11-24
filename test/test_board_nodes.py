@@ -59,6 +59,8 @@ def test_warm_node_failure_returns_marked_sample_with_original_time(monkeypatch)
     calls = []
 
     def execute(_db, _kql, props):
+        if not props.client_request_id.startswith("aictl.nodes.reports;"):
+            raise RuntimeError("E_LOW_MEMORY_CONDITION")  # the status read fails apart; the health rows stand
         calls.append(props.client_request_id)
         if len(calls) > 1:
             raise RuntimeError("E_LOW_MEMORY_CONDITION")
@@ -102,6 +104,8 @@ def test_fleet_discovery_and_health_do_not_substitute_the_serving_node(kusto_sto
         local_health=lambda: pytest.fail("Remote health requested local runtime"),
     )
     assert "local_runtime" not in health
+    assert health["node_status_error"] is None
+    assert [(r["node_id"], r["status"]) for r in health["node_status"]] == [("host-b", "none"), ("legacy", "none")]
     assert [(r["node_id"], r["status"], r["cpu_percent"]) for r in health["rows"]] == [
         ("legacy", "unknown", None),
         ("host-b", "stale", 0),
@@ -143,6 +147,8 @@ def test_health_sample_uses_only_current_process_counters_and_shared_resource_sc
                      "counter_sample": json.dumps({"at": at, "pid": pid, "store": writer})})
 
     def read(view, _params):
+        if view == "nodes.status":
+            return SimpleNamespace(rows=[], truncated=False)
         assert view == "nodes.reports"
         return SimpleNamespace(rows=rows, truncated=False)
 

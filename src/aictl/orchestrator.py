@@ -747,7 +747,17 @@ class CollectionService:
             restart_dir = restart_directory(settings.cluster, settings.database, settings.node_id)
             # The watermark reads its file on first use, after the data epoch check below.
             watermark = TextWatermark(StateFile(restart_dir / "text_trim.json"))
-            self.history_store = stores.open_store("kusto", settings=settings, trim_before=watermark)
+            from .node_status import TASKS
+
+            TASKS.begin("schema", "store schema", "checking the layout and this node's tables", quiet=quiet)
+            try:
+                self.history_store = stores.open_store("kusto", settings=settings, trim_before=watermark)
+            except Exception as exc:
+                TASKS.end("schema", error=f"{type(exc).__name__}: {exc}", quiet=quiet)
+                raise
+            opened = self.history_store.layout or {}
+            TASKS.end("schema", f"layout {opened.get('version')}, data epoch {opened.get('data_epoch')}"
+                      if opened else "ready", quiet=quiet)
             _say(f"  history store: {settings.uri} (Kusto, {settings.auth_mode} auth)")
             if layout := self.history_store.layout:
                 # Restart state of another data epoch (the database was reset) is discarded
@@ -909,6 +919,8 @@ def start_collector(
     from .dashboard.ingester_runner import start_ingesters
 
     service._ingesters = start_ingesters(service.store)
+    _start_node_status(service.store, lambda: service._ingesters,
+                       lambda: getattr(receiver, "otel_receiver", None) if receiver is not None else None)
     print("  aictl reporting node running — no web UI on this machine", file=sys.stderr)
     print("  view from a machine that runs:  aictl daemon serve", file=sys.stderr)
     print("  press Ctrl-C to stop\n", file=sys.stderr)
@@ -921,6 +933,14 @@ def start_collector(
             receiver.shutdown()
             receiver.server_close()
         service.stop()
+
+
+def _start_node_status(store, ingesters, otel):
+    """This node's status: history read progress on the console, and the record other nodes' Health shows."""
+    from .node_status import NodeStatus
+
+    writer = getattr(getattr(store, "history_store", None), "writer", None)
+    return NodeStatus(store, ingesters=ingesters, otel=otel, writer=writer).start()
 
 
 def _start_receiver(store, receive_at: tuple[str, int] | None):
@@ -998,6 +1018,7 @@ def start_server(
         from .index_breakdown import Publisher
 
         server.index_publisher = Publisher(server, writer).start()
+    server.node_status = _start_node_status(store, lambda: server.ingesters, lambda: server.otel_receiver)
 
     url = f"http://{host}:{port}"
     print(f"  aictl daemon serve — dashboard at {url}", file=sys.stderr)

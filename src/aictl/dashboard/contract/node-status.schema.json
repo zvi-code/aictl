@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/node-status.schema.json",
+  "title": "NodeStatus",
+  "description": "One node's status row: the record its daemon publishes (node_status.py), how old it is, and whether it still reports. status: reported, stale (older than STALE_AFTER_S), unknown (a bad time) or none (the node publishes no record: an older aictl).",
+  "type": "object",
+  "properties": {
+    "node_id": {"type": "string"},
+    "reported_at": {"type": ["number", "null"]},
+    "status": {"enum": ["reported", "stale", "unknown", "none"]},
+    "origin": {"enum": ["store", "live", "none"]},
+    "record": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "record_version": {"type": "integer"},
+            "node_id": {"type": "string"},
+            "version": {"type": "string"},
+            "state": {"type": "string"},
+            "layout": {
+              "anyOf": [
+                {"type": "object", "properties": {"version": {"type": ["integer", "null"]}, "data_epoch": {"type": ["string", "null"]}}},
+                {"type": "null"}
+              ]
+            },
+            "daemon_started_at": {"type": ["number", "null"]},
+            "reported_at": {"type": "number"},
+            "history": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {"enum": ["reading", "done"]},
+                    "files": {"type": "integer"},
+                    "complete": {"type": "integer"},
+                    "reading": {"type": "integer"},
+                    "waiting": {"type": "integer"},
+                    "outside_window": {"type": "integer"},
+                    "unreadable": {"type": "integer"},
+                    "bytes": {"type": "integer"},
+                    "bytes_read": {"type": "integer"},
+                    "bytes_skipped": {"type": "integer"},
+                    "bytes_to_read": {"type": "integer"},
+                    "percent": {"type": ["number", "null"]},
+                    "rate_bps": {"type": ["number", "null"]},
+                    "eta_s": {"type": ["number", "null"]},
+                    "started_at": {"type": ["number", "null"]},
+                    "finished_at": {"type": ["number", "null"]},
+                    "computed_at": {"type": ["number", "null"]},
+                    "scan_ms": {"type": ["number", "null"]},
+                    "by_tool": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {"type": "string"},
+                          "files": {"type": "integer"},
+                          "complete": {"type": "integer"},
+                          "reading": {"type": "integer"},
+                          "waiting": {"type": "integer"},
+                          "outside_window": {"type": "integer"},
+                          "unreadable": {"type": "integer"},
+                          "bytes": {"type": "integer"},
+                          "bytes_read": {"type": "integer"},
+                          "bytes_skipped": {"type": "integer"},
+                          "bytes_to_read": {"type": "integer"}
+                        },
+                        "required": ["tool", "files", "complete", "reading", "waiting", "bytes", "bytes_read", "bytes_to_read"]
+                      }
+                    }
+                  },
+                  "required": ["state", "files", "complete", "reading", "waiting"]
+                },
+                {"type": "null"}
+              ]
+            },
+            "readers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string"},
+                  "label": {"type": "string"},
+                  "state": {"type": "string"},
+                  "last_poll_at": {"type": ["number", "null"]},
+                  "last_success_at": {"type": ["number", "null"]},
+                  "last_error": {"type": ["string", "null"]},
+                  "rows_total": {"type": ["integer", "null"]},
+                  "progress": {"type": ["object", "null"]}
+                },
+                "required": ["name", "label", "state"]
+              }
+            },
+            "writer": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "status": {"type": ["string", "null"]},
+                    "rows_queued": {"type": "integer"},
+                    "bytes_queued": {"type": "integer"},
+                    "in_flight": {"type": "integer"},
+                    "failures": {"type": "integer"},
+                    "rows_dropped": {"type": "integer"},
+                    "tables_failing": {"type": "array", "items": {"type": "string"}},
+                    "last_error": {"type": ["string", "null"]},
+                    "last_error_at": {"type": ["number", "null"]}
+                  }
+                },
+                {"type": "null"}
+              ]
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string"},
+                  "label": {"type": "string"},
+                  "state": {"type": "string"},
+                  "started_at": {"type": ["number", "null"]},
+                  "ended_at": {"type": ["number", "null"]},
+                  "progress": {"type": "string"},
+                  "result": {"type": "string"},
+                  "last_error": {"type": ["string", "null"]}
+                },
+                "required": ["name", "label", "state"]
+              }
+            }
+          },
+          "required": ["node_id", "reported_at"]
+        },
+        {"type": "null"}
+      ]
+    }
+  },
+  "required": ["node_id", "reported_at", "status", "record"]
+}

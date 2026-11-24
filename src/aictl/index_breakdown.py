@@ -328,7 +328,7 @@ def scan_sessions(ing: Any, state: ReaderState, cutoff: float) -> tuple[list[dic
             rows.setdefault((tool, fold(str(folder))), {
                 "tool": tool, "kind": kind, "path": str(folder), "exists": _exists(folder), "files": 0, "bytes": 0,
                 "sessions": 0, "newest": None, "oldest": None, "states": dict.fromkeys(FILE_STATES, 0),
-                "bytes_read": 0, "unreadable": [], "unclaimed": 0, "reader": "", "reader_version": 0,
+                "bytes_read": 0, "bytes_skipped": 0, "unreadable": [], "unclaimed": 0, "reader": "", "reader_version": 0,
                 "older_version_files": 0, "folders_without_transcript": 0, "_sessions": set(),
             })
 
@@ -364,6 +364,8 @@ def scan_sessions(ing: Any, state: ReaderState, cutoff: float) -> tuple[list[dic
             row["files"] += 1
             row["bytes"] += st.st_size
             row["bytes_read"] += done
+            # Files the reader does not read (outside history_days, or unreadable): not part of what is left to read.
+            row["bytes_skipped"] += st.st_size if status in ("outside_window", "unreadable") else 0
             row["states"][status] += 1
             row["_sessions"].add(sid)
             row["reader"], row["reader_version"] = kind if not row["reader"] or row["reader"] == kind else "mixed", version
@@ -1277,6 +1279,12 @@ def format_text(node: dict, *, ids: bool = False) -> str:
 # ── the daemon's publisher ─────────────────────────────────────────────
 
 
+def _content_key(node: dict) -> int:
+    """What a published breakdown says, without the times of its computation."""
+    body = {k: v for k, v in node.items() if k not in ("computed_at", "duration_ms", "positions_saved_at", "settings")}
+    return hash(json.dumps(body, sort_keys=True, default=str))
+
+
 class Publisher:
     """Publishes this node's breakdown every PUBLISH_INTERVAL_S, so other nodes' screens can show it."""
 
@@ -1296,9 +1304,19 @@ class Publisher:
         return self
 
     def publish_once(self) -> int:
-        node = live_breakdown(self.server, now=self.clock())
-        size = publish(self.writer, node)
-        self.last = {"published_at": node["computed_at"], "bytes": size}
+        from .node_status import TASKS
+
+        TASKS.begin("index_snapshot", "Index snapshot publish", quiet=True)
+        try:
+            node = live_breakdown(self.server, now=self.clock())
+            size = publish(self.writer, node)
+        except Exception as exc:
+            TASKS.end("index_snapshot", error=f"{type(exc).__name__}: {exc}")
+            raise
+        # A line only when what the snapshot says changed; every publish is in the node's status record.
+        key = _content_key(node)
+        TASKS.end("index_snapshot", f"{size:,} bytes", quiet=key == self.last.get("key"))
+        self.last = {"published_at": node["computed_at"], "bytes": size, "key": key}
         return size
 
     def _run(self) -> None:
