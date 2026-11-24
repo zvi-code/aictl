@@ -28,11 +28,11 @@ export function HeatGrid(props: {
           <div role="row" class={styles.line}>
             <span role="columnheader" class={`${styles.head} ${styles.corner}`}>{props.corner}</span>
             <For each={props.columns}>{column => <span role="columnheader" class={styles.head} title={column.title} data-column={column.key}>
-              <Name text={column.name} open={column.open} /><Show when={column.sub}><small>{column.sub}</small></Show></span>}</For>
+              <Name text={column.name} open={column.open} title={column.title} /><Show when={column.sub}><small>{column.sub}</small></Show></span>}</For>
           </div>
           <For each={props.rows}>{row => <div role="row" class={styles.line} data-row={row.key}>
             <span role="rowheader" class={`${styles.head} ${styles.rowHead}`} title={row.title}>
-              <Name text={row.name} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
+              <Name text={row.name} open={row.open} title={row.title} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
             <For each={row.cells}>{(cell, i) => <Show when={cell} fallback={<span role="cell" class={styles.blank}
               title={props.blank(row, props.columns[i()])} data-blank />}>{value =>
               <span role="cell" class={value().hatched ? `${styles.cell} ${styles.hatched}` : styles.cell} data-cell={value().key}

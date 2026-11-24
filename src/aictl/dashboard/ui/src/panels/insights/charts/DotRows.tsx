@@ -27,7 +27,7 @@ export function DotRows(props: { name: string; title: string; axis: string; meas
         <For each={props.rows}>{row => <div role="row" class={styles.line} data-row={row.key}>
           <span role="rowheader" class={styles.name} title={row.title}>
             <Show when={row.swatch && row.colour}><span class={styles.swatch} style={{ background: row.colour }} data-swatch /></Show>
-            <Name text={row.name} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
+            <Name text={row.name} open={row.open} title={row.title} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
           <For each={row.values}>{(item, i) => <span role="cell" class={styles.cell}>
             <span class={styles.track}>
               <Show when={item.value != null}>

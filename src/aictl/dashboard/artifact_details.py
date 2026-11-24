@@ -13,6 +13,7 @@ from typing import Any
 
 from ..context_audit import _git_states, _path_key, skill_description, skill_field, skill_locations
 from ..ingesters._common import project_root
+from ..stores import local_node_id, normalize_node_id
 from ..tool_scope import stored_ids_for
 from .board_filters import Filters, _detail_filters
 from .board_projection import _agent_key, _api_error_key, _Board, _tool_error_key
@@ -136,13 +137,17 @@ def skill_detail(
     rows = [tuple(r[k] for k in fields) for r in page if r["row_type"] == "item"]
     file_reads = _skill_file_reads(history, name, params)
     read_pairs = {(r["session_id"], _agent_key(r["session_id"], r["agent_id"])) for r in file_reads[:MAX_DETAIL_ROWS]}
-    projects = [] if history.qualified else list(dict.fromkeys(p for raw in overall["projects"] for p in (project_root(raw), raw) if p))
+    # Skill files are read from the disk of the node that serves the page. That is right for this node's own scope and
+    # for all nodes (this node is one of them; a folder of another node is not found here); for another node's scope
+    # nothing is read, because a file found here would not be that node's.
+    here = not history.qualified or history.node in (None, normalize_node_id(local_node_id()))
+    projects = list(dict.fromkeys(p for raw in overall["projects"] for p in (project_root(raw), raw) if p)) if here else []
     pairs = {(sid, _agent_key(sid, aid)) for _ts, sid, aid, *_ in rows} | read_pairs
     titles = _history_titles(history, pairs, now)
 
     locations = []
     seen_text: dict[str, str] = {}
-    for row in ([] if history.qualified else skill_locations(name, projects)):
+    for row in (skill_locations(name, projects) if here else []):
         git_state = ""
         if row["scope"] == "project":
             git_state = _git_states(Path(row["owner"]), [row["path"]]).get(row["path"], "outside-repo")

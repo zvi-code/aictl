@@ -52,7 +52,7 @@ export function Bars(props: {
     </Show>
     <ol class={styles.rows} aria-label={props.title}>
       <For each={props.rows}>{row => <li class={styles.row} data-row={row.key}>
-        <span class={styles.name} title={row.open ? undefined : row.title}><Name text={row.label} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
+        <span class={styles.name}><Name text={row.label} open={row.open} title={row.title} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
         <span class={styles.lane}>
           <span class={styles.stack} role="group" aria-label={`${row.label}: ${row.total}`} style={{ 'inline-size': `${length(row).toFixed(2)}%` }}>
             <For each={row.parts.filter(part => (part.value ?? 0) > 0)}>{part => <span

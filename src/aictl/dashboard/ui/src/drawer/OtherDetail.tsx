@@ -1,6 +1,7 @@
 import { createMemo, createSignal, lazy, Loading, Match, Show, Switch, untrack } from 'solid-js'
 import type { DetailError, DetailExcerpt, DetailFile, DetailPrompt, DetailSkill, DetailTool } from '../data/contract.gen'
 import { boardQuery, windowOf } from '../data/filters'
+import { nodeTag } from '../data/nodeNames'
 import type { Detail, PanelContext } from '../panels/types'
 import type { DrawerProps } from '../shell/drawerTypes'
 import { createBoxes, HiddenBoxes } from '../ui/Box'
@@ -119,10 +120,19 @@ function Failure(props: Props) {
   </Section>}</Resource>
 }
 
-function Skill(props: Props) {
+/** What the list of a skill's files covers in the scope shown; undefined on this node's own scope, where it is whole. */
+export const skillFilesNote = (scope: string, serving: boolean) => scope === 'fleet'
+  ? 'Skill files are read from the disk of the node that serves this page ([0]). Copies on other nodes are not read.'
+  : scope === 'node' && !serving ? 'The skill files of another node are not read: only the node that serves this page reads its own disk.'
+    : undefined
+
+export function Skill(props: Props) {
   const ctx = untrack(() => props.shell.ctx)
   const read = ctx.detail<DetailSkill>(createMemo(() => path(ctx, '/api/board/skill', { ...rangeQuery(ctx), name: props.entry.name })))
-  const [location, inspect] = createSignal<string>()
+  const [picked, inspect] = createSignal<string>()
+  // The text of the first file is shown without a click: a reader who opens a skill wants to read it.
+  const location = () => picked() ?? read()?.data?.locations?.[0]?.path
+  const note = () => skillFilesNote(ctx.scope(), nodeTag(ctx.nodeId()) === '[0]')
   return <Resource read={read}>{data => <>
     <Section title="Skill usage">
       <Stats items={[{ label: 'Uses in range', value: data().uses }, { label: 'Total uses', value: data().total_uses },
@@ -131,6 +141,7 @@ function Skill(props: Props) {
         action={{ label: row => `Open ${row.title}`, run: row => props.shell.open({ type: 'agent', id: row.agent_id, tab: 'flow', initialSkills: true }) }} />
     </Section>
     <Section title="Skill locations">
+      <Show when={note()}>{text => <p class={styles.muted} data-skill-files-note>{text()}</p>}</Show>
       <Rows label="Skill locations" rows={data().locations} identity={['path', 'scope']}
         columns={[['path', 'Path', 'path'], 'scope', 'owner', 'reach', 'git_state']} actionColumn="path"
         action={{ label: row => `Inspect ${row.path}`, run: row => inspect(row.path) }} />

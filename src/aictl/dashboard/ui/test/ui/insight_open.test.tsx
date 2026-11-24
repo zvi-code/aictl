@@ -2,7 +2,7 @@
 // A name drawn on an Insights view is a way in: a skill opens its detail, a session its flow, a repository or a coding
 // tool narrows the page. These tests keep every shared chart piece able to carry that, the Skills view wired to it,
 // and the step of a session's flow linked to the skill and the tool it names.
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FlowEvent } from '../../src/data/contract.gen'
 import { StepInspector } from '../../src/drawer/FlowParts'
 import { flowModel } from '../../src/drawer/flowModel'
@@ -12,7 +12,7 @@ import { BarGrid } from '../../src/panels/insights/charts/BarGrid'
 import { DotRows } from '../../src/panels/insights/charts/DotRows'
 import { HeatGrid } from '../../src/panels/insights/charts/HeatGrid'
 import { MarkStrip } from '../../src/panels/insights/charts/MarkStrip'
-import { opens, OpensContext, type Open } from '../../src/panels/insights/charts/Open'
+import { foldersNamed, openHover, opens, OpensContext, type Open } from '../../src/panels/insights/charts/Open'
 import { PairedBars } from '../../src/panels/insights/charts/PairedBars'
 import { PercentileStrip } from '../../src/panels/insights/charts/PercentileStrip'
 import { Scatter } from '../../src/panels/insights/charts/Scatter'
@@ -64,10 +64,19 @@ describe('INS-OPEN · what each kind of name opens', () => {
     expect(went.patches[3]).toEqual({ model: 'm-1' })
   })
 
+  it('finds every stored folder of a project name, and keeps the hover of a name beside what a click does', () => {
+    const list = [{ project: '/b/alpha', name: 'alpha' }, { project: '/a/alpha' }, { project: '/a/alpha' }, { project: '/a/beta', name: 'beta' }]
+    expect(foldersNamed(list, 'alpha')).toEqual(['/a/alpha', '/b/alpha'])
+    expect(foldersNamed(list, 'gamma')).toEqual([])
+    const open = { label: 'Open session Fix the parser', run() {} }
+    expect(openHover(open, 'Fix the parser\nBranch: main')).toBe('Fix the parser\nBranch: main\nClick: Open session Fix the parser')
+    expect(openHover(open)).toBe('Open session Fix the parser')
+  })
+
   it('opens nothing for a name that is empty', () => {
     const open = opens(context().ctx)
     expect([open.skill(''), open.tool(''), open.mcp(''), open.file(''), open.session('', 'x'), open.repo(''), open.project(''),
-      open.product('', 'x'), open.model('')]).toEqual(Array(9).fill(undefined))
+      open.product('', 'x'), open.model(''), open.projectNamed('')]).toEqual(Array(10).fill(undefined))
   })
 })
 
@@ -187,16 +196,26 @@ describe('INS-OPEN · the Skills view', () => {
     dispose()
   })
 
-  it('narrows the page from a project and from a coding tool', () => {
+  it('narrows the page from a project named by its last folder, and from a coding tool', async () => {
     const { ctx, went } = context({ data: skills, status: 'ready', error: null })
+    // The view names a project by its last folder; the folders of that name come from the project list.
+    const asked: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      asked.push(url)
+      return new Response(JSON.stringify({ projects: [{ project: '/work/alpha', name: 'alpha' }, { project: '/other/alpha', name: 'alpha' },
+        { project: '/work/beta', name: 'beta' }] }))
+    })
     const { host, dispose } = mount(() => <Skills ctx={ctx} since={base.range.since} until={base.range.until} />)
     host.querySelector<HTMLElement>('[data-chart="projects"] [data-open]')!.click()
+    await vi.waitFor(() => expect(went.patches).toHaveLength(1))
+    expect(asked).toEqual(['/api/board/projects'])
     host.querySelector<HTMLElement>('[data-chart="tools"] [data-open]')!.click()
     host.querySelector<HTMLElement>('[data-chart="listings"] [data-open]')!.click()
-    expect(went.patches[0]).toEqual({ project: ['/work/alpha'], repo: null, sel: null })
+    expect(went.patches[0]).toEqual({ project: ['/other/alpha', '/work/alpha'], repo: null, sel: null })
     expect(JSON.stringify(went.patches[1])).toContain('copilot-cli')
     expect(JSON.stringify(went.patches[2])).toContain('claude-code')
     dispose()
+    vi.unstubAllGlobals()
   })
 })
 
@@ -237,5 +256,16 @@ describe('INS-OPEN · a step of a session flow', () => {
     const { host, dispose } = inspect([event('skill_event', 1_700_000_000, { name: 'kql' })])
     expect(host.querySelector('[data-open-skill]')).toBeNull()
     dispose()
+  })
+})
+
+describe('INS-OPEN · the skill detail says whose files it read', () => {
+  it('names the serving node in all nodes scope, says nothing is read for another node, and nothing on this node', async () => {
+    const { skillFilesNote } = await import('../../src/drawer/OtherDetail')
+    expect(skillFilesNote('fleet', false)).toBe('Skill files are read from the disk of the node that serves this page ([0]). ' +
+      'Copies on other nodes are not read.')
+    expect(skillFilesNote('node', false)).toContain('The skill files of another node are not read')
+    expect(skillFilesNote('node', true)).toBeUndefined()
+    expect(skillFilesNote('local', true)).toBeUndefined()
   })
 })

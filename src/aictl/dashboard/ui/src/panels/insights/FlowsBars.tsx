@@ -27,7 +27,7 @@ export function BarChart(props: { title: string; axis: string; rows: readonly Ba
       </Show>
       <ol class={styles.rows}>
         <For each={props.rows}>{row => <li class={styles.row} data-row={row.key}>
-          <span class={styles.name}><Name text={row.name} open={row.open} /><Show when={row.sub}>{sub => <small>{sub()}</small>}</Show></span>
+          <span class={styles.name}><Name text={row.name} open={row.open} title={row.hover} /><Show when={row.sub}>{sub => <small>{sub()}</small>}</Show></span>
           <svg class={styles.track} viewBox="0 0 100 10" preserveAspectRatio="none" role="img" aria-label={row.hover}>
             <title>{row.hover}</title>
             <For each={placeParts(row, top())}>{part => <rect class={part.repo == null ? styles[part.tone] : styles.repo}

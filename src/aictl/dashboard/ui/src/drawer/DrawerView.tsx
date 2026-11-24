@@ -13,6 +13,7 @@ import { SessionTabs } from './SessionTabs'
 import { sessionSpan, spanLabel } from './sessionSpan'
 import { path, NA, type AgentEntry, type TabProps } from './shared'
 import styles from './drawer.module.css'
+import { sessionParts, shortSessionId } from '../panels/insights/sessionName'
 
 const OtherDetail = lazy(() => import('./OtherDetail'))
 const items = [
@@ -107,7 +108,7 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
   const evidence = () => ctx.stopped(props.entry.id) ? undefined : runtime()?.status_evidence ?? agent()?.status_evidence
   // The span is the session's own first and last recorded activity: the runtime process starts again at every resume.
   const span = createMemo(() => sessionSpan(agent()))
-  const name = () => agent()?.parent_id ? `${agent()?.role || agent()?.title} (subagent)` : agent()?.title || runtime()?.title || props.entry.id
+  const name = () => agent()?.parent_id ? `${agent()?.role || agent()?.title} (subagent)` : agent()?.title || runtime()?.title || untitled(props.entry.id)
   const options = items.map(([id, label, Tab]) => ({
     id, label, glyph: glyphs[id], groupStart: id === 'changes' || id === 'events',
     count: () => (id === 'tools' ? agent()?.tool_calls : undefined) ?? counts()[id],
@@ -159,6 +160,12 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
 const identity = (entry: DrawerEntry | undefined, scope: string, node: string | null) => entry == null ? undefined
   : entry.type === 'agent' ? JSON.stringify([scope, node, entry.type, entry.id])
     : JSON.stringify([scope, node, entry.type, entry.path, entry.name, entry.key, entry.ts, entry.session_id, entry.record, entry.line])
+
+/** The heading of a session with no stored title (or not read yet): its short id and its node, never the raw id pair. */
+export function untitled(id: string) {
+  const { node } = sessionParts(id)
+  return `Session ${shortSessionId(id)}${node ? ` on node ${nodeTag(node)}` : ''}`
+}
 
 export default function DrawerView(shell: DrawerProps) {
   const current = () => shell.stack.at(-1)

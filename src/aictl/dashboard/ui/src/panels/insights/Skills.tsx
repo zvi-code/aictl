@@ -16,7 +16,8 @@ import styles from './CallsViews.module.css'
 const links = (open: Opens) => ({
   skill: (rows: BarRow[]) => opening(rows, row => open.skill(row.name)),
   product: (rows: BarRow[]) => opening(rows, row => open.product(row.key, row.name)),
-  project: (rows: BarRow[]) => opening(rows, row => open.project(row.key)),
+  // The answer names a project by its last folder.
+  project: (rows: BarRow[]) => opening(rows, row => open.projectNamed(row.name)),
 })
 type Links = ReturnType<typeof links>
 

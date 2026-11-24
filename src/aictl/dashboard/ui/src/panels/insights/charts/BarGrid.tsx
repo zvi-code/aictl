@@ -71,7 +71,7 @@ function Row(props: { row: GridRow; columns: GridColumn[]; foot?: boolean }) {
     <div role="rowheader" class={styles.name} title={props.row.title}>
       <span>
         <Show when={props.row.mark}>{mark => <span class={styles.swatch} style={{ background: mark() }} data-mark />}</Show>
-        <Name text={props.row.label} open={props.foot ? undefined : props.row.open} />
+        <Name text={props.row.label} open={props.foot ? undefined : props.row.open} title={props.row.title} />
         <Show when={props.row.tag}><span class={styles.tag} data-tag>{props.row.tag}</span></Show>
       </span>
       <Show when={props.row.sub}><small>{props.row.sub}</small></Show>

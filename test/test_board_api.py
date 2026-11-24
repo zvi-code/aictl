@@ -2453,6 +2453,25 @@ class TestSkillDetail:
         assert "abc123secretvalue" not in place["content"]
         assert str(project) in place["reach"]
 
+    def test_all_nodes_scope_reads_the_skill_files_of_the_serving_node(self, db, tmp_path, monkeypatch):
+        """All nodes includes the node that serves the page, so its skill files are shown; another node's scope reads none."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        user = home / ".claude" / "skills" / "checker"
+        user.mkdir(parents=True)
+        (user / "SKILL.md").write_text("---\nname: checker\ndescription: Own copy\n---\nUser text\n")
+        project = self._project_skill(tmp_path)
+        self._use(db, project)
+        reader = board_projection.HistoryScope.local(db).reader
+        fleet = artifact_details.skill_detail(db, "checker", now=2000.0, history=board_projection.HistoryScope(reader, None, qualified=True))[1]
+        assert fleet["uses"] == 1
+        assert {place["scope"] for place in fleet["locations"]} == {"project", "user"}
+        assert any("Body text" in (place["content"] or "") for place in fleet["locations"])
+        other = artifact_details.skill_detail(
+            db, "checker", now=2000.0, history=board_projection.HistoryScope(reader, "another-node", qualified=True))[1]
+        assert other["locations"] == []
+
     def test_the_time_range_limits_uses_but_not_the_total(self, db, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         self._use(db, tmp_path, ts=1000.0)
