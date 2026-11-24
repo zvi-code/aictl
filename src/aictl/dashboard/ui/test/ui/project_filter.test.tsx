@@ -4,6 +4,7 @@ import { createRoot, flush } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { boardLiveRequest, canClear, clearedFilters, filtersToParams, parseFilters, withProjects } from '../../src/data/filters'
 import { createLiveClient } from '../../src/data/live'
+import { setNodes } from '../../src/data/nodeNames'
 import { mergeSearch } from '../../src/data/urlState'
 import { detailPath, panelData } from '../../src/panels/data'
 import PauseTax from '../../src/panels/insights/PauseTax'
@@ -144,8 +145,10 @@ describe('PRJ-03 · The picker and the chips', () => {
   })
 
   it('names the nodes of an entry only when the list holds more than one node', () => {
-    expect(nodeNote(['mac'], true)).toBe(' · on mac')
-    expect(nodeNote(['mac', 'win'], true)).toBe(' · on 2 nodes: mac, win')
+    setNodes('mac', ['mac', 'win'])
+    flush()
+    expect(nodeNote(['mac'], true)).toBe(' · on node [0]')
+    expect(nodeNote(['win', 'mac'], true)).toBe(' · on nodes [0], [1]')
     expect(nodeNote(['mac'], false)).toBe('')
     expect(nodeNote([], true)).toBe('')
   })
@@ -214,9 +217,9 @@ describe('PRJ-03 · The picker and the chips', () => {
       expect(repos.querySelector('[title*="a commit made there"]')).not.toBeNull()
       // Two nodes are in the list, so each entry names the nodes its sessions ran on.
       const rows = [...picker.host.querySelectorAll('[aria-label="Projects"] li')].map(row => row.textContent)
-      expect(rows[0]).toContain(' · on mac')
-      expect(rows[2]).toContain(' · on 2 nodes: mac, win')
-      expect(repos.textContent).toContain(' · on mac')
+      expect(rows[0]).toContain(' · on node [0]')
+      expect(rows[2]).toContain(' · on nodes [0], [1]')
+      expect(repos.textContent).toContain(' · on node [0]')
       const boxes = [...picker.host.querySelectorAll<HTMLInputElement>('[aria-label="Projects"] input[type=checkbox]')]
       expect(boxes.map(box => box.checked)).toEqual([false, false, false])
       boxes[2].click()

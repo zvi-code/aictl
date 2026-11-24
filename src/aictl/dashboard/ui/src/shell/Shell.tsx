@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, For, lazy, Loading, onCleanup, 
 import { render } from '@solidjs/web'
 import { boardLiveRequest, boardRangePatch, clearedFilters, filtersToParams, parseFilters, PERIODS, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
+import { setNodes } from '../data/nodeNames'
 import { isRuntimeSession } from '../data/runtimeAgents'
 import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, scopeParam, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
 import { agentView, selectAgentWatch, supportsLiveAgent } from '../drawer/liveAgent'
@@ -323,7 +324,14 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   window.addEventListener('hashchange', onHash)
   document.addEventListener('keydown', onKey)
   document.addEventListener('aictl:select-session', onSession)
+  // The node numbers of the page ([0], [1], ...): read at the start and every five minutes, so a new node gets one.
+  const readNodes = () => void json<{ local_node?: { node_id?: string }; rows?: { node_id?: string }[] }>('/api/board/nodes?view=nodes&scope=fleet')
+    .then(value => setNodes(value.local_node?.node_id, (value.rows ?? []).flatMap(row => row.node_id ?? [])))
+    .catch(() => { /* Node ids are shown as they are until the list answers. */ })
+  readNodes()
+  const nodesTimer = setInterval(readNodes, 300000)
   onCleanup(() => {
+    clearInterval(nodesTimer)
     clearTimeout(noticeTimer); clearTimeout(findTimer)
     window.removeEventListener('popstate', onPop)
     window.removeEventListener('hashchange', onHash)

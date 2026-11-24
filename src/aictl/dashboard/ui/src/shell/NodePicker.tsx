@@ -3,10 +3,11 @@ import type { DetailNodes } from '../data/contract.gen'
 import { json } from '../panels/data'
 import { Icon } from '../ui/Icon'
 import type { NodeScope } from '../panels/types'
+import { nodeTag, nodeTitle } from '../data/nodeNames'
 import styles from './Shell.module.css'
 
 export const scopeLabel = (scope: NodeScope, node?: string | null) =>
-  scope === 'local' ? 'This node' : scope === 'fleet' ? 'All nodes' : node === 'legacy' ? 'Untagged node' : node || 'Named node'
+  scope === 'local' ? 'This node' : scope === 'fleet' ? 'All nodes' : node === 'legacy' ? 'Untagged node' : node ? `Node ${nodeTag(node)}` : 'Named node'
 
 type Nodes = Extract<DetailNodes, { view: 'nodes' }>
 export function NodePicker(props: { scope: NodeScope; nodeId: string | null; select: (scope: NodeScope, node?: string) => void }) {
@@ -37,6 +38,7 @@ export function NodePicker(props: { scope: NodeScope; nodeId: string | null; sel
   return <>
     <button ref={trigger} class={styles.button} type="button" popovertarget="node-picker"
       onClick={() => { if (!popup.matches(':popover-open')) setTyped(props.nodeId ?? '') }}
+      title={props.scope === 'node' && props.nodeId ? nodeTitle(props.nodeId) : undefined}
       aria-controls="node-picker" aria-expanded={open() ? 'true' : 'false'}><Icon glyph="node" />
       <span><span class={styles.srOnly}>Node scope: </span>{scopeLabel(props.scope, props.nodeId)}</span><Icon glyph="down" small /></button>
     <section ref={popup} id="node-picker" class={styles.popup} popover="auto" aria-label="Choose node scope"
@@ -48,7 +50,7 @@ export function NodePicker(props: { scope: NodeScope; nodeId: string | null; sel
         <button class={styles.secondary} type="button" onClick={() => choose('local')}>This node</button>
         <button class={styles.secondary} type="button" onClick={() => choose('fleet')}>All nodes</button>
       </div>
-      <Show when={nodes()?.local_node?.node_id}>{id => <p>This node: <code>{id()}</code></p>}</Show>
+      <Show when={nodes()?.local_node?.node_id}>{id => <p>This node: <code>{nodeTitle(id())}</code></p>}</Show>
       <form class={styles.controls} onSubmit={event => {
         event.preventDefault()
         if (typed().trim()) choose('node', typed().trim().toLowerCase())
@@ -65,7 +67,7 @@ export function NodePicker(props: { scope: NodeScope; nodeId: string | null; sel
         <For each={[...new Set([...visited(), ...(nodes()?.rows.map(row => row.node_id) ?? []), 'legacy'])]}>{id => {
           const date = () => nodes()?.rows.find(row => row.node_id === id)?.captured_at
           return <button class={styles.button} type="button" onClick={() => choose('node', id)}>
-            {scopeLabel('node', id)}<Show when={date() != null}> — last report {new Date(date()! * 1000).toLocaleString()}</Show>
+            {id === 'legacy' ? scopeLabel('node', id) : nodeTitle(id)}<Show when={date() != null}> — last report {new Date(date()! * 1000).toLocaleString()}</Show>
           </button>
         }}</For>
       </div>

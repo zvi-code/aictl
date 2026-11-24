@@ -4,6 +4,7 @@ import { chosenCount } from '../data/filters'
 import { detailPath, json } from '../panels/data'
 import type { PanelContext } from '../panels/types'
 import { Icon } from '../ui/Icon'
+import { nodeTags } from '../data/nodeNames'
 import styles from './Shell.module.css'
 
 /** One entry of `GET /api/board/projects`: a project value as stored, its sessions and its last activity. */
@@ -31,11 +32,11 @@ export function matchRepos(entries: readonly RepoEntry[], text: string): RepoEnt
   return entries.filter(entry => matches(entry.root, words) || entry.members.some(member => matches(member.project, words)))
 }
 
-/** The nodes an entry's sessions ran on, by name. Written only when the list holds more than one node: the same
-    path on two nodes is one entry, and without the names nothing tells two nodes' folders apart. */
+/** The nodes an entry's sessions ran on, by number. Written only when the list holds more than one node: the same
+    path on two nodes is one entry, and without the numbers nothing tells two nodes' folders apart. */
 export function nodeNote(nodeIds: readonly string[], several: boolean) {
   if (!several || !nodeIds.length) return ''
-  return nodeIds.length === 1 ? ` · on ${nodeIds[0]}` : ` · on ${fmtN(nodeIds.length)} nodes: ${nodeIds.join(', ')}`
+  return ` · on ${nodeIds.length === 1 ? 'node' : 'nodes'} ${nodeTags(nodeIds)}`
 }
 
 /** The address after one entry is switched on or off; the other chosen entries stay. */
