@@ -36,8 +36,16 @@ export type Base<C extends CardId> = {
 } & RepoSplit
 /** What every card's answer carries, for a card whose own types live in its own model file. */
 export type InsightBase<C extends CardId> = Base<C>
-export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
-export type PauseProject = { project: string | null; tool: string; requests: number; sessions: number; cost_usd: Num; extra_usd: Num }
+export type PauseCell = {
+  bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num
+  /** Its parts per repository (requests, priced, cost_usd), repoSplit.ts. */
+  repos?: RepoSegment[]
+}
+export type PauseProject = {
+  project: string | null; tool: string; requests: number; sessions: number; cost_usd: Num; extra_usd: Num
+  /** Its parts per repository (requests, sessions, cost_usd, extra_usd), repoSplit.ts. */
+  repos?: RepoSegment[]
+}
 export type PauseCause = 'tool_running' | 'other_agent_working' | 'person_asked' | 'new_prompt' | 'tool_short_or_untimed' | 'nothing_recorded'
 /** A cause of the long pauses: its requests and cost, and its share of the long-pause cost (of one tool, or of all). */
 export type PauseCauseRow = { cause: PauseCause; requests: number; priced: number; cost_usd: Num; share: Num }
@@ -48,10 +56,17 @@ export type PauseCauseLead = {
 /** A call that ran longest in a pause where a call was still running: its tool name and, for a command, its program. */
 export type PauseCauseTool = {
   tool: string; tool_name: string | null; program: string | null; requests: number; cost_usd: Num; p50_call_s: Num; max_call_s: Num
+  /** Its parts per repository (requests, cost_usd), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
+/**
+ * A tool's requests after a pause of 5 minutes or more: measured cost and the estimate at its under-1-minute average, with
+ * their parts per repository (requests, priced, cost_usd, estimate_usd: a repository's priced requests × the tool's average).
+ */
+export type PauseLong = { requests: number; priced: number; cost_usd: Num; estimate_usd: Num; repos?: RepoSegment[] }
 export type PauseBody = Base<'pause'> & {
-  tools: { tool: string; cache_reported: boolean; buckets: PauseCell[] }[]; projects?: PauseProject[]
-  causes?: (PauseCauseRow & { tool: string; buckets: { bucket: Bucket; requests: number; sessions: number; cost_usd: Num }[] })[]
+  tools: { tool: string; cache_reported: boolean; buckets: PauseCell[]; long_pause?: PauseLong }[]; projects?: PauseProject[]
+  causes?: (PauseCauseRow & { tool: string; buckets: { bucket: Bucket; requests: number; sessions: number; cost_usd: Num }[]; repos?: RepoSegment[] })[]
   cause_tools?: PauseCauseTool[]
   summary: {
     sessions?: number; tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[]; unpriced_requests?: number
@@ -68,7 +83,8 @@ export type CarryBody = Base<'carry'> & {
   tools: { tool: string; calls: number; reported: number; output_bytes: Num; carried_bytes: Num; repos?: RepoSegment[] }[]
   summary: { output_bytes: Num; carried_bytes: Num; top: CarryName | null; not_reported: string[] }
 }
-type Side = { requests: number; priced: number; cost_usd: Num }
+/** One side of a tool's requests, with its parts per repository (requests, priced, cost_usd; agents for subagents), repoSplit.ts. */
+type Side = { requests: number; priced: number; cost_usd: Num; repos?: RepoSegment[] }
 export type SubagentTool = { tool: string; main: Side; subagents: Side & { agents: number }; subagent_share: Num }
 export type SubagentBody = Base<'subagents'> & {
   tools: SubagentTool[]
@@ -77,6 +93,8 @@ export type SubagentBody = Base<'subagents'> & {
 export type FailureTool = {
   tool: string; calls: number; failures: number; last_failures: number; outcomes: Record<Outcome, number>
   streaks: number; streak_calls: number; longest: Num
+  /** Its parts per repository (calls, failures, last_failures, streaks, streak_calls and the five outcomes), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
 export type FailureBody = Base<'failures'> & {
   tools: FailureTool[]
@@ -154,11 +172,17 @@ export type FixedBody = Base<'fixed'> & {
   }
 }
 export type Signal = 'compaction' | 'failure_streak' | 'failed_delegation' | 'api_error' | 'open_todos' | 'hook_failure'
-export type SignalCell = { signal: Signal; reported: boolean; sessions: Num; share: Num; cost_usd: Num }
+export type SignalCell = {
+  signal: Signal; reported: boolean; sessions: Num; share: Num; cost_usd: Num
+  /** Its parts per repository (sessions, cost_usd); empty for a signal the tool does not report. */
+  repos?: RepoSegment[]
+}
 export type ProblemTool = {
   tool: string; sessions: number; reports: boolean; flagged: Num; multi: Num; flagged_cost_usd: Num; cost_usd: Num; signals: SignalCell[]
+  /** Its parts per repository (sessions, flagged, multi, cost_usd, flagged_cost_usd), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
-export type ProblemPair = { signals: [Signal, Signal]; sessions: number; cost_usd: Num }
+export type ProblemPair = { signals: [Signal, Signal]; sessions: number; cost_usd: Num; repos?: RepoSegment[] }
 export type ProblemProject = {
   project: string; sessions: number; all_sessions: number; tools: string[]; cost_usd: Num; signals?: Record<Signal, number>
 }
@@ -348,16 +372,47 @@ export function pauseProjectHover(row: { project: string; sessions: number; requ
 
 /** The card's primary split: the projects whose long pauses cost the most extra, five at most, every other one summed. */
 export function pauseProjects(body: PauseBody, shown = 5) {
-  const named = new Map<string, { project: string; sessions: number; requests: number; extra: number }>()
+  const named = new Map<string, { project: string; sessions: number; requests: number; extra: number; lists: RepoSegment[][] }>()
   for (const row of body.projects ?? []) {
     if (!row.project || row.extra_usd == null || !body.tools.some(tool => tool.tool === row.tool)) continue
-    const found = named.get(row.project) ?? { project: row.project, sessions: 0, requests: 0, extra: 0 }
+    const found = named.get(row.project) ?? { project: row.project, sessions: 0, requests: 0, extra: 0, lists: [] }
     named.set(row.project, { ...found, sessions: found.sessions + row.sessions, requests: found.requests + row.requests,
-      extra: found.extra + row.extra_usd })
+      extra: found.extra + row.extra_usd, lists: row.repos?.length ? [...found.lists, row.repos] : found.lists })
   }
   const top = [...named.values()].filter(row => row.extra > 0).sort((a, b) => b.extra - a.extra).slice(0, shown)
+    .map(({ lists, ...row }) => ({ ...row, repos: sumRepos(lists, PROJECT_MEASURES, body.repo_order) }))
   const rest = (body.summary.extra_usd ?? 0) - top.reduce((sum, row) => sum + row.extra, 0)
   return { top, rest: rest > 0.005 ? rest : 0 }
+}
+const PROJECT_MEASURES = ['requests', 'sessions', 'cost_usd', 'extra_usd'] as const
+
+/**
+ * The segments of several rows of one bar (a project's rows of each tool) summed by repository, in repo_order order with
+ * every other repository last. A share of the bar is taken again of the summed bar; a share of the repository's own total
+ * is summed too (the same total under every row), and is null where one of the rows has none.
+ */
+export function sumRepos(lists: readonly (readonly RepoSegment[])[], measures: readonly string[], order: RepoSplit['repo_order']): RepoSegment[] {
+  const merged = new Map<string, RepoSegment>()
+  for (const segment of lists.flat()) {
+    const found = merged.get(segment.repo)
+    if (!found) {
+      merged.set(segment.repo, { ...segment, share: {}, of_repo: { ...segment.of_repo } })
+      continue
+    }
+    for (const key of measures) {
+      const a = found[key], b = segment[key]
+      found[key] = typeof a === 'number' || typeof b === 'number' ? (typeof a === 'number' ? a : 0) + (typeof b === 'number' ? b : 0) : null
+      const ownA = found.of_repo[key], ownB = segment.of_repo?.[key]
+      found.of_repo[key] = ownA == null || ownB == null ? null : ownA + ownB
+    }
+  }
+  const rank = (repo: string) => { const at = repo ? (order ?? []).findIndex(item => item.repo === repo) : -1; return at < 0 ? Infinity : at }
+  const rows = [...merged.values()].sort((a, b) => rank(a.repo) - rank(b.repo))
+  for (const key of measures) {
+    const whole = rows.reduce((sum, row) => sum + (typeof row[key] === 'number' ? row[key] as number : 0), 0)
+    for (const row of rows) row.share[key] = typeof row[key] === 'number' && whole > 0 ? (row[key] as number) / whole : null
+  }
+  return rows
 }
 
 export function carryFinding(body: CarryBody, label: Label) {

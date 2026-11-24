@@ -7,6 +7,8 @@ import {
   pauseEstimate, pauseEstimateHover, pauseFinding, pauseMeasuredHover, pauseProjectHover, pauseProjects, plural, share,
   toolLabel, type Bucket, type Label, type PauseBody, type PauseCause,
 } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther, notSplitNote, repoParts } from './repoSplit'
 
 const BUCKET_TONE: Record<Bucket, number> = { under_1m: 6, '1_5m': 2, '5_60m': 1, over_60m: 3 }
 const CAUSE_TONE: Record<PauseCause, number> = {
@@ -29,12 +31,29 @@ function bucketRows(body: PauseBody, label: Label, of: 'requests' | 'cost'): Bar
   }))
 }
 
+/**
+ * Per tool and pause bucket, its requests (or their cost) in a segment per repository; the split by pause is the bar
+ * above. A repository's own total is its requests (or cost) after any pause.
+ */
+function bucketRepoRows(body: PauseBody, label: Label, of: 'requests' | 'cost'): BarRow[] {
+  const key = of === 'requests' ? 'requests' : 'cost_usd'
+  const measure = of === 'requests' ? 'requests after any pause' : 'cost after any pause'
+  const format = (value: number) => of === 'requests' ? fmtNum(value) : money(value)
+  return body.tools.flatMap(tool => tool.buckets.filter(cell => cell.repos?.length).map(cell => ({
+    key: `${tool.tool}:${cell.bucket}`, label: `${label(tool.tool)}: pause ${BUCKET_LABELS[cell.bucket]}`,
+    sub: of === 'cost' ? `${fmtNum(cell.priced)} priced of ${plural(cell.requests, 'request')}` : undefined,
+    total: of === 'requests' ? plural(cell.requests, 'request') : money(cell.cost_usd),
+    parts: repoParts(cell.repos, key, body.repo_order, format, `${label(tool.tool)}, pause ${BUCKET_LABELS[cell.bucket]}, ${of}`, measure,
+      pauseBucketHover(tool, cell, label)),
+  })))
+}
+
 /** Per tool and bucket, the average cost of a request: one linear scale for every bar of one tool. */
-function averageRows(tool: PauseBody['tools'][number], label: Label): BarRow[] {
+function averageRows(tool: PauseBody['tools'][number], label: Label, split: boolean): BarRow[] {
   return tool.buckets.map(cell => ({
     key: cell.bucket, label: `Pause ${BUCKET_LABELS[cell.bucket]}`, sub: plural(cell.requests, 'request'), total: money(cell.avg_cost_usd),
     parts: [{ key: cell.bucket, label: 'average cost per request', value: cell.avg_cost_usd, tone: BUCKET_TONE[cell.bucket],
-      text: money(cell.avg_cost_usd), hover: pauseBucketHover(tool, cell, label) }],
+      text: money(cell.avg_cost_usd), hover: pauseBucketHover(tool, cell, label) + (split ? ` ${notSplitNote('average')}` : '') }],
   }))
 }
 
@@ -42,12 +61,18 @@ function averageRows(tool: PauseBody['tools'][number], label: Label): BarRow[] {
 function estimateRows(body: PauseBody, label: Label): BarRow[] {
   return body.tools.filter(tool => tool.cache_reported && pauseEstimate(tool).requests > 0).flatMap(tool => {
     const e = pauseEstimate(tool)
+    const repos = tool.long_pause?.repos
+    const name = `${label(tool.tool)}, after pauses of 5 minutes or more`
     return [
       { key: `${tool.tool}:measured`, label: `${label(tool.tool)}: measured`, sub: plural(e.requests, 'request'), total: money(e.cost),
-        parts: [{ key: 'measured', label: 'measured cost', value: e.cost, tone: 1, text: money(e.cost), hover: pauseMeasuredHover(tool, label) }] },
+        parts: repos?.length ? repoParts(repos, 'cost_usd', body.repo_order, value => money(value), `${name}, measured cost`,
+          'measured cost after pauses of 5 minutes or more', pauseMeasuredHover(tool, label))
+          : [{ key: 'measured', label: 'measured cost', value: e.cost, tone: 1, text: money(e.cost), hover: pauseMeasuredHover(tool, label) }] },
       { key: `${tool.tool}:estimate`, label: `${label(tool.tool)}: estimate`, sub: `${fmtNum(e.priced)} × ${money(e.average)}`,
         total: money(e.estimate),
-        parts: [{ key: 'estimate', label: 'estimate', value: e.estimate, tone: 6, text: money(e.estimate), hover: pauseEstimateHover(tool, label) }] },
+        parts: repos?.length ? repoParts(repos, 'estimate_usd', body.repo_order, value => money(value),
+          `${name}, estimate (not measured: the repository's priced requests × ${money(e.average)})`, 'estimate', pauseEstimateHover(tool, label))
+          : [{ key: 'estimate', label: 'estimate', value: e.estimate, tone: 6, text: money(e.estimate), hover: pauseEstimateHover(tool, label) }] },
     ]
   })
 }
@@ -62,17 +87,31 @@ function causeRows(body: PauseBody, label: Label): BarRow[] {
   }))
 }
 
+/** Per tool and recorded cause, its cost after pauses of 5 minutes or more in a segment per repository. */
+function causeRepoRows(body: PauseBody, label: Label): BarRow[] {
+  return pauseCauseBars(body).flatMap(bar => bar.causes.filter(row => row.repos?.length).map(row => ({
+    key: `${bar.tool}:${row.cause}`, label: `${label(bar.tool)}: ${CAUSE_LABELS[row.cause]}`,
+    sub: `${plural(row.requests, 'request')} (${fmtNum(row.priced)} priced)`, total: money(row.cost_usd),
+    parts: repoParts(row.repos, 'cost_usd', body.repo_order, value => money(value), `${label(bar.tool)}, ${CAUSE_LABELS[row.cause]}, cost`,
+      'cost after pauses with this cause', pauseCauseHover(row, bar.total, label)),
+  })))
+}
+
+const projectsSplit = (body: PauseBody) => pauseProjects(body).top.some(row => row.repos.length)
+
 function projectRows(body: PauseBody): BarRow[] {
   const split = pauseProjects(body)
   return [
     ...split.top.map((row): BarRow => ({
       key: row.project, label: projectName(row.project), title: row.project, sub: `${plural(row.sessions, 'session')} · ${plural(row.requests, 'request')}`,
-      total: money(row.extra), parts: [{ key: 'difference', label: 'measured minus estimate', value: row.extra, tone: 1, text: money(row.extra),
-        hover: pauseProjectHover(row, 0) }],
+      total: money(row.extra), parts: row.repos.length ? repoParts(row.repos, 'extra_usd', body.repo_order, value => money(value),
+        `${projectName(row.project)}, measured cost minus the estimate`, 'measured cost minus the estimate', pauseProjectHover(row, 0))
+        : [{ key: 'difference', label: 'measured minus estimate', value: row.extra, tone: 1, text: money(row.extra), hover: pauseProjectHover(row, 0) }],
     })),
     ...(split.rest ? [{ key: 'rest', label: 'Other projects', sub: 'summed', total: money(split.rest),
       parts: [{ key: 'difference', label: 'measured minus estimate', value: split.rest, tone: 7, text: money(split.rest),
-        hover: pauseProjectHover(null, split.rest) }] }] : []),
+        hover: pauseProjectHover(null, split.rest) + (projectsSplit(body) ? ' Not split by repository: this bar is the card\'s ' +
+          'total difference less the projects drawn above.' : '') }] }] : []),
   ]
 }
 
@@ -82,48 +121,68 @@ function callRows(body: PauseBody, label: Label): BarRow[] {
     label: `${row.tool_name ?? 'unnamed call'}${row.program ? ` (${row.program})` : ''}`,
     sub: `${label(row.tool)} · ${plural(row.requests, 'pause')} · ran ${fmtDur(row.p50_call_s)} median, ${fmtDur(row.max_call_s)} at most`,
     total: money(row.cost_usd),
-    parts: [{ key: 'cost', label: 'cost after the pauses', value: row.cost_usd, tone: CAUSE_TONE.tool_running, text: money(row.cost_usd),
-      hover: pauseCallHover(row, label) }],
+    parts: row.repos?.length ? repoParts(row.repos, 'cost_usd', body.repo_order, value => money(value),
+      `${row.tool_name ?? 'unnamed call'}${row.program ? ` (${row.program})` : ''}, cost after the pauses`, 'cost after these pauses',
+      `${pauseCallHover(row, label)} The median and longest call durations are of all the row's calls, not split by repository.`)
+      : [{ key: 'cost', label: 'cost after the pauses', value: row.cost_usd, tone: CAUSE_TONE.tool_running, text: money(row.cost_usd),
+        hover: pauseCallHover(row, label) }],
   }))
 }
 
 function Visual(props: { body: PauseBody; label: Label }) {
   const causes = () => causeRows(props.body, props.label)
   const shownCauses = () => PAUSE_CAUSES.filter(cause => causes().some(row => row.parts.some(part => part.key === cause)))
+  const longs = () => props.body.tools.flatMap(tool => tool.long_pause ? [tool.long_pause] : [])
+  const split = () => props.body.tools.some(tool => tool.buckets.some(cell => cell.repos?.length))
+  const perRepo = (on: boolean | undefined) => on ? '; a segment per repository' : ''
   return <>
+    <RepoLegend split={props.body} other={hasOther([...props.body.tools.flatMap(tool => tool.buckets), ...longs(),
+      ...(props.body.projects ?? []), ...(props.body.causes ?? []), ...(props.body.cause_tools ?? [])])} />
     <Show when={props.body.tools.length}>
       <Bars name="pause-requests" title="Requests by the pause before them, per tool" scale="whole" legend={bucketLegend}
         axis="Bar: all requests of the tool in the period (100%); segments: requests in each pause bucket, count written on each."
         rows={bucketRows(props.body, props.label, 'requests')} />
+      <Bars name="pause-requests-repos" title="Requests per tool and pause, by repository"
+        axis="Length: requests, one linear scale from 0 for every row; a segment per repository."
+        rows={bucketRepoRows(props.body, props.label, 'requests')} />
       <Bars name="pause-cost" title="Cost by the pause before the request, per tool" scale="whole" legend={bucketLegend}
         axis="Bar: the tool's cost at list price in the period (100%); segments: cost of the requests in each pause bucket."
         rows={bucketRows(props.body, props.label, 'cost')} />
+      <Bars name="pause-cost-repos" title="Cost per tool and pause, by repository"
+        axis="Length: cost at list price, one linear scale from $0 for every row; a segment per repository."
+        rows={bucketRepoRows(props.body, props.label, 'cost')} />
     </Show>
     <Show when={causes().length}>
       <Bars name="pause-causes" title="Cost after pauses of 5 minutes or more, by what the pause recorded, per tool" scale="whole"
         legend={shownCauses().map(cause => ({ label: CAUSE_LABELS[cause], tone: CAUSE_TONE[cause] }))}
         axis="Bar: the tool's cost after pauses of 5 minutes or more (100%); segments: cost and share per recorded cause."
         rows={causes()} />
+      <Bars name="pause-causes-repos" title="Cost after pauses of 5 minutes or more per tool and recorded cause, by repository"
+        axis="Length: cost at list price, one linear scale from $0 for every row; a segment per repository."
+        rows={causeRepoRows(props.body, props.label)} />
     </Show>
     <Show when={estimateRows(props.body, props.label).length}>
       <Bars name="pause-estimate" title="After pauses of 5 minutes or more: measured cost and estimate, per tool"
-        axis="Length: cost at list price, linear from $0. Estimate = priced requests × the tool's average cost per request after a pause under 1 minute (hover for each)."
+        axis={'Length: cost at list price, linear from $0. Estimate = priced requests × the tool\'s average cost per request after a ' +
+          `pause under 1 minute (hover for each)${perRepo(longs().some(row => row.repos?.length))}.`}
         rows={estimateRows(props.body, props.label)} />
     </Show>
     <Show when={pauseProjects(props.body).top.length}>
       <Bars name="pause-projects" title="Measured cost minus the estimate, per project"
-        axis="Length: dollars at list price, linear from $0; the five largest projects, every other one summed (grey)."
+        axis={'Length: dollars at list price, linear from $0; the five largest projects, every other one summed (grey' +
+          `${projectsSplit(props.body) ? ', not split' : ''})${perRepo(projectsSplit(props.body))}.`}
         rows={projectRows(props.body)} />
     </Show>
     <Show when={props.body.cause_tools?.length}>
       <Bars name="pause-calls" title="Calls still running through a pause of 5 minutes or more"
-        axis="Length: cost at list price of the requests after those pauses, linear from $0."
+        axis={`Length: cost at list price of the requests after those pauses, linear from $0${
+          perRepo(props.body.cause_tools?.some(row => row.repos?.length))}.`}
         rows={callRows(props.body, props.label)} />
     </Show>
     <For each={props.body.tools}>{tool => <Bars name={`pause-average-${tool.tool}`}
       title={`${props.label(tool.tool)}: average cost per request by the pause before it${tool.cache_reported ? '' : ' (cache writes not reported)'}`}
-      axis="Length: dollars per priced request at list price, linear from $0 to this tool's largest average."
-      rows={averageRows(tool, props.label)} />}</For>
+      axis={`Length: dollars per priced request at list price, linear from $0 to this tool's largest average${split() ? '; not split by repository' : ''}.`}
+      rows={averageRows(tool, props.label, split())} />}</For>
   </>
 }
 
