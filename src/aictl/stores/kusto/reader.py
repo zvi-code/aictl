@@ -366,6 +366,12 @@ _VIEWS = {
         "failed test_runs writes files lines_added lines_removed lines_unknown commits commit_sessions idle_sessions repository "
         "model node_id session_id tool started_at bin_start first_ts last_ts computed_at",
     ),
+    "insights.durations": (
+        f"{_TIME} restrict_tools requested_tools requested_models",
+        "row_type repo sessions agent_s timed wait_s waits model_ms tool_ms requests calls p50_agent_s p90_agent_s max_agent_s "
+        "walled p50_wall_s p90_wall_s max_wall_s changed p50_first_change_s p90_first_change_s repository program name total_ms "
+        "p50_ms p95_ms failed repo_ms model node_id session_id tool wall_s first_change_s first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -469,6 +475,7 @@ _CACHE_TTL_S = {
     "insights.verified_commits": _INSIGHT_TTL_S,
     "insights.model_report": _INSIGHT_TTL_S,
     "insights.repositories": _INSIGHT_TTL_S,
+    "insights.durations": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }

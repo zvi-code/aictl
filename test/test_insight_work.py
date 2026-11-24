@@ -188,3 +188,46 @@ def test_the_tool_filter_reaches_the_view(kusto_store):
     _seed(kusto_store)
     body = _card(kusto_store, "repos", Filters(since=0.0, until=100_000.0, tools=("claude-code",)))
     assert {repo["repo"]: repo["sessions"] for repo in body["repos"]} == {APP: 2}
+
+
+def _more_turns(store):
+    # s1: a second turn a person started 600 s after the first ended (a wait), then one the autopilot started (no wait).
+    store.insert("session_turns", session_id="s1", prompt_id="t3", ts=1000.0, ended_at=1100.0, origin="human", project=APP,
+                 project_path=APP, tool="claude-code")
+    store.insert("session_turns", session_id="s1", prompt_id="t4", ts=2000.0, ended_at=2050.0, origin="autopilot", project=APP,
+                 project_path=APP, tool="claude-code")
+
+
+def test_durations_split_working_and_waiting_time_by_repository(kusto_store):
+    _seed(kusto_store)
+    _more_turns(kusto_store)
+    body = _card(kusto_store, "durations")
+    repos = _repos(body)
+    app = repos[APP]
+    assert (app["sessions"], app["timed"], app["small"]) == (4, 2, True)
+    assert (app["agent_ms"], app["wait_ms"], app["waits"]) == (1_050_000.0, 600_000.0, 1)
+    assert (app["model_ms"], app["tool_ms"], app["requests"], app["calls"]) == (60_000.0, 600.0, 60, 6)
+    assert (app["changed"], app["p50_first_change_ms"], app["walled"], app["max_wall_ms"]) == (1, 1_090_000.0, 4, 5_000_000.0)
+    assert repos[SCRATCH]["agent_ms"] is None and repos[SCRATCH]["timed"] == 0
+    tools = {tool["name"]: tool for tool in body["tools"]}
+    assert (tools["git"]["program"], tools["git"]["calls"], tools["git"]["total_ms"], tools["git"]["small"]) == (True, 2, 200.0, True)
+    assert tools["Read"]["program"] is False and tools["Read"]["repo"] == APP
+    models = {model["model"]: model for model in body["models"]}
+    assert (models["claude-opus-5-5"]["requests"], models["claude-opus-5-5"]["small"]) == (34, False)
+    summary = body["summary"]
+    assert (summary["timed"], summary["agent_ms"], summary["wait_ms"]) == (2, 1_050_000.0, 600_000.0)
+    # Every repository has fewer than 5 sessions with turn times: none leads the finding.
+    assert summary["top"] is None and set(summary["small"]) == {"app", "scratch"}
+    assert summary["top_tool"]["name"] in {"git", "Edit", "Read", "echo", "python"}
+    assert summary["slowest_tool"] is None and summary["slowest_model"]["model"] == "claude-opus-5-5"
+    assert [session["session_id"] for session in body["sessions"]][:2] == ["s2", "s1"]
+
+
+def test_durations_follow_the_project_filter_and_the_node_scope(kusto_store):
+    _seed(kusto_store)
+    status, raw = board_routes.handle_get("/api/board/insights/durations", urlencode({"since": 0, "until": 100_000, "project": SCRATCH}),
+                                          kusto_store, kusto_store, now=200_000.0)
+    body = json.loads(raw)
+    assert status == 200 and [repo["repo"] for repo in body["repos"]] == [SCRATCH]
+    other = _card(kusto_store, "durations", node=OTHER, qualified=True)
+    assert [(repo["repo"], repo["sessions"], repo["agent_ms"]) for repo in other["repos"]] == [(APP, 1, None)]

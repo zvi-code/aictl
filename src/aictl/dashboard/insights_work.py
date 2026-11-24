@@ -26,8 +26,13 @@ MIN_SESSIONS = 3
 MIN_COMMITS = 3
 MIN_FILES = 5
 
+# Percentiles of session times need this many sessions; a tool's or model's 95th percentile this many calls or requests.
+MIN_TIMED_SESSIONS = 5
+MIN_CALLS = 20
+
 CARDS = {
     "repos": "insights.repositories",
+    "durations": "insights.durations",
 }
 
 
@@ -157,14 +162,85 @@ def _brief(repo: dict) -> dict:
                                         "cost_per_commit", "cost_per_file", "idle_sessions")}
 
 
+_TIMES = ("agent_s", "wait_s", "p50_agent_s", "p90_agent_s", "max_agent_s", "p50_wall_s", "p90_wall_s", "max_wall_s",
+          "p50_first_change_s", "p90_first_change_s")
+
+
+def _times(row: dict) -> dict:
+    """The session-time figures of a repo or 'all' row, in ms; a percentile of no session is None."""
+    timed, walled, changed = _int(row.get("timed")), _int(row.get("walled")), _int(row.get("changed"))
+    out = {"sessions": _int(row.get("sessions")), "timed": timed, "walled": walled, "changed": changed,
+           "waits": _int(row.get("waits")), "requests": _int(row.get("requests")), "calls": _int(row.get("calls")),
+           "model_ms": _num(row.get("model_ms")), "tool_ms": _num(row.get("tool_ms"))}
+    for key in _TIMES:
+        known = {"agent": timed, "wait": timed, "wall": walled, "first": changed}[key.split("_")[1 if key[0] in "pm" else 0]]
+        out[key.removesuffix("_s") + "_ms"] = _ms(row.get(key)) if known else None
+    return out
+
+
+def durations(rows: list[dict]) -> dict:
+    """Where the sessions' time goes, per repository: working time, waiting, model and tool time, and how long things take."""
+    repos = []
+    for row in _of(rows, "repo"):
+        repo = str(row.get("repo") or "")
+        figures = _times(row)
+        repos.append({"repo": repo, "name": folder_name(repo), "kind": "repository" if _int(row.get("repository")) else "folder",
+                      **figures, "small": figures["timed"] < MIN_TIMED_SESSIONS})
+    total = next(iter(_of(rows, "all")), {})
+    overall = _times(total) if total else _times({})
+    agent = sum(repo["agent_ms"] or 0.0 for repo in repos)
+    for repo in repos:
+        repo["agent_share"] = _ratio(repo["agent_ms"], agent)
+    repos.sort(key=lambda repo: (-(repo["agent_ms"] or 0.0), -repo["sessions"], repo["repo"]))
+    tools = [{
+        "name": row.get("name") or None, "program": bool(row.get("program")), "calls": _int(row.get("calls")),
+        "timed": _int(row.get("timed")), "total_ms": _num(row.get("total_ms")), "p50_ms": _num(row.get("p50_ms")),
+        "p95_ms": _num(row.get("p95_ms")), "failed": _int(row.get("failed")),
+        "failed_share": _ratio(_n(row.get("failed")), _n(row.get("calls"))), "repo": row.get("repo") or None,
+        "repo_name": folder_name(row.get("repo")) if row.get("repo") else None, "repo_ms": _num(row.get("repo_ms")),
+        "small": _int(row.get("timed")) < MIN_CALLS,
+    } for row in _of(rows, "tool")]
+    tools.sort(key=lambda tool: -(tool["total_ms"] or 0.0))
+    models = [{
+        "model": row.get("model") or None, "requests": _int(row.get("requests")), "timed": _int(row.get("timed")),
+        "total_ms": _num(row.get("total_ms")), "p50_ms": _num(row.get("p50_ms")), "p95_ms": _num(row.get("p95_ms")),
+        "small": _int(row.get("timed")) < MIN_CALLS,
+    } for row in _of(rows, "model")]
+    models.sort(key=lambda model: -(model["total_ms"] or 0.0))
+    sessions = [{
+        "session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"), "repo": row.get("repo"),
+        "agent_ms": _ms(row.get("agent_s")), "wait_ms": _ms(row.get("wait_s")), "wall_ms": _ms(row.get("wall_s")),
+        "model_ms": _num(row.get("model_ms")), "tool_ms": _num(row.get("tool_ms")), "first_change_ms": _ms(row.get("first_change_s")),
+        "requests": _int(row.get("requests")), "calls": _int(row.get("calls")),
+    } for row in _of(rows, "session") if row.get("session_id")]
+    compared = [repo for repo in repos if not repo["small"] and repo["agent_ms"]]
+    slow_tools = sorted((tool for tool in tools if not tool["small"] and tool["p95_ms"] is not None), key=lambda tool: -tool["p95_ms"])
+    slow_models = sorted((model for model in models if not model["small"] and model["p95_ms"] is not None),
+                         key=lambda model: -model["p95_ms"])
+    top_tool = next((tool for tool in tools if tool["total_ms"]), None)
+    summary = {
+        **overall,
+        "top": {key: compared[0][key] for key in ("repo", "name", "kind", "sessions", "agent_ms", "agent_share", "p50_agent_ms")}
+        if compared else None,
+        "top_tool": {**top_tool, "share": _ratio(top_tool["total_ms"], overall["tool_ms"])} if top_tool else None,
+        "slowest_tool": slow_tools[0] if slow_tools else None,
+        "slowest_model": slow_models[0] if slow_models else None,
+        "small": [repo["name"] for repo in repos if repo["small"]],
+    }
+    return {"repos": repos, "tools": tools, "models": models, "summary": summary, "sessions": sessions}
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "repos": repositories,
+    "durations": durations,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "repos": lambda history, params: history.read("insights.repositories", limit=ROW_LIMIT, **params),
+    "durations": lambda history, params: history.read("insights.durations", limit=ROW_LIMIT, **params),
 }
 # The parameters a work view takes besides the period: the page's tool and model filters, and the bin width.
 PARAMS: dict[str, Callable[[Filters], dict]] = {
     "repos": lambda filters: {**filter_params(filters), "step": step_for(filters)},
+    "durations": filter_params,
 }

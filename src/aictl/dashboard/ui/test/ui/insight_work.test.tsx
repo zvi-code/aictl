@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
+import Durations from '../../src/panels/insights/Durations'
 import Repositories from '../../src/panels/insights/Repositories'
-import { repoFinding, repoHero, smallText, type Repo, type RepoBody } from '../../src/panels/insights/workModel'
+import {
+  durationFinding, durationHero, repoFinding, repoHero, smallText,
+  type DurationBody, type DurationRepo, type DurationTool, type Repo, type RepoBody, type SessionTimes,
+} from '../../src/panels/insights/workModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -94,6 +98,57 @@ describe('Work by repository', () => {
     expect(requested[0]).toContain('tool=copilot-cli')
     expect(requested[0]).toContain('model=claude-opus-5-5')
     expect(requested[0]).toContain('scope=fleet')
+    dispose()
+  })
+})
+
+const times = (values: Partial<SessionTimes> = {}): SessionTimes => ({
+  sessions: 20, timed: 20, walled: 18, changed: 15, waits: 30, requests: 2000, calls: 4000, model_ms: 36_000_000, tool_ms: 7_200_000,
+  agent_ms: 72_000_000, wait_ms: 18_000_000, p50_agent_ms: 600_000, p90_agent_ms: 3_600_000, max_agent_ms: 14_400_000,
+  p50_wall_ms: 900_000, p90_wall_ms: 7_200_000, max_wall_ms: 86_400_000, p50_first_change_ms: 120_000, p90_first_change_ms: 900_000,
+  ...values,
+})
+const loopRepo: DurationRepo = { ...times(), repo: '/src/loop', name: 'loop', kind: 'repository', agent_share: 0.8, small: false }
+const tinyRepo: DurationRepo = { ...times({ sessions: 2, timed: 2, agent_ms: 18_000_000 }), repo: '/tmp/t', name: 't', kind: 'folder',
+  agent_share: 0.2, small: true }
+const pytest: DurationTool = { name: 'pytest', program: true, calls: 300, timed: 300, total_ms: 3_600_000, p50_ms: 4000, p95_ms: 60_000,
+  failed: 30, failed_share: 0.1, repo: '/src/loop', repo_name: 'loop', repo_ms: 3_000_000, small: false }
+const durations = {
+  ...base, card: 'durations', view: 'insights.durations', repos: [loopRepo, tinyRepo], tools: [pytest],
+  models: [{ model: 'gpt-5', requests: 2000, timed: 2000, total_ms: 36_000_000, p50_ms: 8000, p95_ms: 90_000, small: false }],
+  sessions: [],
+  summary: { ...times({ agent_ms: 90_000_000 }), top: { repo: '/src/loop', name: 'loop', kind: 'repository', sessions: 20,
+    agent_ms: 72_000_000, agent_share: 0.8, p50_agent_ms: 600_000 }, top_tool: { ...pytest, share: 0.5 }, slowest_tool: pytest,
+    slowest_model: { model: 'gpt-5', requests: 2000, timed: 2000, total_ms: 36_000_000, p50_ms: 8000, p95_ms: 90_000, small: false },
+    small: ['t'] },
+} as unknown as DurationBody
+
+describe('Where session time goes', () => {
+  it('leads with working time and where it went, then the median session, waiting and the slowest things', () => {
+    expect(durationFinding(durations)).toBe('Agents worked 25 h in 20 sessions; loop took 80% of it (20 h in 20 sessions). A session ' +
+      'worked 10 min at the median and 1 h at the 90th percentile. Between turns, sessions waited 5 h for a person. The most tool ' +
+      'time went to pytest (program): 1 h, 50% of all tool-call time, most of it in loop. The slowest model was gpt-5: 1 request ' +
+      'in 20 took over 1 min 30 s.')
+    expect(durationHero(durations)).toEqual({ value: '25 h', label: 'of agent working time in 20 sessions, 80% of it in loop' })
+    const untimed = { ...durations, summary: { ...durations.summary, timed: 0, agent_ms: null } } as DurationBody
+    expect(durationFinding(untimed)).toBe('20 sessions in this period, but no tool recorded when their turns started and ended, so ' +
+      'working time is not reported.')
+    expect(durationHero(untimed)).toBeUndefined()
+  })
+
+  it('draws working and waiting time per repository and keeps wall-clock length in the detail', () => {
+    const ctx = context({ data: { ...durations, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
+    const { host, dispose } = mount(() => <Durations {...props(ctx)} />)
+    const box = host.querySelector('[data-box="insight-durations"]')!
+    const rows = [...box.querySelectorAll('[data-repo]')]
+    expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['loop', 't'])
+    expect(rows[0].querySelector('summary')!.textContent).toContain('worked 20 h')
+    expect(rows[0].querySelector('summary')!.textContent).toContain('median session 10 min · 90th percentile 1 h')
+    expect(rows[0].querySelector('summary')!.textContent).not.toContain('Wall-clock')
+    expect(rows[0].querySelector('[data-repo-detail]')!.textContent).toContain('Wall-clock length (open time, not work)median 15 min')
+    expect(rows[1].hasAttribute('data-small')).toBe(true)
+    expect(rows[1].querySelector('summary')!.textContent).toContain('too few sessions for a median')
+    expect(box.querySelector('[data-tool-name="pytest"]')!.textContent).toContain('1 h · median 4 s · p95 1 min')
     dispose()
   })
 })
