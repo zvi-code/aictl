@@ -350,6 +350,140 @@ These rules are what the writers enforce (`session_facts.py`, `tool_calls.py`,
   are stored under the session id their source carries; a message with no session id has an
   empty one. No id is invented.
 
+### Relation table
+
+Each row is one key relation a reader needs to put rows back together: the columns of the
+table on the left refer to the columns on the right, in order, within the same `node_id`
+(the OTel tables have no node of their own for a Collector's rows: join them on the columns
+alone). Join after the dedup of both sides, and ignore `project`: a relation never needs it.
+An empty value on the left means "no link" (for `agent_id`, the main agent). Cardinality is
+left to right: `N:1` many rows refer to one row, `1:1` at most one row on each side, `N:M`
+the right side is not unique (a pid is reused, so add a time condition).
+`test/test_storage_relations.py` checks that every column named here exists with the same
+type on both sides, and that every link column of a table is listed here or below.
+
+| table | columns | refers to | cardinality |
+|---|---|---|---|
+| `sessions` | `resumed_from` | `sessions.session_id` | N:1 |
+| `sessions` | `project_path` | `projects.path` | N:1 |
+| `agents` | `session_id` | `sessions.session_id` | N:1 |
+| `agents` | `session_id`, `parent_agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `agents` | `session_id`, `parent_tool_use_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | 1:1 |
+| `agents_text` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | 1:1 |
+| `session_turns` | `session_id` | `sessions.session_id` | N:1 |
+| `session_prompts` | `session_id` | `sessions.session_id` | N:1 |
+| `session_prompts` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `requests` | `session_id` | `sessions.session_id` | N:1 |
+| `requests` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `requests` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
+| `tool_invocations` | `session_id` | `sessions.session_id` | N:1 |
+| `tool_invocations` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `tool_invocations` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
+| `tool_invocations` | `request_key` | `requests.dedup_key` | N:1 |
+| `tool_invocations_text` | `dedup_key` | `tool_invocations.dedup_key` | 1:1 |
+| `tool_invocation_sizes` | `dedup_key` | `tool_invocations.dedup_key` | 1:1 |
+| `tool_invocation_coverage` | `session_id` | `sessions.session_id` | 1:1 |
+| `session_steps` | `session_id` | `sessions.session_id` | N:1 |
+| `session_steps` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_steps` | `session_id`, `parent_agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_steps` | `session_id`, `tool_call_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
+| `session_steps` | `trace_id` | `otel_trace_sessions.trace_id` | N:1 |
+| `session_step_text` | `step_key` | `session_steps.step_key` | 1:1 |
+| `session_step_text` | `session_id` | `sessions.session_id` | N:1 |
+| `turn_request_links` | `request_key` | `requests.dedup_key` | 1:1 |
+| `turn_request_links` | `session_id` | `sessions.session_id` | N:1 |
+| `turn_request_links` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `turn_request_links` | `root_session_id` | `sessions.session_id` | N:1 |
+| `session_thinking` | `session_id` | `sessions.session_id` | N:1 |
+| `session_thinking` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_thinking` | `request_key` | `requests.dedup_key` | N:1 |
+| `file_write_events` | `session_id` | `sessions.session_id` | N:1 |
+| `file_write_events` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `file_write_events` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
+| `file_write_events` | `session_id`, `source_event_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
+| `file_write_events` | `before_hash` | `file_blobs.hash` | N:1 |
+| `file_write_events` | `after_hash` | `file_blobs.hash` | N:1 |
+| `session_files` | `session_id` | `sessions.session_id` | N:1 |
+| `session_files` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_loaded_files` | `session_id` | `sessions.session_id` | N:1 |
+| `session_loaded_files` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_loaded_files` | `path` | `files.path` | N:1 |
+| `session_context_items` | `session_id` | `sessions.session_id` | N:1 |
+| `session_context_items` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_commits` | `session_id` | `sessions.session_id` | N:1 |
+| `session_processes` | `session_id` | `sessions.session_id` | N:1 |
+| `session_processes` | `pid` | `processes.pid` | N:M |
+| `process_snapshots` | `pid` | `processes.pid` | N:M |
+| `skill_uses` | `session_id` | `sessions.session_id` | N:1 |
+| `skill_uses` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `context_events` | `session_id` | `sessions.session_id` | N:1 |
+| `context_events` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `context_events` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
+| `context_events` | `session_id`, `tool_call_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
+| `context_events` | `session_id`, `agent_id`, `summary_kind`, `summary_seq` | `session_digests.session_id`, `session_digests.agent_id`, `session_digests.kind`, `session_digests.seq` | 1:1 |
+| `session_digests` | `session_id` | `sessions.session_id` | N:1 |
+| `session_digests` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `session_digests` | `event_key` | `context_events.dedup_key` | 1:1 |
+| `session_digests` | `text_hash` | `file_blobs.hash` | N:1 |
+| `session_usage` | `session_id` | `sessions.session_id` | 1:1 |
+| `session_outcomes` | `session_id` | `sessions.session_id` | 1:1 |
+| `session_attribution` | `session_id` | `sessions.session_id` | 1:1 |
+| `session_folders` | `session_id` | `sessions.session_id` | 1:1 |
+| `session_artifacts` | `session_id` | `sessions.session_id` | N:1 |
+| `session_sources` | `session_id` | `sessions.session_id` | N:1 |
+| `hook_calls` | `session_id` | `sessions.session_id` | N:1 |
+| `hook_calls` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `hook_calls` | `session_id`, `tool_use_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
+| `hook_calls_text` | `call_id` | `hook_calls.call_id` | 1:1 |
+| `events` | `session_id` | `sessions.session_id` | N:1 |
+| `events_text` | `source_key` | `events.source_key` | 1:1 |
+| `metrics` | `session_id` | `sessions.session_id` | N:1 |
+| `file_history` | `session_id` | `sessions.session_id` | N:1 |
+| `file_history` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `file_history` | `session_id`, `source_event_id` | `context_events.session_id`, `context_events.message_id` | N:1 |
+| `file_history` | `blob_hash` | `file_blobs.hash` | N:1 |
+| `file_history_text` | `path`, `ts` | `file_history.path`, `file_history.ts` | 1:1 |
+| `files` | `blob_hash` | `file_blobs.hash` | N:1 |
+| `files_text` | `path` | `files.path` | 1:1 |
+| `memory_snapshots` | `session_id` | `sessions.session_id` | N:1 |
+| `memory_snapshots_text` | `session_id`, `phase`, `path`, `sha` | `memory_snapshots.session_id`, `memory_snapshots.phase`, `memory_snapshots.path`, `memory_snapshots.sha` | 1:1 |
+| `otel_trace_sessions` | `session_id` | `sessions.session_id` | N:1 |
+| `OTELLogs` | `SessionId` | `sessions.session_id` | N:1 |
+| `OTELLogs` | `SessionId`, `AgentId` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `OTELLogs` | `SessionId`, `ParentAgentId` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `OTELLogs` | `PromptId` | `session_turns.prompt_id` | N:1 |
+| `OTELLogs` | `ToolCallId` | `tool_invocations.source_event_id` | N:1 |
+| `OTELLogs` | `RequestId` | `requests.request_id` | N:1 |
+| `OTELLogs` | `ResponseId` | `requests.response_id` | N:1 |
+| `OTELLogs` | `TraceID` | `otel_trace_sessions.trace_id` | N:1 |
+| `OTELTraces` | `SessionId` | `sessions.session_id` | N:1 |
+| `OTELTraces` | `SessionId`, `AgentId` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `OTELTraces` | `SessionId`, `ParentAgentId` | `agents.session_id`, `agents.agent_id` | N:1 |
+| `OTELTraces` | `TraceID` | `otel_trace_sessions.trace_id` | N:1 |
+| `OTELTraces` | `ToolCallId` | `tool_invocations.source_event_id` | N:1 |
+| `OTELTraces` | `RequestId` | `requests.request_id` | N:1 |
+| `OTELTraces` | `ResponseId` | `requests.response_id` | N:1 |
+| `OTELMetrics` | `SessionId` | `sessions.session_id` | N:1 |
+| `OTELPayloads` | `SessionId` | `sessions.session_id` | N:1 |
+| `text_payloads` | `session_id` | `sessions.session_id` | N:1 |
+| `copilot_session_messages` | `session_id` | `sessions.session_id` | N:1 |
+| `vscode_chat_messages` | `session_id` | `sessions.session_id` | N:1 |
+| `cursor_session_messages` | `session_id` | `sessions.session_id` | N:1 |
+
+Columns named like a link that refer to no stored row, and why:
+
+| table | column | why |
+|---|---|---|
+| `tool_invocations` | `request_id` | a number of an older aictl, always 0; the model call is `request_key` |
+| `session_steps` | `request_id` | the provider's request id of a Copilot round; `requests` does not store it |
+| `session_steps` | `turn_id` | a Copilot turn counter that starts again in each interaction: not unique in a session |
+| `turn_request_links` | `turn_id` | the same counter as `session_steps.turn_id` |
+| `turn_request_links` | `root_turn_id` | the same counter, of the root session |
+| `OTELPayloads` | `SourceRowKey` | the `RowKey` of the row in `SourceTable`, which names the table |
+
+The tables under "Observation tables of an older aictl" are not in these lists: no current
+code writes or reads them.
+
 ## Example queries
 
 Each query deduplicates first and filters after. The column names are checked against
