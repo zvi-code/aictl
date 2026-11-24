@@ -53,7 +53,7 @@ const carry = {
 } as unknown as CarryBody
 const subagents = {
   ...base, card: 'subagents',
-  tools: [{ tool: 'claude-code', main: { requests: 10, priced: 10, cost_usd: 37 }, subagents: { requests: 30, priced: 30, cost_usd: 63, agents: 4 }, subagent_share: 0.63 },
+  tools: [{ tool: 'claude-code', main: { requests: 100, priced: 100, cost_usd: 37 }, subagents: { requests: 300, priced: 300, cost_usd: 63, agents: 4 }, subagent_share: 0.63 },
     { tool: 'codex-cli', main: { requests: 3, priced: 0, cost_usd: null }, subagents: { requests: 0, priced: 0, cost_usd: null, agents: 0 }, subagent_share: null }],
   summary: { main_cost_usd: 37, subagent_cost_usd: 63, subagent_share: 0.63, subagents: 4, subagent_requests: 30 },
   sessions: [{ session_id: 's-sub', node_id: 'n', tool: 'claude-code', requests: 30, cost_usd: 63, main_cost: 37, agents: 4 }],
@@ -75,9 +75,9 @@ const H = 3_600_000
 const time = {
   ...base, card: 'time',
   tools: [
-    { tool: 'claude-code', requests: 100, untimed_requests: 0, overlong_requests: 0, model_ms: 732 * H, thinking_ms: 175 * H,
+    { tool: 'claude-code', requests: 1000, untimed_requests: 0, overlong_requests: 0, model_ms: 732 * H, thinking_ms: 175 * H,
       calls: 200, untimed_calls: 4, overlong_calls: 3, overlong_ms: 815 * H, tool_ms: 377 * H },
-    { tool: 'copilot-cli', requests: 50, untimed_requests: 0, overlong_requests: 0, model_ms: 450 * H, thinking_ms: null,
+    { tool: 'copilot-cli', requests: 500, untimed_requests: 0, overlong_requests: 0, model_ms: 450 * H, thinking_ms: null,
       calls: 60, untimed_calls: 0, overlong_calls: 0, overlong_ms: 0, tool_ms: 152 * H },
     { tool: 'codex-cli', requests: 3, untimed_requests: 3, overlong_requests: 0, model_ms: null, thinking_ms: null,
       calls: 0, untimed_calls: 0, overlong_calls: 0, overlong_ms: 0, tool_ms: null },
@@ -256,9 +256,10 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(requested[0]).toContain(`since=${base.range.since}&until=${base.range.until}`)
     // Pause: one chart per tool with the cache limit; the tool without cache writes says so.
     const pauseBox = card(host, 'pause')
-    expect(pauseBox.querySelectorAll('svg[role="img"]')).toHaveLength(2)
+    // copilot-vscode has 14 requests after a pause, under the card's minimum of 200: named, not charted.
+    expect(pauseBox.querySelectorAll('svg[role="img"]')).toHaveLength(1)
     expect(pauseBox.textContent).toContain('5 min: cache lapses')
-    expect(pauseBox.textContent).toContain('copilot-vscode · cache not reported')
+    expect(pauseBox.querySelector('[data-few]')?.textContent).toBe('copilot-vscode: 14 requests, too few to compare.')
     expect(pauseBox.textContent).toContain('$3.71')
     // Carry: a produced and a carried bar per tool name; a tool without sizes is named, not drawn as zero.
     const carryBox = card(host, 'carry')
@@ -269,7 +270,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     // Subagents: a split bar; an unpriced tool says not reported.
     const subBox = card(host, 'subagents')
     expect(subBox.querySelector('[aria-label="claude-code: main agent $37.00, subagents $63.00"]')).not.toBeNull()
-    expect(subBox.textContent).toContain('main not reported')
+    expect(subBox.querySelector('[data-few]')?.textContent).toBe('codex-cli: 3 requests, too few to compare.')
     // Failures: a flow with one band per outcome that has calls.
     const flow = card(host, 'failures')
     expect(flow.querySelectorAll('svg[role="img"] path')).toHaveLength(5)
@@ -355,11 +356,11 @@ describe('INS-05 · Where the time goes', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <TimeSplit {...props(ctx)} />)
     const box = card(host, 'time')
-    expect(box.querySelectorAll('[role="img"]')).toHaveLength(3)
+    expect(box.querySelectorAll('[role="img"]')).toHaveLength(2)
     expect(box.querySelector('[aria-label="claude-code: model 732 h, thinking 175 h, tool calls 377 h"]')).not.toBeNull()
-    // A tool that reports no thinking and a tool with no durations are named, not drawn as zero.
+    // A tool that reports no thinking is named, not drawn as zero; a tool with 3 requests is too few to draw.
     expect(box.querySelector('[aria-label="copilot-cli: model 450 h, thinking not reported, tool calls 152 h"]')).not.toBeNull()
-    expect(box.querySelector('[aria-label="codex-cli: model not reported, thinking not reported, tool calls not reported"]')).not.toBeNull()
+    expect(box.querySelector('[data-few]')?.textContent).toBe('codex-cli: 3 requests, too few to compare.')
     const rows = [...box.querySelectorAll('[data-group]')].map(row => row.getAttribute('data-group'))
     expect(rows).toEqual(['shell', 'program', 'waiting'])
     expect(box.textContent).toContain('Shell construct, program not identified')
@@ -368,7 +369,7 @@ describe('INS-05 · Where the time goes', () => {
     const counted = box.querySelector('[data-counted]')!.textContent!
     expect(counted).toContain('Without a recorded duration: 3 requests and 4 calls.')
     expect(counted).toContain('3 requests or calls recorded as over 24 hours (815 h in all)')
-    expect(counted).toContain('Thinking not reported by: copilot-cli, codex-cli.')
+    expect(counted).toContain('Thinking not reported by: copilot-cli.')
     dispose()
   })
 
@@ -451,7 +452,8 @@ describe('INS-07 · Orientation cost by repository', () => {
     expect(box.querySelector('[title="/work/alpha"]')).not.toBeNull()
     const never = box.querySelector('[data-never]')!.textContent!
     expect(never).toContain('claude-code: 272 of 378 sessions, $159')
-    expect(never).toContain('codex-cli: 1 of 1 sessions, not reported')
+    expect(never).not.toContain('codex-cli')
+    expect(box.querySelector('[data-few]')?.textContent).toBe('codex-cli: 1 session, too few to compare.')
     dispose()
   })
 
@@ -476,17 +478,18 @@ describe('INS-07 · Orientation cost by repository', () => {
 
 describe('INS-08 · Fixed context overhead', () => {
   it('states the heaviest fixed context, the skills never used and the costliest file from the response', () => {
-    expect(fixedFinding(fixed, tool => tool)).toBe('copilot-desktop sessions carry the most fixed context: a median 51 k tokens ' +
-      'before any work over 362 sessions, instruction files a median 38 k tokens of it (estimated). Of 135 skills claude-code listed, ' +
+    // The headline tool is the one with the most sessions (claude-code, 364), not the one with the largest median.
+    expect(fixedFinding(fixed, tool => tool)).toBe('claude-code sessions carry a median 7.3 k tokens ' +
+      'before any work over 364 sessions, skill listing a median 6.2 k tokens of it (estimated). Of 135 skills claude-code listed, ' +
       '113 were never used in the period; listing them took 980 k tokens of 1.35 M tokens. The costliest instruction or memory file ' +
       'is CLAUDE.md in copilot-desktop: 30 k tokens per load in 357 sessions.')
     expect(fixedHero(fixed)).toEqual({ value: '84%',
-      label: "of the 135 skills listed in sessions' fixed context were never used in the period" })
+      label: "of the 135 skills listed in sessions' fixed context were never used in the period: listing them took 980 k tokens" })
     // No tool lists its skills: the sentence says so and the figure falls back to the heaviest median, never to 0%.
     const unlisted = { ...fixed, top_skills: [], skills: [fixed.skills[1]], summary: { ...fixed.summary, listed: null, never_used: null,
       never_used_share: null, listing_tokens: null, unused_tokens: null } } as FixedBody
     expect(fixedFinding(unlisted, tool => tool)).toContain('No tool in this period reports the skills it lists.')
-    expect(fixedHero(unlisted)?.value).toBe('51 k tokens')
+    expect(fixedHero(unlisted)?.value).toBe('7.3 k tokens')
     const empty = { ...unlisted, tools: [], files: [], summary: { ...unlisted.summary, sessions: 0, heaviest: null } } as FixedBody
     expect(fixedFinding(empty, tool => tool)).toBe('No session in this period records its fixed context.')
     expect(fixedHero(empty)).toBeUndefined()
@@ -530,7 +533,8 @@ describe('INS-09 · Problem sessions', () => {
     expect(problemFinding(problems, tool => tool)).toBe('868 of 2,537 sessions (34%) showed at least one problem signal, costing ' +
       '$36 k at list price; 709 showed two or more, most often failure streak with hook failure (670 sessions). The most ' +
       'frequent is failure streak in copilot-cli: 742 sessions, 34% of its sessions.')
-    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of the sessions of tools that report a problem signal showed at least one' })
+    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of the sessions of tools that report a problem signal showed at least ' +
+      'one: 868 of 2,537 sessions, $36 k at list price' })
     const none = { ...problems, tools: [problems.tools[2]], pairs: [], projects: [],
       summary: { sessions: 0, flagged: 0, flagged_share: null, multi: 0, flagged_cost_usd: null, not_reporting: ['codex-cli'] } } as ProblemBody
     expect(problemFinding(none, tool => tool)).toBe('No session in this period is of a tool that reports a problem signal.')

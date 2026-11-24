@@ -179,7 +179,7 @@ describe('INS-11 · Verified before commit', () => {
   })
 
   it('says a Copilot pass is missing for want of a recorded result, not because the tool never records one', () => {
-    const quietCli = tool({ tool: 'copilot-cli', commits: 4, passed: null, failed: null, no_change: 4, test_results: 0, classified: 4,
+    const quietCli = tool({ tool: 'copilot-cli', commits: 12, passed: null, failed: null, no_change: 12, test_results: 0, classified: 12,
       unseen: 0, checked: true, unseen_share: 0 })
     expect(passMissingText(quietCli)).toBe('no test run with a recorded result in this period')
     expect(passMissingText(claude)).toBe('pass not recorded by this tool')

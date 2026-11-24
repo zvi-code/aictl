@@ -185,9 +185,10 @@ export function pauseFinding(body: PauseBody, label: Label) {
       ? `The sources in this period do not report cache writes (${list(s.not_reported.map(label))}), so the cost of a lapsed cache cannot be shown.`
       : 'No priced request followed a pause in this period.'
   }
-  const sentence = `${fmtNum(s.requests)} ${list(s.tools.map(label))} requests followed a pause of over 5 minutes and cost ` +
+  const named = s.tools.filter(tool => body.tools.some(row => row.tool === tool))
+  const sentence = `${fmtNum(s.requests)} ${list(named.map(label))} requests followed a pause of over 5 minutes and cost ` +
     `${money(s.cost_usd)} at list price; the same number at each tool's under-1-minute average would cost ${money(s.baseline_usd)}.`
-  return s.requests ? sentence + leftOut(s.unpriced_requests) : `No ${list(s.tools.map(label))} request followed a pause of over 5 minutes in this period.`
+  return s.requests ? sentence + leftOut(s.unpriced_requests) : `No ${list(named.map(label))} request followed a pause of over 5 minutes in this period.`
 }
 
 export function carryFinding(body: CarryBody, label: Label) {
@@ -202,7 +203,7 @@ export function subagentFinding(body: SubagentBody, label: Label) {
   const s = body.summary
   if (!s.subagents) return 'No subagent ran in this period.'
   const top = [...body.tools].filter(tool => tool.subagents.agents).sort((a, b) =>
-    (b.subagents.cost_usd ?? 0) - (a.subagents.cost_usd ?? 0))[0]
+    (b.main.requests + b.subagents.requests) - (a.main.requests + a.subagents.requests))[0]
   return `${fmtNum(s.subagents)} subagents made ${fmtNum(s.subagent_requests)} requests costing ${money(s.subagent_cost_usd)} at list price, ` +
     `${share(s.subagent_share)} of all cost` +
     (top ? `; in ${label(top.tool)}, subagents were ${share(top.subagent_share)} of its cost.` : '.') + leftOut(s.unpriced_requests)
@@ -212,7 +213,7 @@ export function failureFinding(body: FailureBody, label: Label) {
   const s = body.summary
   if (!s.failures) return 'No tool call failed in this period.'
   const most = body.tools.filter(tool => tool.outcomes.identical_failed > 0)
-    .sort((a, b) => b.outcomes.identical_failed - a.outcomes.identical_failed).slice(0, 2)
+    .sort((a, b) => b.calls - a.calls).slice(0, 2)
     .map(tool => `${label(tool.tool)} ${fmtNum(tool.outcomes.identical_failed)}`)
   return `After ${fmtNum(s.followed)} failed calls, the next call repeated the identical call ${fmtNum(s.identical_failed + s.identical_succeeded)} times ` +
     `and it failed again ${fmtNum(s.identical_failed)} times${most.length ? ` (${most.join(', ')})` : ''}; ` +
@@ -240,7 +241,8 @@ export const programName = (row: TimeProgram) => row.group === 'program' ? row.p
 export function timeFinding(body: TimeBody, label: Label) {
   const s = body.summary
   if (s.model_ms == null && s.tool_ms == null) return 'No request or tool call with a recorded duration in this period.'
-  const top = [...body.tools].sort((a, b) => ((b.model_ms ?? 0) + (b.tool_ms ?? 0)) - ((a.model_ms ?? 0) + (a.tool_ms ?? 0)))[0]
+  const top = [...body.tools].sort((a, b) => b.requests - a.requests)[0]
+  if (!top) return 'No tool has enough requests in this period to compare.'
   const thinking = top.thinking_ms == null ? 'thinking not reported' : `${hours(top.thinking_ms)} of it thinking`
   const program = s.top_program
   return `Agents spent ${hours(s.model_ms)} in model requests and ${hours(s.tool_ms)} in their own tool calls (summed durations); ` +
@@ -295,12 +297,16 @@ export const FIXED_KINDS = Object.keys(FIXED_LABELS) as FixedKind[]
 export const heaviestKind = (tool: FixedTool) => tool.kinds.filter(cell => cell.p50_tokens != null)
   .sort((a, b) => (b.p50_tokens ?? 0) - (a.p50_tokens ?? 0))[0]
 
+/** The tool a fixed-context headline is about: the one with the most sessions among those with a median. */
+export const fixedLead = (body: FixedBody) => [...body.tools].filter(tool => tool.p50_tokens != null)
+  .sort((a, b) => b.sessions - a.sessions)[0]
+
 export function fixedFinding(body: FixedBody, label: Label) {
   const s = body.summary
   if (!s.sessions) return 'No session in this period records its fixed context.'
-  const top = body.tools.find(tool => tool.tool === s.heaviest?.tool)
+  const top = fixedLead(body)
   const kind = top && heaviestKind(top)
-  const heavy = top ? `${label(top.tool)} sessions carry the most fixed context: a median ${tokens(top.p50_tokens)} before any work ` +
+  const heavy = top ? `${label(top.tool)} sessions carry a median ${tokens(top.p50_tokens)} before any work ` +
     `over ${plural(top.sessions, 'session')}` +
     (kind ? `, ${FIXED_LABELS[kind.kind].toLowerCase()} a median ${tokens(kind.p50_tokens)} of it` : '') + ' (estimated).' : ''
   const listing = body.skills.filter(row => row.listed != null)
@@ -324,7 +330,8 @@ export function problemFinding(body: ProblemBody, label: Label) {
   const s = body.summary
   if (!s.sessions) return 'No session in this period is of a tool that reports a problem signal.'
   const pair = body.pairs[0]
-  const top = body.tools.flatMap(tool => tool.signals.filter(cell => cell.reported && cell.sessions).map(cell => ({ tool, cell })))
+  const lead = [...body.tools].filter(tool => tool.reports).sort((a, b) => b.sessions - a.sessions)[0]
+  const top = (lead ? lead.signals.filter(cell => cell.reported && cell.sessions).map(cell => ({ tool: lead, cell })) : [])
     .sort((a, b) => (b.cell.sessions ?? 0) - (a.cell.sessions ?? 0))[0]
   const flagged = `${fmtNum(s.flagged)} of ${plural(s.sessions, 'session')} (${share(s.flagged_share)}) showed at least one problem signal, ` +
     `costing ${money(s.flagged_cost_usd)} at list price; ${fmtNum(s.multi)} showed two or more` +
@@ -372,29 +379,36 @@ const hero = (value: Num, format: (value: number) => string, label: string): Her
   value == null ? undefined : { value: format(value), label }
 
 export const pauseHero = (body: PauseBody) => hero(ratio(body.summary.cost_usd, body.summary.baseline_usd), fmtTimes,
-  'the cost of requests that followed a pause of over 5 minutes, against the same requests with no pause')
+  `the cost of requests that followed a pause of over 5 minutes, against the same requests with no pause: ` +
+  `${money(body.summary.cost_usd)} against ${money(body.summary.baseline_usd)}, ${money(body.summary.extra_usd)} more`)
 export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_bytes, body.summary.output_bytes), fmtTimes,
-  'how often a byte of a tool result was sent again with later requests (upper bound)')
+  `how often a byte of a tool result was sent again with later requests (upper bound): ${bytes(body.summary.output_bytes)} of ` +
+  `results, up to ${bytes(body.summary.carried_bytes)} sent again`)
 export const subagentHero = (body: SubagentBody) => hero(body.summary.subagent_share, fmtShare,
-  'of the cost was spent in subagents')
+  `of the cost was spent in subagents: ${money(body.summary.subagent_cost_usd)} of ` +
+  `${money(body.summary.main_cost_usd == null ? null : body.summary.main_cost_usd + (body.summary.subagent_cost_usd ?? 0))}`)
 export const failureHero = (body: FailureBody) => body.summary.failures
   ? hero(body.summary.streaks, fmtNum, 'runs of 3 or more failed calls in a row') : undefined
 export const rereadHero = (body: RereadBody) => hero(body.summary.repeat_share, fmtShare,
-  'of file reads read a file the same agent had already read')
+  `of file reads read a file the same agent had already read: ${fmtNum(body.summary.repeat_reads)} of ${fmtNum(body.summary.reads)}`)
 export const timeHero = (body: TimeBody) => hero(
   body.summary.model_ms == null || body.summary.tool_ms == null ? null
     : ratio(body.summary.tool_ms, body.summary.model_ms + body.summary.tool_ms), fmtShare,
-  'of agent time went to its own tool calls, the rest to the model (summed durations)')
+  `of agent time went to its own tool calls, the rest to the model (summed durations): ${hours(body.summary.tool_ms)} against ` +
+  `${hours(body.summary.model_ms)}`)
 export const contextHero = (body: ContextBody) => hero(body.summary.heavy_cost_share, fmtShare,
-  'of the cost is in requests that read a context of 200k tokens or more')
+  `of the cost is in requests that read a context of 200k tokens or more: ${money(body.summary.heavy_cost_usd)} of ${money(body.summary.cost_usd)}`)
 export const fixedHero = (body: FixedBody) => body.summary.never_used_share != null
-  ? hero(body.summary.never_used_share, fmtShare, `of the ${fmtNum(body.summary.listed)} skills listed in sessions' fixed context were never used in the period`)
-  : body.summary.heaviest ? hero(body.summary.heaviest.p50_tokens, value => `${fmtN(value)} tokens`,
-    `median fixed context of a ${toolLabel(body.summary.heaviest.tool)} session before any work (estimated)`) : undefined
+  ? hero(body.summary.never_used_share, fmtShare, `of the ${fmtNum(body.summary.listed)} skills listed in sessions' fixed context were never ` +
+    `used in the period: listing them took ${tokens(body.summary.unused_tokens)}`)
+  : fixedLead(body) ? hero(fixedLead(body)!.p50_tokens, value => `${fmtN(value)} tokens`,
+    `median fixed context of a ${toolLabel(fixedLead(body)!.tool)} session before any work (estimated)`) : undefined
 export const problemHero = (body: ProblemBody) => hero(body.summary.flagged_share, fmtShare,
-  'of the sessions of tools that report a problem signal showed at least one')
+  `of the sessions of tools that report a problem signal showed at least one: ${fmtNum(body.summary.flagged)} of ` +
+  `${plural(body.summary.sessions, 'session')}, ${money(body.summary.flagged_cost_usd)} at list price`)
 export function orientationHero(body: OrientationBody) {
-  const most = body.projects.map(project => project.p50_requests).filter((value): value is number => value != null)
-  return most.length ? hero(Math.max(...most), fmtNum,
-    'requests before the first edit in the median session of the repository that takes longest to start in') : undefined
+  // The project with the most sessions that edit leads, not the one with the largest median.
+  const top = body.projects.find(project => project.p50_requests != null)
+  return top ? hero(top.p50_requests, fmtNum, `requests before the first edit in the median session of ${projectName(top.project_path)}, ` +
+    `the repository with the most sessions that edit (${fmtNum(top.sessions)}); costing ${money(top.p50_cost_usd)}`) : undefined
 }

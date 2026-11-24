@@ -3,7 +3,8 @@
 // the failure share of the tool calls the model's requests asked for. It describes the work recorded here, not a
 // controlled comparison. A figure a tool does not record is null and reads "not reported" or "not recorded".
 import { dayLabel, fmtMs, fmtN, fmtNum, fmtRate, fmtTimes, fmtUsdEach } from '../../design/format'
-import { NOT_REPORTED, plural, type Base, type Hero, type Label } from './insightsModel'
+import { withEvidence } from './evidence'
+import { money, NOT_REPORTED, plural, type Base, type Hero, type Label } from './insightsModel'
 
 type Num = number | null
 /** The thresholds the server applies (insights.py): a share needs RATE_CALLS calls in RATE_SESSIONS sessions. */
@@ -104,12 +105,34 @@ function failureClause(high: ModelRow, low: ModelRow) {
   return `; tool calls: ${high.model} ${one(high)}, ${low.model} ${one(low)}.`
 }
 
+/**
+ * The comparison the card leads with, over the models the card compares (evidence.ts: tools and models below the
+ * minimum are taken out first): in the busiest tool, its dearest and cheapest models by cost per priced request, or the
+ * one; with none priced, the busiest tool's requests. The rule of the server's _model_lead, applied to what is shown.
+ */
+export function leadOf(body: ModelBody): ModelLead | null {
+  const tools = [...withEvidence(body).body.tools].sort((a, b) => (b.requests ?? 0) - (a.requests ?? 0))
+  for (const tool of tools) {
+    const priced = tool.models.filter(model => model.cost_per_request != null && !model.helper)
+      .sort((a, b) => b.cost_per_request! - a.cost_per_request!)
+    if (priced.length) {
+      const high = priced[0], low = priced[priced.length - 1]
+      return priced.length > 1 ? { kind: 'ratio', tool: tool.tool, high, low, ratio: high.cost_per_request! / low.cost_per_request! }
+        : { kind: 'cost', tool: tool.tool, high, low, ratio: null }
+    }
+  }
+  return tools[0]?.requests ? { kind: 'requests', tool: tools[0].tool, requests: tools[0].requests } : null
+}
+
+/** Two models whose periods in the data do not overlap: one was used only after the other. */
+export const apart = (a: ModelFigures, b: ModelFigures) => a.first_ts != null && a.last_ts != null && b.first_ts != null &&
+  b.last_ts != null && (a.last_ts < b.first_ts || b.last_ts < a.first_ts)
+
 /** The lead tool records no model name at all (Codex CLI): every request of it has no model. */
 const namesNoModel = (body: ModelBody, tool: string, requests: number) =>
   requests > 0 && body.tools.find(item => item.tool === tool)?.no_model === requests
 
-export function modelFinding(body: ModelBody, label: Label) {
-  const lead = body.summary.lead
+export function modelFinding(body: ModelBody, label: Label, lead = leadOf(body)) {
   if (!lead) return 'No model request in this period.'
   if (lead.kind === 'requests') {
     if (namesNoModel(body, lead.tool, lead.requests)) {
@@ -128,14 +151,14 @@ export function modelFinding(body: ModelBody, label: Label) {
     return `In ${label(lead.tool)}, ${high.model} cost ${perRequest(high.cost_per_request)} per priced request at list price over ` +
       `${plural(high.priced, 'priced request')}, and ${rate}. ${REAL_WORK}`
   }
-  const dates = datesText(high) === datesText(low) ? '' : ` (${high.model} ${datesText(high)}, ${low.model} ${datesText(low)})`
+  const dates = datesText(high) === datesText(low) ? '' : ` (${high.model} ${datesText(high)}, ${low.model} ${datesText(low)}` +
+    `${apart(high, low) ? '; the periods do not overlap' : ''})`
   return `In ${label(lead.tool)}, ${high.model} cost ${fmtTimes(lead.ratio)} as much per priced request as ${low.model} at list price ` +
     `(${perRequest(high.cost_per_request)} against ${perRequest(low.cost_per_request)})${dates}` +
     `${failureClause(high, low)} ${NOT_A_COMPARISON}`
 }
 
-export function modelHero(body: ModelBody, label: Label): Hero | undefined {
-  const lead = body.summary.lead
+export function modelHero(body: ModelBody, label: Label, lead = leadOf(body)): Hero | undefined {
   if (!lead) return undefined
   const tool = label(lead.tool)
   if (lead.kind === 'requests') {
@@ -143,7 +166,11 @@ export function modelHero(body: ModelBody, label: Label): Hero | undefined {
       ? `requests in ${tool}, which records no model name` : `requests in ${tool}; no model has ${PER_REQUEST} priced requests` }
   }
   if (lead.kind === 'cost') return { value: perRequest(lead.high.cost_per_request), label: `per priced request of ${lead.high.model} in ${tool}, at list price` }
-  return { value: fmtTimes(lead.ratio), label: `the cost per priced request of ${lead.high.model} against ${lead.low.model} in ${tool}, at list price` }
+  const { high, low } = lead
+  return { value: fmtTimes(lead.ratio), label: `the cost per priced request of ${high.model} against ${low.model} in ${tool}, at list ` +
+    `price: ${perRequest(high.cost_per_request)} against ${perRequest(low.cost_per_request)}; ${high.model} cost ${money(high.cost_usd)} ` +
+    `in ${plural(high.sessions, 'session')}, ${low.model} ${money(low.cost_usd)} in ${plural(low.sessions, 'session')}` +
+    (apart(high, low) ? '. Their periods do not overlap: one was used only after the other' : '') }
 }
 
 /** Where a model's dot sits on a log scale from the cheapest to the dearest cost per request on the card: 0 to 1. */

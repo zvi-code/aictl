@@ -9,7 +9,8 @@ import type { Field } from '../../ui/tableModel'
 import { detailPath, detailRead } from '../data'
 import { States } from '../kinds/States'
 import type { PanelContext, Read } from '../types'
-import { learnToolLabels, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
+import { learnToolLabels, toolLabel, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
+import { evidenceNote, fewText, withEvidence } from './evidence'
 import { revealed } from './summaryModel'
 import styles from './Insights.module.css'
 
@@ -81,6 +82,8 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   }
   createEffect(() => data()?.tool_labels, labels => { learnToolLabels(labels) })
   const body = () => data()!
+  // What the headline, the visual and its coloured cells may use: groups below the card's minimum are taken out.
+  const shown = createMemo(() => data() ? withEvidence(data()!) : undefined)
   // A finding of the summary asked for this card's sessions: open them once (the person can close them again).
   const opened = () => revealed()?.card === props.card && revealed()?.sessions === true
   const sessionFields = createMemo((): Field<InsightSession>[] => [{
@@ -91,15 +94,18 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
     controls={['fold', 'full', 'hide']} head={<h2 ref={element} data-insight={props.card}>{props.title}</h2>}>
     <States result={result} retry={read.retry}>
       <p class={styles.meta} data-period>{periodText(body())}</p>
-      <Show when={props.hero?.(body())}>{hero => <p class={styles.hero} data-hero>
+      <Show when={props.hero?.(shown()!.body)}>{hero => <p class={styles.hero} data-hero>
         <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
-      <p class={styles.finding} data-finding>{props.finding(body())}</p>
-      {props.visual(body())}
+      <p class={styles.finding} data-finding>{props.finding(shown()!.body)}</p>
+      {props.visual(shown()!.body)}
+      <Show when={shown()!.few.length}>
+        <p class={styles.note} data-few>{fewText(shown()!.few, toolLabel)}</p>
+      </Show>
       <details class={styles.more} data-more open={opened() || undefined}>
         <summary>Details: sessions ({body().sessions.length}), data table, KQL, how this is measured</summary>
       <details class={styles.disclosure} data-method>
         <summary>How this is measured</summary>
-        <p class={styles.note}>{props.note}</p>
+        <p class={styles.note}>{props.note}{evidenceNote(props.card)}</p>
       </details>
       <details class={styles.disclosure} data-sessions open={opened() || undefined}>
         <summary>Open sessions ({body().sessions.length})</summary>

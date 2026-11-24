@@ -36,7 +36,7 @@ const storeOnly = model('claude-opus-4-8', { requests: 40, sessions: 4, recorded
   refused: null, exit_unknown: null, call_sessions: null, failure_share: null, cost_per_request: 0.12 })
 const partly = model('claude-sonnet-5', { requests: 60, sessions: 6, recorded_sessions: 2, calls: 131, call_sessions: 2,
   failure_share: null, cost_per_request: 0.05 })
-const vscodeUnpriced = model('gpt-5.5', { tool: 'copilot-vscode', requests: 4, sessions: 2, priced: 0, cost_usd: null,
+const vscodeUnpriced = model('gpt-5.5', { tool: 'copilot-vscode', requests: 4, sessions: 10, priced: 0, cost_usd: null,
   cost_per_request: null, cache_reported: 0, cache_write_reported: 0, input_per_request: null, cache_write_per_request: null, cache_read_per_request: null,
   unsplit_prompt_per_request: null, calls: 0, failures: 0, failure_share: null, helper: true, reasoning_reported: 0,
   reasoning_per_request: null })
@@ -50,7 +50,7 @@ const body = {
   tools: [
     { tool: 'copilot-cli', requests: 1000, sessions: 30, no_model: 3, store_calls: 250, store_sessions: 42, unsplit_calls: 0,
       calls: 17_680, failures: 472, refused: 2, exit_unknown: 20, unattributed: 0, models: [astra, argon, storeOnly, partly] },
-    { tool: 'copilot-vscode', requests: 404, sessions: 5, calls: 900, failures: 80, models: [vscodeSplit, vscodeUnpriced] },
+    { tool: 'copilot-vscode', requests: 404, sessions: 12, calls: 900, failures: 80, models: [vscodeSplit, vscodeUnpriced] },
     { tool: 'codex-cli', requests: 129, no_model: 129, calls: null, models: [] },
   ],
   summary: {
@@ -86,40 +86,41 @@ describe('MOD-01 · The finding states the measured costs and failure shares and
       'list price ($0.327 against $0.075) (gpt-6-astra Nov 14–Nov 20, gemini-4-argon Nov 16–Nov 20), and 2.9% of its tool ' +
       'calls were marked failed against 2.6%. They worked on different tasks, so this describes the work recorded here, not the models.')
     expect(modelHero(body, label)).toEqual({ value: '4.4×',
-      label: 'the cost per priced request of gpt-6-astra against gemini-4-argon in Copilot CLI, at list price' })
+      label: 'the cost per priced request of gpt-6-astra against gemini-4-argon in Copilot CLI, at list price: $0.327 against ' +
+        '$0.075; gpt-6-astra cost $42.50 in 10 sessions, gemini-4-argon $10.00 in 10 sessions' })
   })
 
   it('writes "at least" for a floor, and says when calls were not recorded or too few for a share', () => {
     const floor = { ...body, summary: { ...body.summary, lead: { ...body.summary.lead!, high: vscodeSplit, low: { ...argon, first_ts: T0 } } } } as ModelBody
-    expect(modelFinding(floor, label)).toContain('and at least 8.9% of its tool calls were marked failed against 2.6%.')
+    expect(modelFinding(floor, label, floor.summary.lead)).toContain('and at least 8.9% of its tool calls were marked failed against 2.6%.')
     const unrecorded = { ...body, summary: { ...body.summary, lead: { ...body.summary.lead!, high: storeOnly, low: { ...partly, first_ts: T0 } } } } as ModelBody
-    expect(modelFinding(unrecorded, label)).toContain('; tool calls: claude-opus-4-8 calls not recorded, claude-sonnet-5 131 calls ' +
+    expect(modelFinding(unrecorded, label, unrecorded.summary.lead)).toContain('; tool calls: claude-opus-4-8 calls not recorded, claude-sonnet-5 131 calls ' +
       'in 2 sessions, too few sessions for a failure share.')
     const fewCalls = { ...partly, calls: 60, call_sessions: 5 }
     const few = { ...body, summary: { ...body.summary, lead: { ...body.summary.lead!, high: storeOnly, low: { ...fewCalls, first_ts: T0 } } } } as ModelBody
-    expect(modelFinding(few, label)).toContain('claude-sonnet-5 60 calls, too few for a failure share.')
-    expect(modelFinding(unrecorded, label)).not.toMatch(/\b0(\.0)?%/)
+    expect(modelFinding(few, label, few.summary.lead)).toContain('claude-sonnet-5 60 calls, too few for a failure share.')
+    expect(modelFinding(unrecorded, label, unrecorded.summary.lead)).not.toMatch(/\b0(\.0)?%/)
   })
 
   it('leads with one model\'s cost, or with requests when nothing is priced, or says there is no request', () => {
     const one = { ...body, summary: { ...body.summary, lead: { kind: 'cost', tool: 'copilot-cli', high: astra, low: astra, ratio: null } } } as ModelBody
-    expect(modelFinding(one, label)).toBe('In Copilot CLI, gpt-6-astra cost $0.327 per priced request at list price over 130 priced ' +
+    expect(modelFinding(one, label, one.summary.lead)).toBe('In Copilot CLI, gpt-6-astra cost $0.327 per priced request at list price over 130 priced ' +
       'requests, and 2.9% of its tool calls were marked failed. This describes real work, not a controlled comparison.')
     const oneSession = { ...one, summary: { ...one.summary, lead: { kind: 'cost', tool: 'copilot-cli', high: { ...partly, call_sessions: 1 },
       low: partly, ratio: null } } } as ModelBody
-    expect(modelFinding(oneSession, label)).toContain('and its 131 tool calls in 1 session are too few sessions for a failure share.')
-    expect(modelHero(one, label)?.value).toBe('$0.327')
+    expect(modelFinding(oneSession, label, oneSession.summary.lead)).toContain('and its 131 tool calls in 1 session are too few sessions for a failure share.')
+    expect(modelHero(one, label, one.summary.lead)?.value).toBe('$0.327')
     // Codex CLI records no model name at all: the finding says so instead of speaking of unpriced models.
     const none = { ...body, summary: { ...body.summary, lead: { kind: 'requests', tool: 'codex-cli', requests: 129 } } } as ModelBody
-    expect(modelFinding(none, label)).toBe('Codex CLI made 129 requests and records no model name, so no cost per request is ' +
+    expect(modelFinding(none, label, none.summary.lead)).toBe('Codex CLI made 129 requests and records no model name, so no cost per request is ' +
       'stated. This describes real work, not a controlled comparison.')
-    expect(modelHero(none, label)?.label).toBe('requests in Codex CLI, which records no model name')
+    expect(modelHero(none, label, none.summary.lead)?.label).toBe('requests in Codex CLI, which records no model name')
     const unpriced = { ...body, summary: { ...body.summary, lead: { kind: 'requests', tool: 'copilot-vscode', requests: 404 } } } as ModelBody
-    expect(modelFinding(unpriced, label)).toBe('Copilot in VS Code made 404 requests; no model has 20 priced requests, so no cost per ' +
+    expect(modelFinding(unpriced, label, unpriced.summary.lead)).toBe('Copilot in VS Code made 404 requests; no model has 20 priced requests, so no cost per ' +
       'request is stated. This describes real work, not a controlled comparison.')
-    expect(modelHero(unpriced, label)?.label).toBe('requests in Copilot in VS Code; no model has 20 priced requests')
-    expect(modelFinding({ ...body, summary: { ...body.summary, lead: null } }, label)).toBe('No model request in this period.')
-    expect(modelHero({ ...body, summary: { ...body.summary, lead: null } }, label)).toBeUndefined()
+    expect(modelHero(unpriced, label, unpriced.summary.lead)?.label).toBe('requests in Copilot in VS Code; no model has 20 priced requests')
+    expect(modelFinding(body, label, null)).toBe('No model request in this period.')
+    expect(modelHero(body, label, null)).toBeUndefined()
   })
 
   it('states the cost and rate of a model in words and never as zero', () => {
@@ -151,16 +152,18 @@ describe('MOD-02 · The card draws one row per model, grouped by tool', () => {
     // Two efforts with 20 requests or more make a strip; the effort with 5 requests is left out of it.
     expect(Array.from(row('copilot-cli', 'gpt-6-astra').querySelectorAll('[data-efforts] li')).map(li => li.textContent))
       .toEqual(['high $0.076 · 300 reasoning tokens', 'medium $0.078 · 120 reasoning tokens'])
-    expect(row('copilot-cli', 'claude-opus-4-8').querySelector('[data-rate]')?.textContent).toBe('calls not recorded')
-    expect(row('copilot-cli', 'claude-sonnet-5').querySelector('[data-rate]')?.textContent).toBe('131 calls in 2 sessions, too few sessions for a failure ' +
-      'sharecalls recorded in 2 of 6 sessions')
+    // Models seen in fewer than 10 sessions are not drawn or compared: they are named in one line.
+    expect(box.querySelector('[data-tool="copilot-cli"] [data-model="claude-opus-4-8"]')).toBeNull()
+    expect(box.querySelector('[data-tool="copilot-cli"] [data-model="claude-sonnet-5"]')).toBeNull()
+    expect(box.querySelector('[data-few]')?.textContent).toBe('claude-opus-4-8 (Copilot CLI): 4 sessions, too few to compare; ' +
+      'claude-sonnet-5 (Copilot CLI): 6 sessions, too few to compare.')
     expect(row('copilot-vscode', 'claude-opus-4-8').querySelector('[data-rate]')?.textContent).toContain('at least 8.9%')
     expect(row('copilot-vscode', 'gpt-5.5').querySelector('[data-cost]')?.textContent).toBe('not priced')
     expect(row('copilot-vscode', 'gpt-5.5').querySelector('[data-helper]')).not.toBeNull()
     expect(row('copilot-vscode', 'gpt-5.5').querySelector('[role="img"]')).toBeNull()
     // The dots sit on one log scale: the cheapest at the left edge, the dearest at the right.
     const place = (tool: string, name: string) => (row(tool, name).querySelector('[role="img"] span') as HTMLElement).style.insetInlineStart
-    expect([place('copilot-cli', 'claude-sonnet-5'), place('copilot-vscode', 'claude-opus-4-8')]).toEqual(['0.00%', '100.00%'])
+    expect([place('copilot-cli', 'gemini-4-argon'), place('copilot-vscode', 'claude-opus-4-8')]).toEqual(['0.00%', '100.00%'])
     expect(box.querySelector('[data-tool="copilot-cli"] [data-footer]')?.textContent).toBe('3 requests with no model · 250 calls in ' +
       '42 sessions read from the session store: shell commands only, not attributed')
     expect(box.querySelector('[data-tool="codex-cli"]')).toBeNull()
