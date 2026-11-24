@@ -3,7 +3,8 @@ import type { JSX } from '@solidjs/web'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
 import PauseTax from '../../src/panels/insights/PauseTax'
-import { sumRepos, type PauseBody } from '../../src/panels/insights/insightsModel'
+import Subagents from '../../src/panels/insights/Subagents'
+import { sumRepos, type PauseBody, type SubagentBody } from '../../src/panels/insights/insightsModel'
 import { notSplitNote, OTHER, OTHER_REPOS, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -157,5 +158,62 @@ describe('INS-RS-F · Pause tax: bars split by repository', () => {
     const merged = sumRepos([a, b], ['extra_usd'], order)
     expect(merged.map(row => [row.repo, row.extra_usd, row.share.extra_usd, row.of_repo.extra_usd])).toEqual([
       ['/src/app', 3, 3 / 7, 0.1], ['/src/docs', 3, 3 / 7, null], ['', 1, 1 / 7, 0.5]])
+  })
+})
+
+// ─── Spend in subagents ──────────────────────────────────────────────────────────────────────────────────────────────
+const mainWhole = { requests: 300, priced: 300, cost_usd: 30 }
+const subWhole = { requests: 100, priced: 100, cost_usd: 20, agents: 10 }
+const subagents = {
+  ...base, card: 'subagents', repo_order: order, repo_others: others,
+  tools: [{
+    tool: 'claude-code', subagent_share: 0.4,
+    main: { ...mainWhole, repos: [seg('/src/app', { requests: 200, priced: 200, cost_usd: 20 }, mainWhole, { requests: 0.7, cost_usd: 0.6 }),
+      seg('/src/docs', { requests: 100, priced: 100, cost_usd: 10 }, mainWhole, { requests: 0.9, cost_usd: 0.8 })] },
+    subagents: { ...subWhole, repos: [seg('/src/app', { requests: 80, priced: 80, cost_usd: 15, agents: 8 }, subWhole, { cost_usd: 0.4 }),
+      seg('', { requests: 20, priced: 20, cost_usd: 5, agents: 2 }, subWhole, { cost_usd: 0.2 })] },
+  }],
+  sessions: [{ session_id: 's-sub-0001-aaaa', tool: 'claude-code', agents: 4, requests: 40, cost_usd: 8, main_cost: 3,
+    repos: [seg('/src/docs', { requests: 40, cost_usd: 8, agents: 4 }, { requests: 40, cost_usd: 8, agents: 4 }, { cost_usd: 0.25 })] }],
+  summary: { main_cost_usd: 30, subagent_cost_usd: 20, subagent_share: 0.4, subagents: 10, subagent_requests: 100 },
+} as unknown as SubagentBody
+
+describe('INS-RS-F · Spend in subagents: bars split by repository', () => {
+  it('keeps the bars by side and adds a row per tool and side split by repository', () => {
+    const { box, dispose } = draw(Subagents, 'subagents', subagents)
+    expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    expect(texts(box.querySelectorAll('[data-chart="subagent-cost"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['main', 'subagents'])
+    const cost = box.querySelector('[data-chart="subagent-cost-repos"]')!
+    expect(texts(cost.querySelectorAll('[data-row]'), row => row.getAttribute('data-row'))).toEqual(['claude-code:main', 'claude-code:subagents'])
+    const main = cost.querySelector('[data-row="claude-code:main"]')!
+    expect([repos(main), written(main)]).toEqual([['0', '1'], ['$20.00', '$10.00']])
+    expect(main.querySelector('[data-total]')!.textContent).toBe('$30.00')
+    const sub = cost.querySelector('[data-row="claude-code:subagents"]')!
+    expect(repos(sub)).toEqual(['0', OTHER_TEXT])
+    expect(tip(sub, 'repo:/src/app')).toBe('claude-code, subagents, cost — app (/src/app): $15.00 · 75% of this bar · 40% of app own ' +
+      'cost in subagents. claude-code, subagents (10 subagents): 100 requests (25% of 400; 100 priced), $20.00 at list price (40% of $50.00).')
+    const requests = box.querySelector('[data-chart="subagent-requests-repos"] [data-row="claude-code:main"]')!
+    expect(written(requests)).toEqual(['200', '100'])
+    dispose()
+  })
+
+  it('colours a session bar by its repository', () => {
+    const { box, dispose } = draw(Subagents, 'subagents', subagents)
+    const row = box.querySelector('[data-chart="subagent-sessions"] [data-row="s-sub-0001-aaaa"]')!
+    expect([repos(row), written(row)]).toEqual([['1'], ['$8.00']])
+    expect(tip(row, 'repo:/src/docs')).toBe('Session s-sub-00, subagent cost — docs (/src/docs): $8.00 · 100% of this bar · 25% of docs own ' +
+      'subagent cost. Session s-sub-0001-aaaa (claude-code): 4 subagents made 40 requests costing $8.00 at list price; its main agent cost $3.00.')
+    dispose()
+  })
+
+  it('draws the old bars when the answer carries no split', () => {
+    const plain = { ...subagents, repo_order: [], repo_others: null,
+      tools: subagents.tools.map(tool => ({ ...tool, main: { ...tool.main, repos: undefined }, subagents: { ...tool.subagents, repos: undefined } })),
+      sessions: subagents.sessions.map(row => ({ ...row, repos: undefined })) } as unknown as SubagentBody
+    const { box, dispose } = draw(Subagents, 'subagents', plain)
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-chart="subagent-cost-repos"]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-chart="subagent-sessions"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['cost'])
+    dispose()
   })
 })
