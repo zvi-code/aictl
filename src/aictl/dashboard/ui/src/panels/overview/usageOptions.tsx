@@ -1,35 +1,23 @@
-import { createMemo, createSignal, untrack } from 'solid-js'
-import { at, object } from '../data'
+import { createMemo, untrack } from 'solid-js'
 import { keyedRows } from '../kinds/model'
 import type { VisualRowOptions } from '../kinds/Rows'
-import type { PanelProps, Read } from '../types'
-import { Choice, Measures } from './aControls'
+import type { PanelProps } from '../types'
+import { Measures } from './aControls'
 import { cost, count, field, tokens } from './aFields'
 import { fmtN } from '../../design/format'
-import { knownSum, leftOutText, rankedSeries } from './overviewMath'
+import { knownSum, leftOutText } from './overviewMath'
+import { usageSplit } from './usageSplit'
 import { promptSummary } from './RowSummaries'
 import { copilotBilledText } from './copilotCost'
 import css from './overviewA.module.css'
 
 // The model first: a split by tool sets one front end of the same assistant against another.
-const splits = [['model', 'Model'], ['project', 'Project'], ['tool', 'Tool']] as const
 export function costOptions({ ctx, def }: PanelProps) {
-  const [split, setSplit] = createSignal<typeof splits[number][0]>('model')
-  const base = createMemo(() => ctx.read(def.sources[0]))
-  const entries = createMemo(() => rankedSeries(object(at(base().value, `by_${split()}`))))
-  const columns = createMemo(() => {
-    const labels = split() === 'tool' ? ctx.board('tool_labels') : undefined
-    return entries().map(({ key, label }, index) => field(String(index), labels?.[key] ?? label, 'board.series.cost'))
-  })
-  const read = (): Read => {
-    if (base().state !== 'ready' && base().state !== 'stale') return base()
-    if (!object(at(base().value, `by_${split()}`))) return { state: 'unavailable' }
-    return { ...base(), value: Object.fromEntries(entries().map(({ values }, i) => [i, values])) }
-  }
+  const { read, columns, controls } = usageSplit(ctx, { source: def.sources[0], measure: 'cost',
+    datapoint: 'board.series.cost', label: 'Split cost by' })
   const credits = () => ctx.board('credits')
   const unpriced = () => ctx.board('unpriced')
-  return { read, columns,
-    controls: <Choice label="Split cost by" items={splits} value={split} change={setSplit} />,
+  return { read, columns, controls,
     summary: <><Measures ctx={ctx} items={[
       { field: cost('cost_usd', 'List price'), value: ctx.board('kpis')?.cost_usd, detail: 'Not a bill' },
       { field: field('tokens', 'Unpriced tokens', 'board.unpriced'), value: unpriced()?.tokens,
@@ -42,14 +30,26 @@ export function costOptions({ ctx, def }: PanelProps) {
 
 const ratio = (value: number | null | undefined, denominator: number | null | undefined) =>
   value != null && denominator != null && denominator > 0 ? value / denominator : undefined
-export function messagesOptions({ ctx }: PanelProps) {
+/** Messages per group are the model requests: a prompt or a tool call is not made by a model. The roles
+ * (user, assistant, tool) stay the last choice. */
+export function messagesOptions({ ctx, def }: PanelProps) {
   const kpis = () => ctx.board('kpis')
   const turns = () => knownSum(ctx.board('series')?.messages?.user ?? [])
-  return { summary: <Measures ctx={ctx} items={[
+  const { read, columns, controls } = usageSplit(ctx, { source: def.sources[1], measure: 'requests',
+    datapoint: 'board.series.messages', label: 'Split messages by',
+    fallback: { id: 'role', name: 'Role', read: () => ctx.read(def.sources[0]), columns: () => def.columns } })
+  return { read, columns, controls, summary: <Measures ctx={ctx} items={[
     { field: count('per_agent', 'Messages per agent'), value: ratio(kpis()?.messages, ctx.board('scope')?.shown_agents) },
     { field: count('per_turn', 'Tool calls per turn', 'board.kpi.tool_calls'), value: ratio(kpis()?.tool_calls, turns()) },
     { field: tokens('per_message', 'Tokens per message'), value: ratio(kpis()?.tokens, kpis()?.messages) },
   ]} /> }
+}
+
+/** Tokens per group, or by kind (cache read, input, cache write, output) as the last choice. */
+export function tokenOptions({ ctx, def }: PanelProps) {
+  return usageSplit(ctx, { source: def.sources[1], measure: 'tokens', datapoint: 'board.kpi.tokens',
+    label: 'Split tokens by',
+    fallback: { id: 'kind', name: 'Kind', read: () => ctx.read(def.sources[0]), columns: () => def.columns } })
 }
 
 export function promptOptions(props: PanelProps) {
