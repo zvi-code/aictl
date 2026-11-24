@@ -1,100 +1,55 @@
-import { Show, untrack } from 'solid-js'
+import { For, Show, untrack } from 'solid-js'
 import { fmtN, fmtNum } from '../../design/format'
-import { Bars, type BarRow } from './Bars'
+import { Bars } from './Bars'
+import { Columns, toneClass } from './charts/Columns'
+import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { MarkStrip } from './charts/MarkStrip'
+import charts from './charts/Charts.module.css'
+import {
+  CONTEXT_LEGEND, CONTEXT_REFS, contextColumns, contextLine, contextSmallRows, contextSplit, contextStripRows, SMALL_TITLE,
+} from './costModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { contextHero,
-  CONTEXT_BUCKETS, CONTEXT_LABELS, contextCellHover, contextFinding, contextPercentileHover, count, money, plural, repoPartsWith, share,
-  SMALL_STEP_OUTPUT, smallRepoMore, smallStepHover, tokens, toolLabel, type ContextBody, type Label,
-} from './insightsModel'
+import { contextHero, CONTEXT_LABELS, money, SMALL_STEP_OUTPUT, share, tokens, toolLabel, type ContextBody, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
-import { hasOther, notSplitNote, repoParts } from './repoSplit'
+import { hasOther } from './repoSplit'
 
-const TONE = [6, 2, 0, 1, 3]
-const legend = CONTEXT_BUCKETS.map((bucket, i) => ({ label: `${CONTEXT_LABELS[bucket]} tokens`, tone: TONE[i] }))
-const NONE = 'token counts not reported'
+const NONE = 'Token counts not reported by this source.'
 
-function bucketRows(body: ContextBody, label: Label, of: 'requests' | 'cost'): BarRow[] {
-  return body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool),
-    total: !tool.reported ? NONE : of === 'requests' ? plural(tool.reported, 'request') : money(tool.cost_usd),
-    parts: tool.reported ? tool.buckets.map((cell, i) => ({
-      key: cell.bucket, label: `${CONTEXT_LABELS[cell.bucket]} tokens`, tone: TONE[i],
-      value: of === 'requests' ? cell.requests : cell.cost_usd,
-      text: of === 'requests' ? `${fmtNum(cell.requests)} · ${share(cell.request_share)}` : `${money(cell.cost_usd)} · ${share(cell.cost_share)}`,
-      hover: contextCellHover(tool, cell, label),
-    })) : [],
-  }))
-}
-
-/**
- * Per tool: its whole bar (requests with token counts, or their cost) in a segment per repository, then each context
- * bucket's cell the same way, on one scale; the split by bucket is the bar above.
- */
-function repoRows(body: ContextBody, label: Label, of: 'requests' | 'cost'): BarRow[] {
-  const measure = of === 'requests' ? 'requests' : 'cost at list price'
-  const format = (value: number) => of === 'requests' ? plural(value, 'request') : money(value)
-  return body.tools.filter(tool => tool.reported && tool.repos?.length).flatMap(tool => [
-    { key: tool.tool, label: label(tool.tool), sub: 'all buckets',
-      total: of === 'requests' ? plural(tool.reported, 'request') : money(tool.cost_usd),
-      parts: repoParts(tool.repos, of === 'requests' ? 'reported' : 'cost_usd', body.repo_order, format,
-        `${label(tool.tool)}, ${measure}`, measure,
-        `${label(tool.tool)}: ${plural(tool.reported, 'request')} with token counts, ${money(tool.cost_usd)} at list price.`) },
-    ...tool.buckets.filter(cell => cell.repos?.length && cell.requests).map(cell => ({
-      key: `${tool.tool}:${cell.bucket}`, label: `${label(tool.tool)}: ${CONTEXT_LABELS[cell.bucket]}`,
-      total: of === 'requests' ? plural(cell.requests, 'request') : money(cell.cost_usd),
-      parts: repoParts(cell.repos, of === 'requests' ? 'requests' : 'cost_usd', body.repo_order, format,
-        `${label(tool.tool)}, context ${CONTEXT_LABELS[cell.bucket]} tokens, ${measure}`, measure, contextCellHover(tool, cell, label)),
-    })),
-  ])
-}
-
-function percentileRows(body: ContextBody, label: Label): BarRow[] {
-  return body.tools.filter(tool => tool.reported).flatMap(tool => (['p50', 'p90'] as const).map(which => {
-    const value = which === 'p50' ? tool.p50_context : tool.p90_context
-    return { key: `${tool.tool}:${which}`, label: `${label(tool.tool)}: ${which === 'p50' ? 'median' : '90th percentile'}`, total: tokens(value),
-      parts: [{ key: which, label: which === 'p50' ? 'median' : '90th percentile', value, tone: which === 'p50' ? 2 : 1,
-        text: value == null ? '' : fmtN(value),
-        hover: `${contextPercentileHover(tool, which, label)} ${notSplitNote(which === 'p50' ? 'median' : '90th percentile')}` }] }
-  }))
-}
-
-function smallRows(body: ContextBody, label: Label): BarRow[] {
-  return body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool),
-    total: tool.small_requests == null ? 'not reported' : `${count(tool.small_requests)} requests · ${money(tool.small_cost_usd)}`,
-    parts: tool.small_requests == null ? [] : tool.small_repos?.length
-      ? repoPartsWith(tool.small_repos, 'small_requests', body.repo_order, value => plural(value, 'request'),
-        `${label(tool.tool)}, small steps`, 'small-step requests', smallStepHover(tool, label), smallRepoMore)
-      : [{ key: 'small', label: 'requests', value: tool.small_requests, tone: 3,
-        text: fmtNum(tool.small_requests), hover: smallStepHover(tool, label) }],
-  }))
-}
-
-const split = (body: ContextBody) => body.tools.some(tool => tool.repos?.length)
-
-function Stacks(props: { body: ContextBody; label: Label }) {
+function Visual(props: { body: ContextBody; label: Label; by: ColourMode; setBy: (by: ColourMode) => void }) {
+  const split = () => contextSplit(props.body)
+  const by = (): ColourMode => split() ? props.by : 'parts'
+  const repo = () => by() === 'repo'
+  const perRepo = () => repo() ? '; a segment per repository' : ''
   return <>
-    <RepoLegend split={props.body} other={hasOther([...props.body.tools, ...props.body.tools.flatMap(tool => tool.buckets),
-      ...props.body.tools.map(tool => ({ repos: tool.small_repos }))])} />
-    <Bars name="context-requests" title="Requests by the size of the context they read, per tool" scale="whole" legend={legend}
-      axis="Bar: the tool's requests with token counts (100%); segments: count and share per bucket." rows={bucketRows(props.body, props.label, 'requests')} />
-    <Show when={split(props.body)}>
-      <Bars name="context-requests-repos" title="Requests per tool and per context bucket, by repository"
-        axis="Length: requests with token counts, one linear scale from 0; a segment per repository; under each tool its buckets."
-        rows={repoRows(props.body, props.label, 'requests')} />
+    <ColourBy parts="Context size" value={by()} onChange={props.setBy} split={split()} />
+    <Show when={repo()} fallback={<ul class={charts.legend} aria-label="Context size: colours of the columns" data-parts-legend>
+      <For each={CONTEXT_LEGEND}>{item => <li><span class={`${charts.swatch} ${toneClass(item.tone)}`} />{item.label}</li>}</For>
+    </ul>}>
+      <RepoLegend split={props.body} other={hasOther([...props.body.tools, ...props.body.tools.flatMap(tool => tool.buckets),
+        ...props.body.tools.map(tool => ({ repos: tool.small_repos }))])} />
     </Show>
-    <Bars name="context-cost" title="Cost by the size of the context read, per tool" scale="whole" legend={legend}
-      axis="Bar: the tool's cost at list price (100%); segments: cost and share per bucket." rows={bucketRows(props.body, props.label, 'cost')} />
-    <Show when={split(props.body)}>
-      <Bars name="context-cost-repos" title="Cost per tool and per context bucket, by repository"
-        axis="Length: cost at list price, one linear scale from $0; a segment per repository; under each tool its buckets."
-        rows={repoRows(props.body, props.label, 'cost')} />
-    </Show>
-    <Bars name="context-percentiles" title="Context read per request: median and 90th percentile, per tool"
-      axis={`Length: tokens, linear from 0.${split(props.body) ? ' Not split by repository: a percentile is not a sum.' : ''}`} rows={percentileRows(props.body, props.label)} />
-    <Bars name="context-small" title={`Requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time, per tool`}
-      axis={`Length: requests, linear from 0${props.body.tools.some(tool => tool.small_repos?.length) ? ', a segment per repository' : ''}; ` +
-        'beside it their cost at list price.'} rows={smallRows(props.body, props.label)} />
+    <For each={props.body.tools}>{tool => <section class={charts.group} data-tool={tool.tool} aria-label={props.label(tool.tool)}>
+      <h2 class={charts.groupTitle}>{props.label(tool.tool)}</h2>
+      <Show when={tool.reported} fallback={<p class={charts.note} data-no-tokens>{NONE}</p>}>
+        <div class={charts.grid}>
+          <Columns name={`context-requests-${tool.tool}`} title="Requests by context size"
+            axis={`Requests, one scale from 0; under each column its share of the tool's ${fmtNum(tool.reported)}${perRepo()}.`}
+            columns={contextColumns(props.body, tool, 'requests', by(), props.label)} />
+          <Columns name={`context-cost-${tool.tool}`} title="Cost by context size"
+            axis={`Cost at list price, one scale from $0; under each column its share of the tool's ${money(tool.cost_usd)}${perRepo()}.`}
+            columns={contextColumns(props.body, tool, 'cost', by(), props.label)} />
+        </div>
+      </Show>
+    </section>}</For>
+    <div class={charts.gridWide}>
+      <MarkStrip name="context-percentiles" title="Context per request: median and 90th percentile"
+        axis={`Tokens, one axis from 0 for every tool; dashed lines at the bucket boundaries${repo() ? '; not split by repository' : ''}.`}
+        legend={[{ label: 'Median', shape: 'dot' }, { label: '90th percentile', shape: 'tick' }]} refs={CONTEXT_REFS}
+        format={value => fmtN(value)} rows={contextStripRows(props.body, by(), props.label)} />
+      <Bars name="context-small" title={SMALL_TITLE}
+        axis={`Requests, one scale from 0${perRepo()}; beside it their cost at list price.`}
+        rows={contextSmallRows(props.body, by(), props.label)} />
+    </div>
   </>
 }
 
@@ -103,15 +58,18 @@ type Row = Record<string, unknown>
 export default function ContextWeight(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const [by, setBy] = useColourBy()
   return <InsightCard<ContextBody> {...props} card="context" tab="context"
     hero={contextHero}
-    finding={body => contextFinding(body, label)}
-    visual={body => <Stacks body={body} label={label} />}
+    finding={contextLine}
+    visual={body => <Visual body={body} label={label} by={by()} setBy={setBy} />}
     note={'Context of a request: input + cache read + cache write tokens, everything the model read for it. A bucket ' +
-      'includes its lower bound: 200k tokens is in 200k–500k. A request with no token counts (or all zero) is not reported, ' +
-      'not a request of 0 tokens. Cost is list price, not a bill; a cache read costs less than input, so cost does not grow ' +
-      `in step with context. Small steps: under ${SMALL_STEP_OUTPUT} output tokens and no thinking time recorded; a source ` +
-      'that does not report thinking records none. Only requests in the period count.'}
+      'includes its lower bound: 200k tokens is in 200k–500k. Columns of 200k tokens or more have their own colour. A request ' +
+      'with no token counts (or all zero) is not reported, not a request of 0 tokens. Cost is list price, not a bill; a cache ' +
+      'read costs less than input, so cost does not grow in step with context. The median and 90th percentile are over the ' +
+      `requests with token counts; the dashed lines are the bucket boundaries. Small steps: under ${SMALL_STEP_OUTPUT} output ` +
+      'tokens and no thinking time recorded; a source that does not report thinking records none. Only requests in the period ' +
+      'count. Colour by Repository: requests, cost and small steps split into one segment per repository; a percentile is not split.'}
     table={{
       label: 'Context weight by tool and bucket',
       rows: body => body.tools.flatMap(tool => tool.buckets.map((cell): Row => ({

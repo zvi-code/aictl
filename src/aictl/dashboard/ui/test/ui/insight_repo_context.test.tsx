@@ -109,36 +109,39 @@ function strip<T>(body: T): T {
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights&range=all') })
 
 describe('INS-RS · Context group cards split by repository', () => {
-  it('Context weight: keeps the bucket bars, adds per-tool and per-bucket bars by repository, splits small steps', () => {
+  it('Context weight: colours the context columns by repository, the whole of each repository in the hover, splits small steps', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=context&by=repo')
     const { host, dispose } = mount(() => <ContextWeight {...props(context)} />)
     const box = host.querySelector('#insight-context')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect([...box.querySelectorAll('[data-chart="context-requests"] [data-part]')].map(part => part.getAttribute('data-part')))
-      .toEqual(['under_50k', '50_100k'])
-    const rows = [...box.querySelectorAll('[data-chart="context-requests-repos"] [data-row]')]
-    expect(rows.map(row => row.getAttribute('data-row'))).toEqual(['claude-code', 'claude-code:under_50k', 'claude-code:50_100k'])
-    expect(repoAttrs(rows[0])).toEqual(ALL)
-    expect(rows[0].querySelector('[data-total]')!.textContent).toBe('1,000 requests')
-    expect(texts(rows[0])).toEqual(['700 requests', '210 requests', ''])
-    expect(hover(rows[0], 'repo:/src/app')).toBe('claude-code, requests — app (/src/app): 700 requests · 70% of this bar · 80% of app ' +
-      'own requests. claude-code: 1,000 requests with token counts, $100 at list price.')
-    const cost = box.querySelector('[data-chart="context-cost-repos"] [data-row="claude-code:50_100k"]')!
+    const requests = box.querySelector('[data-chart="context-requests-claude-code"]')!
+    expect([...requests.querySelectorAll('[data-column]')].map(column => column.getAttribute('data-column')))
+      .toEqual(['under_50k', '50_100k', '100_200k', '200_500k', 'over_500k'])
+    const small50 = requests.querySelector('[data-column="under_50k"]')!
+    expect(repoAttrs(small50)).toEqual(ALL)
+    expect(small50.querySelector('[data-total]')!.textContent).toBe('600')
+    expect(hover(small50, 'repo:/src/app')).toBe('claude-code, context under 50k tokens, requests — app (/src/app): 400 requests · ' +
+      '67% of this bar. This repository in every context size: 700 requests · 70% of the tool\'s · 80% of its own requests. ' +
+      'claude-code, context under 50k tokens: 600 requests (60% of 1,000 with token counts), $40.00 at list price (40% of $100), 600 priced.')
+    const cost = box.querySelector('[data-chart="context-cost-claude-code"] [data-column="50_100k"]')!
     expect(repoAttrs(cost)).toEqual(ALL)
-    expect(hover(cost, 'repo:/src/docs')).toMatch(/^claude-code, context 50k–100k tokens, cost at list price — docs \(\/src\/docs\): \$10\.00 · 17% of this bar\. claude-code, context 50k–100k tokens: 400 requests/)
+    expect(hover(cost, 'repo:/src/docs')).toMatch(/^claude-code, context 50k–100k tokens, cost at list price — docs \(\/src\/docs\): \$10\.00 · 17% of this bar\. This repository in every context size: \$18\.00 at list price/)
     const small = box.querySelector('[data-chart="context-small"] [data-row="claude-code"]')!
     expect(repoAttrs(small)).toEqual(ALL)
     expect(hover(small, 'repo:')).toMatch(/^claude-code, small steps — Other repositories \(.*\): 20 requests · 10% of this bar\. Their cost: \$1\.00 at list price\. claude-code: 200 requests/)
-    expect(hover(box.querySelector('[data-chart="context-percentiles"] [data-row="claude-code:p50"]')!, 'p50'))
-      .toContain('Not split by repository: the median of a whole is not the sum of the medians of its parts.')
+    expect(box.querySelector('[data-chart="context-percentiles"] [data-mark="p50"] [role="tooltip"]')!.textContent).toContain('Not split by repository: the median of a whole is not the sum of the medians of its parts.')
     dispose()
   })
 
-  it('Context weight: a body without repos draws the old bars only', () => {
+  it('Context weight: a body without repos draws the columns whole and no switch', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=context&by=repo')
     const { host, dispose } = mount(() => <ContextWeight {...props(strip(context))} />)
     const box = host.querySelector('#insight-context')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect(box.querySelector('[data-chart="context-requests-repos"]')).toBeNull()
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect([...box.querySelectorAll('[data-chart="context-requests-claude-code"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['under_50k', '50_100k'])
     expect([...box.querySelectorAll('[data-chart="context-small"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['small'])
     dispose()
   })

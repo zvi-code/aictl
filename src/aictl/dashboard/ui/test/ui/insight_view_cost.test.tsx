@@ -7,10 +7,11 @@ import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
 import ContextCarry from '../../src/panels/insights/ContextCarry'
+import ContextWeight from '../../src/panels/insights/ContextWeight'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
-import { carryLine, carryNameRows, pauseColumns, pauseLine } from '../../src/panels/insights/costModel'
-import type { CarryBody, PauseBody } from '../../src/panels/insights/insightsModel'
+import { carryLine, carryNameRows, contextLine, pauseColumns, pauseLine } from '../../src/panels/insights/costModel'
+import type { CarryBody, ContextBody, PauseBody } from '../../src/panels/insights/insightsModel'
 import { OTHER, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { UrlPatch } from '../../src/data/urlState'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -268,6 +269,97 @@ describe('INS-VIEW-COST · Context carry', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(attr(box.querySelectorAll('[data-chart="carry-names"] [data-part]'), 'data-part')).toEqual(['output', 'carried', 'output', 'carried'])
     expect(carryNameRows(unsplit(carry), 'repo', tool => tool)[0].cells[0].parts.map(part => part.key)).toEqual(['output'])
+    dispose()
+  })
+})
+
+// ─── Context weight ──────────────────────────────────────────────────────────────────────────────────────────────────
+const ctxCell = (bucket: string, requests: number, cost: number) => ({
+  bucket, requests, priced: requests, cost_usd: cost, request_share: requests / 1000, cost_share: cost / 200,
+  repos: segments({ requests: [requests * 0.5, requests * 0.3, requests * 0.2], cost_usd: [cost * 0.5, cost * 0.3, cost * 0.2] }),
+})
+const weight = {
+  ...base, card: 'context', repo_order: order, repo_others: others,
+  tools: [{ tool: 'claude-code', requests: 1000, reported: 1000, p50_context: 120_000, p90_context: 300_000, cost_usd: 200,
+    buckets: [ctxCell('under_50k', 100, 5), ctxCell('50_100k', 300, 30), ctxCell('100_200k', 400, 80), ctxCell('200_500k', 180, 70),
+      ctxCell('over_500k', 20, 15)],
+    heavy_requests: 200, heavy_cost_usd: 85, small_requests: 250, small_cost_usd: 20,
+    repos: segments({ reported: [500, 300, 200], cost_usd: [100, 60, 40] }),
+    small_repos: segments({ small_requests: [125, 75, 50], small_cost_usd: [10, 6, 4] }) },
+  { tool: 'codex-cli', requests: 400, reported: 0, p50_context: null, p90_context: null, cost_usd: null,
+    buckets: ['under_50k', '50_100k', '100_200k', '200_500k', 'over_500k'].map(bucket => ({ bucket, requests: 0, priced: 0, cost_usd: null,
+      request_share: null, cost_share: null })),
+    heavy_requests: 0, heavy_cost_usd: null, small_requests: null, small_cost_usd: null }],
+  summary: { reported: 1000, heavy_requests: 200, heavy_share: 0.2, cost_usd: 200, heavy_cost_usd: 85, heavy_cost_share: 0.425,
+    small_requests: 250, small_cost_usd: 20, not_reported: ['codex-cli'] },
+} as unknown as ContextBody
+
+describe('INS-VIEW-COST · Context weight', () => {
+  it('says what is measured in one line, and a headline of one measured total', () => {
+    const { box, dispose } = draw(ContextWeight, 'context', weight)
+    expect(box.querySelector('[data-finding]')!.textContent).toBe(contextLine(weight))
+    expect(words(contextLine(weight))).toBeLessThanOrEqual(30)
+    expect(box.querySelector('[data-hero]')!.textContent).toBe('$200at list price for the 1,000 requests with token counts')
+    dispose()
+  })
+
+  it('draws a column per context size in order, the heavy sizes in their own colour', () => {
+    const { box, dispose } = draw(ContextWeight, 'context', weight)
+    const chart = box.querySelector('[data-chart="context-cost-claude-code"]')!
+    expect(attr(chart.querySelectorAll('[data-column]'), 'data-column')).toEqual(['under_50k', '50_100k', '100_200k', '200_500k', 'over_500k'])
+    expect(text(chart.querySelectorAll('[data-column] [data-total]'))).toEqual(['$5.00', '$30.00', '$80.00', '$70.00', '$15.00'])
+    expect(text(chart.querySelectorAll('[data-column] small'))).toEqual(['3%', '15%', '40%', '35%', '8%'])
+    expect(text(chart.querySelectorAll('[data-column] > span:last-child')).map(label => label!.replace(/\d+%$/, '')))
+      .toEqual(['under 50k', '50k–100k', '100k–200k', '200k–500k', '500k and more'])
+    expect(text(box.querySelectorAll('[data-parts-legend] li'))).toEqual(['Context under 200k tokens', 'Context of 200k tokens or more'])
+    // The tool with no token counts gets its name and one line, no empty chart.
+    expect(box.querySelector('[data-tool="codex-cli"] [data-no-tokens]')).not.toBeNull()
+    expect(box.querySelector('[data-chart="context-requests-codex-cli"]')).toBeNull()
+    dispose()
+  })
+
+  it('marks the median and 90th percentile of each tool on one axis of tokens, with the bucket boundaries', () => {
+    const { box, dispose } = draw(ContextWeight, 'context', weight)
+    const strip = box.querySelector('[data-chart="context-percentiles"]')!
+    expect(attr(strip.querySelectorAll('[data-row]'), 'data-row')).toEqual(['claude-code'])
+    expect([...strip.querySelectorAll<HTMLElement>('[data-mark]')].map(mark => [mark.dataset.mark, mark.style.insetInlineStart]))
+      .toEqual([['p50', '40.00%'], ['p90', '100.00%']])
+    expect(text(strip.querySelectorAll('[data-scale] span span'))).toEqual(['0', '50k', '100k', '200k', '300 k'])
+    expect(strip.querySelector('[data-total]')!.textContent).toBe('120 k · 300 k')
+    dispose()
+  })
+
+  it('switches the columns and the small steps to a segment per repository; the percentiles stay whole', () => {
+    const patches: UrlPatch[] = []
+    const { box, dispose } = draw(ContextWeight, 'context', weight, patches)
+    switchTo(box, 'repo')
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
+    const column = box.querySelector('[data-chart="context-requests-claude-code"] [data-column="100_200k"]')!
+    expect(attr(column.querySelectorAll('[data-part]'), 'data-repo')).toEqual(['0', '1', String(OTHER)])
+    expect(tip(column, 'repo:/work/shop')).toMatch(/^claude-code, context 100k–200k tokens, requests — shop \(\/work\/shop\): 200 requests · 50% of this bar\. This repository in every context size: 500 requests · 50% of the tool's\. /)
+    expect(attr(box.querySelectorAll('[data-chart="context-small"] [data-row="claude-code"] [data-part]'), 'data-repo'))
+      .toEqual(['0', '1', String(OTHER)])
+    expect(box.querySelector('[data-chart="context-percentiles"] [data-mark="p90"] [role="tooltip"]')!.textContent)
+      .toContain('Not split by repository')
+    dispose()
+  })
+
+  it('gives every kind of mark a hover with its figures', () => {
+    const { box, dispose } = draw(ContextWeight, 'context', weight)
+    expect(tip(box.querySelector('[data-chart="context-requests-claude-code"]')!, 'under_50k')).toBe('claude-code, context under 50k ' +
+      'tokens: 100 requests (10% of 1,000 with token counts), $5.00 at list price (3% of $200), 100 priced.')
+    expect(box.querySelector('[data-chart="context-percentiles"] [data-mark="p50"] [role="tooltip"]')!.textContent).toBe('claude-code: ' +
+      'median context 120 k tokens (input + cache read + cache write) over 1,000 requests with token counts.')
+    expect(tip(box.querySelector('[data-chart="context-small"]')!, 'small')).toBe('claude-code: 250 requests with under 150 output ' +
+      'tokens and no thinking time (25% of 1,000), $20.00 at list price. All tools: 250 small steps, $20.00 at list price.')
+    dispose()
+  })
+
+  it('draws a body without a split by repository with no switch', () => {
+    const { box, dispose } = draw(ContextWeight, 'context', unsplit(weight))
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(attr(box.querySelectorAll('[data-chart="context-requests-claude-code"] [data-part]'), 'data-part'))
+      .toEqual(['under_50k', '50_100k', '100_200k', '200_500k', 'over_500k'])
     dispose()
   })
 })

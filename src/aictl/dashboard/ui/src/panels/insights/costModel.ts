@@ -1,14 +1,16 @@
 // ─── The marks of the cost views (Pause tax, Context carry, Context weight, Fixed context overhead) ─
 // Pure functions: each builds the columns, rows or marks of one chart and the hover of every mark, in one of two
 // encodings: coloured by the view's own parts, or a segment per repository (repoSplit.ts). Tests read them directly.
-import { fmtDur, fmtNum, fmtTimes, projectName, toolDisplayName } from '../../design/format'
+import { fmtDur, fmtN, fmtNum, fmtShare, fmtTimes, projectName, toolDisplayName } from '../../design/format'
 import type { BarPart, BarRow } from './Bars'
 import type { Column } from './charts/Columns'
 import type { PairedRow } from './charts/PairedBars'
+import type { StripRow } from './charts/MarkStrip'
 import {
-  BUCKET_LABELS, bytes, CAUSE_LABELS, carryHover, carryToolHover, causeText, count, leftOut, money, pauseBucketHover, pauseCallHover,
-  pauseCauseBars, pauseCauseHover, pauseEstimate, pauseEstimateHover, pauseMeasuredHover, pauseProjectHover, pauseProjects, plural, share,
-  type Bucket, type CarryBody, type Label, type PauseBody, type PauseCause,
+  BUCKET_LABELS, bytes, CAUSE_LABELS, carryHover, carryToolHover, causeText, CONTEXT_LABELS, contextCellHover, contextPercentileHover, count,
+  leftOut, money, pauseBucketHover, pauseCallHover, pauseCauseBars, pauseCauseHover, pauseEstimate, pauseEstimateHover, pauseMeasuredHover,
+  pauseProjectHover, pauseProjects, plural, repoPartsWith, segmentValue, share, SMALL_STEP_OUTPUT, smallRepoMore, smallStepHover, tokens,
+  type Bucket, type CarryBody, type ContextBody, type ContextBucket, type ContextTool, type Label, type PauseBody, type PauseCause,
 } from './insightsModel'
 import { notSplitNote, repoParts, type RepoSegment } from './repoSplit'
 import type { ColourBy } from './charts/ColourBy'
@@ -209,3 +211,91 @@ export function carryToolRows(body: CarryBody, by: ColourMode, label: Label): Pa
       carryCell(body, row, 'carried', by, label(row.tool), `${carryToolHover(row, label)} ${totals}`)],
   }))
 }
+
+// ─── Context weight ─────────────────────────────────────────────────────────────────
+
+export function contextLine(body: ContextBody) {
+  return 'Model requests with token counts and their cost at list price, by the context each request read: input + cache ' +
+    `read + cache write tokens.${leftOut(body.summary.unpriced_requests)}`
+}
+
+const HEAVY: readonly ContextBucket[] = ['200_500k', 'over_500k']
+export const CONTEXT_TONE = (bucket: ContextBucket) => HEAVY.includes(bucket) ? 1 : 6
+export const CONTEXT_LEGEND = [{ label: 'Context under 200k tokens', tone: 6 }, { label: 'Context of 200k tokens or more', tone: 1 }]
+/** The reference lines of the percentile strip: the bucket boundaries. */
+export const CONTEXT_REFS = [{ value: 50_000, label: '50k' }, { value: 100_000, label: '100k' }, { value: 200_000, label: '200k' },
+  { value: 500_000, label: '500k' }]
+
+export const contextSplit = (body: ContextBody) =>
+  anyRepos([...body.tools, ...body.tools.flatMap(tool => tool.buckets), ...body.tools.map(tool => ({ repos: tool.small_repos }))])
+
+/** The hover line of the columns of 200k tokens or more: those requests over all tools, as the store summed them. */
+export function contextHeavyText(body: ContextBody) {
+  const s = body.summary
+  return `All tools, context of 200k tokens or more: ${fmtNum(s.heavy_requests)} of ${plural(s.reported, 'request')} ` +
+    `(${share(s.heavy_share)}), ${money(s.heavy_cost_usd)} of ${money(s.cost_usd)} at list price (${share(s.heavy_cost_share)}).`
+}
+
+/** A repository's whole of one tool (every bucket), named in the hover of its segment in each bucket. */
+function contextRepoMore(tool: ContextTool, of: 'requests' | 'cost') {
+  return (segment: RepoSegment) => {
+    const whole = tool.repos?.find(item => item.repo === segment.repo)
+    if (!whole) return ''
+    const key = of === 'requests' ? 'reported' : 'cost_usd'
+    const value = of === 'requests' ? plural(segmentValue(whole, key) ?? 0, 'request') : `${money(segmentValue(whole, key))} at list price`
+    const own = whole.of_repo?.[key]
+    return `This repository in every context size: ${value} · ${share(whole.share?.[key] ?? null)} of the tool's` +
+      `${own == null ? '' : ` · ${fmtShare(own)} of its own ${of === 'requests' ? 'requests' : 'cost'}`}.`
+  }
+}
+
+/** One tool's columns over the five context sizes, for requests or cost; a segment per repository when `by` is repo. */
+export function contextColumns(body: ContextBody, tool: ContextTool, of: 'requests' | 'cost', by: ColourMode, label: Label): Column[] {
+  const heavy = contextHeavyText(body)
+  return tool.buckets.map(cell => {
+    const hover = contextCellHover(tool, cell, label) + (HEAVY.includes(cell.bucket) ? ` ${heavy}` : '')
+    const value = of === 'requests' ? cell.requests : cell.cost_usd
+    const text = of === 'requests' ? fmtNum(cell.requests) : money(cell.cost_usd)
+    const measure = of === 'requests' ? 'requests' : 'cost at list price'
+    return {
+      key: cell.bucket, label: CONTEXT_LABELS[cell.bucket], sub: share(of === 'requests' ? cell.request_share : cell.cost_share), total: text,
+      parts: by === 'repo' && cell.repos?.length
+        ? repoPartsWith(cell.repos, of === 'requests' ? 'requests' : 'cost_usd', body.repo_order,
+          of === 'requests' ? value => plural(value, 'request') : value => money(value),
+          `${label(tool.tool)}, context ${CONTEXT_LABELS[cell.bucket]} tokens, ${measure}`, measure, hover, contextRepoMore(tool, of))
+        : [{ key: cell.bucket, label: `${CONTEXT_LABELS[cell.bucket]} tokens`, value, text, hover,
+          tone: by === 'repo' ? 7 : CONTEXT_TONE(cell.bucket) }],
+    }
+  })
+}
+
+/** Per tool with token counts: its median and 90th percentile context on one axis of tokens. */
+export function contextStripRows(body: ContextBody, by: ColourMode, label: Label): StripRow[] {
+  return body.tools.filter(tool => tool.reported).map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: plural(tool.reported, 'request'),
+    total: `${tool.p50_context == null ? 'not reported' : fmtN(tool.p50_context)} · ${tool.p90_context == null ? 'not reported' : fmtN(tool.p90_context)}`,
+    marks: (['p50', 'p90'] as const).map(which => {
+      const value = which === 'p50' ? tool.p50_context : tool.p90_context
+      return { key: which, label: which === 'p50' ? 'median' : '90th percentile', value, text: tokens(value), shape: which === 'p50' ? 'dot' : 'tick',
+        hover: contextPercentileHover(tool, which, label) + (by === 'repo' ? ` ${notSplitNote(which === 'p50' ? 'median' : '90th percentile')}` : '') }
+    }),
+  }))
+}
+
+/** Per tool: its small steps (under the output limit, no thinking time); a segment per repository when `by` is repo. */
+export function contextSmallRows(body: ContextBody, by: ColourMode, label: Label): BarRow[] {
+  const s = body.summary
+  const all = `All tools: ${count(s.small_requests)} small steps, ${money(s.small_cost_usd)} at list price.`
+  return body.tools.map(tool => {
+    const hover = `${smallStepHover(tool, label)} ${all}`
+    return {
+      key: tool.tool, label: label(tool.tool),
+      total: tool.small_requests == null ? 'not reported' : `${plural(tool.small_requests, 'request')} · ${money(tool.small_cost_usd)}`,
+      parts: tool.small_requests == null ? [] : by === 'repo' && tool.small_repos?.length
+        ? repoPartsWith(tool.small_repos, 'small_requests', body.repo_order, value => plural(value, 'request'),
+          `${label(tool.tool)}, small steps`, 'small-step requests', hover, smallRepoMore)
+        : [{ key: 'small', label: 'requests', value: tool.small_requests, tone: 3, text: fmtNum(tool.small_requests), hover }],
+    }
+  })
+}
+export const SMALL_TITLE = `Requests under ${SMALL_STEP_OUTPUT} output tokens, no thinking time`

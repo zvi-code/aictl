@@ -909,8 +909,9 @@ export const timeHero = (body: TimeBody) => hero(
     : ratio(body.summary.tool_ms, body.summary.model_ms + body.summary.tool_ms), fmtShare,
   `of the summed durations of model requests and tool calls is tool calls: ${hours(body.summary.tool_ms)} tool calls, ` +
   `${hours(body.summary.model_ms)} model requests`)
-export const contextHero = (body: ContextBody) => hero(body.summary.heavy_cost_share, fmtShare,
-  `of the cost is in requests that read a context of 200k tokens or more: ${money(body.summary.heavy_cost_usd)} of ${money(body.summary.cost_usd)}`)
+/** The measured total of the view: the cost of the requests with token counts; the 200k share is in the columns' hover. */
+export const contextHero = (body: ContextBody) => body.summary.reported ? hero(body.summary.cost_usd, fmtUsd,
+  `at list price for the ${plural(body.summary.reported, 'request')} with token counts`) : undefined
 export const fixedHero = (body: FixedBody) => body.summary.never_used_share != null
   ? hero(body.summary.never_used_share, fmtShare, `of the ${fmtNum(body.summary.listed)} skills listed in sessions' fixed context were never ` +
     `used in the period: listing them took ${tokens(body.summary.unused_tokens)}`)

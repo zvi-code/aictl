@@ -487,22 +487,24 @@ describe('INS-06 · Context weight', () => {
     expect(contextFinding(none, tool => tool)).toBe('The sources in this period do not report token counts (codex-cli).')
   })
 
-  it('draws a request bar and a cost bar over the same buckets, and a tool without token counts as not reported', () => {
+  it('draws a request column and a cost column per context size, and a tool without token counts as not reported', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <ContextWeight {...props(ctx)} />)
     const box = card(host, 'context')
-    const requests = box.querySelector('[data-chart="context-requests"] [data-row="claude-code"]')!
-    expect([...requests.querySelectorAll('[data-part] button')].map(part => part.textContent))
-      .toEqual(['30 · 3%', '150 · 15%', '340 · 34%', '430 · 43%', '50 · 5%'])
+    const requests = box.querySelector('[data-chart="context-requests-claude-code"]')!
+    expect([...requests.querySelectorAll('[data-column] [data-total]')].map(total => total.textContent)).toEqual(['30', '150', '340', '430', '50'])
+    expect([...requests.querySelectorAll('[data-column] small')].map(sub => sub.textContent)).toEqual(['3%', '15%', '34%', '43%', '5%'])
     expect(requests.querySelector('[data-part="200_500k"] [role="tooltip"]')!.textContent).toBe('claude-code, context 200k–500k ' +
-      'tokens: 430 requests (43% of 1,000 with token counts), $52.00 at list price (52% of $100), 430 priced.')
-    const cost = box.querySelector('[data-chart="context-cost"] [data-row="claude-code"]')!
-    expect(cost.querySelector('[data-part="over_500k"] button')!.textContent).toBe('$17.00 · 17%')
+      'tokens: 430 requests (43% of 1,000 with token counts), $52.00 at list price (52% of $100), 430 priced. All tools, context of ' +
+      '200k tokens or more: 480 of 1,000 requests (48%), $69.00 of $100 at list price (69%).')
+    const cost = box.querySelector('[data-chart="context-cost-claude-code"] [data-column="over_500k"]')!
+    expect([cost.querySelector('[data-total]')!.textContent, cost.querySelector('small')!.textContent]).toEqual(['$17.00', '17%'])
     const percentiles = box.querySelector('[data-chart="context-percentiles"]')!
-    expect(percentiles.querySelector('[data-row="claude-code:p90"] [data-total]')!.textContent).toBe('417 k tokens')
-    const codex = box.querySelector('[data-chart="context-requests"] [data-row="codex-cli"]')!
-    expect(codex.querySelectorAll('[data-part]')).toHaveLength(0)
-    expect(codex.textContent).toContain('token counts not reported')
+    expect(percentiles.querySelector('[data-row="claude-code"] [data-total]')!.textContent).toBe('194 k · 417 k')
+    expect(percentiles.querySelector('[data-row="claude-code"] [data-mark="p90"] [role="tooltip"]')!.textContent).toBe('claude-code: ' +
+      '90th percentile context 417 k tokens (input + cache read + cache write) over 1,000 requests with token counts.')
+    expect(box.querySelector('[data-tool="codex-cli"] [data-no-tokens]')!.textContent).toBe('Token counts not reported by this source.')
+    expect(box.querySelector('[data-chart="context-requests-codex-cli"]')).toBeNull()
     const small = box.querySelector('[data-chart="context-small"]')!
     expect(small.querySelector('[data-row="claude-code"] [data-total]')!.textContent).toBe('150 requests · $14.60')
     expect(small.querySelector('[data-row="codex-cli"] [data-total]')!.textContent).toBe('not reported')
