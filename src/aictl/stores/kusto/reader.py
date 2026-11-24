@@ -349,6 +349,12 @@ _VIEWS = {
         "no_model effort_reported unattributed call_only_sessions store_calls store_sessions unsplit_calls "
         "unsplit_sessions recorded_calls tool_name node_id session_id models computed_at",
     ),
+    "insights.flows": (
+        _TIME,
+        "row_type from_step to_step calls pair loops sessions seconds rounds tool test_runs unflagged_tests outcome last_step "
+        "path project_name node_id session_id committed changed no_change priced cost_usd no_change_cost tools loop_calls "
+        "first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -449,6 +455,7 @@ _CACHE_TTL_S = {
     "insights.work_per_instruction": _INSIGHT_TTL_S,
     "insights.verified_commits": _INSIGHT_TTL_S,
     "insights.model_report": _INSIGHT_TTL_S,
+    "insights.flows": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }

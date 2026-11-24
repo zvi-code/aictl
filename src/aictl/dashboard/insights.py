@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from . import insights_work
 from .board_filters import Filters
 from .panel_kql import query_block
 from .projection_utils import _label
@@ -31,6 +32,7 @@ CARDS = {
     "autonomy": "insights.work_per_instruction",
     "verified": "insights.verified_commits",
     "models": "insights.model_report",
+    "flows": "insights.flows",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -852,6 +854,7 @@ SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "autonomy": work_per_instruction,
     "verified": verified_commits,
     "models": model_report,
+    "flows": insights_work.flows,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -868,6 +871,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "autonomy": lambda history, params: history.read("insights.work_per_instruction", limit=ROW_LIMIT, **params),
     "verified": lambda history, params: history.read("insights.verified_commits", limit=ROW_LIMIT, **params),
     "models": lambda history, params: history.read("insights.model_report", limit=ROW_LIMIT, **params),
+    "flows": lambda history, params: history.read("insights.flows", limit=ROW_LIMIT, **params),
 }
 
 

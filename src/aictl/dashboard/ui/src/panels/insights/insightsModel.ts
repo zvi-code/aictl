@@ -8,10 +8,12 @@ import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'
 import type { VerifiedBody } from './verifiedModel'
 import type { ModelBody } from './modelReportModel'
+import type { FlowsBody } from './flowsModel'
 
 export type { QueryBlock }
 export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
   | 'autonomy' | 'verified' | 'models'
+  | 'flows'
 export type Bucket = 'under_1m' | '1_5m' | '5_60m' | 'over_60m'
 export type Outcome = 'identical_failed' | 'identical_succeeded' | 'changed_failed' | 'changed_succeeded' | 'other_tool'
 type Num = number | null
@@ -131,6 +133,7 @@ export type InsightBody = PauseBody | CarryBody | SubagentBody | FailureBody | R
   | AutonomyBody
   | VerifiedBody
   | ModelBody
+  | FlowsBody
 
 export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
