@@ -22,7 +22,8 @@ export function Bars(props: {
   const largest = () => Math.max(0, ...props.rows.map(amount))
   const length = (row: BarRow) => props.scale === 'whole' ? (amount(row) > 0 ? 100 : 0)
     : largest() > 0 ? amount(row) / largest() * 100 : 0
-  return <figure class={styles.figure} data-chart={props.name}>
+  // No row to draw (every group below the card's minimum, or none in the period): no empty chart.
+  return <Show when={props.rows.length}><figure class={styles.figure} data-chart={props.name}>
     <figcaption class={styles.caption}>
       <span class={styles.title}>{props.title}</span>
       <span class={styles.axis} data-axis>{props.axis}</span>
@@ -47,5 +48,5 @@ export function Bars(props: {
         <span class={styles.total} data-total>{row.total}</span>
       </li>}</For>
     </ol>
-  </figure>
+  </figure></Show>
 }

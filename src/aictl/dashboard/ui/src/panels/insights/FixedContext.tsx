@@ -1,67 +1,83 @@
-import { For, Show, untrack } from 'solid-js'
-import { fmtNum } from '../../design/format'
+import { Show, untrack } from 'solid-js'
+import { fmtN, fmtNum } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  FIXED_KINDS, FIXED_LABELS, fixedFinding, fixedHero, NOT_REPORTED, plural, share, tokens, toolLabel,
-  type FixedBody, type FixedTool, type Label,
+  FIXED_KINDS, FIXED_LABELS, fixedFileHover, fixedFinding, fixedHero, fixedKindHover, fixedListingHover, fixedSkillHover, NOT_REPORTED,
+  plural, share, tokens, toolLabel, type FixedBody, type Label,
 } from './insightsModel'
 import styles from './Insights.module.css'
 
+const TONE = [0, 2, 4, 1, 3, 6, 5]
+const legend = FIXED_KINDS.map((kind, i) => ({ label: FIXED_LABELS[kind], tone: TONE[i] }))
+const short = (value: number | null) => value == null ? '' : fmtN(value)
+
 /** One bar per tool: the average fixed context of its sessions, stacked by kind, on one scale for all tools. */
+function kindRows(body: FixedBody, label: Label): BarRow[] {
+  return body.tools.map(tool => {
+    const missing = tool.kinds.filter(cell => !cell.reported).map(cell => FIXED_LABELS[cell.kind])
+    return {
+      key: tool.tool, label: label(tool.tool),
+      sub: `median ${tokens(tool.p50_tokens)} · 90th percentile ${tokens(tool.p90_tokens)} · ${plural(tool.sessions, 'session')}` +
+        (tool.estimated ? ' · estimated' : '') + (missing.length ? ` · ${NOT_REPORTED}: ${missing.join(', ')}` : ''),
+      total: `average ${tokens(tool.avg_tokens)}`,
+      parts: tool.kinds.filter(cell => cell.reported).map(cell => ({
+        key: cell.kind, label: FIXED_LABELS[cell.kind], value: cell.avg_tokens, tone: TONE[FIXED_KINDS.indexOf(cell.kind)],
+        text: short(cell.avg_tokens), hover: fixedKindHover(tool, cell, label),
+      })),
+    }
+  })
+}
+
+function listingRows(body: FixedBody, label: Label): BarRow[] {
+  return body.skills.filter(row => row.listing_tokens != null).map(row => ({
+    key: row.tool, label: label(row.tool), sub: `${fmtNum(row.used)} of ${fmtNum(row.listed)} skills used`, total: tokens(row.listing_tokens),
+    parts: [
+      { key: 'used', label: 'skills used', value: row.listing_tokens! - (row.unused_tokens ?? 0), tone: 2,
+        text: short(row.listing_tokens! - (row.unused_tokens ?? 0)), hover: fixedListingHover(row, 'used', label) },
+      { key: 'unused', label: 'skills not used', value: row.unused_tokens, tone: 7, text: short(row.unused_tokens),
+        hover: fixedListingHover(row, 'unused', label) },
+    ],
+  }))
+}
+
+function fileRows(body: FixedBody, label: Label): BarRow[] {
+  return body.files.map(row => ({
+    key: `${row.tool}:${row.file}`, label: row.file, sub: `${label(row.tool)} · largest ${tokens(row.max_tokens)} · ${plural(row.sessions, 'session')}`,
+    total: `${tokens(row.avg_tokens)} per load`,
+    parts: [{ key: 'avg', label: 'tokens per load', value: row.avg_tokens, tone: 0, text: short(row.avg_tokens), hover: fixedFileHover(row, label) }],
+  }))
+}
+
+function skillRows(body: FixedBody, label: Label): BarRow[] {
+  return body.top_skills.map(row => ({
+    key: `${row.tool}:${row.name}`, label: row.name, sub: `${label(row.tool)} · ${plural(row.sessions, 'session')}`,
+    total: `${tokens(row.tokens)} · ${row.uses ? plural(row.uses, 'use') : 'no use in the period'}`,
+    parts: [{ key: 'tokens', label: 'listing tokens', value: row.tokens, tone: row.uses ? 1 : 7, text: short(row.tokens), hover: fixedSkillHover(row, label) }],
+  }))
+}
+
 function KindBars(props: { body: FixedBody; label: Label }) {
-  const largest = () => Math.max(0, ...props.body.tools.map(tool => tool.avg_tokens ?? 0))
-  const part = (value: number | null) => `${(largest() > 0 ? (value ?? 0) / largest() * 100 : 0).toFixed(2)}%`
-  const missing = (tool: FixedTool) => tool.kinds.filter(cell => !cell.reported).map(cell => FIXED_LABELS[cell.kind])
   return <>
-    <ul class={styles.legend} aria-label="Kinds of fixed context">
-      <For each={FIXED_KINDS}>{(kind, i) => <li><span class={`${styles.swatch} ${styles[`k${i()}`]}`} />{FIXED_LABELS[kind]}</li>}</For>
-    </ul>
-    <ol class={styles.bars} aria-label="Average fixed context of a session by kind, per tool">
-      <For each={props.body.tools}>{tool => <li class={styles.barRow} data-tool={tool.tool}>
-        <span class={styles.barName}>{props.label(tool.tool)}<small>median {tokens(tool.p50_tokens)} · 90th percentile{' '}
-          {tokens(tool.p90_tokens)} · {plural(tool.sessions, 'session')}{tool.estimated ? ' · estimated' : ''}</small></span>
-        <span class={styles.barTrack}>
-          <span class={styles.split} role="img" aria-label={`${props.label(tool.tool)}, average fixed context by kind: ` +
-            tool.kinds.filter(cell => cell.reported).map(cell => `${FIXED_LABELS[cell.kind]} ${tokens(cell.avg_tokens)}`).join(', ')}>
-            <For each={tool.kinds}>{(cell, i) => <Show when={cell.reported}>
-              <span class={styles[`k${i()}`]} style={{ 'inline-size': part(cell.avg_tokens) }}
-                title={`${FIXED_LABELS[cell.kind]}: average ${tokens(cell.avg_tokens)}, median ${tokens(cell.p50_tokens)} in ` +
-                  `${fmtNum(cell.sessions)} sessions (${share(cell.session_share)})`} />
-            </Show>}</For>
-          </span>
-          <span class={styles.splitText}>average {tokens(tool.avg_tokens)}
-            {missing(tool).length ? ` · ${NOT_REPORTED}: ${missing(tool).join(', ')}` : ''}</span>
-        </span>
-      </li>}</For>
-    </ol>
-    <div class={styles.lists}>
-      <section>
-        <h3 class={styles.subhead}>Costliest instruction and memory files</h3>
-        <Show when={props.body.files.length} fallback={<p class={styles.note}>No instruction or memory file in this period.</p>}>
-          <ol class={styles.rankList} data-files>
-            <For each={props.body.files}>{row => <li>
-              <span>{row.file} <small>{props.label(row.tool)}</small></span>
-              <span>{tokens(row.avg_tokens)} per load · largest {tokens(row.max_tokens)} · {plural(row.sessions, 'session')}</span>
-            </li>}</For>
-          </ol>
-        </Show>
-      </section>
-      <section>
-        <h3 class={styles.subhead}>Skills by listing tokens</h3>
-        <Show when={props.body.top_skills.length} fallback={<p class={styles.note}>No tool in this period reports the skills it lists.</p>}>
-          <ol class={styles.rankList} data-skills>
-            <For each={props.body.top_skills}>{row => <li data-unused={row.uses ? undefined : ''}>
-              <span>{row.name} <small>{props.label(row.tool)}</small></span>
-              <span>{tokens(row.tokens)} · {plural(row.sessions, 'session')} · {row.uses ? plural(row.uses, 'use') : 'never used'}</span>
-            </li>}</For>
-          </ol>
-        </Show>
-        <Show when={props.body.summary.listing_not_reported.length}>
-          <p class={styles.note}>Skill listing {NOT_REPORTED} by {props.body.summary.listing_not_reported.map(props.label).join(', ')};
-            {' '}their uses are not compared.</p>
-        </Show>
-      </section>
-    </div>
+    <Bars name="fixed-kinds" title="Average fixed context of a session by kind, per tool (estimated tokens)" legend={legend}
+      axis="Length: estimated tokens per session, one linear scale for every tool from 0." rows={kindRows(props.body, props.label)} />
+    <Show when={listingRows(props.body, props.label).length}>
+      <Bars name="fixed-listing" title="Skill listing tokens: skills used and not used in the period, per tool" scale="whole"
+        legend={[{ label: 'Skills used', tone: 2 }, { label: 'Skills not used', tone: 7 }]}
+        axis="Bar: the tool's listing tokens in the period (100%, estimated)." rows={listingRows(props.body, props.label)} />
+    </Show>
+    <Show when={props.body.files.length} fallback={<p class={styles.note}>No instruction or memory file in this period.</p>}>
+      <Bars name="fixed-files" title="Instruction and memory files with the most tokens" axis="Length: estimated tokens per load, linear from 0."
+        rows={fileRows(props.body, props.label)} />
+    </Show>
+    <Show when={props.body.top_skills.length} fallback={<p class={styles.note}>No tool in this period reports the skills it lists.</p>}>
+      <Bars name="fixed-skills" title="Skills by listing tokens (grey: no use in the period)"
+        axis="Length: estimated listing tokens in all sessions, linear from 0." rows={skillRows(props.body, props.label)} />
+    </Show>
+    <Show when={props.body.summary.listing_not_reported.length}>
+      <p class={styles.note}>Skill listing {NOT_REPORTED} by {props.body.summary.listing_not_reported.map(props.label).join(', ')};
+        {' '}their uses are not compared.</p>
+    </Show>
   </>
 }
 

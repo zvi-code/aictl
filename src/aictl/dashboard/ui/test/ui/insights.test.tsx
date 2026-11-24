@@ -50,11 +50,11 @@ const pause = {
 } as unknown as PauseBody
 const carry = {
   ...base, card: 'carry',
-  tool_names: [{ tool: 'claude-code', tool_name: 'Bash', calls: 10, output_bytes: 457_000_000, carried_bytes: 74e9, avg_later_requests: 162 }],
-  tools: [{ tool: 'claude-code', calls: 10, reported: 10, output_bytes: 457_000_000, carried_bytes: 74e9 },
+  tool_names: [{ tool: 'claude-code', tool_name: 'Bash', calls: 1000, output_bytes: 457_000_000, carried_bytes: 74e9, avg_later_requests: 162 }],
+  tools: [{ tool: 'claude-code', calls: 1000, reported: 1000, output_bytes: 457_000_000, carried_bytes: 74e9 },
     { tool: 'codex-cli', calls: 4, reported: 0, output_bytes: null, carried_bytes: null }],
   summary: { output_bytes: 457_000_000, carried_bytes: 74e9,
-    top: { tool: 'claude-code', tool_name: 'Bash', calls: 10, output_bytes: 457_000_000, carried_bytes: 74e9, avg_later_requests: 162 },
+    top: { tool: 'claude-code', tool_name: 'Bash', calls: 1000, output_bytes: 457_000_000, carried_bytes: 74e9, avg_later_requests: 162 },
     not_reported: ['codex-cli'] },
   sessions: [],
 } as unknown as CarryBody
@@ -219,7 +219,9 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
   it('builds every sentence from the summary and never reads a missing figure as zero', () => {
     const label = (tool: string) => tool
     expect(pauseFinding(pause, label)).toBe(PAUSE_TEXT)
-    expect(carryFinding(carry, label)).toContain('up to 74 GB in all; Bash (claude-code) alone produced 457 MB')
+    expect(carryFinding(carry, label)).toBe('Tool results in the period: 457 MB. Estimate of the bytes sent again with later ' +
+      'requests of the same agent (upper bound): 74 GB. Bash (claude-code), the tool name with the largest estimate: 457 MB of ' +
+      'results, up to 74 GB sent again.')
     expect(subagentFinding(subagents, label)).toBe('4 subagents made 30 requests; they cost $63.00 at list price, 63% of the cost ' +
       'of all requests (main agents and subagents). claude-code (the tool with the most requests): subagents 63% of its cost.')
     expect(failureFinding(failures, label)).toBe('Of 5,000 failed tool calls (claude-code), 4,933 had a next call by the same ' +
@@ -278,6 +280,12 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(carryBox.textContent).toContain('74 GB')
     expect(carryBox.textContent).toContain('Result size not reported by: codex-cli.')
     expect(carryBox.textContent).toContain('upper bound')
+    expect(carryBox.querySelector('[data-chart="carry-carried"] [data-total]')!.textContent).toBe('74 GB')
+    expect(carryBox.querySelector('[data-chart="carry-carried"] [role="tooltip"]')!.textContent).toBe('Bash (claude-code): 1,000 calls ' +
+      'returned 457 MB. Estimate, upper bound: each result × the later requests of the same session and agent (162 on average) = ' +
+      '74 GB; compaction and truncation are not taken into account.')
+    expect(carryBox.querySelector('[data-chart="carry-tools"] [data-row="claude-code"] [data-total]')!.textContent)
+      .toBe('457 MB · up to 74 GB again')
     // Subagents: cost and requests split per tool, values on the segments; the sessions with the largest subagent cost.
     const subBox = card(host, 'subagents')
     const subCost = subBox.querySelector('[data-chart="subagent-cost"] [data-row="claude-code"]')!
@@ -466,9 +474,9 @@ describe('INS-05 · Where the time goes', () => {
 
 describe('INS-06 · Context weight', () => {
   it('states the share of heavy requests, the share of cost they carry and the small steps with their limit', () => {
-    expect(contextFinding(contextBody, tool => tool)).toBe('48% of requests (480 of 1,000) read a context of 200k tokens or more and ' +
-      'carried 69% of the cost ($69.00 of $100 at list price). Small steps, requests with under 150 output tokens and no ' +
-      'thinking time, were 150 requests costing $14.60.')
+    expect(contextFinding(contextBody, tool => tool)).toBe('48% of requests with token counts (480 of 1,000) read a context of 200k ' +
+      'tokens or more; they cost $69.00 of $100 at list price (69%). Requests with under 150 output tokens and no thinking time: ' +
+      '150, costing $14.60.')
     const none = { ...contextBody, tools: [contextBody.tools[1]], summary: { ...contextBody.summary, reported: 0, heavy_requests: 0,
       heavy_share: null, cost_usd: null, heavy_cost_usd: null, heavy_cost_share: null, small_requests: null, small_cost_usd: null } } as ContextBody
     expect(contextFinding(none, tool => tool)).toBe('The sources in this period do not report token counts (codex-cli).')
@@ -478,19 +486,21 @@ describe('INS-06 · Context weight', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <ContextWeight {...props(ctx)} />)
     const box = card(host, 'context')
-    const claude = box.querySelector('[data-tool="claude-code"]')!
-    const bars = claude.querySelectorAll('[role="img"]')
-    expect(bars).toHaveLength(2)
-    expect(bars[0].getAttribute('aria-label')).toBe('claude-code, share of requests by context: under 50k 3%, 50k–100k 15%, ' +
-      '100k–200k 34%, 200k–500k 43%, 500k and more 5%')
-    expect(bars[1].getAttribute('aria-label')).toContain('200k–500k 52%, 500k and more 17%')
-    for (const bar of bars) expect(bar.children).toHaveLength(5)
-    expect(claude.textContent).toContain('median 194 k tokens · 90th percentile 417 k tokens')
-    const codex = box.querySelector('[data-tool="codex-cli"]')!
-    expect(codex.querySelectorAll('[role="img"]')).toHaveLength(0)
+    const requests = box.querySelector('[data-chart="context-requests"] [data-row="claude-code"]')!
+    expect([...requests.querySelectorAll('[data-part] button')].map(part => part.textContent))
+      .toEqual(['30 · 3%', '150 · 15%', '340 · 34%', '430 · 43%', '50 · 5%'])
+    expect(requests.querySelector('[data-part="200_500k"] [role="tooltip"]')!.textContent).toBe('claude-code, context 200k–500k ' +
+      'tokens: 430 requests (43% of 1,000 with token counts), $52.00 at list price (52% of $100), 430 priced.')
+    const cost = box.querySelector('[data-chart="context-cost"] [data-row="claude-code"]')!
+    expect(cost.querySelector('[data-part="over_500k"] button')!.textContent).toBe('$17.00 · 17%')
+    const percentiles = box.querySelector('[data-chart="context-percentiles"]')!
+    expect(percentiles.querySelector('[data-row="claude-code:p90"] [data-total]')!.textContent).toBe('417 k tokens')
+    const codex = box.querySelector('[data-chart="context-requests"] [data-row="codex-cli"]')!
+    expect(codex.querySelectorAll('[data-part]')).toHaveLength(0)
     expect(codex.textContent).toContain('token counts not reported')
-    expect(box.textContent).toContain('Small steps: under 150 output tokens and no thinking time')
-    expect(box.querySelector('[data-small]')!.textContent).toContain('codex-cli: not reported')
+    const small = box.querySelector('[data-chart="context-small"]')!
+    expect(small.querySelector('[data-row="claude-code"] [data-total]')!.textContent).toBe('150 requests · $14.60')
+    expect(small.querySelector('[data-row="codex-cli"] [data-total]')!.textContent).toBe('not reported')
     dispose()
   })
 
@@ -557,8 +567,8 @@ describe('INS-08 · Fixed context overhead', () => {
     // The headline tool is the one with the most sessions (claude-code, 364), not the one with the largest median.
     expect(fixedFinding(fixed, tool => tool)).toBe('claude-code sessions carry a median 7.3 k tokens ' +
       'before any work over 364 sessions, skill listing a median 6.2 k tokens of it (estimated). Of 135 skills claude-code listed, ' +
-      '113 were never used in the period; listing them took 980 k tokens of 1.35 M tokens. The costliest instruction or memory file ' +
-      'is CLAUDE.md in copilot-desktop: 30 k tokens per load in 357 sessions.')
+      '113 were never used in the period; listing them took 980 k tokens of 1.35 M tokens. Instruction or memory file with the ' +
+      'most tokens in all: CLAUDE.md in copilot-desktop, 30 k tokens per load in 357 sessions.')
     expect(fixedHero(fixed)).toEqual({ value: '84%',
       label: "of the 135 skills listed in sessions' fixed context were never used in the period: listing them took 980 k tokens" })
     // No tool lists its skills: the sentence says so and the figure falls back to the heaviest median, never to 0%.
@@ -575,20 +585,25 @@ describe('INS-08 · Fixed context overhead', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <FixedContext {...props(ctx)} />)
     const box = card(host, 'fixed')
-    const desktop = box.querySelector('[data-tool="copilot-desktop"]')!
-    const bar = desktop.querySelector('[role="img"]')!
-    expect(bar.getAttribute('aria-label')).toBe('copilot-desktop, average fixed context by kind: Instruction files 37 k tokens, ' +
-      'Other system prompt 14 k tokens')
-    expect(bar.children).toHaveLength(2)
+    const kinds = box.querySelector('[data-chart="fixed-kinds"]')!
+    const desktop = kinds.querySelector('[data-row="copilot-desktop"]')!
+    expect([...desktop.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['37 k', '14 k'])
+    expect(desktop.querySelector('[data-part="instruction_file"] [role="tooltip"]')!.textContent).toBe('copilot-desktop, instruction ' +
+      'files: average 37 k tokens per session (362 sessions of the tool); median 38 k tokens and 2 items in the 362 sessions that ' +
+      'record it (100%); estimated from item sizes.')
     expect(desktop.textContent).toContain('not reported: Memory files, Skill listing, MCP instructions, Custom agents, Deferred tool list')
     expect(desktop.textContent).toContain('median 51 k tokens · 90th percentile 54 k tokens · 362 sessions · estimated')
-    const claude = box.querySelector('[data-tool="claude-code"]')!
-    expect(claude.querySelector('[role="img"]')!.children).toHaveLength(5)
+    const claude = kinds.querySelector('[data-row="claude-code"]')!
+    expect(claude.querySelectorAll('[data-part]')).toHaveLength(5)
     expect(claude.textContent).toContain('not reported: Instruction files, Other system prompt')
-    expect(box.querySelector('[data-files]')!.textContent).toContain('CLAUDE.md copilot-desktop30 k tokens per load · largest 32 k tokens · 357 sessions')
-    const skills = box.querySelectorAll('[data-skills] li')
+    const listing = box.querySelector('[data-chart="fixed-listing"] [data-row="claude-code"]')!
+    expect([...listing.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['375 k', '980 k'])
+    const file = box.querySelector('[data-chart="fixed-files"] [data-row]')!
+    expect(file.textContent).toContain('copilot-desktop · largest 32 k tokens · 357 sessions')
+    expect(file.querySelector('[data-total]')!.textContent).toBe('30 k tokens per load')
+    const skills = box.querySelectorAll('[data-chart="fixed-skills"] [data-row]')
     expect(skills[0].textContent).toContain('5 uses')
-    expect(skills[1].textContent).toContain('never used')
+    expect(skills[1].textContent).toContain('no use in the period')
     expect(box.textContent).toContain('Skill listing not reported by copilot-cli; their uses are not compared.')
     dispose()
   })

@@ -1,51 +1,57 @@
-import { For, Show, untrack } from 'solid-js'
-import { fmtNum } from '../../design/format'
+import { untrack } from 'solid-js'
+import { fmtN, fmtNum } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { contextHero,
-  CONTEXT_BUCKETS, CONTEXT_LABELS, contextFinding, count, money, share, SMALL_STEP_OUTPUT, tokens, toolLabel,
-  type ContextBody, type ContextCell, type ContextTool, type Label,
+  CONTEXT_BUCKETS, CONTEXT_LABELS, contextCellHover, contextFinding, contextPercentileHover, count, money, plural, share, SMALL_STEP_OUTPUT,
+  smallStepHover, tokens, toolLabel, type ContextBody, type Label,
 } from './insightsModel'
-import styles from './Insights.module.css'
 
-/** One stacked bar over the five context buckets: the share of requests or the share of cost in each. */
-function Stack(props: { tool: ContextTool; label: Label; side: 'request_share' | 'cost_share' }) {
-  const name = () => props.side === 'request_share' ? 'Requests' : 'Cost'
-  const part = (cell: ContextCell) => `${((cell[props.side] ?? 0) * 100).toFixed(2)}%`
-  const tip = (cell: ContextCell) => `${CONTEXT_LABELS[cell.bucket]}: ${fmtNum(cell.requests)} requests (${share(cell.request_share)}), ` +
-    `${money(cell.cost_usd)} (${share(cell.cost_share)} of cost)`
-  return <span class={styles.stackRow}>
-    <span class={styles.stackName}>{name()}</span>
-    <span class={styles.split} role="img" aria-label={`${props.label(props.tool.tool)}, share of ${name().toLowerCase()} by context: ` +
-      props.tool.buckets.map(cell => `${CONTEXT_LABELS[cell.bucket]} ${share(cell[props.side])}`).join(', ')}>
-      <For each={props.tool.buckets}>{(cell, i) => <span class={styles[`c${i()}`]} style={{ 'inline-size': part(cell) }} title={tip(cell)} />}</For>
-    </span>
-  </span>
+const TONE = [6, 2, 0, 1, 3]
+const legend = CONTEXT_BUCKETS.map((bucket, i) => ({ label: `${CONTEXT_LABELS[bucket]} tokens`, tone: TONE[i] }))
+const NONE = 'token counts not reported'
+
+function bucketRows(body: ContextBody, label: Label, of: 'requests' | 'cost'): BarRow[] {
+  return body.tools.map(tool => ({
+    key: tool.tool, label: label(tool.tool),
+    total: !tool.reported ? NONE : of === 'requests' ? plural(tool.reported, 'request') : money(tool.cost_usd),
+    parts: tool.reported ? tool.buckets.map((cell, i) => ({
+      key: cell.bucket, label: `${CONTEXT_LABELS[cell.bucket]} tokens`, tone: TONE[i],
+      value: of === 'requests' ? cell.requests : cell.cost_usd,
+      text: of === 'requests' ? `${fmtNum(cell.requests)} · ${share(cell.request_share)}` : `${money(cell.cost_usd)} · ${share(cell.cost_share)}`,
+      hover: contextCellHover(tool, cell, label),
+    })) : [],
+  }))
+}
+
+function percentileRows(body: ContextBody, label: Label): BarRow[] {
+  return body.tools.filter(tool => tool.reported).flatMap(tool => (['p50', 'p90'] as const).map(which => {
+    const value = which === 'p50' ? tool.p50_context : tool.p90_context
+    return { key: `${tool.tool}:${which}`, label: `${label(tool.tool)}: ${which === 'p50' ? 'median' : '90th percentile'}`, total: tokens(value),
+      parts: [{ key: which, label: which === 'p50' ? 'median' : '90th percentile', value, tone: which === 'p50' ? 2 : 1,
+        text: value == null ? '' : fmtN(value), hover: contextPercentileHover(tool, which, label) }] }
+  }))
+}
+
+function smallRows(body: ContextBody, label: Label): BarRow[] {
+  return body.tools.map(tool => ({
+    key: tool.tool, label: label(tool.tool),
+    total: tool.small_requests == null ? 'not reported' : `${count(tool.small_requests)} requests · ${money(tool.small_cost_usd)}`,
+    parts: tool.small_requests == null ? [] : [{ key: 'small', label: 'requests', value: tool.small_requests, tone: 3,
+      text: fmtNum(tool.small_requests), hover: smallStepHover(tool, label) }],
+  }))
 }
 
 function Stacks(props: { body: ContextBody; label: Label }) {
   return <>
-    <ul class={styles.legend} aria-label="Context buckets">
-      <For each={CONTEXT_BUCKETS}>{(bucket, i) => <li><span class={`${styles.swatch} ${styles[`c${i()}`]}`} />{CONTEXT_LABELS[bucket]}</li>}</For>
-    </ul>
-    <ol class={styles.bars} aria-label="Share of requests and of cost by context, per tool">
-      <For each={props.body.tools}>{tool => <li class={styles.barRow} data-tool={tool.tool}>
-        <span class={styles.barName}>{props.label(tool.tool)}<small>{tool.reported
-          ? `median ${tokens(tool.p50_context)} · 90th percentile ${tokens(tool.p90_context)}` : 'token counts not reported'}</small></span>
-        <Show when={tool.reported} fallback={<span class={styles.splitText}>{fmtNum(tool.requests)} requests without token counts</span>}>
-          <span class={styles.barTrack}>
-            <Stack tool={tool} label={props.label} side="request_share" />
-            <Stack tool={tool} label={props.label} side="cost_share" />
-            <span class={styles.splitText}>200k and more: {share((tool.heavy_requests / tool.reported) || 0)} of {fmtNum(tool.reported)} requests,
-              {' '}{money(tool.heavy_cost_usd)} of {money(tool.cost_usd)}</span>
-          </span>
-        </Show>
-      </li>}</For>
-    </ol>
-    <h3 class={styles.subhead}>Small steps: under {SMALL_STEP_OUTPUT} output tokens and no thinking time</h3>
-    <ul class={styles.smallSteps} data-small>
-      <For each={props.body.tools}>{tool => <li>{props.label(tool.tool)}: {tool.small_requests == null ? 'not reported'
-        : `${count(tool.small_requests)} requests, ${money(tool.small_cost_usd)}`}</li>}</For>
-    </ul>
+    <Bars name="context-requests" title="Requests by the size of the context they read, per tool" scale="whole" legend={legend}
+      axis="Bar: the tool's requests with token counts (100%); segments: count and share per bucket." rows={bucketRows(props.body, props.label, 'requests')} />
+    <Bars name="context-cost" title="Cost by the size of the context read, per tool" scale="whole" legend={legend}
+      axis="Bar: the tool's cost at list price (100%); segments: cost and share per bucket." rows={bucketRows(props.body, props.label, 'cost')} />
+    <Bars name="context-percentiles" title="Context read per request: median and 90th percentile, per tool"
+      axis="Length: tokens, linear from 0." rows={percentileRows(props.body, props.label)} />
+    <Bars name="context-small" title={`Requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time, per tool`}
+      axis="Length: requests, linear from 0; beside it their cost at list price." rows={smallRows(props.body, props.label)} />
   </>
 }
 

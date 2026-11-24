@@ -354,8 +354,21 @@ export function carryFinding(body: CarryBody, label: Label) {
   const s = body.summary
   if (s.carried_bytes == null || !s.top) return 'No tool result with a reported size in this period.'
   const top = s.top
-  return `Tool results of ${bytes(s.output_bytes)} were sent again with later requests, up to ${bytes(s.carried_bytes)} in all; ` +
-    `${top.tool_name} (${label(top.tool)}) alone produced ${bytes(top.output_bytes)} and carried up to ${bytes(top.carried_bytes)}.`
+  return `Tool results in the period: ${bytes(s.output_bytes)}. Estimate of the bytes sent again with later requests of the same ` +
+    `agent (upper bound): ${bytes(s.carried_bytes)}. ${top.tool_name} (${label(top.tool)}), the tool name with the largest estimate: ` +
+    `${bytes(top.output_bytes)} of results, up to ${bytes(top.carried_bytes)} sent again.`
+}
+
+/** The hover of a tool name's bars: its results and the upper-bound estimate with its formula. */
+export function carryHover(row: CarryName, label: Label) {
+  return `${row.tool_name} (${label(row.tool)}): ${plural(row.calls, 'call')} returned ${bytes(row.output_bytes)}. Estimate, upper bound: ` +
+    `each result × the later requests of the same session and agent (${count(row.avg_later_requests)} on average) = ` +
+    `${bytes(row.carried_bytes)}; compaction and truncation are not taken into account.`
+}
+export function carryToolHover(row: CarryBody['tools'][number], label: Label) {
+  return row.output_bytes == null ? `${label(row.tool)}: ${plural(row.calls, 'call')}; result size not reported.`
+    : `${label(row.tool)}: ${plural(row.calls, 'call')}, ${fmtNum(row.reported)} with a size, ${bytes(row.output_bytes)} of results; ` +
+      `up to ${bytes(row.carried_bytes)} sent again (estimate, upper bound).`
 }
 
 export function subagentFinding(body: SubagentBody, label: Label) {
@@ -523,10 +536,26 @@ export function contextFinding(body: ContextBody, label: Label) {
     return s.not_reported.length ? `The sources in this period do not report token counts (${list(s.not_reported.map(label))}).`
       : 'No model request in this period.'
   }
-  const heavy = `${share(s.heavy_share)} of requests (${fmtNum(s.heavy_requests)} of ${fmtNum(s.reported)}) read a context of 200k tokens or more ` +
-    `and carried ${share(s.heavy_cost_share)} of the cost (${money(s.heavy_cost_usd)} of ${money(s.cost_usd)} at list price).`
-  return `${heavy} Small steps, requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time, were ` +
-    `${count(s.small_requests)} requests costing ${money(s.small_cost_usd)}.${leftOut(s.unpriced_requests)}`
+  const heavy = `${share(s.heavy_share)} of requests with token counts (${fmtNum(s.heavy_requests)} of ${fmtNum(s.reported)}) read a ` +
+    `context of 200k tokens or more; they cost ${money(s.heavy_cost_usd)} of ${money(s.cost_usd)} at list price (${share(s.heavy_cost_share)}).`
+  return `${heavy} Requests with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time: ${count(s.small_requests)}, costing ` +
+    `${money(s.small_cost_usd)}.${leftOut(s.unpriced_requests)}`
+}
+
+/** The hover of one context bucket of one tool: its requests and cost with their shares of the tool. */
+export function contextCellHover(tool: ContextTool, cell: ContextCell, label: Label) {
+  return `${label(tool.tool)}, context ${CONTEXT_LABELS[cell.bucket]} tokens: ${plural(cell.requests, 'request')} (${share(cell.request_share)} ` +
+    `of ${fmtNum(tool.reported)} with token counts), ${money(cell.cost_usd)} at list price (${share(cell.cost_share)} of ` +
+    `${money(tool.cost_usd)}), ${fmtNum(cell.priced)} priced.`
+}
+export function contextPercentileHover(tool: ContextTool, which: 'p50' | 'p90', label: Label) {
+  return `${label(tool.tool)}: ${which === 'p50' ? 'median' : '90th percentile'} context ${tokens(which === 'p50' ? tool.p50_context : tool.p90_context)} ` +
+    `(input + cache read + cache write) over ${plural(tool.reported, 'request')} with token counts.`
+}
+export function smallStepHover(tool: ContextTool, label: Label) {
+  return tool.small_requests == null ? `${label(tool.tool)}: small steps not reported (no token counts).`
+    : `${label(tool.tool)}: ${plural(tool.small_requests, 'request')} with under ${SMALL_STEP_OUTPUT} output tokens and no thinking time ` +
+      `(${share(ratio(tool.small_requests, tool.reported))} of ${fmtNum(tool.reported)}), ${money(tool.small_cost_usd)} at list price.`
 }
 
 export function orientationFinding(body: OrientationBody) {
@@ -587,9 +616,31 @@ export function fixedFinding(body: FixedBody, label: Label) {
     : ` Of ${fmtNum(s.listed)} skills ${list(listing.map(row => label(row.tool)))} listed, ${count(s.never_used)} were never used in the period; ` +
       `listing them took ${tokens(s.unused_tokens)} of ${tokens(s.listing_tokens)}.`
   const file = body.files[0]
-  const files = file ? ` The costliest instruction or memory file is ${file.file} in ${label(file.tool)}: ` +
+  const files = file ? ` Instruction or memory file with the most tokens in all: ${file.file} in ${label(file.tool)}, ` +
     `${tokens(file.avg_tokens)} per load in ${plural(file.sessions, 'session')}.` : ''
   return `${heavy}${skills}${files}`.trim()
+}
+
+export function fixedKindHover(tool: FixedTool, cell: FixedCell, label: Label) {
+  if (!cell.reported) return `${label(tool.tool)}, ${FIXED_LABELS[cell.kind].toLowerCase()}: not recorded by this tool.`
+  return `${label(tool.tool)}, ${FIXED_LABELS[cell.kind].toLowerCase()}: average ${tokens(cell.avg_tokens)} per session ` +
+    `(${plural(tool.sessions, 'session')} of the tool); median ${tokens(cell.p50_tokens)} and ${count(cell.p50_items)} items in the ` +
+    `${fmtNum(cell.sessions ?? 0)} sessions that record it (${share(cell.session_share)})${cell.estimated ? '; estimated from item sizes' : ''}.`
+}
+export function fixedFileHover(row: FixedFile, label: Label) {
+  return `${row.file} (${label(row.tool)}): ${tokens(row.avg_tokens)} per load on average, largest ${tokens(row.max_tokens)}; ` +
+    `${plural(row.loads, 'load')} in ${plural(row.sessions, 'session')}, ${tokens(row.tokens)} in all (estimated).`
+}
+export function fixedSkillHover(row: FixedSkill, label: Label) {
+  return `${row.name} (${label(row.tool)}): listed in ${plural(row.sessions, 'session')}, ${tokens(row.tokens)} of listing in all ` +
+    `(estimated); ${row.uses ? plural(row.uses, 'use') : 'no use'} in the period.`
+}
+export function fixedListingHover(row: FixedSkills, part: 'used' | 'unused', label: Label) {
+  const used = row.listing_tokens == null || row.unused_tokens == null ? null : row.listing_tokens - row.unused_tokens
+  return part === 'used'
+    ? `${label(row.tool)}: listing of the ${count(row.used)} skills used in the period, ${tokens(used)} of ${tokens(row.listing_tokens)} (estimated).`
+    : `${label(row.tool)}: listing of the ${count(row.listed == null || row.used == null ? null : row.listed - row.used)} skills listed and ` +
+      `not used in the period, ${tokens(row.unused_tokens)} of ${tokens(row.listing_tokens)} (estimated).`
 }
 
 export const SIGNAL_LABELS: Record<Signal, string> = {
@@ -695,8 +746,8 @@ export const pauseHero = (body: PauseBody) => body.summary.requests ? hero(body.
   (body.summary.sessions ? ` in ${plural(body.summary.sessions, 'session')}` : '') +
   `; estimate at each tool's under-1-minute average: ${money(body.summary.baseline_usd)}, difference ${money(body.summary.extra_usd)}`) : undefined
 export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_bytes, body.summary.output_bytes), fmtTimes,
-  `how often a byte of a tool result was sent again with later requests (upper bound): ${bytes(body.summary.output_bytes)} of ` +
-  `results, up to ${bytes(body.summary.carried_bytes)} sent again`)
+  `estimate (upper bound) of how many times a byte of a tool result was sent again with later requests: ` +
+  `${bytes(body.summary.output_bytes)} of results, up to ${bytes(body.summary.carried_bytes)} sent again`)
 export const subagentHero = (body: SubagentBody) => hero(body.summary.subagent_share, fmtShare,
   `of the cost at list price is in subagent requests: ${money(body.summary.subagent_cost_usd)} of ` +
   `${money(body.summary.main_cost_usd == null ? null : body.summary.main_cost_usd + (body.summary.subagent_cost_usd ?? 0))}`)

@@ -1,28 +1,39 @@
-import { For, Show, untrack } from 'solid-js'
+import { Show, untrack } from 'solid-js'
 import { fmtNum, toolDisplayName } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { carryHero, bytes, carryFinding, count, scaled, type CarryBody, toolLabel, type Label } from './insightsModel'
+import { carryHero, bytes, carryFinding, carryHover, carryToolHover, count, plural, type CarryBody, toolLabel, type Label } from './insightsModel'
 import styles from './Insights.module.css'
 
-const width = (value: number | null, largest: number) => `max(var(--space-1), ${(scaled(value, largest) * 85).toFixed(2)}%)`
+function nameRows(body: CarryBody, label: Label, of: 'output' | 'carried'): BarRow[] {
+  return body.tool_names.map(row => ({
+    key: `${row.tool}:${row.tool_name}`, label: toolDisplayName(row.tool_name),
+    sub: `${label(row.tool)} · ${plural(row.calls, 'call')}${of === 'carried' ? ` · ≈ ${count(row.avg_later_requests)} later requests` : ''}`,
+    total: bytes(of === 'output' ? row.output_bytes : row.carried_bytes),
+    parts: [{ key: of, label: of === 'output' ? 'result bytes' : 'bytes sent again (upper bound)', tone: of === 'output' ? 2 : 0,
+      value: of === 'output' ? row.output_bytes : row.carried_bytes, text: bytes(of === 'output' ? row.output_bytes : row.carried_bytes),
+      hover: carryHover(row, label) }],
+  }))
+}
 
-/** Per tool name: a bar for the bytes its results had, beside a bar for the bytes sent again with later requests. */
+function toolRows(body: CarryBody, label: Label): BarRow[] {
+  return body.tools.map(row => ({
+    key: row.tool, label: label(row.tool), sub: `${fmtNum(row.reported)} of ${plural(row.calls, 'call')} with a size`,
+    total: row.output_bytes == null ? 'result size not reported' : `${bytes(row.output_bytes)} · up to ${bytes(row.carried_bytes)} again`,
+    parts: row.output_bytes == null ? [] : [{ key: 'output', label: 'result bytes', value: row.output_bytes, tone: 2,
+      text: bytes(row.output_bytes), hover: carryToolHover(row, label) }],
+  }))
+}
+
 function CarryBars(props: { body: CarryBody; label: Label }) {
-  const largest = () => Math.max(0, ...props.body.tool_names.map(row => row.carried_bytes))
   return <>
-    <ul class={styles.legend}>
-      <li><span class={`${styles.swatch} ${styles.produced}`} />Result bytes</li>
-      <li><span class={`${styles.swatch} ${styles.carried}`} />Bytes carried (upper bound)</li>
-    </ul>
-    <ol class={styles.bars} aria-label="Tool names that carry the most bytes">
-      <For each={props.body.tool_names}>{row => <li class={styles.barRow}>
-        <span class={styles.barName}>{toolDisplayName(row.tool_name)}<small>{props.label(row.tool)} · {fmtNum(row.calls)} calls · ≈ {count(row.avg_later_requests)} later requests</small></span>
-        <span class={styles.barTrack}>
-          <span class={styles.bar}><span class={`${styles.fill} ${styles.produced}`} style={{ 'inline-size': width(row.output_bytes, largest()) }} />{bytes(row.output_bytes)}</span>
-          <span class={styles.bar}><span class={`${styles.fill} ${styles.carried}`} style={{ 'inline-size': width(row.carried_bytes, largest()) }} />{bytes(row.carried_bytes)}</span>
-        </span>
-      </li>}</For>
-    </ol>
+    <Bars name="carry-output" title="Result bytes per tool name (the 10 with the largest estimate)"
+      axis="Length: bytes the results had, as the source recorded them, linear from 0." rows={nameRows(props.body, props.label, 'output')} />
+    <Bars name="carry-carried" title="Bytes sent again with later requests per tool name (estimate, upper bound)"
+      axis="Length: result bytes × later requests of the same session and agent, linear from 0; hover for the formula."
+      rows={nameRows(props.body, props.label, 'carried')} />
+    <Bars name="carry-tools" title="Result bytes per tool" axis="Length: bytes, linear from 0; beside it the upper-bound estimate."
+      rows={toolRows(props.body, props.label)} />
     <Show when={props.body.summary.not_reported.length}>
       <p class={styles.note}>Result size not reported by: {props.body.summary.not_reported.map(props.label).join(', ')}.</p>
     </Show>
