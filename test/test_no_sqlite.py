@@ -91,6 +91,7 @@ def _dashboard_requests(root):
             "/api/board/insights/models",
             "/api/board/insights/summary",
             "/api/board/insights/repos", "/api/board/insights/durations", "/api/board/insights/changes",
+            "/api/board/insights/flows", "/api/board/insights/skills", "/api/board/insights/mcp", "/api/board/insights/kql",
         )},
         "/api/board/session/convergence": "/api/board/session/convergence?session_id=no-sqlite-probe",
         "/api/board/memory/diff": "/api/board/memory/diff?first=no-sqlite-probe",

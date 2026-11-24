@@ -1,0 +1,182 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// What sequence of work the agents follow. Each tool call of the period is one step of one kind, decided from
+// stored columns only, first rule that holds:
+//   ask      the call asks the person (AskUserQuestion, ask_user)
+//   finish   the agent reports its task done (task_complete)
+//   delegate the call starts or talks to a subagent (target kind agent, or a subagent tool by name)
+//   mcp      the call is an MCP server's tool (mcp_server set or a name mcp__<server>__<tool>)
+//   skill    the call runs a skill (target kind skill)
+//   test     the call runs tests (is_test_run)
+//   commit   a shell call whose command line runs git commit (the rule of insights.verified_commits)
+//   edit     the call edits or creates a file (is_edit, or a file creation tool: create, create_file)
+//   command  any other shell command (target kind command)
+//   search   a search (target kind query)
+//   read     a file read (target kind file)
+//   web      a URL fetch (target kind url)
+//   other    anything else
+// A path is the kinds of a session's main agent in time order with repeats of one kind joined into one step:
+// its first 4 steps and its last 3. A transition is one call followed by the next call of the same session and
+// agent (repeats of one kind count). A session ends on its main agent's last step; it committed when any agent
+// of it ran a commit, changed when any agent edited a file. A cycle is two kinds taking turns (named A <> B in
+// name order, whichever came first), A B A B A B or
+// longer (3 rounds or more), in the joined steps of one agent: its calls and its working time, the time from each
+// call to the next of the same agent with any pause over 5 minutes counted as 5 minutes. Cost is the list price of the session's requests in the period. A project is the last folder of
+// the session's working folder.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let CommitRe = @'(?i)(?:^|[\s;&|({"''])(?:[^\s;&|({"'']*[/\\])?git(?:\.exe)?["'']?(?:\s+-c\s+\S+|\s+--no-p\S*|\s+--(?:git-dir|work-tree)=\S+)*\s+commit(?:[\s"'';)]|$)';
+// A command line that names a known test runner anywhere. A tool whose rows never set is_test_run shows no test
+// step; these lines are counted per tool (unflagged_tests) so that gap shows instead of being silent.
+let TestRe = @'(?i)\b(?:pytest|vitest|jest|mocha|unittest|go\s+test|cargo\s+test|dotnet\s+test|mvn\s+(?:\S+\s+)*test|gradlew?\s+(?:\S+\s+)*test|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+test|ctest|phpunit|rspec|Invoke-Pester)\b';
+let AskTools =dynamic(['AskUserQuestion', 'ask_user', 'askQuestions', 'ask_followup_question']);
+let AgentTools = dynamic(['Agent', 'Task', 'task', 'runSubagent', 'read_agent', 'write_agent', 'SendMessage', 'list_agents']);
+let CreateTools = dynamic(['create', 'create_file']);
+let calls = materialize(tool_invocations_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, target_kind, target,
+              mcp_server, is_edit, is_test_run, failed, duration_ms, project_path
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | extend step=case(
+        tool_name in (AskTools), 'ask',
+        tool_name == 'task_complete', 'finish',
+        target_kind == 'agent' or tool_name in (AgentTools), 'delegate',
+        isnotempty(mcp_server) or tool_name startswith_cs 'mcp__', 'mcp',
+        target_kind == 'skill', 'skill',
+        coalesce(is_test_run, false), 'test',
+        target_kind == 'command' and target contains 'commit' and not(coalesce(failed, false)) and target matches regex CommitRe, 'commit',
+        coalesce(is_edit, false) or tool_name in (CreateTools), 'edit',
+        target_kind == 'command', 'command',
+        target_kind == 'query', 'search',
+        target_kind == 'file', 'read',
+        target_kind == 'url', 'web',
+        'other')
+    | extend target_mentions_test=target_kind == 'command' and target matches regex TestRe
+    | project node_id, session_id, agent_id, ts, fact_key, tool, step, project_path, target_mentions_test);
+// Each call with the next call of its session and agent, and whether it starts a new joined step.
+let ordered = materialize(calls
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, fact_key asc
+    | extend same=row_number() > 1 and prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id
+    | extend prev_step=iff(same, prev(step), ''), new_step=not(same) or prev(step) != step,
+             busy=iff(same, min_of(ts - prev(ts), 300.0), 0.0));
+// The joined steps: one row per run of one kind, with its calls and working time.
+let runs = materialize(ordered
+    | extend run=row_cumsum(tolong(new_step))
+    | summarize step=take_any(step), calls=count(), busy=sum(busy), node_id=take_any(node_id),
+                session_id=take_any(session_id), agent_id=take_any(agent_id), tool=take_any(tool) by run
+    | sort by run asc
+    | extend same=row_number() > 1 and prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id
+    | extend agent_run=row_number(1, not(same)));
+let reqs = requests_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, cost_usd
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | summarize priced=countif(isnotnull(cost_usd)), cost_usd=sum(cost_usd) by node_id, session_id;
+let main_runs = runs | where isempty(agent_id) or agent_id == session_id;
+// Cycles: a joined step equal to the one two before it, in a row; a chain of 4 or more such steps is a cycle of
+// 3 or more rounds (A B A B A B).
+let loops = materialize(runs
+    | sort by run asc
+    | extend same2=row_number() > 2 and prev(node_id, 2) == node_id and prev(session_id, 2) == session_id
+        and prev(agent_id, 2) == agent_id and prev(step, 2) == step
+    | extend chain_start=same2 and not(prev(same2) and prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id),
+             pair=iff(strcmp(prev(step, 2), prev(step, 1)) < 0, strcat(prev(step, 2), ' <> ', prev(step, 1)),
+                 strcat(prev(step, 1), ' <> ', prev(step, 2))), lead_calls=prev(calls, 2) + prev(calls, 1),
+             lead_busy=prev(busy, 1)
+    | extend chain=row_cumsum(tolong(chain_start))
+    | where same2
+    | summarize links=count(), node_id=take_any(node_id), session_id=take_any(session_id), tool=take_any(tool),
+                pair=take_anyif(pair, chain_start), calls=sum(calls) + take_anyif(lead_calls, chain_start),
+                seconds=sum(busy) + take_anyif(lead_busy, chain_start) by chain
+    | where links >= 4
+    | extend rounds=(links + 2) / 2);
+let per_session = materialize(calls
+    | summarize tool=take_any(tool), project_path=take_anyif(project_path, isnotempty(project_path)), calls=count(),
+                committed=countif(step == 'commit') > 0, changed=countif(step == 'edit') > 0,
+                first_ts=min(ts), last_ts=max(ts) by node_id, session_id
+    // Each joined step keyed by its number, zero-padded, so sorting the list puts it in time order.
+    | join kind=inner (main_runs
+        | extend number=tostring(agent_run)
+        | summarize steps=make_list(strcat(substring(strcat('000000', number), strlen(number)), ':', step)) by node_id, session_id
+        | extend steps=array_sort_asc(steps))
+        on node_id, session_id
+    | project-away node_id1, session_id1
+    | lookup kind=leftouter reqs on node_id, session_id
+    | lookup kind=leftouter (loops
+        | summarize loops=count(), loop_seconds=sum(seconds), loop_calls=sum(calls), pair=take_any(pair) by node_id, session_id)
+        on node_id, session_id
+    | extend outcome=case(committed, 'committed', changed, 'changed', 'no_change'),
+             project_name=coalesce(extract(@'([^/\\]+)[/\\]*$', 1, project_path), ''),
+             last_step=extract(@':(\w+)$', 1, tostring(steps[-1])),
+             first_path=replace_regex(strcat_array(array_slice(steps, 0, 3), ' > '), @'\d+:', ''),
+             last_path=replace_regex(strcat_array(array_slice(steps, -3, -1), ' > '), @'\d+:', ''),
+             priced=coalesce(priced, 0), loops=coalesce(loops, 0)
+    | project-away steps);
+// The sessions to open: the 10 with the most working time in cycles and the 10 dearest that changed nothing.
+// One pass over the sessions makes every row about them: the cluster recomputed a materialized table read by
+// several legs, so each leg over it cost as much as a fresh read.
+union
+    (ordered
+        | where isnotempty(prev_step)
+        | summarize calls=count() by from_step=prev_step, to_step=step
+        | extend row_type='transition'),
+    (loops
+        | summarize loops=count(), sessions=dcount(strcat(node_id, '/', session_id)), calls=sum(calls), seconds=sum(seconds),
+                    rounds=sum(rounds) by pair
+        | top 10 by seconds desc
+        | extend row_type='cycle'),
+    (ordered
+        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), seconds=sum(busy),
+                    test_runs=countif(step == 'test'), unflagged_tests=countif(step == 'command' and target_mentions_test) by tool
+        | extend row_type='tool'),
+    (per_session
+        | extend kinds=iff(loops > 0 or outcome == 'no_change', dynamic(['ending', 'first_path', 'last_path', 'project', 'meta', 'session']),
+                           dynamic(['ending', 'first_path', 'last_path', 'project', 'meta']))
+        | mv-expand row_type=kinds to typeof(string)
+        | extend outcome=iff(row_type in ('ending', 'session'), outcome, ''), last_step=iff(row_type in ('ending', 'session'), last_step, ''),
+                 path=case(row_type == 'first_path', first_path, row_type == 'last_path', last_path, ''),
+                 project_name=iff(row_type in ('project', 'session'), project_name, ''),
+                 node_id=iff(row_type == 'session', node_id, ''), session_id=iff(row_type == 'session', session_id, ''),
+                 pair=iff(row_type == 'session', pair, '')
+        | summarize sessions=count(), committed=countif(outcome == 'committed'), changed=countif(outcome == 'changed'),
+                    no_change=countif(outcome == 'no_change'), priced=sum(priced), cost_usd=sum(cost_usd),
+                    no_change_cost=sumif(cost_usd, outcome == 'no_change'), tools=make_set(tool), tool=take_any(tool),
+                    loops=sum(loops), seconds=sum(loop_seconds), loop_calls=sum(loop_calls),
+                    first_ts=min(first_ts), last_ts=max(last_ts)
+              by row_type, outcome, last_step, path, project_name, node_id, session_id, pair
+        // The sessions: the 10 with most working time in cycles and the 10 dearest that changed nothing.
+        | sort by row_type asc, seconds desc
+        | extend by_cycle=row_number(1, prev(row_type) != row_type)
+        | sort by row_type asc, iff(outcome == 'no_change', coalesce(cost_usd, 0.0), -1.0) desc
+        | extend by_cost=row_number(1, prev(row_type) != row_type)
+        | sort by row_type asc, sessions desc
+        | extend by_sessions=row_number(1, prev(row_type) != row_type)
+        | where row_type in ('ending', 'meta') or (row_type == 'project' and by_sessions <= 20)
+            or (row_type in ('first_path', 'last_path') and by_sessions <= 10)
+            or (row_type == 'session' and ((loops > 0 and by_cycle <= 10) or (outcome == 'no_change' and by_cost <= 10)))
+        | extend computed_at=iff(row_type == 'meta', todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000, real(null))
+        | project-away by_cycle, by_cost, by_sessions)
+| order by row_type asc, sessions desc, calls desc
+| take row_limit

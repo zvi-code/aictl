@@ -378,6 +378,30 @@ _VIEWS = {
         "committed_writes lines_added lines_removed lines_unknown files reworked source tests docs config memory other commits "
         "commit_days path file_kind most_in_session node_id session_id tool bin_start first_ts last_ts computed_at",
     ),
+    "insights.flows": (
+        _TIME,
+        "row_type from_step to_step calls pair loops sessions seconds rounds tool test_runs unflagged_tests outcome last_step "
+        "path project_name node_id session_id committed changed no_change priced cost_usd no_change_cost tools loop_calls "
+        "first_ts last_ts computed_at",
+    ),
+    "insights.skills": (
+        _TIME,
+        "row_type name uses sessions projects with_turn after_edit after_test after_commit tools turns turn_tokens "
+        "priced cost_usd tool list_tokens listed unused unused_tokens skills project_name top_skill skill_names node_id "
+        "session_id first_ts last_ts computed_at",
+    ),
+    "insights.mcp": (
+        _TIME,
+        "row_type server server_tool calls sessions projects failures timed p50_ms p95_ms sum_ms output_bytes "
+        "sized tools server_tools carried_bytes called_sessions list_tokens unused_tokens listed_tools tool "
+        "project_name servers node_id session_id mcp_calls first_ts last_ts computed_at",
+    ),
+    "insights.kql": (
+        _TIME,
+        "row_type tool runs unrecognised mcp cli script with_text sessions failures changes large sum_ms "
+        "output_bytes large_bytes snippet first_ts last_ts run_kind verb failure cluster database shape_key "
+        "project_name node_id session_id fact_key ts route text computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -483,6 +507,10 @@ _CACHE_TTL_S = {
     "insights.repositories": _INSIGHT_TTL_S,
     "insights.durations": _INSIGHT_TTL_S,
     "insights.changes": _INSIGHT_TTL_S,
+    "insights.flows": _INSIGHT_TTL_S,
+    "insights.skills": _INSIGHT_TTL_S,
+    "insights.mcp": _INSIGHT_TTL_S,
+    "insights.kql": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }

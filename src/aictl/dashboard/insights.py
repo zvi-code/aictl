@@ -12,7 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import insights_work
+from . import insights_flows, insights_work
 from .board_filters import Filters
 from .panel_kql import query_block
 from .projection_utils import _label
@@ -34,6 +34,10 @@ CARDS = {
     "verified": "insights.verified_commits",
     "models": "insights.model_report",
     **insights_work.CARDS,
+    "flows": "insights.flows",
+    "skills": "insights.skills",
+    "mcp": "insights.mcp",
+    "kql": "insights.kql",
 }
 # The findings summary: one ranked list built from the answers of these cards (no view of its own).
 SUMMARY_CARDS = ("problems", "orientation", "context", "pause", "subagents", "verified", "rereads", "failures")
@@ -903,6 +907,10 @@ SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "verified": verified_commits,
     "models": model_report,
     **insights_work.SHAPES,
+    "flows": insights_flows.flows,
+    "skills": insights_flows.skills,
+    "mcp": insights_flows.mcp,
+    "kql": insights_flows.kql,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -920,6 +928,10 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "verified": lambda history, params: history.read("insights.verified_commits", limit=ROW_LIMIT, **params),
     "models": lambda history, params: history.read("insights.model_report", limit=ROW_LIMIT, **params),
     **insights_work.READS,
+    "flows": lambda history, params: history.read("insights.flows", limit=ROW_LIMIT, **params),
+    "skills": lambda history, params: history.read("insights.skills", limit=ROW_LIMIT, **params),
+    "mcp": lambda history, params: history.read("insights.mcp", limit=ROW_LIMIT, **params),
+    "kql": lambda history, params: history.read("insights.kql", limit=ROW_LIMIT, **params),
 }
 
 

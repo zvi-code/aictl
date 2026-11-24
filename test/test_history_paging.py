@@ -290,6 +290,11 @@ BOUNDED = {
     "insights.changes": "one row per repository, 15 reworked files, 10 sessions, at most 32 time bins and a meta row",
     "insights.durations": "one row per repository, 20 tools and programs, 15 models, 10 sessions, a total row and a meta row",
     "insights.repositories": "per repository: one row, a row per model, 3 sessions and at most 9 time bins; one meta row",
+    "insights.flows": "one row per pair of step kinds, 10 cycles, per tool, per outcome and last step, 10 first and 10 last "
+                      "paths, 20 projects, 20 sessions and one meta row",
+    "insights.skills": "25 skills, 10 unused listed skills, per tool, 20 projects, 10 sessions and one meta row",
+    "insights.mcp": "25 servers, 40 server tools, 200 listed servers, 20 projects, 10 sessions and one meta row",
+    "insights.kql": "per tool, per kind and verb, per failure kind, 15 targets, 15 shapes, 20 projects, 10 sessions, 50 repeats, 10 large results and one meta row",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",
     "prompts.titles": "one row per agent of the board's sessions",

@@ -1,0 +1,127 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// MCP servers: per server and per tool of a server, calls, sessions and projects, failed calls, duration (median,
+// 95th percentile, total), result bytes and bytes carried. An MCP call is one with mcp_server set or a name
+// mcp__<server>__<tool>; its server and tool are the stored ones, else read from the name. Bytes carried is the
+// measure of insights.context_carry: a result stays in the conversation and is sent again with every later request
+// of the same session and agent in the period, so bytes carried = result bytes x later requests, an upper bound
+// (compaction and truncation are not counted). Listed and never called: the tools named mcp__<server>__<tool>
+// a session's main agent was told of (context items of kind tools_listed, expanded from their lists), each once per
+// session, as its newest record, not removed, recorded in the period; a server listed in a session and not called
+// in it counts its listing tokens there (estimated from size). Only tools that record their tool listings count
+// here (Claude Code). A project is the last folder of the working folder.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
+        name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
+    let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
+        | extend list_key=substring(name,5);
+    union
+        (items | where not(name matches regex @'^list:[0-9a-f]{32}$')),
+        (pointers
+            | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
+                | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
+                | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
+                    item_tokens=tokens,item_estimated=tolong(estimated),item_removed=tolong(removed))
+                on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
+            | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
+                removed=item_removed
+            | project-away list_node,list_key,list_ref,item_*)
+};
+let all_calls = materialize(tool_invocations_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, mcp_server, mcp_tool,
+              failed, duration_ms, output_bytes, project_path
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | extend is_mcp=isnotempty(mcp_server) or tool_name startswith_cs 'mcp__'
+    | extend server=iff(not(is_mcp), '', iff(isnotempty(mcp_server), mcp_server, extract(@'^mcp__(.+?)__', 1, tool_name))),
+             server_tool=iff(not(is_mcp), '', iff(isnotempty(mcp_tool), mcp_tool, extract(@'^mcp__.+?__(.+)$', 1, tool_name))),
+             project_name=iff(not(is_mcp), '', coalesce(extract(@'([^/\\]+)[/\\]*$', 1, project_path), ''))
+    | project node_id, session_id, agent_id, ts, tool, is_mcp, server, server_tool, failed=coalesce(failed, false), duration_ms,
+              output_bytes, project_name);
+let calls = all_calls | where is_mcp;
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// Bytes carried, as insights.context_carry counts them.
+let reqs = requests_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | project node_id, session_id, agent_id, ts;
+// Per call, its later requests: those of its session and agent in the period after its time (a request at the same
+// time comes before the call it made). The times of each agent's requests are compared with the call's in one array.
+let request_times = reqs | summarize times=make_list(ts) by node_id, session_id, agent_id;
+let carried = materialize(calls
+    | lookup kind=leftouter request_times on node_id, session_id, agent_id
+    | extend later=iff(isnull(times), 0, toint(array_sum(series_greater(times, ts))))
+    | summarize carried_bytes=sum(todouble(output_bytes) * later) by server, server_tool);
+let listed = materialize(session_context_items_secs | where (isempty(agent_id) or agent_id == session_id) and ['kind'] == 'tools_listed' | extend entry=name
+    | invoke context_items_expanded()
+    | where (all_nodes or node_id == requested_node) and name startswith_cs 'mcp__'
+    | project ['project'], node_id, session_id, agent_id, ['kind'], name, tokens, removed, _v, ts, tool, entry
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, ['kind'], entry, name
+    | summarize arg_max(ts, *) by node_id, session_id, name
+    | where removed == 0 and ts >= since and ts < until
+    | extend server=extract(@'^mcp__(.+?)__', 1, name)
+    | summarize list_tokens=sum(coalesce(tokens, 0)), listed_tools=count(), tool=take_any(tool) by node_id, session_id, server
+    | join kind=leftouter (calls | summarize called=count() by node_id, session_id, server) on node_id, session_id, server
+    | summarize sessions=count(), called_sessions=countif(called > 0), list_tokens=sum(list_tokens),
+                unused_tokens=sumif(list_tokens, isnull(called)), listed_tools=max(listed_tools), tool=take_any(tool) by server);
+union
+    (calls
+        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
+                    failures=countif(failed), timed=countif(duration_ms > 0), p50_ms=percentile(duration_ms, 50),
+                    p95_ms=percentile(duration_ms, 95), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
+                    sized=countif(isnotnull(output_bytes)), tools=make_set(tool), server_tools=dcount(server_tool) by server
+        | lookup kind=leftouter (carried | summarize carried_bytes=sum(carried_bytes) by server) on server
+        | top 25 by calls desc
+        | extend row_type='server'),
+    (calls
+        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
+                    failures=countif(failed), timed=countif(duration_ms > 0), p50_ms=percentile(duration_ms, 50),
+                    p95_ms=percentile(duration_ms, 95), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
+                    sized=countif(isnotnull(output_bytes)) by server, server_tool
+        | lookup kind=leftouter carried on server, server_tool
+        | top 40 by calls desc
+        | extend row_type='server_tool'),
+    (listed
+        | top 200 by unused_tokens desc
+        | extend row_type='listed'),
+    (calls
+        | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), servers=dcount(server),
+                    failures=countif(failed), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes) by project_name
+        | top 20 by calls desc
+        | extend row_type='project'),
+    (calls
+        | summarize calls=count(), failures=countif(failed), sum_ms=sum(duration_ms), output_bytes=sum(output_bytes),
+                    servers=dcount(server), tool=take_any(tool), project_name=take_any(project_name) by node_id, session_id
+        | top 10 by calls desc
+        | extend row_type='session'),
+    (all_calls
+        | summarize calls=count(), mcp_calls=countif(is_mcp),
+                    sum_ms=sum(duration_ms), output_bytes=sum(output_bytes), first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, calls desc
+| take row_limit
