@@ -14,6 +14,7 @@ import type { SkillsBody } from './skillsModel'
 import type { McpBody } from './mcpModel'
 import type { KqlBody } from './kqlModel'
 import type { RepoSegment, RepoSplit } from './repoSplit'
+import { sessionName } from './sessionName'
 
 export type { QueryBlock }
 export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
@@ -392,7 +393,7 @@ export function subagentFinding(body: SubagentBody, label: Label) {
 }
 
 export function subagentSessionHover(row: InsightSession, label: Label) {
-  return `Session ${row.session_id} (${label(String(row.tool ?? ''))}): ${plural(Number(row.agents ?? 0), 'subagent')} made ` +
+  return `Session ${sessionName(row)} (${label(String(row.tool ?? ''))}): ${plural(Number(row.agents ?? 0), 'subagent')} made ` +
     `${plural(Number(row.requests ?? 0), 'request')} costing ${money(typeof row.cost_usd === 'number' ? row.cost_usd : null)} at list ` +
     `price; its main agent cost ${money(typeof row.main_cost === 'number' ? row.main_cost : null)}.`
 }

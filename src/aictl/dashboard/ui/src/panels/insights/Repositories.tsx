@@ -4,6 +4,7 @@ import type { PanelContext } from '../types'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { count, share, toolLabel } from './insightsModel'
 import { Bars, Columns } from './WorkCharts'
+import { sessionBranch, sessionHover, sessionName } from './sessionName'
 import {
   agentTime, repoBinChart, repoFinding, repoHero, repoLines, repoModelChart, repoName, repoOutputChart, repoPerCommitChart,
   repoSpendChart, repoStartChart, SHOWN, smallText, startedText, type Repo, type RepoBody,
@@ -41,7 +42,8 @@ function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelCon
       <h4 class={own.title}>Sessions by spend</h4>
       <ol class={own.sessions} data-sessions>
         <For each={repo().top_sessions}>{session => <li>
-          <button type="button" onClick={() => props.ctx.openAgent(session.session_id, 'flow')}>{session.session_id}</button>
+          <button type="button" title={sessionHover(session)} onClick={() => props.ctx.openAgent(session.session_id, 'flow')}>
+            {sessionName(session)}<Show when={sessionBranch(session)}> · on {sessionBranch(session)}</Show></button>
           <span>{toolLabel(String(session.tool ?? ''))}</span>
           <span>{money(session.cost_usd)} · {fmtNum(session.requests)} requests</span>
           <span>{fmtNum(session.commits)} commits · {fmtNum(session.files)} files · {agentTime(session.agent_ms)} working</span>

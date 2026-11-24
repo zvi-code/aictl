@@ -5,6 +5,7 @@ import { InsightCard, numberField, textField, type CardProps } from './InsightCa
 import {
   subagentHero, money, plural, share, subagentFinding, subagentHover, subagentSessionHover, toolLabel, type Label, type SubagentBody,
 } from './insightsModel'
+import { sessionHover, sessionLabel } from './sessionName'
 
 const legend = [{ label: 'Main agent', tone: 2 }, { label: 'Subagents', tone: 1 }]
 const SESSIONS = 5
@@ -27,7 +28,7 @@ function sideRows(body: SubagentBody, label: Label, of: 'cost' | 'requests'): Ba
 function sessionRows(body: SubagentBody, label: Label): BarRow[] {
   return [...body.sessions].filter(row => typeof row.cost_usd === 'number')
     .sort((a, b) => Number(b.cost_usd) - Number(a.cost_usd)).slice(0, SESSIONS).map(row => ({
-      key: row.session_id, label: `${label(String(row.tool ?? ''))} · ${row.session_id.slice(0, 8)}`, title: row.session_id,
+      key: row.session_id, label: sessionLabel(row, label), title: sessionHover(row),
       sub: `${plural(Number(row.agents ?? 0), 'subagent')} · ${plural(Number(row.requests ?? 0), 'request')}`,
       total: money(Number(row.cost_usd)),
       parts: [{ key: 'cost', label: 'subagent cost', value: Number(row.cost_usd), tone: 1, text: money(Number(row.cost_usd)),

@@ -12,6 +12,7 @@ import type { PanelContext, Read } from '../types'
 import { learnToolLabels, toolLabel, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
 import { evidenceNote, fewText, withEvidence } from './evidence'
 import { revealed } from './summaryModel'
+import { sessionBranch, sessionHover, sessionName } from './sessionName'
 import styles from './Insights.module.css'
 
 export type CardProps = { ctx: PanelContext; boxes: Boxes; since: number; until: number }
@@ -92,9 +93,9 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   // A finding of the summary asked for this card's sessions: open them once (the person can close them again).
   const opened = () => revealed()?.card === props.card && revealed()?.sessions === true
   const sessionFields = createMemo((): Field<InsightSession>[] => [{
-    id: 'session_id', label: 'Session', read: row => row.session_id,
-    action: { label: row => `Open session ${row.session_id}`, run: row => ctx.openAgent(row.session_id, props.tab) },
-  }, ...props.sessionFields])
+    id: 'session_id', label: 'Session', read: row => sessionName(row), hint: row => sessionHover(row),
+    action: { label: row => `Open session ${sessionName(row)}`, run: row => ctx.openAgent(row.session_id, props.tab) },
+  }, { id: 'git_branch', label: 'Branch', read: row => sessionBranch(row) || undefined }, ...props.sessionFields])
   return <Box boxes={props.boxes} id={`insight-${props.card}`} label={props.title} class={styles.card} corner
     controls={['fold', 'full', 'hide']} head={<h2 ref={element} data-insight={props.card}>{props.title}</h2>}>
     <States result={result} retry={read.retry}>

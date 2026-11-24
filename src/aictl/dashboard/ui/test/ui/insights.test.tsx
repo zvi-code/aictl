@@ -760,3 +760,34 @@ describe('INS-PAUSE-CAUSE · The pause tax says what each long pause was', () =>
     dispose()
   })
 })
+
+describe('INS-NAME · the subagent sessions and every card session table name a session, never the JSON of its id', () => {
+  it('labels a session bar by its title and branch, and its table row by name and branch', () => {
+    const pair = JSON.stringify(['host-b', 'abcdef12-3456-7890-abcd-ef1234567890'])
+    const named = {
+      ...subagents, sessions: [
+        { ...subagents.sessions[0], session_id: pair, node_id: 'host-b', title: 'Fix the login page', git_branch: 'feature/login',
+          project_path: '/work/app' },
+        { ...subagents.sessions[0], session_id: JSON.stringify(['host-b', 'fedcba98-0000-1111-2222-333344445555']), node_id: 'host-b',
+          cost_usd: 10, title: null, git_branch: null },
+      ],
+    }
+    const { ctx } = context(id => id === 'subagents' ? { data: named, status: 'ready', error: null } : ready(id))
+    const { host, dispose } = mount(() => <Subagents {...props(ctx)} />)
+    const names = [...card(host, 'subagents').querySelectorAll('[data-chart="subagent-sessions"] [data-row] > span:first-child')]
+    expect(names.map(name => name.firstChild!.textContent)).toEqual(['claude-code · Fix the login page · on feature/login',
+      'claude-code · fedcba98'])
+    expect(names[0].getAttribute('title')).toBe('Fix the login page\nBranch: feature/login\nFolder: /work/app\nNode: host-b\n' +
+      'Session id: abcdef12-3456-7890-abcd-ef1234567890')
+    const sessions = card(host, 'subagents').querySelector<HTMLDetailsElement>('[data-sessions]')!
+    sessions.open = true
+    flush()
+    const cells = (col: string) => [...sessions.querySelectorAll(`td[data-col="${col}"]`)]
+      .map(cell => cell.querySelector('[data-missing]') ? 'missing' : cell.textContent)
+    expect(cells('session_id')).toEqual(['Fix the login page', 'fedcba98'])
+    expect(cells('git_branch')).toEqual(['feature/login', 'missing'])
+    expect(sessions.querySelector('td[data-col="session_id"]')!.getAttribute('title')).toContain('Branch: feature/login')
+    expect(sessions.textContent).not.toContain('["')
+    dispose()
+  })
+})
