@@ -69,7 +69,7 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
     <header class={styles.heading}>
       <h1>Thinking</h1>
       <label class={styles.range}>Period
-        <select value={period().id} onChange={event => ctx.navigate({ range: event.currentTarget.value, since: null, until: null, sel: null })}>
+        <select class={styles.rangeSelect} value={period().id} onChange={event => ctx.navigate({ range: event.currentTarget.value, since: null, until: null, sel: null })}>
           <For each={INSIGHT_RANGES}>{range => <option value={range.id}>{range.label}</option>}</For>
           {period().id === 'custom' ? <option value="custom">Custom range</option> : null}
         </select>
@@ -83,7 +83,7 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
         <input type="search" maxlength={400} value={draft()} placeholder='Whole words, or "an exact phrase"'
           aria-label="Search thinking text" onInput={event => setDraft(event.currentTarget.value)} />
       </label>
-      <button type="submit">Search</button>
+      <button class={styles.searchButton} type="submit">Search</button>
       <span class={styles.hint}>Words match whole terms, all of them; a quoted phrase matches as written. An empty search lists the newest blocks.</span>
     </form>
 
@@ -119,8 +119,8 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
         <section class={styles.results} aria-label="Blocks">
           <div class={styles.pager}>
             <span>{pageText(body().search.offset, body().blocks.length, body().total)}</span>
-            <button type="button" disabled={body().search.offset === 0} onClick={() => page(-1)}>Newer page</button>
-            <button type="button" disabled={body().search.offset + body().blocks.length >= body().total} onClick={() => page(1)}>Next page</button>
+            <button class={styles.smallButton} type="button" disabled={body().search.offset === 0} onClick={() => page(-1)}>Newer page</button>
+            <button class={styles.smallButton} type="button" disabled={body().search.offset + body().blocks.length >= body().total} onClick={() => page(1)}>Next page</button>
           </div>
           <Table label="Thinking blocks" tableId="thinking-blocks" fields={fields} rows={body().blocks} rowId={rowKey}
             sorted={{ sort: { id: state().sort, desc: !state().ascending },
@@ -131,8 +131,8 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
         <Show when={open()}>{block => <section class={styles.text} aria-label="Block text">
           <header>
             <h2>{toolDisplayName(block().tool)} · {block().model} · {stamp(block().ts, true)} · {fmtNum(block().chars)} characters</h2>
-            <button type="button" onClick={() => openFlow(block())}>{block().call_ts != null ? 'Open call in flow' : 'Open session flow'}</button>
-            <button type="button" aria-label="Close block text" onClick={() => setOpen(undefined)}><Icon glyph="close" small /></button>
+            <button class={styles.smallButton} type="button" onClick={() => openFlow(block())}>{block().call_ts != null ? 'Open call in flow' : 'Open session flow'}</button>
+            <button class={styles.smallButton} type="button" aria-label="Close block text" onClick={() => setOpen(undefined)}><Icon glyph="close" small /></button>
           </header>
           <Show when={full()?.data} fallback={<p class={styles.note}>Loading the text…</p>}>{detail =>
             <For each={detail().blocks} fallback={<p class={styles.note}>This block is no longer stored.</p>}>{item =>
