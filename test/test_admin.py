@@ -207,7 +207,8 @@ class TestDbStats:
         assert result.exit_code == 0
         rows = {r["table"]: r for line in result.output.splitlines() if (r := json.loads(line))}
         assert rows["events"]["key"] == ["project", "node_id", "source_key"]
-        assert rows["events_text"]["retention_days"] == 365
+        assert rows["events"]["retention_days"] == 365 and "events_text" not in rows
+        assert rows["events"]["columns"]["full_detail"] == "dynamic"
         assert rows["files"]["columns"]["_deleted"] == "bool"
 
 
@@ -251,7 +252,7 @@ class TestDbReset:
         monkeypatch.setattr(maintenance.KustoClientFactory, "client", lambda _: MagicMock(execute_mgmt=receive))
         monkeypatch.setattr(maintenance, "restart_directory", lambda *_: tmp_path)
         done = maintenance.trim_text(settings, 1000, dry_run=True)
-        assert "events_text" in done and "files_text" in done and "OTELLogs" not in done
+        assert "agents_text" in done and "file_blobs" in done and "OTELLogs" not in done and "events" not in done
         for call in receive.call_args_list:
             database, command = call.args
             assert database == "aictl_perf_test"

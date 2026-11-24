@@ -1,5 +1,6 @@
 """Native Kusto schema, generated from the phase-0 store schema and OTel definitions."""
 
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -45,9 +46,9 @@ class Table:
 SESSION_HISTORY_DAYS = 365
 SESSION_HISTORY_TABLES = frozenset(
     {
-        "sessions", "session_usage", "requests", "agents", "tool_invocations", "tool_invocation_coverage",
-        "tool_invocation_sizes", "context_events", "session_steps", "turn_request_links", "skill_uses",
-        "file_write_events", "session_folders", "session_artifacts", "session_sources", "session_loaded_files",
+        "sessions", "session_usage", "requests", "agents", "tool_invocations", "context_events", "session_steps",
+        "turn_request_links", "skill_uses", "file_write_events", "session_folders", "session_artifacts", "session_sources",
+        "session_loaded_files",
         "session_context_items", "context_lists", "session_processes", "session_commits", "session_attribution",
         "otel_trace_sessions", "session_turns", "session_files", "session_outcomes",
     }
@@ -88,43 +89,6 @@ _DEFINED = (
                 ("_v", "datetime"),
             ),
             ("project", "node_id", "tool"),
-            "streaming",
-        ),
-        "projects": Table(
-            (
-                ("path", "string"),
-                ("name", "string"),
-                ("git_remote", "string"),
-                ("git_branch", "string"),
-                ("first_seen_at", "datetime"),
-                ("last_seen_at", "datetime"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "path"),
-            "streaming",
-        ),
-        "processes": Table(
-            (
-                ("id", "long"),
-                ("pid", "long"),
-                ("tool", "string"),
-                ("project_path", "string"),
-                ("cwd", "string"),
-                ("cmdline", "string"),
-                ("ppid", "long"),
-                ("started_at", "datetime"),
-                ("ended_at", "datetime"),
-                ("exit_code", "long"),
-                ("source", "string"),
-                ("meta", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-                ("source_key", "string"),
-            ),
-            ("project", "node_id", "source_key"),
             "streaming",
         ),
         "process_snapshots": Table(
@@ -458,29 +422,6 @@ _DEFINED = (
             "streaming",
             retention_days=14,
         ),
-        "tool_invocation_coverage": Table(
-            (
-                ("session_id", "string"),
-                ("covered_through", "datetime"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "session_id"),
-            "streaming",
-        ),
-        "tool_invocation_sizes": Table(
-            (
-                ("dedup_key", "string"),
-                ("input_bytes", "long"),
-                ("output_bytes", "long"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "dedup_key"),
-            "streaming",
-        ),
         "session_prompts": Table(
             (
                 ("id", "long"),
@@ -537,18 +478,6 @@ _DEFINED = (
                 ("conversation_tokens", "long"),
                 ("tool_tokens", "long"),
                 ("prompt_id", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "step_key"),
-            "streaming",
-        ),
-        "session_step_text": Table(
-            (
-                ("step_key", "string"),
-                ("session_id", "string"),
-                ("ts", "datetime"),
                 ("text", "string"),
                 ("project", "string"),
                 ("node_id", "string"),
@@ -556,7 +485,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "step_key"),
             "streaming",
-            retention_days=14,
         ),
         # One row per user turn of a Claude Code session (one promptId), its subagents included.
         "session_turns": Table(
@@ -795,20 +723,6 @@ _DEFINED = (
             "streaming",
             tombstone="_deleted",
         ),
-        "files_text": Table(
-            (
-                ("path", "string"),
-                ("content", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-                ("_deleted", "bool"),
-            ),
-            ("project", "node_id", "path"),
-            "streaming",
-            retention_days=14,
-            tombstone="_deleted",
-        ),
         "file_history": Table(
             (
                 ("path", "string"),
@@ -833,19 +747,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "path", "ts"),
             "queued",
-        ),
-        "file_history_text": Table(
-            (
-                ("path", "string"),
-                ("ts", "datetime"),
-                ("content", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "path", "ts"),
-            "queued",
-            retention_days=14,
         ),
         "file_write_events": Table(
             (
@@ -1088,6 +989,7 @@ _DEFINED = (
                 ("pid", "long"),
                 ("project_path", "string"),
                 ("detail", "dynamic"),
+                ("full_detail", "dynamic"),
                 ("source_key", "string"),
                 ("seq", "long"),
                 ("project", "string"),
@@ -1096,13 +998,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "source_key"),
             "streaming",
-        ),
-        "events_text": Table(
-            (("source_key", "string"), ("detail", "dynamic"), ("project", "string"),
-             ("node_id", "string"), ("_v", "datetime"), ("ts", "datetime")),
-            ("project", "node_id", "source_key"),
-            "streaming",
-            retention_days=14,
         ),
         "hook_calls": Table(
             (
@@ -1127,6 +1022,9 @@ _DEFINED = (
                 ("payload_bytes", "long"),
                 ("truncated", "bool"),
                 ("payload", "string"),
+                ("command", "string"),
+                ("output", "string"),
+                ("full_payload", "string"),
                 ("wrapped", "bool"),
                 ("command_hash", "string"),
                 ("exit_code", "long"),
@@ -1141,21 +1039,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "call_id"),
             "streaming",
-        ),
-        "hook_calls_text": Table(
-            (
-                ("call_id", "string"),
-                ("command", "string"),
-                ("output", "string"),
-                ("payload", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-                ("ts", "datetime"),
-            ),
-            ("project", "node_id", "call_id"),
-            "streaming",
-            retention_days=14,
         ),
         "otel_trace_sessions": Table(
             (("trace_id", "string"), ("session_id", "string"), ("project", "string"),
@@ -1262,14 +1145,6 @@ _DEFINED = (
             ),
             ("project", "node_id", "session_id", "phase", "path"),
             "streaming",
-        ),
-        "memory_snapshots_text": Table(
-            (("session_id", "string"), ("phase", "string"), ("path", "string"), ("sha", "string"),
-             ("content", "string"), ("ts", "datetime"), ("project", "string"), ("node_id", "string"),
-             ("_v", "datetime")),
-            ("project", "node_id", "session_id", "phase", "path", "sha"),
-            "streaming",
-            retention_days=14,
         ),
         "datapoint_catalog": Table(
             (
@@ -1387,468 +1262,6 @@ _DEFINED = (
             "streaming",
             retention_days=14,
             tombstone="_deleted",
-        ),
-        "requests_observations": Table(
-            (
-                ("id", "long"),
-                ("dedup_key", "string"),
-                ("ts", "datetime"),
-                ("session_id", "string"),
-                ("agent_id", "string"),
-                ("tool", "string"),
-                ("project_path", "string"),
-                ("pid", "long"),
-                ("model", "string"),
-                ("input_tokens", "long"),
-                ("output_tokens", "long"),
-                ("cache_read_tokens", "long"),
-                ("cache_creation_tokens", "long"),
-                ("cost_usd", "real"),
-                ("duration_ms", "real"),
-                ("finish_reason", "string"),
-                ("is_error", "bool"),
-                ("error_type", "string"),
-                ("http_status", "long"),
-                ("source", "string"),
-                ("prompt_id", "string"),
-                ("ttft_ms", "real"),
-                ("tool_tokens", "long"),
-                ("max_prompt_tokens", "long"),
-                ("request_bytes", "long"),
-                ("available_tools", "long"),
-                ("source_ts", "datetime"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "tool_invocations_observations": Table(
-            (
-                ("id", "long"),
-                ("dedup_key", "string"),
-                ("ts", "datetime"),
-                ("session_id", "string"),
-                ("request_id", "long"),
-                ("tool", "string"),
-                ("tool_name", "string"),
-                ("project_path", "string"),
-                ("pid", "long"),
-                ("is_error", "bool"),
-                ("duration_ms", "real"),
-                ("source", "string"),
-                ("source_event_id", "string"),
-                ("agent_id", "string"),
-                ("confirm", "string"),
-                ("confirm_wait_ms", "real"),
-                ("exit_code", "long"),
-                ("input_bytes", "long"),
-                ("output_bytes", "long"),
-                ("source_ts", "datetime"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "tool_invocations_observations_text": Table(
-            (
-                ("input", "string"),
-                ("result_summary", "string"),
-                ("target", "string"),
-                ("observation_id", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-            retention_days=14,
-        ),
-        "sessions_observations": Table(
-            (
-                ("session_id", "string"),
-                ("tool", "string"),
-                ("pid", "long"),
-                ("project_path", "string"),
-                ("model", "string"),
-                ("git_branch", "string"),
-                ("git_commit", "string"),
-                ("started_at", "datetime"),
-                ("ended_at", "datetime"),
-                ("source", "string"),
-                ("input_tokens", "long"),
-                ("output_tokens", "long"),
-                ("cache_read_tokens", "long"),
-                ("cache_creation_tokens", "long"),
-                ("cost_usd", "real"),
-                ("request_count", "long"),
-                ("tool_call_count", "long"),
-                ("files_modified", "long"),
-                ("ts", "datetime"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "agents_observations": Table(
-            (
-                ("agent_id", "string"),
-                ("session_id", "string"),
-                ("tool", "string"),
-                ("model", "string"),
-                ("is_sidechain", "bool"),
-                ("started_at", "datetime"),
-                ("ended_at", "datetime"),
-                ("completed", "bool"),
-                ("input_tokens", "long"),
-                ("output_tokens", "long"),
-                ("cache_read_tokens", "long"),
-                ("cache_creation_tokens", "long"),
-                ("cost_usd", "real"),
-                ("project_path", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "agents_observations_text": Table(
-            (
-                ("task", "string"),
-                ("observation_id", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-            retention_days=14,
-        ),
-        "session_usage_observations": Table(
-            (
-                ("session_id", "string"),
-                ("tool", "string"),
-                ("source", "string"),
-                ("quality", "string"),
-                ("quality_reason", "string"),
-                ("model", "string"),
-                ("models_json", "string"),
-                ("daily_json", "string"),
-                ("input_tokens", "long"),
-                ("output_tokens", "long"),
-                ("cache_read_tokens", "long"),
-                ("cache_creation_tokens", "long"),
-                ("request_count", "long"),
-                ("tool_call_count", "long"),
-                ("turn_count", "long"),
-                ("cost_usd", "real"),
-                ("cost_quality", "string"),
-                ("cost_reason", "string"),
-                ("unpriced_models", "string"),
-                ("billing_unit", "string"),
-                ("billing_amount", "real"),
-                ("premium_requests", "real"),
-                ("estimated_list_usd", "real"),
-                ("started_at", "datetime"),
-                ("last_activity_at", "datetime"),
-                ("project_path", "string"),
-                ("updated_at", "datetime"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "session_processes_observations": Table(
-            (
-                ("session_id", "string"),
-                ("pid", "long"),
-                ("tool", "string"),
-                ("joined_at", "datetime"),
-                ("role", "string"),
-                ("trace_id", "string"),
-                ("project_path", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "session_prompts_observations": Table(
-            (
-                ("id", "long"),
-                ("dedup_key", "string"),
-                ("ts", "datetime"),
-                ("session_id", "string"),
-                ("agent_id", "string"),
-                ("tool", "string"),
-                ("project_path", "string"),
-                ("text", "string"),
-                ("prompt_file", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-            retention_days=14,
-        ),
-        "skill_uses_observations": Table(
-            (
-                ("id", "long"),
-                ("dedup_key", "string"),
-                ("ts", "datetime"),
-                ("session_id", "string"),
-                ("agent_id", "string"),
-                ("tool", "string"),
-                ("project_path", "string"),
-                ("name", "string"),
-                ("trigger", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "file_write_events_observations": Table(
-            (
-                ("id", "long"),
-                ("dedup_key", "string"),
-                ("ts", "datetime"),
-                ("session_id", "string"),
-                ("tool", "string"),
-                ("tool_name", "string"),
-                ("operation", "string"),
-                ("path", "string"),
-                ("project_path", "string"),
-                ("pid", "long"),
-                ("source_event_kind", "string"),
-                ("source_event_id", "string"),
-                ("content_hash", "string"),
-                ("size_bytes", "long"),
-                ("detail", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "context_events_observations": Table(
-            (
-                ("id", "long"),
-                ("dedup_key", "string"),
-                ("ts", "datetime"),
-                ("session_id", "string"),
-                ("agent_id", "string"),
-                ("tool", "string"),
-                ("kind", "string"),
-                ("trigger", "string"),
-                ("before_tokens", "long"),
-                ("after_tokens", "long"),
-                ("duration_ms", "real"),
-                ("current_tokens", "long"),
-                ("system_tokens", "long"),
-                ("conversation_tokens", "long"),
-                ("tool_tokens", "long"),
-                ("project_path", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "session_loaded_files_observations": Table(
-            (
-                ("session_id", "string"),
-                ("path", "string"),
-                ("how", "string"),
-                ("detail", "string"),
-                ("ts", "datetime"),
-                ("tool", "string"),
-                ("agent_id", "string"),
-                ("project_path", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
-        ),
-        "session_context_items_observations": Table(
-            (
-                ("session_id", "string"),
-                ("agent_id", "string"),
-                ("kind", "string"),
-                ("name", "string"),
-                ("ts", "datetime"),
-                ("path", "string"),
-                ("chars", "long"),
-                ("tokens", "long"),
-                ("estimated", "long"),
-                ("removed", "long"),
-                ("tool", "string"),
-                ("project_path", "string"),
-                ("observation_id", "string"),
-                ("observation_source", "string"),
-                ("source_entity_id", "string"),
-                ("producer_id", "string"),
-                ("source_revision", "long"),
-                ("event_time", "datetime"),
-                ("received_time", "datetime"),
-                ("retention_ts", "datetime"),
-                ("presence", "string"),
-                ("source_presence_known", "bool"),
-                ("serialized_fields", "string"),
-                ("observation_operation", "string"),
-                ("project", "string"),
-                ("node_id", "string"),
-                ("_v", "datetime"),
-            ),
-            ("project", "node_id", "observation_id"),
-            "streaming",
         ),
         "OTELLogs": Table(
             (
@@ -2052,44 +1465,56 @@ _DEFINED = (
 
 # ── Retention ────────────────────────────────────────────────────────────
 # Every table belongs to exactly one retention class; the user sets a period per class in
-# [storage.retention] as hours or days (``tool_content = "24h"``, ``prompt = "365d"``).
+# [storage.retention] as hours or days (``large_payload = "24h"``, ``prompt = "365d"``).
 # This is the one place that maps tables to classes. The classes are split by kind and
-# volume, so the largest kinds of data can be shortened on their own.
+# volume, so the largest kinds of data can be shortened on their own. The text of a data point
+# kept in a table of its own (tool_invocations_text, ...) has the class of its figures table:
+# text and figures of one data point are kept equally long.
 HOUR = 1
 DAY = 24
 RETENTION_DEFAULTS = MappingProxyType({
-    "history": 365 * DAY,  # what sessions did, without text: tool calls, requests, turns, outcomes
+    "history": 365 * DAY,  # what sessions did: tool calls, requests, turns, steps, agents, with their text
     "prompt": 365 * DAY,  # user prompts
     "thinking": 365 * DAY,  # thinking (reasoning) text
-    "message": 365 * DAY,  # assistant and chat messages, session step text (bounded previews)
-    "text": 365 * DAY,  # other text: subagent prompts, event text, session digests (bounded)
-    "file_text": 365 * DAY,  # file contents and snapshots
+    "message": 365 * DAY,  # assistant and chat messages of Copilot, Cursor and VS Code chat
+    "text": 365 * DAY,  # session digests
+    "file_text": 365 * DAY,  # file contents (file_blobs)
     "otel": 365 * DAY,  # raw OpenTelemetry logs, metrics, spans and their spilled payloads
-    "metrics": 365 * DAY,  # metric samples, snapshots, events, files, configuration
-    "tool_content": 24 * HOUR,  # tool call arguments, edit text and result excerpts; hook payloads
+    "metrics": 365 * DAY,  # metric samples, snapshots, events, hook calls, files, memory snapshots, configuration
     "large_payload": 24 * HOUR,  # the full text of large values whose preview is kept elsewhere
 })
 RETENTION_CLASSES = tuple(RETENTION_DEFAULTS)
 RETENTION_MIN_HOURS = 1
 RETENTION_MAX_HOURS = 3650 * DAY
+# Classes an older aictl had. A config file that still names one is read with a warning; the
+# setting is left out (see validate_retention).
+RETIRED_RETENTION_CLASSES = MappingProxyType({
+    "tool_content": "tool call and hook text is kept as long as its call: tool_invocations_text has the "
+                    "period of class history, hook_calls (its text included) that of class metrics",
+})
 _CLASS_TABLES = {
-    "prompt": {"session_prompts", "session_prompts_observations"},
+    "prompt": {"session_prompts"},
     "thinking": {"session_thinking"},
-    "tool_content": {"tool_invocations_text", "tool_invocations_observations_text", "hook_calls_text"},
-    "message": {"copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_step_text"},
-    "file_text": {"files_text", "file_history_text", "file_blobs", "memory_snapshots_text"},
+    "message": {"copilot_session_messages", "cursor_session_messages", "vscode_chat_messages"},
+    "file_text": {"file_blobs"},
     "otel": {"OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"},
     "large_payload": {"text_payloads"},
 }
+# The text table of a data point -> the table of its figures, whose class it has.
+TEXT_OF = MappingProxyType({
+    "tool_invocations_text": "tool_invocations", "agents_text": "agents",
+})
 
 
 def _retention_class(name: str, table: Table) -> str:
+    if name in TEXT_OF:
+        name, table = TEXT_OF[name], _DEFINED[TEXT_OF[name]]
     for cls, names in _CLASS_TABLES.items():
         if name in names:
             return cls
     if table.retention_days == 14:  # every other table that holds text
         return "text"
-    if name.removesuffix("_observations") in SESSION_HISTORY_TABLES:
+    if name in SESSION_HISTORY_TABLES:
         return "history"
     return "metrics"
 
@@ -2120,11 +1545,16 @@ def format_period(hours: int) -> str:
 def validate_retention(values: Mapping[str, object]) -> dict[str, int]:
     """``[storage.retention]`` as {class: hours}.
 
-    A key is a class name with a period (``tool_content = "24h"``); ``<class>_days = <days>``
-    is read too.
+    A key is a class name with a period (``large_payload = "24h"``); ``<class>_days = <days>``
+    is read too. A class an older aictl had (RETIRED_RETENTION_CLASSES) is left out with one warning.
     """
     hours: dict[str, int] = {}
     for key, value in values.items():
+        if (retired := key.removesuffix("_days")) in RETIRED_RETENTION_CLASSES:
+            logging.getLogger(__name__).warning(
+                "[storage.retention] %s is ignored: class %s no longer exists, %s. Remove the line.",
+                key, retired, RETIRED_RETENTION_CLASSES[retired])
+            continue
         cls = key.removesuffix("_days") if key.endswith("_days") and key.removesuffix("_days") in RETENTION_DEFAULTS else key
         if cls not in RETENTION_DEFAULTS:
             raise ValueError(f"[storage.retention] has an unknown setting {key!r}; known settings: "

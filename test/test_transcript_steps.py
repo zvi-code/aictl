@@ -72,9 +72,7 @@ def test_flow_across_polls_and_restart(tmp_path):
         ingester.poll()
 
     def timeline():
-        text = {r["step_key"]: r["text"] for r in current(writer, "session_step_text")}
-        return [r | {"text": text.get(r["step_key"])}
-                for r in sorted(current(writer, "session_steps"), key=lambda r: r["source_order"])]
+        return sorted(current(writer, "session_steps"), key=lambda r: r["source_order"])
 
     rows = timeline()
     reader(facts, tmp_path).poll()
@@ -307,7 +305,7 @@ def test_cost_links_join_canonical_requests_across_polls_and_nested_agents(tmp_p
     assert {r["phase"] for r in current(writer, "session_steps") if r["role"] == "assistant" and r["phase"]} == {
         "commentary", "final_answer",
     }
-    assert all("HIDDEN" not in r["text"] for r in current(writer, "session_step_text"))
+    assert all("HIDDEN" not in (r["text"] or "") for r in current(writer, "session_steps"))
 
 
 def test_ambiguous_usage_stays_unattributed_until_same_agent_api_id_arrives():

@@ -67,16 +67,24 @@ def schema_rows():
 # Do not soft-delete raw signals that also hold counts or timings.
 TRIM_TIMESTAMPS = {
     name: ("ts", "datetime") for name in (
-        "agents_text", "events_text", "file_history_text", "hook_calls_text", "memory_snapshots_text",
-        "session_prompts", "session_step_text", "session_digests", "session_thinking",
+        "agents_text", "session_prompts", "session_digests", "session_thinking",
     )
 }
 TRIM_TIMESTAMPS.update({
     name: ("_v", "datetime") for name in (
-        "agents_observations_text", "file_blobs", "files_text", "tool_invocations_text", "tool_invocations_observations_text",
+        "file_blobs", "tool_invocations_text",
     )
 })
 TRIM_TIMESTAMPS["OTELPayloads"] = ("Timestamp", "datetime")
+# Tables whose rows hold the figures and the text of one data point: the time column, and the text
+# columns a trim empties. A trim does not delete these rows; text older than the trim watermark is
+# not written (the writer empties these columns of a row still queued), and readers hide older text.
+TEXT_COLUMNS = {
+    "session_steps": ("ts", ("text",)),
+    "events": ("ts", ("full_detail",)),
+    "hook_calls": ("ts", ("command", "output", "full_payload")),
+    "memory_snapshots": ("ts", ("content",)),
+}
 
 
 def trim_text(settings, before: float, *, dry_run: bool) -> list[str]:

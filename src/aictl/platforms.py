@@ -669,15 +669,14 @@ kusto_ingestion = "auto"  # auto: queued on a cluster with inline state tables; 
 # How long the Kusto store keeps each class of data, in hours or days ("24h", "365d"; a bare
 # number is days). See each class and table with its size: `aictl db retention`. Change one:
 # `aictl db retention set <class> <period>`. Lowering a period deletes older data.
-# history = "365d"        # what sessions did, without text: tool calls, requests, turns, outcomes
+# history = "365d"        # what sessions did, with its text: tool calls, requests, turns, steps, agents
 # prompt = "365d"         # user prompts
 # thinking = "365d"       # thinking (reasoning) text
-# message = "365d"        # assistant and chat messages, session step text
-# text = "365d"           # other text: subagent prompts, event text, session digests
-# file_text = "365d"      # file contents and snapshots
+# message = "365d"        # assistant and chat messages of Copilot, Cursor and VS Code chat
+# text = "365d"           # session digests
+# file_text = "365d"      # file contents
 # otel = "365d"           # raw OpenTelemetry logs, metrics, spans and their payloads
-# metrics = "365d"        # metric samples, snapshots, events, files, configuration
-# tool_content = "24h"    # tool call arguments, edit text and result excerpts; hook payloads
+# metrics = "365d"        # metric samples, snapshots, events, hook calls, files, memory, configuration
 # large_payload = "24h"   # the full text of large values (over large_payload_bytes)
 
 [logging]

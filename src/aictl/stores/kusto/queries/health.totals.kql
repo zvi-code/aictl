@@ -9,7 +9,6 @@ let files_secs = files | extend mtime = (mtime - datetime(1970-01-01)) / 1s, fir
 let path_defs_secs = path_defs | extend hidden = tolong(hidden);
 let process_defs_secs = process_defs | extend is_daemon = tolong(is_daemon), auto_start = tolong(auto_start), known_leak = tolong(known_leak);
 let process_snapshots_secs = process_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let processes_secs = processes | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s;
 let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
 let system_snapshots_secs = system_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s, settings_captured_at = (settings_captured_at - datetime(1970-01-01)) / 1s;
@@ -81,11 +80,8 @@ union hint.concurrency=1
         | summarize arg_max(_v, _deleted) by node_id, ['project'], fact_key
         | where not(coalesce(_deleted, false))
         | summarize rows=count() | extend table='tool_invocations'),
-    (processes_secs | where all_nodes or node_id == requested_node
-        | extend deleted=column_ifexists('_deleted', false)
-        | summarize arg_max(_v, deleted) by node_id, ['project'], source_key
-        | where not(coalesce(deleted, false))
-        | summarize rows=count() | extend table='processes'),
+    // No table holds processes any more (nothing wrote one); the row stays with 0 rows.
+    (print rows=tolong(0) | extend table='processes'),
     (agents_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], session_id, agent_id

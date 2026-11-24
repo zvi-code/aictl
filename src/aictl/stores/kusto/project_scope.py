@@ -33,10 +33,10 @@ PROJECT_TABLES = (
     "sessions", "session_usage", "agents", "agents_text", "session_turns", "session_outcomes", "session_digests",
     "session_prompts", "session_thinking", "session_files", "session_loaded_files", "session_context_items",
     "session_folders", "session_artifacts", "requests", "turn_request_links", "tool_invocations",
-    "tool_invocations_text", "tool_invocation_coverage", "tool_invocation_sizes", "skill_uses", "context_events",
-    "file_write_events", "session_steps", "session_step_text", "text_payloads", "copilot_session_messages",
-    "vscode_chat_messages", "cursor_session_messages", "events", "events_text", "hook_calls", "hook_calls_text",
-    "memory_snapshots", "memory_snapshots_text",
+    "tool_invocations_text", "skill_uses", "context_events",
+    "file_write_events", "session_steps", "text_payloads", "copilot_session_messages",
+    "vscode_chat_messages", "cursor_session_messages", "events", "hook_calls",
+    "memory_snapshots",
 )
 # The current views of those tables (current.py) are filed the same way. `project` is a group-by key
 # of their materialized views, so the filter reaches the stored rows.

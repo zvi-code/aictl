@@ -25,6 +25,7 @@ _SCHEMA = {
     f"status:string resolved_model:string parent_agent_id:string spawn_depth:long completed:bool {_VERSION}",
     "turn_request_links": f"request_key:string {_SESSION} agent_id:string turn_id:string root_session_id:string "
     f"root_turn_id:string basis:string {_VERSION}",
+    # The text of a step: a column of its session_steps row, null while text is not kept.
     "session_step_text": f"step_key:string session_id:string ['text']:string {_VERSION}",
     "sessions": f"session_id:string started_at:datetime {_VERSION}",
 }
@@ -213,8 +214,8 @@ def _retained(steps: str, params: _Params, kind: str) -> str:
 | project session_id, step_key, ts, turn_id, text_status{fields});
 selected_steps
 | join kind={'leftouter' if command else 'inner'} (
-    {_source('session_step_text', _SCHEMA['session_step_text'], params.node)}
-    | where step_key in (selected_steps | where text_status in ("captured", "truncated") | project step_key)
+    {_source('session_steps', _SCHEMA['session_step_text'], params.node)}
+    | where isnotnull(['text']) and step_key in (selected_steps | where text_status in ("captured", "truncated") | project step_key)
     | project session_id, step_key, _v, _deleted, text_preview=substring(trim(@"\s+", ['text']), 0, 240){matched}
     | summarize arg_max(_v, *) by step_key
     | where not(coalesce(_deleted, false)) and session_id == sid and isnotempty(text_preview){'' if command else ' and matched'}

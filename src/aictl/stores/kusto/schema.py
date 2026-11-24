@@ -45,6 +45,17 @@ _LAYOUT_COLUMNS = ("kind", "node_id", "version", "compatible_since", "data_epoch
 LAYOUT_QUERY = f"{quote(LAYOUT_TABLE)} | project {', '.join(quote(c) for c in _LAYOUT_COLUMNS)} | take 100000"
 # Tables earlier aictl versions created. They belong to aictl, and a reset drops them.
 LEGACY_OWNED = frozenset({"aictl_information_schema"})
+# Logical tables aictl defined before and nothing writes or reads now. aictl still owns them, so a
+# reset drops their node tables and the function sync drops their functions; nothing creates them.
+RETIRED_TABLES = COMPANIONS | frozenset({
+    "tool_invocation_coverage", "tool_invocation_sizes", "files_text", "projects", "tool_invocations_observations_text",
+    "agents_observations_text",
+    # Merged into the table of their figures (one data point, one row): session_steps.text,
+    # events.full_detail, hook_calls.command/output/full_payload, memory_snapshots.content.
+    "session_step_text", "events_text", "hook_calls_text", "memory_snapshots_text",
+    # Read by a view, written by nothing.
+    "file_history_text", "processes",
+})
 NODE_TABLES = "node_tables"  # the registry step of the database-wide copy that made the node tables (layout 3)
 _TYPES = {
     "System.Int32": "int",
@@ -64,7 +75,7 @@ def logical_tables() -> frozenset[str]:
     """Every logical table aictl defines, the shared ones included."""
     from .otel import TABLES as OTEL_TABLES
 
-    return frozenset(TABLES) | {t.name for t in OTEL_TABLES} | COMPANIONS
+    return frozenset(TABLES) | {t.name for t in OTEL_TABLES} | RETIRED_TABLES
 
 
 def owned_tables() -> frozenset[str]:
@@ -114,7 +125,7 @@ LEGACY_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
                 if column not in dict(TABLES[name].columns))
     for name in ("tool_invocations", "files", "file_history", "file_blobs", "metrics",
                  "system_snapshots", "process_snapshots", "tool_stats", "requests", "sessions", "agents", "events",
-                 "session_usage", "session_processes", "session_steps", "session_step_text", "turn_request_links",
+                 "session_usage", "session_processes", "session_steps", "turn_request_links",
                  "session_prompts", "skill_uses", "session_loaded_files", "session_context_items",
                  "context_events", "file_write_events", "hook_calls", "datapoint_catalog", "data_quality_status",
                  "copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_artifacts",
@@ -461,13 +472,13 @@ def function_commands(state: LayoutState, logical: Iterable[str]) -> list[str]:
     included = [node for node in state.nodes.values() if node.included]
     commands = []
     for name in sorted(set(logical) - N.SHARED_TABLES):
-        if name not in TABLES:
-            continue  # a table a newer aictl added: its nodes keep its function
-        legs = sorted(node.tables[name] for node in included if name in node.tables)
-        if "_observations" in name and not legs:
+        if name in RETIRED_TABLES:
             if name in state.functions:
                 commands.append(f".drop function {quote(name)} ifexists")
             continue
+        if name not in TABLES:
+            continue  # a table a newer aictl added: its nodes keep its function
+        legs = sorted(node.tables[name] for node in included if name in node.tables)
         collector = name if name in N.COLLECTOR_TABLES and name in state.have else None
         body = N.function_body(logical_columns(name), legs, collector)
         if N.normalized_body(state.functions.get(name)) != N.normalized_body(body):
@@ -647,8 +658,7 @@ def ensure_schema(
     key = N.node_key(node_id)
     have, details = state.have, state.details
     specs = {name: logical_columns(name) for name, table in tables.items()
-             if name not in N.SHARED_TABLES and ("_observations" not in name or N.physical(name, key) in have
-                                                    or name in have or N.legacy_name(name) in have)}
+             if name not in N.SHARED_TABLES}
     mapping = {name: N.physical(name, key) for name in specs}
     for name, columns in [*((mapping[n], c) for n, c in specs.items()),
                           (LAYOUT_TABLE, TABLES[LAYOUT_TABLE].columns)]:

@@ -65,14 +65,8 @@ def _unrelated() -> set[tuple[str, str]]:
     return out
 
 
-def _older_tables() -> set[str]:
-    part = TEXT.split("\n## Tables: Observation tables of an older aictl\n", 1)[1].split("\n## ", 1)[0]
-    return set(re.findall(r"^### (\w+)$", part, re.MULTILINE))
-
-
 RELATIONS = _relations()
 UNRELATED = _unrelated()
-OLDER = _older_tables()
 
 
 def _types(table: str) -> dict[str, str]:
@@ -115,14 +109,9 @@ def _covered() -> set[tuple[str, str]]:
 
 @pytest.mark.parametrize("table", sorted(LOGICAL))
 def test_every_link_column_of_a_table_is_in_a_relation(table):
-    if table in OLDER:
-        return
     own_key = set(TABLES[table].key) if table in TABLES else set()
     covered = _covered()
     missing = [c for c, _ in logical_columns(table)
                if c in LINK_COLUMNS and c not in own_key and (table, c) not in covered]
     assert not missing, f"{table}: {missing} link to another row but are not in the relation table"
 
-
-def test_the_older_tables_are_the_observation_tables():
-    assert OLDER and all(t.endswith(("_observations", "_observations_text")) for t in OLDER)

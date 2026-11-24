@@ -657,13 +657,14 @@ hurting the machine is not.
 | `metadata` | Sessions, tokens, cost, timings, tool names and sizes, with no prompt or response text |
 | `off` | No history capture; live runtime data remains available |
 
-Kusto retention policies, set per class of data, control how long data is kept. `[storage.retention]` in the config file sets the period of a class (`"24h"` or `"365d"`; a bare number is days). Two classes are short by default:
+Kusto retention policies, set per class of data, control how long data is kept. `[storage.retention]` in the config file sets the period of a class (`"24h"` or `"365d"`; a bare number is days). The text of a tool call, hook call, step, agent or event is kept as long as its figures. One class is short by default:
 
 | Class | Default | What it holds |
 |---|---|---|
-| `tool_content` | 24 hours | Tool call arguments, edit text and result excerpts; hook payloads |
 | `large_payload` | 24 hours | The full text of values larger than `[storage] large_payload_bytes` (default 32768; a preview is kept elsewhere) |
-| all others (`history`, `prompt`, `thinking`, `message`, `text`, `file_text`, `otel`, `metrics`) | 365 days | Sessions, requests and tool calls without text; prompts; thinking; messages; other text; file contents; raw OpenTelemetry data; metric samples and snapshots |
+| all others (`history`, `prompt`, `thinking`, `message`, `text`, `file_text`, `otel`, `metrics`) | 365 days | Sessions, requests, tool calls, steps and agents with their text; prompts; thinking; chat messages; session digests; file contents; raw OpenTelemetry data; metric samples, events, hook calls and snapshots |
+
+An older config file that sets `tool_content` gets one warning and the line is ignored.
 
 `aictl db retention` shows each class and each table with its size. `aictl db retention set CLASS PERIOD` saves a period and applies it to this node's tables (`--all-nodes`: every node's, now). Lowering a period deletes older data and asks first (`--yes` skips the question).
 

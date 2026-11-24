@@ -563,7 +563,7 @@ bags and previously shipped columns remain available. See the [complete generate
 schema](kusto-schema.md#opentelemetry) for the actual column names and types.
 
 The session breakdown reads execution evidence from `session_steps`, with captured
-transcript text in `session_step_text.text` (a Kusto `string`, not JSON).
+transcript text in `session_steps.text` (a Kusto `string`, not JSON; null while text is not kept).
 The local `/api/session-evidence?session_id=...` endpoint also includes matching
 OTel spans. `q` searches a session, `kind=context` selects reported context
 observations, and `step_key` opens the text of one event. List results use short

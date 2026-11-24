@@ -8,6 +8,7 @@ import json
 import time
 from datetime import datetime, timezone
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -20,8 +21,10 @@ from aictl.stores.kusto.client import Result
 from aictl.stores.kusto.tables import (
     RETENTION_CLASSES,
     RETENTION_DEFAULTS,
+    RETIRED_RETENTION_CLASSES,
     TABLE_RETENTION_CLASS,
     TABLES,
+    TEXT_OF,
     format_period,
     parse_period,
     tables_with_retention,
@@ -33,13 +36,21 @@ DAY = 86400
 
 
 class TestClasses:
-    def test_every_class_keeps_a_year_except_tool_content_and_large_payloads(self):
-        assert dict(RETENTION_DEFAULTS) == {**dict.fromkeys(RETENTION_CLASSES, 365 * 24),
-                                            "tool_content": 24, "large_payload": 24}
-        short = {name for name, cls in TABLE_RETENTION_CLASS.items() if cls in ("tool_content", "large_payload")}
-        assert short == {"tool_invocations_text", "tool_invocations_observations_text", "hook_calls_text", "text_payloads"}
+    def test_every_class_keeps_a_year_except_large_payloads(self):
+        assert dict(RETENTION_DEFAULTS) == {**dict.fromkeys(RETENTION_CLASSES, 365 * 24), "large_payload": 24}
+        short = {name for name, cls in TABLE_RETENTION_CLASS.items() if cls == "large_payload"}
+        assert short == {"text_payloads"}
         assert {TABLES[name].retention_literal for name in short} == {"24h"}
         assert {TABLES[name].retention_literal for name in TABLES.keys() - short} == {"365d"}
+
+    def test_the_text_of_a_data_point_is_kept_as_long_as_its_figures(self):
+        assert TEXT_OF.keys() <= TABLES.keys() and set(TEXT_OF.values()) <= TABLES.keys()
+        assert {text: TABLE_RETENTION_CLASS[text] for text in TEXT_OF} == {
+            text: TABLE_RETENTION_CLASS[figures] for text, figures in TEXT_OF.items()}
+        # Every text table named after a figures table is in TEXT_OF.
+        paired = {name for name in TABLES if name.endswith("_text") and name.removesuffix("_text") in TABLES}
+        assert paired | {"tool_invocations_text"} <= TEXT_OF.keys()
+        assert not RETIRED_RETENTION_CLASSES.keys() & RETENTION_DEFAULTS.keys()
 
     def test_every_table_has_exactly_one_class(self):
         assert TABLE_RETENTION_CLASS.keys() == TABLES.keys()
@@ -47,17 +58,17 @@ class TestClasses:
 
     def test_the_large_kinds_of_data_can_be_shortened_on_their_own(self):
         expected = {
-            "session_prompts": "prompt", "session_thinking": "thinking", "tool_invocations_text": "tool_content",
+            "session_prompts": "prompt", "session_thinking": "thinking", "tool_invocations_text": "history",
             "vscode_chat_messages": "message", "file_blobs": "file_text", "session_digests": "text",
             "OTELLogs": "otel", "OTELPayloads": "otel", "OTELTraces": "otel", "OTELMetrics": "otel",
             "system_snapshots": "metrics", "process_snapshots": "metrics", "requests": "history",
             "tool_invocations": "history", "file_write_events": "history", "text_payloads": "large_payload",
         }
         assert {name: TABLE_RETENTION_CLASS[name] for name in expected} == expected
-        shorter = tables_with_retention({"otel": 7 * 24, "thinking": 30 * 24, "tool_content": 12})
+        shorter = tables_with_retention({"otel": 7 * 24, "thinking": 30 * 24, "large_payload": 12})
         assert shorter["OTELPayloads"].retention_literal == "7d" and shorter["session_thinking"].retention_days == 30
-        assert shorter["tool_invocations_text"].retention_literal == "12h"
-        assert shorter["tool_invocations_text"].retention_timespan == "12:00:00"
+        assert shorter["text_payloads"].retention_literal == "12h"
+        assert shorter["text_payloads"].retention_timespan == "12:00:00"
         assert tables_with_retention({"otel": 36})["OTELLogs"].retention_timespan == "1.12:00:00"
         assert shorter["requests"].retention_timespan == "365.00:00:00"
 
@@ -73,7 +84,7 @@ class TestSetting:
     def test_validation(self):
         assert validate_retention({"prompt": "200d", "otel": "1h", "thinking_days": 30}) == {
             "prompt": 4800, "otel": 1, "thinking": 720}
-        with pytest.raises(ValueError, match="unknown setting 'prompts'.*tool_content"):
+        with pytest.raises(ValueError, match="unknown setting 'prompts'.*large_payload"):
             validate_retention({"prompts": "3d"})
         with pytest.raises(ValueError, match="text_days must be a whole number of days"):
             validate_retention({"text_days": "24h"})
@@ -90,13 +101,27 @@ class TestSetting:
         assert load_config().retention == {"otel": 720}
         set_retention_setting("thinking", "30d")
         set_retention_setting("otel", "14d")
-        set_retention_setting("tool_content", "12h")
+        set_retention_setting("large_payload", "12h")
         set_retention_setting("thinking", 60)
         cfg = load_config()
-        assert cfg.retention == {"thinking": 1440, "otel": 336, "tool_content": 12}
+        assert cfg.retention == {"thinking": 1440, "otel": 336, "large_payload": 12}
         assert cfg.retention_by_class()["prompt"] == 8760 and cfg.large_payload_bytes == 32768
         text = path.read_text()
         assert text.count("thinking") == 1 and 'otel = "14d"' in text and "otel_days" not in text and "[logging]" in text
+
+    def test_a_class_of_an_older_aictl_is_ignored_with_one_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setattr("aictl.platforms.IS_WINDOWS", False)
+        path = tmp_path / "aictl" / "config.toml"
+        path.parent.mkdir()
+        path.write_text('[storage.retention]\ntool_content = "24h"\notel = "30d"\n')
+        with caplog.at_level("WARNING"):
+            assert load_config().retention == {"otel": 720}
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1 and "tool_content is ignored" in warnings[0] and "history" in warnings[0]
+        assert validate_retention({"tool_content_days": 1}) == {}
+        with pytest.raises(click.BadParameter):
+            admin.retention_set.params[0].type.convert("tool_content", None, None)
 
     def test_a_bad_setting_is_refused(self, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -172,7 +197,7 @@ def cluster(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("aictl.platforms.IS_WINDOWS", False)
     fake = FakeCluster({"OTELLogs": 8760, "OTELPayloads": 8760, "requests": 8760, "session_thinking": 720,
-                        "tool_invocations_text": 24})
+                        "tool_invocations_text": 24, "text_payloads": 24})
     settings = type("S", (), {"uri": "https://fake/aictl"})()
     monkeypatch.setattr(admin, "_retention_commands", lambda ctx: (settings, fake.mgmt, fake.query))
     return fake
@@ -190,13 +215,15 @@ class TestRetentionCommand:
     def test_show_lists_classes_with_units_tables_sizes_and_differences(self, cluster):
         result = _run()
         assert result.exit_code == 0, result.output
-        assert _line(result.output, "tool_content").split()[1] == "24h"
+        assert _line(result.output, "large_payload").split()[1] == "24h"
+        assert not any(line.strip().startswith("tool_content ") for line in result.output.splitlines())
         assert _line(result.output, "prompt").split()[1] == "365d"
         assert "large_payload_bytes = 32768" in result.output
         line = _line(result.output, "session_thinking")
         assert line.split()[1:4] == ["thinking", "365d", "30d"] and line.endswith("differs")
-        assert _line(result.output, "tool_invocations_text").split()[1:4] == ["tool_content", "24h", "24h"]
-        assert "50.0%" in _line(result.output, "OTELPayloads")  # 4 MB of 8 MB
+        # Tool call text has the period of its calls (class history); a cluster still at 24h differs.
+        assert _line(result.output, "tool_invocations_text").split()[1:4] == ["history", "365d", "24h"]
+        assert "44.4%" in _line(result.output, "OTELPayloads")  # 4 MB of 9 MB
         assert cluster.commands == [kusto_retention.POLICY_QUERY]
         # Table details leave out rows still in the row store: no row count, and the size says what it is.
         assert "TotalRowCount" not in kusto_retention.POLICY_QUERY and "Rows" not in result.output
@@ -218,11 +245,11 @@ class TestRetentionCommand:
         assert not (tmp_path / "aictl" / "config.toml").exists()
 
     def test_lowering_with_yes_applies_in_hours(self, cluster):
-        result = _run("set", "tool_content", "12h", "--yes")
+        result = _run("set", "large_payload", "12h", "--yes")
         assert result.exit_code == 0, result.output
-        assert "['tool_invocations_text'] | where ingestion_time() < ago(12h)" in "\n".join(cluster.commands)
-        assert cluster.commands[-1] == ".alter-merge table ['tool_invocations_text'] policy retention softdelete = 12h"
-        assert cluster.periods["tool_invocations_text"] == 12 and cluster.periods["requests"] == 8760
+        assert "['text_payloads'] | where ingestion_time() < ago(12h)" in "\n".join(cluster.commands)
+        assert cluster.commands[-1] == ".alter-merge table ['text_payloads'] policy retention softdelete = 12h"
+        assert cluster.periods["text_payloads"] == 12 and cluster.periods["requests"] == 8760
 
     def test_bad_values_are_refused(self, cluster):
         assert _run("set", "otel", "0h").exit_code != 0

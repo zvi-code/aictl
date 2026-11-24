@@ -420,8 +420,8 @@ def history(monkeypatch, kusto_store):
         kind="round",
         ts=1600,
         text_status="captured",
+        text="node-b evidence",
     )
-    add("session_step_text", "host-b", "step", step_key="step", session_id=sid, ts=1600, text="node-b evidence")
 
 
     def no_local(*_args, **_kwargs):
@@ -530,8 +530,9 @@ def test_file_fallback_diff_never_uses_a_later_version(kusto_store):
         kusto_store.insert("file_write_events", node_id="host-a", path="/x", ts=ts, session_id="session")
     for node, ts, content in (("host-a", 90, "before"), ("host-a", 110, "selected"), ("host-a", 300, "later"),
                               ("host-b", 190, "other node")):
-        kusto_store.insert("file_history", node_id=node, path="/x", ts=ts)
-        kusto_store.insert("file_history_text", node_id=node, path="/x", ts=ts, content=content)
+        # A revision's content is its blob (file_blobs), read on the node that stored it.
+        kusto_store.insert("file_history", node_id=node, path="/x", ts=ts, blob_hash=f"h-{content}")
+        kusto_store.insert("file_blobs", node_id=node, hash=f"h-{content}", content=content, created_at=ts)
     _, data = file_detail(kusto_store, "/x", now=400.0, since=100, until=200, history=history)
     assert [edit["ts"] for edit in data["edits"]] == [100]
     assert data["diff_as_of"] == 110

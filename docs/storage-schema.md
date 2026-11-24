@@ -30,7 +30,7 @@ session files again. The migrations that layouts 1 to 3 named were removed with 
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 | 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran under, with the reported fields in detail; sessions written before have none. |
 | 6 | yes | | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: such a node is reset. |
-| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. `agents_text` and `session_turns` get a tombstone column `_deleted`. New columns: `requests.api_call_id`, `session_steps.prompt_id`, `turn_request_links.prompt_id`, `session_prompts.prompt_id`, `skill_uses.tool_call_id` and `prompt_id`, `session_commits.basis`, `source_event_id`, `agent_id` and `prompt_id`, `sessions.merged_into` (set on tombstones only); the `request_id` column of `tool_invocations` (`long`, always 0) is dropped. A column cannot change its type in place: a node of layout 6 or older is reset. |
+| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. `agents_text` and `session_turns` get a tombstone column `_deleted`. New columns: `requests.api_call_id`, `session_steps.prompt_id`, `turn_request_links.prompt_id`, `session_prompts.prompt_id`, `skill_uses.tool_call_id` and `prompt_id`, `session_commits.basis`, `source_event_id`, `agent_id` and `prompt_id`, `sessions.merged_into` (set on tombstones only); the `request_id` column of `tool_invocations` (`long`, always 0) is dropped. A column cannot change its type in place: a node of layout 6 or older is reset. The tables that nothing wrote or read back are removed: `tool_invocation_coverage`, `tool_invocation_sizes`, `files_text`, `projects`, and the `*_observations` and `*_observations_text` tables of an older aictl, `file_history_text` and `processes`; a reset drops their node tables and stored functions, and nothing creates them again. One data point is one row: `session_step_text`, `events_text`, `hook_calls_text` and `memory_snapshots_text` are gone; their text is `session_steps.text`, `events.full_detail`, `hook_calls.command`, `output` and `full_payload`, and `memory_snapshots.content`, null while text is not kept. |
 
 ### The `schema_version` registry
 
@@ -270,38 +270,36 @@ resource attributes. A column is null when none of its keys is sent.
 ## Retention classes
 
 Every table belongs to exactly one retention class. `[storage.retention]` sets a period per
-class in hours or days (`tool_content = "24h"`, `prompt = "365d"`; a bare number is days).
+class in hours or days (`large_payload = "24h"`, `prompt = "365d"`; a bare number is days).
 Each node applies the periods to its own physical tables when it starts.
 `aictl db retention` shows each class and table; `aictl db retention set <class> <period>`
 changes one. The defaults:
 
 | class | default | tables |
 |---|---|---|
-| `history` | 365d | `agents`, `agents_observations`, `context_events`, `context_events_observations`, `context_lists`, `file_write_events`, `file_write_events_observations`, `otel_trace_sessions`, `requests`, `requests_observations`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_context_items_observations`, `session_files`, `session_folders`, `session_loaded_files`, `session_loaded_files_observations`, `session_outcomes`, `session_processes`, `session_processes_observations`, `session_sources`, `session_steps`, `session_turns`, `session_usage`, `session_usage_observations`, `sessions`, `sessions_observations`, `skill_uses`, `skill_uses_observations`, `tool_invocation_coverage`, `tool_invocation_sizes`, `tool_invocations`, `tool_invocations_observations`, `turn_request_links` |
-| `prompt` | 365d | `session_prompts`, `session_prompts_observations` |
+| `history` | 365d | `agents`, `agents_text`, `context_events`, `context_lists`, `file_write_events`, `otel_trace_sessions`, `requests`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_files`, `session_folders`, `session_loaded_files`, `session_outcomes`, `session_processes`, `session_sources`, `session_steps`, `session_turns`, `session_usage`, `sessions`, `skill_uses`, `tool_invocations`, `tool_invocations_text`, `turn_request_links` |
+| `prompt` | 365d | `session_prompts` |
 | `thinking` | 365d | `session_thinking` |
-| `message` | 365d | `copilot_session_messages`, `cursor_session_messages`, `session_step_text`, `vscode_chat_messages` |
-| `text` | 365d | `agents_observations_text`, `agents_text`, `events_text`, `session_digests` |
-| `file_text` | 365d | `file_blobs`, `file_history_text`, `files_text`, `memory_snapshots_text` |
+| `message` | 365d | `copilot_session_messages`, `cursor_session_messages`, `vscode_chat_messages` |
+| `text` | 365d | `session_digests` |
+| `file_text` | 365d | `file_blobs` |
 | `otel` | 365d | `OTELLogs`, `OTELMetrics`, `OTELPayloads`, `OTELTraces` |
-| `metrics` | 365d | `data_quality_status`, `datapoint_catalog`, `environment_vars`, `events`, `file_history`, `files`, `hook_calls`, `maintenance_state`, `memory_snapshots`, `metrics`, `path_defs`, `process_defs`, `process_snapshots`, `processes`, `projects`, `schema_version`, `system_snapshots`, `tool_config`, `tool_stats`, `tools` |
-| `tool_content` | 24h | `hook_calls_text`, `tool_invocations_observations_text`, `tool_invocations_text` |
+| `metrics` | 365d | `data_quality_status`, `datapoint_catalog`, `environment_vars`, `events`, `file_history`, `files`, `hook_calls`, `maintenance_state`, `memory_snapshots`, `metrics`, `path_defs`, `process_defs`, `process_snapshots`, `schema_version`, `system_snapshots`, `tool_config`, `tool_stats`, `tools` |
 | `large_payload` | 24h | `text_payloads` |
 
-A table is in a class by name in `tables.py`; otherwise a table that holds text is in
-`text`, a table of what sessions did is in `history`, and the rest is in `metrics`.
+A table is in a class by name in `tables.py`. The text table of a data point
+(`tool_invocations_text`, `agents_text`) has the class of its figures table, so text and
+figures are kept equally long. The text of a step, an event, a hook call or a memory snapshot is
+a column of its own row (`session_steps.text`, `events.full_detail`, `hook_calls.command`,
+`output` and `full_payload`, `memory_snapshots.content`), null while text is not kept. Otherwise a table that holds text is in `text`, a table of what
+sessions did is in `history`, and the rest is in `metrics`. The class `tool_content` of an
+older aictl is gone: a config file that still sets it gets one warning and the line is ignored.
 
 Kusto removes rows by ingestion time, an extent at a time, so a row can live somewhat longer
 than its period. Lowering a period deletes older data and cannot be undone.
 
 What remains after the text expires:
 
-- A tool call keeps its `tool_invocations` row (class `history`): tool and tool name, MCP
-  server and tool, `target_kind` and `target`, command name, URL host, search folder, sizes,
-  error flag, exit code, durations, confirmation, turn, prompt and request keys. Its
-  arguments and result excerpt in `tool_invocations_text` (class `tool_content`) are gone.
-- A hook call keeps its `hook_calls` row (class `metrics`); its command, output and payload
-  in `hook_calls_text` (class `tool_content`) are gone.
 - A large text value keeps its preview and a note in its own table; its full text in
   `text_payloads` (class `large_payload`) is gone.
 - Text older than its class's period is not imported from old session files, while the
@@ -335,13 +333,11 @@ These rules are what the writers enforce (`session_facts.py`, `tool_calls.py`,
 - `tool_invocations.request_key`, `session_thinking.request_key` and
   `turn_request_links.request_key` are the `requests.dedup_key` of the model call.
   `tool_invocations.prompt_id` and `requests.prompt_id` join `session_turns.prompt_id`.
-- A transcript tool call replaces the hook and OTel rows of the same session up to
-  `tool_invocation_coverage.covered_through`; those rows are deleted.
+- A transcript tool call replaces the hook and OTel rows of the same session up to its own
+  time; those rows are deleted.
 - Text tables join their metadata table by key: `tool_invocations_text.dedup_key`,
-  `agents_text` by `session_id` and `agent_id`, `session_step_text.step_key`,
-  `events_text.source_key`, `hook_calls_text.call_id`, `memory_snapshots_text` by
-  `session_id`, `phase` and `path`. `text_payloads` joins by `source_table`, `source_key`
-  and `field`.
+  `agents_text` by `session_id` and `agent_id`. `text_payloads` joins by `source_table`,
+  `source_key` and `field`.
 - A `session_context_items` row whose `name` is `list:` followed by 32 hex digits is a
   pointer: it stands for the items of the `context_lists` rows of the same `node_id` whose
   `list_id` is the rest of the name. Each of those items takes the pointer's `session_id`,
@@ -359,7 +355,8 @@ alone). Join after the dedup of both sides, and ignore `project`: a relation nev
 An empty value on the left means "no link" (for `agent_id`, the main agent). Cardinality is
 left to right: `N:1` many rows refer to one row, `1:1` at most one row on each side, `N:M`
 the right side is not unique (a pid is reused, so add a time condition).
-`sessions.project_path` is the project key itself: `projects` is not written by current code.
+`project_path` is the project key itself (each table's `project` key column holds it); there is no
+table of projects.
 `test/test_storage_relations.py` checks that every column named here exists with the same
 type on both sides, and that every link column of a table is listed here or below.
 
@@ -383,8 +380,6 @@ type on both sides, and that every link column of a table is listed here or belo
 | `tool_invocations` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `tool_invocations` | `request_key` | `requests.dedup_key` | N:1 |
 | `tool_invocations_text` | `dedup_key` | `tool_invocations.dedup_key` | 1:1 |
-| `tool_invocation_sizes` | `dedup_key` | `tool_invocations.dedup_key` | 1:1 |
-| `tool_invocation_coverage` | `session_id` | `sessions.session_id` | 1:1 |
 | `session_steps` | `session_id` | `sessions.session_id` | N:1 |
 | `session_steps` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `session_steps` | `session_id`, `parent_agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
@@ -393,8 +388,6 @@ type on both sides, and that every link column of a table is listed here or belo
 | `session_steps` | `session_id`, `prompt_id` | `session_turns.session_id`, `session_turns.prompt_id` | N:1 |
 | `session_steps` | `round_id` | `requests.api_call_id` | N:1 |
 | `session_steps` | `request_id` | `requests.request_id` | N:1 |
-| `session_step_text` | `step_key` | `session_steps.step_key` | 1:1 |
-| `session_step_text` | `session_id` | `sessions.session_id` | N:1 |
 | `turn_request_links` | `request_key` | `requests.dedup_key` | 1:1 |
 | `turn_request_links` | `session_id` | `sessions.session_id` | N:1 |
 | `turn_request_links` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
@@ -443,19 +436,14 @@ type on both sides, and that every link column of a table is listed here or belo
 | `hook_calls` | `session_id` | `sessions.session_id` | N:1 |
 | `hook_calls` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `hook_calls` | `session_id`, `tool_use_id` | `tool_invocations.session_id`, `tool_invocations.source_event_id` | N:1 |
-| `hook_calls_text` | `call_id` | `hook_calls.call_id` | 1:1 |
 | `events` | `session_id` | `sessions.session_id` | N:1 |
-| `events_text` | `source_key` | `events.source_key` | 1:1 |
 | `metrics` | `session_id` | `sessions.session_id` | N:1 |
 | `file_history` | `session_id` | `sessions.session_id` | N:1 |
 | `file_history` | `session_id`, `agent_id` | `agents.session_id`, `agents.agent_id` | N:1 |
 | `file_history` | `session_id`, `source_event_id` | `context_events.session_id`, `context_events.message_id` | N:1 |
 | `file_history` | `blob_hash` | `file_blobs.hash` | N:1 |
-| `file_history_text` | `path`, `ts` | `file_history.path`, `file_history.ts` | 1:1 |
 | `files` | `blob_hash` | `file_blobs.hash` | N:1 |
-| `files_text` | `path` | `files.path` | 1:1 |
 | `memory_snapshots` | `session_id` | `sessions.session_id` | N:1 |
-| `memory_snapshots_text` | `session_id`, `phase`, `path`, `sha` | `memory_snapshots.session_id`, `memory_snapshots.phase`, `memory_snapshots.path`, `memory_snapshots.sha` | 1:1 |
 | `otel_trace_sessions` | `session_id` | `sessions.session_id` | N:1 |
 | `OTELLogs` | `SessionId` | `sessions.session_id` | N:1 |
 | `OTELLogs` | `SessionId`, `AgentId` | `agents.session_id`, `agents.agent_id` | N:1 |
@@ -487,7 +475,7 @@ Columns named like a link that refer to no stored row, and why:
 | `turn_request_links` | `turn_id` | the same counter as `session_steps.turn_id` |
 | `turn_request_links` | `root_turn_id` | the same counter, of the root session |
 | `OTELPayloads` | `SourceRowKey` | the `RowKey` of the row in `SourceTable`, which names the table |
-| `session_processes` | `pid` | an operating-system pid: `processes` is not written by current code, and a pid is reused, so a process is found only with a time condition |
+| `session_processes` | `pid` | an operating-system pid: no table holds processes, and a pid is reused, so a process is found only with a time condition |
 | `process_snapshots` | `pid` | not a process: a number made from the tool name, one sample series per tool; join on `tool` and time |
 
 The tables under "Observation tables of an older aictl" are not in these lists: no current
@@ -791,7 +779,7 @@ The prompt each subagent was given. Text.
 - Version column: `_v`
 - Tombstone column: `_deleted`
 - Ingestion: `streaming`
-- Retention class: `text` (default 365d)
+- Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`agents`), only while text is kept
 
 | column | type | meaning |
@@ -1199,36 +1187,13 @@ The memory files of a session's project at a phase of the session.
 | `phase` | string | The phase of the session the snapshot was taken at |
 | `path` | string | Path of the memory file |
 | `sha` | string | SHA-256 of the content |
-| `content` | string | Not set here (null): the content is in `memory_snapshots_text` |
+| `content` | string | The file content; null while text is not kept |
 | `ts` | datetime | Time of the snapshot, UTC |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### memory_snapshots_text
-
-The content of the memory files of `memory_snapshots`. Text.
-
-- Key: `project`, `node_id`, `session_id`, `phase`, `path`, `sha`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `file_text` (default 365d)
-- Written by: `session_evidence.py` (`memory`), only while text is kept
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | The session |
-| `phase` | string | The phase |
-| `path` | string | Path of the memory file |
-| `sha` | string | SHA-256 of the content |
-| `content` | string | The file content |
-| `ts` | datetime | Time of the snapshot, UTC |
-| `project` | string | Part of the key. The root of the session's repository |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
 ## Tables: Model calls and tool calls
 
@@ -1349,7 +1314,7 @@ One row per tool call, without its text.
 | `pid` | long | Process id of the AI tool, when known |
 | `is_error` | bool | true when the call failed |
 | `duration_ms` | real | Duration in ms |
-| `source` | string | `transcript`, `copilot-session-store` (a shell command from Copilot's `session-store.db`, for a session with no events file), `hook` or `otel`. A transcript or store row replaces hook and OTel rows of the same session up to `tool_invocation_coverage.covered_through` |
+| `source` | string | `transcript`, `copilot-session-store` (a shell command from Copilot's `session-store.db`, for a session with no events file), `hook` or `otel`. A transcript or store row replaces hook and OTel rows of the same session up to its own time |
 | `source_event_id` | string | The source's own id of the call, for example the `tool_use_id` |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `confirm` | string | "", `auto`, `approved`, `denied` or `pending` |
@@ -1393,8 +1358,8 @@ The text of each tool call: arguments and result excerpt. Text, kept 24 hours by
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
-- Retention class: `tool_content` (default 24h)
-- Written by: `tool_calls.py`, only while text is kept and the call is newer than the `tool_content` period
+- Retention class: `history` (default 365d)
+- Written by: `tool_calls.py`, only while text is kept and the call is newer than the `history` period
 
 | column | type | meaning |
 |---|---|---|
@@ -1403,47 +1368,6 @@ The text of each tool call: arguments and result excerpt. Text, kept 24 hours by
 | `result_summary` | string | An excerpt of the result |
 | `target` | string | Short display text of the call: command, file path or query |
 | `project` | string | Part of the key. As the `tool_invocations` row |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### tool_invocation_coverage
-
-How far the transcript has covered each session's tool calls.
-
-- Key: `project`, `node_id`, `session_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: `tool_calls.py` (`publish_coverage`)
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | The session |
-| `covered_through` | datetime | Time of the newest transcript tool call stored for the session, UTC. Hook and OTel calls up to it are replaced by transcript rows |
-| `project` | string | Part of the key. The session's `project_path` |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### tool_invocation_sizes
-
-Argument and result sizes of tool calls, read again from old transcripts.
-
-- Key: `project`, `node_id`, `dedup_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: `tool_calls.py` (`write_size_fills`)
-
-Kept apart so that a replay cannot overwrite a stored call.
-
-| column | type | meaning |
-|---|---|---|
-| `dedup_key` | string | Joins `tool_invocations.dedup_key` |
-| `input_bytes` | long | Size of the arguments as UTF-8 text |
-| `output_bytes` | long | Size of the result as UTF-8 text |
-| `project` | string | Part of the key. The call's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
@@ -1612,7 +1536,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `role` | string | `user` or `assistant` on a message step |
 | `name` | string | A label: tool, skill, command or agent name; only names that look like identifiers |
 | `phase` | string | Phase of the step, for example `requested`, `started`, `failed`, `applied`, `loaded` |
-| `text_status` | string | "" when the text is in `session_step_text`; `omitted`, `truncated` (only a preview is kept), `expired` or `withheld` (text not kept) |
+| `text_status` | string | "" when the text is in `text`; `omitted`, `truncated` (only a preview is kept), `expired` or `withheld` (text not kept) |
 | `context_tokens` | long | Context tokens reported with the step |
 | `context_limit` | long | Context limit reported with the step |
 | `before_tokens` | long | Tokens before a compaction or truncation |
@@ -1625,29 +1549,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `conversation_tokens` | long | Conversation part of the context |
 | `tool_tokens` | long | Tool part of the context |
 | `prompt_id` | string | The person's turn the step belongs to (Copilot `interactionId`); joins `session_turns.prompt_id` |
-| `project` | string | Part of the key. The step's `project_path` |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
-| `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### session_step_text
-
-The text of session steps. Text.
-
-- Key: `project`, `node_id`, `step_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `message` (default 365d)
-- Written by: `session_facts.py` (`write`), only while text is kept and newer than the `message` period
-
-| column | type | meaning |
-|---|---|---|
-| `step_key` | string | Joins `session_steps.step_key` |
-| `session_id` | string | The session |
-| `ts` | datetime | Time of the step, UTC |
-| `text` | string | The step's text, redacted, at most 32768 characters; a value over `large_payload_bytes` is a preview, see `text_payloads` |
+| `text` | string | The step's text, redacted, at most 32768 characters; a value over `large_payload_bytes` is a preview, see `text_payloads`; null while text is not kept or older than the `history` period |
 | `project` | string | Part of the key. The step's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1663,7 +1565,7 @@ The full text of large text values, in chunks. The row in the value's own table 
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `large_payload` (default 24h)
-- Written by: `session_facts.py` (`spill`), for values over `[storage] large_payload_bytes` (default 32768) in `agents_text`, `events_text`, `session_digests` and `session_step_text`
+- Written by: `session_facts.py` (`spill`), for values over `[storage] large_payload_bytes` (default 32768) in `agents_text`, `events.full_detail`, `session_digests` and `session_steps.text`
 
 | column | type | meaning |
 |---|---|---|
@@ -1766,7 +1668,7 @@ Messages of Cursor conversations. Text.
 
 ### events
 
-The event log: monitor events, hook events and OTel events, without their text.
+The event log: monitor events, hook events and OTel events, with their text in `full_detail` while text is kept.
 
 - Key: `project`, `node_id`, `source_key`
 - Version column: `_v`
@@ -1784,6 +1686,7 @@ The event log: monitor events, hook events and OTel events, without their text.
 | `pid` | long | Process id, when known |
 | `project_path` | string | `project_path`, `cwd` or `project` of the detail |
 | `detail` | dynamic | JSON detail with text removed: text keys become `<key>_chars` lengths, strings over 256 characters too |
+| `full_detail` | dynamic | The JSON detail with its text, when it has text and text is kept; a value over `large_payload_bytes` is a preview, see `text_payloads`; otherwise null |
 | `source_key` | string | Key of the event |
 | `seq` | long | A number from the hash of `source_key` |
 | `project` | string | Part of the key. `project_path` of the event |
@@ -1791,26 +1694,6 @@ The event log: monitor events, hook events and OTel events, without their text.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### events_text
-
-The full detail of events whose detail had text. Text.
-
-- Key: `project`, `node_id`, `source_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `text` (default 365d)
-- Written by: `session_facts.py` (`events`), only while text is kept
-
-| column | type | meaning |
-|---|---|---|
-| `source_key` | string | Joins `events.source_key` |
-| `detail` | dynamic | JSON detail with its text; a value over `large_payload_bytes` is a preview, see `text_payloads` |
-| `project` | string | Part of the key. As the `events` row |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | datetime | Time of the event, UTC |
 
 <a id="version-38-hook-calls"></a>
 
@@ -1847,7 +1730,10 @@ One row per hook call the aictl hook handler reports.
 | `permission_mode` | string | Permission mode |
 | `payload_bytes` | long | Bytes read from stdin |
 | `truncated` | bool | true when the payload was over 16 MiB |
-| `payload` | string | `{}` when the text is kept (the payload is then in `hook_calls_text`); otherwise the payload as JSON with its text removed |
+| `payload` | string | `{}` when the text is kept (the payload is then in `full_payload`); otherwise the payload as JSON with its text removed |
+| `command` | string | The wrapped command; null while text is not kept |
+| `output` | string | The wrapped command's stdout; null while text is not kept |
+| `full_payload` | string | The tool's payload as JSON; null while text is not kept |
 | `wrapped` | bool | true for a user hook run through `aictl hooks wrap` |
 | `command_hash` | string | First 16 hex digits of the SHA-256 of the wrapped command |
 | `exit_code` | long | Exit code of the wrapped command; null when not wrapped |
@@ -1861,28 +1747,6 @@ One row per hook call the aictl hook handler reports.
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### hook_calls_text
-
-The text of hook calls: wrapped command, its output and the payload. Text, kept 24 hours by default.
-
-- Key: `project`, `node_id`, `call_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `tool_content` (default 24h)
-- Written by: `session_facts.py` (`hook`), only while text is kept and newer than the `tool_content` period
-
-| column | type | meaning |
-|---|---|---|
-| `call_id` | string | Joins `hook_calls.call_id` |
-| `command` | string | The wrapped command |
-| `output` | string | The wrapped command's stdout |
-| `payload` | string | The tool's payload as JSON |
-| `project` | string | Part of the key. As the `hook_calls` row |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | datetime | Time of the call, UTC |
 
 ### metrics
 
@@ -1946,7 +1810,7 @@ Host-wide totals and node settings, sampled by the daemon.
 | `capture_mode` | string | The capture mode: `full`, `metadata` or `off` |
 | `ingestion_mode` | string | The configured Kusto ingestion mode |
 | `retention_days` | long | Retention in days of `system_snapshots` as the code defines it by default |
-| `content_retention_days` | long | Retention in days of `session_step_text` as the code defines it by default |
+| `content_retention_days` | long | Retention in days of `session_steps` (its text included) as the code defines it by default |
 | `settings_captured_at` | datetime | Time the settings columns were captured, UTC |
 | `host_cpu_percent` | real | Average CPU percent over all cores of the host |
 | `host_memory_used_mb` | real | Used memory of the host in MB |
@@ -2150,46 +2014,6 @@ A row each time a tracked file has a new version: the file was first seen, its c
 | `lines_removed` | long | Lines removed since the rewind point (Copilot); null when not reported |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
-
-### files_text
-
-Defined for the text of tracked files. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `path`
-- Version column: `_v`
-- Tombstone column: `_deleted`
-- Ingestion: `streaming`
-- Retention class: `file_text` (default 365d)
-- Written by: none in current code
-
-| column | type | meaning |
-|---|---|---|
-| `path` | string | meaning not established: no current aictl code writes this table |
-| `content` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `_deleted` | bool | Tombstone flag: true on a delete row, which carries only the key columns |
-
-### file_history_text
-
-Defined for the text of file history snapshots. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `path`, `ts`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `queued`
-- Retention class: `file_text` (default 365d)
-- Written by: none in current code
-
-| column | type | meaning |
-|---|---|---|
-| `path` | string | meaning not established: no current aictl code writes this table |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `content` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
 ## Tables: OpenTelemetry
 
@@ -2563,59 +2387,6 @@ Defined for the tools aictl knows. No current aictl code writes it.
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 
-### projects
-
-Defined for the projects aictl knows. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `path`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `metrics` (default 365d)
-- Written by: none in current code
-
-| column | type | meaning |
-|---|---|---|
-| `path` | string | meaning not established: no current aictl code writes this table |
-| `name` | string | meaning not established: no current aictl code writes this table |
-| `git_remote` | string | meaning not established: no current aictl code writes this table |
-| `git_branch` | string | meaning not established: no current aictl code writes this table |
-| `first_seen_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `last_seen_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### processes
-
-Defined for AI tool processes. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `source_key`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `metrics` (default 365d)
-- Written by: none in current code
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `pid` | long | meaning not established: no current aictl code writes this table |
-| `tool` | string | meaning not established: no current aictl code writes this table |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `cwd` | string | meaning not established: no current aictl code writes this table |
-| `cmdline` | string | meaning not established: no current aictl code writes this table |
-| `ppid` | long | meaning not established: no current aictl code writes this table |
-| `started_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `ended_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `exit_code` | long | meaning not established: no current aictl code writes this table |
-| `source` | string | meaning not established: no current aictl code writes this table |
-| `meta` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `source_key` | string | meaning not established: no current aictl code writes this table |
-
 ### tool_config
 
 Defined for tool configuration values. No current aictl code writes it.
@@ -2738,604 +2509,3 @@ Defined as a mirror of the process catalog CSV files. No current aictl code writ
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
 | `_deleted` | bool | Tombstone flag: true on a delete row, which carries only the key columns |
-
-## Tables: Observation tables of an older aictl
-
-### requests_observations
-
-Observation rows of `requests` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `dedup_key` | string | meaning not established: no current aictl code writes this table; `requests.dedup_key` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `requests.ts` has the same name; UTC |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `requests.session_id` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `requests.agent_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `requests.tool` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `requests.project_path` has the same name |
-| `pid` | long | meaning not established: no current aictl code writes this table; `requests.pid` has the same name |
-| `model` | string | meaning not established: no current aictl code writes this table; `requests.model` has the same name |
-| `input_tokens` | long | meaning not established: no current aictl code writes this table; `requests.input_tokens` has the same name |
-| `output_tokens` | long | meaning not established: no current aictl code writes this table; `requests.output_tokens` has the same name |
-| `cache_read_tokens` | long | meaning not established: no current aictl code writes this table; `requests.cache_read_tokens` has the same name |
-| `cache_creation_tokens` | long | meaning not established: no current aictl code writes this table; `requests.cache_creation_tokens` has the same name |
-| `cost_usd` | real | meaning not established: no current aictl code writes this table; `requests.cost_usd` has the same name |
-| `duration_ms` | real | meaning not established: no current aictl code writes this table; `requests.duration_ms` has the same name |
-| `finish_reason` | string | meaning not established: no current aictl code writes this table; `requests.finish_reason` has the same name |
-| `is_error` | bool | meaning not established: no current aictl code writes this table; `requests.is_error` has the same name |
-| `error_type` | string | meaning not established: no current aictl code writes this table; `requests.error_type` has the same name |
-| `http_status` | long | meaning not established: no current aictl code writes this table; `requests.http_status` has the same name |
-| `source` | string | meaning not established: no current aictl code writes this table; `requests.source` has the same name |
-| `prompt_id` | string | meaning not established: no current aictl code writes this table; `requests.prompt_id` has the same name |
-| `ttft_ms` | real | meaning not established: no current aictl code writes this table; `requests.ttft_ms` has the same name |
-| `tool_tokens` | long | meaning not established: no current aictl code writes this table; `requests.tool_tokens` has the same name |
-| `max_prompt_tokens` | long | meaning not established: no current aictl code writes this table; `requests.max_prompt_tokens` has the same name |
-| `request_bytes` | long | meaning not established: no current aictl code writes this table; `requests.request_bytes` has the same name |
-| `available_tools` | long | meaning not established: no current aictl code writes this table; `requests.available_tools` has the same name |
-| `source_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### tool_invocations_observations
-
-Observation rows of `tool_invocations` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `dedup_key` | string | meaning not established: no current aictl code writes this table; `tool_invocations.dedup_key` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `tool_invocations.ts` has the same name; UTC |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `tool_invocations.session_id` has the same name |
-| `request_id` | long | meaning not established: no current aictl code writes this table; a column of the same name that `tool_invocations` once had was always 0 |
-| `tool` | string | meaning not established: no current aictl code writes this table; `tool_invocations.tool` has the same name |
-| `tool_name` | string | meaning not established: no current aictl code writes this table; `tool_invocations.tool_name` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `tool_invocations.project_path` has the same name |
-| `pid` | long | meaning not established: no current aictl code writes this table; `tool_invocations.pid` has the same name |
-| `is_error` | bool | meaning not established: no current aictl code writes this table; `tool_invocations.is_error` has the same name |
-| `duration_ms` | real | meaning not established: no current aictl code writes this table; `tool_invocations.duration_ms` has the same name |
-| `source` | string | meaning not established: no current aictl code writes this table; `tool_invocations.source` has the same name |
-| `source_event_id` | string | meaning not established: no current aictl code writes this table; `tool_invocations.source_event_id` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `tool_invocations.agent_id` has the same name |
-| `confirm` | string | meaning not established: no current aictl code writes this table; `tool_invocations.confirm` has the same name |
-| `confirm_wait_ms` | real | meaning not established: no current aictl code writes this table; `tool_invocations.confirm_wait_ms` has the same name |
-| `exit_code` | long | meaning not established: no current aictl code writes this table; `tool_invocations.exit_code` has the same name |
-| `input_bytes` | long | meaning not established: no current aictl code writes this table; `tool_invocations.input_bytes` has the same name |
-| `output_bytes` | long | meaning not established: no current aictl code writes this table; `tool_invocations.output_bytes` has the same name |
-| `source_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### sessions_observations
-
-Observation rows of `sessions` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | meaning not established: no current aictl code writes this table; `sessions.session_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `sessions.tool` has the same name |
-| `pid` | long | meaning not established: no current aictl code writes this table; `sessions.pid` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `sessions.project_path` has the same name |
-| `model` | string | meaning not established: no current aictl code writes this table; `sessions.model` has the same name |
-| `git_branch` | string | meaning not established: no current aictl code writes this table; `sessions.git_branch` has the same name |
-| `git_commit` | string | meaning not established: no current aictl code writes this table; `sessions.git_commit` has the same name |
-| `started_at` | datetime | meaning not established: no current aictl code writes this table; `sessions.started_at` has the same name; UTC |
-| `ended_at` | datetime | meaning not established: no current aictl code writes this table; `sessions.ended_at` has the same name; UTC |
-| `source` | string | meaning not established: no current aictl code writes this table; `sessions.source` has the same name |
-| `input_tokens` | long | meaning not established: no current aictl code writes this table; `sessions.input_tokens` has the same name |
-| `output_tokens` | long | meaning not established: no current aictl code writes this table; `sessions.output_tokens` has the same name |
-| `cache_read_tokens` | long | meaning not established: no current aictl code writes this table; `sessions.cache_read_tokens` has the same name |
-| `cache_creation_tokens` | long | meaning not established: no current aictl code writes this table; `sessions.cache_creation_tokens` has the same name |
-| `cost_usd` | real | meaning not established: no current aictl code writes this table; `sessions.cost_usd` has the same name |
-| `request_count` | long | meaning not established: no current aictl code writes this table; `sessions.request_count` has the same name |
-| `tool_call_count` | long | meaning not established: no current aictl code writes this table; `sessions.tool_call_count` has the same name |
-| `files_modified` | long | meaning not established: no current aictl code writes this table; `sessions.files_modified` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### agents_observations
-
-Observation rows of `agents` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `agents.agent_id` has the same name |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `agents.session_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `agents.tool` has the same name |
-| `model` | string | meaning not established: no current aictl code writes this table; `agents.model` has the same name |
-| `is_sidechain` | bool | meaning not established: no current aictl code writes this table; `agents.is_sidechain` has the same name |
-| `started_at` | datetime | meaning not established: no current aictl code writes this table; `agents.started_at` has the same name; UTC |
-| `ended_at` | datetime | meaning not established: no current aictl code writes this table; `agents.ended_at` has the same name; UTC |
-| `completed` | bool | meaning not established: no current aictl code writes this table; `agents.completed` has the same name |
-| `input_tokens` | long | meaning not established: no current aictl code writes this table; `agents.input_tokens` has the same name |
-| `output_tokens` | long | meaning not established: no current aictl code writes this table; `agents.output_tokens` has the same name |
-| `cache_read_tokens` | long | meaning not established: no current aictl code writes this table; `agents.cache_read_tokens` has the same name |
-| `cache_creation_tokens` | long | meaning not established: no current aictl code writes this table; `agents.cache_creation_tokens` has the same name |
-| `cost_usd` | real | meaning not established: no current aictl code writes this table; `agents.cost_usd` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### session_usage_observations
-
-Observation rows of `session_usage` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | meaning not established: no current aictl code writes this table; `session_usage.session_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `session_usage.tool` has the same name |
-| `source` | string | meaning not established: no current aictl code writes this table; `session_usage.source` has the same name |
-| `quality` | string | meaning not established: no current aictl code writes this table; `session_usage.quality` has the same name |
-| `quality_reason` | string | meaning not established: no current aictl code writes this table; `session_usage.quality_reason` has the same name |
-| `model` | string | meaning not established: no current aictl code writes this table; `session_usage.model` has the same name |
-| `models_json` | string | meaning not established: no current aictl code writes this table; `session_usage.models_json` has the same name |
-| `daily_json` | string | meaning not established: no current aictl code writes this table; `session_usage.daily_json` has the same name |
-| `input_tokens` | long | meaning not established: no current aictl code writes this table; `session_usage.input_tokens` has the same name |
-| `output_tokens` | long | meaning not established: no current aictl code writes this table; `session_usage.output_tokens` has the same name |
-| `cache_read_tokens` | long | meaning not established: no current aictl code writes this table; `session_usage.cache_read_tokens` has the same name |
-| `cache_creation_tokens` | long | meaning not established: no current aictl code writes this table; `session_usage.cache_creation_tokens` has the same name |
-| `request_count` | long | meaning not established: no current aictl code writes this table; `session_usage.request_count` has the same name |
-| `tool_call_count` | long | meaning not established: no current aictl code writes this table; `session_usage.tool_call_count` has the same name |
-| `turn_count` | long | meaning not established: no current aictl code writes this table; `session_usage.turn_count` has the same name |
-| `cost_usd` | real | meaning not established: no current aictl code writes this table; `session_usage.cost_usd` has the same name |
-| `cost_quality` | string | meaning not established: no current aictl code writes this table; `session_usage.cost_quality` has the same name |
-| `cost_reason` | string | meaning not established: no current aictl code writes this table; `session_usage.cost_reason` has the same name |
-| `unpriced_models` | string | meaning not established: no current aictl code writes this table; `session_usage.unpriced_models` has the same name |
-| `billing_unit` | string | meaning not established: no current aictl code writes this table; `session_usage.billing_unit` has the same name |
-| `billing_amount` | real | meaning not established: no current aictl code writes this table; `session_usage.billing_amount` has the same name, in the unit `billing_unit` names |
-| `premium_requests` | real | meaning not established: no current aictl code writes this table; `session_usage.premium_requests` has the same name, in premium request units |
-| `estimated_list_usd` | real | meaning not established: no current aictl code writes this table; `session_usage.estimated_list_usd` has the same name |
-| `started_at` | datetime | meaning not established: no current aictl code writes this table; `session_usage.started_at` has the same name; UTC |
-| `last_activity_at` | datetime | meaning not established: no current aictl code writes this table; `session_usage.last_activity_at` has the same name; UTC |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `session_usage.project_path` has the same name |
-| `updated_at` | datetime | meaning not established: no current aictl code writes this table; `session_usage.updated_at` has the same name; UTC |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### session_processes_observations
-
-Observation rows of `session_processes` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | meaning not established: no current aictl code writes this table; `session_processes.session_id` has the same name |
-| `pid` | long | meaning not established: no current aictl code writes this table; `session_processes.pid` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `session_processes.tool` has the same name |
-| `joined_at` | datetime | meaning not established: no current aictl code writes this table; `session_processes.joined_at` has the same name; UTC |
-| `role` | string | meaning not established: no current aictl code writes this table; `session_processes.role` has the same name |
-| `trace_id` | string | meaning not established: no current aictl code writes this table |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### session_prompts_observations
-
-Observation rows of `session_prompts` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `prompt` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `dedup_key` | string | meaning not established: no current aictl code writes this table; `session_prompts.dedup_key` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `session_prompts.ts` has the same name; UTC |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `session_prompts.session_id` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `session_prompts.agent_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `session_prompts.tool` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `session_prompts.project_path` has the same name |
-| `text` | string | meaning not established: no current aictl code writes this table; `session_prompts.text` has the same name |
-| `prompt_file` | string | meaning not established: no current aictl code writes this table; `session_prompts.prompt_file` has the same name |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### skill_uses_observations
-
-Observation rows of `skill_uses` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `dedup_key` | string | meaning not established: no current aictl code writes this table; `skill_uses.dedup_key` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `skill_uses.ts` has the same name; UTC |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `skill_uses.session_id` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `skill_uses.agent_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `skill_uses.tool` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `skill_uses.project_path` has the same name |
-| `name` | string | meaning not established: no current aictl code writes this table; `skill_uses.name` has the same name |
-| `trigger` | string | meaning not established: no current aictl code writes this table; `skill_uses.trigger` has the same name |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### file_write_events_observations
-
-Observation rows of `file_write_events` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `dedup_key` | string | meaning not established: no current aictl code writes this table; `file_write_events.dedup_key` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `file_write_events.ts` has the same name; UTC |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `file_write_events.session_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `file_write_events.tool` has the same name |
-| `tool_name` | string | meaning not established: no current aictl code writes this table; `file_write_events.tool_name` has the same name |
-| `operation` | string | meaning not established: no current aictl code writes this table; `file_write_events.operation` has the same name |
-| `path` | string | meaning not established: no current aictl code writes this table; `file_write_events.path` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table; `file_write_events.project_path` has the same name |
-| `pid` | long | meaning not established: no current aictl code writes this table; `file_write_events.pid` has the same name |
-| `source_event_kind` | string | meaning not established: no current aictl code writes this table; `file_write_events.source_event_kind` has the same name |
-| `source_event_id` | string | meaning not established: no current aictl code writes this table; `file_write_events.source_event_id` has the same name |
-| `content_hash` | string | meaning not established: no current aictl code writes this table; `file_write_events.content_hash` has the same name |
-| `size_bytes` | long | meaning not established: no current aictl code writes this table; `file_write_events.size_bytes` has the same name |
-| `detail` | string | meaning not established: no current aictl code writes this table; `file_write_events.detail` has the same name |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### context_events_observations
-
-Observation rows of `context_events` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `id` | long | meaning not established: no current aictl code writes this table |
-| `dedup_key` | string | meaning not established: no current aictl code writes this table; `context_events.dedup_key` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `context_events.ts` has the same name; UTC |
-| `session_id` | string | meaning not established: no current aictl code writes this table; `context_events.session_id` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `context_events.agent_id` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `context_events.tool` has the same name |
-| `kind` | string | meaning not established: no current aictl code writes this table; `context_events.kind` has the same name |
-| `trigger` | string | meaning not established: no current aictl code writes this table; `context_events.trigger` has the same name |
-| `before_tokens` | long | meaning not established: no current aictl code writes this table; `context_events.before_tokens` has the same name |
-| `after_tokens` | long | meaning not established: no current aictl code writes this table; `context_events.after_tokens` has the same name |
-| `duration_ms` | real | meaning not established: no current aictl code writes this table; `context_events.duration_ms` has the same name |
-| `current_tokens` | long | meaning not established: no current aictl code writes this table; `context_events.current_tokens` has the same name |
-| `system_tokens` | long | meaning not established: no current aictl code writes this table; `context_events.system_tokens` has the same name |
-| `conversation_tokens` | long | meaning not established: no current aictl code writes this table; `context_events.conversation_tokens` has the same name |
-| `tool_tokens` | long | meaning not established: no current aictl code writes this table; `context_events.tool_tokens` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### session_loaded_files_observations
-
-Observation rows of `session_loaded_files` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.session_id` has the same name |
-| `path` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.path` has the same name |
-| `how` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.how` has the same name |
-| `detail` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.detail` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `session_loaded_files.ts` has the same name; UTC |
-| `tool` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.tool` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.agent_id` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### session_context_items_observations
-
-Observation rows of `session_context_items` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `history` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `session_id` | string | meaning not established: no current aictl code writes this table; `session_context_items.session_id` has the same name |
-| `agent_id` | string | meaning not established: no current aictl code writes this table; `session_context_items.agent_id` has the same name |
-| `kind` | string | meaning not established: no current aictl code writes this table; `session_context_items.kind` has the same name |
-| `name` | string | meaning not established: no current aictl code writes this table; `session_context_items.name` has the same name |
-| `ts` | datetime | meaning not established: no current aictl code writes this table; `session_context_items.ts` has the same name; UTC |
-| `path` | string | meaning not established: no current aictl code writes this table; `session_context_items.path` has the same name |
-| `chars` | long | meaning not established: no current aictl code writes this table; `session_context_items.chars` has the same name |
-| `tokens` | long | meaning not established: no current aictl code writes this table; `session_context_items.tokens` has the same name |
-| `estimated` | long | meaning not established: no current aictl code writes this table; `session_context_items.estimated` has the same name |
-| `removed` | long | meaning not established: no current aictl code writes this table; `session_context_items.removed` has the same name |
-| `tool` | string | meaning not established: no current aictl code writes this table; `session_context_items.tool` has the same name |
-| `project_path` | string | meaning not established: no current aictl code writes this table |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `observation_source` | string | meaning not established: no current aictl code writes this table |
-| `source_entity_id` | string | meaning not established: no current aictl code writes this table |
-| `producer_id` | string | meaning not established: no current aictl code writes this table |
-| `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
-| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
-| `presence` | string | meaning not established: no current aictl code writes this table |
-| `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
-| `serialized_fields` | string | meaning not established: no current aictl code writes this table |
-| `observation_operation` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### tool_invocations_observations_text
-
-Observation rows of `tool_invocations` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `tool_content` (default 24h)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `input` | string | meaning not established: no current aictl code writes this table; `tool_invocations_text.input` has the same name |
-| `result_summary` | string | meaning not established: no current aictl code writes this table; `tool_invocations_text.result_summary` has the same name |
-| `target` | string | meaning not established: no current aictl code writes this table; `tool_invocations_text.target` has the same name |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-
-### agents_observations_text
-
-Observation rows of `agents` from an older aictl. No current aictl code writes it.
-
-- Key: `project`, `node_id`, `observation_id`
-- Version column: `_v`
-- Tombstone column: none
-- Ingestion: `streaming`
-- Retention class: `text` (default 365d)
-- Written by: none in current code
-
-A node creates this table only when the database already has it. Its stored function is dropped when no node has the table. Reports count a database that has any `*_observations` table as holding unresolved facts.
-
-| column | type | meaning |
-|---|---|---|
-| `task` | string | meaning not established: no current aictl code writes this table; `agents_text.task` has the same name |
-| `observation_id` | string | meaning not established: no current aictl code writes this table |
-| `project` | string | Part of the key. No current writer sets it |
-| `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
-| `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |

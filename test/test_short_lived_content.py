@@ -45,11 +45,11 @@ class TestLargePayloads:
         big = "line of a long step\n" * 20_000
         step = SessionStepRow(step_key="k1", ts=NOW - 60, session_id=SESSION, kind="tool_result", text=big)
         facts.write(CallFacts(steps=[step]))
-        stored = one(table(facts, "session_step_text"))["text"]
+        stored = one(table(facts, "session_steps"))["text"]
         assert stored.startswith("line of a long step") and len(stored) < 5000
         assert f"preview of {len(big)} bytes" in stored and "kept 24 hours" in stored
         chunks = sorted(table(facts, "text_payloads"), key=lambda r: r["chunk_no"])
-        assert {r["source_table"] for r in chunks} == {"session_step_text"}
+        assert {r["source_table"] for r in chunks} == {"session_steps"}
         assert len(chunks) == chunks[0]["chunk_count"] > 1
         assert "".join(r["text"] for r in chunks) == big and chunks[0]["total_bytes"] == len(big)
 
@@ -69,7 +69,7 @@ class TestLargePayloads:
         facts = _facts()
         step = SessionStepRow(step_key="k1", ts=NOW - 60, session_id=SESSION, kind="tool_result", text="z" * 3000)
         facts.write(CallFacts(steps=[step]))
-        assert "preview of 3000 bytes" in one(table(facts, "session_step_text"))["text"]
+        assert "preview of 3000 bytes" in one(table(facts, "session_steps"))["text"]
         assert one(table(facts, "text_payloads"))["source_key"] == f"{SESSION}/k1"
 
     def test_an_old_large_value_writes_its_preview_only(self):

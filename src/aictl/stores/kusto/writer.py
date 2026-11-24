@@ -10,15 +10,15 @@ import threading
 import time
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from ..base import InvalidRowError, Row, StoreError
 from .client import next_version, retrying, schema_cache_behind
 from .current import untimed_tombstone
-from .ingest import RowIngester, json_line
-from .maintenance import TRIM_TIMESTAMPS
+from .ingest import RowIngester, json_line, sound_line
+from .maintenance import TEXT_COLUMNS, TRIM_TIMESTAMPS
 from .schema import LEGACY_COLUMNS
 from .tables import TABLES, IngestionMode, Table
 
@@ -32,6 +32,15 @@ class _Pending:
     line: str
     size: int
     text_ts: float | None = None
+
+
+def _without_text(line: str, columns: Iterable[str]) -> str:
+    """A queued row with its text columns emptied (its text is older than the trim watermark)."""
+    row = json.loads(line)
+    for column in columns:
+        if column in row:
+            row[column] = None
+    return sound_line(json.dumps(row, ensure_ascii=True, separators=(",", ":")))
 
 
 @dataclass
@@ -175,7 +184,7 @@ class KustoWriter:
                     return
                 line = self._encode(name, table, row, columns, input_columns, delete=delete)
                 ts = None
-                if spec := TRIM_TIMESTAMPS.get(name):
+                if spec := TRIM_TIMESTAMPS.get(name) or TEXT_COLUMNS.get(name):
                     ts = row.get(spec[0])
                     if isinstance(ts, str):
                         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -297,6 +306,10 @@ class KustoWriter:
                 if name in TRIM_TIMESTAMPS:
                     before = self._trim_before()
                     sent = [item for item in batch if item.text_ts is None or item.text_ts >= before]
+                elif name in TEXT_COLUMNS:
+                    before = self._trim_before()
+                    sent = [item if item.text_ts is None or item.text_ts >= before else
+                            replace(item, line=_without_text(item.line, TEXT_COLUMNS[name][1])) for item in batch]
                 if sent:
                     with self._lock:
                         queue.requests += 1

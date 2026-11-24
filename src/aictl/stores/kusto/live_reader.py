@@ -39,7 +39,7 @@ NODE = "node_id"
 # one of them alone does not make the feed poll fast. It is still published like any other change.
 BACKGROUND_TABLES = frozenset({
     "metrics", "OTELMetrics", "system_snapshots", "process_snapshots", "data_quality_status",
-    "datapoint_catalog", "tool_invocation_coverage", "maintenance_state", "schema_version",
+    "datapoint_catalog", "maintenance_state", "schema_version",
 })
 
 

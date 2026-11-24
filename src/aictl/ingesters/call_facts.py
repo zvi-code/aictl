@@ -63,7 +63,8 @@ from ._common import claude_line_finishes, coerce_ts, decode_file_uri, project_r
 from .session_outcomes import TRANSCRIPT as TRANSCRIPT_PART
 from .session_outcomes import _add_unique, digest_text, file_key
 from .transcript_steps import CopilotSteps, redact_step_text
-from .transcript_steps import _api_id as step_api_id, _label as step_label
+from .transcript_steps import _api_id as step_api_id
+from .transcript_steps import _label as step_label
 
 if TYPE_CHECKING:
     from .. import records as fact_rows
@@ -564,8 +565,6 @@ class FactBuffer:
             self.flush(retry=False)
 
     def flush(self, *, retry: bool = True) -> None:
-        if self.tool_calls is not None:
-            self.tool_calls.publish_coverage()
         if not len(self) or (self.write_error is not None and not retry):
             return
         self._take_marked()

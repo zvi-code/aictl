@@ -588,7 +588,7 @@ def test_api_calls_endpoint(otel_server, kusto_store):
     )
 
     for _, table, rows in writer.operations:
-        if table in {"events", "events_text"}:
+        if table == "events":
             for row in rows:
                 kusto_store.insert(table, **row)
     data = _get_json(f"{base}/api/api-calls?since={NOW - 60}&until={NOW + 1}")

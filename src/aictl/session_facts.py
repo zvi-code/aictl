@@ -20,7 +20,7 @@ from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
 from .stores.base import InvalidRowError
-from .stores.kusto.tables import TABLES
+from .stores.kusto.tables import TABLE_RETENTION_CLASS, TABLES
 from .tool_calls import call_key
 
 _LIMIT = 20_000
@@ -69,7 +69,7 @@ class SessionFacts:
         # Hours each retention class is kept (stores.kusto.tables.TABLE_RETENTION_CLASS): text older than its
         # class keeps is not imported. Without a configuration, text classes keep content_days.
         self.retention = {**dict.fromkeys(("text", "message", "file_text"), content_days * 24),
-                          "prompt": 365 * 24, "thinking": 365 * 24, "tool_content": 24, "large_payload": 24,
+                          "prompt": 365 * 24, "thinking": 365 * 24, "large_payload": 24,
                           **(retention or {})}
         self.large_payload_bytes = large_payload_bytes
         self.trim_before = trim_before
@@ -638,7 +638,7 @@ class SessionFacts:
                     staged[key] = (data, project)
                     staged.move_to_end(key)
                 ts = row.started_at or row.ended_at or time.time()
-                if task and self.allows_text(ts):
+                if task and self.allows_text(ts, TABLE_RETENTION_CLASS["agents_text"]):
                     task = self.spill("agents_text", f"{row.session_id}/{row.agent_id}", "task", task, ts=ts,
                                       session_id=row.session_id, project=project)
                     text_row = dict(session_id=row.session_id, agent_id=row.agent_id, task=task, ts=ts)
@@ -698,9 +698,9 @@ class SessionFacts:
                                                         for sid in session_ids])
 
     def events(self, rows, *, source: str, source_key: str = "") -> None:
-        output, text = [], []
+        output = []
         keep = self.keeps_text()
-        floor = self.text_floor()
+        floor = self.text_floor(TABLE_RETENTION_CLASS["events"])
         for row in rows:
             if row.kind in ("otel:health", "otel:proc_stats"):
                 with self._lock:
@@ -724,13 +724,12 @@ class SessionFacts:
             output.append(dict(ts=row.ts, tool=row.tool, kind=row.kind, detail=_json(metadata),
                                session_id=row.session_id, pid=row.pid, project_path=project, project=project,
                                source_key=key, seq=int(call_key(key), 16) & (2**63 - 1)))
+            # One event, one row: its whole detail with the text, while text is kept.
             if keep and row.ts >= floor and detail != metadata:
-                text.append(dict(project=project, source_key=key, ts=row.ts, detail=self.spill(
-                    "events_text", key, "detail", _json(detail), ts=row.ts, session_id=row.session_id, project=project)))
+                output[-1]["full_detail"] = self.spill(
+                    "events", key, "full_detail", _json(detail), ts=row.ts, session_id=row.session_id, project=project)
         if output:
             self.writer.append("events", output)
-            if text:
-                self.writer.append("events_text", text)
 
     def trace_links(self, links) -> None:
         if links:
@@ -741,13 +740,12 @@ class SessionFacts:
         data = asdict(row)
         command, output, payload = (data.pop(k) for k in ("command", "output", "payload"))
         project = row.project_path
-        keep = self.allows_text(row.ts or row.received_at, "tool_content")
+        keep = self.allows_text(row.ts or row.received_at, TABLE_RETENTION_CLASS["hook_calls"])
+        # One hook call, one row: its command, output and whole payload while text is kept.
         self.writer.upsert("hook_calls", [dict(data, project=project,
-                                              payload="{}" if keep else _json(strip_event_text(payload)))])
-        if keep:
-            self.writer.upsert("hook_calls_text", [dict(project=project, call_id=row.call_id,
-                                                        command=command, output=output, payload=_json(payload),
-                                                        ts=row.ts or row.received_at)])
+                                              payload="{}" if keep else _json(strip_event_text(payload)),
+                                              command=command if keep else None, output=output if keep else None,
+                                              full_payload=_json(payload) if keep else None)])
 
     def file_writes(self, rows, *, transcript: bool) -> None:
         """Store write events. A hook and the transcript report one edit under one key (see
@@ -866,24 +864,24 @@ class SessionFacts:
                         count -= 1
                         log.warning("A %s row is left out, it can never be stored: %s", table, exc)
         if only is None and facts.steps:
-            metadata, text = [], []
-            floor = self.text_floor("message")
+            # One step, one row: its text is a column, null while text is not kept.
+            metadata = []
+            floor = self.text_floor(TABLE_RETENTION_CLASS["session_steps"])
             for step in facts.steps:
                 data = asdict(step)
                 content = data.pop("text")
                 data["project"] = step.project_path
+                data["text"] = None
                 if content and step.ts >= floor and self.keeps_text():
-                    stored = self.spill("session_step_text", step.step_key, "text", content, ts=step.ts,
+                    stored = self.spill("session_steps", step.step_key, "text", content, ts=step.ts,
                                         session_id=step.session_id, project=step.project_path)
-                    if stored is not content:  # only a preview stays in session_step_text
+                    if stored is not content:  # only a preview stays in session_steps
                         data["text_status"] = "truncated"
-                    text.append(dict(project=step.project_path, step_key=step.step_key,
-                                     session_id=step.session_id, ts=step.ts, text=stored))
+                    data["text"] = stored
                 elif content:
                     data["text_status"] = "expired" if self.keeps_text() else "withheld"
                 metadata.append(data)
             self.writer.append("session_steps", metadata)
-            self.writer.append("session_step_text", text)
         pace = getattr(self.writer, "pace", None)
         if callable(pace):
             pace()

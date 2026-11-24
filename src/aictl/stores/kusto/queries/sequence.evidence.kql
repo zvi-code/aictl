@@ -3,7 +3,9 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', requeste
     evidence_filters:dynamic=dynamic({}), search_terms:dynamic=dynamic([]), context_group:string='',
     page_offset:long=0, include_detail:bool=false, include_spans:bool=false, row_limit:long);
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let session_step_text_secs = session_step_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// A step's text is a column of its own row (null while text is not kept).
+let session_step_text_secs = session_steps | where isnotnull(['text'])
+    | project step_key, session_id, ts = (ts - datetime(1970-01-01)) / 1s, ['text'], ['project'], node_id, _v;
 let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
 let retained = session_step_text_secs
     | where keep_text and session_id == requested_session and (all_nodes or node_id == requested_node)

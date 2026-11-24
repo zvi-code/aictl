@@ -163,7 +163,7 @@ TRAFFIC_LABELS = {
 }
 
 SESSION_TABLES = frozenset({
-    "sessions", "requests", "tool_invocations", "session_prompts", "session_steps", "session_step_text",
+    "sessions", "requests", "tool_invocations", "session_prompts", "session_steps",
     "turn_request_links", "session_usage", "skill_uses", "file_write_events", "context_events", "agents",
     "session_commits", "session_processes", "session_folders", "session_artifacts", "session_sources", "session_loaded_files",
     "session_context_items", "context_lists", "events", "hook_calls", "session_turns", "session_files", "session_outcomes",
@@ -171,14 +171,14 @@ SESSION_TABLES = frozenset({
 })
 
 
-_OBSERVATION_SUFFIXES = ("_observations_text", "_observations", "_text")
+_TEXT_SUFFIX = "_text"
 _SESSION_EXTRA = frozenset({
     "copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_attribution",
-    "tool_invocation_coverage", "tool_invocation_sizes", "text_payloads",
+    "text_payloads",
 })
-_MONITORING = frozenset({"metrics", "system_snapshots", "process_snapshots", "tool_stats", "processes"})
+_MONITORING = frozenset({"metrics", "system_snapshots", "process_snapshots", "tool_stats"})
 _FILES_CONFIG = frozenset({
-    "memory_snapshots", "tool_config", "environment_vars", "path_defs", "process_defs", "datapoint_catalog", "tools", "projects",
+    "memory_snapshots", "tool_config", "environment_vars", "path_defs", "process_defs", "datapoint_catalog", "tools",
 })
 _BOOKKEEPING = frozenset({"schema_version", "maintenance_state", "data_quality_status"})
 
@@ -200,7 +200,7 @@ def traffic_group(table: str) -> str:
         return "otel"
     if table in _BOOKKEEPING:
         return "store"
-    candidates = [table, *(table.removesuffix(suffix) for suffix in _OBSERVATION_SUFFIXES if table.endswith(suffix))]
+    candidates = [table, table.removesuffix(_TEXT_SUFFIX)]
     for name in candidates:
         if name == "hook_calls":
             return "hooks"

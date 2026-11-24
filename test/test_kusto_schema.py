@@ -19,7 +19,7 @@ def test_schema_includes_all_otlp_wire_columns():
 
 @pytest.mark.parametrize("existing", [None, "requests", "requests_observations", CURRENT_STORE])
 def test_schema_marks_only_a_fresh_report_layout(existing):
-    tables = {name: TABLES[name] for name in ("requests", "tool_invocations", "requests_observations")}
+    tables = {name: TABLES[name] for name in ("requests", "tool_invocations")}
     columns = [("TableName", "string"), ("ColumnName", "string"), ("ColumnType", "string")]
 
     def mgmt(command):
@@ -33,9 +33,33 @@ def test_schema_marks_only_a_fresh_report_layout(existing):
     ensure_schema(client, "test", tables=tables, modes=dict.fromkeys(tables, "queued"))
     creates = [c for c in client.commands if c.startswith(".create-merge table")]
     assert any(CURRENT_STORE in command for command in creates) == (existing is None)
-    # Each node writes its own tables (nodes.py); an observation companion only where one existed.
+    # Each node writes its own tables (nodes.py); a retired observation table is never created, not even where one exists.
     key = N.node_key("")
-    assert any(f"['requests_observations__{key}']" in command for command in creates) == (
-        existing == "requests_observations")
+    assert not any("_observations" in command for command in creates)
     assert any(f"['requests__{key}']" in command for command in creates)
     assert any(f"['tool_invocations__{key}']" in command for command in creates)
+
+
+def test_a_retired_table_is_owned_so_the_reset_drops_it_and_its_function_goes():
+    from aictl.stores.kusto.schema import RETIRED_TABLES, LayoutState, function_commands, is_owned, logical_tables
+
+    assert RETIRED_TABLES and not RETIRED_TABLES & TABLES.keys()
+    key = N.node_key("host-a")
+    for name in RETIRED_TABLES:
+        assert is_owned(N.physical(name, key)) and is_owned(name)
+    state = LayoutState(have={}, details={}, counts={}, stored=None, has_data=False,
+                        functions={"files_text": "files_text__x", "tool_invocation_coverage": "y"})
+    commands = function_commands(state, logical_tables())
+    assert ".drop function ['files_text'] ifexists" in commands
+    assert ".drop function ['tool_invocation_coverage'] ifexists" in commands
+    assert not any("create" in c and any(f"['{name}']" in c for name in RETIRED_TABLES) for c in commands)
+
+
+def test_a_trim_never_deletes_a_row_that_also_holds_figures():
+    from aictl.stores.kusto.maintenance import TEXT_COLUMNS, TRIM_TIMESTAMPS
+
+    # A trim deletes whole rows of TRIM_TIMESTAMPS tables; a row of one data point only loses its text.
+    assert TEXT_COLUMNS and not TEXT_COLUMNS.keys() & TRIM_TIMESTAMPS.keys()
+    for table, (time_column, text_columns) in TEXT_COLUMNS.items():
+        columns = dict(TABLES[table].columns)
+        assert columns[time_column] == "datetime" and set(text_columns) <= columns.keys(), table

@@ -798,7 +798,7 @@ class CollectionService:
                 "node_source": settings.node_id_source,
                 "ingestion_mode": settings.ingestion,
                 "retention_days": TABLES["system_snapshots"].retention_days,
-                "content_retention_days": TABLES["session_step_text"].retention_days,
+                "content_retention_days": TABLES["session_steps"].retention_days,
             }
 
             def flush_history():
@@ -1394,9 +1394,12 @@ class SnapshotStore:
     ) -> None:
         self._state = SnapshotState()
         self.history_store = history_store or stores.Store()
-        # Tool content older than its retention class keeps is not imported (24 hours by default).
+        # Tool content older than its retention class keeps is not imported (the class of tool_invocations).
+        from .stores.kusto.tables import TABLE_RETENTION_CLASS
+
+        tool_text = TABLE_RETENTION_CLASS["tool_invocations_text"]
         self.tool_calls = ToolCalls(self.history_store.writer, keeps_text=keeps_text,
-                                    text_floor=lambda: self.session_facts.text_floor("tool_content"))
+                                    text_floor=lambda: self.session_facts.text_floor(tool_text))
         self.restart_dir = restart_dir
         def state(name: str):
             return StateFile(restart_dir / f"{name}.json") if restart_dir is not None else None

@@ -48,9 +48,15 @@ GPT = "gpt-5"
 def _insert(conn, table: str, **values) -> None:
     text_fields = {
         "agents": ("task",), "tool_invocations": ("input", "result_summary", "target"),
-        "file_history": ("content",), "files": ("content",),
     }.get(table, ())
     text = {key: values.pop(key) for key in text_fields if key in values}
+    if table == "files":
+        values.pop("content", None)  # no table holds a file's current content
+    if table == "file_history" and "content" in values:
+        # A revision's content is a blob (file_blobs) that the revision names by hash.
+        content = values.pop("content")
+        values["blob_hash"] = digest = f"blob:{values.get('path')}:{values.get('ts')}"
+        conn.facts.insert("file_blobs", hash=digest, content=content, created_at=values.get("ts", 0))
     # The writer files a row under its project_path, or its session's (session_facts.py); the project
     # filter reads that key.
     if "project" not in values and "project" in dict(TABLES[table].columns):
@@ -63,8 +69,7 @@ def _insert(conn, table: str, **values) -> None:
     if text:
         # agents_text is keyed by (session, agent), as session_facts writes it: an agent id is unique
         # only within its session.
-        fields = ("session_id", "agent_id") if table == "agents" else ("dedup_key",) if table == "tool_invocations" else (
-            ("path", "ts") if table == "file_history" else ("path",))
+        fields = ("session_id", "agent_id") if table == "agents" else ("dedup_key",)
         retained = {k: row[k] for k in fields}
         if table == "agents":
             retained["ts"] = row.get("started_at", 0)
@@ -3803,8 +3808,7 @@ class TestAgentFlow:
             ("d", t + 2, "agent_prompt", "user", "Internal assignment"),
         ):
             db.insert("session_steps", step_key=key, ts=ts, session_id="flow-s", kind=kind,
-                      source=f"{role}.message", role=role, text_status="captured")
-            db.insert("session_step_text", step_key=key, ts=ts, session_id="flow-s", text=text)
+                      source=f"{role}.message", role=role, text_status="captured", text=text)
         _, result = flow_projection.agent_flow(db, "flow-s", now=NOW, category="prompts", legacy_flow=_no_legacy)
         assert [(r["step_key"], r["message"]) for r in result["turns"]] == [("p", "Actual question about Kusto")]
         db.capture = "metadata"
@@ -3817,8 +3821,7 @@ class TestAgentFlow:
         _seed_flow(db, NOW - DAY)
         for key, ts, role, text in (("sp", t, "user", "Question from the store"), ("sa", t + 1, "assistant", "Reply from the store")):
             db.insert("session_steps", step_key=key, ts=ts, session_id="flow-s", kind="message",
-                      source="copilot-session-store", role=role, text_status="captured")
-            db.insert("session_step_text", step_key=key, ts=ts, session_id="flow-s", text=text)
+                      source="copilot-session-store", role=role, text_status="captured", text=text)
         _, flow = flow_projection.agent_flow(db, "flow-s", now=NOW, legacy_flow=_no_legacy)
         assert [e["message"] for e in flow["turns"] if e["type"] == "user_message"] == ["Question from the store"]
         assert [e["response"] for e in flow["turns"] if e["type"] == "api_response"] == ["Reply from the store"]
