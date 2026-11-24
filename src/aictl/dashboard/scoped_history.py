@@ -89,6 +89,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
         memory_views,
         projection_utils,
         session_details,
+        thinking,
     )
     from .session_record import _reader_search, finder_query
 
@@ -233,6 +234,10 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 raise ScopeError("A fleet file detail requires a node-qualified record")
             return result(*artifact_details.file_detail(db, name, now, since=lo, until=hi,
                                              history=HistoryScope(reader, node, qualified=True)))
+        if path in thinking.ROUTES:
+            node, raw = parse_identity(one("session_id"), scope)
+            return result(*thinking.handle(path, one, db, HistoryScope(reader, node, qualified=True), now, reported=True,
+                                           session=identity(node, raw)))
         if path in memory_views.ROUTES:
             if endpoint.startswith("agent/"):
                 node, raw = parse_identity(one("id"), scope)

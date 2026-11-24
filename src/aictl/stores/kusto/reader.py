@@ -164,6 +164,10 @@ _VIEWS = {
     "skills.window": (f"{_TIME} session_keys after_row", f"{_BOARD_ID} name ts"),
     "prompts.titles": ("all_nodes requested_node session_keys", f"{_BOARD_ID} text"),
     "board.search_hits": (f"{_TIME} session_keys search_text extended", "node_id session_id"),
+    "thinking.blocks": (
+        "all_nodes requested_node requested_session call_ts call_agent block_key keep_text text_floor",
+        "node_id thinking_key request_key ts agent_id model turn_index block_index chars tool text",
+    ),
     "prompts.detail": (
         "all_nodes requested_node requested_session prompt_ts open_end",
         "text prompt_file project_path input_tokens output_tokens cache_read_tokens cache_creation_tokens "
@@ -409,6 +413,7 @@ _PARAMETER_TYPES = {
     "end_grace": float,
     "text_floor": float,
     "prompt_ts": float,
+    "call_ts": float,
     "open_end": float,
     "node_limit": int,
     "session_limit": int,

@@ -950,6 +950,9 @@ The visible thinking text of model calls, one row per block. Text.
 - Ingestion: `streaming`
 - Retention class: `thinking` (default 365d)
 - Written by: `session_facts.py` (`write`), from `ingesters/call_facts.py`, only while text is kept and newer than the `thinking` period
+- Read by: the view `thinking.blocks`, the blocks of one model call that the session flow opens (the session's
+  `requests` row at the call's time gives the `request_key`). A block with an empty `request_key` belongs to no
+  known call and is not shown under one.
 
 | column | type | meaning |
 |---|---|---|

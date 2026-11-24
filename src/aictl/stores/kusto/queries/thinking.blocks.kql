@@ -1,0 +1,39 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
+    call_ts:real=0.0, call_agent:string='', block_key:string='', keep_text:bool=true, text_floor:real=0.0, row_limit:long);
+// The thinking blocks of one model call of a session, in block order: the call is the session's requests row
+// of the agent at call_ts (seconds, as the flow shows it), and its blocks are the session_thinking rows whose
+// request_key is that row's dedup_key. With block_key, the one block of the session with that thinking_key.
+// text is '' when it is not kept (capture without text, or older than text_floor); chars stays the stored length.
+let call_time = unixtime_seconds_todatetime(min_of(max_of(call_ts, 0.0), 32503680000.0));
+let wanted_agent = call_agent;
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the call are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where isempty(block_key)
+    | where event_hour >= bin(call_time, 1h) - 1h
+    | where event_hour <= call_time + 1h
+    | where session_id == requested_session;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let call = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | where (all_nodes or node_id == requested_node) and agent_id == wanted_agent and isnotempty(dedup_key)
+    // The flow's time is the stored time in seconds: equal to it within a millisecond, the nearest first.
+    | extend apart = abs(ts - call_time)
+    | where apart < 1ms
+    | order by apart asc, dedup_key asc
+    | take 1
+    | project node_id, request_key=dedup_key;
+// A block's time is fixed by its source, so the days around the call prune the table before versions are reduced.
+session_thinking
+| where isnotempty(block_key) or (ts >= call_time - 1d and ts <= call_time + 1d)
+| where session_id == requested_session and (all_nodes or node_id == requested_node)
+| where (isnotempty(block_key) and thinking_key == block_key)
+    or (isempty(block_key) and request_key in (call | project request_key))
+| summarize arg_max(_v, *) by ['project'], node_id, session_id, thinking_key
+| join kind=leftouter (call | extend matched=true) on node_id, request_key
+| where isnotempty(block_key) or matched
+| order by block_index asc, ts asc, thinking_key asc
+| take row_limit
+| project node_id, thinking_key, request_key, ts=(ts - datetime(1970-01-01)) / 1s, agent_id, model, turn_index, block_index,
+    chars, tool, ['text']=iff(keep_text and (ts - datetime(1970-01-01)) / 1s >= text_floor, ['text'], '')

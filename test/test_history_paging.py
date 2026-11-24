@@ -310,6 +310,7 @@ BOUNDED = {
     "tools.agent_totals": "one row per agent of the board's sessions",
     "tools.confirm_counts": "one row per session, tool name and confirmation value",
     "tools.series": "one row per tool name and grid bucket",
+    "thinking.blocks": "the thinking blocks of one model call, or one block",
     "tools.totals": "one row per tool name",
     "usage.sessions": "one row per session",
 }

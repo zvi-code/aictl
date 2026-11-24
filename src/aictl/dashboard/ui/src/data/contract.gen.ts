@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: aa240ea814f5c1795f62f1c6c595a0ceef4e3e5960b62699f696580f3e8f50df
+// Schema digest: a5fc5be7b95d2be06804a7df692837166520d1537b23d5662f0f924001cc6eed
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2186,6 +2186,25 @@ export type DetailTerminalSessions = Array<{
   process_tree?: Array<Record<string, unknown>>;
 }>;
 
+export type DetailThinking = {
+  ts: number | null;
+  agent_id: string;
+  blocks: Array<{
+    thinking_key: string;
+    request_key: string;
+    ts: number;
+    agent_id: string;
+    model: string;
+    turn_index: number | null;
+    block_index: number | null;
+    chars: number | null;
+    tool: string;
+    text: string;
+    text_state: "kept" | "not_kept" | "expired" | "not_stored";
+  }>;
+  node_scope?: NodeScope;
+};
+
 export type DetailToolConfig = {
   tool: string;
   scope: string;
@@ -3917,6 +3936,7 @@ export interface DetailResponses {
   "/api/board/session/records": DetailSessionRecords;
   "/api/board/sessions": DetailSessions;
   "/api/board/skill": DetailSkill;
+  "/api/board/thinking": DetailThinking;
   "/api/board/terminal/events": DetailTerminalEvents;
   "/api/board/terminal/file": DetailTerminalFile;
   "/api/board/terminal/metrics": DetailTerminalMetrics;

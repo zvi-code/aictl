@@ -11,6 +11,7 @@ import {
   type FlowRow, type Metric, type Step, type StepKind,
 } from './flowSteps'
 import { clip } from './shared'
+import { reportsThinking } from './thinkingModel'
 import { VirtualList } from './VirtualList'
 import styles from './flow.module.css'
 
@@ -292,7 +293,11 @@ function toolFacts(tool: PlacedEvent): Fact[] {
  * The selected step: the model request, every tool call it issued with its input and result, and its
  * reply. `openAgent` selects the start of a subagent a tool call started.
  */
-export function StepInspector(props: { step: Step; close: () => void; evidence?: (event: PlacedEvent) => void; openAgent?: (agent: string) => void }) {
+export function StepInspector(props: {
+  step: Step; close: () => void; evidence?: (event: PlacedEvent) => void; openAgent?: (agent: string) => void
+  /** The thinking text of the step's model call, read when the call is shown. */
+  thinking?: (call: PlacedEvent) => JSX.Element
+}) {
   const step = () => props.step
   const sourced = (event: PlacedEvent) => !!props.evidence && !!(event.step_key || event.turn_id)
   return <section class={styles.inspector} aria-label="Step inspector" data-kind={stepColor(step())}>
@@ -315,6 +320,10 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
     <Show when={step().call}>{request => <>
       <h4 class={styles.inspectorSection}>Model request</h4>
       <Facts items={requestFacts(request())} />
+      <Show when={props.thinking && reportsThinking(request())}>
+        <h4 class={styles.inspectorSection}>Thinking</h4>
+        {props.thinking!(request())}
+      </Show>
     </>}</Show>
     <Show when={step().tools.length}>
       <h4 class={styles.inspectorSection}>Tool calls · {step().tools.length}</h4>

@@ -9,6 +9,7 @@ import { Segmented } from '../../ui/Segmented'
 import { Tooltip } from '../../ui/Tooltip'
 import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
 import { createHover, DroppedNotice, HoverCard, OlderButtons, StepInspector, StepList, TurnScrubber } from '../FlowParts'
+import { ThinkingBlocks } from '../ThinkingBlocks'
 import { FLOW_PAGE, flowPages } from '../flowPages'
 import { definitions, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
 import { collapseRuns, repeatsOf, scalesOf, tracksOf, workCounts, type ChartRow } from '../chartModel'
@@ -417,7 +418,9 @@ export default function Flow(props: TabProps) {
               moveColumn={placeColumn} hideColumn={id => showColumn(id, false)} resize={resize} />
           </Show>
           <Show when={picked()}>{step =>
-            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} openAgent={goToAgent} />
+            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} openAgent={goToAgent}
+              thinking={call => <Show when={read()?.data?.session_id}>{session =>
+                <ThinkingBlocks ctx={props.shell.ctx} session={session()} call={call} />}</Show>} />
           }</Show>
         </div>
         </Box>

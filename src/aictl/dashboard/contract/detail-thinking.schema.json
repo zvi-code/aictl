@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-thinking.schema.json",
+  "title": "DetailThinking",
+  "type": "object",
+  "properties": {
+    "ts": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "thinking_key": {
+            "type": "string"
+          },
+          "request_key": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "number"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "turn_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "block_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "chars": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tool": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_state": {
+            "enum": [
+              "kept",
+              "not_kept",
+              "expired",
+              "not_stored"
+            ]
+          }
+        },
+        "required": [
+          "thinking_key",
+          "request_key",
+          "ts",
+          "agent_id",
+          "model",
+          "turn_index",
+          "block_index",
+          "chars",
+          "tool",
+          "text",
+          "text_state"
+        ]
+      }
+    },
+    "node_scope": {
+      "$ref": "node-scope.schema.json"
+    }
+  },
+  "required": [
+    "ts",
+    "agent_id",
+    "blocks"
+  ]
+}
