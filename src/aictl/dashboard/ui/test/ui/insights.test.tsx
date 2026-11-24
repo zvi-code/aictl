@@ -226,7 +226,7 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
       'agent: identical call, failed: 1,233; identical call, succeeded: 400; changed call, failed: 300; changed call, succeeded: ' +
       '2,000; another tool: 1,000. 71 runs of 3 or more failed calls in a row, 245 calls in all, the longest 8 calls.')
     expect(rereadFinding(rereads)).toContain('42% of file reads (42 of 100)')
-    expect(rereadFinding(rereads)).toContain('the repeated reads returned not reported')
+    expect(rereadFinding(rereads)).toContain('3 files were read 5 times or more; the size of the repeated reads is not reported.')
     const unreported = { ...pause, tools: [pause.tools[1]], summary: { ...pause.summary, tools: [], requests: 0, cost_usd: null } }
     expect(pauseFinding(unreported, label)).toContain('do not report cache writes (copilot-vscode)')
   })
@@ -306,7 +306,13 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(card(host, 'failures').querySelector('[data-hero]')!.textContent).toBe('71runs of 3 or more failed calls in a row, among ' +
       '5,000 failed tool calls in the period')
     // Rereads: bytes not reported stays not reported.
-    expect(card(host, 'rereads').textContent).toContain('42% repeated · not reported returned again')
+    const reads = card(host, 'rereads').querySelector('[data-chart="reread-reads"] [data-row="copilot-cli"]')!
+    expect([...reads.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['58', '42'])
+    expect(reads.querySelector('[data-total]')!.textContent).toBe('42 of 100 again · 42%')
+    expect(reads.textContent).toContain('not reported returned again')
+    expect(reads.querySelector('[data-part="again"] [role="tooltip"]')!.textContent).toBe('copilot-cli, read of a file the same ' +
+      'agent had already read: 42 reads, 42% of 100 reads with a recorded path over 58 files; not reported returned again.')
+    expect(card(host, 'rereads').querySelector('[data-chart="reread-files"] [data-total]')!.textContent).toBe('3 of 58 files')
     dispose()
   })
 })
@@ -500,23 +506,29 @@ describe('INS-06 · Context weight', () => {
 describe('INS-07 · Orientation cost by repository', () => {
   it('names the project with the most sessions that edit, the range of medians and the sessions that never edit', () => {
     expect(orientationFinding(orientation)).toBe('alpha has the most sessions that edit (89); the median one made 4 requests ' +
-      'costing $0.21 before its first edit. Across 2 projects the median runs from 4 to 35 requests. 273 sessions never edited; ' +
-      'they cost $159.')
+      'costing $0.21 before its first edit. Across 2 projects the median runs from 4 to 35 requests. 273 sessions recorded no ' +
+      "edit; their main agents' requests cost $159.")
     const none = { ...orientation, projects: [] } as OrientationBody
-    expect(orientationFinding(none)).toBe('No project has 3 or more sessions that edit in this period. 273 sessions never edited; they cost $159.')
+    expect(orientationFinding(none)).toBe('No project has 3 or more sessions that edit in this period. 273 sessions recorded no ' +
+      "edit; their main agents' requests cost $159.")
   })
 
-  it('draws one bar per project with its median cost, and an unpriced cost as not reported', () => {
+  it('draws one bar per project with its median requests and cost, and an unpriced cost as not reported', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <Orientation {...props(ctx)} />)
     const box = card(host, 'orientation')
-    expect(box.querySelectorAll('[data-project]')).toHaveLength(2)
-    expect(box.querySelector('[aria-label="alpha: median 4 requests, $0.21 before the first edit"]')).not.toBeNull()
-    expect(box.querySelector('[aria-label="beta: median 35 requests, not reported before the first edit"]')).not.toBeNull()
+    const requests = box.querySelector('[data-chart="orientation-requests"]')!
+    expect([...requests.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['/work/alpha', '/work/beta/'])
+    expect(requests.querySelector('[data-row="/work/alpha"] [data-total]')!.textContent).toBe('4 requests')
+    expect(requests.querySelector('[data-row="/work/alpha"] [role="tooltip"]')!.textContent).toBe('/work/alpha: median 4 main-agent ' +
+      'requests costing $0.21 at list price before the first edit, over 89 sessions that edit (copilot-cli).')
+    expect(box.querySelector('[data-chart="orientation-cost"] [data-row="/work/beta/"] [data-total]')!.textContent).toBe('not reported')
     expect(box.querySelector('[title="/work/alpha"]')).not.toBeNull()
-    const never = box.querySelector('[data-never]')!.textContent!
-    expect(never).toContain('claude-code: 272 of 378 sessions, $159')
-    expect(never).not.toContain('codex-cli')
+    const tools = box.querySelector('[data-chart="orientation-tools"]')!
+    expect([...tools.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['claude-code'])
+    expect([...tools.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['106', '272'])
+    expect(tools.querySelector('[data-part="never"] [role="tooltip"]')!.textContent).toBe('claude-code: 272 of 378 sessions (72%) ' +
+      'recorded no edit; their main agents made 2,207 requests costing $159 at list price.')
     expect(box.querySelector('[data-few]')?.textContent).toBe('codex-cli: 1 session, too few to compare.')
     dispose()
   })

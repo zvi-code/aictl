@@ -1,29 +1,41 @@
-import { For, Show, untrack } from 'solid-js'
+import { Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { rereadHero, bytes, rereadFinding, share, toolLabel, type Label, type RereadBody } from './insightsModel'
+import {
+  rereadHero, bytes, plural, rereadFilesHover, rereadFinding, rereadHover, share, toolLabel, type Label, type RereadBody,
+} from './insightsModel'
 import styles from './Insights.module.css'
 
-/** Per tool: file reads split into first reads and reads of a file the same agent had already read. */
+function readRows(body: RereadBody, label: Label): BarRow[] {
+  return body.tools.map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: `${plural(tool.files, 'file')} · ${bytes(tool.repeat_bytes)} returned again`,
+    total: `${fmtNum(tool.repeat_reads)} of ${fmtNum(tool.reads)} again · ${share(tool.repeat_share)}`,
+    parts: [
+      { key: 'first', label: 'first read', value: tool.reads - tool.repeat_reads, tone: 2, text: fmtNum(tool.reads - tool.repeat_reads),
+        hover: rereadHover(tool, 'first', label) },
+      { key: 'again', label: 'read again', value: tool.repeat_reads, tone: 1, text: fmtNum(tool.repeat_reads), hover: rereadHover(tool, 'again', label) },
+    ],
+  }))
+}
+
+function fileRows(body: RereadBody, label: Label): BarRow[] {
+  return body.tools.map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: `most reads of one file: ${fmtNum(tool.most_reads)}`,
+    total: `${fmtNum(tool.files_5plus)} of ${plural(tool.files, 'file')}`,
+    parts: [{ key: 'files', label: 'files read 5 times or more', value: tool.files_5plus, tone: 1, text: fmtNum(tool.files_5plus),
+      hover: rereadFilesHover(tool, label) }],
+  }))
+}
+
 function ReadBars(props: { body: RereadBody; label: Label }) {
-  const width = (part: number, whole: number) => whole > 0 ? `${(part / whole * 100).toFixed(2)}%` : '0%'
   return <>
-    <ul class={styles.legend}>
-      <li><span class={`${styles.swatch} ${styles.first}`} />First read of a file</li>
-      <li><span class={`${styles.swatch} ${styles.again}`} />Read again</li>
-    </ul>
-    <ol class={styles.bars} aria-label="File reads per tool">
-      <For each={props.body.tools}>{tool => <li class={styles.barRow}>
-        <span class={styles.barName}>{props.label(tool.tool)}<small>{fmtNum(tool.reads)} reads · {fmtNum(tool.files_5plus)} files read 5+ times</small></span>
-        <span class={styles.barTrack}>
-          <span class={styles.split} role="img" aria-label={`${props.label(tool.tool)}: ${fmtNum(tool.repeat_reads)} of ${fmtNum(tool.reads)} reads were repeats`}>
-            <span class={styles.first} style={{ 'inline-size': width(tool.reads - tool.repeat_reads, tool.reads) }} />
-            <span class={styles.again} style={{ 'inline-size': width(tool.repeat_reads, tool.reads) }} />
-          </span>
-          <span class={styles.splitText}>{share(tool.repeat_share)} repeated · {bytes(tool.repeat_bytes)} returned again · most reads of one file {fmtNum(tool.most_reads)}</span>
-        </span>
-      </li>}</For>
-    </ol>
+    <Bars name="reread-reads" title="File reads per tool: first reads and reads of a file already read" scale="whole"
+      legend={[{ label: 'First read of a file by its agent', tone: 2 }, { label: 'Read again by the same agent', tone: 1 }]}
+      axis="Bar: the tool's file reads with a recorded path (100%); segments: counts written on each."
+      rows={readRows(props.body, props.label)} />
+    <Bars name="reread-files" title="Files read 5 times or more by one agent, per tool"
+      axis="Length: number of files, linear from 0." rows={fileRows(props.body, props.label)} />
     <Show when={props.body.summary.unmatched}>
       <p class={styles.note}>{fmtNum(props.body.summary.unmatched)} reads had no recorded path and are not compared.</p>
     </Show>

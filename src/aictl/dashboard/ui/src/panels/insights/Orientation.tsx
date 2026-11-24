@@ -1,33 +1,46 @@
-import { For, Show, untrack } from 'solid-js'
+import { Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { orientationHero, count, money, orientationFinding, scaled, toolLabel, type Label, type OrientationBody } from './insightsModel'
+import {
+  orientationHero, count, money, orientationFinding, orientationProjectHover, orientationToolHover, plural, toolLabel,
+  type Label, type OrientationBody,
+} from './insightsModel'
 import styles from './Insights.module.css'
 
-/** One row per project: a bar for the median requests before the first edit, the median cost beside it. */
+function projectRows(body: OrientationBody, label: Label, of: 'requests' | 'cost'): BarRow[] {
+  return body.projects.map(row => ({
+    key: row.project_path, label: projectName(row.project_path), title: row.project_path,
+    sub: `${plural(row.sessions, 'session')} · ${row.tools.map(label).join(', ')}`,
+    total: of === 'requests' ? `${count(row.p50_requests)} requests` : money(row.p50_cost_usd),
+    parts: [{ key: of, label: of === 'requests' ? 'median requests' : 'median cost', tone: of === 'requests' ? 2 : 1,
+      value: of === 'requests' ? row.p50_requests : row.p50_cost_usd,
+      text: of === 'requests' ? count(row.p50_requests) : money(row.p50_cost_usd), hover: orientationProjectHover(row, label) }],
+  }))
+}
+
+function toolRows(body: OrientationBody, label: Label): BarRow[] {
+  return body.tools.map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: `no edit: ${money(tool.never_cost_usd)}`, total: plural(tool.sessions, 'session'),
+    parts: [
+      { key: 'edited', label: 'recorded an edit', value: tool.edited, tone: 2, text: fmtNum(tool.edited), hover: orientationToolHover(tool, 'edited', label) },
+      { key: 'never', label: 'no edit', value: tool.never, tone: 7, text: fmtNum(tool.never), hover: orientationToolHover(tool, 'never', label) },
+    ],
+  }))
+}
+
 function ProjectBars(props: { body: OrientationBody; label: Label }) {
-  const largest = () => Math.max(0, ...props.body.projects.map(row => row.p50_requests ?? 0))
   return <>
-    <ol class={styles.bars} aria-label="Median requests before the first edit, per project">
-      <For each={props.body.projects}>{row => <li class={styles.barRow} data-project>
-        <span class={styles.barName} title={row.project_path}>{projectName(row.project_path)}
-          <small>{fmtNum(row.sessions)} sessions · {row.tools.map(props.label).join(', ')}</small></span>
-        <span class={styles.bar} role="img" aria-label={`${projectName(row.project_path)}: median ${count(row.p50_requests)} requests, ` +
-          `${money(row.p50_cost_usd)} before the first edit`}>
-          <span class={`${styles.fill} ${styles.main}`}
-            style={{ 'inline-size': `max(var(--space-1), ${(scaled(row.p50_requests, largest()) * 60).toFixed(2)}%)` }} />
-          {count(row.p50_requests)} requests · {money(row.p50_cost_usd)}
-        </span>
-      </li>}</For>
-    </ol>
-    <Show when={!props.body.projects.length}>
-      <p class={styles.note}>No project has 3 or more sessions that edit in this period.</p>
+    <Show when={props.body.projects.length} fallback={<p class={styles.note}>No project has 3 or more sessions that edit in this period.</p>}>
+      <Bars name="orientation-requests" title="Median main-agent requests before the first edit, per project"
+        axis="Length: requests, linear from 0; projects with 3 or more sessions that edit, the 10 with the most."
+        rows={projectRows(props.body, props.label, 'requests')} />
+      <Bars name="orientation-cost" title="Median cost before the first edit, per project"
+        axis="Length: cost at list price, linear from $0." rows={projectRows(props.body, props.label, 'cost')} />
     </Show>
-    <h3 class={styles.subhead}>Sessions that never edit, apart from the medians</h3>
-    <ul class={styles.smallSteps} data-never>
-      <For each={props.body.tools}>{tool => <li>{props.label(tool.tool)}: {fmtNum(tool.never)} of {fmtNum(tool.sessions)} sessions,
-        {' '}{money(tool.never_cost_usd)}</li>}</For>
-    </ul>
+    <Bars name="orientation-tools" title="Sessions per tool: with an edit and with no edit" scale="whole"
+      legend={[{ label: 'Recorded an edit', tone: 2 }, { label: 'No edit (not in the medians)', tone: 7 }]}
+      axis="Bar: the tool's sessions that started in the period (100%)." rows={toolRows(props.body, props.label)} />
   </>
 }
 

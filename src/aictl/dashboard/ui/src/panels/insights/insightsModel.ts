@@ -429,7 +429,21 @@ export function rereadFinding(body: RereadBody) {
   const s = body.summary
   if (!s.reads) return 'No file read with a recorded path in this period.'
   return `${share(s.repeat_share)} of file reads (${fmtNum(s.repeat_reads)} of ${fmtNum(s.reads)}) read a file the same agent had already read; ` +
-    `${fmtNum(s.files_5plus)} files were read 5 times or more, and the repeated reads returned ${bytes(s.repeat_bytes)}.`
+    `${fmtNum(s.files_5plus)} files were read 5 times or more; ` +
+    (s.repeat_bytes == null ? 'the size of the repeated reads is not reported.' : `the repeated reads returned ${bytes(s.repeat_bytes)}.`)
+}
+
+/** The hover of a part of a tool's reads: first reads or reads again, their share of the tool's reads. */
+export function rereadHover(tool: RereadTool, part: 'first' | 'again', label: Label) {
+  const n = part === 'first' ? tool.reads - tool.repeat_reads : tool.repeat_reads
+  return `${label(tool.tool)}, ${part === 'first' ? 'first read of a file by its agent' : 'read of a file the same agent had already read'}: ` +
+    `${plural(n, 'read')}, ${share(ratio(n, tool.reads))} of ${plural(tool.reads, 'read')} with a recorded path over ${plural(tool.files, 'file')}` +
+    (part === 'again' ? `; ${bytes(tool.repeat_bytes)} returned again.` : '.') +
+    (tool.unmatched ? ` ${plural(tool.unmatched, 'read')} without a path not counted.` : '')
+}
+export function rereadFilesHover(tool: RereadTool, label: Label) {
+  return `${label(tool.tool)}: ${plural(tool.files_5plus, 'file')} read 5 times or more by one agent, of ${plural(tool.files, 'file')} read; ` +
+    `the most reads of one file: ${fmtNum(tool.most_reads)}.`
 }
 
 export const hours = (value: Num) => value == null ? NOT_REPORTED : fmtHours(value)
@@ -517,7 +531,8 @@ export function contextFinding(body: ContextBody, label: Label) {
 
 export function orientationFinding(body: OrientationBody) {
   const s = body.summary
-  const never = s.never ? ` ${fmtNum(s.never)} sessions never edited; they cost ${money(s.never_cost_usd)}.${leftOut(s.unpriced_requests)}` : ''
+  const never = s.never ? ` ${fmtNum(s.never)} sessions recorded no edit; their main agents' requests cost ${money(s.never_cost_usd)}.` +
+    leftOut(s.unpriced_requests) : ''
   if (!s.sessions) return 'No session started in this period.'
   const top = body.projects[0]
   if (!top) return `No project has 3 or more sessions that edit in this period.${never}`
@@ -526,6 +541,19 @@ export function orientationFinding(body: OrientationBody) {
     ? ` Across ${fmtNum(body.projects.length)} projects the median runs from ${fmtNum(Math.min(...medians))} to ${fmtNum(Math.max(...medians))} requests.` : ''
   return `${projectName(top.project_path)} has the most sessions that edit (${fmtNum(top.sessions)}); the median one made ` +
     `${count(top.p50_requests)} requests costing ${money(top.p50_cost_usd)} before its first edit.${range}${never}`
+}
+
+export function orientationProjectHover(row: OrientationProject, label: Label) {
+  return `${row.project_path}: median ${count(row.p50_requests)} main-agent requests costing ${money(row.p50_cost_usd)} at list price ` +
+    `before the first edit, over ${plural(row.sessions, 'session')} that edit (${row.tools.map(label).join(', ')}).`
+}
+export function orientationToolHover(tool: OrientationTool, part: 'edited' | 'never', label: Label) {
+  if (part === 'edited') {
+    return `${label(tool.tool)}: ${fmtNum(tool.edited)} of ${plural(tool.sessions, 'session')} (${share(ratio(tool.edited, tool.sessions))}) ` +
+      `recorded an edit; the median one made ${count(tool.p50_requests)} requests before it.`
+  }
+  return `${label(tool.tool)}: ${fmtNum(tool.never)} of ${plural(tool.sessions, 'session')} (${share(ratio(tool.never, tool.sessions))}) ` +
+    `recorded no edit; their main agents made ${plural(tool.never_requests, 'request')} costing ${money(tool.never_cost_usd)} at list price.`
 }
 
 /** A count and its noun: 1 session, 2 sessions. */
