@@ -98,7 +98,7 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
 # add those rows to its view, add the card to REPO_SPLIT_CARDS, take repo_order in its shape and call attach_repos.
 REPO_COLOURS = 8
 # The cards whose shape takes repo_order as a second argument: shape(rows, repo_order).
-REPO_SPLIT_CARDS = frozenset({"carry", "time"})
+REPO_SPLIT_CARDS = frozenset({"carry", "time", "pause", "subagents", "failures", "problems"})
 
 
 def repo_order(history: HistoryScope, params: dict) -> dict:
@@ -201,8 +201,14 @@ def _sessions(rows: list[dict], fields: tuple[str, ...]) -> list[dict]:
              **{field: row.get(field) for field in fields}} for row in _of(rows, "session") if row.get("session_id")]
 
 
-def pause_tax(rows: list[dict]) -> dict:
-    """Per tool and pause bucket: requests, cache-hit share of input and cost; the tax of pauses over 5 minutes."""
+PAUSE_MEASURES = ("requests", "priced", "cost_usd")
+
+
+def pause_tax(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per tool and pause bucket: requests, cache-hit share of input and cost; the tax of pauses over 5 minutes.
+
+    Split by repository: each bucket cell, each tool's long pauses (measured cost and estimate, ``long_pause``), each
+    project row, each cause row per tool and each cause_tool row. The average per bucket is not additive: not split."""
     reported = {row.get("tool"): _n(row.get("cache_creation_tokens")) > 0 for row in _of(rows, "tool")}
     cells = {(row.get("tool"), row.get("bucket")): row for row in _of(rows, "bucket")}
     tools = []
@@ -240,15 +246,18 @@ def pause_tax(rows: list[dict]) -> dict:
         cost = _cost(row.get("cost_usd")) if priced else None
         projects.append({"project": row.get("project_name") or None, "tool": row.get("tool"), "requests": _int(row.get("requests")),
                          "sessions": _int(row.get("reached")), "cost_usd": cost,
-                         "extra_usd": cost - priced * quick if cost is not None and quick is not None else None})
+                         "extra_usd": cost - priced * quick if cost is not None and quick is not None else None,
+                         "_key": (str(row.get("tool") or ""), f"project:{row.get('project_name') or ''}")})
     projects.sort(key=lambda row: -_n(row["extra_usd"]))
     causes, overall = _pause_causes(_of(rows, "cause"), counted)
     cause_tools = [{
+        "_key": (str(row.get("tool") or ""), f"call:{row.get('tool_name') or ''}:{row.get('program') or ''}"),
         "tool": row.get("tool"), "tool_name": row.get("tool_name") or None, "program": row.get("program") or None,
         "requests": _int(row.get("requests")), "cost_usd": _cost(row.get("cost_usd")) if _int(row.get("priced")) else None,
         "p50_call_s": _cost(row.get("p50_call_s")), "max_call_s": _cost(row.get("max_call_s")),
     } for row in _of(rows, "cause_tool")]
     cause_tools.sort(key=lambda row: (-row["requests"], -_n(row["cost_usd"])))
+    _pause_repos(rows, tools, projects, causes, cause_tools, quick_avg, order or [])
     return {
         "tools": tools, "projects": projects, "causes": causes, "cause_tools": cause_tools,
         "summary": {
@@ -263,6 +272,44 @@ def pause_tax(rows: list[dict]) -> dict:
         "sessions": sorted(_sessions(rows, ("requests", "cost_usd")),
                            key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
     }
+
+
+def _pause_repos(rows: list[dict], tools: list[dict], projects: list[dict], causes: list[dict], cause_tools: list[dict],
+                 quick_avg: dict, order: list[dict]) -> None:
+    """Put the segments per repository on the bars of the Pause tax card (see pause_tax)."""
+    splits = repo_splits(rows)
+    buckets = {key: found for key, found in splits.items() if key[1].startswith("bucket:")}
+    # The buckets cover every request after a pause: a repository's own total is the sum of its bucket segments.
+    totals = repo_totals([row for found in buckets.values() for row in found], PAUSE_MEASURES)
+    for tool in tools:
+        name = str(tool["tool"] or "")
+        for cell in tool["buckets"]:
+            attach_repos(cell, buckets.get((name, f"bucket:{cell['bucket']}"), []), PAUSE_MEASURES, order, totals)
+        # After a pause of 5 minutes or more: measured cost and the estimate at the under-1-minute average, per repository.
+        late = [cell for cell in tool["buckets"] if cell["bucket"] in LONG_PAUSE]
+        priced = sum(cell["priced"] for cell in late)
+        quick = tool["buckets"][0]["avg_cost_usd"]
+        costs = [cell["cost_usd"] for cell in late if cell["cost_usd"] is not None]
+        tool["long_pause"] = attach_repos(
+            {"requests": sum(cell["requests"] for cell in late), "priced": priced, "cost_usd": sum(costs) if costs else None,
+             "estimate_usd": priced * quick if quick is not None else None},
+            [{**row, "estimate_usd": _int(row.get("priced")) * quick if quick is not None else None}
+             for bucket in LONG_PAUSE for row in buckets.get((name, f"bucket:{bucket}"), [])],
+            (*PAUSE_MEASURES, "estimate_usd"), order)
+    for project in projects:
+        quick = quick_avg.get(project["tool"])
+        attach_repos(project, [{"repo": row.get("repo"), "requests": row.get("requests"), "sessions": row.get("reached"),
+                                "cost_usd": row.get("cost_usd"),
+                                "extra_usd": _n(row.get("cost_usd")) - _int(row.get("priced")) * quick if quick is not None else None}
+                               for row in splits.get(project.pop("_key"), [])],
+                     ("requests", "sessions", "cost_usd", "extra_usd"), order)
+    found_causes = [row for key, found in splits.items() if key[1].startswith("cause:") for row in found]
+    cause_totals = repo_totals(found_causes, PAUSE_MEASURES)
+    for cause in causes:
+        attach_repos(cause, splits.get((str(cause["tool"] or ""), f"cause:{cause['cause']}"), []), PAUSE_MEASURES, order,
+                     cause_totals)
+    for row in cause_tools:
+        attach_repos(row, splits.get(row.pop("_key"), []), ("requests", "cost_usd"), order)
 
 
 def _pause_causes(rows: list[dict], counted: list[str]) -> tuple[list[dict], list[dict]]:
@@ -358,8 +405,14 @@ def context_carry(rows: list[dict], order: list[dict] | None = None) -> dict:
     }
 
 
-def subagents(rows: list[dict]) -> dict:
-    """Per tool: requests and cost of the main agent against subagents, and how many subagents ran."""
+SUBAGENT_MEASURES = ("requests", "priced", "cost_usd")
+
+
+def subagents(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per tool: requests and cost of the main agent against subagents, and how many subagents ran.
+
+    Split by repository: each tool's main and subagents sides (subagents also by number of subagents), and each
+    session's subagent cost (one segment: the repository of the session)."""
     split: dict[str, dict] = {}
     for row in _of(rows, "split"):
         side = "subagents" if row.get("subagent") else "main"
@@ -372,7 +425,7 @@ def subagents(rows: list[dict]) -> dict:
     empty = {"requests": 0, "priced": 0, "cost_usd": None}
     tools = []
     for tool, sides in sorted(split.items()):
-        main, sub = sides.get("main", empty), sides.get("subagents", {**empty, "agents": 0})
+        main, sub = sides.get("main", dict(empty)), sides.get("subagents", {**empty, "agents": 0})
         both = _n(main["cost_usd"]) + _n(sub["cost_usd"])
         priced = main["cost_usd"] is not None or sub["cost_usd"] is not None
         tools.append({"tool": tool, "main": main, "subagents": sub,
@@ -381,6 +434,18 @@ def subagents(rows: list[dict]) -> dict:
     main_cost = sum(_n(tool["main"]["cost_usd"]) for tool in tools)
     sub_cost = sum(_n(tool["subagents"]["cost_usd"]) for tool in tools)
     priced = any(tool["subagent_share"] is not None for tool in tools)
+    splits = repo_splits(rows)
+    totals = repo_totals([row for (_tool, key), found in splits.items() if key in ("main", "subagents") for row in found],
+                         (*SUBAGENT_MEASURES, "agents"))
+    for tool in tools:
+        attach_repos(tool["main"], splits.get((str(tool["tool"] or ""), "main"), []), SUBAGENT_MEASURES, order or [], totals)
+        attach_repos(tool["subagents"], splits.get((str(tool["tool"] or ""), "subagents"), []), (*SUBAGENT_MEASURES, "agents"),
+                     order or [], totals)
+    sessions = []
+    for row in _sessions(rows, ("requests", "cost_usd", "main_cost", "agents", "repo")):
+        repo = row.pop("repo")
+        sessions.append(attach_repos(row, [{"repo": repo, "requests": row["requests"], "cost_usd": row["cost_usd"],
+                                            "agents": row["agents"]}], ("requests", "cost_usd", "agents"), order or []))
     projects = sorted(({"project": row.get("project_name") or None, "requests": _int(row.get("requests")),
                         "agents": _int(row.get("agents")), "sessions": _int(row.get("sessions")),
                         "cost_usd": _cost(row.get("cost_usd")) if _int(row.get("priced")) else None}
@@ -395,13 +460,18 @@ def subagents(rows: list[dict]) -> dict:
             "subagent_requests": sum(tool["subagents"]["requests"] for tool in tools),
             "unpriced_requests": _unpriced([tool[side] for tool in tools for side in ("main", "subagents")]),
         },
-        "sessions": sorted(_sessions(rows, ("requests", "cost_usd", "main_cost", "agents")),
-                           key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
+        "sessions": sorted(sessions, key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
     }
 
 
-def after_failure(rows: list[dict]) -> dict:
-    """Per tool: what the next call after a failed call is, and runs of three or more failed calls."""
+FAILURE_MEASURES = ("calls", "failures", "last_failures", "streaks", "streak_calls", *OUTCOMES)
+
+
+def after_failure(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Per tool: what the next call after a failed call is, and runs of three or more failed calls.
+
+    Each tool's figures are split by repository in ``repos``: every segment has calls, failures, last failures, runs
+    (streaks) and their calls, and each next-call outcome. The longest run is not additive: not split."""
     outcomes: dict[str, dict[str, int]] = {}
     for row in _of(rows, "outcome"):
         if row.get("outcome") in OUTCOMES:
@@ -421,6 +491,11 @@ def after_failure(rows: list[dict]) -> dict:
             "longest": _int(found.get("longest")) or None,
         })
     tools.sort(key=lambda tool: -tool["failures"])
+    splits = repo_splits(rows)
+    totals = repo_totals([row for (_tool, key), found in splits.items() if not key for row in found], FAILURE_MEASURES)
+    for tool in tools:
+        tool["repos"] = attach_repos({**tool, **tool["outcomes"]}, splits.get((str(tool["tool"] or ""), ""), []),
+                                     FAILURE_MEASURES, order or [], totals)["repos"]
     longest = max((tool["longest"] or 0 for tool in tools), default=0)
     return {
         "tools": tools,
@@ -721,10 +796,15 @@ def _priced(row: dict) -> float | None:
     return _cost(row.get("cost_usd")) if _int(row.get("priced")) else None
 
 
-def problem_sessions(rows: list[dict]) -> dict:
+PROBLEM_MEASURES = ("sessions", "flagged", "multi", "cost_usd", "flagged_cost_usd")
+
+
+def problem_sessions(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per signal and tool: sessions flagged, their share of the tool's sessions and their cost; pairs; projects.
 
     A signal a tool's source cannot show is not reported (None) for that tool, and the tool is left out of its share.
+    Split by repository: each tool's sessions (flagged, multi, cost), each tool's sessions per signal and each pair.
+    The grid per project is not split: a project is the last folder of the session's path, itself a split of the sessions.
     """
     cells = {(row.get("tool"), row.get("signal")): row for row in _of(rows, "signal")}
     tools = []
@@ -748,6 +828,16 @@ def problem_sessions(rows: list[dict]) -> dict:
             "cost_usd": _cost(row.get("all_cost_usd")) if _int(row.get("all_priced")) else None, "signals": signals,
         })
     tools.sort(key=lambda tool: (-tool["sessions"], str(tool["tool"])))
+    splits = repo_splits(rows)
+    whole = {key: [{"repo": row.get("repo"), "sessions": row.get("sessions"), "flagged": row.get("flagged"),
+                    "multi": row.get("multi"), "cost_usd": row.get("all_cost_usd"), "flagged_cost_usd": row.get("cost_usd")}
+                   for row in found] for key, found in splits.items() if not key[1]}
+    totals = repo_totals([row for found in whole.values() for row in found], PROBLEM_MEASURES)
+    for tool in tools:
+        attach_repos(tool, whole.get((str(tool["tool"] or ""), ""), []), PROBLEM_MEASURES, order or [], totals)
+        for cell in tool["signals"]:
+            attach_repos(cell, splits.get((str(tool["tool"] or ""), f"signal:{cell['signal']}"), []), ("sessions", "cost_usd"),
+                         order or [])
     counted = [tool for tool in tools if tool["reports"]]
     totals = []
     for i, signal in enumerate(SIGNALS):
@@ -756,8 +846,10 @@ def problem_sessions(rows: list[dict]) -> dict:
         of = sum(tool["sessions"] for tool in found)
         totals.append({"signal": signal, "tools": [tool["tool"] for tool in found], "sessions": flagged if found else None,
                        "share": _ratio(flagged, of) if found else None})
-    pairs = sorted(({"signals": [row.get("signal"), row.get("other")], "sessions": _int(row.get("sessions")),
-                     "cost_usd": _priced(row)} for row in _of(rows, "pair")),
+    pairs = sorted((attach_repos({"signals": [row.get("signal"), row.get("other")], "sessions": _int(row.get("sessions")),
+                                  "cost_usd": _priced(row)},
+                                 splits.get(("", f"pair:{row.get('signal')}+{row.get('other')}"), []), ("sessions", "cost_usd"),
+                                 order or []) for row in _of(rows, "pair")),
                    key=lambda row: (-row["sessions"], row["signals"]))
     # The card's primary split: the five projects whose flagged sessions cost the most, each with its sessions per signal.
     cells = {(row.get("project_name"), row.get("signal")): row for row in _of(rows, "project_signal")}

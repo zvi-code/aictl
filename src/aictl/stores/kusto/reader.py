@@ -293,7 +293,7 @@ _VIEWS = {
     "insights.pause_tax": (
         _TIME,
         "row_type tool bucket node_id session_id project_name requests input_tokens cache_read_tokens cache_creation_tokens "
-        "priced cost_usd reached cause tool_name program p50_call_s max_call_s first_ts last_ts computed_at",
+        "priced cost_usd reached cause tool_name program p50_call_s max_call_s first_ts last_ts computed_at split_key repo",
     ),
     "insights.context_carry": (
         _TIME,
@@ -302,12 +302,13 @@ _VIEWS = {
     ),
     "insights.subagents": (
         _TIME,
-        "row_type tool subagent node_id session_id requests priced cost_usd main_cost agents first_ts last_ts computed_at",
+        "row_type tool subagent node_id session_id requests priced cost_usd main_cost agents first_ts last_ts computed_at "
+        "split_key repo",
     ),
     "insights.after_failure": (
         _TIME,
         "row_type tool outcome node_id session_id calls failures last_failures streaks streak_calls longest first_ts "
-        "last_ts computed_at",
+        "last_ts computed_at split_key repo identical_failed identical_succeeded changed_failed changed_succeeded other_tool",
     ),
     "insights.rereads": (
         _TIME,
@@ -338,7 +339,7 @@ _VIEWS = {
     "insights.problem_sessions": (
         _TIME,
         "row_type tool signal other node_id session_id sessions priced cost_usd flagged multi all_priced all_cost_usd "
-        "all_sessions tools project_name signals names first_ts last_ts computed_at",
+        "all_sessions tools project_name signals names first_ts last_ts computed_at split_key repo",
     ),
     "insights.work_per_instruction": (
         _TIME,

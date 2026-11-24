@@ -36,6 +36,13 @@ def _card(store, card):
     return body
 
 
+def _bare(rows):
+    """Bars without their split by repository (test_insight_repo_failures checks the split)."""
+    if isinstance(rows, dict):
+        return {key: value for key, value in rows.items() if key != "repos"}
+    return [_bare(row) for row in rows]
+
+
 def _request(store, key, ts, *, session="s1", agent="", tool="claude-code", cost=1.0, duration_ms=0.0, cache_write=10,
              **values):
     store.insert("requests", dedup_key=key, ts=ts, session_id=session, agent_id=agent, tool=tool, input_tokens=5,
@@ -236,7 +243,7 @@ def test_pause_tax_names_the_cause_of_each_long_pause_in_order(kusto_store):
     running = next(row for row in body["causes"] if row["cause"] == "tool_running")
     assert running["buckets"] == [{"bucket": "5_60m", "requests": 2, "sessions": 2, "cost_usd": pytest.approx(12.0)}]
     # The call that ran longest in each tool_running pause, by tool name and program.
-    assert body["cause_tools"] == [
+    assert _bare(body["cause_tools"]) == [
         {"tool": "claude-code", "tool_name": "Bash", "program": name, "requests": 1, "cost_usd": pytest.approx(cost),
          "p50_call_s": pytest.approx(seconds), "max_call_s": pytest.approx(seconds)}
         for name, cost, seconds in (("cargo", 7.0, 250.0), ("pytest", 5.0, 300.0))]
@@ -247,7 +254,7 @@ def test_pause_tax_causes_keep_the_other_rows_and_follow_the_node_scope(kusto_st
     body = _card(kusto_store, "pause")
     claude = {cell["bucket"]: cell["requests"] for cell in body["tools"][0]["buckets"]}
     assert claude == {"under_1m": 1, "1_5m": 0, "5_60m": 8, "over_60m": 1}
-    assert body["projects"] == [
+    assert _bare(body["projects"]) == [
         {"project": "alpha", "tool": "claude-code", "requests": 8, "sessions": 1, "cost_usd": pytest.approx(25.75),
          "extra_usd": pytest.approx(24.95)},
         {"project": "beta", "tool": "claude-code", "requests": 1, "sessions": 1, "cost_usd": pytest.approx(7.0),
@@ -314,15 +321,15 @@ def test_subagent_spend_splits_by_agent_id(kusto_store):
     body = _card(s, "subagents")
     tools = {tool["tool"]: tool for tool in body["tools"]}
     claude = tools["claude-code"]
-    assert claude["main"] == {"requests": 2, "priced": 2, "cost_usd": 2.0}
-    assert claude["subagents"] == {"requests": 3, "priced": 3, "cost_usd": 8.0, "agents": 2}
+    assert _bare(claude["main"]) == {"requests": 2, "priced": 2, "cost_usd": 2.0}
+    assert _bare(claude["subagents"]) == {"requests": 3, "priced": 3, "cost_usd": 8.0, "agents": 2}
     assert claude["subagent_share"] == pytest.approx(0.8)
     assert tools["codex-cli"]["main"]["cost_usd"] is None and tools["codex-cli"]["subagent_share"] is None
     assert body["summary"]["subagents"] == 2 and body["summary"]["subagent_share"] == pytest.approx(0.8)
     # The card names a tool as the board does; the labels come with the answer.
     assert body["tool_labels"] == {"claude-code": "Claude Code", "codex-cli": "Codex CLI"}
-    assert body["sessions"] == [{"session_id": "s1", "node_id": "test-node", "tool": "claude-code", "requests": 3,
-                                 "cost_usd": 8.0, "main_cost": 2.0, "agents": 2}]
+    assert _bare(body["sessions"]) == [{"session_id": "s1", "node_id": "test-node", "tool": "claude-code", "requests": 3,
+                                        "cost_usd": 8.0, "main_cost": 2.0, "agents": 2}]
 
 
 def test_after_failure_classifies_the_next_call_of_the_same_agent(kusto_store):
@@ -496,8 +503,8 @@ def test_a_stored_zero_cost_with_tokens_is_unpriced_and_the_cards_say_how_many_r
     s.insert("requests", dedup_key="z1", ts=14.0, session_id="s1", agent_id="a", tool="claude-code", cost_usd=0.0)
     body = _card(s, "subagents")
     (claude,) = body["tools"]
-    assert claude["main"] == {"requests": 2, "priced": 1, "cost_usd": 1.0}
-    assert claude["subagents"] == {"requests": 3, "priced": 2, "cost_usd": 2.0, "agents": 1}
+    assert _bare(claude["main"]) == {"requests": 2, "priced": 1, "cost_usd": 1.0}
+    assert _bare(claude["subagents"]) == {"requests": 3, "priced": 2, "cost_usd": 2.0, "agents": 1}
     assert body["summary"]["unpriced_requests"] == 2
     context = _card(s, "context")
     assert context["summary"]["unpriced_requests"] == 2 and context["summary"]["cost_usd"] == pytest.approx(3.0)
@@ -741,11 +748,11 @@ def test_problem_sessions_flag_each_signal_per_session_and_tool(kusto_store):
     tools = {tool["tool"]: tool for tool in body["tools"]}
     claude = {cell["signal"]: cell for cell in tools["claude-code"]["signals"]}
     assert (tools["claude-code"]["sessions"], tools["claude-code"]["flagged"], tools["claude-code"]["multi"]) == (2, 1, 1)
-    assert claude["compaction"] == {"signal": "compaction", "reported": True, "sessions": 1, "share": 0.5, "cost_usd": 2.0}
+    assert _bare(claude["compaction"]) == {"signal": "compaction", "reported": True, "sessions": 1, "share": 0.5, "cost_usd": 2.0}
     assert claude["failure_streak"]["sessions"] == 1 and claude["api_error"]["sessions"] == 1
-    assert claude["failed_delegation"] == {"signal": "failed_delegation", "reported": True, "sessions": 0, "share": 0.0,
+    assert _bare(claude["failed_delegation"]) == {"signal": "failed_delegation", "reported": True, "sessions": 0, "share": 0.0,
                                            "cost_usd": 0.0}
-    assert claude["open_todos"] == {"signal": "open_todos", "reported": False, "sessions": None, "share": None, "cost_usd": None}
+    assert _bare(claude["open_todos"]) == {"signal": "open_todos", "reported": False, "sessions": None, "share": None, "cost_usd": None}
     copilot = {cell["signal"]: cell for cell in tools["copilot-cli"]["signals"]}
     assert (copilot["failed_delegation"]["sessions"], copilot["failed_delegation"]["share"]) == (2, pytest.approx(2 / 3))
     assert copilot["failed_delegation"]["cost_usd"] == 0.5     # c2 is not priced
@@ -801,7 +808,7 @@ def test_the_findings_cards_name_the_project_that_carries_the_stake_and_the_summ
     _request(s, "b2", 1000.0, session="small2", cost=3.0, project_path="C:\\work\\beta", output_tokens=900)
     history = HistoryScope(kusto_store.history_store.reader, None)
     pause = _card(s, "pause")
-    assert pause["projects"] == [{"project": "alpha", "tool": "claude-code", "requests": 1, "sessions": 1, "cost_usd": 40.0,
+    assert _bare(pause["projects"]) == [{"project": "alpha", "tool": "claude-code", "requests": 1, "sessions": 1, "cost_usd": 40.0,
                                   "extra_usd": pytest.approx(39.0)}] and pause["summary"]["sessions"] == 1
     sub = _card(s, "subagents")
     assert sub["projects"] == [{"project": "alpha", "requests": 1, "agents": 1, "sessions": 1, "cost_usd": 20.0}]

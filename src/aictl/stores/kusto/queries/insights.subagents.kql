@@ -2,6 +2,8 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // Requests of the main agent against requests of subagents: a subagent request has an agent_id that is set
 // and differs from its session_id. A project is the last folder of the session's project path; the project rows are
 // the five with the highest subagent cost.
+// Each tool's main-agent and subagent bars (requests, cost, subagents) are split by the repository of the session
+// (rows repo_split, split_key main or subagents); each session row carries the repository of its session.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // requests_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
@@ -13,7 +15,7 @@ let requests_secs = union (requests_current_rows | where dedup_key !in (requests
         (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
     | where not(coalesce(_deleted, false))
     | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
-let per_agent = materialize(requests_secs
+let req_rows = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, cost_usd,
@@ -22,6 +24,90 @@ let per_agent = materialize(requests_secs
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
     // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
     | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(output_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
+    | project node_id, session_id, agent_id, ts, tool, cost_usd, project_path);
+// The rank counts an unpriced request at 0, as a stored cost of 0.
+let rank_requests = req_rows | project node_id, session_id, cost_usd;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
+let per_agent = materialize(req_rows
     | extend subagent=isnotempty(agent_id) and agent_id != session_id
     | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), first_ts=min(ts),
                 last_ts=max(ts), tool=take_any(tool), project_path=take_anyif(project_path, isnotempty(project_path))
@@ -38,8 +124,17 @@ union
         | where agents > 0
         | order by sum_cost desc, requests desc, node_id asc, session_id asc
         | take 10
+        | invoke repo_of()
         | extend row_type='session', main_cost=iff(main_priced == 0, real(null), main_cost)
         | project-away main_priced),
+    // Split by repository: each tool's main-agent and subagent figures, summed per session first.
+    (per_agent
+        | summarize requests=sum(requests), priced=sum(priced), sum_cost=sum(sum_cost), agents=countif(subagent)
+              by node_id, session_id, tool, subagent
+        | invoke repo_of()
+        | summarize requests=sum(requests), priced=sum(priced), sum_cost=sum(sum_cost), agents=sum(agents) by tool, subagent, repo
+        | project row_type='repo_split', tool, split_key=iff(subagent, 'subagents', 'main'), repo, requests, priced, sum_cost,
+                  agents),
     (per_agent
         | where subagent
         | extend project_name=extract(@'([^/\\]+)[/\\]*$', 1, project_path)

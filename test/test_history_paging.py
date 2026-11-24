@@ -273,17 +273,20 @@ BOUNDED = {
     "files.loaded": "one row per node and requested path",
     "memory.diff": "at most two rows, one per requested content hash",
     "files.session_inventory": "the inventory files of one folder, which no session adds to",
-    "insights.after_failure": "one row per tool and outcome, per tool, 10 sessions and one meta row",
+    "insights.after_failure": "one row per tool and outcome, per tool, 10 sessions, one meta row and at most 9 repository rows "
+                              "per tool",
     "insights.context_weight": "one row per tool and context bucket, per tool, 10 sessions and one meta row",
     "insights.fixed_context": "one row per tool and kind, per tool, 10 skills, 10 files, 10 sessions and one meta row",
-    "insights.problem_sessions": "one row per tool and signal, per tool, 10 pairs, 10 projects, 10 sessions and one meta row",
+    "insights.problem_sessions": "one row per tool and signal, per tool, 10 pairs, 10 projects, 10 sessions, one meta row and at "
+                                 "most 9 repository rows per tool, per tool and signal and per pair",
     "insights.context_carry": "the 25 tool names that carry most, one row per tool, 10 sessions, one meta row and at most 9 repository "
                              "rows per tool name and per tool",
     "insights.orientation": "10 projects, one row per tool, 10 sessions and one meta row",
     "insights.pause_tax": "one row per tool and pause bucket, per tool, 10 sessions, 10 projects, one reach row, one row "
-                          "per tool, long-pause bucket and cause, 10 tools and programs of long pauses and one meta row",
+                          "per tool, long-pause bucket and cause, 10 tools and programs of long pauses, one meta row and at "
+                          "most 9 repository rows per tool and bucket, per project row, per tool and cause and per program row",
     "insights.rereads": "two rows per tool, 10 sessions and one meta row",
-    "insights.subagents": "two rows per tool, 10 sessions and one meta row",
+    "insights.subagents": "two rows per tool, 10 sessions, one meta row and at most 9 repository rows per tool and side",
     "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions, one meta row and at most 9 repository "
                           "rows per tool and per program row",
     "insights.work_per_instruction": "per tool, a coverage row per tool, one row per tool and bin (at most 26 weeks, or "
