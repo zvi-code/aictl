@@ -1,32 +1,52 @@
-/* The work cards (repositories, durations, changes): one expandable row per repository. */
+/* The work cards (repositories, durations, changes): titled bar, range and column charts, then one expandable row per repository. */
+.figure { display: grid; gap: var(--space-2); margin: 0; min-inline-size: 0; }
+.title { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.list { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.list > li > span { display: flex; }
+.hit {
+  display: grid; grid-template-columns: minmax(7rem, 11rem) 1fr; gap: var(--space-1) var(--space-3); align-items: center;
+  inline-size: 100%; padding: var(--space-1) 0; border: 0; border-radius: var(--radius-sm); background: none; color: inherit;
+  font: inherit; font-size: var(--text-xs); text-align: start; cursor: default;
+}
+.hit:hover { background: var(--color-raised); }
+.hit:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
+.label { overflow-wrap: anywhere; }
+.label small { display: block; color: var(--color-muted); }
+.tracks { display: grid; gap: var(--space-1); min-inline-size: 0; }
+.bar { display: grid; grid-template-columns: minmax(4rem, 16rem) minmax(0, 1fr); gap: var(--space-2); align-items: center; min-inline-size: 0; }
+.track { display: flex; block-size: var(--space-3); border-radius: var(--radius-sm); background: var(--color-raised); overflow: hidden; }
+.track > span { display: block; block-size: 100%; flex: none; }
+.value { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.range { position: relative; display: block; block-size: var(--space-3); border-radius: var(--radius-sm); background: var(--color-raised); }
+.range > span { position: absolute; inset-block: 0; inset-inline-start: 0; display: block; }
+.range > .mid { background: var(--color-chart-1); border-radius: var(--radius-sm); }
+.range > .high { inset-block: calc(50% - 1px); background: var(--color-chart-1); }
+.range > .max { inline-size: 2px; background: var(--color-text); }
+.c1 { background: var(--color-chart-1); }
+.c2 { background: var(--color-chart-2); }
+.c3 { background: var(--color-chart-3); }
+.c4 { background: var(--color-chart-4); }
+.c1soft { background: var(--color-chart-1); opacity: .45; }
+.muted { background: var(--color-muted); opacity: .5; }
+.column { fill: var(--color-chart-3); }
+.column:hover { fill: var(--color-chart-1); }
+.figure svg text.small { font-size: calc(var(--text-xs) * .8); }
+.left { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }
+
 .rows { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .row { border-block-end: var(--border-size) solid var(--color-border-subtle); padding-block-end: var(--space-2); min-inline-size: 0; }
-.row > summary { cursor: pointer; display: grid; grid-template-columns: minmax(8rem, 13rem) 1fr; gap: var(--space-1) var(--space-4); align-items: center; font-size: var(--text-xs); list-style: none; }
-.row > summary::-webkit-details-marker { display: none; }
+.row > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); align-items: baseline; font-size: var(--text-xs); }
 .row > summary:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
 .row[open] > summary { margin-block-end: var(--space-3); }
 .name { overflow-wrap: anywhere; font-weight: var(--weight-medium); }
-.name small { display: block; color: var(--color-muted); font-weight: normal; }
-.figures { display: grid; gap: var(--space-1); min-inline-size: 0; font-variant-numeric: tabular-nums; }
-.figures small { color: var(--color-muted); }
-.meter { display: flex; align-items: center; gap: var(--space-2); }
-.track { flex: 1; block-size: var(--space-3); border-radius: var(--radius-sm); background: var(--color-raised); overflow: hidden; max-inline-size: 24rem; }
-.track > span { display: block; block-size: 100%; }
-.spend { background: var(--color-chart-3); }
-.muted { background: var(--color-muted); opacity: .5; }
-.alt { background: var(--color-chart-2); }
+.rowText { color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .detail { display: grid; gap: var(--space-3); padding-inline-start: var(--space-4); font-size: var(--text-xs); min-inline-size: 0; }
 .facts { display: grid; gap: var(--space-1) var(--space-5); grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr)); margin: 0; }
 .facts div { display: flex; justify-content: space-between; gap: var(--space-2); border-block-end: var(--border-size) dotted var(--color-border-subtle); }
 .facts dt { color: var(--color-muted); }
 .facts dd { margin: 0; font-variant-numeric: tabular-nums; text-align: end; }
-.weeks { display: flex; align-items: flex-end; gap: var(--space-1); block-size: 3rem; margin: 0; padding: 0; list-style: none; }
-.weeks li { flex: 1; max-inline-size: 3rem; display: flex; flex-direction: column; justify-content: flex-end; block-size: 100%; }
-.weeks li > span { display: block; background: var(--color-chart-3); border-radius: var(--radius-sm) var(--radius-sm) 0 0; min-block-size: 1px; }
-.weeksAxis { display: flex; gap: var(--space-1); margin: 0; padding: 0; list-style: none; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-.weeksAxis li { flex: 1; max-inline-size: 3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 .sessions { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
 .sessions li { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); align-items: baseline; font-variant-numeric: tabular-nums; }
 .sessions button { font: inherit; color: var(--color-accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
 .sessions button:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
-.kind { display: inline-block; margin-inline-start: var(--space-2); padding: 0 var(--space-1); border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-sm); color: var(--color-muted); font-size: var(--text-xs); font-weight: normal; }
+.kind { display: inline-block; padding: 0 var(--space-1); border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-sm); color: var(--color-muted); font-size: var(--text-xs); font-weight: normal; }

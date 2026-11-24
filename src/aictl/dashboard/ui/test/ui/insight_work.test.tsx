@@ -4,7 +4,10 @@ import Changes from '../../src/panels/insights/Changes'
 import Durations from '../../src/panels/insights/Durations'
 import Repositories from '../../src/panels/insights/Repositories'
 import {
-  changeFinding, changeHero, durationFinding, durationHero, repoFinding, repoHero, smallText,
+  binUnit, binWidth, changeBinChart, changeFilesChart, changeFinding, changeHero, changeKindChart, changePerCommitChart, changeSessionsChart,
+  changeWritesChart, durationFinding, durationFirstChangeRange, durationHero, durationSessionRange, durationWorkChart, modelRange,
+  modelTimeChart, repoBinChart, repoFinding, repoHero, repoModelChart, repoOutputChart, repoPerCommitChart, repoSpendChart,
+  repoStartChart, reworkedChart, smallText, toolRange, toolTimeChart,
   type ChangeBody, type ChangeRepo, type DurationBody, type DurationRepo, type DurationTool, type Repo, type RepoBody, type SessionTimes,
 } from '../../src/panels/insights/workModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -28,7 +31,7 @@ const repo = (values: Partial<Repo> & { repo: string; name: string }): Repo => (
 })
 const app = repo({ repo: '/src/app', name: 'app', cost_usd: 300, cost_share: 0.6, commits: 4, cost_per_commit: 75 })
 const docs = repo({ repo: '/src/docs', name: 'docs', cost_usd: 150, cost_share: 0.3, commits: 30, cost_per_commit: 5, idle_sessions: 0 })
-const scratch = repo({ repo: '/tmp/scratch', name: 'scratch', kind: 'folder', cost_usd: 50, cost_share: 0.1, requests: 12, small: true,
+const scratch = repo({ repo: '/tmp/scratch', name: 'scratch', kind: 'folder', cost_usd: 50, cost_share: 0.1, priced: 12, requests: 12, small: true,
   commits: 0, cost_per_commit: null, idle_sessions: 1 })
 const brief = (r: Repo) => ({ repo: r.repo, name: r.name, kind: r.kind, sessions: r.sessions, cost_usd: r.cost_usd, cost_share: r.cost_share,
   commits: r.commits, files: r.files, cost_per_commit: r.cost_per_commit, cost_per_file: r.cost_per_file, idle_sessions: r.idle_sessions })
@@ -56,45 +59,87 @@ const props = (ctx: PanelContext) => ({ ctx, boxes: createBoxes('test-work'), si
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights') })
 
 describe('Work by repository', () => {
-  it('states which repository took what share of the spend, what it produced, and who pays most per commit', () => {
-    expect(repoFinding(body)).toBe('app took $300 of $500 at list price (60%) in 10 sessions, and produced 4 commits and 20 changed ' +
-      'files. Per commit, app spent $75.00 against $5.00 in docs (15.0 times as much). 3 sessions changed no file and made no commit.')
-    expect(repoHero(body)).toEqual({ value: '60%', label: "of the period's spend went to app" })
-  })
-
-  it('names a folder as a folder and the repositories too small to compare in one line', () => {
-    const folderTop = { ...body, summary: { ...body.summary, top: brief(scratch), dearest_per_commit: null, cheapest_per_commit: null } } as RepoBody
-    expect(repoFinding(folderTop)).toMatch(/^the folder scratch took \$50\.00 of \$500/)
-    expect(repoFinding(folderTop)).toContain('None of that spend ended in a commit.')
+  it('states the sessions, spend and output it covers, with no ranking or verdict', () => {
+    expect(repoFinding(body)).toBe('30 sessions in 3 repositories or folders: $500 at list price, 34 commits, 60 changed files and ' +
+      '6 h of agent working time. 3 of the 30 sessions changed no file and made no commit; 18 were started by a script and 9 by a person.')
+    expect(repoHero(body)).toEqual({ value: '$500', label: 'spend at list price in 30 sessions across 3 repositories or folders' })
+    const unpriced = { ...body, summary: { ...body.summary, unpriced: 4 } } as RepoBody
+    expect(repoFinding(unpriced)).toContain(' 4 requests had no price and are not in the spend.')
     expect(smallText(['a', 'b'])).toBe('Too small to compare (fewer than 50 model requests): a, b.')
     expect(smallText([])).toBe('')
   })
 
   it('never reads an unreported spend as zero', () => {
     const none = { ...body, summary: { ...body.summary, cost_usd: null, top: null } } as RepoBody
-    expect(repoFinding(none)).toBe('30 sessions in 3 repositories or folders; no spend is reported for them, so no repository can be ranked by spend.')
+    expect(repoFinding(none)).toMatch(/^30 sessions in 3 repositories or folders: spend not reported, 34 commits/)
     expect(repoHero(none)).toBeUndefined()
     const empty = { ...body, repos: [], summary: { ...body.summary, sessions: 0, top: null } } as RepoBody
     expect(repoFinding(empty)).toBe('No agent session made a model request or a tool call in this period.')
   })
 
-  it('draws a row per repository, a small one in grey, opens to its figures and sessions, and sends the page filters', () => {
+  it('builds the hover text of every kind of mark from the figures behind it', () => {
+    const spend = repoSpendChart(body)
+    expect(spend.rows.map(row => row.tracks[0].text)).toEqual(['$300 · 60%', '$150 · 30%', '$50.00 · 10%'])
+    expect(spend.rows[0].hover).toBe('app: $300 at list price, 60% of $500; 500 priced requests of 500; 10 sessions.')
+    expect(spend.rows[2].hover).toBe('the folder scratch: $50.00 at list price, 10% of $500; 12 priced requests of 12; 10 sessions. ' +
+      'Too few to compare (fewer than 50 model requests): drawn grey.')
+    expect(spend.rows[2].tracks[0].parts[0].tone).toBe('muted')
+    expect(spend.axis).toBe('Linear scale from 0 to $300.')
+    const output = repoOutputChart(body)
+    expect(output.rows[0].tracks.map(track => track.text)).toEqual(['4 commits', '20 files'])
+    expect(output.rows[0].hover).toBe('app: 4 commits in 4 sessions; 20 changed files in 30 writes, lines +400 −100; 2 of 10 sessions ' +
+      'changed no file and made no commit.')
+    expect(output.axis).toBe('Each bar on its own linear scale: commits 0 to 30, files 0 to 20.')
+    const perCommit = repoPerCommitChart(body)
+    expect(perCommit.rows.map(row => row.key)).toEqual(['app', 'docs'])
+    expect(perCommit.left).toEqual(['scratch'])
+    expect(perCommit.rows[0].hover).toBe('app: $300 ÷ 4 commits = $75.00 per commit; $5.00 per changed file (20 files).')
+    expect(repoStartChart(body).rows[0].tracks[0].text).toBe('6 script · 3 person · 1 not known')
+    const models = repoModelChart(app)
+    expect(models.rows[0].tracks[0].text).toBe('500 requests · $100')
+    expect(models.rows[0].hover).toBe("gpt-5 in app: 500 requests of 500, $100 at list price (33% of the repository's $300).")
+    const bins = repoBinChart(app, body.range)
+    expect(bins.title).toBe('Spend per week in app (US dollars; commits under each column)')
+    expect(bins.columns.map(column => [column.text, column.under])).toEqual([['$60.00', '6 commits'], ['$40.00', '4 commits']])
+    expect(bins.columns[0].hover).toBe('app, Nov 14 to Nov 20: $60.00 at list price, 6 commits, 6 sessions.')
+  })
+
+  it('cuts time bins as the server does: weeks up to 8 bins, days up to 31', () => {
+    expect(binWidth({ since: 0, until: 1 }, 7 * 86400, 8)).toBe(7 * 7 * 86400)
+    expect(binUnit(7 * 86400)).toBe('week')
+    expect(binUnit(14 * 86400)).toBe('2 weeks')
+    expect(binUnit(86400)).toBe('day')
+    expect(binUnit(12 * 86400)).toBe('12 days')
+  })
+
+  it('draws titled charts with the value on every bar and the hover on it, then a row per repository with its detail', () => {
     const requested: string[] = [], opened: string[] = []
     const ctx = context({ data: { ...body, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null }, requested, opened)
     const { host, dispose } = mount(() => <Repositories {...props(ctx)} />)
     const box = host.querySelector('[data-box="insight-repos"]')!
-    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('60%')
+    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('$500')
+    const spend = box.querySelector('[data-chart="spend"]')!
+    expect(spend.querySelector('figcaption')!.textContent).toBe('Spend at list price per repository (US dollars)')
+    expect([...spend.querySelectorAll('[data-value]')].map(value => value.textContent)).toEqual(['$300 · 60%', '$150 · 30%', '$50.00 · 10%'])
+    expect(spend.querySelector('[data-bar="app"] [role="tooltip"]')!.textContent).toMatch(/^app: \$300 at list price, 60% of \$500/)
+    expect(spend.querySelector('[data-bar="scratch"]')!.hasAttribute('data-small')).toBe(true)
+    expect(box.querySelector('[data-chart="output"] [data-bar="docs"]')!.textContent).toContain('30 commits')
+    expect(box.querySelector('[data-chart="per-commit"]')!.textContent).toContain('$75.00 per commit')
+    expect(box.querySelector('[data-no-per-commit]')!.textContent).toBe('Fewer than 3 commits, no spend per commit: scratch.')
+    expect(box.querySelector('[data-chart="started"] [data-bar="app"] [data-value]')!.textContent).toBe('6 script · 3 person · 1 not known')
+    expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 50 model requests): scratch.')
     const rows = [...box.querySelectorAll('[data-repo]')]
     expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['app', 'docs', 'scratch'])
     expect(rows[2].hasAttribute('data-small')).toBe(true)
-    expect(rows[2].querySelector('summary')!.textContent).toContain('folder')
-    expect(rows[0].querySelector('summary')!.textContent).toContain('$300 · 60%')
-    expect(rows[0].querySelector('summary')!.textContent).toContain('4 commits · 20 files +400 −100 · 2 h working')
-    expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 50 model requests): scratch.')
+    expect(rows[0].querySelector('summary')!.textContent).toContain('$300 · 10 sessions · 4 commits')
     const detail = rows[0].querySelector('[data-repo-detail]')!
     expect(detail.textContent).toContain('Spend per commit$75.00')
     expect(detail.textContent).toContain('Sessions started6 by a script, 3 by a person, 1 not known')
-    ;(detail.querySelector('button') as HTMLButtonElement).click()
+    expect(detail.querySelector('[data-chart="models"] [data-value]')!.textContent).toBe('500 requests · $100')
+    const column = detail.querySelector('[data-chart="bins"] [data-column] rect title')!
+    expect(column.textContent).toBe('app, Nov 14 to Nov 20: $60.00 at list price, 6 commits, 6 sessions.')
+    expect(detail.querySelector('[data-chart="bins"] svg')!.textContent).toContain('$60.00')
+    ;(detail.querySelector('[data-sessions] button') as HTMLButtonElement).click()
     expect(opened).toEqual(['s-top:flow'])
     expect(requested[0]).toContain('tool=copilot-cli')
     expect(requested[0]).toContain('model=claude-opus-5-5')
@@ -125,31 +170,62 @@ const durations = {
 } as unknown as DurationBody
 
 describe('Where session time goes', () => {
-  it('leads with working time and where it went, then the median session, waiting and the slowest things', () => {
-    expect(durationFinding(durations)).toBe('Agents worked 25 h in 20 sessions; loop took 80% of it (20 h in 20 sessions). A session ' +
-      'worked 10 min at the median and 1 h at the 90th percentile. Between turns, sessions waited 5 h for a person. The most tool ' +
-      'time went to pytest (program): 1 h, 50% of all tool-call time, most of it in loop. The slowest model was gpt-5: 1 request ' +
-      'in 20 took over 1 min 30 s.')
-    expect(durationHero(durations)).toEqual({ value: '25 h', label: 'of agent working time in 20 sessions, 80% of it in loop' })
+  it('states working time, its distribution, waiting and the summed model and tool time', () => {
+    expect(durationFinding(durations)).toBe('Agents worked 25 h in 20 sessions with turn times. Per session: median 10 min, 90th ' +
+      'percentile 1 h, longest 4 h. Waiting for a person between turns: 5 h over 30 waits. Summed model request time 10 h over ' +
+      '2,000 requests; summed tool-call time 2 h over 4,000 calls.')
+    expect(durationHero(durations)).toEqual({ value: '25 h', label: 'of agent working time in 20 sessions with turn times' })
+    const partly = { ...durations, summary: { ...durations.summary, sessions: 26 } } as DurationBody
+    expect(durationHero(partly)!.label).toBe('of agent working time in 20 sessions with turn times (of 26 sessions)')
     const untimed = { ...durations, summary: { ...durations.summary, timed: 0, agent_ms: null } } as DurationBody
     expect(durationFinding(untimed)).toBe('20 sessions in this period, but no tool recorded when their turns started and ended, so ' +
       'working time is not reported.')
     expect(durationHero(untimed)).toBeUndefined()
   })
 
-  it('draws working and waiting time per repository and keeps wall-clock length in the detail', () => {
+  it('builds the hover text of bars and percentile rows from the figures behind them', () => {
+    const work = durationWorkChart(durations)
+    expect(work.rows[0].tracks.map(track => track.text)).toEqual(['worked 20 h · 80%', 'waited 5 h'])
+    expect(work.rows[0].hover).toBe('loop: agent working time 20 h, 80% of 25 h, in 20 sessions with turn times (of 20); waiting for a ' +
+      'person 5 h over 30 waits.')
+    expect(work.tops).toEqual([72_000_000, 72_000_000])
+    const range = durationSessionRange(durations)
+    expect(range.rows.map(row => row.text)).toEqual(['median 10 min · 90th 1 h · longest 4 h', 'fewer than 5 sessions with turn times'])
+    expect(range.rows[1].mid).toBeNull()
+    expect(range.rows[1].hover).toBe('the folder t: agent working time per session over 2 sessions with turn times; not drawn: a median ' +
+      'needs 5 or more sessions with turn times.')
+    expect(durationFirstChangeRange(durations).rows[0].text).toBe('median 2 min · 90th 15 min')
+    const tools = toolTimeChart(durations)
+    expect(tools.rows[0].tracks[0].text).toBe('1 h · 50%')
+    expect(tools.rows[0].hover).toBe('pytest (program): 1 h summed over 300 timed calls of 300 (50% of all tool-call time, 2 h); ' +
+      'median 4 s, 95th percentile 1 min; 30 failed calls (10%); most time in loop: 50 min.')
+    expect(toolRange(durations).rows[0].text).toBe('median 4 s · 95th 1 min')
+    expect(modelTimeChart(durations).rows[0].tracks[0].text).toBe('10 h · 100%')
+    expect(modelRange(durations).rows[0].text).toBe('median 8 s · 95th 1 min 30 s')
+  })
+
+  it('draws working and waiting time, percentiles, tools and models, and keeps wall-clock length in the detail', () => {
     const ctx = context({ data: { ...durations, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
     const { host, dispose } = mount(() => <Durations {...props(ctx)} />)
     const box = host.querySelector('[data-box="insight-durations"]')!
+    const work = box.querySelector('[data-chart="work"]')!
+    expect(work.querySelector('figcaption')!.textContent).toBe('Agent working time and waiting time per repository (hours)')
+    expect([...work.querySelectorAll('[data-bar="loop"] [data-value]')].map(value => value.textContent)).toEqual(['worked 20 h · 80%', 'waited 5 h'])
+    expect(work.querySelector('[data-bar="loop"] [role="tooltip"]')!.textContent).toMatch(/^loop: agent working time 20 h/)
+    const range = box.querySelector('[data-chart="session-range"]')!
+    expect(range.querySelector('[data-bar="loop"] [data-value]')!.textContent).toBe('median 10 min · 90th 1 h · longest 4 h')
+    expect(range.querySelector('[data-bar="loop"] [data-mid]')).not.toBeNull()
+    expect(range.querySelector('[data-bar="loop"] [data-max]')).not.toBeNull()
+    expect(range.querySelector('[data-bar="t"] [data-mid]')).toBeNull()
+    expect(box.querySelector('[data-chart="tools"] [data-bar="pytest"] [data-value]')!.textContent).toBe('1 h · 50%')
+    expect(box.querySelector('[data-chart="tool-range"] [data-bar="pytest"] [role="tooltip"]')!.textContent).toContain('95th percentile 1 min')
+    expect(box.querySelector('[data-chart="model-range"] [data-bar="gpt-5"] [data-value]')!.textContent).toBe('median 8 s · 95th 1 min 30 s')
+    expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 5 sessions with turn times): t.')
     const rows = [...box.querySelectorAll('[data-repo]')]
     expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['loop', 't'])
-    expect(rows[0].querySelector('summary')!.textContent).toContain('worked 20 h')
-    expect(rows[0].querySelector('summary')!.textContent).toContain('median session 10 min · 90th percentile 1 h')
     expect(rows[0].querySelector('summary')!.textContent).not.toContain('Wall-clock')
     expect(rows[0].querySelector('[data-repo-detail]')!.textContent).toContain('Wall-clock length (open time, not work)median 15 min')
     expect(rows[1].hasAttribute('data-small')).toBe(true)
-    expect(rows[1].querySelector('summary')!.textContent).toContain('too few sessions for a median')
-    expect(box.querySelector('[data-tool-name="pytest"]')!.textContent).toContain('1 h · median 4 s · p95 1 min')
     dispose()
   })
 })
@@ -165,7 +241,7 @@ const svc = changeRepo({ repo: '/src/svc', name: 'svc' })
 const loop = changeRepo({ repo: '/src/loop', name: 'loop', writes: 300, committed_writes: 0, committed_share: 0, files: 40, files_share: 0.34,
   commits: 0, commit_days: 0, cost_per_commit: null, time_per_commit_ms: null, uncommitted_sessions: 30, change_sessions: 30 })
 const tiny = changeRepo({ repo: '/tmp/t', name: 't', kind: 'folder', writes: 5, committed_writes: 0, committed_share: 0, files: 2,
-  files_share: 0.02, commits: 0, small: true })
+  files_share: 0.02, commits: 0, cost_per_commit: null, time_per_commit_ms: null, small: true })
 const changeBrief = (r: ChangeRepo) => ({ repo: r.repo, name: r.name, kind: r.kind, files: r.files, files_share: r.files_share, writes: r.writes,
   committed_writes: r.committed_writes, committed_share: r.committed_share, commits: r.commits, reworked: r.reworked,
   cost_per_commit: r.cost_per_commit, time_per_commit_ms: r.time_per_commit_ms, change_sessions: r.change_sessions,
@@ -183,29 +259,67 @@ const changes = {
 } as unknown as ChangeBody
 
 describe('What the agents changed', () => {
-  it('states what was changed, the committed share, where changes were never committed and what was redone', () => {
-    expect(changeFinding(changes)).toBe('Agents changed 101 files (505 writes, +6.0 k −1.6 k lines) in 46 sessions; 30% of the writes ' +
-      'ended in a commit in the same session. svc holds 50% of the changed files. The most changes never committed are in loop: ' +
-      '300 writes, 30 sessions changed files and made no commit. 9 files were written again and again; the most, plan.md, 90 times ' +
-      'in 12 sessions.')
-    expect(changeHero(changes)).toEqual({ value: '30%', label: 'of 505 file writes by agents ended in a commit in the same session' })
+  it('states the writes, files and lines, what share a commit followed, and the files written again', () => {
+    expect(changeFinding(changes)).toBe('505 file writes by agents to 101 files (+6.0 k −1.6 k lines) in 46 sessions across 3 repositories ' +
+      'or folders. A commit of the same session followed 150 of the writes (30%); 12 commits in all; 41 sessions changed files and ' +
+      'made no commit. 9 files were written in 3 or more sessions or 5 or more times in one.')
+    expect(changeHero(changes)).toEqual({ value: '101', label: 'files changed by agents: 505 file writes in 46 sessions' })
     const none = { ...changes, summary: { ...changes.summary, writes: 0, commits: 0, committed_share: null } } as ChangeBody
     expect(changeFinding(none)).toBe('No agent changed a file or made a commit in this period.')
     expect(changeHero(none)).toBeUndefined()
   })
 
-  it('splits each repository\'s writes into committed and not, greys a small one, and points to the commit check', () => {
+  it('builds the hover text of bars, stacked parts, columns and rewritten files from the figures behind them', () => {
+    const files = changeFilesChart(changes)
+    expect(files.rows.map(row => row.tracks[0].text)).toEqual(['59 · 50%', '40 · 34%', '2 · 2%'])
+    expect(files.rows[0].hover).toBe('svc: 59 distinct files changed, 50% of 101; 200 writes, lines +3.0 k −800; kinds: 40 source · ' +
+      '10 tests · 5 docs · 3 config and data · 1 memory and instructions.')
+    const kindRows = changeKindChart(changes).rows
+    expect(kindRows[0].tracks[0].text).toBe('40 · 68%')
+    expect(kindRows[0].hover).toBe('source: 40 files, 68% of 59 changed files. Kind by path: code, query, style and markup files by extension.')
+    const writes = changeWritesChart(changes)
+    expect(writes.rows.map(row => row.tracks[0].text)).toEqual(['150 committed · 50 not', '0 committed · 300 not', '0 committed · 5 not'])
+    expect(writes.rows[0].hover).toBe('svc: 200 writes; a commit of the same session followed 150 (75%), none followed 50; 12 commits on ' +
+      '6 days in 5 sessions.')
+    expect(changeSessionsChart(changes).rows[0].tracks[0].text).toBe('5 · 10 · 5')
+    const perCommit = changePerCommitChart(changes)
+    expect(perCommit.rows.map(row => row.key)).toEqual(['svc'])
+    expect(perCommit.rows[0].tracks.map(track => track.text)).toEqual(['$10.00 per commit', '50 min per commit'])
+    expect(perCommit.rows[0].hover).toBe('svc: $120 at list price ÷ 12 commits = $10.00; agent working time 10 h ÷ 12 commits = 50 min.')
+    const commits = changeBinChart(changes, 'commits')
+    expect(commits.title).toBe('Commits per day')
+    expect(commits.columns.map(column => column.text)).toEqual(['4', '8'])
+    expect(commits.columns[0].hover).toBe('Nov 14: 4 commits, 100 file writes.')
+    expect(changeBinChart(changes, 'writes').columns.map(column => column.text)).toEqual(['100', '405'])
+    const reworked = reworkedChart(changes)
+    expect(reworked.rows[0].tracks[0].text).toBe('90 writes · 12 sessions')
+    expect(reworked.rows[0].hover).toBe('/src/loop/docs/plan.md (docs, loop): 90 writes in 12 sessions, at most 20 in one session.')
+  })
+
+  it('draws titled charts with values and hovers, greys a small repository, and points to the commit check', () => {
     const ctx = context({ data: { ...changes, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
     const { host, dispose } = mount(() => <Changes {...props(ctx)} />)
     const box = host.querySelector('[data-box="insight-changes"]')!
+    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('101')
+    const writes = box.querySelector('[data-chart="writes"]')!
+    expect(writes.querySelector('figcaption')!.textContent).toBe('File writes per repository, by whether a commit of the same session followed')
+    expect(writes.querySelector('[data-bar="svc"] [data-value]')!.textContent).toBe('150 committed · 50 not')
+    expect(writes.querySelector('[data-bar="svc"] [role="tooltip"]')!.textContent).toMatch(/^svc: 200 writes/)
+    expect(writes.querySelector('[data-bar="t"]')!.hasAttribute('data-small')).toBe(true)
+    expect(box.querySelector('[data-chart="repo-kinds"] [data-bar="svc"] [data-value]')!.textContent)
+      .toBe('40 source · 10 tests · 5 docs · 3 config and data · 1 memory and instructions')
+    expect(box.querySelectorAll('[data-chart="repo-kinds"] [data-bar="svc"] [data-part]').length).toBe(6)
+    const commits = box.querySelector('[data-chart="commits"]')!
+    expect(commits.querySelector('svg')!.textContent).toContain('8')
+    expect(commits.querySelector('[data-column] rect title')!.textContent).toBe('Nov 14: 4 commits, 100 file writes.')
+    expect(box.querySelector('[data-chart="reworked"] [data-bar="plan.md"] [role="tooltip"]')!.textContent)
+      .toBe('/src/loop/docs/plan.md (docs, loop): 90 writes in 12 sessions, at most 20 in one session.')
+    expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 20 file writes and 3 commits): t.')
     const rows = [...box.querySelectorAll('[data-repo]')]
     expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['svc', 'loop', 't'])
-    expect(rows[0].querySelector('summary')!.textContent).toContain('200 writes · 75% committed')
-    expect(rows[0].querySelector('summary')!.textContent).toContain('40 source · 10 tests · 5 docs · 3 config and data · 1 memory and instructions')
     expect(rows[0].querySelector('[data-repo-detail]')!.textContent).toContain('Per commit$10.00 and 50 min of working time per commit')
     expect(rows[1].querySelector('[data-repo-detail]')!.textContent).toContain('0 commits, too few for a cost per commit')
     expect(rows[2].hasAttribute('data-small')).toBe(true)
-    expect(box.querySelector('[data-file="plan.md"]')!.textContent).toContain('90 writes in 12 sessions, at most 20 in one')
     expect(box.textContent).toContain('see the card "Verified before commit"')
     dispose()
   })

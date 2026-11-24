@@ -1,39 +1,26 @@
 import { For, Show, untrack } from 'solid-js'
-import { fmtNum, fmtShare, fmtUsd, stamp } from '../../design/format'
+import { fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import type { PanelContext } from '../types'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { count, share, toolLabel } from './insightsModel'
-import { agentTime, repoFinding, repoHero, repoLines, repoName, smallText, startedText, type Repo, type RepoBody } from './workModel'
+import { Bars, Columns } from './WorkCharts'
+import {
+  agentTime, repoBinChart, repoFinding, repoHero, repoLines, repoModelChart, repoName, repoOutputChart, repoPerCommitChart,
+  repoSpendChart, repoStartChart, SHOWN, smallText, startedText, type Repo, type RepoBody,
+} from './workModel'
 import styles from './Insights.module.css'
 import own from './Work.module.css'
 
-const SHOWN = 15
 const money = (value: number | null) => value == null ? 'not reported' : fmtUsd(value)
 
-/** A repository's weeks (or longer bins): spend as columns, commits under each. */
-function Bins(props: { repo: Repo }) {
-  const largest = () => Math.max(0, ...props.repo.bins.map(bin => bin.cost_usd))
-  return <Show when={props.repo.bins.length} fallback={<p class={styles.note}>No spend or commit in a bin of this period.</p>}>
-    <ol class={own.weeks} aria-label={`${props.repo.name}: spend per bin`}>
-      <For each={props.repo.bins}>{bin => <li title={`From ${stamp(bin.start, true)}: ${fmtUsd(bin.cost_usd)}, ` +
-        `${fmtNum(bin.commits)} commits, ${fmtNum(bin.sessions)} sessions`}>
-        <span style={{ 'block-size': `${largest() ? (bin.cost_usd / largest() * 100).toFixed(1) : 0}%` }} />
-      </li>}</For>
-    </ol>
-    <ol class={own.weeksAxis} aria-hidden="true">
-      <For each={props.repo.bins}>{bin => <li>{fmtNum(bin.commits)} c</li>}</For>
-    </ol>
-  </Show>
-}
-
-/** What one repository row opens to: its figures, models, bins and its costliest sessions. */
-function RepoDetail(props: { repo: Repo; ctx: PanelContext }) {
+/** What one repository row opens to: its figures, its models, its spend per bin and its costliest sessions. */
+function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelContext }) {
   const repo = () => props.repo
   const facts = (): [string, string][] => [
     ['Folders in it', fmtNum(repo().projects)],
-    ['Model requests', fmtNum(repo().requests)],
-    ['Unpriced requests', fmtNum(repo().unpriced)],
-    ['Agent working time', agentTime(repo().agent_ms)],
+    ['Machines', fmtNum(repo().nodes)],
+    ['Model requests', `${fmtNum(repo().requests)} (${fmtNum(repo().unpriced)} unpriced)`],
+    ['Agent working time', `${agentTime(repo().agent_ms)} in ${fmtNum(repo().timed_sessions)} timed sessions`],
     ['Sessions started', startedText(repo())],
     ['Sessions that changed nothing', `${fmtNum(repo().idle_sessions)} of ${fmtNum(repo().sessions)}`],
     ['Tool calls failed', `${fmtNum(repo().failed)} of ${fmtNum(repo().calls)} (${share(repo().failed_share)})`],
@@ -46,50 +33,50 @@ function RepoDetail(props: { repo: Repo; ctx: PanelContext }) {
   ]
   return <div class={own.detail} data-repo-detail>
     <dl class={own.facts}><For each={facts()}>{([label, value]) => <div><dt>{label}</dt><dd>{value}</dd></div>}</For></dl>
-    <p class={styles.note}>Models: {repo().models.map(model => `${model.model ?? 'not reported'} ${fmtNum(model.requests)} requests, ` +
-      money(model.cost_usd)).join(' · ') || 'none'}</p>
-    <h4 class={styles.subhead}>Spend by time (column) and commits (under it)</h4>
-    <Bins repo={repo()} />
-    <h4 class={styles.subhead}>Costliest sessions</h4>
-    <ol class={own.sessions}>
-      <For each={repo().top_sessions}>{session => <li>
-        <button type="button" onClick={() => props.ctx.openAgent(session.session_id, 'flow')}>{session.session_id}</button>
-        <span>{toolLabel(String(session.tool ?? ''))}</span>
-        <span>{money(session.cost_usd)}</span>
-        <span>{fmtNum(session.commits)} commits · {fmtNum(session.files)} files · {agentTime(session.agent_ms)} working</span>
-        <Show when={session.scripted != null}><span>{session.scripted ? 'started by a script' : 'started by a person'}</span></Show>
-      </li>}</For>
-    </ol>
+    <Bars chart={repoModelChart(repo())} />
+    <Show when={repo().bins.length} fallback={<p class={styles.note}>No spend or commit in a bin of this period.</p>}>
+      <Columns chart={repoBinChart(repo(), props.range)} />
+    </Show>
+    <Show when={repo().top_sessions.length}>
+      <h4 class={own.title}>Sessions by spend</h4>
+      <ol class={own.sessions} data-sessions>
+        <For each={repo().top_sessions}>{session => <li>
+          <button type="button" onClick={() => props.ctx.openAgent(session.session_id, 'flow')}>{session.session_id}</button>
+          <span>{toolLabel(String(session.tool ?? ''))}</span>
+          <span>{money(session.cost_usd)} · {fmtNum(session.requests)} requests</span>
+          <span>{fmtNum(session.commits)} commits · {fmtNum(session.files)} files · {agentTime(session.agent_ms)} working</span>
+          <span>{fmtNum(session.failed)} of {fmtNum(session.calls)} calls failed</span>
+          <Show when={session.scripted != null}><span>{session.scripted ? 'started by a script' : 'started by a person'}</span></Show>
+        </li>}</For>
+      </ol>
+    </Show>
   </div>
 }
 
-/** One row per repository, by spend: a bar of its share of the spend, what it produced, open for the rest. */
-function RepoRows(props: { body: RepoBody; ctx: PanelContext }) {
-  const shown = () => props.body.repos.slice(0, SHOWN)
-  const largest = () => Math.max(0, ...props.body.repos.map(repo => repo.cost_share ?? 0))
+function Visual(props: { body: RepoBody; ctx: PanelContext }) {
+  const perCommit = () => repoPerCommitChart(props.body)
   return <>
+    <Bars chart={repoSpendChart(props.body)} />
+    <Bars chart={repoOutputChart(props.body)} />
+    <Bars chart={perCommit()} />
+    <Show when={perCommit().left.length}>
+      <p class={own.left} data-no-per-commit>Fewer than 3 commits, no spend per commit: {perCommit().left.join(', ')}.</p>
+    </Show>
+    <Bars chart={repoStartChart(props.body)} />
+    <Show when={smallText(props.body.summary.small)}>{text => <p class={styles.note} data-small-list>{text()}</p>}</Show>
+    <h3 class={styles.subhead}>Each repository: figures, models, spend over time, sessions</h3>
     <ol class={own.rows} aria-label="Repositories and folders by spend">
-      <For each={shown()}>{repo => <li><details class={own.row} data-repo={repo.name} data-small={repo.small ? '' : undefined}>
+      <For each={props.body.repos.slice(0, SHOWN)}>{repo => <li><details class={own.row} data-repo={repo.name} data-small={repo.small ? '' : undefined}>
         <summary>
-          <span class={own.name}>{repo.name}<span class={own.kind}>{repo.kind}</span>
-            <small>{fmtNum(repo.sessions)} sessions · {startedText(repo)}</small></span>
-          <span class={own.figures}>
-            <span class={own.meter}>
-              <span class={own.track}><span class={repo.small ? own.muted : own.spend}
-                style={{ 'inline-size': `${largest() ? ((repo.cost_share ?? 0) / largest() * 100).toFixed(1) : 0}%` }} /></span>
-              <span>{money(repo.cost_usd)} · {share(repo.cost_share)}</span>
-            </span>
-            <small>{fmtNum(repo.commits)} commits · {fmtNum(repo.files)} files {repoLines(repo)} · {agentTime(repo.agent_ms)} working
-              · {fmtNum(repo.idle_sessions)} changed nothing</small>
-          </span>
+          <span class={own.name}>{repo.name}</span><span class={own.kind}>{repo.kind}</span>
+          <span class={own.rowText}>{money(repo.cost_usd)} · {count(repo.sessions)} sessions · {fmtNum(repo.commits)} commits</span>
         </summary>
-        <RepoDetail repo={repo} ctx={props.ctx} />
+        <RepoDetail repo={repo} range={props.body.range} ctx={props.ctx} />
       </details></li>}</For>
     </ol>
     <Show when={props.body.repos.length > SHOWN}>
       <p class={styles.note}>{fmtNum(props.body.repos.length - SHOWN)} more in the data table.</p>
     </Show>
-    <Show when={smallText(props.body.summary.small)}>{text => <p class={styles.note} data-small-list>{text()}</p>}</Show>
   </>
 }
 
@@ -108,9 +95,11 @@ const NOTE = 'A session counts when it made a model request or a tool call in th
   'script: the first prompt to the main agent starts with <scheduled-task, or its first 100 characters (at least 20, not a ' +
   'slash command) or its first 40 (digits made equal) open 3 or more sessions of the same node and tool in the period; or ' +
   'the first turn did not come from a person (its origin, where the tool records one, is not human). There is no launch-mode ' +
-  'record, so a loop that types a new prompt each time reads as a person. Too little data: a repository with fewer than 50 ' +
-  'model requests is listed but never leads the finding and is drawn grey; spend per commit needs 3 commits, per file 5 files. ' +
-  'The page\'s project, tool and model filters apply (a model: the sessions that used it, all their figures).'
+  'record, so a loop that types a new prompt each time reads as a person. Spend per commit is the repository\'s spend divided ' +
+  'by its commits. Bins are weeks, or whole weeks so the period has at most 8 (all history: a year). Too little data: a ' +
+  'repository with fewer than 50 model requests is listed and drawn grey; spend per commit needs 3 commits, per file 5 ' +
+  'files. Charts show the first 15 repositories by spend. The page\'s project, tool and model filters apply (a model: the ' +
+  'sessions that used it, all their figures).'
 
 export default function Repositories(props: CardProps) {
   const ctx = untrack(() => props.ctx)
@@ -118,7 +107,7 @@ export default function Repositories(props: CardProps) {
     hero={repoHero}
     finding={repoFinding}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>
-      <RepoRows body={body} ctx={ctx} />
+      <Visual body={body} ctx={ctx} />
     </Show>}
     note={NOTE}
     table={{
