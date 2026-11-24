@@ -222,7 +222,9 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(carryFinding(carry, label)).toContain('up to 74 GB in all; Bash (claude-code) alone produced 457 MB')
     expect(subagentFinding(subagents, label)).toBe('4 subagents made 30 requests costing $63.00 at list price, 63% of all cost; ' +
       'in claude-code, subagents were 63% of its cost.')
-    expect(failureFinding(failures, label)).toContain('and it failed again 1,233 times (claude-code 1,233)')
+    expect(failureFinding(failures, label)).toBe('Of 5,000 failed tool calls (claude-code), 4,933 had a next call by the same ' +
+      'agent: identical call, failed: 1,233; identical call, succeeded: 400; changed call, failed: 300; changed call, succeeded: ' +
+      '2,000; another tool: 1,000. 71 runs of 3 or more failed calls in a row, 245 calls in all, the longest 8 calls.')
     expect(rereadFinding(rereads)).toContain('42% of file reads (42 of 100)')
     expect(rereadFinding(rereads)).toContain('the repeated reads returned not reported')
     const unreported = { ...pause, tools: [pause.tools[1]], summary: { ...pause.summary, tools: [], requests: 0, cost_usd: null } }
@@ -280,10 +282,21 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     const subBox = card(host, 'subagents')
     expect(subBox.querySelector('[aria-label="claude-code: main agent $37.00, subagents $63.00"]')).not.toBeNull()
     expect(subBox.querySelector('[data-few]')?.textContent).toBe('codex-cli: 3 requests, too few to compare.')
-    // Failures: a flow with one band per outcome that has calls.
+    // Failures: a stacked bar of what followed each failed call, a segment per outcome and one for no next call.
     const flow = card(host, 'failures')
-    expect(flow.querySelectorAll('svg[role="img"] path')).toHaveLength(5)
-    expect(flow.textContent).toContain('Same call, failed again · 1,233')
+    const outcomes = flow.querySelector('[data-chart="failure-outcomes"] [data-row="claude-code"]')!
+    expect([...outcomes.querySelectorAll('[data-part] button')].map(part => part.textContent))
+      .toEqual(['1,233', '400', '300', '2,000', '1,000', '67'])
+    expect(outcomes.querySelector('[data-part="identical_failed"] [role="tooltip"]')!.textContent).toBe('claude-code, identical call, ' +
+      'failed: 1,233 calls, 25% of the 4,933 failed calls with a next call, 25% of all 5,000 failed calls. Next call: same tool ' +
+      'name and same target (command, path or URL), and it failed.')
+    expect(outcomes.querySelector('[data-part="last"] [role="tooltip"]')!.textContent).toBe('claude-code, no next call: 67 failed ' +
+      'calls (1% of 5,000 failed calls) were the last call of their agent in the period.')
+    expect(flow.querySelector('[data-chart="failure-calls"] [data-total]')!.textContent).toBe('5,000 · 56%')
+    expect(flow.querySelector('[data-chart="failure-runs"] [role="tooltip"]')!.textContent).toBe('claude-code: 71 runs of 3 or more ' +
+      'failed calls in a row by one agent, 245 calls in them (5% of 5,000 failed calls); the longest 8 calls.')
+    expect(card(host, 'failures').querySelector('[data-hero]')!.textContent).toBe('71runs of 3 or more failed calls in a row, among ' +
+      '5,000 failed tool calls in the period')
     // Rereads: bytes not reported stays not reported.
     expect(card(host, 'rereads').textContent).toContain('42% repeated · not reported returned again')
     dispose()
@@ -352,33 +365,67 @@ describe('INS-04 · The period and the flow geometry', () => {
 
 describe('INS-05 · Where the time goes', () => {
   it('states model against tool time, the thinking inside it and the program with the most time', () => {
-    expect(timeFinding(time, tool => tool)).toBe('Agents spent 1,182 h in model requests and 529 h in their own tool calls (summed durations); ' +
-      'claude-code: 732 h model (175 h of it thinking) against 377 h tools. The program with the most time is cargo: ' +
-      '63.4 h over 5,812 calls, 95th percentile 2 min 56 s.')
+    expect(timeFinding(time, tool => tool)).toBe('Summed durations in the period: model requests 1,182 h, tool calls 529 h. ' +
+      'claude-code (1,000 requests, 200 calls): model 732 h, of it thinking 175 h; tool calls 377 h. Program with the largest ' +
+      'summed time: cargo, 63.4 h over 5,812 calls, 95th percentile 2 min 56 s.')
     const unreported = { ...time, tools: [time.tools[1]] } as TimeBody
-    expect(timeFinding(unreported, tool => tool)).toContain('copilot-cli: 450 h model (thinking not reported) against 152 h tools')
+    expect(timeFinding(unreported, tool => tool)).toContain('copilot-cli (500 requests, 60 calls): model 450 h, thinking time not ' +
+      'recorded; tool calls 152 h')
     const empty = { ...time, tools: [], programs: [], summary: { ...time.summary, model_ms: null, tool_ms: null, top_program: null } } as TimeBody
     expect(timeFinding(empty, tool => tool)).toBe('No request or tool call with a recorded duration in this period.')
   })
 
-  it('draws one split bar per tool, the program rows with their p95, and says what was not counted', () => {
+  it('draws one stacked bar per tool, the program rows with their p95, and says what was not counted', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <TimeSplit {...props(ctx)} />)
     const box = card(host, 'time')
-    expect(box.querySelectorAll('[role="img"]')).toHaveLength(2)
-    expect(box.querySelector('[aria-label="claude-code: model 732 h, thinking 175 h, tool calls 377 h"]')).not.toBeNull()
-    // A tool that reports no thinking is named, not drawn as zero; a tool with 3 requests is too few to draw.
-    expect(box.querySelector('[aria-label="copilot-cli: model 450 h, thinking not reported, tool calls 152 h"]')).not.toBeNull()
+    const tools = box.querySelector('[data-chart="time-tools"]')!
+    // A tool with 3 requests is too few to draw; a tool that records no thinking time gets no thinking segment.
+    expect([...tools.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['claude-code', 'copilot-cli'])
+    const claude = tools.querySelector('[data-row="claude-code"]')!
+    expect([...claude.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['175 h', '557 h', '377 h'])
+    expect(claude.querySelector('[data-total]')!.textContent).toBe('1,109 h')
+    expect(claude.querySelector('[data-part="thinking"] [role="tooltip"]')!.textContent).toBe('claude-code, model, thinking: 175 h, ' +
+      '16% of its summed 1,109 h (model 732 h + tool calls 377 h), over 1,000 requests; 0 without a duration and 0 over 24 hours not counted.')
+    const copilot = tools.querySelector('[data-row="copilot-cli"]')!
+    expect(copilot.querySelectorAll('[data-part]')).toHaveLength(2)
+    expect(copilot.textContent).toContain('thinking time not recorded by this tool')
     expect(box.querySelector('[data-few]')?.textContent).toBe('codex-cli: 3 requests, too few to compare.')
-    const rows = [...box.querySelectorAll('[data-group]')].map(row => row.getAttribute('data-group'))
-    expect(rows).toEqual(['shell', 'program', 'waiting'])
-    expect(box.textContent).toContain('Shell construct, program not identified')
-    expect(box.textContent).toContain('Waiting or polling (sleep, until, while, wait)')
-    expect(box.textContent).toContain('63.4 h · median 8.4 s · p95 2 min 56 s')
+    // No tool reports reasoning tokens in this answer: no reasoning chart.
+    expect(box.querySelector('[data-chart="time-reasoning"]')).toBeNull()
+    const programs = box.querySelector('[data-chart="time-programs"]')!
+    expect([...programs.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['shell:', 'program:cargo', 'waiting:'])
+    expect(programs.textContent).toContain('Shell construct, program not identified')
+    expect(programs.textContent).toContain('Waiting or polling (sleep, until, while, wait)')
+    expect(programs.querySelector('[data-row="program:cargo"] [data-total]')!.textContent).toBe('63.4 h · median 8.4 s · p95 2 min 56 s')
+    expect(programs.querySelector('[data-row="program:cargo"] [role="tooltip"]')!.textContent).toBe('cargo: 63.4 h summed over 5,812 ' +
+      'calls (30% of the 208 h of the programs listed); median 8.4 s, 95th percentile 2 min 56 s; 1% failed; 0 without a duration ' +
+      'and 0 over 24 hours not counted.')
     const counted = box.querySelector('[data-counted]')!.textContent!
     expect(counted).toContain('Without a recorded duration: 3 requests and 4 calls.')
     expect(counted).toContain('3 requests or calls recorded as over 24 hours (815 h in all)')
-    expect(counted).toContain('Thinking not reported by: copilot-cli.')
+    expect(counted).toContain('Thinking time not recorded by: copilot-cli.')
+    dispose()
+  })
+
+  it('shows reasoning tokens as a token measure for a tool that reports them, beside a tool with thinking time only', () => {
+    const reasoning = { ...time, tools: [
+      { ...time.tools[0], reasoning_requests: 0, reasoning_tokens: null, reasoning_output_tokens: null, reasoning_share: null },
+      { ...time.tools[1], reasoning_requests: 2, reasoning_tokens: 400, reasoning_output_tokens: 1600, reasoning_share: 0.25 },
+    ] } as TimeBody
+    const { ctx } = context(id => id === 'time' ? { data: reasoning, status: 'ready', error: null } : ready(id))
+    const { host, dispose } = mount(() => <TimeSplit {...props(ctx)} />)
+    const chart = card(host, 'time').querySelector('[data-chart="time-reasoning"]')!
+    expect([...chart.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['copilot-cli'])
+    const row = chart.querySelector('[data-row="copilot-cli"]')!
+    expect(row.querySelector('[data-total]')!.textContent).toBe('Reasoning tokens: 400 of 1,600 output tokens (25%) in 2 requests that report them')
+    expect(row.textContent).toContain('thinking time not recorded by this tool')
+    expect([...row.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['400', '1.2 k'])
+    expect(row.querySelector('[data-part="reasoning"] [role="tooltip"]')!.textContent).toBe('copilot-cli: 400 reasoning tokens and ' +
+      '1,600 output tokens in 2 requests that report reasoning tokens; reasoning is 25% of their output. The share covers only ' +
+      'requests that report reasoning tokens, not all 500 requests of the tool.')
+    // The tool with thinking time only keeps its thinking segment and has no reasoning line.
+    expect(card(host, 'time').querySelector('[data-chart="time-tools"] [data-row="claude-code"] [data-part="thinking"]')).not.toBeNull()
     dispose()
   })
 

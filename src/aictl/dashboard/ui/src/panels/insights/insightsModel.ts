@@ -87,6 +87,8 @@ export type RereadBody = Base<'rereads'> & {
 export type TimeTool = {
   tool: string; requests: number; untimed_requests: number; overlong_requests: number; model_ms: Num; thinking_ms: Num
   calls: number; untimed_calls: number; overlong_calls: number; overlong_ms: number; tool_ms: Num
+  /** Requests that report reasoning tokens (0 when none), their reasoning and output tokens, and reasoning / output. */
+  reasoning_requests?: number; reasoning_tokens?: Num; reasoning_output_tokens?: Num; reasoning_share?: Num
 }
 export type ProgramGroup = 'program' | 'shell' | 'waiting' | 'unrecorded'
 export type TimeProgram = {
@@ -172,11 +174,11 @@ export const BUCKET_LABELS: Record<Bucket, string> = {
   under_1m: 'under 1 min', '1_5m': '1–5 min', '5_60m': '5–60 min', over_60m: 'over 60 min',
 }
 export const OUTCOME_LABELS: Record<Outcome, string> = {
-  identical_failed: 'Identical call, failed again',
+  identical_failed: 'Identical call, failed',
   identical_succeeded: 'Identical call, succeeded',
-  changed_failed: 'Same tool changed, failed again',
-  changed_succeeded: 'Same tool changed, succeeded',
-  other_tool: 'Different tool',
+  changed_failed: 'Changed call, failed',
+  changed_succeeded: 'Changed call, succeeded',
+  other_tool: 'Another tool',
 }
 export const OUTCOMES = Object.keys(OUTCOME_LABELS) as Outcome[]
 export const NOT_REPORTED = 'not reported'
@@ -369,12 +371,41 @@ export function subagentFinding(body: SubagentBody, label: Label) {
 export function failureFinding(body: FailureBody, label: Label) {
   const s = body.summary
   if (!s.failures) return 'No tool call failed in this period.'
-  const most = body.tools.filter(tool => tool.outcomes.identical_failed > 0)
-    .sort((a, b) => b.calls - a.calls).slice(0, 2)
-    .map(tool => `${label(tool.tool)} ${fmtNum(tool.outcomes.identical_failed)}`)
-  return `After ${fmtNum(s.followed)} failed calls, the next call repeated the identical call ${fmtNum(s.identical_failed + s.identical_succeeded)} times ` +
-    `and it failed again ${fmtNum(s.identical_failed)} times${most.length ? ` (${most.join(', ')})` : ''}; ` +
-    `${fmtNum(s.streaks)} runs of 3 or more failures in a row, the longest ${count(s.longest)} calls.`
+  const tools = body.tools.length ? ` (${list(body.tools.map(tool => label(tool.tool)))})` : ''
+  return `Of ${plural(s.failures, 'failed tool call')}${tools}, ${fmtNum(s.followed)} had a next call by the same agent: ` +
+    OUTCOMES.map(outcome => `${lower(OUTCOME_LABELS[outcome])}: ${count(s[outcome] ?? null)}`).join('; ') + '. ' +
+    `${plural(s.streaks, 'run')} of 3 or more failed calls in a row, ${plural(s.streak_calls ?? 0, 'call')} in all, the longest ` +
+    `${count(s.longest)} calls.`
+}
+
+/** What each outcome of the next call means, as the view tests it. */
+const OUTCOME_RULES: Record<Outcome, string> = {
+  identical_failed: 'same tool name and same target (command, path or URL), and it failed',
+  identical_succeeded: 'same tool name and same target, and it succeeded',
+  changed_failed: 'same tool name with another target, and it failed',
+  changed_succeeded: 'same tool name with another target, and it succeeded',
+  other_tool: 'another tool name',
+}
+/** The hover of one outcome of one tool: its calls, their share of the failures followed and of all failures, and the rule. */
+export function failureOutcomeHover(tool: FailureTool, outcome: Outcome | 'last', label: Label) {
+  const followed = OUTCOMES.reduce((sum, key) => sum + (tool.outcomes[key] ?? 0), 0)
+  if (outcome === 'last') {
+    return `${label(tool.tool)}, no next call: ${plural(tool.last_failures, 'failed call')} (${share(ratio(tool.last_failures, tool.failures))} ` +
+      `of ${fmtNum(tool.failures)} failed calls) were the last call of their agent in the period.`
+  }
+  const calls = tool.outcomes[outcome] ?? 0
+  return `${label(tool.tool)}, ${lower(OUTCOME_LABELS[outcome])}: ${plural(calls, 'call')}, ${share(ratio(calls, followed))} of the ` +
+    `${fmtNum(followed)} failed calls with a next call, ${share(ratio(calls, tool.failures))} of all ${fmtNum(tool.failures)} failed calls. ` +
+    `Next call: ${OUTCOME_RULES[outcome]}.`
+}
+export function failureShareHover(tool: FailureTool, label: Label) {
+  return `${label(tool.tool)}: ${plural(tool.failures, 'failed call')} of ${plural(tool.calls, 'tool call')} in the period ` +
+    `(${share(ratio(tool.failures, tool.calls))}).`
+}
+export function failureStreakHover(tool: FailureTool, label: Label) {
+  return `${label(tool.tool)}: ${plural(tool.streaks, 'run')} of 3 or more failed calls in a row by one agent, ` +
+    `${plural(tool.streak_calls, 'call')} in them (${share(ratio(tool.streak_calls, tool.failures))} of ${fmtNum(tool.failures)} failed calls); ` +
+    `the longest ${count(tool.longest)} calls.`
 }
 
 export function rereadFinding(body: RereadBody) {
@@ -400,12 +431,51 @@ export function timeFinding(body: TimeBody, label: Label) {
   if (s.model_ms == null && s.tool_ms == null) return 'No request or tool call with a recorded duration in this period.'
   const top = [...body.tools].sort((a, b) => b.requests - a.requests)[0]
   if (!top) return 'No tool has enough requests in this period to compare.'
-  const thinking = top.thinking_ms == null ? 'thinking not reported' : `${hours(top.thinking_ms)} of it thinking`
+  const thinking = top.thinking_ms == null ? 'thinking time not recorded' : `of it thinking ${hours(top.thinking_ms)}`
   const program = s.top_program
-  return `Agents spent ${hours(s.model_ms)} in model requests and ${hours(s.tool_ms)} in their own tool calls (summed durations); ` +
-    `${label(top.tool)}: ${hours(top.model_ms)} model (${thinking}) against ${hours(top.tool_ms)} tools.` +
-    (program ? ` The program with the most time is ${programName(program)}: ${hours(program.duration_ms)} over ${fmtNum(program.calls)} calls, ` +
-      `95th percentile ${millis(program.p95_ms)}.` : '')
+  return `Summed durations in the period: model requests ${hours(s.model_ms)}, tool calls ${hours(s.tool_ms)}. ` +
+    `${label(top.tool)} (${plural(top.requests, 'request')}, ${plural(top.calls, 'call')}): model ${hours(top.model_ms)}, ${thinking}; ` +
+    `tool calls ${hours(top.tool_ms)}.` +
+    (program ? ` Program with the largest summed time: ${programName(program)}, ${hours(program.duration_ms)} over ` +
+      `${fmtNum(program.calls)} calls, 95th percentile ${millis(program.p95_ms)}.` : '')
+}
+
+export type TimePart = 'thinking' | 'model' | 'tools'
+/** The model time of a tool without its thinking: all of it when thinking is not recorded. */
+export const modelRest = (tool: TimeTool) => tool.model_ms == null ? null : tool.model_ms - (tool.thinking_ms ?? 0)
+/** The hover of one part of a tool's time bar: its hours, its share of the tool's summed time, and what it was counted over. */
+export function timePartHover(tool: TimeTool, part: TimePart, label: Label) {
+  const total = (tool.model_ms ?? 0) + (tool.tool_ms ?? 0)
+  const value = part === 'thinking' ? tool.thinking_ms : part === 'model' ? modelRest(tool) : tool.tool_ms
+  const name = part === 'thinking' ? 'model, thinking' : part === 'model'
+    ? (tool.thinking_ms == null ? 'model (thinking time not recorded by this tool)' : 'model, rest of the request') : 'tool calls'
+  const over = part === 'tools'
+    ? `${plural(tool.calls, 'call')}; ${fmtNum(tool.untimed_calls)} without a duration and ${fmtNum(tool.overlong_calls)} over 24 hours not counted`
+    : `${plural(tool.requests, 'request')}; ${fmtNum(tool.untimed_requests)} without a duration and ${fmtNum(tool.overlong_requests)} over 24 hours not counted`
+  return `${label(tool.tool)}, ${name}: ${hours(value)}, ${share(ratio(value, total))} of its summed ${hours(total)} ` +
+    `(model ${hours(tool.model_ms)} + tool calls ${hours(tool.tool_ms)}), over ${over}.`
+}
+
+/** Reasoning tokens as a token measure, never time: the figures of the requests that report them. */
+export function reasoningText(tool: TimeTool) {
+  if (!tool.reasoning_requests) return ''
+  return `Reasoning tokens: ${count(tool.reasoning_tokens ?? null)} of ${count(tool.reasoning_output_tokens ?? null)} output tokens` +
+    (tool.reasoning_share == null ? '' : ` (${fmtShare(tool.reasoning_share)})`) +
+    ` in ${plural(tool.reasoning_requests, 'request')} that report them`
+}
+export function reasoningHover(tool: TimeTool, label: Label) {
+  return `${label(tool.tool)}: ${count(tool.reasoning_tokens ?? null)} reasoning tokens and ${count(tool.reasoning_output_tokens ?? null)} ` +
+    `output tokens in ${plural(tool.reasoning_requests ?? 0, 'request')} that report reasoning tokens` +
+    (tool.reasoning_share == null ? '; share not computed (reasoning exceeds output or is not reported).'
+      : `; reasoning is ${fmtShare(tool.reasoning_share)} of their output.`) +
+    ` The share covers only requests that report reasoning tokens, not all ${plural(tool.requests, 'request')} of the tool.`
+}
+
+/** The hover of a program row: its summed time and share, the calls it rests on, its percentiles and failures. */
+export function programHover(row: TimeProgram, total: number) {
+  return `${programName(row)}: ${hours(row.duration_ms)} summed over ${plural(row.calls, 'call')} (${share(ratio(row.duration_ms, total))} of ` +
+    `the ${hours(total)} of the programs listed); median ${millis(row.p50_ms)}, 95th percentile ${millis(row.p95_ms)}; ` +
+    `${share(row.failure_share)} failed; ${fmtNum(row.untimed)} without a duration and ${fmtNum(row.overlong)} over 24 hours not counted.`
 }
 
 export const CONTEXT_LABELS: Record<ContextBucket, string> = {
@@ -551,14 +621,15 @@ export const subagentHero = (body: SubagentBody) => hero(body.summary.subagent_s
   `of the cost was spent in subagents: ${money(body.summary.subagent_cost_usd)} of ` +
   `${money(body.summary.main_cost_usd == null ? null : body.summary.main_cost_usd + (body.summary.subagent_cost_usd ?? 0))}`)
 export const failureHero = (body: FailureBody) => body.summary.failures
-  ? hero(body.summary.streaks, fmtNum, 'runs of 3 or more failed calls in a row') : undefined
+  ? hero(body.summary.streaks, fmtNum, `runs of 3 or more failed calls in a row, among ${plural(body.summary.failures, 'failed tool call')} ` +
+    'in the period') : undefined
 export const rereadHero = (body: RereadBody) => hero(body.summary.repeat_share, fmtShare,
   `of file reads read a file the same agent had already read: ${fmtNum(body.summary.repeat_reads)} of ${fmtNum(body.summary.reads)}`)
 export const timeHero = (body: TimeBody) => hero(
   body.summary.model_ms == null || body.summary.tool_ms == null ? null
     : ratio(body.summary.tool_ms, body.summary.model_ms + body.summary.tool_ms), fmtShare,
-  `of agent time went to its own tool calls, the rest to the model (summed durations): ${hours(body.summary.tool_ms)} against ` +
-  `${hours(body.summary.model_ms)}`)
+  `of the summed durations of model requests and tool calls is tool calls: ${hours(body.summary.tool_ms)} tool calls, ` +
+  `${hours(body.summary.model_ms)} model requests`)
 export const contextHero = (body: ContextBody) => hero(body.summary.heavy_cost_share, fmtShare,
   `of the cost is in requests that read a context of 200k tokens or more: ${money(body.summary.heavy_cost_usd)} of ${money(body.summary.cost_usd)}`)
 export const fixedHero = (body: FixedBody) => body.summary.never_used_share != null
