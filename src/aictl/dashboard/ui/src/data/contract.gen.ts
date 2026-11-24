@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: a5fc5be7b95d2be06804a7df692837166520d1537b23d5662f0f924001cc6eed
+// Schema digest: 4831d381842713bbb7e28eccfb5eac256c29ff05c9742964eb39ad61b1bf190f
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2186,6 +2186,61 @@ export type DetailTerminalSessions = Array<{
   process_tree?: Array<Record<string, unknown>>;
 }>;
 
+export type DetailThinkingSearch = {
+  range: {
+    since: number;
+    until: number;
+  };
+  search: {
+    q: string;
+    terms: Array<string>;
+    phrases: Array<string>;
+    sort: "ts" | "chars";
+    ascending: boolean;
+    offset: number;
+    limit: number;
+  };
+  text_kept: boolean;
+  total: number;
+  chars: number;
+  first_ts: number | null;
+  last_ts: number | null;
+  by_tool: Array<{
+    name: string;
+    blocks: number;
+    chars: number | null;
+  }>;
+  by_model: Array<{
+    name: string;
+    blocks: number;
+    chars: number | null;
+  }>;
+  by_day: Array<{
+    day: number;
+    blocks: number;
+    chars: number | null;
+  }>;
+  blocks: Array<{
+    thinking_key: string;
+    request_key: string;
+    ts: number;
+    agent_id: string;
+    model: string;
+    turn_index: number | null;
+    block_index: number | null;
+    chars: number | null;
+    tool: string;
+    session_id: string;
+    call_ts: number | null;
+    snippet_at: number | null;
+    node_id: string;
+    position: number;
+    title: string;
+    snippet: string;
+  }>;
+  node_scope?: NodeScope;
+};
+
 export type DetailThinking = {
   ts: number | null;
   agent_id: string;
@@ -3937,6 +3992,7 @@ export interface DetailResponses {
   "/api/board/sessions": DetailSessions;
   "/api/board/skill": DetailSkill;
   "/api/board/thinking": DetailThinking;
+  "/api/board/thinking/search": DetailThinkingSearch;
   "/api/board/terminal/events": DetailTerminalEvents;
   "/api/board/terminal/file": DetailTerminalFile;
   "/api/board/terminal/metrics": DetailTerminalMetrics;

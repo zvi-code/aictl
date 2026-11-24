@@ -278,11 +278,13 @@ export const countsAsFailure = (event: FlowEvent) => event.type === 'error'
 
 /**
  * Whether an event is what a reference from another tab names. `failed_at` is the time of a failure the Failures tab lists:
- * the failed call or request that happened then.
+ * the failed call or request that happened then. `call_at` is the time of a model call a thinking search result names.
  */
 export const matchesReference = (event: FlowEvent, reference: { field: string; id: string; traceId?: string }) =>
   reference.field === 'failed_at'
     ? countsAsFailure(event) && Math.abs(event.ts - Number(reference.id)) < 1e-3
+    : reference.field === 'call_at'
+    ? event.type === 'api_call' && Math.abs(event.ts - Number(reference.id)) < 1e-3
     : (event as unknown as Record<string, unknown>)[reference.field] === reference.id && (!reference.traceId || event.trace_id === reference.traceId)
 
 export function totalsOf(steps: readonly Step[]): Totals {

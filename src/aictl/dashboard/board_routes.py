@@ -79,7 +79,7 @@ def handle_get(
         elif path in memory_views.ROUTES:
             status, payload = memory_views.handle(path, one, db, history, now)
         elif path in thinking.ROUTES:
-            status, payload = thinking.handle(path, one, db, history, now)
+            status, payload = thinking.handle(path, one, db, history, now, query=query)
         elif path == "/api/board/agent":
             status, payload = agent_detail(db, one("id"), snapshot, now, history=history) if one("id") else (400, {"error": "Missing id"})
         elif path == "/api/board/sessions":

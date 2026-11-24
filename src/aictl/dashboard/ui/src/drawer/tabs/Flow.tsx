@@ -175,7 +175,8 @@ export default function Flow(props: TabProps) {
   }
   // A reference from another tab selects its step, reading older windows until the event is loaded.
   let found: object | undefined
-  const reference = createMemo(() => props.entry.flowRef ?? (props.entry.failedAt != null ? { field: 'failed_at', id: String(props.entry.failedAt) } : undefined))
+  const reference = createMemo(() => props.entry.flowRef ?? (props.entry.failedAt != null ? { field: 'failed_at', id: String(props.entry.failedAt) }
+    : props.entry.callAt != null ? { field: 'call_at', id: String(props.entry.callAt) } : undefined))
   createEffect(() => ({ reference: reference(), events: model().events, more: pages.more(),
     failed: pages.problem() || pages.dropped(), ready: read()?.data != null }), current => {
     const reference = current.reference

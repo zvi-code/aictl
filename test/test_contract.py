@@ -52,7 +52,7 @@ MEMORY_DETAILS = {
 }
 
 # Read on demand by the flow; their bodies are checked against Kusto replay in test_thinking.py.
-THINKING_DETAILS = {"/api/board/thinking"}
+THINKING_DETAILS = {"/api/board/thinking", "/api/board/thinking/search"}
 
 
 # Routes whose contract gained required fields after the tapes of 2026-11-20 were captured.

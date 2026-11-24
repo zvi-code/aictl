@@ -8,7 +8,7 @@
 import { dateLabel } from '../design/format';
 import { parseUrlState, rangeToParams, type Range, type TimeWindow, type UrlPatch } from './urlState';
 
-export type Screen = 'board' | 'health' | 'insights' | 'index' | 'settings';
+export type Screen = 'board' | 'health' | 'insights' | 'thinking' | 'index' | 'settings';
 export type Filters = ReturnType<typeof parseFilters>;
 type Tools = readonly string[] | null;
 
@@ -36,7 +36,7 @@ const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 const DEFAULT_RANGE = '24h';
 export function readScreen(search: string): Screen {
   const screen = new URLSearchParams(search).get('screen');
-  return screen === 'settings' || screen === 'health' || screen === 'insights' || screen === 'index' ? screen : 'board';
+  return screen === 'settings' || screen === 'health' || screen === 'insights' || screen === 'thinking' || screen === 'index' ? screen : 'board';
 }
 
 export function boardLiveRequest(filters: Filters, tools: Tools, screen: Screen, now: number) {
@@ -45,7 +45,7 @@ export function boardLiveRequest(filters: Filters, tools: Tools, screen: Screen,
       ? { since: Math.floor(filters.sel.since), until: Math.floor(filters.sel.until) }
       : windowOf(filters.range, now)),
     history: screen === 'board',
-    requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'insights' || screen === 'index' ? ['runtime.machine'] : screen === 'settings'
+    requiredTopics: screen === 'health' ? ['runtime.health'] : screen === 'insights' || screen === 'thinking' || screen === 'index' ? ['runtime.machine'] : screen === 'settings'
       ? ['configuration.file'] : ['history.board', 'runtime.machine'],
   };
 }

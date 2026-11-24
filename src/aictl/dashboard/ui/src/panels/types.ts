@@ -90,7 +90,8 @@ export interface PanelContext {
   navigate(patch: UrlPatch): void
   jump(section: string): void
   select(window: TimeWindow | null): void
-  openAgent(id: string, tab?: string): void
+  /** `extra` carries what the drawer opens at, such as a flow reference. */
+  openAgent(id: string, tab?: string, extra?: Record<string, unknown>): void
   openDetail(detail: Detail): void
   stopped(id: string): boolean
   stopAgent(agent: { id: string; title: string; parent_id?: string | null; role?: string | null; pids?: readonly number[] }): void

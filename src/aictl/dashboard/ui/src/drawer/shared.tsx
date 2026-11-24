@@ -23,8 +23,11 @@ export const records = (value: unknown): Row[] | undefined => Array.isArray(valu
   (item): item is Row => typeof item === 'object' && item !== null && !Array.isArray(item)) : undefined
 
 export type Reference = { field: 'step_key' | 'turn_id' | 'request_id' | 'message_id' | 'tool_call_id' | 'span_id' | 'round_id' | 'trace_id'; id: string; traceId?: string }
-/** `failedAt`: open Flow at the failed call or request that happened at this time (seconds), as the Failures tab lists it. */
-export type AgentEntry = Extract<DrawerEntry, { type: 'agent' }> & { flowRef?: Reference; turnId?: string; failedAt?: number }
+/** `failedAt`: open Flow at the failed call or request that happened at this time (seconds), as the Failures tab lists it.
+ * `callAt`: open Flow at the model call of this time (seconds), as a thinking search result names it. */
+export type AgentEntry = Extract<DrawerEntry, { type: 'agent' }> & {
+  flowRef?: Reference; turnId?: string; failedAt?: number; callAt?: number
+}
 export type TabProps = {
   shell: DrawerProps
   entry: AgentEntry

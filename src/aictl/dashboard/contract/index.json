@@ -73,6 +73,7 @@
     "/api/board/sessions": "detail-sessions.schema.json",
     "/api/board/skill": "detail-skill.schema.json",
     "/api/board/thinking": "detail-thinking.schema.json",
+    "/api/board/thinking/search": "detail-thinking-search.schema.json",
     "/api/board/terminal/events": "detail-terminal-events.schema.json",
     "/api/board/terminal/file": "detail-terminal-file.schema.json",
     "/api/board/terminal/metrics": "detail-terminal-metrics.schema.json",

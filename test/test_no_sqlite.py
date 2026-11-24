@@ -97,6 +97,7 @@ def _dashboard_requests(root):
         "/api/board/agent/checkpoint/files": "/api/board/agent/checkpoint/files?id=no-sqlite-probe&message_id=u-1",
         "/api/board/projects": "/api/board/projects?project=/no-sqlite-probe",
         "/api/board/thinking": "/api/board/thinking?session_id=no-sqlite-probe",
+        "/api/board/thinking/search": "/api/board/thinking/search?sort=no-sqlite-probe",
         **{route: recorded[route] for route in (
             "/api/api-calls", "/api/board/agent", "/api/board/agent/flow", "/api/board/agent/transcript",
             "/api/board/context", "/api/board/error", "/api/board/excerpt", "/api/board/file",

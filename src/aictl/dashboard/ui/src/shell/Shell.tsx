@@ -30,11 +30,12 @@ import styles from './Shell.module.css'
 const Overview = lazy(() => import('./Overview'))
 const Health = lazy(() => import('./Health'))
 const Insights = lazy(() => import('./Insights'))
+const Thinking = lazy(() => import('./Thinking'))
 const Settings = lazy(() => import('./Settings'))
 const Index = lazy(() => import('./Index'))
 const Drawer = lazy(() => import('../drawer/DrawerView'))
-const screenNames = { board: 'Overview', health: 'Health', insights: 'Insights', index: 'Index', settings: 'Settings' }
-const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', insights: 'spark', index: 'sources', settings: 'settings' }
+const screenNames = { board: 'Overview', health: 'Health', insights: 'Insights', thinking: 'Thinking', index: 'Index', settings: 'Settings' }
+const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', insights: 'spark', thinking: 'search', index: 'sources', settings: 'settings' }
 const sectionGlyphs: Record<string, Glyph> = {
   top: 'top', usage: 'usage', agents: 'agents', sessions: 'clock', prompts: 'prompts', context: 'context', tools: 'tools',
   changes: 'changes', resources: 'resources', effect: 'effect', sources: 'sources',
@@ -166,7 +167,9 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   }
   const context = {
     client, scope, nodeId, filters, tools, paused, startedAt, revision, navigate, jump, openDetail: open, refresh, copy, runCommand,
-    openAgent(id: string, tab = 'flow') { if (id) open({ type: 'agent', id, tab }, true) },
+    openAgent(id: string, tab = 'flow', extra?: Record<string, unknown>) {
+      if (id) open({ ...extra, type: 'agent', id, tab } as DrawerEntry, true)
+    },
     select(window: { since: number; until: number } | null) {
       navigate({ sel: window ? `${Math.floor(window.since)}-${Math.floor(window.until)}` : null })
     },
@@ -343,7 +346,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   }
   // The screens whose data is per project. Health (this daemon and the store) and Settings (tool
   // configuration on disk) are not: the chosen projects stay in the address but do not apply there.
-  const projectScreen = () => screen() === 'board' || screen() === 'insights'
+  const projectScreen = () => screen() === 'board' || screen() === 'insights' || screen() === 'thinking'
   const sourceRows = createMemo(() => scope() === 'local' ? statuses(client) : [])
   const stream = () => {
     const health = topic(client, 'runtime.health', 'local')
@@ -429,6 +432,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
             <Match when={screen() === 'board'}><Overview ctx={ctx} anchor={query().hash} order={sectionOrder} /></Match>
             <Match when={screen() === 'health'}><Health ctx={ctx} order={sectionOrder} /></Match>
             <Match when={screen() === 'insights'}><Insights ctx={ctx} search={search()} /></Match>
+            <Match when={screen() === 'thinking'}><Thinking ctx={ctx} search={search()} /></Match>
             <Match when={screen() === 'index'}><Index ctx={ctx} /></Match>
             <Match when={screen() === 'settings'}><Settings ctx={ctx} /></Match>
           </Switch>

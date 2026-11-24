@@ -952,7 +952,9 @@ The visible thinking text of model calls, one row per block. Text.
 - Written by: `session_facts.py` (`write`), from `ingesters/call_facts.py`, only while text is kept and newer than the `thinking` period
 - Read by: the view `thinking.blocks`, the blocks of one model call that the session flow opens (the session's
   `requests` row at the call's time gives the `request_key`). A block with an empty `request_key` belongs to no
-  known call and is not shown under one.
+  known call and is not shown under one. Also read by the view `thinking.search`, the Thinking screen: whole-term
+  search (`has_all`) and quoted phrases (`contains`) over the blocks of a period, filtered on `ts` before versions
+  are reduced (a block's time never changes), with counts by tool, model and day and one page of blocks.
 
 | column | type | meaning |
 |---|---|---|

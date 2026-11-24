@@ -234,6 +234,8 @@ def route(db, scope, path, query, params, now, *, reader=None):
                 raise ScopeError("A fleet file detail requires a node-qualified record")
             return result(*artifact_details.file_detail(db, name, now, since=lo, until=hi,
                                              history=HistoryScope(reader, node, qualified=True)))
+        if path == "/api/board/thinking/search":
+            return result(*thinking.handle(path, one, db, history, now, reported=True, query=query))
         if path in thinking.ROUTES:
             node, raw = parse_identity(one("session_id"), scope)
             return result(*thinking.handle(path, one, db, HistoryScope(reader, node, qualified=True), now, reported=True,

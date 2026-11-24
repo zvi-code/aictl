@@ -38,7 +38,7 @@ _SCOPED_BOARD_ROUTES = frozenset({
     "/api/board/skill", "/api/board/tool", "/api/session-evidence",
     "/api/board/mcp", "/api/board/mcp/server", "/api/board/convergence", "/api/board/session/convergence",
     "/api/board/memory/diff", "/api/board/memory/versions", "/api/board/agent/recalls", "/api/board/agent/checkpoint/files",
-    "/api/board/projects", "/api/board/thinking",
+    "/api/board/projects", "/api/board/thinking", "/api/board/thinking/search",
     *INSIGHT_ROUTES,
 })
 
@@ -69,7 +69,8 @@ GET_ROUTES = {
         "/api/board/terminal/metrics", "/api/board/terminal/resources", "/api/board/terminal/sessions",
         "/api/board/mcp", "/api/board/mcp/server", "/api/board/convergence", "/api/board/session/convergence",
         "/api/board/memory/diff", "/api/board/memory/versions", "/api/board/agent/recalls",
-        "/api/board/agent/checkpoint/files", "/api/board/projects", "/api/board/thinking", *INSIGHT_ROUTES,
+        "/api/board/agent/checkpoint/files", "/api/board/projects", "/api/board/thinking",
+        "/api/board/thinking/search", *INSIGHT_ROUTES,
     ), "_serve_board"),
     "/api/samples": "_serve_samples",
     "/api/context-audit": "_serve_context_audit",

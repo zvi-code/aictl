@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/detail-thinking-search.schema.json",
+  "title": "DetailThinkingSearch",
+  "type": "object",
+  "properties": {
+    "range": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "type": "number"
+        },
+        "until": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "since",
+        "until"
+      ]
+    },
+    "search": {
+      "type": "object",
+      "properties": {
+        "q": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "phrases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sort": {
+          "enum": [
+            "ts",
+            "chars"
+          ]
+        },
+        "ascending": {
+          "type": "boolean"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "q",
+        "terms",
+        "phrases",
+        "sort",
+        "ascending",
+        "offset",
+        "limit"
+      ]
+    },
+    "text_kept": {
+      "type": "boolean"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "chars": {
+      "type": "integer"
+    },
+    "first_ts": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "last_ts": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "by_tool": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "blocks": {
+            "type": "integer"
+          },
+          "chars": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "blocks",
+          "chars"
+        ]
+      }
+    },
+    "by_model": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "blocks": {
+            "type": "integer"
+          },
+          "chars": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "blocks",
+          "chars"
+        ]
+      }
+    },
+    "by_day": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "number"
+          },
+          "blocks": {
+            "type": "integer"
+          },
+          "chars": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "day",
+          "blocks",
+          "chars"
+        ]
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "thinking_key": {
+            "type": "string"
+          },
+          "request_key": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "number"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "turn_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "block_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "chars": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tool": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "call_ts": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "snippet_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thinking_key",
+          "request_key",
+          "ts",
+          "agent_id",
+          "model",
+          "turn_index",
+          "block_index",
+          "chars",
+          "tool",
+          "session_id",
+          "call_ts",
+          "snippet_at",
+          "node_id",
+          "position",
+          "title",
+          "snippet"
+        ]
+      }
+    },
+    "node_scope": {
+      "$ref": "node-scope.schema.json"
+    }
+  },
+  "required": [
+    "range",
+    "search",
+    "text_kept",
+    "total",
+    "chars",
+    "first_ts",
+    "last_ts",
+    "by_tool",
+    "by_model",
+    "by_day",
+    "blocks"
+  ]
+}

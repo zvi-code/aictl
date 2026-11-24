@@ -1,0 +1,75 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real,
+    search_terms:dynamic=dynamic([]), search_phrases:dynamic=dynamic([]), restrict_tools:bool=false,
+    requested_tools:dynamic=dynamic([]), requested_models:dynamic=dynamic([]), sort_key:string='ts', ascending:bool=false,
+    page_offset:long=0, page_size:long=50, keep_text:bool=true, text_floor:real=0.0, row_limit:long);
+// The thinking blocks of a time range that hold every search term as a whole term (has_all, which the term index
+// answers) and every quoted phrase as a substring (contains), for chosen tools and models: their count, the
+// count per tool, per model and per UTC day, and one page of blocks with a snippet around the first match.
+// An empty search lists every block of the range. Text is searched and shown only while it is kept
+// (keep_text, and not older than text_floor); chars is the stored length either way.
+let lo = unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0));
+let hi = unixtime_seconds_todatetime(min_of(max_of(until, 0.0), 32503680000.0));
+let floor_time = unixtime_seconds_todatetime(min_of(max_of(text_floor, 0.0), 32503680000.0));
+let page_rows = min_of(max_of(page_size, 1), 200);
+let skip = min_of(max_of(page_offset, 0), 20000);
+let searching = array_length(search_terms) > 0 or array_length(search_phrases) > 0;
+let phrase_count = min_of(array_length(search_phrases), 4);
+// What a block's text must hold. Applied to every version first, so the term index prunes, then again to the
+// newest version of each block: a block whose text changed keeps no stale match.
+let matches = (t:string) {
+    (array_length(search_terms) == 0 or t has_all (search_terms))
+    and (phrase_count < 1 or t contains tostring(search_phrases[0]))
+    and (phrase_count < 2 or t contains tostring(search_phrases[1]))
+    and (phrase_count < 3 or t contains tostring(search_phrases[2]))
+    and (phrase_count < 4 or t contains tostring(search_phrases[3]))
+};
+// A block's time is fixed by its source: the range is applied to the stored time before versions are reduced.
+let in_range = session_thinking
+    | where ts >= lo and ts < hi
+    | where all_nodes or node_id == requested_node;
+let candidates = in_range
+    | where not(searching) or (keep_text and ts >= floor_time and matches(['text']))
+    | distinct ['project'], node_id, session_id, thinking_key;
+let hits = materialize(in_range
+    | where not(searching) or thinking_key in (candidates | project thinking_key)
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, thinking_key
+    | join kind=inner candidates on ['project'], node_id, session_id, thinking_key
+    | where not(restrict_tools) or tool in (requested_tools)
+    | where array_length(requested_models) == 0 or model in (requested_models)
+    | where not(searching) or (keep_text and ts >= floor_time and matches(['text']))
+    | project ['project'], node_id, session_id, thinking_key, request_key, agent_id, ts, tool, model, chars, turn_index,
+        block_index, ['text']);
+let page = materialize(hits
+    | extend sort_value=iff(sort_key == 'chars', todouble(chars), (ts - datetime(1970-01-01)) / 1s)
+    | order by sort_value asc, ts asc, thinking_key asc, node_id asc
+    | extend position=iff(ascending, row_number(), toscalar(hits | count) - row_number() + 1)
+    | where position > skip and position <= skip + page_rows);
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(lo, 1h) - 1h
+    | where event_hour <= hi + 1h
+    | where dedup_key in (page | where isnotempty(request_key) | project request_key);
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let calls = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | project node_id, request_key=dedup_key, call_ts=(ts - datetime(1970-01-01)) / 1s;
+let needle = tolower(iff(phrase_count > 0, tostring(search_phrases[0]), tostring(search_terms[0])));
+union
+    (hits | summarize blocks=count(), chars=sum(chars), first_ts=min(ts), last_ts=max(ts)
+        | project row_type='total', blocks, chars, first_ts=(first_ts - datetime(1970-01-01)) / 1s,
+            last_ts=(last_ts - datetime(1970-01-01)) / 1s),
+    (hits | summarize blocks=count(), chars=sum(chars) by name=tool | project row_type='tool', name, blocks, chars),
+    (hits | summarize blocks=count(), chars=sum(chars) by name=model | top 30 by blocks desc | project row_type='model', name, blocks, chars),
+    (hits | summarize blocks=count(), chars=sum(chars) by day=bin(ts, 1d) | top 400 by day desc
+        | project row_type='day', day=(day - datetime(1970-01-01)) / 1s, blocks, chars),
+    (page
+        | join kind=leftouter calls on node_id, request_key
+        | extend shown=keep_text and ts >= floor_time
+        | extend found_at=iff(isempty(needle), 0, max_of(indexof(tolower(['text']), needle), 0))
+        | extend snippet_at=max_of(found_at - 120, 0)
+        | project row_type='block', position, node_id, session_id, thinking_key, request_key, agent_id,
+            ts=(ts - datetime(1970-01-01)) / 1s, call_ts, tool, model, chars, turn_index, block_index,
+            snippet_at=iff(shown, snippet_at, long(null)), snippet=iff(shown, substring(['text'], snippet_at, 320), ''))
+| order by row_type asc, position asc, day desc, blocks desc, name asc

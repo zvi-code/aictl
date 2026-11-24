@@ -168,6 +168,12 @@ _VIEWS = {
         "all_nodes requested_node requested_session call_ts call_agent block_key keep_text text_floor",
         "node_id thinking_key request_key ts agent_id model turn_index block_index chars tool text",
     ),
+    "thinking.search": (
+        f"{_TIME} search_terms search_phrases restrict_tools requested_tools requested_models sort_key ascending "
+        "page_offset page_size keep_text text_floor",
+        "row_type position node_id session_id thinking_key request_key agent_id ts call_ts tool model chars turn_index "
+        "block_index snippet_at snippet name blocks first_ts last_ts day",
+    ),
     "prompts.detail": (
         "all_nodes requested_node requested_session prompt_ts open_end",
         "text prompt_file project_path input_tokens output_tokens cache_read_tokens cache_creation_tokens "
@@ -436,6 +442,7 @@ _PARAMETER_TYPES = {
     "live_sessions": list,
     "observed_ends": list,
     "search_terms": list,
+    "search_phrases": list,
     "calendar_days": list,
     "pids": tuple,
     PROJECT_PARAMETER: list,

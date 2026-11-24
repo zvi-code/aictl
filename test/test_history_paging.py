@@ -312,6 +312,7 @@ BOUNDED = {
     "tools.confirm_counts": "one row per session, tool name and confirmation value",
     "tools.series": "one row per tool name and grid bucket",
     "thinking.blocks": "the thinking blocks of one model call, or one block",
+    "thinking.search": "a total, one row per tool, at most 30 models and 400 days, and one page (page_size, at most 200)",
     "tools.totals": "one row per tool name",
     "usage.sessions": "one row per session",
 }
