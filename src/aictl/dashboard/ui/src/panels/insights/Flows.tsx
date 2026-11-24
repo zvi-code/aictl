@@ -28,10 +28,11 @@ function splitBars(body: FlowsBody) {
 const axisOf = (measure: string, top: string, rows: readonly BarRow[]) =>
   axisText(measure, top) + (rows.some(row => row.parts.some(part => part.repo != null)) ? ' A segment per repository.' : '')
 
-/** A coding tool's name narrows the page to it. Steps, cycles, paths and endings are kinds of step, not names; a project is
- * named by its last folder only, and the page narrows only to a whole project path. */
+/** A coding tool's name narrows the page to it. Steps, cycles, paths and endings are kinds of step, not names. A project is
+ * named by its last folder: its name narrows the page to every stored folder of that name. */
 const links = (open: Opens) => ({
   product: (rows: BarRow[]) => opening(rows, row => open.product(row.key, row.name)),
+  project: (rows: BarRow[]) => opening(rows, row => open.projectNamed(row.name)),
 })
 type Links = ReturnType<typeof links>
 
@@ -73,9 +74,9 @@ function Visual(props: { body: FlowsBody; label: Label; mode: ColourMode; setMod
       <BarChart data="last-paths" title="Last steps of sessions" rows={pathRows(shown(), 'last')}
         axis={sessionsAxis(pathRows(shown(), 'last'))} empty="No end shared by 3 or more sessions." />
       <Show when={byRepo() && projectRepoRows(props.body).length} fallback={
-        <BarChart data="projects" title="Sessions per project, by how they ended" rows={projectRows(props.body)} legend={endingLegend}
+        <BarChart data="projects" title="Sessions per project, by how they ended" rows={props.link.project(projectRows(props.body))} legend={endingLegend}
           axis={sessionsAxis(projectRows(props.body))} empty="No project with 5 or more sessions." />}>
-        <BarChart data="projects-repos" title="Sessions per project" rows={projectRepoRows(props.body)}
+        <BarChart data="projects-repos" title="Sessions per project" rows={props.link.project(projectRepoRows(props.body))}
           axis={sessionsAxis(projectRepoRows(props.body))} />
       </Show>
     </div>

@@ -17,11 +17,12 @@ import own from './ProblemSessions.module.css'
 
 const COUNT_NAMES = { multi: 'two or more signals', one: 'one signal', none: 'no signal' } as const
 
-/** A coding tool's name narrows the page to it. Signals name nothing to open; a project is named by its last folder only, and
- * the page narrows only to a whole project path. */
+/** A coding tool's name narrows the page to it. Signals name nothing to open. A project is named by its last folder: its
+ * name narrows the page to every stored folder of that name; "Other projects" is a sum and stays text. */
 const links = (open: Opens, label: Label) => ({
   product: (tool: string) => open.product(tool, label(tool)),
   columns: (columns: HeatColumn[]) => opening(columns, column => open.product(column.key, column.name)),
+  projects: (columns: HeatColumn[]) => opening(columns, column => column.key === 'other' ? undefined : open.projectNamed(column.name)),
 })
 type Links = ReturnType<typeof links>
 
@@ -62,7 +63,10 @@ function Visual(props: { body: ProblemBody; label: Label; mode: ColourMode; setM
     return { ...grid, columns: props.link.columns(grid.columns) }
   }
   const pairs = () => pairGrid(props.body)
-  const projects = () => projectGrid(props.body)
+  const projects = () => {
+    const grid = projectGrid(props.body)
+    return { ...grid, columns: props.link.projects(grid.columns) }
+  }
   const few = () => projectColumns(props.body).few
   return <>
     <ColourBy parts="Number of signals" value={byRepo() ? 'repo' : 'parts'} onChange={props.setMode} split={problemSplit(props.body)} />
@@ -127,7 +131,7 @@ export default function ProblemSessions(props: CardProps) {
         id: `${tool.tool}:${cell.signal}`, tool: label(tool.tool), tool_key: tool.tool, signal: SIGNAL_LABELS[cell.signal], sessions: cell.sessions ?? undefined,
         share: cell.share ?? undefined, cost: cell.cost_usd ?? undefined, of: tool.sessions,
       }))),
-      fields: [{ ...textField('tool', 'Tool'), action: { label: row => `Show only ${String(row.tool)} on every view`,
+      fields: [{ ...textField('tool', 'Tool'), action: { label: row => open.product(String(row.tool_key ?? ''), String(row.tool))?.label ?? '',
         run: row => open.product(String(row.tool_key ?? ''), String(row.tool))?.run() } }, textField('signal', 'Signal'), numberField('sessions', 'Sessions flagged', fmtNum),
         numberField('of', 'Sessions of the tool', fmtNum), numberField('share', 'Share of the tool\'s sessions', value => share(value)),
         numberField('cost', 'Cost of the flagged sessions (list price)', value => money(value))],

@@ -1,4 +1,4 @@
-import { createEffect, createMemo, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, For, Show, untrack } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import { stamp } from '../../design/format'
 import { kustoLink } from '../../drawer/kqlLink'
@@ -11,9 +11,9 @@ import type { PanelContext, Read } from '../types'
 import { learnToolLabels, toolLabel, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
 import { evidenceNote, fewText, withEvidence } from './evidence'
 import { sessionBranch, sessionHover, sessionName } from './sessionName'
-import { insightView } from './views'
+import { insightView, TOOL_FILTERED } from './views'
 import styles from './Insights.module.css'
-import { opens, OpensContext } from './charts/Open'
+import { Name, opens, OpensContext } from './charts/Open'
 
 export type CardProps = { ctx: PanelContext; since: number; until: number }
 
@@ -85,6 +85,12 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
     <h1 id={`insight-${props.card}-title`} data-insight={props.card}>{title}</h1>
     <States result={result} retry={read.retry}>
       <p class={styles.meta} data-period>{periodText(body())}</p>
+      {/* A coding tool or model filter the view's query does not take: said here, with the views that do take it. */}
+      <Show when={!props.filtered && (ctx.tools() != null || ctx.filters().model !== 'all')}>
+        <p class={styles.note} data-unfiltered>The coding tool and model filters do not narrow this view: it shows every tool and
+          model. They narrow <For each={TOOL_FILTERED}>{(id, i) => <>{i() ? ', ' : ''}<Name text={insightView(id).title}
+            open={{ label: `Open ${insightView(id).title} with the filter applied`, run: () => ctx.navigate({ view: id }) }} /></>}</For>.</p>
+      </Show>
       <Show when={props.hero?.(shown()!.body)}>{hero => <p class={styles.hero} data-hero>
         <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
       <p class={styles.finding} data-finding>{props.finding(shown()!.body)}</p>

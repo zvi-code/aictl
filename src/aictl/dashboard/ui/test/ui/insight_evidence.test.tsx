@@ -112,7 +112,7 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
       summary: { sessions: 5486, flagged: 549, flagged_share: 0.1, multi: 0, flagged_cost_usd: 1, not_reporting: [] }, sessions: [],
     }
     const ctx = {
-      scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
+      scope: () => 'local', tools: () => null, nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
       openAgent() {}, detail: (path: () => string | undefined) => Object.assign(() => path()
         ? { data: body, status: 'ready', error: null } as DetailState<unknown> : undefined, { retry() {} }),
     } as unknown as PanelContext

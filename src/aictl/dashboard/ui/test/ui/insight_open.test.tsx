@@ -2,6 +2,8 @@
 // A name drawn on an Insights view is a way in: a skill opens its detail, a session its flow, a repository or a coding
 // tool narrows the page. These tests keep every shared chart piece able to carry that, the Skills view wired to it,
 // and the step of a session's flow linked to the skill and the tool it names.
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FlowEvent } from '../../src/data/contract.gen'
 import { StepInspector } from '../../src/drawer/FlowParts'
@@ -18,6 +20,7 @@ import { PercentileStrip } from '../../src/panels/insights/charts/PercentileStri
 import { Scatter } from '../../src/panels/insights/charts/Scatter'
 import { BarChart } from '../../src/panels/insights/FlowsBars'
 import { RepoLegend } from '../../src/panels/insights/RepoLegend'
+import { INSIGHT_VIEWS, TOOL_FILTERED } from '../../src/panels/insights/views'
 import Skills from '../../src/panels/insights/Skills'
 import type { SkillsBody } from '../../src/panels/insights/skillsModel'
 import { Bars as WorkBars, Ranges } from '../../src/panels/insights/WorkCharts'
@@ -30,7 +33,7 @@ type Went = { details: Detail[]; agents: string[]; patches: Record<string, unkno
 function context(state?: DetailState<unknown>) {
   const went: Went = { details: [], agents: [], patches: [] }
   const ctx = {
-    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
+    scope: () => 'local', tools: () => null, nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
     openAgent(id: string, tab = 'flow') { went.agents.push(`${id}:${tab}`) },
     openDetail(detail: Detail) { went.details.push(detail) },
     navigate(patch: Record<string, unknown>) { went.patches.push(patch) },
@@ -177,6 +180,29 @@ const skills = {
   sessions: [{ session_id: 's-skill', node_id: 'n', tool: 'copilot-cli', project_name: 'alpha', uses: 7, skills: ['kql', 'review'] }],
 } as unknown as SkillsBody
 
+describe('INS-OPEN · a view the coding tool and model filters do not narrow', () => {
+  it('says so when one is set, and links the views that take the filter', () => {
+    const { ctx, went } = context({ data: skills, status: 'ready', error: null })
+    const filtered = { ...ctx, tools: () => ['copilot-cli'], filters: () => ({ projects: [], repos: [], model: 'all' }) } as unknown as PanelContext
+    const { host, dispose } = mount(() => <Skills ctx={filtered} since={base.range.since} until={base.range.until} />)
+    const note = host.querySelector('[data-unfiltered]')!
+    expect(note.textContent).toContain('The coding tool and model filters do not narrow this view')
+    expect([...note.querySelectorAll('[data-open]')].map(node => node.textContent)).toEqual(['Work by repository', 'Where session time goes',
+      'What the agents changed'])
+    note.querySelector<HTMLElement>('[data-open]')!.click()
+    expect(went.patches).toEqual([{ view: 'repos' }])
+    dispose()
+  })
+
+  it('says nothing when neither filter is set', () => {
+    const { ctx } = context({ data: skills, status: 'ready', error: null })
+    const open = { ...ctx, tools: () => null, filters: () => ({ projects: [], repos: [], model: 'all' }) } as unknown as PanelContext
+    const { host, dispose } = mount(() => <Skills ctx={open} since={base.range.since} until={base.range.until} />)
+    expect(host.querySelector('[data-unfiltered]')).toBeNull()
+    dispose()
+  })
+})
+
 describe('INS-OPEN · the Skills view', () => {
   it('opens the skill from its name on every chart that ranks skills, and from the data table', () => {
     const { ctx, went } = context({ data: skills, status: 'ready', error: null })
@@ -267,5 +293,20 @@ describe('INS-OPEN · the skill detail says whose files it read', () => {
     expect(skillFilesNote('node', false)).toContain('The skill files of another node are not read')
     expect(skillFilesNote('node', true)).toBeUndefined()
     expect(skillFilesNote('local', true)).toBeUndefined()
+  })
+})
+
+describe('INS-OPEN · no view is drawn without openers', () => {
+  it('every Insights view builds its openers from the one map', () => {
+    const folder = join(__dirname, '../../src/panels/insights')
+    const source = (file: string) => readFileSync(join(folder, file), 'utf8')
+    const views = readdirSync(folder).filter(file => file.endsWith('.tsx') && file !== 'InsightCard.tsx' && /<InsightCard[<\s]/.test(source(file)))
+    // One file per view of views.ts.
+    expect(views).toHaveLength(INSIGHT_VIEWS.length)
+    // The views listed as taking the coding tool and model filters are the ones that pass them on, no more and no fewer.
+    expect(views.filter(file => /<InsightCard[^\n]*\sfiltered\b/.test(source(file))).map(file => /card="(\w+)"/.exec(source(file))![1]).sort())
+      .toEqual([...TOOL_FILTERED].sort())
+    // A view that draws names as plain text is a dead end for the reader: a new view has to say what its names open.
+    expect(views.filter(file => !/\bopens\(/.test(source(file)))).toEqual([])
   })
 })

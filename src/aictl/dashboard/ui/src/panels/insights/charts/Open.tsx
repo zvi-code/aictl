@@ -66,12 +66,13 @@ export function opens(ctx: PanelContext) {
           if (folders.length) ctx.navigate({ project: folders, repo: null, sel: null })
         }).catch(() => undefined)
       } } : undefined,
-    /** A coding tool (Claude Code, Copilot CLI): the whole page narrowed to it. */
+    /** A coding tool (Claude Code, Copilot CLI): the page's coding tool filter set to it. A view that does not take
+     * the filter says so under its title (InsightCard). */
     product: (tool: string, name: string): Open | undefined => tool
-      ? { label: `Show only ${name} on every view`, run: () => ctx.navigate(toolsToParams([tool])) } : undefined,
-    /** A model: the whole page narrowed to it. */
+      ? { label: `Set the coding tool filter to ${name}`, run: () => ctx.navigate(toolsToParams([tool])) } : undefined,
+    /** A model: the page's model filter set to it. A view that does not take the filter says so under its title. */
     model: (model: string): Open | undefined => model
-      ? { label: `Show only the model ${model} on every view`, run: () => ctx.navigate({ model }) } : undefined,
+      ? { label: `Set the model filter to ${model}`, run: () => ctx.navigate({ model }) } : undefined,
   }
 }
 export type Opens = ReturnType<typeof opens>

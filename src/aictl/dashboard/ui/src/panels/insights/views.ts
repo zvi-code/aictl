@@ -27,6 +27,10 @@ export const INSIGHT_VIEWS: readonly InsightView[] = [
   { id: 'models', title: 'Model report on your own work', group: 'Repositories and models' },
 ]
 
+/** The views whose queries take the page's coding tool and model filters. The others take the period and the project
+    and repository filters only, and say so when one of the two is set. */
+export const TOOL_FILTERED: readonly CardId[] = ['repos', 'durations', 'changes']
+
 /** The view an address names; the first one when it names none or one that does not exist. */
 export const insightView = (id: string | null | undefined): InsightView =>
   INSIGHT_VIEWS.find(view => view.id === id) ?? INSIGHT_VIEWS[0]

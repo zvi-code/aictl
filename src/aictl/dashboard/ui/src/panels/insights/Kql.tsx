@@ -19,10 +19,11 @@ import insights from './Insights.module.css'
 const runs = (rows: BarRow[]) => axisText('runs', fmtNum(barTop(rows)))
 
 /** A run of 100 KB or more is one call of one session: its name opens that session at its tool calls. Routes, failure kinds,
- * kinds, clusters and query shapes name nothing to open; a project is named by its last folder only, and the page narrows
- * only to a whole project path. */
+ * kinds, clusters and query shapes name nothing to open. A project is named by its last folder: its name narrows the page to
+ * every stored folder of that name. */
 const links = (open: Opens) => ({
   large: (rows: (BarRow & { run: KqlLarge })[]) => opening(rows, row => open.session(row.run.session_id, sessionName(row.run), 'tools')),
+  project: (rows: BarRow[]) => opening(rows, row => open.projectNamed(row.name)),
 })
 type Links = ReturnType<typeof links>
 
@@ -64,7 +65,7 @@ function Visual(props: { body: KqlBody; label: Label; by: ColourMode; setBy: (va
     <div class={styles.columns}>
       <BarChart data="targets" title="Runs per cluster and database" rows={targetRows(props.body, repo())} legend={legend(runLegend)}
         axis={runs(targetRows(props.body)) + along()} empty="No run named its cluster." />
-      <BarChart data="projects" title="Runs per project" rows={kqlProjectRows(props.body, repo())} legend={legend(runLegend)}
+      <BarChart data="projects" title="Runs per project" rows={props.link.project(kqlProjectRows(props.body, repo()))} legend={legend(runLegend)}
         axis={runs(kqlProjectRows(props.body)) + along()} empty="No project with 5 runs." />
     </div>
     <BarChart data="shapes" title="Query shapes run most (literals as ?)" rows={shapeRows(props.body, repo())} legend={legend(shapeLegend)}

@@ -15,12 +15,13 @@ import styles from './CallsViews.module.css'
 
 const calls = (rows: BarRow[]) => axisText('calls', fmtNum(barTop(rows)))
 
-/** The rows of a chart with what their names open: a server its detail, a server tool the tool. A project stays text: the
- * answer names it by its last folder, and the page narrows only to a whole project path. */
+/** The rows of a chart with what their names open: a server its detail, a server tool the tool. A project is named
+ * by its last folder: its name narrows the page to every stored folder of that name. */
 const links = (open: Opens) => ({
   server: (rows: BarRow[]) => opening(rows, row => open.mcp(mcpServerId(row.key), row.name)),
   listed: (rows: (BarRow & { server: string })[]) => opening(rows, row => open.mcp(mcpServerId(row.server), row.server)),
   tool: (rows: McpToolRow[]) => opening(rows, row => open.tool(mcpToolName(row.server, row.tool_name))),
+  project: (rows: BarRow[]) => opening(rows, row => open.projectNamed(row.name)),
 })
 type Links = ReturnType<typeof links>
 
@@ -55,7 +56,7 @@ function Visual(props: { body: McpBody; label: Label; by: ColourMode; setBy: (va
       <BarChart data="listed" title="Sessions that listed a server's tools" rows={props.link.listed(listedRows(props.body, props.label, repo()))}
         legend={legend(listedLegend)} axis={axisText('sessions', fmtNum(barTop(listedRows(props.body, props.label)))) + along()}
         empty="No MCP tool listing recorded in this period." />
-      <BarChart data="projects" title="MCP calls per project" rows={mcpProjectRows(props.body, repo())} legend={legend(callLegend)}
+      <BarChart data="projects" title="MCP calls per project" rows={props.link.project(mcpProjectRows(props.body, repo()))} legend={legend(callLegend)}
         axis={calls(mcpProjectRows(props.body)) + along()} empty="No project with 20 MCP calls." />
     </div>
     <p class={styles.note} data-coverage>{mcpCoverage(props.body, props.label)}</p>

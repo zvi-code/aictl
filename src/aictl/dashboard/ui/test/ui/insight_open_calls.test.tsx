@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The names drawn on the MCP, Kusto, Flows and Problem sessions views open what they name: an MCP server its detail, a
 // server tool the tool, a large Kusto run its session, a coding tool the page narrowed to it. Kinds of step, signals,
-// clusters, query shapes and projects named by their last folder stay text.
+// clusters and query shapes stay text. A project named by its last folder narrows the page to every folder of that name.
 import { beforeEach, describe, expect, it } from 'vitest'
 import Flows from '../../src/panels/insights/Flows'
 import type { FlowsBody } from '../../src/panels/insights/flowsModel'
@@ -23,7 +23,7 @@ function draw(View: (props: CardProps) => JSX.Element, data: unknown) {
   const went: Went = { details: [], agents: [], patches: [] }
   const state = { data, status: 'ready', error: null }
   const ctx = {
-    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
+    scope: () => 'local', tools: () => null, nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
     openAgent(id: string, tab = 'flow') { went.agents.push(`${id}:${tab}`) },
     openDetail(detail: Detail) { went.details.push(detail) },
     navigate(patch: Record<string, unknown>) { went.patches.push(patch) },
@@ -77,14 +77,13 @@ describe('INS-OPEN · MCP servers', () => {
     dispose()
   })
 
-  it('opens a server tool as the store names it; the whole-server row of the table and a project stay text', () => {
+  it('opens a server tool as the store names it; the whole-server row of the table stays text; a project narrows by its name', () => {
     const { host, dispose, went } = draw(Mcp, mcp)
     named(host, '[data-chart="server-tools"]', 'kusto · query')!.click()
     inTable(host, 'Open tool mcp__kusto__query')!.click()
     expect(went.details).toEqual([{ type: 'tool', name: 'mcp__kusto__query' }, { type: 'tool', name: 'mcp__kusto__query' }])
     expect([...host.querySelectorAll('button')].some(button => button.textContent === '(all tools)')).toBe(false)
-    expect(host.querySelector('[data-chart="projects"] [data-open]')).toBeNull()
-    expect(host.querySelector('[data-chart="projects"]')!.textContent).toContain('alpha')
+    expect(host.querySelector('[data-chart="projects"] [data-open]')!.getAttribute('aria-label')).toBe('Show only the project folders named alpha on every view')
     dispose()
   })
 })
@@ -115,9 +114,9 @@ describe('INS-OPEN · Kusto runs', () => {
     dispose()
   })
 
-  it('keeps routes, failure kinds, kinds, clusters, query shapes and projects as text', () => {
+  it('keeps routes, failure kinds, kinds, clusters and query shapes as text; a project narrows by its name', () => {
     const { host, dispose } = draw(Kql, kql)
-    for (const chart of ['routes', 'failures', 'kinds', 'targets', 'shapes', 'projects']) {
+    for (const chart of ['routes', 'failures', 'kinds', 'targets', 'shapes']) {
       expect(host.querySelector(`[data-chart="${chart}"]`), chart).toBeTruthy()
       expect(host.querySelector(`[data-chart="${chart}"] [data-open]`), chart).toBeNull()
     }
@@ -147,11 +146,11 @@ const flows = {
 } as unknown as FlowsBody
 
 describe('INS-OPEN · Flows', () => {
-  it('narrows the page to a coding tool from its name; steps, cycles, paths and projects stay text', () => {
+  it('narrows the page to a coding tool from its name; steps, cycles and paths stay text', () => {
     const { host, dispose, went } = draw(Flows, flows)
     named(host, '[data-chart="tools"]', 'copilot-cli')!.click()
     expect(JSON.stringify(went.patches)).toContain('copilot-cli')
-    for (const chart of ['[data-chart="cycles"]', '[data-chart="first-paths"]', '[data-chart="projects"]', '[data-heat="transitions"]']) {
+    for (const chart of ['[data-chart="cycles"]', '[data-chart="first-paths"]', '[data-heat="transitions"]']) {
       expect(host.querySelector(chart), chart).toBeTruthy()
       expect(host.querySelector(`${chart} [data-open]`), chart).toBeNull()
     }
@@ -178,18 +177,18 @@ describe('INS-OPEN · Problem sessions', () => {
     // With no labels on the board a coding tool is shown by its id.
     named(host, '[data-chart="problem-counts"]', 'claude-code')!.click()
     named(host, '[data-heat="problem-tools"]', 'claude-code')!.click()
-    inTable(host, 'Show only claude-code on every view')!.click()
+    inTable(host, 'Set the coding tool filter to claude-code')!.click()
     expect(went.patches).toHaveLength(3)
     for (const patch of went.patches) expect(JSON.stringify(patch)).toContain('claude-code')
     dispose()
   })
 
-  it('opens a flagged session from the sessions table; signals and projects stay text', () => {
+  it('opens a flagged session from the sessions table; signals stay text; a project narrows by its name', () => {
     const { host, dispose, went } = draw(ProblemSessions, problems)
     inTable(host, 'Open session Fix the parser')!.click()
     expect(went.agents).toEqual(['s-flagged:errors'])
     expect(host.querySelector('[data-heat="problem-pairs"] [data-open]')).toBeNull()
-    expect(host.querySelector('[data-heat="problem-projects"] [data-open]')).toBeNull()
+    expect(host.querySelector('[data-heat="problem-projects"] [data-open]')!.getAttribute('aria-label')).toBe('Show only the project folders named alpha on every view')
     expect(host.querySelector('[data-heat="problem-tools"] [data-row] [data-open]')).toBeNull()
     dispose()
   })

@@ -143,7 +143,7 @@ describe('INS-OPEN · Verified before commit', () => {
     press(host.querySelector('[data-chart="verified-sessions"] [data-sessions-tool="claude-code"] [data-open]'))
     expect(host.querySelector('[data-idle]')!.textContent).toBe('No commit in this period by claude-code.')
     press(host.querySelector('[data-idle] [data-open]'))
-    press(labelled(host, 'Show only copilot-cli on every view', 'table')[0])
+    press(labelled(host, 'Set the coding tool filter to copilot-cli', 'table')[0])
     expect(went.patches.map(patch => JSON.stringify(patch))).toEqual(['copilot-cli', 'claude-code', 'claude-code', 'copilot-cli']
       .map(tool => expect.stringContaining(tool) as unknown as string))
     // A class of commit is not a name: its segment opens nothing.
@@ -275,21 +275,21 @@ describe('INS-OPEN · Model report', () => {
   it('a model narrows the page to it from its grid row, its dot and the table; the tool heading narrows to the tool', () => {
     const { ctx, went } = context(models)
     const { host, dispose } = mount(() => <ModelReport {...show(ctx)} />)
-    const astra = 'Show only the model gpt-6-astra on every view'
+    const astra = 'Set the model filter to gpt-6-astra'
     const inCharts = labelled(host, astra, 'chart')
     expect(inCharts).toHaveLength(2)
     for (const name of inCharts) press(name)
     press(labelled(host, astra, 'table')[0])
     expect(went.patches).toEqual(Array(3).fill({ model: 'gpt-6-astra' }))
     // A row per effort opens its model; the tool total opens no model.
-    const argon = labelled(host, 'Show only the model gemini-4-argon on every view', 'table')
+    const argon = labelled(host, 'Set the model filter to gemini-4-argon', 'table')
     expect(argon.map(button => button.textContent)).toEqual(['gemini-4-argon', 'gemini-4-argon · high'])
     press(argon[1])
-    expect([...host.querySelectorAll('table button')].filter(button => (button.getAttribute('aria-label') ?? '').includes('Show only the model'))).toHaveLength(3)
+    expect([...host.querySelectorAll('table button')].filter(button => (button.getAttribute('aria-label') ?? '').includes('Set the model filter to'))).toHaveLength(3)
     expect(went.patches.at(-1)).toEqual({ model: 'gemini-4-argon' })
     press(host.querySelector('section[data-tool="copilot-cli"] h3 [data-open]'))
     expect(JSON.stringify(went.patches.at(-1))).toContain('copilot-cli')
-    expect(labelled(host, 'Show only copilot-cli on every view', 'table').length).toBeGreaterThan(0)
+    expect(labelled(host, 'Set the coding tool filter to copilot-cli', 'table').length).toBeGreaterThan(0)
     // The line of measures a tool does not record names tools in a sentence: it stays text.
     expect(host.querySelector('[data-not-reported] [data-open]')).toBeNull()
     dispose()

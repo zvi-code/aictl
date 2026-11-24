@@ -194,7 +194,7 @@ type State = DetailState<unknown> | undefined
 function context(states: (card: string) => State, opened: string[] = []) {
   const requested: string[] = []
   const ctx = {
-    scope: () => 'local', nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
+    scope: () => 'local', tools: () => null, nodeId: () => null, paused: () => false, copy() {}, board: () => undefined, filters: () => ({ projects: [], repos: [] }),
     openAgent(id: string, tab = 'flow') {
       opened.push(`${id}:${tab}`)
       history.pushState(null, '', nextAddress(drawerPatch({ type: 'agent', id, tab })))
@@ -802,8 +802,10 @@ describe('INS-NAME · the subagent sessions and every card session table name a 
     const names = [...card(host, 'subagents').querySelectorAll('[data-chart="subagent-sessions"] [data-row] > span:first-child')]
     expect(names.map(name => name.firstChild!.textContent)).toEqual(['claude-code · Fix the login page · on feature/login',
       'claude-code · fedcba98'])
-    // The name opens the session, so its hover is what a click does (Bars draws an opening name's label, not the row title).
-    expect(names[0].querySelector('[data-open]')!.getAttribute('title')).toBe('Open session Fix the login page')
+    // The name opens the session: its hover keeps the session's title, branch and folder, then says what a click does.
+    const hover = names[0].querySelector('[data-open]')!.getAttribute('title')!
+    expect(hover.startsWith('Fix the login page\nBranch: feature/login')).toBe(true)
+    expect(hover.endsWith('\nClick: Open session Fix the login page')).toBe(true)
     const sessions = card(host, 'subagents').querySelector<HTMLDetailsElement>('[data-sessions]')!
     sessions.open = true
     flush()
