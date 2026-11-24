@@ -880,3 +880,296 @@ def test_board_cli_reads_real_loopback_route_and_rejects_remote_settings_edits(t
         server.shutdown()
         server.server_close()
         thread.join(2)
+
+
+# ── The board in sections (board_sections.py, GET /api/history/board/section) ──
+
+FLEET = "scope=fleet&since=1000&until=2000&buckets=2"
+
+
+def _fresh_board_state(monkeypatch):
+    """No answer, selection or memo of an earlier read: every read below reaches the reader."""
+    from aictl.dashboard import board_projection, history_board
+
+    for name in ("_cache", "_inflight", "_latest", "_selections", "_viewers", "_latest_selection"):
+        monkeypatch.setattr(history_board, name, {})
+    for name in ("_facts_memo", "_facts_inflight", "_sources_memo"):
+        monkeypatch.setattr(board_projection, name, {})
+
+
+def _section(store, section, query=FLEET, now=4000, viewer=""):
+    from aictl.dashboard.history_board import read_section
+
+    extra = f"&viewer={viewer}" if viewer else ""
+    return json.loads(read_section(store, f"{query}&section={section}{extra}", now=now))
+
+
+def _single_board(store, query=FLEET, now=4000):
+    """The complete single board of the selection, at the same time as the sections."""
+    from aictl.dashboard.history_board import read_board
+
+    board = json.loads(read_board(store, query, now=now))
+    if board.get("pending_fields"):
+        _finish_builds()
+        board = json.loads(read_board(store, query, now=now))
+    return board
+
+
+def _all_sections(store, query=FLEET, now=4000):
+    from aictl.dashboard.board_sections import SECTIONS
+
+    return {name: _section(store, name, query, now) for name in SECTIONS}
+
+
+def _leaves(value, prefix=""):
+    """Every value of a board by its dotted name, down to the names the sections split fields by."""
+    if isinstance(value, dict) and prefix in ("", "kpis", "kpis.spark", "series", "series.failures"):
+        return {path: leaf for key, item in value.items()
+                for path, leaf in _leaves(item, f"{prefix}.{key}" if prefix else key).items()}
+    return {prefix: value}
+
+
+@pytest.fixture
+def counted_reads(kusto_store, monkeypatch):
+    """Every read that reaches the store, by view and parameters; the view named in ``fail`` fails."""
+    from aictl.dashboard.projections.history import configured_reader
+    from aictl.stores.base import StoreError
+
+    reader = configured_reader(kusto_store)
+    real = type(reader).read
+    state = SimpleNamespace(reads=[], fail=None, lock=threading.Lock())
+
+    def read(self, view, params):
+        # One view read for different kinds of rows is a read of each kind: each may fail alone.
+        name = f"{view}:{params['kind_filter']}" if params.get("kind_filter") else view
+        with state.lock:
+            state.reads.append((name, json.dumps(dict(params), sort_keys=True, default=str)))
+        if name == state.fail:
+            raise StoreError(f"Kusto view {name} failed: injected")
+        return real(self, view, params)
+
+    monkeypatch.setattr(type(reader), "read", read)
+    return state
+
+
+RICH = "scope=fleet&since=1000&until=4000&buckets=3"
+
+
+@pytest.fixture
+def rich_history(history):
+    """The fleet history with a session that makes the board read every view it can: a request over a model's
+    long-prompt tier, a test loop at its end, a pending and an approved confirmation, a skill, a prompt, a
+    memory file a session loaded, and a last activity a few minutes before now (the turns that ended)."""
+    sid = "0b1c2d3e-0000-4000-8000-000000000042"
+    add = history.add
+    add("sessions", "host-a", sid, session_id=sid, tool="claude-code", project_path="/shared", started_at=3380)
+    add("session_prompts", "host-a", 2, id=2, session_id=sid, ts=3390, text="fix the failing test", tool="claude-code")
+    add("requests", "host-a", 2, id=2, session_id=sid, ts=3400, tool="claude-code", model="claude-haiku-5-5",
+        input_tokens=250_000, output_tokens=10, duration_ms=900)
+    for i, ts in enumerate((3400, 3410, 3420)):
+        add("tool_invocations", "host-a", 100 + i, id=100 + i, session_id=sid, tool="claude-code", tool_name="Bash",
+            target="pytest test/test_x.py", ts=ts, is_error=1, exit_code=1, duration_ms=2000, confirm="approved",
+            confirm_wait_ms=1500)
+    add("tool_invocations", "host-a", 110, id=110, session_id=sid, tool="claude-code", tool_name="Write",
+        target="/shared/x.py", ts=3430, confirm="pending")
+    add("skill_uses", "host-a", 1, id=1, session_id=sid, tool="claude-code", name="review", ts=3405)
+    add("files", "host-a", "/shared/CLAUDE.md", path="/shared/CLAUDE.md", tool="claude-code", category="instruction",
+        scope="project", tokens=100, last_changed=3000, mtime=3000)
+    add("session_loaded_files", "host-a", (sid, "/shared/CLAUDE.md"), session_id=sid, path="/shared/CLAUDE.md",
+        how="startup", ts=3395, tool="claude-code")
+    add("file_write_events", "host-a", 2, id=2, path="/shared/CLAUDE.md", ts=3396, session_id=sid, tool="claude-code",
+        detail='{"lines_added":1}')
+    return history
+
+
+def test_the_page_asks_each_field_of_the_section_that_answers_it():
+    """The page's map of sections (ui/src/panels/boardSections.json) is the server's, field by field."""
+    from pathlib import Path
+
+    from aictl.dashboard.board_sections import SECTIONS
+
+    page = Path(__file__).resolve().parents[1] / "src/aictl/dashboard/ui/src/panels/boardSections.json"
+    assert json.loads(page.read_text(encoding="utf-8")) == {name: list(s.paths) for name, s in SECTIONS.items()}
+
+
+@pytest.mark.parametrize("query", [FLEET, FLEET + "&tool=copilot-cli&q=host-b", FLEET + "&status=ended&model=model-b",
+                                   "scope=node&node_id=host-a&since=1000&until=2000&buckets=2", RICH,
+                                   RICH + "&status=active", RICH + "&q=test"])
+def test_the_sections_together_are_the_single_board(rich_history, kusto_store, monkeypatch, query):
+    """K-parity: every field of every section equals the field of the single board of the same selection."""
+    from test_contract import validate_detail
+
+    from aictl.dashboard.board_sections import SECTIONS, merge
+
+    _fresh_board_state(monkeypatch)
+    single = _single_board(kusto_store, query)
+    assert "field_errors" not in single
+    _fresh_board_state(monkeypatch)
+    answers = _all_sections(kusto_store, query)
+    for name, answer in answers.items():
+        validate_detail("/api/history/board/section", answer)
+        assert answer["section"] == name and answer["node_scope"] == single["node_scope"]
+        # A section answers exactly the fields it names, no more and no fewer.
+        assert set(_leaves(answer["fields"])) == set(SECTIONS[name].paths), name
+    board = merge([answer["fields"] for answer in answers.values()]) | {"node_scope": single["node_scope"]}
+    validate_detail("/api/history/board", board)
+    single.pop("generated_at")
+    assert board.pop("generated_at") == 4000
+    mine, theirs = _leaves(board), _leaves(single)
+    assert mine.keys() == theirs.keys()
+    for path, value in mine.items():
+        assert value == theirs[path], (path, _difference(value, theirs[path]))
+
+
+def _difference(a, b, at=""):
+    """Where two board values first differ, for a readable failure."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        for key in sorted(a.keys() | b.keys()):
+            if a.get(key) != b.get(key):
+                return _difference(a.get(key), b.get(key), f"{at}.{key}")
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        for i, (x, y) in enumerate(zip(a, b)):
+            if x != y:
+                return _difference(x, y, f"{at}[{i}]")
+    return at, a, b
+
+
+def _views_of_each_section(kusto_store, monkeypatch, counted_reads, query):
+    from aictl.dashboard.board_sections import SECTIONS
+
+    views = {}
+    for name in SECTIONS:
+        _fresh_board_state(monkeypatch)
+        counted_reads.reads.clear()
+        _section(kusto_store, name, query)
+        views[name] = {view for view, _params in counted_reads.reads}
+    return views
+
+
+# What each section reads in the rich history, besides the base board every section reads: the views
+# (and kinds of call rows) a failure of which fails that section, and only that section.
+BASE_VIEWS = {"requests.cells", "requests.long", "tools.agent_totals", "prompts.series", "usage.sessions",
+              "board.sessions", "board.agents"}
+CALL_ROWS = {"tools.activity_rows:tests", "tools.activity_rows:failures", "tools.activity_rows:loops", "requests.ended"}
+SECTION_VIEWS = {
+    "usage": set(),
+    "tools": {"board.activity_facts", "tools.series"},
+    "status": CALL_ROWS,
+    "speed": {"requests.latency"},
+    "options": {"board.sources"},
+    "agents": CALL_ROWS | {"board.activity_facts", "tools.activity_rows:pending", "prompts.titles", "tools.activity"},
+    "attention": CALL_ROWS | {"board.activity_facts", "tools.activity_rows:pending", "prompts.titles", "tools.activity",
+                              "requests.loop_models"},
+    "projects": CALL_ROWS | {"board.activity_facts", "requests.latency", "requests.error_series", "files.changes"},
+    "prompts": {"skills.window", "prompts.page", "requests.intervals"},
+    "project_prompts": {"prompts.files"},
+    "confirms": {"tools.activity_rows:pending", "tools.confirm_counts", "tools.series"},
+    "errors": {"tools.activity_rows:failures", "requests.error_series"},
+    "latency": CALL_ROWS | {"requests.latency", "tools.series", "skills.window", "prompts.page", "requests.intervals"},
+    "loops": CALL_ROWS | {"prompts.titles", "requests.loop_models"},
+    "changes": {"files.changes"},
+    "tests": {"tools.activity_rows:tests"},
+    "files": {"files.inventory", "files.changes", "files.loaded"},
+    "resources": {"runtime.resources"},
+    "sources": {"board.activity_facts", "board.sources"},
+}
+
+
+@pytest.mark.parametrize("query", [RICH, RICH + "&q=test"])
+def test_a_failed_view_fails_only_the_sections_that_read_it(rich_history, kusto_store, monkeypatch, counted_reads, query):
+    """K-independent, over every view the board reads: one failed view leaves every section that does not
+    read it complete and unchanged; each section that reads it fails with the reason of that view. A section
+    that failed is complete once the view answers again."""
+    from aictl.dashboard.board_sections import SECTIONS
+    from aictl.dashboard.history_scope import ScopeError
+
+    _fresh_board_state(monkeypatch)
+    clean = {name: answer["fields"] for name, answer in _all_sections(kusto_store, query).items()}
+    views = _views_of_each_section(kusto_store, monkeypatch, counted_reads, query)
+    base = BASE_VIEWS | ({"board.search_hits"} if "&q=" in query else set())
+    for name in SECTIONS:
+        assert views[name] - base == SECTION_VIEWS[name] and base <= views[name], (name, sorted(views[name] - base))
+    every = set().union(*views.values())
+    # The single board reads no view that no section reads.
+    _fresh_board_state(monkeypatch)
+    counted_reads.reads.clear()
+    _single_board(kusto_store, query)
+    assert {view for view, _params in counted_reads.reads} == every
+    for failed in sorted(every):
+        _fresh_board_state(monkeypatch)
+        counted_reads.fail = failed
+        for name in SECTIONS:
+            if failed in views[name]:
+                with pytest.raises(ScopeError) as error:
+                    _section(kusto_store, name, query)
+                assert error.value.status == 503 and f"Kusto view {failed} failed: injected" in str(error.value), name
+            else:
+                assert _section(kusto_store, name, query)["fields"] == clean[name], (failed, name)
+        counted_reads.fail = None
+        assert {name: _section(kusto_store, name, query)["fields"] for name in SECTIONS} == clean, failed
+    # The rich history holds a figure for every section: a section that fails cannot pass for an empty one.
+    assert all(clean[name] for name in SECTIONS) and clean["loops"]["loops"] and clean["confirms"]["confirms"]["pending"]
+
+
+def test_the_sections_of_one_selection_read_each_input_once(rich_history, kusto_store, monkeypatch, counted_reads):
+    """K-cost: the session list and every other shared input is read once per selection, not once per section,
+    and the sections together read no more than the single board."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from aictl.dashboard.board_sections import SECTIONS
+
+    _fresh_board_state(monkeypatch)
+    counted_reads.reads.clear()
+    _single_board(kusto_store, RICH)
+    single = list(counted_reads.reads)
+    _fresh_board_state(monkeypatch)
+    counted_reads.reads.clear()
+    with ThreadPoolExecutor(max_workers=len(SECTIONS)) as pool:
+        list(pool.map(lambda name: _section(kusto_store, name, RICH), SECTIONS))
+    sections = list(counted_reads.reads)
+    assert len(sections) == len(set(sections)), [r for r in sections if sections.count(r) > 1]
+    assert set(sections) <= set(single) and len(sections) <= len(single)
+
+
+def test_a_selection_nobody_reads_any_more_starts_no_read(history, kusto_store, monkeypatch, counted_reads):
+    """K-change on the server: once its page moves to another selection, the earlier one starts no new read."""
+    from aictl.dashboard import board_projection, history_board
+    from aictl.dashboard.history_scope import ScopeError
+
+    _fresh_board_state(monkeypatch)
+    later = "scope=fleet&since=1500&until=2000&buckets=2"
+    entered, release = threading.Event(), threading.Event()
+    real = board_projection._tools_section
+
+    def slow(board):
+        entered.set()
+        release.wait(10)
+        return real(board)
+
+    monkeypatch.setattr(board_projection, "_tools_section", slow)
+    outcome = {}
+
+    def tools():
+        try:
+            outcome["answer"] = _section(kusto_store, "tools", viewer="page-1")
+        except ScopeError as exc:
+            outcome["error"] = exc
+
+    waiting = threading.Thread(target=tools)
+    waiting.start()
+    assert entered.wait(10)
+    # The page moved on to a later window while its tools section was still being read.
+    assert _section(kusto_store, "usage", later, viewer="page-1")["fields"]["kpis"]["tokens"] == 420
+    counted_reads.reads.clear()
+    release.set()
+    waiting.join(10)
+    assert outcome["error"].status == 409 and outcome["error"].reason == "superseded"
+    assert not [view for view, _params in counted_reads.reads if view == "tools.series"]
+    # A page that comes back to it reads it anew.
+    assert _section(kusto_store, "tools", viewer="page-1")["fields"]["tools"]
+    # A selection another page still reads is kept when one page leaves it.
+    _section(kusto_store, "usage", later, viewer="page-2")
+    _section(kusto_store, "usage", later, viewer="page-1")
+    _section(kusto_store, "usage", viewer="page-1")
+    assert not history_board._viewers["page-2"].abandoned and history_board._viewers["page-1"] is not \
+        history_board._viewers["page-2"]

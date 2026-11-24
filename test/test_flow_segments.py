@@ -122,6 +122,23 @@ def test_older_segments_load_on_demand_and_keep_the_positions_of_events_already_
     assert {(e["ts"], e["type"]): e["step"] for e in again["turns"]} == shown
 
 
+def test_the_live_stream_and_the_http_route_read_one_flow_cache():
+    # The stream's newest window and the HTTP route's older windows must share one epoch and anchor,
+    # or the page can never join an older window to the window it has.
+    from aictl.dashboard.live.projection import _ProjectionDB
+
+    session = Session(turns=20)
+    db = session.store()
+    live = _ProjectionDB(db, "epoch-1")
+    history = HistoryScope.local(db)
+    _, newest = flow_projection.agent_flow(live, SID, now=T + 10_000, limit=500, history=history)
+    _, older = flow_projection.agent_flow(db, SID, now=T + 10_000, offset=newest["summary"]["first_offset"] - 5, limit=5,
+                                         history=history)
+    assert older["summary"]["flow_epoch"] == newest["summary"]["flow_epoch"] != ""
+    assert older["summary"]["first_offset"] < newest["summary"]["first_offset"]
+    assert older["summary"]["matched_events"] >= newest["summary"]["matched_events"]
+
+
 def test_all_segments_read_give_the_events_of_one_whole_read_in_the_same_order():
     session = Session(turns=12)
     db = session.store()

@@ -247,7 +247,10 @@ export default function DockScreen(props: {
         const def = untrack(() => defs().get(id))
         if (!def || dispose) return
         element.style.removeProperty('min-block-size')
+        const ctx = untrack(() => props.ctx)
         dispose = runWithOwner(owner, () => render(() => {
+          // A panel asks for its board fields while it is mounted: near the viewport, in an open section.
+          ctx.need(def.kind === 'chart' ? [...def.sources, def.chart.x] : def.sources)
           const View = panelView(def)
           const hideTitle = () => !editing() && (where()?.stacked || flow && def.id === 'kpis')
           return <Panel title={def.title} size={def.defaultSize} fill={!flow} flow={flow}

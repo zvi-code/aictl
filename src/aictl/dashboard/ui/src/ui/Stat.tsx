@@ -9,11 +9,13 @@ export function Stat(props: {
   unit?: string
   detail?: JSX.Element
   tone?: 'neutral' | 'positive' | 'warning'
+  /** What a missing value says, such as that it is still being read; by default that the source has none. */
+  missing?: string
 }) {
   return <dl class={styles.stat} data-tone={props.tone ?? 'neutral'}>
     <dt>{props.label}</dt>
     <dd class={styles.value}>
-      <Show when={props.value != null} fallback={<span class={styles.missing}>Not available from this source</span>}>
+      <Show when={props.value != null} fallback={<span class={styles.missing}>{props.missing ?? 'Not available from this source'}</span>}>
         {typeof props.value === 'number' ? fmtNum(props.value) : props.value}
         <Show when={props.unit}>{' '}<span class={styles.unit}>{props.unit}</span></Show>
       </Show>

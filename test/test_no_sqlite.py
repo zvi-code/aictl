@@ -63,6 +63,8 @@ def _dashboard_requests(root):
         "/api/live/capabilities": "/api/live/capabilities",
         "/api/live/stream": "/api/live/stream?history=1",
         "/api/history/board": "/api/history/board?since=1795130000&until=1795135200&view=charts",
+        "/api/history/board/section":
+            "/api/history/board/section?since=1795130000&until=1795135200&scope=fleet&section=usage",
         "/api/copilot-sessions": "/api/copilot-sessions",
         "/api/copilot-sessions/{id}": "/api/copilot-sessions/capture-missing-session",
         "/api/board/nodes": "/api/board/nodes?view=health&scope=fleet",

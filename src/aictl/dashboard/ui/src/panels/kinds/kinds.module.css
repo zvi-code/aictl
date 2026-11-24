@@ -17,6 +17,7 @@
 .kpiStats dd:first-of-type { font-size: var(--text-lg); }
 .kpiDetail { display: grid; gap: var(--space-2); }
 .kpiDetail .spark { order: -1; inline-size: 100%; block-size: var(--space-6); }
+.tileRetry { composes: secondary small from "../../ui/control.module.css"; }
 .spark { display: block; inline-size: calc(var(--space-8) * 2); color: var(--color-chart-1); }
 .chartTools { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; }
 .chartTools > span { flex-basis: 100%; min-block-size: 1lh; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

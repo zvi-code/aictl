@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: a7f631ac9705f94b49be49dbc25103e5612a57c4628655ad653380279632f4e3
+// Schema digest: 7052dd54519f637bbb78a4e853b86f510afa19c5203cb5abad1f4ce9242fe3ca
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -1063,6 +1063,13 @@ export type DetailBoardHistory = {
   unpriced?: BoardUnpriced;
   pending_fields?: Array<string>;
   field_errors?: Record<string, string>;
+};
+
+export type DetailBoardSection = {
+  node_scope: BoardNodeScope;
+  section: string;
+  generated_at: BoardGeneratedAt;
+  fields: Record<string, unknown>;
 };
 
 export type DetailCheckpointFiles = {
@@ -3831,6 +3838,7 @@ export interface DetailResponses {
   "/api/events": DetailEvents;
   "/api/events/count": DetailEventsCount;
   "/api/history/board": DetailBoardHistory;
+  "/api/history/board/section": DetailBoardSection;
   "/api/hooks-status": DetailHooksStatus;
   "/api/otel-status": DetailOtelStatus;
   "/api/samples": DetailSamples;

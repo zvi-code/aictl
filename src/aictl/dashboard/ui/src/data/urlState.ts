@@ -42,13 +42,29 @@ export function mergeSearch(search: string, patch: UrlPatch) {
   return s ? '?' + s : '';
 }
 
-// Other values of `scope` (e.g. `project-local`) belong to the Settings workspace.
-export function boardNodeScope(search: string) {
+export type BoardScope = 'local' | 'node' | 'fleet';
+
+// The scope an address without `scope` shows. "All nodes" is where the page opens; main.ts
+// switches it to "This node" when the daemon has no shared history store to answer fleet reads.
+let defaultScope: 'local' | 'fleet' = 'fleet';
+export const defaultNodeScope = () => defaultScope;
+export function setDefaultNodeScope(scope: 'local' | 'fleet') { defaultScope = scope; }
+
+/**
+ * The scope an address shows. `scope=local` is the explicit "This node". Any other value of
+ * `scope` (e.g. `project-local`) belongs to the Settings workspace, which exists only in
+ * "This node", so it also means local.
+ */
+export function boardNodeScope(search: string): BoardScope {
   const q = new URLSearchParams(search);
   const scope = q.get('scope');
-  if (scope === 'fleet') return 'fleet';
-  return scope === 'node' || (!scope && q.has('node_id')) ? 'node' : 'local';
+  if (scope === 'fleet' || scope === 'node') return scope;
+  if (scope) return 'local';
+  return q.has('node_id') ? 'node' : defaultScope;
 }
+
+/** The `scope` value that makes an address show `scope`; null when the default already does. */
+export const scopeParam = (scope: BoardScope) => scope === defaultScope ? null : scope;
 
 export function loadToolFilter(search: string): string[] | null {
   const fromUrl = parseUrlState(search).tools;

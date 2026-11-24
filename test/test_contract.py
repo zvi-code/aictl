@@ -148,7 +148,7 @@ def test_recorded_rest_payloads():
     }
     # Board history is exercised against seeded local and scoped readers.
     no_capture = local_file_routes | {
-        "/api/board/error", "/api/board/prompt", "/api/board/agent/kql", "/api/history/board",
+        "/api/board/error", "/api/board/prompt", "/api/board/agent/kql", "/api/history/board", "/api/history/board/section",
     } | TERMINAL_DETAILS | MEMORY_DETAILS
     assert (set(VALIDATORS["details"]) | {"/api/board"}) - seen <= no_capture | CHANGED_SINCE_CAPTURE
     # A route leaves the list when a new capture has it; an entry no tape holds is stale.

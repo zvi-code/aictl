@@ -478,7 +478,12 @@ class _Board:
         # optional board (``load(optional=True)``) lets them fail alone.
         self.optional = False
         self.unread: dict[str, str] = {}
-        facts = facts or {}
+        # How each shown row was named; rows named by several readers at once keep their own entries.
+        self.name_meta: dict[tuple[str, str], dict] = {}
+        self.use_facts(facts or {})
+
+    def use_facts(self, facts: dict[str, set[str]]) -> None:
+        """Which tools report tool calls, confirmations and prompts at all: a 0 of such a tool is known, else None."""
         self.facts = facts
         self.tools_with_calls = {tool for tool, kinds in facts.items() if "tool_calls" in kinds}
         self.tools_with_confirms = {tool for tool, kinds in facts.items() if "confirms" in kinds}
@@ -589,6 +594,28 @@ class _Board:
         self._apply_filters()
         self._rollup()
         self._index_pending()
+        return self
+
+    def load_base(self, decide_status: Any = None) -> _Board:
+        """The part of the board every section of one selection shares: usage, tool totals, prompts and
+        session rows of the window, filtered and rolled up. No call row is read here.
+
+        A status filter decides which sessions are in view, so with one *decide_status()* runs before
+        the filters: it reads the call rows the statuses need (see ``board_sections``).
+        """
+        reads = [("requests.cells", {"grid": True}), ("tools.agent_totals", {}), ("prompts.series", {"grid": True})]
+        if self._prefetch_fallback:
+            reads.append(("usage.sessions", {"without_requests": True}))
+        self._prefetch(reads)
+        self._load_identity()
+        self._price_cells()
+        self._match_live()
+        self._prefetched.clear()
+        self._index_agents()
+        if self.f.status != "all":
+            decide_status()
+        self._apply_filters()
+        self._rollup()
         return self
 
     def _load_identity(self) -> None:
@@ -967,11 +994,17 @@ class _Board:
 
     def _load_confirms(self) -> None:
         """The confirmation values counted in the cluster, and the pending calls one by one with their target."""
+        self._load_confirm_counts()
+        self._load_pending()
+
+    def _load_confirm_counts(self) -> None:
         if "confirm_counts" not in self.unread:
             self.confirm_counts = [
                 (row["session_id"], row["tool_name"], row["confirm"], row["calls"], exact_values(row, "waits", "wait_count"))
                 for row in self._history_window("tools.confirm_counts")
             ]
+
+    def _load_pending(self) -> None:
         if "pending" in self.unread:
             return
         fields = "session_id agent_id tool_name target ts confirm confirm_wait_ms".split()
@@ -1026,6 +1059,11 @@ class _Board:
         return {r["session_id"] for r in self.history.read("requests.ended", session_keys=self.history.keys(quiet))}
 
     def _assign_status(self) -> None:
+        self._index_agents()
+        self._decide_status()
+
+    def _index_agents(self) -> None:
+        """Each session's agents and last activity: what the filters and the statuses start from."""
         self.sub_lifecycle, self.sub_last_line = {}, {}
         last_activity: dict[str, float] = {}
         last_call: dict[tuple[str, str], float] = {}
@@ -1043,12 +1081,7 @@ class _Board:
         for (sid, agent), agg in self.tool_agg.items():
             note(sid, agent, agg.max_ts, agg.last_err_ts)
         self.last_activity = last_activity
-
-        def last_failed(sid: str, agents: Iterable[str]) -> bool:
-            ends = [(last_call.get((sid, a), 0.0), last_err.get((sid, a), 0.0)) for a in agents]
-            when = max((call for call, _ in ends), default=0.0)
-            return bool(when) and any(err == when for _, err in ends)
-
+        self._last_call, self._last_err = last_call, last_err
         pending_by_root: dict[str, int] = defaultdict(int)
         agents_by_root: dict[str, set[str]] = defaultdict(set)
         for (sid, agent), agg in self.tool_agg.items():
@@ -1062,6 +1095,18 @@ class _Board:
             agents_by_root[sid].add(agent)
         for sid in self.live_by_sid:
             agents_by_root[sid].add(sid)
+        self._pending_by_root = pending_by_root
+        self.agents_by_root = agents_by_root
+
+    def _decide_status(self) -> None:
+        """Each session's and subagent's status, from its activity, the loops and the turns that ended."""
+        last_call, last_err, last_activity = self._last_call, self._last_err, self.last_activity
+        pending_by_root, agents_by_root = self._pending_by_root, self.agents_by_root
+
+        def last_failed(sid: str, agents: Iterable[str]) -> bool:
+            ends = [(last_call.get((sid, a), 0.0), last_err.get((sid, a), 0.0)) for a in agents]
+            when = max((call for call, _ in ends), default=0.0)
+            return bool(when) and any(err == when for _, err in ends)
 
         looping_at_end = {(loop["session_id"], loop["agent_id"]) for loop in self.loops if loop["at_end"]}
         roots_looping = {sid for sid, _ in looping_at_end}
@@ -1316,7 +1361,9 @@ class _Board:
         spawns = getattr(self, "spawns", None) or [r for r in sub_rows.values() if r.get("row_kind") == "spawn"]
         subs = {key: row for key, row in sub_rows.items() if row.get("row_kind") != "spawn"}
         self.spawn_of = subagents.match_spawns(subs, spawns)
-        self.name_meta: dict[tuple[str, str], dict] = {}
+        # Another reader may be naming other rows of this board at the same time: each adds its own.
+        if not isinstance(getattr(self, "name_meta", None), dict):
+            self.name_meta = {}
         titles = {}
         for sid, agent in keys:
             text = firsts.get((sid, agent))
@@ -1353,23 +1400,12 @@ class _Board:
         billed = _billed_usd(self, sid) if root and tool.startswith("copilot") else None
         # No status was decided for this row: say so rather than call it ended.
         status = self.status.get(sid, "unknown") if root else self.sub_status.get((sid, agent), "unknown")
-        meta = self.meta.get(sid) or {}
         sub = self.sub_rows.get((sid, agent)) or {}
         spawn = getattr(self, "spawn_of", {}).get((sid, agent)) or {}
         live = self.live_by_sid.get(sid) if root else None
         active = status in LIVE_STATUSES
         keys = self.agents_by_root.get(sid, ()) if root else (agent,)
-        firsts = [self.first_ts[(sid, a)] for a in keys if (sid, a) in self.first_ts]
-        firsts += [self.tool_agg[(sid, a)].min_ts for a in keys if (sid, a) in self.tool_agg]
-        known_start = meta.get("started_at") if root else sub.get("started_at")
-        started = known_start or (min(firsts) if firsts else None)
-        if root and live is not None and not started:
-            started = live.get("started_at")
-        ended = None
-        if not active:
-            lasts = [self.last_ts.get((sid, a), 0.0) for a in keys]
-            lasts += [self.tool_agg[(sid, a)].max_ts for a in keys if (sid, a) in self.tool_agg]
-            ended = (meta.get("ended_at") if root else sub.get("ended_at")) or (max(lasts) if lasts else None)
+        started, ended = self._span(sid, agent)
         models = sorted({m for a in keys for m in self.agent_models.get(a, ()) if m})
         pending = self._pending_of(sid, None if root else agent) if active else None
         cache_write: int | None = usage.cache_write if usage else None
@@ -1421,6 +1457,27 @@ class _Board:
             row["cpu_percent"] = sampled if sampled is not None else live["cpu_percent"]
             row["pids"] = pids
         return row
+
+    def _span(self, sid: str, agent: str) -> tuple[float | None, float | None]:
+        """When a row started, and when it ended unless it is live: its own record, else its first and last activity."""
+        root = agent == sid
+        status = self.status.get(sid, "unknown") if root else self.sub_status.get((sid, agent), "unknown")
+        meta = self.meta.get(sid) or {}
+        sub = self.sub_rows.get((sid, agent)) or {}
+        live = self.live_by_sid.get(sid) if root else None
+        keys = self.agents_by_root.get(sid, ()) if root else (agent,)
+        firsts = [self.first_ts[(sid, a)] for a in keys if (sid, a) in self.first_ts]
+        firsts += [self.tool_agg[(sid, a)].min_ts for a in keys if (sid, a) in self.tool_agg]
+        known_start = meta.get("started_at") if root else sub.get("started_at")
+        started = known_start or (min(firsts) if firsts else None)
+        if root and live is not None and not started:
+            started = live.get("started_at")
+        ended = None
+        if status not in LIVE_STATUSES:
+            lasts = [self.last_ts.get((sid, a), 0.0) for a in keys]
+            lasts += [self.tool_agg[(sid, a)].max_ts for a in keys if (sid, a) in self.tool_agg]
+            ended = (meta.get("ended_at") if root else sub.get("ended_at")) or (max(lasts) if lasts else None)
+        return started, ended
 
     def _status_evidence(self, sid: str, root: bool, sub: dict, active: bool, agent: str = "") -> dict:
         """Why the row has its status, in a few words, and the kind of end (empty while live)."""
@@ -2859,13 +2916,18 @@ def _processes(board: _Board) -> list[dict]:
     return out[:MAX_LIST_ROWS]
 
 
-def _resource_series(board: _Board) -> tuple[dict, dict]:
-    """CPU and memory per tool. Only the tool and time filters apply."""
-    f = board.f
-    rows = board.history.read(
+def resource_rows(history: HistoryScope, f: Filters) -> list[dict]:
+    """The sampled CPU and memory of the window per tool and bucket: the time and tool filters alone."""
+    return history.read(
         "runtime.resources", since=f.since, until=f.until, grid=f.buckets, restrict_tools=f.tools is not None,
         requested_tools=list(stored_ids_for(f.tools)) if f.tools is not None else [],
     )
+
+
+def _resource_series(board: _Board) -> tuple[dict, dict]:
+    """CPU and memory per tool. Only the tool and time filters apply."""
+    f = board.f
+    rows = resource_rows(board.history, f)
     cpu: dict[str, list] = {}
     mem: dict[str, list] = {}
     for r in rows:
@@ -2990,8 +3052,6 @@ def _gather(conn: Any, calls: list) -> list:
 
 
 _FAILED = object()
-# A board field whose value waits for a late section.
-_LATE = object()
 
 
 class _StagedReads:
@@ -3367,10 +3427,6 @@ def compute_board(
     # The sections read the loaded board and the store; none changes the board, so on a
     # cluster they run side by side. The charts need neither the rows nor the comparison.
     # The early sections come first: the board can be shown from them while the late ones run.
-    def skills_and_turns() -> tuple[list[tuple], _Turns]:
-        rows = _skill_rows(board)
-        return rows, _turns(board, rows)
-
     early = [
         lambda: _latency(board),
         lambda: _tools_section(board),
@@ -3379,7 +3435,7 @@ def compute_board(
         lambda: _resource_series(board),
     ]
     late = {
-        "skills_and_turns": skills_and_turns,
+        "skills_and_turns": lambda: skills_and_turns(board),
         "changes": lambda: _changes_section(board),
         "loops": lambda: _loop_rows(board),
     }
@@ -3387,12 +3443,17 @@ def compute_board(
     with _StagedReads(conn, calls) as reads:
         latency, tool_section, errors_section, tests_section, resources = (
             reads.result(i) for i in range(len(early)))
-        agents = [] if charts_only else reads.result(len(early))
-        early_fields, complete = _board_payload(db, board, history, facts, memo_key, now, agents, latency,
-                                                tool_section, errors_section, tests_section, resources, charts_only)
+        if charts_only:
+            return _without(chart_fields(board, now, latency, tool_section, errors_section, tests_section, resources),
+                            unread)
+        agents = reads.result(len(early))
+        early_fields = _merge(
+            usage_part(db, board, now), tools_part(board, tool_section), status_part(board),
+            speed_part(board, latency), errors_part(board, errors_section), tests_part(board, tests_section),
+            resources_part(db, board, resources), confirms_part(board, tool_section), agents_part(agents),
+            files_part(board), project_prompts_part(board), *sources_parts(board, history, facts, memo_key),
+        )
         early_fields = _without(early_fields, unread)
-        if complete is None:
-            return early_fields
         if on_partial is not None:
             on_partial(early_fields, [name for name in LATE_FIELDS if name not in unread])
         failures: dict[int, Exception] | None = None if field_errors is None else {}
@@ -3403,34 +3464,55 @@ def compute_board(
             reason = str(error) or type(error).__name__
             logger.warning("Board section %s failed; its fields are left out: %s", name, mask_secrets(reason)[:600])
             field_errors.update({field: reason for field in _LATE_FIELDS[name] if field not in unread})
-    return _without(complete(results), unread)
+    late_parts = []
+    if (turns := results["skills_and_turns"]) is not _FAILED:
+        late_parts += [prompts_part(board, turns),
+                       latency_part(board, latency, tool_section, turns, run_lengths(board, history, agents))]
+    if (changes := results["changes"]) is not _FAILED:
+        late_parts += [changes_part(changes),
+                       projects_part(board, latency, tests_section, errors_section, changes[1])]
+    if (loops := results["loops"]) is not _FAILED:
+        late_parts += [loops_part(loops), attention_part(board, loops, agents)]
+    return _without(_merge(early_fields, *late_parts), unread)
 
 
-def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, memo_key: str, now: float,
-                   agents: list[dict], latency: dict, tool_section: dict, errors_section: tuple,
-                   tests_section: tuple, resources: tuple, charts_only: bool) -> tuple[dict, Any]:
-    """The board fields that need no late section, and the function that completes the board from the late ones.
+def skills_and_turns(board: _Board) -> tuple[list[tuple], _Turns]:
+    rows = _skill_rows(board)
+    return rows, _turns(board, rows)
 
-    For the charts alone, the chart fields and no function.
+
+def _merge(*parts: dict) -> dict:
+    """One board from parts that each hold some of its fields; a field split by key is joined by key.
+
+    Two parts never hold the same value: that would make which one is shown depend on the order.
     """
-    f = board.f
-    tool_calls_bucket = tool_section["calls_bucket"]
-    tool_fail_bucket = tool_section["fail_bucket"]
-    tool_spark = {"spark_calls": tool_section["spark_calls"], "spark_failed": tool_section["spark_failed"]}
-    errors, api_bucket, api_by_project = errors_section
-    tests, tests_passed, tests_failed, tests_by_project = tests_section
-    tests_piped = sum(
-        1
-        for sid, _aid, _ts, _name, target, is_error, exit_code, _duration in board.test_rows
-        if sid in board.scope
-        and not _test_failed(is_error, exit_code)
-        and _PIPED_TO_FILTER_RE.search(target or "")
-        and "pipefail" not in (target or "")
-    )
-    cpu, mem = resources
+    out: dict = {}
+    for part in parts:
+        for name, value in part.items():
+            if name not in out:
+                out[name] = value
+            elif isinstance(out[name], dict) and isinstance(value, dict):
+                out[name] = _merge(out[name], value)
+            else:
+                raise ValueError(f"Two board parts hold the field {name}")
+    return out
 
-    # Prompts per bucket and per project.
-    n = f.buckets
+
+# ── The board's parts. Each takes the inputs it is computed from and returns some of the board's
+# fields; the single board joins them all, a section (board_sections.py) the ones it answers. ──
+
+
+@dataclass
+class _Prompts:
+    bucket: list[int]
+    spark: list[int]
+    by_project: dict[str, int]
+    total: int
+    fallback_total: int
+
+
+def _prompt_counts(board: _Board) -> _Prompts:
+    """Prompts per bucket and per project."""
     user_bucket = list(board.fallback_user_buckets)
     user_spark = [0] * SPARK_POINTS
     prompts_by_project: dict[str, int] = defaultdict(int)
@@ -3441,17 +3523,24 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
             user_spark[s] += count
             prompts_by_project[board.session_project.get(sid, "")] += count
             prompt_total += count
-    fallback_user_total = sum(board.fallback_user.values())
     for c in board.cells:
         if c.estimated:
             user_spark[c.s] += c.user
-    for c in board.cells:
-        if c.estimated:
-            tool_spark["spark_calls"][c.s] += c.tools_fallback
-    for i, value in enumerate(board.fallback_tool_buckets):
-        tool_calls_bucket[i] += value
+    return _Prompts(user_bucket, user_spark, prompts_by_project, prompt_total, sum(board.fallback_user.values()))
 
-    # Agents' tool numbers per project and per role.
+
+@dataclass
+class _Tallies:
+    calls_by_project: dict[str, int]
+    fails_by_project: dict[str, int]
+    roles: dict[str, dict]
+    calls_total: int
+    failures_total: int
+    agents_by_project: dict[str, set[str]]
+
+
+def _agent_tallies(board: _Board) -> _Tallies:
+    """Agents' tool numbers per project and per role."""
     calls_by_project: dict[str, int] = defaultdict(int)
     fails_by_project: dict[str, int] = defaultdict(int)
     role_rows: dict[str, dict] = defaultdict(
@@ -3485,128 +3574,56 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
             fails_by_project[project] += own_fails
             calls_total += own_calls + fallback_calls
             failures_total += own_fails
+    return _Tallies(calls_by_project, fails_by_project, role_rows, calls_total, failures_total, agents_by_project)
 
-    # Which null rule applies to the whole board.
-    scope_tools = {board.session_tool.get(sid, "") for sid in board.scope}
-    calls_known = bool(scope_tools & board.tools_with_calls) or bool(calls_total)
-    tool_calls_kpi = calls_total if calls_known else None
-    failures_kpi = failures_total if bool(scope_tools & board.tools_with_calls) else None
-    user_known = bool(scope_tools & board.tools_with_prompts) or bool(fallback_user_total)
-    messages_total = board.total.calls + prompt_total + fallback_user_total + calls_total
 
-    # Spark lines.
-    running_spark = [len(sessions) for sessions in board.spark_sessions]
-    loop_spark = [0] * SPARK_POINTS
-    for loop in board.visible_loops:
-        loop_spark[board._spark_of(loop["since_ts"])] += 1
-    kpis = {
-        "running": sum(1 for sid in board.scope if board.status.get(sid) in ACTIVE_STATUSES),
-        "idle": sum(1 for sid in board.scope if board.status.get(sid) == "idle"),
-        "subagents_running": sum(
-            1
-            for sid in board.scope
-            for agent in board.agents_by_root.get(sid, ())
-            if agent != sid and board.sub_status.get((sid, agent)) in ACTIVE_STATUSES
-        ),
-        "messages": messages_total,
-        "tokens": board.total.tokens,
-        "cached_share": board.total.cached_share,
-        "cost_usd": _usd(board.total.cost),
-        "tool_calls": tool_calls_kpi,
-        "failures": failures_kpi,
-        "fail_rate": _ratio(failures_kpi, tool_calls_kpi),
-        "p50_ms": _ms(_percentile(latency["replies"], 0.50)),
-        "p95_ms": _ms(_percentile(latency["replies"], 0.95)),
-        "loops": len(board.visible_loops),
-        "spark": {
-            "running": running_spark,
-            "messages": [
-                board.spark[i].calls + user_spark[i] + tool_spark["spark_calls"][i] for i in range(SPARK_POINTS)
-            ],
-            "tokens": [board.spark[i].tokens for i in range(SPARK_POINTS)],
-            "cached": [board.spark[i].cached_share for i in range(SPARK_POINTS)],
-            "cost": [_usd(board.spark[i].cost) for i in range(SPARK_POINTS)],
-            "tool_calls": tool_spark["spark_calls"],
-            "failures": tool_spark["spark_failed"],
-            "p95": [_ms(_percentile(latency["by_spark"][i], 0.95)) for i in range(SPARK_POINTS)],
-            "loops": loop_spark,
-        },
+def _scope_tools(board: _Board) -> set[str]:
+    return {board.session_tool.get(sid, "") for sid in board.scope}
+
+
+@dataclass
+class _Known:
+    """Which null rule applies to the whole board. Needs the board's facts (``_Board.use_facts``)."""
+
+    calls: bool
+    tool_calls: int | None
+    failures: int | None
+    user: bool
+
+
+def _known(board: _Board, tallies: _Tallies, prompts: _Prompts) -> _Known:
+    scope_tools = _scope_tools(board)
+    calls_known = bool(scope_tools & board.tools_with_calls) or bool(tallies.calls_total)
+    return _Known(
+        calls=calls_known,
+        tool_calls=tallies.calls_total if calls_known else None,
+        failures=tallies.failures_total if bool(scope_tools & board.tools_with_calls) else None,
+        user=bool(scope_tools & board.tools_with_prompts) or bool(prompts.fallback_total),
+    )
+
+
+def _tool_lines(board: _Board, tool_section: dict) -> tuple[list[int], list[int]]:
+    """Tool calls per time bucket and per spark point, with the calls of sessions known only by their totals."""
+    spark = list(tool_section["spark_calls"])
+    for c in board.cells:
+        if c.estimated:
+            spark[c.s] += c.tools_fallback
+    bucket = [calls + extra for calls, extra in zip(tool_section["calls_bucket"], board.fallback_tool_buckets, strict=True)]
+    return bucket, spark
+
+
+def _range_field(board: _Board, now: float) -> dict:
+    f, n = board.f, board.f.buckets
+    return {
+        "since": f.since, "until": f.until, "bucket_s": f.bucket_s,
+        "bucket_starts": [f.since + i * f.bucket_s for i in range(n)],
+        "partial_bucket": n - 1 if f.until > now and n else None,
     }
 
-    reported = _reported_as(board.cells)
-    by_model = [
-        {
-            "model": model,
-            "reported_as": reported.get(model, []),
-            "agents": len(board.model_agents[model]),
-            "msgs": usage.calls,
-            "tokens": usage.tokens,
-            "input": usage.input,
-            "output": usage.output,
-            "cache_read": usage.cache_read,
-            "cache_write": _reported(usage.cache_write, board.model_tools[model], _NO_CACHE_WRITE),
-            "cached_share": usage.cached_share,
-            "cost_usd": _usd(usage.cost),
-            "p95_ms": _ms(_percentile(latency["by_model"].get(model, []), 0.95)),
-            "agent_ids": sorted(board.model_agents[model])[:MAX_AGENT_IDS],
-        }
-        for model, usage in sorted(board.by_model.items(), key=lambda kv: (-kv[1].tokens, kv[0]))[:MAX_LIST_ROWS]
-    ]
 
-    by_role = [
-        {
-            "kind": kind,
-            "runs": role["runs"],
-            "msgs": role["msgs"],
-            "tokens": role["tokens"],
-            "cost_usd": _usd(role["cost"]),
-            "fail_rate": _ratio(role["failed"], role["calls"]),
-        }
-        for kind, role in sorted(role_rows.items(), key=lambda kv: (kv[0] != "Main agents", -kv[1]["tokens"], kv[0]))[:MAX_LIST_ROWS]
-    ]
-
-    loops_by_project: dict[str, int] = defaultdict(int)
-    for loop in board.visible_loops:
-        loops_by_project[board.session_project.get(loop["session_id"], "")] += 1
-    project_ids = set(board.by_project) | {board.session_project.get(sid, "") for sid in board.scope}
-
-    def project_rows(lines_by_project: dict) -> list[dict]:
-        return sorted(
-            (project_row(project, lines_by_project.get(project)) for project in project_ids),
-            key=lambda p: (-p["tokens"], -p["agents"], p["project"]),
-        )
-
-    billed_by_project = _billed_by_project(board)
-
-    def project_row(project: str, lines: tuple | None) -> dict:
-        usage = board.by_project.get(project)
-        calls = calls_by_project.get(project, 0)
-        fails = fails_by_project.get(project, 0)
-        test_counts = tests_by_project.get(project)
-        project_msgs = (usage.calls if usage else 0) + prompts_by_project.get(project, 0) + calls
-        project_msgs += sum(
-            board.fallback_user.get(sid, 0) for sid in board.scope if board.session_project.get(sid, "") == project
-        )
-        return {
-            "project": project,
-            "agents": len(agents_by_project.get(project, ())),
-            "prompts": prompts_by_project.get(project, 0) if user_known else None,
-            "msgs": project_msgs,
-            "tokens": usage.tokens if usage else 0,
-            "cached_share": usage.cached_share if usage else None,
-            **_project_cost(usage, billed_by_project.get(project)),
-            "tool_calls": calls if calls_known else None,
-            "fail_rate": _ratio(fails, calls) if failures_kpi is not None else None,
-            "test_runs": test_counts[0] if test_counts else (0 if calls_known else None),
-            "test_passed": test_counts[1] if test_counts else (0 if calls_known else None),
-            "lines_added": lines[0] if lines else None,
-            "lines_removed": lines[1] if lines else None,
-            "api_errors": api_by_project.get(project, 0),
-            "loops": loops_by_project.get(project, 0),
-            "p95_ms": _ms(_percentile(latency["by_project"].get(project, []), 0.95)),
-        }
-
-    series = {
+def _usage_series(board: _Board) -> dict:
+    scope_tools = _scope_tools(board)
+    return {
         "tokens": {
             "cache_read": [u.cache_read for u in board.bucket],
             "input": [u.input for u in board.bucket],
@@ -3626,123 +3643,330 @@ def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, m
                 for m, values in sorted(board.cost_by_model.items(), key=lambda kv: -board.by_model[kv[0]].tokens)
             },
         },
-        "messages": {
-            "user": user_bucket if user_known else [None] * n,
-            "assistant": [u.calls for u in board.bucket],
-            "tool": tool_calls_bucket if calls_known else [None] * n,
-        },
         "cached_share": [u.cached_share for u in board.bucket],
-        "latency": {
-            "p50": [_ms(_percentile(v, 0.50)) for v in latency["by_bucket"]],
-            "p95": [_ms(_percentile(v, 0.95)) for v in latency["by_bucket"]],
-        },
-        "failures": {"tool": tool_fail_bucket, "api": api_bucket},
-        "tests": {"passed": tests_passed, "failed": tests_failed},
-        "cpu": cpu,
-        "mem": mem,
     }
-    chart_fields = {"range": {
-        "since": f.since, "until": f.until, "bucket_s": f.bucket_s,
-        "bucket_starts": [f.since + i * f.bucket_s for i in range(n)],
-        "partial_bucket": n - 1 if f.until > now and n else None,
-    }, "series": series}
-    if charts_only:
-        return chart_fields, None
 
-    runs = []
-    historical = history.qualified
-    run_rows = (board._agent_row(sid, aid, "", []) for sid in board.scope for aid in board.agents_by_root[sid]) if historical else agents
-    for row in run_rows:
-        if row["started_at"] and row["ended_at"] and row["ended_at"] > row["started_at"]:
-            runs.append((row["ended_at"] - row["started_at"]) * 1000.0)
 
-    def latency_rows(turns: _Turns) -> list[dict]:
-        return [
-            _latency_row("Model reply", latency["replies"], latency["reply_count"], latency["reply_max"]),
-            _latency_row(
-                "Time to first token",
-                latency["firsts"],
-                _reported(latency["first_count"], scope_tools, _NO_TTFT),
-                latency["first_max"],
-            ),
-            _latency_row("Tool call", tool_section["durations"], tool_section["timed"], tool_section["longest"]),
-            _latency_row("Whole turn", turns.lengths_ms, turns.count),
-            _latency_row("Agent run", sorted(runs)),
-        ]
+def _messages_series(board: _Board, tool_section: dict) -> dict:
+    n = board.f.buckets
+    prompts = _prompt_counts(board)
+    known = _known(board, _agent_tallies(board), prompts)
+    tool_bucket, _spark = _tool_lines(board, tool_section)
+    return {
+        "user": prompts.bucket if known.user else [None] * n,
+        "assistant": [u.calls for u in board.bucket],
+        "tool": tool_bucket if known.calls else [None] * n,
+    }
 
-    tool_order = list(board.tool_order)
-    source_rows = _source_rows(history, memo_key)
-    options = _options(board, (tool for tool, _source, _ts in source_rows))
-    option_tools = [o["id"] for o in options["tools"]]
-    selected = set(stored_ids_for(f.tools)) if f.tools is not None else None
-    project_list = sorted(project_ids - {""})
-    project_prompts, prompts_searched = _project_prompts(board, project_list)
 
+def _latency_series(latency: dict) -> dict:
+    return {
+        "p50": [_ms(_percentile(v, 0.50)) for v in latency["by_bucket"]],
+        "p95": [_ms(_percentile(v, 0.95)) for v in latency["by_bucket"]],
+    }
+
+
+def chart_fields(board: _Board, now: float, latency: dict, tool_section: dict, errors_section: tuple,
+                 tests_section: tuple, resources: tuple) -> dict:
+    """The whole-window charts alone: the range and the series."""
+    _errors, api_bucket, _api_by_project = errors_section
+    _tests, tests_passed, tests_failed, _tests_by_project = tests_section
+    cpu, mem = resources
+    usage = _usage_series(board)
+    series = {
+        "tokens": usage["tokens"], "cost": usage["cost"], "messages": _messages_series(board, tool_section),
+        "cached_share": usage["cached_share"], "latency": _latency_series(latency),
+        "failures": {"tool": tool_section["fail_bucket"], "api": api_bucket},
+        "tests": {"passed": tests_passed, "failed": tests_failed}, "cpu": cpu, "mem": mem,
+    }
+    return {"range": _range_field(board, now), "series": series}
+
+
+def usage_part(db: Any, board: _Board, now: float) -> dict:
+    """Usage, cost and the selection: read from the window's request cells and session rows alone."""
     from ..orchestrator import tool_configs_at
 
-    payload = {
+    historical = board.history.qualified
+    prompts = _prompt_counts(board)
+    tallies = _agent_tallies(board)
+    kpis = {
+        "messages": board.total.calls + prompts.total + prompts.fallback_total + tallies.calls_total,
+        "tokens": board.total.tokens,
+        "cached_share": board.total.cached_share,
+        "cost_usd": _usd(board.total.cost),
+        "spark": {
+            "running": [len(sessions) for sessions in board.spark_sessions],
+            "tokens": [board.spark[i].tokens for i in range(SPARK_POINTS)],
+            "cached": [board.spark[i].cached_share for i in range(SPARK_POINTS)],
+            "cost": [_usd(board.spark[i].cost) for i in range(SPARK_POINTS)],
+        },
+    }
+    by_role = [
+        {
+            "kind": kind,
+            "runs": role["runs"],
+            "msgs": role["msgs"],
+            "tokens": role["tokens"],
+            "cost_usd": _usd(role["cost"]),
+            "fail_rate": _ratio(role["failed"], role["calls"]),
+        }
+        for kind, role in sorted(tallies.roles.items(), key=lambda kv: (kv[0] != "Main agents", -kv[1]["tokens"], kv[0]))[:MAX_LIST_ROWS]
+    ]
+    return {
         "generated_at": now,
         # When the settings records last changed: the settings screen reads them again on a new value.
         "settings_at": None if historical else tool_configs_at(),
         "capture_mode": None if historical else capture_mode(db, default="full"),
-        **chart_fields,
-        "options": options,
+        "range": _range_field(board, now),
+        "series": _usage_series(board),
         "scope": {
             "shown_agents": _count_agents(board, board.scope),
             "shown_sessions": sum(1 for sid in board.scope if sid in board.agents_by_root),
             "all_agents": _count_agents(board, (sid for sid in board.agents_by_root if sid)),
         },
         "kpis": kpis,
-        "attention": _LATE,
-        "agents": agents,
-        "by_model": by_model,
         "by_role": by_role,
         "saved_usd": _usd(board.total.saved),
         "unpriced": _unpriced_section(board),
         "credits": _credits_section(board),
-        "projects": _LATE,
-        "prompts": _LATE,
-        "project_prompts": project_prompts,
-        "project_prompts_searched": prompts_searched,
-        "skills": _LATE,
-        "tests_piped": tests_piped,
         "prompts_total": sum(n for sid, _, _, _, n, _, _ in board.prompt_rows if not board.narrowed or sid in board.scope),
-        "tools": tool_section["rows"],
-        "confirms": _confirms_section(board, tool_section["calls_by_name"]),
-        "errors": errors,
-        "latency": _LATE,
-        "loops": _LATE,
-        "changes": _LATE,
-        "tests": tests,
-        "memory_files": _memory_files(board),
-        "processes": _processes(board),
-        # Names for tools that have processes but no activity in this range.
-        "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in _processes(board)} | set(cpu)},
-        "sources": _sources(source_rows, tool_order or option_tools, selected,
-                            reported=historical),
-        "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
-        "self": None if historical else _self_section(db),
     }
 
-    def complete(results: dict[str, Any]) -> dict:
-        """The whole board from the late sections; a section that failed leaves its fields out."""
-        late: dict[str, Any] = {}
-        if (section := results["skills_and_turns"]) is not _FAILED:
-            skill_rows, turns = section
-            late |= {"latency": latency_rows(turns), "prompts": _prompts_section(board, turns.tokens),
-                     "skills": _skills_section(board, skill_rows, turns)}
-        if (section := results["changes"]) is not _FAILED:
-            changes, lines_by_project = section
-            late |= {"projects": project_rows(lines_by_project)[:MAX_LIST_ROWS], "changes": changes}
-        if (loops := results["loops"]) is not _FAILED:
-            late |= {"attention": _attention(board, loops, agents), "loops": loops}
-        whole = {}
-        for name, value in payload.items():
-            if value is _LATE:
-                if name in late:
-                    whole[name] = late[name]
-            else:
-                whole[name] = value
-        return whole
 
-    return {name: value for name, value in payload.items() if value is not _LATE}, complete
+def tools_part(board: _Board, tool_section: dict) -> dict:
+    """Messages and tool calls over time, and the tool table. Needs the board's facts."""
+    prompts = _prompt_counts(board)
+    known = _known(board, _agent_tallies(board), prompts)
+    _bucket, tool_spark = _tool_lines(board, tool_section)
+    return {
+        "series": {"messages": _messages_series(board, tool_section), "failures": {"tool": tool_section["fail_bucket"]}},
+        "kpis": {
+            "tool_calls": known.tool_calls,
+            "failures": known.failures,
+            "fail_rate": _ratio(known.failures, known.tool_calls),
+            "spark": {
+                "messages": [board.spark[i].calls + prompts.spark[i] + tool_spark[i] for i in range(SPARK_POINTS)],
+                "tool_calls": tool_spark,
+                "failures": tool_section["spark_failed"],
+            },
+        },
+        "tools": tool_section["rows"],
+    }
+
+
+def status_part(board: _Board) -> dict:
+    """What runs now and the loops: needs the statuses (``_Board._decide_status``)."""
+    loop_spark = [0] * SPARK_POINTS
+    for loop in board.visible_loops:
+        loop_spark[board._spark_of(loop["since_ts"])] += 1
+    return {"kpis": {
+        "running": sum(1 for sid in board.scope if board.status.get(sid) in ACTIVE_STATUSES),
+        "idle": sum(1 for sid in board.scope if board.status.get(sid) == "idle"),
+        "subagents_running": sum(
+            1
+            for sid in board.scope
+            for agent in board.agents_by_root.get(sid, ())
+            if agent != sid and board.sub_status.get((sid, agent)) in ACTIVE_STATUSES
+        ),
+        "loops": len(board.visible_loops),
+        "spark": {"loops": loop_spark},
+    }}
+
+
+def speed_part(board: _Board, latency: dict) -> dict:
+    """Reply latency and usage by model."""
+    reported = _reported_as(board.cells)
+    by_model = [
+        {
+            "model": model,
+            "reported_as": reported.get(model, []),
+            "agents": len(board.model_agents[model]),
+            "msgs": usage.calls,
+            "tokens": usage.tokens,
+            "input": usage.input,
+            "output": usage.output,
+            "cache_read": usage.cache_read,
+            "cache_write": _reported(usage.cache_write, board.model_tools[model], _NO_CACHE_WRITE),
+            "cached_share": usage.cached_share,
+            "cost_usd": _usd(usage.cost),
+            "p95_ms": _ms(_percentile(latency["by_model"].get(model, []), 0.95)),
+            "agent_ids": sorted(board.model_agents[model])[:MAX_AGENT_IDS],
+        }
+        for model, usage in sorted(board.by_model.items(), key=lambda kv: (-kv[1].tokens, kv[0]))[:MAX_LIST_ROWS]
+    ]
+    return {
+        "kpis": {
+            "p50_ms": _ms(_percentile(latency["replies"], 0.50)),
+            "p95_ms": _ms(_percentile(latency["replies"], 0.95)),
+            "spark": {"p95": [_ms(_percentile(latency["by_spark"][i], 0.95)) for i in range(SPARK_POINTS)]},
+        },
+        "series": {"latency": _latency_series(latency)},
+        "by_model": by_model,
+    }
+
+
+def errors_part(board: _Board, errors_section: tuple) -> dict:
+    errors, api_bucket, _api_by_project = errors_section
+    return {"errors": errors, "series": {"failures": {"api": api_bucket}}}
+
+
+def tests_part(board: _Board, tests_section: tuple) -> dict:
+    tests, tests_passed, tests_failed, _tests_by_project = tests_section
+    tests_piped = sum(
+        1
+        for sid, _aid, _ts, _name, target, is_error, exit_code, _duration in board.test_rows
+        if sid in board.scope
+        and not _test_failed(is_error, exit_code)
+        and _PIPED_TO_FILTER_RE.search(target or "")
+        and "pipefail" not in (target or "")
+    )
+    return {"tests": tests, "tests_piped": tests_piped, "series": {"tests": {"passed": tests_passed, "failed": tests_failed}}}
+
+
+def resources_part(db: Any, board: _Board, resources: tuple) -> dict:
+    cpu, mem = resources
+    processes = _processes(board)
+    return {
+        "series": {"cpu": cpu, "mem": mem},
+        "processes": processes,
+        # Names for tools that have processes but no activity in this range.
+        "tool_labels": {tool: _label(tool) for tool in {p["tool"] for p in processes} | set(cpu)},
+        "self": None if board.history.qualified else _self_section(db),
+    }
+
+
+def confirms_part(board: _Board, tool_section: dict) -> dict:
+    """Needs the confirmation counts and the pending calls (``_Board._load_confirms``, ``_index_pending``)."""
+    return {"confirms": _confirms_section(board, tool_section["calls_by_name"])}
+
+
+def agents_part(agents: list[dict]) -> dict:
+    return {"agents": agents}
+
+
+def files_part(board: _Board) -> dict:
+    return {"memory_files": _memory_files(board)}
+
+
+def _project_ids(board: _Board) -> set[str]:
+    return set(board.by_project) | {board.session_project.get(sid, "") for sid in board.scope}
+
+
+def project_prompts_part(board: _Board) -> dict:
+    project_prompts, prompts_searched = _project_prompts(board, sorted(_project_ids(board) - {""}))
+    return {"project_prompts": project_prompts, "project_prompts_searched": prompts_searched}
+
+
+def sources_parts(board: _Board, history: HistoryScope, facts: dict, memo_key: str) -> tuple[dict, dict]:
+    """The filter menus (``options``), and what each tool reports (``sources``, ``coverage``)."""
+    source_rows = _source_rows(history, memo_key)
+    options = _options(board, (tool for tool, _source, _ts in source_rows))
+    option_tools = [o["id"] for o in options["tools"]]
+    selected = set(stored_ids_for(board.f.tools)) if board.f.tools is not None else None
+    return {"options": options}, {
+        "sources": _sources(source_rows, list(board.tool_order) or option_tools, selected,
+                            reported=history.qualified),
+        "coverage": {"rows": coverage_rows(facts, option_tools), "notes": coverage_notes([*option_tools, *_COVERAGE_TOOLS])},
+    }
+
+
+def agents_of(board: _Board) -> list[dict]:
+    """The agent rows; needs the statuses and the pending calls."""
+    return board.agents()
+
+
+def run_lengths(board: _Board, history: HistoryScope, agents: list[dict] | None) -> list[float]:
+    """How long each agent of the selection ran, in ms, sorted. A node or fleet history counts every
+    agent in view, the rows shown or not; this node's board the rows it shows."""
+    runs = []
+    if history.qualified:
+        spans = (board._span(sid, aid) for sid in board.scope for aid in board.agents_by_root[sid])
+    else:
+        spans = ((row["started_at"], row["ended_at"]) for row in agents or [])
+    for started, ended in spans:
+        if started and ended and ended > started:
+            runs.append((ended - started) * 1000.0)
+    return sorted(runs)
+
+
+def latency_part(board: _Board, latency: dict, tool_section: dict, turns: tuple[list[tuple], _Turns],
+                 runs: list[float]) -> dict:
+    scope_tools = _scope_tools(board)
+    _skill_rows_, turn_info = turns
+    return {"latency": [
+        _latency_row("Model reply", latency["replies"], latency["reply_count"], latency["reply_max"]),
+        _latency_row(
+            "Time to first token",
+            latency["firsts"],
+            _reported(latency["first_count"], scope_tools, _NO_TTFT),
+            latency["first_max"],
+        ),
+        _latency_row("Tool call", tool_section["durations"], tool_section["timed"], tool_section["longest"]),
+        _latency_row("Whole turn", turn_info.lengths_ms, turn_info.count),
+        _latency_row("Agent run", runs),
+    ]}
+
+
+def prompts_part(board: _Board, turns: tuple[list[tuple], _Turns]) -> dict:
+    skill_rows, turn_info = turns
+    return {"prompts": _prompts_section(board, turn_info.tokens), "skills": _skills_section(board, skill_rows, turn_info)}
+
+
+def changes_part(changes: tuple[dict, dict]) -> dict:
+    return {"changes": changes[0]}
+
+
+def loops_part(loops: list[dict]) -> dict:
+    return {"loops": loops}
+
+
+def attention_part(board: _Board, loops: list[dict], agents: list[dict]) -> dict:
+    return {"attention": _attention(board, loops, agents)}
+
+
+def projects_part(board: _Board, latency: dict, tests_section: tuple, errors_section: tuple,
+                  lines_by_project: dict) -> dict:
+    """One row per project. Needs the facts, the statuses (loops) and the changed lines."""
+    _errors, _api_bucket, api_by_project = errors_section
+    tests_by_project = tests_section[3]
+    prompts = _prompt_counts(board)
+    tallies = _agent_tallies(board)
+    known = _known(board, tallies, prompts)
+    loops_by_project: dict[str, int] = defaultdict(int)
+    for loop in board.visible_loops:
+        loops_by_project[board.session_project.get(loop["session_id"], "")] += 1
+    billed_by_project = _billed_by_project(board)
+
+    def project_row(project: str, lines: tuple | None) -> dict:
+        usage = board.by_project.get(project)
+        calls = tallies.calls_by_project.get(project, 0)
+        fails = tallies.fails_by_project.get(project, 0)
+        test_counts = tests_by_project.get(project)
+        project_msgs = (usage.calls if usage else 0) + prompts.by_project.get(project, 0) + calls
+        project_msgs += sum(
+            board.fallback_user.get(sid, 0) for sid in board.scope if board.session_project.get(sid, "") == project
+        )
+        return {
+            "project": project,
+            "agents": len(tallies.agents_by_project.get(project, ())),
+            "prompts": prompts.by_project.get(project, 0) if known.user else None,
+            "msgs": project_msgs,
+            "tokens": usage.tokens if usage else 0,
+            "cached_share": usage.cached_share if usage else None,
+            **_project_cost(usage, billed_by_project.get(project)),
+            "tool_calls": calls if known.calls else None,
+            "fail_rate": _ratio(fails, calls) if known.failures is not None else None,
+            "test_runs": test_counts[0] if test_counts else (0 if known.calls else None),
+            "test_passed": test_counts[1] if test_counts else (0 if known.calls else None),
+            "lines_added": lines[0] if lines else None,
+            "lines_removed": lines[1] if lines else None,
+            "api_errors": api_by_project.get(project, 0),
+            "loops": loops_by_project.get(project, 0),
+            "p95_ms": _ms(_percentile(latency["by_project"].get(project, []), 0.95)),
+        }
+
+    rows = sorted(
+        (project_row(project, lines_by_project.get(project)) for project in _project_ids(board)),
+        key=lambda p: (-p["tokens"], -p["agents"], p["project"]),
+    )
+    return {"projects": rows[:MAX_LIST_ROWS]}

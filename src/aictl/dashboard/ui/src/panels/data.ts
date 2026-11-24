@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, untrack } from 'solid-js'
 import type { BoardFields, DetailResponses, LiveTopicData, TopicSourceStatus } from '../data/contract.gen'
 import { createResourceCache } from '../data/resource'
 import { boardQuery, windowOf, withProjects, type Screen } from '../data/filters'
+import SECTION_PATHS from './boardSections.json'
 import type { DetailState, PanelContext, Read, Row, Source } from './types'
 
 export function object(value: unknown): Row | undefined {
@@ -34,7 +35,9 @@ export function statuses(client: PanelContext['client']) {
     .filter(status => !('scope' in status) || !status.scope || status.scope === client.store.meta.scope)
 }
 
-function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, key: () => string | undefined, revision: () => number) {
+function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, asked: () => string | undefined, revision: () => number) {
+  // The same key asked again is the same read: it is neither released nor read again.
+  const key = createMemo(asked)
   const [handle, setHandle] = createSignal<{ key: string; resource: ReturnType<typeof cache.acquire> }>()
   createEffect(key, path => {
     if (!path) { setHandle(undefined); return }
@@ -52,57 +55,131 @@ function useRead<T>(cache: ReturnType<typeof createResourceCache<string, T>>, ke
   return untrack(() => Object.assign(state, { retry }))
 }
 
-type HistoryBoard = DetailResponses['/api/history/board']
-/** How long a staged board waits before it asks for the fields still to come. */
-export const STAGE_POLL_MS = 1000
+type SectionAnswer = DetailResponses['/api/history/board/section']
+export type SectionId = keyof typeof SECTION_PATHS
+const SECTION_IDS = Object.keys(SECTION_PATHS) as SectionId[]
 /** What a panel says while it shows the board of the earlier range or filter. */
 export const EARLIER_SELECTION = 'from the earlier selection, while the new one is read'
+/** The window a board field is read for: the one shown (a selected interval when there is one), or the whole range. */
+type Lane = 'shown' | 'whole'
 
-export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' | 'detail'>, screen: () => Screen) {
+/** The sections of a node or fleet board that answer a board field, or one key of it: the section that holds
+ * it, or each section that holds a key of it (``board_sections.SECTIONS`` on the server). */
+export function sectionsOf(field: string, path?: string): SectionId[] {
+  const name = path ? `${field}.${path}` : field
+  return SECTION_IDS.filter(id => (SECTION_PATHS[id] as readonly string[]).some(owned =>
+    owned === name || owned.startsWith(`${name}.`) || name.startsWith(`${owned}.`)))
+}
+
+/** A field split between sections, joined key by key; a value that is not split is taken as it is. */
+function join(a: unknown, b: unknown): unknown {
+  const left = object(a), right = object(b)
+  if (a === undefined) return b
+  if (!left || !right) return a
+  const out: Record<string, unknown> = { ...left }
+  for (const [key, value] of Object.entries(right)) out[key] = join(out[key], value)
+  return out
+}
+
+function scopeCheck(path: string, scope: { kind?: string; node_id?: string | null } | undefined) {
+  const request = new URL(path, location.origin).searchParams
+  const asked = request.get('scope') ?? 'local'
+  if (scope?.kind !== asked || (asked === 'node' && scope.node_id !== request.get('node_id'))) {
+    throw new Error('The server did not confirm the requested node scope.')
+  }
+}
+
+export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' | 'detail' | 'need'>, screen: () => Screen) {
+  // This node's board comes from the live stream; with an interval selected, its whole-range charts are one read.
   const historyCache = createResourceCache({
     load: async (path, signal) => {
       const data = await json<DetailResponses['/api/history/board']>(path, { signal })
-      const request = new URL(path, location.origin).searchParams
-      const scope = request.get('scope') ?? 'local'
-      if (data.node_scope?.kind !== scope ||
-          (scope === 'node' && data.node_scope.node_id !== request.get('node_id'))) {
-        throw new Error('The server did not confirm the requested node scope.')
-      }
+      scopeCheck(path, data.node_scope)
       return data
     },
   })
-  const path = (whole: boolean) => {
-    if (screen() !== 'board' || (ctx.scope() === 'local' && !(whole && ctx.filters().sel))) return
+  const localWhole = useRead(historyCache, () => {
     const filters = ctx.filters()
-    const win = !whole && filters.sel ? filters.sel : windowOf(filters.range, ctx.startedAt)
-    const query = new URLSearchParams(boardQuery(filters, ctx.tools(), win))
-    if (whole) query.set('view', 'charts')
-    if (ctx.scope() !== 'local') query.set('scope', ctx.scope())
-    if (ctx.scope() === 'node') query.set('node_id', ctx.nodeId() ?? '')
+    if (screen() !== 'board' || ctx.scope() !== 'local' || !filters.sel) return
+    const query = new URLSearchParams(boardQuery(filters, ctx.tools(), windowOf(filters.range, ctx.startedAt)))
+    query.set('view', 'charts')
     return `/api/history/board?${query}`
-  }
-  const remote = useRead(historyCache, () => path(false), ctx.revision)
-  const whole = useRead(historyCache, () => ctx.filters().sel ? path(true) : undefined, ctx.revision)
-  // A board answered in stages names the fields still to come: ask again until none is.
-  createEffect(() => {
-    const state = remote()
-    return state?.status === 'ready' && state.data?.pending_fields?.length ? state.data : undefined
-  }, staged => {
-    if (!staged) return
-    const timer = setTimeout(() => remote.retry(), STAGE_POLL_MS)
-    return () => clearTimeout(timer)
+  }, ctx.revision)
+
+  // A node or fleet board is read in sections, each by its own request, and only while a panel on screen
+  // needs it (``need``). The page names itself and the window it reads (``viewer``), so the server starts
+  // no more reads for a selection this page moved away from.
+  const viewer = Math.random().toString(36).slice(2, 12)
+  const sectionCache = createResourceCache({
+    load: async (path, signal) => {
+      const data = await json<SectionAnswer>(path, { signal })
+      scopeCheck(path, data.node_scope)
+      return data
+    },
   })
-  // The board read last stays on screen, marked as the earlier selection, until the first answer
-  // for a new range or filter arrives: a change never blanks the board.
-  let shown: { key: string; data: HistoryBoard } | undefined
-  const board = createMemo(() => {
-    const state = remote(), key = path(false)
-    if (state?.data && key) shown = { key, data: state.data }
-    if (shown && key && shown.key !== key && (!state || state.status === 'loading')) {
-      return { state: { status: 'stale' as const, data: shown.data, error: null }, earlier: true }
+  const sectionPath = (lane: Lane, id: SectionId) => {
+    const filters = ctx.filters()
+    if (screen() !== 'board' || ctx.scope() === 'local' || (lane === 'whole' && !filters.sel)) return
+    const win = lane === 'shown' && filters.sel ? filters.sel : windowOf(filters.range, ctx.startedAt)
+    const query = new URLSearchParams(boardQuery(filters, ctx.tools(), win))
+    query.set('scope', ctx.scope())
+    if (ctx.scope() === 'node') query.set('node_id', ctx.nodeId() ?? '')
+    query.set('section', id)
+    query.set('viewer', `${viewer}-${lane}`)
+    return `/api/history/board/section?${query}`
+  }
+  // How many panels on screen need each section, by lane and section.
+  const needs = new Map<string, number>()
+  const [needed, setNeeded] = createSignal(0)
+  // A section asked for stays held for its selection while the page scrolls: a panel that leaves and comes
+  // back shows its answer without asking again. A section no panel has needed is never asked for.
+  const asked = new Set<string>()
+  const wanted = (lane: Lane, id: SectionId) => {
+    needed()
+    const path = sectionPath(lane, id)
+    if (!path) return false
+    if ((needs.get(`${lane}:${id}`) ?? 0) > 0) {
+      if (asked.size > 4 * SECTION_IDS.length) asked.clear()
+      asked.add(path)
+    }
+    return asked.has(path)
+  }
+  const lanes = { shown: {}, whole: {} } as Record<Lane, Record<SectionId, ReturnType<typeof useRead<SectionAnswer>>>>
+  for (const lane of ['shown', 'whole'] as const) {
+    for (const id of SECTION_IDS) {
+      lanes[lane][id] = useRead(sectionCache, () => wanted(lane, id) ? sectionPath(lane, id) : undefined, ctx.revision)
+    }
+  }
+  // Each section read last stays on screen, marked as the earlier selection, until its own answer for a
+  // new range or filter arrives: a change never blanks a section.
+  const shown = new Map<string, { key: string; data: SectionAnswer }>()
+  const section = (lane: Lane, id: SectionId) => {
+    const state = lanes[lane][id](), key = sectionPath(lane, id), slot = `${lane}:${id}`
+    if (state?.data && key) shown.set(slot, { key, data: state.data })
+    const before = shown.get(slot)
+    if (before && key && before.key !== key && (!state || state.status === 'loading')) {
+      return { state: { status: 'stale' as const, data: before.data, error: null }, earlier: true }
     }
     return { state, earlier: false }
-  })
+  }
+  const need: PanelContext['need'] = sources => {
+    createEffect(() => {
+      const keys = new Set<string>()
+      for (const source of sources) {
+        if (!('field' in source)) continue
+        const lane: Lane = source.wholeRange && ctx.filters().sel ? 'whole' : 'shown'
+        for (const id of sectionsOf(source.field, source.path)) keys.add(`${lane}:${id}`)
+      }
+      return [...keys]
+    }, keys => {
+      for (const key of keys) needs.set(key, (needs.get(key) ?? 0) + 1)
+      setNeeded(n => n + 1)
+      return () => {
+        for (const key of keys) needs.set(key, (needs.get(key) ?? 1) - 1)
+        setNeeded(n => n + 1)
+      }
+    })
+  }
   const detailCache = createResourceCache({ load: (path, signal) => json<unknown>(path, { signal }) })
   const textCache = createResourceCache<string, unknown>({ load: async (path, signal) => {
     const response = await fetch(path, { signal })
@@ -132,26 +209,35 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
     let value: unknown, rowKeys: readonly string[] | undefined
     let updatedAt: number | undefined
     let stale = ctx.paused(), pending = false, fault: string | undefined, fieldFault: string | undefined
-    let coming = false, note: string | undefined
+    let note: string | undefined
     // A field the server names as failed, such as "kpis.prev", covers its own path and the paths under it.
     const fieldPath = 'field' in source ? [source.field, source.path].filter(Boolean).join('.') : ''
     const covers = (listed: string) => fieldPath === listed || fieldPath.startsWith(listed + '.')
     const failedField = (errors: Record<string, string> | undefined) =>
       Object.entries(errors ?? {}).find(([listed]) => covers(listed))?.[1]
-    if ('field' in source && (ctx.scope() !== 'local' || (source.wholeRange && ctx.filters().sel))) {
-      const shownBoard = board()
-      const wholeRange = source.wholeRange && ctx.filters().sel
-      const resource = wholeRange ? whole() : shownBoard.state
+    if ('field' in source && ctx.scope() !== 'local') {
+      // Each section that answers the field gives its part; a part still to come or failed is absent, never 0.
+      const lane: Lane = source.wholeRange && ctx.filters().sel ? 'whole' : 'shown'
+      for (const id of sectionsOf(source.field, source.path)) {
+        const { state, earlier } = section(lane, id)
+        if (state?.data) {
+          value = join(value, at(at(state.data.fields, source.field), source.path))
+          updatedAt ??= state.data.generated_at
+          stale ||= !earlier && (state.status === 'stale' || state.status === 'refreshing')
+          if (earlier) note = EARLIER_SELECTION
+        } else if (state?.status === 'error') {
+          fault ??= state.error instanceof Error ? state.error.message : String(state.error)
+        } else pending = true
+      }
+      stale ||= note !== undefined
+    } else if ('field' in source && source.wholeRange && ctx.filters().sel) {
+      const resource = localWhole()
       value = at(at(resource?.data, source.field), source.path)
       updatedAt = resource?.data?.generated_at
       pending = !resource || resource.status === 'loading'
-      // A stage of the board is final for the fields it has: asking for the rest does not make them stale.
-      const staged = Boolean(resource?.data?.pending_fields?.length)
-      stale ||= resource?.status === 'stale' || (resource?.status === 'refreshing' && !staged)
+      stale ||= resource?.status === 'stale' || resource?.status === 'refreshing'
       if (resource?.error) fault = String(resource.error)
       fieldFault = failedField(resource?.data?.field_errors)
-      if (!wholeRange && shownBoard.earlier) note = EARLIER_SELECTION
-      else coming = (resource?.data?.pending_fields ?? []).some(covers)
     } else if (ctx.scope() !== 'local') {
       return { state: 'unavailable' }
     } else {
@@ -188,8 +274,6 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
       fault = relevant.flatMap(status => 'error' in status && status.error ? [status.error] : [])[0] ?? ctx.client.status.error?.message
       stale ||= Boolean(fault) || relevant.some(status => ('stale' in status && status.stale) || waiting(status))
     }
-    // A field the server is still reading says so, never 0.
-    if (value == null && coming) return { state: 'loading' }
     // A field the server could not read while the rest of the board was read shows its own reason.
     if (value == null && fieldFault) return { state: 'error', message: fieldFault }
     if (value == null) return { state: fault ? 'error' : pending ? 'loading' : 'unavailable', message: fault ?? note }
@@ -199,6 +283,7 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   }
   return {
     read,
+    need,
     detail,
     board<K extends keyof BoardFields>(field: K, wholeRange = false) {
       return read({ field, wholeRange }).value as BoardFields[K] | undefined

@@ -8,7 +8,7 @@ import { PanelState } from '../../ui/PanelState'
 import { Segmented } from '../../ui/Segmented'
 import { Tooltip } from '../../ui/Tooltip'
 import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
-import { createHover, HoverCard, StepInspector, StepList, TurnScrubber } from '../FlowParts'
+import { createHover, DroppedNotice, HoverCard, OlderButtons, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { FLOW_PAGE, flowPages } from '../flowPages'
 import { definitions, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
 import { collapseRuns, repeatsOf, scalesOf, tracksOf, workCounts, type ChartRow } from '../chartModel'
@@ -176,7 +176,7 @@ export default function Flow(props: TabProps) {
   let found: object | undefined
   const reference = createMemo(() => props.entry.flowRef ?? (props.entry.failedAt != null ? { field: 'failed_at', id: String(props.entry.failedAt) } : undefined))
   createEffect(() => ({ reference: reference(), events: model().events, more: pages.more(),
-    failed: pages.problem(), ready: read()?.data != null }), current => {
+    failed: pages.problem() || pages.dropped(), ready: read()?.data != null }), current => {
     const reference = current.reference
     if (!reference || !current.ready || found === reference) return
     const event = current.events.find(item => matchesReference(item, reference))
@@ -218,7 +218,7 @@ export default function Flow(props: TabProps) {
     show(events.find(event => event.type === 'user_message' && Math.abs(event.ts - mark.ts) < 1e-3)
       ?? events.find(event => event.ts >= mark.ts))
   }
-  const older = () => { if (pages.more() && !pages.loading() && !pages.problem()) void pages.loadOlder() }
+  const older = () => { if (pages.more() && !pages.loading() && !pages.problem() && !pages.dropped()) void pages.loadOlder() }
   const range = (first: number, last: number) => {
     const list = shownRows()
     const start = list[first], end = list[last]
@@ -391,11 +391,7 @@ export default function Flow(props: TabProps) {
             ? `${fmtN(Math.max(0, pages.matched() - pages.oldest()))} of ${fmtN(pages.matched() - pages.first())} ${filtered() ? 'matching ' : ''}events loaded`
             : `${fmtN(Math.max(0, pages.matched() - pages.oldest()))} ${filtered() ? 'matching ' : ''}events loaded; older events are read on demand`}</span>
           <div class={styles.paging}>
-            <Show when={pages.more()}>
-              <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder()}>
-                <Icon glyph="up" small />{pages.complete() ? `Load older (${fmtN(pages.unloaded())} events not loaded)` : 'Load older'}</button>
-              <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder(-Infinity)}>Load all</button>
-            </Show>
+            <OlderButtons pages={pages} />
             <Tooltip label="Jump to newest" text="Scroll to the newest step" class={styles.iconButton}
               disabled={!rows().length} onClick={() => {
                 const last = rows().at(-1)
@@ -405,6 +401,7 @@ export default function Flow(props: TabProps) {
           <BoxControls boxes={boxes} id="chart" label="Flow chart" />
         </div>}>
         <Show when={pages.loading()}><p class={styles.notice} role="status"><Icon glyph="refresh" small />Loading older events…</p></Show>
+        <DroppedNotice dropped={pages.dropped} retry={() => { pages.retry(); read.retry() }} />
         <Show when={pages.problem()}><p class={styles.problem} role="alert">Could not load older events: {pages.problem()}</p></Show>
         <Show when={missing()}><p class={styles.notice} role="status">No event matches this reference.</p></Show>
         <Show when={mode() === 'chart' && steps().length}><WorkKey counts={counts()} failed={loaded().failures} /></Show>

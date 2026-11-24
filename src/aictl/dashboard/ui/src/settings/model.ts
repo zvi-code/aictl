@@ -1,4 +1,5 @@
 import type { DetailContextAudit, DetailSettingsFiles, DetailSettingsTools, SettingsToolConfig } from '../data/contract.gen'
+import { scopeParam } from '../data/urlState'
 import { isConfigSelected, isToolSelected } from '../data/toolScope'
 import { rowTip } from './tips'
 
@@ -346,7 +347,7 @@ export function nextSettings(state: SettingsState, patch: Partial<SettingsState>
 }
 export function settingsParams(state: SettingsState, local: boolean) {
   return { pivot: state.view === 'tool' ? null : state.view, tool: state.tool || null,
-    sec: state.sec || null, row: state.row || null, ...(local && { scope: state.scope || null }),
+    sec: state.sec || null, row: state.row || null, ...(local && { scope: state.scope || scopeParam('local') }),
     unset: state.unset ? '1' : null, group: state.group === 'purpose' ? 'purpose' : null,
     purpose: state.purpose || null, fscope: state.fscope || null, git: state.git || null,
     recent: state.recent ? '1' : null, cell: state.cell || null }

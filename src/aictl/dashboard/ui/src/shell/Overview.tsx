@@ -17,7 +17,10 @@ const definitions = [...overviewA, ...overviewB]
 
 function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
   const ctx = untrack(() => props.ctx)
-  const history = createMemo(() => ctx.read({ field: 'kpis' }))
+  // The first section of the selected history: once it answers, the board is shown. The tiles' other
+  // sections are asked for at the same time, so they do not wait for the board to be drawn.
+  ctx.need([{ field: 'kpis' }])
+  const history = createMemo(() => ctx.read({ field: 'range' }))
   const runtime = createMemo(() => ctx.read({ topic: 'runtime.agent' }))
   const reported = monitoredReport(ctx)
   const counts = createMemo(() => {
@@ -67,6 +70,8 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
 
 export default function Overview(props: { ctx: PanelContext; order: (order: string[]) => void; anchor: string }) {
   const [browse, setBrowse] = createSignal(false)
+  // The filter menus above the board list the tools, projects and models of the selection.
+  untrack(() => props.ctx).need([{ field: 'options' }])
   const hasHistory = createMemo(() => (['kpis', 'series', 'agents', 'attention', 'by_model', 'range'] as const)
     .some(field => props.ctx.board(field) != null))
   const entered = () => hasHistory() || (props.anchor !== '' && props.anchor !== '#sec-top')
