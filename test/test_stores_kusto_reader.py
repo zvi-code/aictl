@@ -59,10 +59,10 @@ def test_native_tables_use_scoped_keys_and_text_tables_have_their_own_retention_
         if spec.tombstone:
             assert columns[spec.tombstone] == "bool"
         if moved := TABLES.get(f"{name}_text"):
-            # A text table can be shortened without its metadata table.
-            assert TABLE_RETENTION_CLASS[f"{name}_text"] != TABLE_RETENTION_CLASS[name]
+            # A text table is kept as long as its metadata table: one data point, one retention.
+            assert TABLE_RETENTION_CLASS[f"{name}_text"] == TABLE_RETENTION_CLASS[name]
             assert spec.retention_days == 365
-            assert moved.retention_period_hours == (24 if TABLE_RETENTION_CLASS[f"{name}_text"] == "tool_content" else 8760)
+            assert moved.retention_period_hours == spec.retention_period_hours
             assert moved.key[:len(spec.key)] == spec.key
 
 
@@ -72,9 +72,8 @@ def test_session_history_and_text_are_kept_for_a_year_by_default_and_text_can_be
         assert TABLES[name].retention_days == 365 and TABLE_RETENTION_CLASS[name] == "history"
     texts = [name for name in TABLES
              if name.endswith("_text") or name in ("session_prompts", "vscode_chat_messages", "copilot_session_messages")]
-    # Tool call content is kept 24 hours; every other text a year.
-    assert {name: TABLES[name].retention_literal for name in texts if TABLES[name].retention_literal != "365d"} == {
-        "tool_invocations_text": "24h", "hook_calls_text": "24h"}
+    # Every text is kept a year by default, tool call and hook text as long as their calls.
+    assert {name: TABLES[name].retention_literal for name in texts if TABLES[name].retention_literal != "365d"} == {}
     assert TABLES["system_snapshots"].retention_days == TABLES["metrics"].retention_days == 365
     shorter = tables_with_retention({"text": 14 * 24, "message": 14 * 24, "file_text": 14 * 24})
     assert all(shorter[name].retention_days == 14 for name in texts

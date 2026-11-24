@@ -1,5 +1,6 @@
 """Native Kusto schema, generated from the phase-0 store schema and OTel definitions."""
 
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -1538,38 +1539,52 @@ _DEFINED = (
 
 # ── Retention ────────────────────────────────────────────────────────────
 # Every table belongs to exactly one retention class; the user sets a period per class in
-# [storage.retention] as hours or days (``tool_content = "24h"``, ``prompt = "365d"``).
+# [storage.retention] as hours or days (``large_payload = "24h"``, ``prompt = "365d"``).
 # This is the one place that maps tables to classes. The classes are split by kind and
-# volume, so the largest kinds of data can be shortened on their own.
+# volume, so the largest kinds of data can be shortened on their own. The text of a data point
+# kept in a table of its own (tool_invocations_text, ...) has the class of its figures table:
+# text and figures of one data point are kept equally long.
 HOUR = 1
 DAY = 24
 RETENTION_DEFAULTS = MappingProxyType({
-    "history": 365 * DAY,  # what sessions did, without text: tool calls, requests, turns, outcomes
+    "history": 365 * DAY,  # what sessions did: tool calls, requests, turns, steps, agents, with their text
     "prompt": 365 * DAY,  # user prompts
     "thinking": 365 * DAY,  # thinking (reasoning) text
-    "message": 365 * DAY,  # assistant and chat messages, session step text (bounded previews)
-    "text": 365 * DAY,  # other text: subagent prompts, event text, session digests (bounded)
-    "file_text": 365 * DAY,  # file contents and snapshots
+    "message": 365 * DAY,  # assistant and chat messages of Copilot, Cursor and VS Code chat
+    "text": 365 * DAY,  # session digests
+    "file_text": 365 * DAY,  # file contents (file_blobs)
     "otel": 365 * DAY,  # raw OpenTelemetry logs, metrics, spans and their spilled payloads
-    "metrics": 365 * DAY,  # metric samples, snapshots, events, files, configuration
-    "tool_content": 24 * HOUR,  # tool call arguments, edit text and result excerpts; hook payloads
+    "metrics": 365 * DAY,  # metric samples, snapshots, events, hook calls, files, memory snapshots, configuration
     "large_payload": 24 * HOUR,  # the full text of large values whose preview is kept elsewhere
 })
 RETENTION_CLASSES = tuple(RETENTION_DEFAULTS)
 RETENTION_MIN_HOURS = 1
 RETENTION_MAX_HOURS = 3650 * DAY
+# Classes an older aictl had. A config file that still names one is read with a warning; the
+# setting is left out (see validate_retention).
+RETIRED_RETENTION_CLASSES = MappingProxyType({
+    "tool_content": "tool call and hook text is kept as long as its call: tool_invocations_text has the "
+                    "period of class history, hook_calls_text that of class metrics",
+})
 _CLASS_TABLES = {
     "prompt": {"session_prompts"},
     "thinking": {"session_thinking"},
-    "tool_content": {"tool_invocations_text", "hook_calls_text"},
-    "message": {"copilot_session_messages", "cursor_session_messages", "vscode_chat_messages", "session_step_text"},
-    "file_text": {"file_history_text", "file_blobs", "memory_snapshots_text"},
+    "message": {"copilot_session_messages", "cursor_session_messages", "vscode_chat_messages"},
+    "file_text": {"file_blobs"},
     "otel": {"OTELLogs", "OTELMetrics", "OTELTraces", "OTELPayloads"},
     "large_payload": {"text_payloads"},
 }
+# The text table of a data point -> the table of its figures, whose class it has.
+TEXT_OF = MappingProxyType({
+    "session_step_text": "session_steps", "tool_invocations_text": "tool_invocations", "agents_text": "agents",
+    "events_text": "events", "hook_calls_text": "hook_calls", "memory_snapshots_text": "memory_snapshots",
+    "file_history_text": "file_history",
+})
 
 
 def _retention_class(name: str, table: Table) -> str:
+    if name in TEXT_OF:
+        name, table = TEXT_OF[name], _DEFINED[TEXT_OF[name]]
     for cls, names in _CLASS_TABLES.items():
         if name in names:
             return cls
@@ -1606,11 +1621,16 @@ def format_period(hours: int) -> str:
 def validate_retention(values: Mapping[str, object]) -> dict[str, int]:
     """``[storage.retention]`` as {class: hours}.
 
-    A key is a class name with a period (``tool_content = "24h"``); ``<class>_days = <days>``
-    is read too.
+    A key is a class name with a period (``large_payload = "24h"``); ``<class>_days = <days>``
+    is read too. A class an older aictl had (RETIRED_RETENTION_CLASSES) is left out with one warning.
     """
     hours: dict[str, int] = {}
     for key, value in values.items():
+        if (retired := key.removesuffix("_days")) in RETIRED_RETENTION_CLASSES:
+            logging.getLogger(__name__).warning(
+                "[storage.retention] %s is ignored: class %s no longer exists, %s. Remove the line.",
+                key, retired, RETIRED_RETENTION_CLASSES[retired])
+            continue
         cls = key.removesuffix("_days") if key.endswith("_days") and key.removesuffix("_days") in RETENTION_DEFAULTS else key
         if cls not in RETENTION_DEFAULTS:
             raise ValueError(f"[storage.retention] has an unknown setting {key!r}; known settings: "

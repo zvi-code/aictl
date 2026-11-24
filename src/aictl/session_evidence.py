@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .collection_status import load_state
 from .ingesters._common import project_root
+from .stores.kusto.tables import TABLE_RETENTION_CLASS
 
 
 class SessionEvidence:
@@ -92,7 +93,7 @@ class SessionEvidence:
         from .memory_snapshot import _iter_memory_files, _read_text, _sha256
 
         project = project_root(cwd)
-        keep = self.sessions.allows_text(ts)
+        keep = self.sessions.allows_text(ts, TABLE_RETENTION_CLASS["memory_snapshots_text"])
         metadata, text = [], []
         for path, source in _iter_memory_files(project_hash):
             content = _read_text(source)

@@ -20,7 +20,7 @@ from .session_lifecycle import END_GRACE_S, END_OBSERVED, PROCESS_SOURCE
 from .state_file import StateFile
 from .stores import writer_or_discard
 from .stores.base import InvalidRowError
-from .stores.kusto.tables import TABLES
+from .stores.kusto.tables import TABLE_RETENTION_CLASS, TABLES
 from .tool_calls import call_key
 
 _LIMIT = 20_000
@@ -69,7 +69,7 @@ class SessionFacts:
         # Hours each retention class is kept (stores.kusto.tables.TABLE_RETENTION_CLASS): text older than its
         # class keeps is not imported. Without a configuration, text classes keep content_days.
         self.retention = {**dict.fromkeys(("text", "message", "file_text"), content_days * 24),
-                          "prompt": 365 * 24, "thinking": 365 * 24, "tool_content": 24, "large_payload": 24,
+                          "prompt": 365 * 24, "thinking": 365 * 24, "large_payload": 24,
                           **(retention or {})}
         self.large_payload_bytes = large_payload_bytes
         self.trim_before = trim_before
@@ -638,7 +638,7 @@ class SessionFacts:
                     staged[key] = (data, project)
                     staged.move_to_end(key)
                 ts = row.started_at or row.ended_at or time.time()
-                if task and self.allows_text(ts):
+                if task and self.allows_text(ts, TABLE_RETENTION_CLASS["agents_text"]):
                     task = self.spill("agents_text", f"{row.session_id}/{row.agent_id}", "task", task, ts=ts,
                                       session_id=row.session_id, project=project)
                     text_row = dict(session_id=row.session_id, agent_id=row.agent_id, task=task, ts=ts)
@@ -700,7 +700,7 @@ class SessionFacts:
     def events(self, rows, *, source: str, source_key: str = "") -> None:
         output, text = [], []
         keep = self.keeps_text()
-        floor = self.text_floor()
+        floor = self.text_floor(TABLE_RETENTION_CLASS["events_text"])
         for row in rows:
             if row.kind in ("otel:health", "otel:proc_stats"):
                 with self._lock:
@@ -741,7 +741,7 @@ class SessionFacts:
         data = asdict(row)
         command, output, payload = (data.pop(k) for k in ("command", "output", "payload"))
         project = row.project_path
-        keep = self.allows_text(row.ts or row.received_at, "tool_content")
+        keep = self.allows_text(row.ts or row.received_at, TABLE_RETENTION_CLASS["hook_calls_text"])
         self.writer.upsert("hook_calls", [dict(data, project=project,
                                               payload="{}" if keep else _json(strip_event_text(payload)))])
         if keep:
@@ -867,7 +867,7 @@ class SessionFacts:
                         log.warning("A %s row is left out, it can never be stored: %s", table, exc)
         if only is None and facts.steps:
             metadata, text = [], []
-            floor = self.text_floor("message")
+            floor = self.text_floor(TABLE_RETENTION_CLASS["session_step_text"])
             for step in facts.steps:
                 data = asdict(step)
                 content = data.pop("text")

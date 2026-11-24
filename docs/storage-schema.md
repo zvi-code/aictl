@@ -270,38 +270,35 @@ resource attributes. A column is null when none of its keys is sent.
 ## Retention classes
 
 Every table belongs to exactly one retention class. `[storage.retention]` sets a period per
-class in hours or days (`tool_content = "24h"`, `prompt = "365d"`; a bare number is days).
+class in hours or days (`large_payload = "24h"`, `prompt = "365d"`; a bare number is days).
 Each node applies the periods to its own physical tables when it starts.
 `aictl db retention` shows each class and table; `aictl db retention set <class> <period>`
 changes one. The defaults:
 
 | class | default | tables |
 |---|---|---|
-| `history` | 365d | `agents`, `context_events`, `context_lists`, `file_write_events`, `otel_trace_sessions`, `requests`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_files`, `session_folders`, `session_loaded_files`, `session_outcomes`, `session_processes`, `session_sources`, `session_steps`, `session_turns`, `session_usage`, `sessions`, `skill_uses`, `tool_invocations`, `turn_request_links` |
+| `history` | 365d | `agents`, `agents_text`, `context_events`, `context_lists`, `file_write_events`, `otel_trace_sessions`, `requests`, `session_artifacts`, `session_attribution`, `session_commits`, `session_context_items`, `session_files`, `session_folders`, `session_loaded_files`, `session_outcomes`, `session_processes`, `session_sources`, `session_step_text`, `session_steps`, `session_turns`, `session_usage`, `sessions`, `skill_uses`, `tool_invocations`, `tool_invocations_text`, `turn_request_links` |
 | `prompt` | 365d | `session_prompts` |
 | `thinking` | 365d | `session_thinking` |
-| `message` | 365d | `copilot_session_messages`, `cursor_session_messages`, `session_step_text`, `vscode_chat_messages` |
-| `text` | 365d | `agents_text`, `events_text`, `session_digests` |
-| `file_text` | 365d | `file_blobs`, `file_history_text`, `memory_snapshots_text` |
+| `message` | 365d | `copilot_session_messages`, `cursor_session_messages`, `vscode_chat_messages` |
+| `text` | 365d | `session_digests` |
+| `file_text` | 365d | `file_blobs` |
 | `otel` | 365d | `OTELLogs`, `OTELMetrics`, `OTELPayloads`, `OTELTraces` |
-| `metrics` | 365d | `data_quality_status`, `datapoint_catalog`, `environment_vars`, `events`, `file_history`, `files`, `hook_calls`, `maintenance_state`, `memory_snapshots`, `metrics`, `path_defs`, `process_defs`, `process_snapshots`, `processes`, `schema_version`, `system_snapshots`, `tool_config`, `tool_stats`, `tools` |
-| `tool_content` | 24h | `hook_calls_text`, `tool_invocations_text` |
+| `metrics` | 365d | `data_quality_status`, `datapoint_catalog`, `environment_vars`, `events`, `events_text`, `file_history`, `file_history_text`, `files`, `hook_calls`, `hook_calls_text`, `maintenance_state`, `memory_snapshots`, `memory_snapshots_text`, `metrics`, `path_defs`, `process_defs`, `process_snapshots`, `processes`, `schema_version`, `system_snapshots`, `tool_config`, `tool_stats`, `tools` |
 | `large_payload` | 24h | `text_payloads` |
 
-A table is in a class by name in `tables.py`; otherwise a table that holds text is in
-`text`, a table of what sessions did is in `history`, and the rest is in `metrics`.
+A table is in a class by name in `tables.py`. The text table of a data point
+(`tool_invocations_text`, `agents_text`, `session_step_text`, `events_text`, `hook_calls_text`,
+`memory_snapshots_text`, `file_history_text`) has the class of its figures table, so text and
+figures are kept equally long. Otherwise a table that holds text is in `text`, a table of what
+sessions did is in `history`, and the rest is in `metrics`. The class `tool_content` of an
+older aictl is gone: a config file that still sets it gets one warning and the line is ignored.
 
 Kusto removes rows by ingestion time, an extent at a time, so a row can live somewhat longer
 than its period. Lowering a period deletes older data and cannot be undone.
 
 What remains after the text expires:
 
-- A tool call keeps its `tool_invocations` row (class `history`): tool and tool name, MCP
-  server and tool, `target_kind` and `target`, command name, URL host, search folder, sizes,
-  error flag, exit code, durations, confirmation, turn, prompt and request keys. Its
-  arguments and result excerpt in `tool_invocations_text` (class `tool_content`) are gone.
-- A hook call keeps its `hook_calls` row (class `metrics`); its command, output and payload
-  in `hook_calls_text` (class `tool_content`) are gone.
 - A large text value keeps its preview and a note in its own table; its full text in
   `text_payloads` (class `large_payload`) is gone.
 - Text older than its class's period is not imported from old session files, while the
@@ -789,7 +786,7 @@ The prompt each subagent was given. Text.
 - Version column: `_v`
 - Tombstone column: `_deleted`
 - Ingestion: `streaming`
-- Retention class: `text` (default 365d)
+- Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`agents`), only while text is kept
 
 | column | type | meaning |
@@ -1213,7 +1210,7 @@ The content of the memory files of `memory_snapshots`. Text.
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
-- Retention class: `file_text` (default 365d)
+- Retention class: `metrics` (default 365d)
 - Written by: `session_evidence.py` (`memory`), only while text is kept
 
 | column | type | meaning |
@@ -1391,8 +1388,8 @@ The text of each tool call: arguments and result excerpt. Text, kept 24 hours by
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
-- Retention class: `tool_content` (default 24h)
-- Written by: `tool_calls.py`, only while text is kept and the call is newer than the `tool_content` period
+- Retention class: `history` (default 365d)
+- Written by: `tool_calls.py`, only while text is kept and the call is newer than the `history` period
 
 | column | type | meaning |
 |---|---|---|
@@ -1596,7 +1593,7 @@ The text of session steps. Text.
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
-- Retention class: `message` (default 365d)
+- Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`write`), only while text is kept and newer than the `message` period
 
 | column | type | meaning |
@@ -1757,7 +1754,7 @@ The full detail of events whose detail had text. Text.
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
-- Retention class: `text` (default 365d)
+- Retention class: `metrics` (default 365d)
 - Written by: `session_facts.py` (`events`), only while text is kept
 
 | column | type | meaning |
@@ -1827,8 +1824,8 @@ The text of hook calls: wrapped command, its output and the payload. Text, kept 
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
-- Retention class: `tool_content` (default 24h)
-- Written by: `session_facts.py` (`hook`), only while text is kept and newer than the `tool_content` period
+- Retention class: `metrics` (default 365d)
+- Written by: `session_facts.py` (`hook`), only while text is kept and newer than the `metrics` period
 
 | column | type | meaning |
 |---|---|---|
@@ -2116,7 +2113,7 @@ Defined for the text of file history snapshots. No current aictl code writes it.
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `queued`
-- Retention class: `file_text` (default 365d)
+- Retention class: `metrics` (default 365d)
 - Written by: none in current code
 
 | column | type | meaning |

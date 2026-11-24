@@ -442,14 +442,14 @@ class TestMemoryContent:
         edit = one(table(facts, "file_write_events", source_event_id="e1"))
         assert (edit["before_source"], edit["before_hash"]) == ("previous_version", hash_of("first\n"))
 
-    def test_content_outlives_the_24_hour_tool_content(self, tmp_path):
+    def test_content_outlives_the_tool_call_text(self, tmp_path):
         ago = 2 * 86400
         put_file(memory_file(), "new line\n", ago=ago - 1)
         memory_edit_session(tmp_path, ago=ago)
         facts = Facts()
         ingester(facts, tmp_path, backfill_days=30).poll()
-        # Retention drops the call's arguments and edit text after 24 hours (tool_content).
-        assert TABLE_RETENTION_CLASS["tool_invocations_text"] == "tool_content"
+        # The call's arguments and edit text go with the call's retention; file contents have their own class.
+        assert TABLE_RETENTION_CLASS["tool_invocations_text"] != TABLE_RETENTION_CLASS["file_blobs"]
         facts.writer.operations = [op for op in facts.writer.operations if op[1] != "tool_invocations_text"]
         edit = one(table(facts, "file_write_events", source_event_id="e1"))
         assert blob(facts, edit["before_hash"]) == "old line\n" and blob(facts, edit["after_hash"]) == "new line\n"
