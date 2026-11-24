@@ -2,7 +2,7 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, projectName } from '../../design/format'
+import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, projectName } from '../../design/format'
 import { parseFilters, PERIODS, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'
@@ -221,22 +221,22 @@ export const CAUSE_LABELS: Record<PauseCause, string> = {
   tool_running: 'A call still running', other_agent_working: 'Another agent working', person_asked: 'Waiting for an approval or answer',
   new_prompt: 'A new prompt', tool_short_or_untimed: 'Short or untimed calls', nothing_recorded: 'Nothing recorded',
 }
-/** What each cause means, in one plain sentence part. */
+/** What the session recorded in a pause for each cause, in one plain sentence part. */
 export const CAUSE_MEANING: Record<PauseCause, string> = {
-  tool_running: 'a long command outlives the 5-minute cache', other_agent_working: 'the main agent waits while subagents work',
-  person_asked: 'the agent asked a person to approve a call or answer a question', new_prompt: 'the person came back later',
+  tool_running: 'a call of the agent ran for at least half the pause', other_agent_working: 'another agent of the session made requests',
+  person_asked: 'a call waited for an approval or an answer', new_prompt: 'a prompt arrived',
   tool_short_or_untimed: 'the calls recorded ran for less than half the pause, or have no duration',
   nothing_recorded: 'no call, prompt or other agent was recorded in the pause',
 }
 const lower = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
 
-/** The cause of the long pauses as the card and the findings summary both word it; empty without a priced long pause. */
+/** The long-pause cost by what was recorded in the pause, as the card and the findings list both word it; empty without one. */
 export function causeText(cause: PauseCauseLead | null | undefined) {
   if (!cause) return ''
-  return ` The largest cause by cost is ${lower(CAUSE_LABELS[cause.top])} (${CAUSE_MEANING[cause.top]}): ${money(cause.top_usd)}, ` +
-    `${fmtShare(cause.top_share)} of the long-pause cost. The agent itself was busy for ${fmtShare(cause.busy_share)} of that cost ` +
-    `(a call running or another agent working); it waited for the person for ${fmtShare(cause.person_share)} ` +
-    '(a new prompt, an approval or an answer).'
+  return ` Of the ${money(cause.cost_usd)} after these pauses, the largest part by what the pause recorded is ` +
+    `${lower(CAUSE_LABELS[cause.top])}: ${money(cause.top_usd)} (${fmtShare(cause.top_share)}). Pauses with a call running ` +
+    `or another agent working: ${money(cause.busy_usd)} (${fmtShare(cause.busy_share)}); pauses with a new prompt, an ` +
+    `approval or an answer: ${money(cause.person_usd)} (${fmtShare(cause.person_share)}).`
 }
 
 /** The long-pause cost of each compared tool by cause, in the order of the causes, with the tool's total. */
@@ -255,14 +255,83 @@ export function pauseFinding(body: PauseBody, label: Label) {
   const s = body.summary
   if (!s.tools.length) {
     return s.not_reported.length && body.tools.every(tool => !tool.cache_reported)
-      ? `The sources in this period do not report cache writes (${list(s.not_reported.map(label))}), so the cost of a lapsed cache cannot be shown.`
+      ? `The sources in this period do not report cache writes (${list(s.not_reported.map(label))}); their cost after a pause is not compared.`
       : 'No priced request followed a pause in this period.'
   }
   const named = s.tools.filter(tool => body.tools.some(row => row.tool === tool))
-  const sentence = `${fmtNum(s.requests)} ${list(named.map(label))} requests followed a pause of over 5 minutes and cost ` +
-    `${money(s.cost_usd)} at list price; the same number at each tool's under-1-minute average would cost ${money(s.baseline_usd)}.`
+  const sentence = `${fmtNum(s.requests)} ${list(named.map(label))} requests followed a pause of 5 minutes or more and cost ` +
+    `${money(s.cost_usd)} at list price. Estimate for the same requests at each tool's average cost per request after a pause ` +
+    `under 1 minute: ${money(s.baseline_usd)}, a difference of ${money(s.extra_usd)}.`
   return s.requests ? sentence + leftOut(s.unpriced_requests) + causeText(s.cause)
-    : `No ${list(named.map(label))} request followed a pause of over 5 minutes in this period.`
+    : `No ${list(named.map(label))} request followed a pause of 5 minutes or more in this period.`
+}
+
+export const BUCKETS = Object.keys(BUCKET_LABELS) as Bucket[]
+/** The rule that puts a request in a pause bucket. */
+export const BUCKET_RULES: Record<Bucket, string> = {
+  under_1m: 'pause under 1 minute', '1_5m': 'pause from 1 to under 5 minutes', '5_60m': 'pause from 5 to under 60 minutes',
+  over_60m: 'pause of 60 minutes or more',
+}
+const LONG_BUCKETS: readonly Bucket[] = ['5_60m', 'over_60m']
+type PauseTool = PauseBody['tools'][number]
+const sumOf = <T,>(rows: readonly T[], read: (row: T) => Num) => rows.some(row => read(row) != null)
+  ? rows.reduce((sum, row) => sum + (read(row) ?? 0), 0) : null
+
+/** The hover of one pause bucket of one tool: its requests and cost with their shares of the tool, its average and cache hits. */
+export function pauseBucketHover(tool: PauseTool, cell: PauseCell, label: Label) {
+  const requests = tool.buckets.reduce((sum, row) => sum + row.requests, 0)
+  const cost = sumOf(tool.buckets, row => row.cost_usd)
+  return `${label(tool.tool)}, ${BUCKET_RULES[cell.bucket]}: ${plural(cell.requests, 'request')} (${share(ratio(cell.requests, requests))} of ` +
+    `${fmtNum(requests)}), ${money(cell.cost_usd)} at list price (${share(ratio(cell.cost_usd, cost))} of ${money(cost)}), ` +
+    `${money(cell.avg_cost_usd)} per request over ${fmtNum(cell.priced)} priced, cache hits ${share(cell.cache_hit_share)} of input` +
+    (tool.cache_reported ? '.' : '; this source reports no cache writes.')
+}
+
+/** One tool's requests after a pause of 5 minutes or more: measured cost, and the estimate at its under-1-minute average. */
+export function pauseEstimate(tool: PauseTool) {
+  const long = tool.buckets.filter(cell => LONG_BUCKETS.includes(cell.bucket))
+  const priced = long.reduce((sum, cell) => sum + cell.priced, 0)
+  const average = tool.buckets.find(cell => cell.bucket === 'under_1m')?.avg_cost_usd ?? null
+  const cost = sumOf(long, cell => cell.cost_usd)
+  const estimate = average == null ? null : priced * average
+  return { requests: long.reduce((sum, cell) => sum + cell.requests, 0), priced, average, cost, estimate,
+    difference: cost == null || estimate == null ? null : cost - estimate }
+}
+
+/** The estimate of one tool with its formula: the what-if is not measured, so the hover says how it is computed. */
+export function pauseEstimateHover(tool: PauseTool, label: Label) {
+  const e = pauseEstimate(tool)
+  return `${label(tool.tool)}, estimate: ${fmtNum(e.priced)} priced requests after a pause of 5 minutes or more × ${money(e.average)}, ` +
+    `the tool's average cost per request after a pause under 1 minute = ${money(e.estimate)}. Measured cost of the same requests: ` +
+    `${money(e.cost)}; difference ${money(e.difference)}.`
+}
+export function pauseMeasuredHover(tool: PauseTool, label: Label) {
+  const e = pauseEstimate(tool)
+  return `${label(tool.tool)}, measured: ${plural(e.requests, 'request')} after a pause of 5 minutes or more (${fmtNum(e.priced)} priced) ` +
+    `cost ${money(e.cost)} at list price.`
+}
+
+/** The hover of one cause of one tool: its requests and cost, its share of the tool's long-pause cost, per bucket, and its rule. */
+export function pauseCauseHover(row: NonNullable<PauseBody['causes']>[number], total: number, label: Label) {
+  const buckets = row.buckets.filter(cell => cell.requests > 0).map(cell => `${BUCKET_LABELS[cell.bucket]}: ` +
+    `${plural(cell.requests, 'request')} in ${plural(cell.sessions, 'session')}, ${money(cell.cost_usd)}`)
+  return `${label(row.tool)}, ${CAUSE_LABELS[row.cause]}: ${plural(row.requests, 'request')} (${fmtNum(row.priced)} priced), ` +
+    `${money(row.cost_usd)} at list price, ${share(row.share)} of the tool's ${money(total)} after pauses of 5 minutes or more.` +
+    (buckets.length ? ` ${buckets.join('; ')}.` : '') + ` Recorded in the pause: ${CAUSE_MEANING[row.cause]}.`
+}
+
+/** The hover of a call that ran through pauses. */
+export function pauseCallHover(row: PauseCauseTool, label: Label) {
+  return `${row.tool_name ?? 'unnamed call'}${row.program ? ` (${row.program})` : ''} in ${label(row.tool)}: the longest-running call ` +
+    `in ${plural(row.requests, 'pause')} of 5 minutes or more with a call still running; the requests after them cost ` +
+    `${money(row.cost_usd)} at list price; the call ran ${fmtDur(row.p50_call_s)} at the median, ${fmtDur(row.max_call_s)} at most.`
+}
+
+/** The hover of a project's difference between the measured cost after long pauses and the estimate. */
+export function pauseProjectHover(row: { project: string; sessions: number; requests: number; extra: number } | null, rest: number) {
+  return row ? `${row.project}: measured cost minus the estimate at its tool's under-1-minute average = ${money(row.extra)}, over ` +
+    `${plural(row.requests, 'request')} after a pause of 5 minutes or more in ${plural(row.sessions, 'session')}.`
+    : `Every other project and the requests with no project, summed: ${money(rest)} measured cost minus the estimate.`
 }
 
 /** The card's primary split: the projects whose long pauses cost the most extra, five at most, every other one summed. */
@@ -471,9 +540,10 @@ const ratio = (part: Num, whole: Num) => part != null && whole != null && whole 
 const hero = (value: Num, format: (value: number) => string, label: string): Hero | undefined =>
   value == null ? undefined : { value: format(value), label }
 
-export const pauseHero = (body: PauseBody) => hero(ratio(body.summary.cost_usd, body.summary.baseline_usd), fmtTimes,
-  `the cost of requests that followed a pause of over 5 minutes, against the same requests with no pause: ` +
-  `${money(body.summary.cost_usd)} against ${money(body.summary.baseline_usd)}, ${money(body.summary.extra_usd)} more`)
+export const pauseHero = (body: PauseBody) => body.summary.requests ? hero(body.summary.cost_usd, fmtUsd,
+  `at list price for the ${plural(body.summary.requests, 'request')} that followed a pause of 5 minutes or more` +
+  (body.summary.sessions ? ` in ${plural(body.summary.sessions, 'session')}` : '') +
+  `; estimate at each tool's under-1-minute average: ${money(body.summary.baseline_usd)}, difference ${money(body.summary.extra_usd)}`) : undefined
 export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_bytes, body.summary.output_bytes), fmtTimes,
   `how often a byte of a tool result was sent again with later requests (upper bound): ${bytes(body.summary.output_bytes)} of ` +
   `results, up to ${bytes(body.summary.carried_bytes)} sent again`)

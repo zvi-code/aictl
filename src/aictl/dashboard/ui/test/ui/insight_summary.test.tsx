@@ -59,18 +59,26 @@ describe('INS-SUM · The findings summary ranks what the cards found by its stak
     const lines = [...host.querySelectorAll('[data-finding-kind]')]
     expect(lines.map(line => line.getAttribute('data-finding-kind'))).toEqual(['top_session', 'subagents', 'never_edited', 'untested'])
     expect(lines.map(line => line.querySelector('[data-stake]')!.textContent)).toEqual(['$1,000', '$900', '$130', '7 sessions'])
-    expect(lines[0].textContent).toContain('One session cost $1,000 on its own.')
-    expect(lines[0].textContent).toContain('25% of the period\'s cost · in loop')
-    expect(lines[1].textContent).toContain('40 subagents in 13 sessions made 500 requests and cost $900.')
-    expect(lines[1].textContent).toContain('most in loop: $450 (50%), 8 sessions')
-    expect(lines[3].textContent).toContain('7 of 16 sessions that changed source code never ran a test.')
-    expect(host.querySelector('[data-overlap]')!.textContent).toContain('do not add them up')
+    // The title says what the list holds; no line ranks by importance in words.
+    expect(host.querySelector('h2')!.textContent).toBe('Largest amounts measured in this period, one per card measure')
+    expect(lines[0].textContent).toContain('The session with the highest cost in the period: $1,000 at list price.')
+    expect(lines[0].textContent).toContain('25% of the period\'s cost · in loop · from Problem sessions')
+    expect(lines[1].textContent).toContain('40 subagents in 13 sessions made 500 requests; they cost $900 at list price.')
+    expect(lines[1].textContent).toContain('largest project part: loop, $450 (50%), 8 sessions')
+    expect(lines[3].textContent).toContain('7 of 16 sessions that changed source code recorded no test run.')
+    // Each share bar is written beside it and holds its figures on hover.
+    expect(lines[1].querySelector('[data-share]')!.textContent).toContain('23%')
+    expect(lines[1].querySelector('[role="tooltip"]')!.textContent).toBe('$900 at list price · 23% of the period\'s cost, $4,000 at ' +
+      'list price · counted over 13 sessions · from the Spend in subagents card, over the period')
+    expect(lines[3].querySelector('[role="tooltip"]')!.textContent).toBe('7 sessions · 44% of the 16 sessions that changed source ' +
+      'code · counted over 7 sessions · from the Verified before commit card, over the period')
+    expect(host.querySelector('[data-overlap]')!.textContent).toContain('the amounts overlap and are not to be added')
     expect(host.querySelector('[data-missing]')!.textContent).toContain('Repeated file reads')
     // One request for the whole list.
     expect(new Set(requested.filter(path => path.includes('insights/summary'))).size).toBe(1)
     expect(requested.every(path => path.includes('insights/summary'))).toBe(true)
     // The one-session finding opens the session itself.
-    lines[0].querySelector('button')!.click()
+    lines[0].querySelector<HTMLButtonElement>('button[data-open]')!.click()
     expect(opened).toEqual(['s-top'])
     dispose()
   })
@@ -86,7 +94,7 @@ describe('INS-SUM · The findings summary ranks what the cards found by its stak
     flush()
     const sessions = () => host.querySelector<HTMLDetailsElement>('[data-box="insight-subagents"] details[data-sessions]')!
     expect(sessions().open).toBe(false)
-    host.querySelector('[data-finding-kind="subagents"] button')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    host.querySelector('[data-finding-kind="subagents"] button[data-open]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     flush()
     expect(sessions().open).toBe(true)
     expect(scrolled).toEqual(['insight-subagents'])
@@ -97,17 +105,18 @@ describe('INS-SUM · The findings summary ranks what the cards found by its stak
   it('words a finding with no project or session plainly, from its own figures', () => {
     expect(findingText(finding({ kind: 'pause_tax', card: 'pause', stake: 39, sessions: 2,
       detail: { requests: 5, cost_usd: 40, baseline_usd: 1 } })))
-      .toBe('5 requests came after a pause of over 5 minutes in 2 sessions and cost $40.00; without the pause they would cost ' +
-        'about $1.00, so the pauses cost $39.00 more.')
-    // With the cause of the long pauses: the same words as the card's own finding.
+      .toBe('5 requests followed a pause of 5 minutes or more in 2 sessions; they cost $40.00 at list price. At each tool\'s ' +
+        'average cost per request after a pause under 1 minute they would cost $1.00 (estimate); the difference is $39.00.')
+    // With the cost by what the pauses recorded: the same words as the card's own finding.
     const cause = { top: 'other_agent_working', top_usd: 20, top_share: 0.5, cost_usd: 40, busy_usd: 30, busy_share: 0.75,
       person_usd: 4, person_share: 0.1 } as const
     expect(findingText(finding({ kind: 'pause_tax', card: 'pause', stake: 39, sessions: 2,
       detail: { requests: 5, cost_usd: 40, baseline_usd: 1 }, cause })))
-      .toBe('5 requests came after a pause of over 5 minutes in 2 sessions and cost $40.00; without the pause they would cost ' +
-        'about $1.00, so the pauses cost $39.00 more. The largest cause by cost is another agent working (the main agent waits ' +
-        'while subagents work): $20.00, 50% of the long-pause cost. The agent itself was busy for 75% of that cost (a call ' +
-        'running or another agent working); it waited for the person for 10% (a new prompt, an approval or an answer).')
+      .toBe('5 requests followed a pause of 5 minutes or more in 2 sessions; they cost $40.00 at list price. At each tool\'s ' +
+        'average cost per request after a pause under 1 minute they would cost $1.00 (estimate); the difference is $39.00. ' +
+        'Of the $40.00 after these pauses, the largest part by what the pause recorded is another agent working: $20.00 (50%). ' +
+        'Pauses with a call running or another agent working: $30.00 (75%); pauses with a new prompt, an approval or an ' +
+        'answer: $4.00 (10%).')
     expect(findingText(finding({ kind: 'failure_runs', card: 'failures', stake: 1, unit: 'runs', detail: { streak_calls: 3, longest: null } })))
       .toBe('1 run of 3 or more failed calls in a row, 3 calls in all.')
   })
