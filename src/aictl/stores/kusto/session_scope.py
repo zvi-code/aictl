@@ -27,6 +27,8 @@ MODELS_PARAMETER = "scope_models"
 PARAMETERS = (TOOLS_PARAMETER, MODELS_PARAMETER)
 
 _IDS = "aictl_scope_ids"
+# The most session ids one read is narrowed to (the limit of make_set). A store holds far fewer sessions per filter.
+_MAX_SESSIONS = 1_000_000
 
 
 def _columns(table: str) -> set[str]:
@@ -83,7 +85,9 @@ def chosen_sessions(*, tools: bool, models: bool, projects: str = "") -> list[st
         chosen = "aictl_scope_tool_sessions | join kind=inner aictl_scope_model_sessions on node_id, session_id"
     else:
         chosen = "aictl_scope_tool_sessions" if tools else "aictl_scope_model_sessions"
-    lets.append(f"let {_IDS} = materialize({chosen} | distinct session_id);")
+    # One value, computed once and compared as a constant list: a table of ids read by `in` at every reference of
+    # every table cost two to three times the cluster CPU on the larger views (measured, 30 days of a fleet).
+    lets.append(f"let {_IDS} = toscalar({chosen} | summarize make_set(session_id, {_MAX_SESSIONS}));")
     return lets
 
 
