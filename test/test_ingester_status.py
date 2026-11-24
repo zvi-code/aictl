@@ -97,6 +97,53 @@ def test_optional_source_is_not_polled_until_it_appears(tmp_path):
     assert polls == [True] and handle.enabled and not handle.source_exists
 
 
+def test_a_backlog_is_read_poll_after_poll_and_a_failed_poll_waits_the_interval():
+    from types import SimpleNamespace
+
+    from aictl.dashboard import ingester_runner
+    from aictl.dashboard.ingester_runner import _poll_loop
+
+    # Polls: backlog left, backlog left, failure with backlog left, backlog read.
+    pending = iter([True, True, False])
+    outcomes = iter([5, 5, RuntimeError("store refused"), 5])
+
+    def poll():
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    ingester = SimpleNamespace(poll=poll, backlog_pending=lambda: next(pending))
+    waits = []
+
+    def wait(timeout):
+        waits.append(timeout)
+        return len(waits) == 4
+
+    _poll_loop(ingester, SimpleNamespace(wait=wait), 60.0, "transcript-usage")
+    pause = ingester_runner.BACKLOG_PAUSE_S
+    assert pause <= 1.0
+    assert waits == [pause, pause, 60.0, 60.0]
+
+
+def test_the_transcript_reader_asks_for_the_next_poll_only_while_files_wait_and_the_store_takes_rows(tmp_path):
+    from types import SimpleNamespace
+
+    from aictl.ingesters.transcript_usage import TranscriptUsageIngester
+
+    reader = TranscriptUsageIngester.__new__(TranscriptUsageIngester)
+    reader._waiting, reader._budget_scale = {}, 1.0
+    reader.facts = SimpleNamespace(write_error=None)
+    assert not reader.backlog_pending()
+    reader._waiting = {tmp_path / "a.jsonl": ("claude-code", 10, 0.0, False)}
+    assert reader.backlog_pending()
+    reader._budget_scale = 0.5
+    assert not reader.backlog_pending()
+    reader._budget_scale = 1.0
+    reader.facts.write_error = RuntimeError("refused")
+    assert not reader.backlog_pending()
+
+
 # ── VS Code ingester: quality + retry-on-parse-failure ────────────
 
 

@@ -264,6 +264,10 @@ def _record_poll_failure(ingester, name: str, exc: Exception) -> None:
         log.debug("%s ingester: failed to record poll-failure quality event", name)
 
 
+# The pause before the next poll while an ingester still has a backlog to read.
+BACKLOG_PAUSE_S = 1.0
+
+
 def _poll_loop(
     ingester,
     stop: threading.Event,
@@ -272,10 +276,18 @@ def _poll_loop(
     *,
     watch_source: IngesterHandle | None = None,
 ) -> None:
-    """Call ``ingester.poll()`` every *interval* seconds until *stop* is set."""
+    """Call ``ingester.poll()`` every *interval* seconds until *stop* is set.
+
+    While the ingester has a backlog to read (``backlog_pending()``) the next poll follows
+    after BACKLOG_PAUSE_S instead: a poll reads a bounded part of the backlog, and a full
+    interval between two parts made a re-read of history take hours, most of them waiting.
+    A poll that failed keeps the full interval.
+    """
     first = True  # initial poll immediately so the first data point is available
-    while first or not stop.wait(timeout=interval):
+    wait = interval
+    while first or not stop.wait(timeout=wait):
         first = False
+        wait = interval
         if watch_source is not None:
             watch_source.source_exists = watch_source.source_path.is_file()
             if not watch_source.source_exists:
@@ -299,6 +311,9 @@ def _poll_loop(
                 # New session data means a tool is working: collectors keep their full pace.
                 PACE.note_activity()
                 log.debug("%s ingester: poll inserted %d rows", name, inserted)
+            pending = getattr(ingester, "backlog_pending", None)
+            if pending is not None and pending():
+                wait = min(interval, BACKLOG_PAUSE_S)
         except Exception as exc:
             poll.update(last_error=str(exc), last_error_at=time.time())
             log.exception("%s ingester: poll loop error", name)

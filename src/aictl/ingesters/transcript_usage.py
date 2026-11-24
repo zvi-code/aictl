@@ -1758,6 +1758,16 @@ class TranscriptUsageIngester:
                               key=lambda item: "subagents" in item[0].parts)
         return ordered
 
+    def backlog_pending(self) -> bool:
+        """Whether the next poll should follow at once: backlog files wait and the store takes rows.
+
+        A poll reads DEFERRED_BYTES_PER_POLL of backlog. With POLL_INTERVAL_S between two polls a
+        re-read of 14.5 GB after a reset ran at 66 MB a minute, half of the time waiting for the
+        next poll (measured 2026-11-24). While the store refuses rows (_check_fact_write halves
+        what a poll reads) the reader keeps its interval.
+        """
+        return bool(self._waiting) and self._budget_scale >= 1.0 and self.facts.write_error is None
+
     def backlog_status(self) -> dict[str, dict]:
         """Per tool, what waits in the backlog: files and bytes, those of them to read again for a
         newer reader, and the day of the oldest waiting file."""
