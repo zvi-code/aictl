@@ -710,8 +710,12 @@ def _session_flow(db: Any, agent_id: str, since: float, until: float,
         if meta is not None:
             meta.update(anchor=since, older=False, epoch="", lo=since)
         return _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
-    memo = db.__dict__.setdefault("_reader_flow_memo", {})
-    guard = db.__dict__.setdefault("_reader_flow_guard", threading.Lock())
+    # The live stream reads through a proxy of the db that keeps its board keys apart; a flow is not
+    # a board: the stream's newest window and the older windows the HTTP route reads must come from
+    # one cache, or their epochs and positions differ and no older window can join the newest.
+    owner = db._db if getattr(db, "_live_projection", False) else db
+    memo = owner.__dict__.setdefault("_reader_flow_memo", {})
+    guard = owner.__dict__.setdefault("_reader_flow_guard", threading.Lock())
     keep = capture_mode(db, default="full") == "full"
     scope = (history.reader, node, sid, since, None if open_end else until, keep)
     with guard:
