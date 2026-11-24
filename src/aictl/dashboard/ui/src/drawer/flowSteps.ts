@@ -397,6 +397,20 @@ export function toolTarget(tool: FlowEvent) {
   return tool.target || ''
 }
 export const toolName = (tool: FlowEvent) => toolDisplayName(tool.to || tool.name || NO_TOOL)
+/** The tool of a call by the name the store keeps (the key of its detail); '' when the call names none. */
+export const toolKey = (tool: FlowEvent) => tool.to || tool.name || ''
+/**
+ * The skill a call of the Skill tool started, read from the call's own input (`skill`, or `name`); '' for any other
+ * call, and when the input was not kept.
+ */
+export function skillOfCall(tool: FlowEvent) {
+  if (toolKey(tool).toLowerCase() !== 'skill' || !tool.params) return ''
+  try {
+    const input = JSON.parse(tool.params) as { skill?: unknown; name?: unknown }
+    const name = typeof input.skill === 'string' ? input.skill : typeof input.name === 'string' ? input.name : ''
+    return name.trim()
+  } catch { return '' }
+}
 
 /**
  * The title of one tool call: for a shell tool the program its command ran ("git", "git +2"), else

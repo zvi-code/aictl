@@ -1,0 +1,7 @@
+/* A name that opens something: text of the row, marked as a link only by colour and an underline on hover. */
+.open {
+  composes: focus from "../../../ui/control.module.css";
+  display: inline; margin: 0; padding: 0; border: 0; background: none; font: inherit; text-align: start;
+  color: var(--color-accent); cursor: pointer; overflow-wrap: anywhere;
+}
+.open:hover { text-decoration: underline; }

@@ -1,11 +1,12 @@
 import { For, Show } from 'solid-js'
 import { Tooltip } from '../../../ui/Tooltip'
+import { Name, type Open } from './Open'
 import styles from './Charts.module.css'
 
 /** One mark on a row's axis: a median, a 90th percentile, an average. `shape` tells them apart on the strip and in the legend. */
 export type StripMark = { key: string; label: string; value: number | null; text: string; hover: string; shape: 'dot' | 'tick' | 'ring' }
 /** `total`: the marks' values written at the row's end, so close marks never overlap their labels. */
-export type StripRow = { key: string; label: string; sub?: string; marks: StripMark[]; total: string }
+export type StripRow = { key: string; label: string; sub?: string; marks: StripMark[]; total: string; open?: Open }
 /** A labelled line across every row (a bucket boundary), so a mark can be read against it. */
 export type StripRef = { value: number; label: string }
 
@@ -33,7 +34,7 @@ export function MarkStrip(props: {
     </ul>
     <ol class={styles.strip} aria-label={props.title}>
       <For each={props.rows}>{row => <li class={styles.stripRow} data-row={row.key}>
-        <span class={styles.name}>{row.label}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+        <span class={styles.name}><Name text={row.label} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
         <span class={styles.stripLane}>
           <For each={refs()}>{ref => <span class={styles.refLine} style={{ 'inset-inline-start': `${at(ref.value).toFixed(2)}%` }} />}</For>
           <Show when={shown(row).length > 1}>

@@ -1,5 +1,6 @@
 import { For, Show } from 'solid-js'
 import { Tooltip } from '../../ui/Tooltip'
+import { Name, type Open } from './charts/Open'
 import styles from './Bars.module.css'
 import { OTHER } from './repoSplit'
 
@@ -13,7 +14,9 @@ export type BarPart = {
   key: string; label: string; value: number | null; text: string; hover: string; tone: number; repo?: number; light?: boolean
 }
 /** One bar: a label, the segments (one for a plain bar), and the value written beside it. */
-export type BarRow = { key: string; label: string; title?: string; sub?: string; parts: BarPart[]; total: string }
+export type BarRow = { key: string; label: string; title?: string; sub?: string; parts: BarPart[]; total: string
+  /** What the row's name opens when clicked (a detail, a session, a filter of the page). */
+  open?: Open }
 export type LegendItem = { label: string; tone: number }
 
 const TONES = 10
@@ -49,7 +52,7 @@ export function Bars(props: {
     </Show>
     <ol class={styles.rows} aria-label={props.title}>
       <For each={props.rows}>{row => <li class={styles.row} data-row={row.key}>
-        <span class={styles.name} title={row.title}>{row.label}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+        <span class={styles.name} title={row.open ? undefined : row.title}><Name text={row.label} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
         <span class={styles.lane}>
           <span class={styles.stack} role="group" aria-label={`${row.label}: ${row.total}`} style={{ 'inline-size': `${length(row).toFixed(2)}%` }}>
             <For each={row.parts.filter(part => (part.value ?? 0) > 0)}>{part => <span

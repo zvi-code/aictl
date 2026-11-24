@@ -37,9 +37,9 @@ export function Bars(props: { chart: BarChart }) {
       <Legend items={props.chart.legend} />
       <ol class={own.list} aria-label={props.chart.title}>
         <For each={props.chart.rows}>{row => <li data-bar={row.key} data-small={row.small ? '' : undefined}>
-          <Tooltip class={own.hit} text={row.hover} onClick={noop}
-            label={`${row.name}: ${row.tracks.map(track => track.text).join('; ')}`}>
-            <span class={own.label}><RepoMark repo={row.repo} />{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+          <Tooltip class={own.hit} text={row.open ? `${row.hover}\nClick: ${row.open.label}` : row.hover} onClick={row.open?.run ?? noop}
+            label={`${row.name}: ${row.tracks.map(track => track.text).join('; ')}${row.open ? `. ${row.open.label}` : ''}`}>
+            <span class={own.label} data-open={row.open ? '' : undefined}><RepoMark repo={row.repo} />{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
             <span class={own.tracks}>
               <For each={row.tracks}>{(track, i) => <span class={own.bar}>
                 <span class={own.track}>
@@ -66,8 +66,9 @@ export function Ranges(props: { chart: RangeChart }) {
       <p class={styles.note}>{props.chart.legend}</p>
       <ol class={own.list} aria-label={props.chart.title}>
         <For each={props.chart.rows}>{row => <li data-bar={row.key} data-small={row.small ? '' : undefined}>
-          <Tooltip class={own.hit} text={row.hover} onClick={noop} label={`${row.name}: ${row.text}`}>
-            <span class={own.label}><RepoMark repo={row.repo} />{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+          <Tooltip class={own.hit} text={row.open ? `${row.hover}\nClick: ${row.open.label}` : row.hover} onClick={row.open?.run ?? noop}
+            label={`${row.name}: ${row.text}${row.open ? `. ${row.open.label}` : ''}`}>
+            <span class={own.label} data-open={row.open ? '' : undefined}><RepoMark repo={row.repo} />{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
             <span class={own.tracks}>
               <span class={own.bar}>
                 <span class={own.range}>

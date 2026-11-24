@@ -6,6 +6,7 @@ import { dayLabel, fmtHours, fmtLines, fmtMs, fmtNum, fmtShare, fmtUsd } from '.
 import type { BarRow as SplitRow } from './Bars'
 import type { Base, Hero } from './insightsModel'
 import { notSplitNote, OTHER, repoColour, repoName as repoLabel, repoParts, type RepoRef, type RepoSegment } from './repoSplit'
+import type { Open } from './charts/Open'
 
 type Num = number | null
 export type WorkCardId = 'repos' | 'durations' | 'changes'
@@ -51,12 +52,13 @@ export type Part = { value: number; tone: Tone; label: string; repo?: number }
 /** One bar of a row: its stacked parts and the value written beside it. */
 export type Track = { parts: Part[]; text: string }
 /** `repo`: the row is one repository, marked with its colour (repoSplit.ts). */
-export type BarRow = { key: string; name: string; sub: string; tracks: Track[]; hover: string; small: boolean; repo?: number }
+/** `open`: what a click on the row opens (a session, a repository filter). */
+export type BarRow = { key: string; name: string; sub: string; tracks: Track[]; hover: string; small: boolean; repo?: number; open?: Open }
 /** Horizontal bars, linear; `tops[i]` is the scale end of the i-th bar of every row. */
 export type BarChart = { id: string; title: string; axis: string; legend: { tone: Tone; label: string }[]; tops: number[]; rows: BarRow[] }
 /** A distribution per row: a bar to the median, a line on to the upper percentile, a tick at the longest. */
 export type RangeRow = {
-  key: string; name: string; sub: string; mid: Num; high: Num; max: Num; text: string; hover: string; small: boolean; repo?: number
+  key: string; name: string; sub: string; mid: Num; high: Num; max: Num; text: string; hover: string; small: boolean; repo?: number; open?: Open
 }
 export type RangeChart = { id: string; title: string; axis: string; legend: string; top: number; rows: RangeRow[] }
 /** Columns over time bins, one per bin, value written on top and a second line under it. */

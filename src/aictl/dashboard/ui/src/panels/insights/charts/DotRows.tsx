@@ -2,12 +2,13 @@
 // Each measure column has its own linear scale from 0 to its largest value, written in its header. The value is written
 // beside each dot; the dot carries the hover text. A value the source does not report has no dot.
 import { For, Show } from 'solid-js'
+import { Name, type Open } from './Open'
 import styles from './DotRows.module.css'
 
 export type DotMeasure = { key: string; name: string; top: number; topText: string }
 /** `colour`: a CSS colour from the tokens; `swatch` marks the row's name with it (a repository's colour). */
 export type DotValue = { value: number | null; text: string; hover: string }
-export type DotRow = { key: string; name: string; sub?: string; title?: string; colour?: string; swatch?: boolean; values: DotValue[] }
+export type DotRow = { key: string; name: string; sub?: string; title?: string; colour?: string; swatch?: boolean; values: DotValue[]; open?: Open }
 
 /** Where a dot sits on its measure's axis, 0 to 100. */
 export const dotAt = (value: number, top: number) => top > 0 ? Math.max(0, Math.min(1, value / top)) * 100 : 0
@@ -26,7 +27,7 @@ export function DotRows(props: { name: string; title: string; axis: string; meas
         <For each={props.rows}>{row => <div role="row" class={styles.line} data-row={row.key}>
           <span role="rowheader" class={styles.name} title={row.title}>
             <Show when={row.swatch && row.colour}><span class={styles.swatch} style={{ background: row.colour }} data-swatch /></Show>
-            {row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+            <Name text={row.name} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
           <For each={row.values}>{(item, i) => <span role="cell" class={styles.cell}>
             <span class={styles.track}>
               <Show when={item.value != null}>

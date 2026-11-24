@@ -2,11 +2,12 @@ import { For, Show } from 'solid-js'
 import { Tooltip } from '../../../ui/Tooltip'
 import type { BarPart, LegendItem } from '../Bars'
 import { partClass, toneClass } from './Columns'
+import { Name, type Open } from './Open'
 import styles from './Charts.module.css'
 
 /** One measure of one row: its segments and the value written beside them. */
 export type PairedCell = { parts: BarPart[]; total: string }
-export type PairedRow = { key: string; label: string; title?: string; sub?: string; cells: [PairedCell, PairedCell] }
+export type PairedRow = { key: string; label: string; title?: string; sub?: string; cells: [PairedCell, PairedCell]; open?: Open }
 /** A lane's heading; `estimate` marks a lane whose figures are not measured (its heading says so, its bars are hatched). */
 export type Lane = { title: string; estimate?: boolean }
 
@@ -40,7 +41,7 @@ export function PairedBars(props: {
           {lane.title}</span>}</For>
       </div>
       <For each={props.rows}>{row => <div class={styles.pairedRow} role="row" data-row={row.key}>
-        <span role="rowheader" class={styles.name} title={row.title}>{row.label}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+        <span role="rowheader" class={styles.name} title={row.title}><Name text={row.label} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show></span>
         <For each={[0, 1] as const}>{lane => <span role="cell" class={styles.pairedCell} data-lane={lane}
           data-estimate={props.lanes[lane].estimate ? '' : undefined}>
           <span class={styles.pairedLane}>

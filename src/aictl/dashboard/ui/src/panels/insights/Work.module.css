@@ -12,6 +12,12 @@
 .hit:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
 .label { overflow-wrap: anywhere; }
 .label small { display: block; color: var(--color-muted); }
+/* A row that opens something on click: its name in the accent colour, the pointer over the whole row. */
+.label[data-open] { color: var(--color-accent); }
+.label[data-open] small { color: var(--color-muted); }
+.hit:has(.label[data-open]) { cursor: pointer; }
+.hit:has(.label[data-open]):hover .label { text-decoration: underline; }
+.hit:has(.label[data-open]):hover .label small { text-decoration: none; }
 .tracks { display: grid; gap: var(--space-1); min-inline-size: 0; }
 .bar { display: grid; grid-template-columns: minmax(4rem, 16rem) minmax(0, 1fr); gap: var(--space-2); align-items: center; min-inline-size: 0; }
 .track { display: flex; block-size: var(--space-3); border-radius: var(--radius-sm); background: var(--color-raised); overflow: hidden; }

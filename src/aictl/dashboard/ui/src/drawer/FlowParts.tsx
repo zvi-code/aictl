@@ -7,7 +7,7 @@ import { Icon, type Glyph } from '../ui/Icon'
 import { moveFocus } from '../ui/keyboard'
 import { clockTime, durationOf, eventTokens, failedEvent, inputOf, outputOf, type EventKind, type PlacedEvent } from './flowModel'
 import {
-  approvalOf, callTitle, definitions, isPromptTurn, spanSummary, stepMetrics, stepTitle, toolMetrics, toolName, toolTarget, turnName, waitLabel,
+  approvalOf, callTitle, definitions, isPromptTurn, spanSummary, stepMetrics, stepTitle, skillOfCall, toolKey, toolMetrics, toolName, toolTarget, turnName, waitLabel,
   type FlowRow, type Metric, type Step, type StepKind,
 } from './flowSteps'
 import { clip } from './shared'
@@ -294,6 +294,8 @@ function toolFacts(tool: PlacedEvent): Fact[] {
  */
 export function StepInspector(props: {
   step: Step; close: () => void; evidence?: (event: PlacedEvent) => void; openAgent?: (agent: string) => void
+  /** Opens the detail of a skill or a tool the step names. */
+  open?: (detail: { type: 'skill' | 'tool'; name: string }) => void
   /** The thinking text of the step's model call, read when the call is shown. */
   thinking?: (call: PlacedEvent) => JSX.Element
 }) {
@@ -307,6 +309,10 @@ export function StepInspector(props: {
         <Icon glyph="close" small /></button>
     </div>
     <p class={styles.summary}>{stepTitle(step())}</p>
+    <Show when={step().kind === 'skill' && step().lead.name && props.open}>
+      <button class={styles.button} type="button" data-open-skill onClick={() => props.open?.({ type: 'skill', name: step().lead.name! })}>
+        <Icon glyph="spark" small />Open skill {step().lead.name}</button>
+    </Show>
     <Facts items={[
       ['Time', stamp(step().ts, true)],
       ['Step time', stepSpan(step()), 'From the start of the step to its last result.'],
@@ -333,6 +339,14 @@ export function StepInspector(props: {
           <Show when={tool.spawned_agent_id && props.openAgent}>
             <button class={styles.button} type="button" onClick={() => props.openAgent?.(tool.spawned_agent_id!)}>
               <Icon glyph="agents" small />Go to subagent {tool.spawned_agent_id!.slice(0, 8)}</button>
+          </Show>
+          <Show when={skillOfCall(tool) && props.open}>
+            <button class={styles.button} type="button" data-open-skill onClick={() => props.open?.({ type: 'skill', name: skillOfCall(tool) })}>
+              <Icon glyph="spark" small />Open skill {skillOfCall(tool)}</button>
+          </Show>
+          <Show when={toolKey(tool) && props.open}>
+            <button class={styles.button} type="button" data-open-tool onClick={() => props.open?.({ type: 'tool', name: toolKey(tool) })}>
+              <Icon glyph="tools" small />Open tool {toolName(tool)}</button>
           </Show>
           <Show when={inputOf(tool)}>{value => <CodeView label={`${toolName(tool)} input`} text={value()} wrap />}</Show>
           <Show when={outputOf(tool)}>{value => <CodeView label={`${toolName(tool)} result`} text={value()} wrap />}</Show>

@@ -5,6 +5,7 @@
 import { For, Show } from 'solid-js'
 import { Tooltip } from '../../../ui/Tooltip'
 import { repoClass } from '../Bars'
+import { Name, type Open } from './Open'
 import styles from './PercentileStrip.module.css'
 
 /** `mid`: a filled dot (the median); `high`: a hollow dot (an upper percentile); `max`: a tick (the longest). */
@@ -14,6 +15,7 @@ export type StripMark = { key: string; shape: StripShape; label: string; value: 
  * repository's colour before the name (repoSplit.ts). */
 export type StripRow = {
   key: string; label: string; sub?: string; title?: string; marks: StripMark[]; text: string; muted?: boolean; repo?: number
+  open?: Open
 }
 export type StripChart = {
   name: string; title: string; axis: string; rows: StripRow[]; top: number; start: string; end: string
@@ -41,7 +43,7 @@ export function PercentileStrip(props: { chart: StripChart }) {
         return <li class={styles.row} data-row={row.key} data-muted={row.muted ? '' : undefined}>
           <span class={styles.name} title={row.title}>
             <Show when={row.repo != null}><span class={`${styles.swatch} ${repoClass(row.repo!)}`} data-repo-mark={String(row.repo)} /></Show>
-            {row.label}<Show when={row.sub}><small>{row.sub}</small></Show>
+            <Name text={row.label} open={row.open} /><Show when={row.sub}><small>{row.sub}</small></Show>
           </span>
           <span class={styles.lane} role="group" aria-label={`${row.label}: ${row.text}`}>
             <Show when={row.marks.length > 1 && high() > low()}>

@@ -1,7 +1,8 @@
 import { For, untrack } from 'solid-js'
 import { fmtN, fmtNum, projectName } from '../../design/format'
+import { opening, opens, type Opens } from './charts/Open'
 import { BarChart } from './FlowsBars'
-import { axisText, barTop } from './flowBarModel'
+import { axisText, barTop, type BarRow } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { money, share, toolLabel, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
@@ -11,8 +12,17 @@ import {
 } from './skillsModel'
 import styles from './CallsViews.module.css'
 
-/** Rankings side by side: uses and turn cost per skill; what followed a use; then listings, projects and tools. */
-function Visual(props: { body: SkillsBody; label: Label }) {
+/** The rows of a chart with what their names open: a skill its detail, a project or a coding tool the page narrowed. */
+const links = (open: Opens) => ({
+  skill: (rows: BarRow[]) => opening(rows, row => open.skill(row.name)),
+  product: (rows: BarRow[]) => opening(rows, row => open.product(row.key, row.name)),
+  project: (rows: BarRow[]) => opening(rows, row => open.project(row.key)),
+})
+type Links = ReturnType<typeof links>
+
+/** Rankings side by side: uses and turn cost per skill; what followed a use; then listings, projects and tools. A
+ * skill's name opens the skill: its uses and sessions in the period, where it is installed, and its text. */
+function Visual(props: { body: SkillsBody; label: Label; link: Links }) {
   const empty = 'No skill with 5 uses in 3 sessions.'
   const split = () => skillsSplit(props.body)
   const by = () => split() ? ' A segment per repository.' : ''
@@ -20,28 +30,28 @@ function Visual(props: { body: SkillsBody; label: Label }) {
     {split() ? <RepoLegend split={props.body} other={[props.body.skills, props.body.unused, props.body.projects, props.body.tools]
       .some(list => list.some(row => row.repos?.some(segment => !segment.repo)))} /> : null}
     <div class={styles.columns}>
-      <BarChart data="uses" title="Uses per skill" rows={skillUseRows(props.body, props.label)}
+      <BarChart data="uses" title="Uses per skill" rows={props.link.skill(skillUseRows(props.body, props.label))}
         axis={countAxis(skillUseRows(props.body, props.label), 'uses') + by()} empty={empty} />
-      <BarChart data="cost" title="List price of the turns each skill ran in" rows={skillCostRows(props.body)}
+      <BarChart data="cost" title="List price of the turns each skill ran in" rows={props.link.skill(skillCostRows(props.body))}
         axis={`${axisText('list price', money(barTop(skillCostRows(props.body))))}${by()} Beside: share of the period's cost.`} empty={empty} />
     </div>
     <section class={styles.group} data-after>
       <h2>What followed a use in the same turn</h2>
       <p class={styles.note} data-after-axis>{axisText("share of the skill's uses with a turn", '100%') + by()} One scale for the three charts.</p>
       <div class={styles.narrow}>
-        <For each={AFTER}>{after => <BarChart data={after} title={AFTER_LABELS[after]} rows={afterRows(props.body, after)} top={1}
+        <For each={AFTER}>{after => <BarChart data={after} title={AFTER_LABELS[after]} rows={props.link.skill(afterRows(props.body, after))} top={1}
           axis="" empty={empty} />}</For>
       </div>
     </section>
     <div class={styles.columns}>
-      <BarChart data="projects" title="Skill uses per project" rows={skillProjectRows(props.body)}
+      <BarChart data="projects" title="Skill uses per project" rows={props.link.project(skillProjectRows(props.body))}
         axis={countAxis(skillProjectRows(props.body), 'uses') + by()} empty="No project with 5 skill uses." />
-      <BarChart data="tools" title="Skill uses per tool" rows={skillToolRows(props.body, props.label)}
+      <BarChart data="tools" title="Skill uses per tool" rows={props.link.product(skillToolRows(props.body, props.label))}
         axis={countAxis(skillToolRows(props.body, props.label), 'uses') + by()} empty="No skill use in this period." />
-      <BarChart data="unused" title="Listed, not used: listing tokens per skill" rows={unusedRows(props.body, props.label)}
+      <BarChart data="unused" title="Listed, not used: listing tokens per skill" rows={props.link.skill(unusedRows(props.body, props.label))}
         axis={axisText('listing tokens, estimated from size', fmtN(barTop(unusedRows(props.body, props.label)))) + by()}
         empty="No listed skill went unused, or no tool reports listings." />
-      <BarChart data="listings" title="Skills listed to the model, per tool" rows={listingRows(props.body, props.label)}
+      <BarChart data="listings" title="Skills listed to the model, per tool" rows={props.link.product(listingRows(props.body, props.label))}
         legend={listingLegend} axis={countAxis(listingRows(props.body, props.label), 'listed skills') + (split() ? ' Not split by repository.' : '')}
         empty="No tool reported a skill listing in this period." />
     </div>
@@ -60,10 +70,12 @@ const skillRow = (item: SkillRow, small: boolean): Row => ({
 export default function Skills(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const open = opens(ctx)
+  const link = links(open)
   return <InsightCard<SkillsBody> {...props} card="skills" tab="flow"
     hero={skillsHero}
     finding={() => skillsMeasured}
-    visual={body => <Visual body={body} label={label} />}
+    visual={body => <Visual body={body} label={label} link={link} />}
     note={'A use is a skill_uses record in the period, any trigger (the agent invoked it, the person ran it, or the tool loaded ' +
       'it). A turn is the person\'s instruction the use belongs to; its tokens and list price are those of the requests of that ' +
       'turn in the period, each turn once per skill. A Copilot CLI turn is often a whole session, so the turns of different skills ' +
@@ -77,7 +89,8 @@ export default function Skills(props: CardProps) {
     table={{
       label: 'Skills',
       rows: body => [...body.skills.map(item => skillRow(item, false)), ...body.small_skills.map(item => skillRow(item, true))],
-      fields: [textField('name', 'Skill'), numberField('uses', 'Uses', fmtNum), numberField('sessions', 'Sessions', fmtNum),
+      fields: [{ ...textField('name', 'Skill'), action: { label: row => `Open skill ${String(row.name)}`, run: row => open.skill(String(row.name))?.run() } },
+        numberField('uses', 'Uses', fmtNum), numberField('sessions', 'Sessions', fmtNum),
         numberField('projects', 'Projects', fmtNum), numberField('turns', 'Turns', fmtNum), numberField('tokens', 'Turn tokens', fmtN),
         numberField('cost', 'Turn cost (list price)', value => money(value)),
         numberField('edit', 'Then edited', value => share(value)), numberField('test', 'Then tested', value => share(value)),

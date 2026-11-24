@@ -440,7 +440,7 @@ export default function Flow(props: TabProps) {
               moveColumn={placeColumn} hideColumn={id => showColumn(id, false)} resize={resize} />
           </Show>
           <Show when={picked()}>{step =>
-            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} openAgent={goToAgent}
+            <StepInspector step={step()} close={() => select(undefined)} evidence={openSource} openAgent={goToAgent} open={detail => props.shell.open(detail)}
               thinking={call => <Show when={read()?.data?.session_id}>{session =>
                 <ThinkingBlocks ctx={props.shell.ctx} session={session()} call={call} />}</Show>} />
           }</Show>

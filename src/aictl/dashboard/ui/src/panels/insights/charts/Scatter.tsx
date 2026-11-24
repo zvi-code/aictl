@@ -2,10 +2,11 @@
 // to the largest value with the end written at the axis. A hollow dot marks a value that is a floor. Every dot has a
 // <title> with its exact figures.
 import { For, Show } from 'solid-js'
+import type { Open } from './Open'
 import styles from './Scatter.module.css'
 
 export type ScatterAxis = { label: string; format: (value: number) => string }
-export type ScatterPoint = { key: string; x: number; y: number; label: string; hover: string; hollow?: boolean }
+export type ScatterPoint = { key: string; x: number; y: number; label: string; hover: string; hollow?: boolean; open?: Open }
 
 const W = 520, H = 300, LEFT = 56, RIGHT = 24, TOP = 16, BOTTOM = 40
 
@@ -34,8 +35,12 @@ export function Scatter(props: { name: string; title: string; x: ScatterAxis; y:
           transform={`rotate(-90 12 ${(TOP + H - BOTTOM) / 2})`}>{props.y.label}</text>
         <For each={props.points}>{point => <g data-point={point.key}>
           <circle class={point.hollow ? styles.hollow : styles.dot} cx={px(point.x)} cy={py(point.y)} r={5}><title>{point.hover}</title></circle>
-          <text class={styles.name} x={px(point.x) + (right(point) ? -9 : 9)} y={py(point.y) + 4}
-            text-anchor={right(point) ? 'end' : 'start'}>{point.label}</text>
+          <Show when={point.open} fallback={<text class={styles.name} x={px(point.x) + (right(point) ? -9 : 9)} y={py(point.y) + 4}
+            text-anchor={right(point) ? 'end' : 'start'}>{point.label}</text>}>{open =>
+            <text class={`${styles.name} ${styles.open}`} x={px(point.x) + (right(point) ? -9 : 9)} y={py(point.y) + 4}
+              text-anchor={right(point) ? 'end' : 'start'} role="button" tabindex="0" aria-label={open().label} data-open
+              onClick={() => open().run()} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open().run() } }}>
+              <title>{open().label}</title>{point.label}</text>}</Show>
         </g>}</For>
       </svg>
       <Show when={props.note}><p class={styles.note}>{props.note}</p></Show>

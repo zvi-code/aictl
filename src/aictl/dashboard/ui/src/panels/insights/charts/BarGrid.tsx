@@ -5,6 +5,7 @@
 // when narrow.
 import { For, Show } from 'solid-js'
 import { Tooltip } from '../../../ui/Tooltip'
+import { Name, type Open } from './Open'
 import styles from './BarGrid.module.css'
 
 /** One part of a cell's bar: `value` sets its share of the bar, `fill` is a CSS colour built from tokens, `hatch` stripes it. */
@@ -21,6 +22,8 @@ export type GridColumn = { id: string; label: string; scale: string; text?: bool
 export type GridRow = {
   key: string; label: string; sub?: string; title?: string; mark?: string; faded?: boolean; tag?: string
   cells: Record<string, GridCell | null | undefined>
+  /** What the row's name opens when clicked. */
+  open?: Open
 }
 
 /** A bar's length on a linear scale from 0 to the largest value of its column, as a share (0 to 1). */
@@ -68,7 +71,7 @@ function Row(props: { row: GridRow; columns: GridColumn[]; foot?: boolean }) {
     <div role="rowheader" class={styles.name} title={props.row.title}>
       <span>
         <Show when={props.row.mark}>{mark => <span class={styles.swatch} style={{ background: mark() }} data-mark />}</Show>
-        {props.row.label}
+        <Name text={props.row.label} open={props.foot ? undefined : props.row.open} />
         <Show when={props.row.tag}><span class={styles.tag} data-tag>{props.row.tag}</span></Show>
       </span>
       <Show when={props.row.sub}><small>{props.row.sub}</small></Show>

@@ -13,6 +13,7 @@ import { evidenceNote, fewText, withEvidence } from './evidence'
 import { sessionBranch, sessionHover, sessionName } from './sessionName'
 import { insightView } from './views'
 import styles from './Insights.module.css'
+import { opens, OpensContext } from './charts/Open'
 
 export type CardProps = { ctx: PanelContext; since: number; until: number }
 
@@ -75,6 +76,7 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   const body = () => data()!
   // What the headline, the visual and its coloured cells may use: groups below the card's minimum are taken out.
   const shown = createMemo(() => data() ? withEvidence(data()!) : undefined)
+  const open = opens(ctx)
   const sessionFields = createMemo((): Field<InsightSession>[] => [{
     id: 'session_id', label: 'Session', read: row => sessionName(row), hint: row => sessionHover(row),
     action: { label: row => `Open session ${sessionName(row)}`, run: row => ctx.openAgent(row.session_id, props.tab) },
@@ -86,7 +88,7 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
       <Show when={props.hero?.(shown()!.body)}>{hero => <p class={styles.hero} data-hero>
         <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
       <p class={styles.finding} data-finding>{props.finding(shown()!.body)}</p>
-      {props.visual(shown()!.body)}
+      <OpensContext value={open}>{props.visual(shown()!.body)}</OpensContext>
       <Show when={shown()!.few.length}>
         <p class={styles.note} data-few>{fewText(shown()!.few, toolLabel)}</p>
       </Show>
