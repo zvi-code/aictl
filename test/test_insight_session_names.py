@@ -121,8 +121,9 @@ def test_one_names_read_per_answer_and_a_failed_read_leaves_the_card_intact():
     failing = _Reader(SUBAGENT_ROWS, fail=True)
     status, body = insights.insight("subagents", PERIOD, 1.0, history=HistoryScope(failing, "n"))
     assert status == 200
-    assert body["sessions"] == [{"session_id": "s1", "node_id": "n", "tool": "t", "requests": 1, "cost_usd": 1.0,
-                                 "main_cost": 0.5, "agents": 1}]
+    # The row as the card gave it: no name fields. (repos is the card's own repository split, not a name.)
+    assert [{k: v for k, v in row.items() if k != "repos"} for row in body["sessions"]] == [
+        {"session_id": "s1", "node_id": "n", "tool": "t", "requests": 1, "cost_usd": 1.0, "main_cost": 0.5, "agents": 1}]
 
 
 def test_every_row_that_carries_a_session_id_is_named_nested_or_not():
