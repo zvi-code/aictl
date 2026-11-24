@@ -2,13 +2,16 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', since:real, until:real,
     restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), page_size:long, row_limit:long
 );
-let named_sessions = sessions
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let named_sessions = sessions_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by node_id, ['project'], session_id
     | where not(coalesce(column_ifexists('_deleted', false), false)) and isnotempty(session_id)
     | summarize arg_max(_v, tool) by node_id, session_id
     | project node_id, session_id, session_tool=tool;
-let calls = materialize(requests
+let calls = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by node_id, ['project'], fact_key

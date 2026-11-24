@@ -1,11 +1,14 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let system_snapshots_secs = system_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s, settings_captured_at = (settings_captured_at - datetime(1970-01-01)) / 1s;
 union
-    (system_snapshots
+    (system_snapshots_secs
         | where all_nodes or node_id == requested_node
         | summarize arg_max(_v, *) by ['project'], node_id, ts
         | where not(coalesce(column_ifexists('_deleted', false), false))
         | summarize captured_at=max(ts) by node_id),
-    (sessions
+    (sessions_secs
         | where all_nodes or node_id == requested_node
         | summarize arg_max(_v, *) by ['project'], node_id, session_id
         | where not(coalesce(column_ifexists('_deleted', false), false))

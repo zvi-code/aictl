@@ -12,6 +12,9 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // A skill is used when skill_uses holds a call of it by the same tool in the period, any trigger (the agent
 // invoked it, the user ran it, or the tool loaded its body into the context).
 // A file is the last segment of the item's path; an instruction block with no file is 'custom instruction (no file)'.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
+let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
         name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
     let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'
@@ -23,7 +26,7 @@ let context_items_expanded = (items:(['project']:string,node_id:string,session_i
             | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
                 | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
                 | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
-                    item_tokens=tokens,item_estimated=estimated,item_removed=removed)
+                    item_tokens=tokens,item_estimated=tolong(estimated),item_removed=tolong(removed))
                 on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
             | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
                 removed=item_removed
@@ -31,7 +34,7 @@ let context_items_expanded = (items:(['project']:string,node_id:string,session_i
 };
 // entry keeps the stored row's name: with it, a plain row reduces by the table's key and the items of a list by the
 // list row they came from, so two lists that hold the same item are not reduced against each other by _v.
-let items = materialize(session_context_items | where isempty(agent_id) or agent_id == session_id | extend entry=name
+let items = materialize(session_context_items_secs | where isempty(agent_id) or agent_id == session_id | extend entry=name
     | invoke context_items_expanded()
     | where (all_nodes or node_id == requested_node) and not(['kind'] in ('report', 'report_category', 'report_item'))
     | extend deleted=column_ifexists('_deleted', false)
@@ -61,7 +64,7 @@ let per_session = materialize(fixed
     | where started >= since and started < until);
 let in_period = fixed
     | join kind=inner (per_session | project node_id, session_id) on node_id, session_id;
-let used = skill_uses
+let used = skill_uses_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, name, trigger

@@ -7,6 +7,16 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', since:re
     row_limit:long);
 // One page of the session finder, its total and its facet counts, in one query.
 // A session is one logical id per node: the tool's UUID when the id carries one.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_artifacts_secs = session_artifacts | extend mtime = (mtime - datetime(1970-01-01)) / 1s;
+let session_commits_secs = session_commits | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_sources_secs = session_sources | extend mtime = (mtime - datetime(1970-01-01)) / 1s, indexed_at = (indexed_at - datetime(1970-01-01)) / 1s;
+let session_usage_secs = session_usage | extend started_at = (started_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s, updated_at = (updated_at - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let uuid_of = (s:string) { coalesce(extract(@"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", 0, s), s) };
 // aictl.data.model_pricing.normalize_model_id; model_prices holds USD per 1M tokens by that id.
 let model_key = (m:string) {
@@ -22,7 +32,7 @@ let canon = (m:string) {
     iff(a startswith "claude-", replace_string(a, ".", "-"), m)
 };
 let wanted_model = canon(requested_model);
-let stored = materialize(sessions
+let stored = materialize(sessions_secs
     | where (all_nodes or node_id == requested_node) and isnotempty(session_id)
     | summarize arg_max(_v, *) by ['project'],node_id,session_id
     | where not(column_ifexists('_deleted',false))
@@ -36,7 +46,7 @@ let candidates = materialize(stored
     | where not(restrict_tools) or tool in (requested_tools)
     | where isempty(requested_project) or project_path contains requested_project);
 // The import state of each session: one row per session file the transcript reader found.
-let sources = materialize(session_sources
+let sources = materialize(session_sources_secs
     | where (all_nodes or node_id == requested_node) and isnotempty(session_id)
     | summarize arg_max(_v, *) by ['project'],node_id,source_file
     | extend logical_id=uuid_of(session_id)
@@ -53,7 +63,7 @@ let unread = materialize(sources
 let fact_keys = union (candidates | project node_id,session_id), (unread | project node_id,session_id=src_session),
     (unread | project node_id,session_id=logical_id)
     | distinct node_id,session_id;
-let req = materialize(requests
+let req = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | join kind=leftsemi fact_keys on node_id,session_id
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
@@ -78,14 +88,14 @@ let req = materialize(requests
         r_models=make_set_if(model, isnotempty(model), 32), r_canon=make_set_if(canon(model), isnotempty(model), 32),
         r_list=make_bag_if(bag_pack(model, pack_array(li, lo, lcr, lcw)), isnotempty(model) and li + lo + lcr + lcw > 0)
         by node_id,session_id);
-let calls = materialize(tool_invocations
+let calls = materialize(tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | join kind=leftsemi fact_keys on node_id,session_id
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'],node_id,key
     | where not(column_ifexists('_deleted',false))
     | summarize t_calls=count(), t_errors=countif(is_error != 0), t_last=max(ts) by node_id,session_id);
-let usage = materialize(session_usage
+let usage = materialize(session_usage_secs
     | where all_nodes or node_id == requested_node
     | join kind=leftsemi fact_keys on node_id,session_id
     | summarize arg_max(_v, *) by ['project'],node_id,session_id
@@ -95,7 +105,7 @@ let usage = materialize(session_usage
         u_priced=countif(isnotnull(cost_usd)), u_cost=sum(cost_usd), u_tools=sum(tool_call_count),
         u_last=max(last_activity_at), u_model=take_anyif(model, isnotempty(model))
         by node_id,session_id);
-let prompt_rows = materialize(session_prompts
+let prompt_rows = materialize(session_prompts_secs
     | where all_nodes or node_id == requested_node
     | join kind=leftsemi fact_keys on node_id,session_id
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
@@ -116,18 +126,18 @@ let hits = union
         | project node_id,session_id,rank=1,match_text=project_path,stamp=0.0),
     (prompt_rows | where isnotempty(search_text) and text contains search_text
         | project node_id,session_id,rank=2,match_text=text,stamp=ts),
-    (session_artifacts | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
+    (session_artifacts_secs | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
         | join kind=leftsemi fact_keys on node_id,session_id
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,path
         | where not(column_ifexists('_deleted',false)) and path contains search_text
         | project node_id,session_id,rank=3,match_text=path,stamp=-mtime),
-    (file_write_events | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
+    (file_write_events_secs | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
         | join kind=leftsemi fact_keys on node_id,session_id
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and path contains search_text
         | project node_id,session_id,rank=4,match_text=path,stamp=-ts),
-    (session_commits | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
+    (session_commits_secs | where isnotempty(search_text) and (all_nodes or node_id == requested_node)
         | join kind=leftsemi fact_keys on node_id,session_id
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,sha
         | where not(column_ifexists('_deleted',false)) and subject contains search_text
@@ -241,7 +251,7 @@ let titles = prompt_rows | where isempty(agent_id) and isnotempty(text)
     | order by ts asc,key asc
     | serialize position=row_number()
     | summarize arg_min(position, ts,text) by node_id,session_id;
-let commit_counts = session_commits
+let commit_counts = session_commits_secs
     | where all_nodes or node_id == requested_node
     | join kind=leftsemi page_ids on node_id,session_id
     | summarize arg_max(_v, *) by ['project'],node_id,session_id,sha

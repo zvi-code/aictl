@@ -1,5 +1,7 @@
 declare query_parameters(since:real = 0.0, until:real = 0.0, null_timestamp:bool = false, row_limit:long);
-metrics
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let metrics_secs = metrics | extend ts = (ts - datetime(1970-01-01)) / 1s;
+metrics_secs
 | where (null_timestamp and isnull(ts)) or (not(null_timestamp) and ts >= since and ts < until)
 | extend deleted=column_ifexists('_deleted', false)
 | summarize arg_max(_v, deleted) by node_id, ['project'], metric, ts, seq

@@ -1,6 +1,8 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20,
                          requested_tool:string = '', row_limit:long);
-process_snapshots
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let process_snapshots_secs = process_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s;
+process_snapshots_secs
 | where (all_nodes or node_id == requested_node) and ts between (since .. until)
 | summarize arg_max(_v, *) by node_id, ['project'], ts, pid
 | where not(coalesce(column_ifexists('_deleted', false), false))

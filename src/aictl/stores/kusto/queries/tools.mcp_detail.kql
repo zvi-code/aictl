@@ -7,12 +7,14 @@ declare query_parameters(
 // The calls of one group of tool names (one MCP server) in the window:
 // 'bucket' rows per time step, the 200 'session' rows with the most calls,
 // and the 500 newest 'failure' rows with their retained result text.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let wanted = (t:real, n:string, s:string, client:string) {
     t between (since .. until) and isnotempty(s)
     and (not(restrict_sessions) or strcat(strlen(n), ':', n, s) in (session_keys))
     and (not(restrict_tools) or client in (requested_tools))
 };
-let versions = tool_invocations
+let versions = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | where tool_name in (requested_tool_names)
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key);

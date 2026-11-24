@@ -1,6 +1,12 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real = 1.0e20,
                          counts_only:bool = false, row_limit:long);
-let scoped_events = () { events
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let scoped_events = () { events_secs
     | where (all_nodes or node_id == requested_node) and ts between (since .. until)
     | extend event_key=iff(isempty(source_key), strcat('legacy:', tostring(seq)), source_key),
              deleted=column_ifexists('_deleted', false),
@@ -20,16 +26,16 @@ let hook_events = materialize(scoped_events()
         by node_id, ['project'], event_key
     | where not(coalesce(deleted, false)) and relevant and not(verified)
     | project node_id, ['project'], event_key, ts, tool, kind, name, skill, agent_id, agent_type);
-let session_tools = sessions
+let session_tools = sessions_secs
     | where not(counts_only) and (all_nodes or node_id == requested_node)
     | extend deleted=column_ifexists('_deleted', false)
     | summarize arg_max(_v, deleted, tool) by node_id, ['project'], session_id
     | where not(coalesce(deleted, false))
     | project node_id, ['project'], session_id, session_tool=tool;
 let stored_tools =
-    union (tool_invocations | project category='call', entry=tool_name, node_id, ['project'], dedup_key,
+    union (tool_invocations_secs | project category='call', entry=tool_name, node_id, ['project'], dedup_key,
                                       id, _v, deleted=column_ifexists('_deleted', false), ts, session_id, tool),
-          (skill_uses | project category='skill', entry=name, node_id, ['project'], dedup_key,
+          (skill_uses_secs | project category='skill', entry=name, node_id, ['project'], dedup_key,
                                 id, _v, deleted=column_ifexists('_deleted', false), ts, session_id, tool)
     | where not(counts_only) and (all_nodes or node_id == requested_node)
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
@@ -52,7 +58,7 @@ union
     (subagents | summarize count=count() by tool, kind | extend row_type='subagent'),
     (subagents | order by ts desc, node_id asc, ['project'] asc, event_key asc | take 10
         | project row_type='recent', ts, tool, kind, agent_id, agent_type, event_key),
-    (agents | where not(counts_only) and (all_nodes or node_id == requested_node)
+    (agents_secs | where not(counts_only) and (all_nodes or node_id == requested_node)
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted, is_sidechain, started_at, ended_at, tool) by node_id, ['project'], session_id, agent_id
         | where not(coalesce(deleted, false)) and is_sidechain == 1

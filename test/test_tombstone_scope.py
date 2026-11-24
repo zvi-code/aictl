@@ -321,7 +321,9 @@ def test_a_tombstone_keeps_the_columns_of_the_row_it_deletes():
     writer.flush()
     stored, tombstone = sink.lines["requests"]
     assert tombstone["_deleted"] and not stored["_deleted"]
-    assert {k: tombstone[k] for k in row} == row and tombstone["id"] == stored["id"]
+    # The writer stores the time as a UTC datetime; the tombstone carries the same stored value.
+    assert {k: tombstone[k] for k in row} == {**row, "ts": "1970-01-01T00:00:05.000000Z"} == {k: stored[k] for k in row}
+    assert tombstone["id"] == stored["id"]
 
 
 SESSION = "tomb-session"
@@ -367,7 +369,7 @@ def test_a_telemetry_call_paired_with_its_transcript_row_is_counted_once(kusto_t
     assert sorted((r["source"], r["_deleted"]) for r in rows) == [
         ("otel", False), ("otel", True), ("transcript", False)]
     tombstone = next(r for r in rows if r["_deleted"])
-    assert tombstone["session_id"] == SESSION and tombstone["ts"] == 1000.0
+    assert tombstone["session_id"] == SESSION and tombstone["ts"] == "1970-01-01T00:16:40.000000Z"
     seeded = Facts()
     for row in rows:
         seeded.insert("requests", **row)

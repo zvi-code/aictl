@@ -20,7 +20,7 @@ from aictl.session_facts import SessionFacts
 from aictl.state_file import StateFile, TextWatermark
 from aictl.stores.kusto import maintenance
 from aictl.stores.kusto.recorded import RecordedKustoClient
-from aictl.stores.kusto.writer import KustoWriter
+from aictl.stores.kusto.writer import KustoWriter, epoch_datetime
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def test_catalog_emits_only_changes_and_quality_counters_survive_restart(history
     writer.flush()
     tables = dict(client.ingestions)
     assert len(tables["datapoint_catalog"]) == count + 1
-    assert [(r["count"], r["last_ok_at"]) for r in tables["data_quality_status"]] == [(1, now), (2, now)]
+    assert [(r["count"], r["last_ok_at"]) for r in tables["data_quality_status"]] == [(1, epoch_datetime(now)), (2, epoch_datetime(now))]
 
 
 def test_external_message_cursors_and_local_attribution(history, tmp_path, monkeypatch):

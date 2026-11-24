@@ -17,6 +17,7 @@ let crossed = current_rows | summarize copies=count() by dedup_key | where copie
 union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
 | where not(coalesce(_deleted, false))
+| extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error)
 | where wanted(ts, node_id, session_id, model, duration_ms, ttft_ms)
 | extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
 | summarize durations=make_list_if(duration_ms, duration_ms > 0, 20000), firsts=make_list_if(ttft_ms, ttft_ms > 0, 20000),

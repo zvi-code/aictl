@@ -1,5 +1,7 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real, row_limit:long);
-file_write_events
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+file_write_events_secs
 | where all_nodes or node_id == requested_node
 | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
 | summarize arg_max(_v, *) by ['project'],node_id,key

@@ -8,13 +8,16 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // can stand where the program should be. Those rows are one group whose program is not identified; waiting
 // commands are a group of their own; a command call with no command_name recorded is a third group.
 // Command and edit tools are named by the board's rules (board_projection._COMMAND_TOOL_RE, is_server_tool).
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let Day = 86400000.0;
 let WaitingWords = dynamic(['sleep', 'until', 'while', 'wait']);
 let ShellWords = dynamic(['for', 'foreach', 'if', 'then', 'else', 'elif', 'fi', 'case', 'esac', 'select', 'function',
     'do', 'done', 'export', 'set', 'unset', 'source', '.', 'eval', 'cd', 'pushd', 'popd', 'chdir', 'printf', 'echo',
     'local', 'declare', 'typeset', 'readonly', 'read', 'trap', 'exec', 'true', 'false', 'test', 'alias', 'shift',
     'return', 'exit', 'sudo', 'env', 'time', 'nohup', 'nice', 'command', 'builtin', 'end', 'set-location', 'sl']);
-let reqs = materialize(requests
+let reqs = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, duration_ms, thinking_ms
@@ -23,7 +26,7 @@ let reqs = materialize(requests
     | extend overlong=coalesce(duration_ms > Day, false)
     | project node_id, session_id, ts, tool, overlong, raw_ms=duration_ms, duration_ms=iff(overlong, real(null), duration_ms),
               thinking_ms);
-let calls = materialize(tool_invocations
+let calls = materialize(tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, tool_name, target_kind, command_name,

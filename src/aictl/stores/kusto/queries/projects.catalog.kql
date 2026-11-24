@@ -6,7 +6,11 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_
 //   folder, as git names it (a linked worktree names its main repository; ingesters/call_facts.py);
 // - worktree: Claude Code records the worktree an agent of a session worked in; the worktree belongs to
 //   the repository the session ran in.
-let s = materialize(sessions
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let session_commits_secs = session_commits | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let s = materialize(sessions_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'], node_id, session_id
     | where not(coalesce(_deleted, false)) and isnotempty(['project'])
@@ -15,7 +19,7 @@ let s = materialize(sessions
 let folders = s
     | summarize sessions=count(), last_ts=max(active_ts), nodes=dcount(node_id) by project_path
     | extend last_ts=iff(last_ts > 0, last_ts, real(null)), row_type='project', root='', evidence='';
-let commit_roots = session_commits
+let commit_roots = session_commits_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
     | where not(coalesce(column_ifexists('_deleted', false), false)) and isnotempty(['project'])
@@ -25,7 +29,7 @@ let commit_roots = session_commits
     | where root != project_path
     | summarize sessions=dcount(strcat(node_id, '/', session_id)) by project_path, root
     | extend row_type='root', evidence='commit';
-let worktree_roots = agents
+let worktree_roots = agents_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)

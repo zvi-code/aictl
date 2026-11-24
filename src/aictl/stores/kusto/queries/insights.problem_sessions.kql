@@ -11,6 +11,12 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // failure flag, turns, a todo count, a hook count. A tool that cannot is left out of that signal's share.
 // The sessions of a tool: sessions with a request or a tool call in the period; cost is the list price of their
 // requests in the period. A project is the last folder of the session's project path.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let context_events_secs = context_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_outcomes_secs = session_outcomes | extend ts = (ts - datetime(1970-01-01)) / 1s, task_complete = tolong(task_complete);
+let session_turns_secs = session_turns | extend ts = (ts - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, ended_with_api_error = tolong(ended_with_api_error);
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
     // A run: consecutive calls of one session and agent, in time order, that all failed. Each call gets its run's id.
     calls
@@ -28,7 +34,7 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
 };
 let AgentTools = dynamic(['Agent', 'Task', 'task', 'runSubagent', 'run_subagent']);
 let CollectTools = dynamic(['read_agent', 'TaskOutput', 'SubagentHandback']);
-let all_calls = materialize(tool_invocations
+let all_calls = materialize(tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, target_kind, is_error,
@@ -39,26 +45,26 @@ let calls = materialize(all_calls
     | where ts >= since and ts < until
     | project node_id, session_id, agent_id, ts, fact_key, tool, tool_name, target_kind, failed=coalesce(is_error, 0) == 1,
               project_path);
-let reqs = requests
+let reqs = requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, cost_usd, project_path
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
     | project node_id, session_id, ts, tool, cost_usd, project_path;
-let compactions = materialize(context_events
+let compactions = materialize(context_events_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, ['kind']
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ['kind'] == 'compaction');
-let turns = materialize(session_turns
+let turns = materialize(session_turns_secs
     | where all_nodes or node_id == requested_node
     | extend deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, session_id, prompt_id, _v, deleted, ts, tool, ended_with_api_error
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, prompt_id
     | where not(coalesce(deleted, false)));
-let outcomes = materialize(session_outcomes
+let outcomes = materialize(session_outcomes_secs
     | where all_nodes or node_id == requested_node
     | extend deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, session_id, _v, deleted, ts, tool, todos_total, todos_completed, hook_failures

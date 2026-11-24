@@ -1,5 +1,7 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20, row_limit:long);
-tool_stats
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_stats_secs = tool_stats | extend ts = (ts - datetime(1970-01-01)) / 1s;
+tool_stats_secs
 | where (all_nodes or node_id == requested_node) and ts between (since .. until)
 | summarize arg_max(_v, *) by ['project'],node_id,ts,tool
 | where not(column_ifexists('_deleted',false))

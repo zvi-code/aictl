@@ -18,6 +18,7 @@ union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed)
         | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
 | where not(coalesce(_deleted, false))
+| extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error)
 | join kind=inner bounds on session_id
 | where (isempty(span_node) or node_id == span_node) and (isempty(span_agent) or agent_id == span_agent)
     and ts >= since_ts and ts <= until_ts

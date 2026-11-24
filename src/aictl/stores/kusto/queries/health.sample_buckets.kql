@@ -1,5 +1,7 @@
 declare query_parameters(row_limit:long);
-metrics
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let metrics_secs = metrics | extend ts = (ts - datetime(1970-01-01)) / 1s;
+metrics_secs
 | summarize by start=bin(ts, 300.0)
 | order by start asc nulls first
 | take row_limit

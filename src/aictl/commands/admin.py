@@ -355,7 +355,7 @@ def _print_nodes(state, settings, *, details: bool, counts=None, echo=click.echo
              + (f", {sum(counts[n][0] for n in state.renamed):,} rows, sealed size "
                 f"{_sealed(sum(int(state.details.get(n, {}).get('TotalExtentSize') or 0) for n in state.renamed), sum(counts[n][0] for n in state.renamed))}"
                 if counted else "")
-             + ". Remove them with: aictl db migrate --drop-legacy")
+             + ". A reset of the whole database drops them: aictl db reset --all-nodes")
 
 
 @db.command()
@@ -406,58 +406,6 @@ def layout(ctx, show_nodes, kusto_cluster, kusto_database):
     click.echo("\nChangelog:")
     for line in L.changelog_lines():
         click.echo(line)
-
-
-@db.command()
-@click.option("--dry-run", is_flag=True, help="Print each step's commands and the rows they change; change nothing")
-@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
-@click.option("--take-over", is_flag=True, help="Continue a node_tables migration another node started and stopped")
-@click.option("--slice-days", type=click.IntRange(min=1, max=31), default=1, show_default=True,
-              help="Copy rows in slices of this many days of ingestion time (each keeps its creation time)")
-@click.option("--drop-legacy", is_flag=True, help="Drop the legacy__ tables the finished migration kept")
-@_store_options
-@click.pass_context
-def migrate(ctx, dry_run, yes, take_over, slice_days, drop_legacy, kusto_cluster, kusto_database):
-    """Upgrade the stored data to this aictl's layout and keep the history. Stop all writers first."""
-    from ..stores.kusto import layout as L
-    from ..stores.kusto.maintenance import drop_legacy as drop
-    from ..stores.kusto.maintenance import legacy_tables, migrate_store
-
-    settings = _target_settings(ctx, kusto_cluster, kusto_database)
-    if drop_legacy:
-        try:
-            tables = legacy_tables(settings)
-        except StoreError as exc:
-            raise click.ClickException(str(exc)) from exc
-        if not tables:
-            click.echo("No legacy tables to drop.")
-            return
-        click.echo(f"These shared tables of layout 1 were kept by the migration in {settings.database} on "
-                   f"{settings.cluster}; each node's rows are in its own tables:")
-        for name, rows, size in tables:
-            click.echo(f"  {name:48s} {rows:>14,} rows {_sealed(size, rows):>15}")
-        if dry_run:
-            click.echo("Dry run: nothing was dropped.")
-            return
-        if not yes and not click.confirm("Drop them? This cannot be undone", default=False):
-            raise click.exceptions.Exit(1)
-        try:
-            click.echo(drop(settings, [name for name, _, _ in tables]))
-        except StoreError as exc:
-            raise click.ClickException(str(exc)) from exc
-        click.echo(f"Dropped {len(tables)} legacy tables.")
-        return
-    if not dry_run and not yes:
-        click.confirm(f"Migrate the stored data in {settings.database} on {settings.cluster} to layout "
-                      f"{L.LAYOUT_VERSION}? Stop the other aictl writers of this database first.", abort=True)
-    try:
-        verdict, _ = migrate_store(settings, dry_run=dry_run, echo=click.echo, take_over=take_over,
-                                   slice_days=slice_days)
-    except (StoreError, RuntimeError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if verdict == L.MIGRATE:
-        click.echo("Dry run: nothing was changed." if dry_run else
-                   f"Migrated {settings.database} on {settings.cluster} to layout {L.LAYOUT_VERSION}.")
 
 
 REREAD_TOOLS = ("copilot-cli", "copilot-desktop", "copilot-vscode", "claude-code", "codex-cli")
@@ -640,17 +588,11 @@ def reset(ctx, yes, node, all_nodes, kusto_cluster, kusto_database):
     Prefer `aictl db migrate` when it applies. With --all-nodes, every node's data. Stop the
     writers of what is reset first.
     """
-    from ..stores.kusto import layout as L
-    from ..stores.kusto.client import KustoClientFactory
-    from ..stores.kusto.schema import check_layout
 
     if node and all_nodes:
         raise click.UsageError("Give --node or --all-nodes, not both.")
     settings = _target_settings(ctx, kusto_cluster, kusto_database)
     try:
-        if check_layout(KustoClientFactory.client(settings), settings.database, settings.node_id).verdict == L.MIGRATE:
-            click.echo("A migration upgrades this data and keeps the history: aictl db migrate --dry-run, then "
-                       "aictl db migrate. A reset deletes it.")
         if not confirm_and_reset(settings, yes=yes, node=node, all_nodes=all_nodes):
             raise click.exceptions.Exit(1)
     except StoreError as exc:

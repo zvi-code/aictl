@@ -5,7 +5,10 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // board's rule (board_projection._EDIT_TOOL_RE and not a server tool, projection_utils._MCP_TOOL_RE).
 // A session counts in the period its first main-agent request falls in; its later requests count with it.
 // A project is the session's project_path; projects with fewer than 3 sessions that edit are left out.
-let reqs = requests
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let reqs = requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, project_path, cost_usd,
@@ -15,7 +18,7 @@ let reqs = requests
     // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
     | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(output_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
     | project node_id, session_id, ts, tool, project_path, cost_usd;
-let edits = tool_invocations
+let edits = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool_name

@@ -1,5 +1,12 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
     since:real=0.0, until:real=1.0e20, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let context_events_secs = context_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
+let session_loaded_files_secs = session_loaded_files | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let cursor_row = parse_json(after_row);
 let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
         name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
@@ -12,42 +19,42 @@ let context_items_expanded = (items:(['project']:string,node_id:string,session_i
             | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
                 | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
                 | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
-                    item_tokens=tokens,item_estimated=estimated,item_removed=removed)
+                    item_tokens=tokens,item_estimated=tolong(estimated),item_removed=tolong(removed))
                 on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
             | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
                 removed=item_removed
             | project-away list_node,list_key,list_ref,item_*)
 };
 union
-    (requests | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (requests_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until and is_error == 0
         | extend size=input_tokens+cache_read_tokens+cache_creation_tokens
         | where size != 0
         | project row_type='call',['project'],node_id,ts,key,values=pack_array(agent_id,size,tool_tokens,max_prompt_tokens,request_bytes,available_tools,ts,tool,model,output_tokens)),
-    (context_events | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (context_events_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until and kind in ('compaction','split')
         | project row_type=kind,['project'],node_id,ts,key,values=iff(kind=='split',pack_array(ts,current_tokens,system_tokens,conversation_tokens,tool_tokens),
             pack_array(agent_id,ts,tool,trigger,before_tokens,after_tokens,duration_ms))),
-    (session_context_items | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_context_items_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | invoke context_items_expanded()
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
         | project row_type='item',['project'],node_id,ts,key=strcat(agent_id,':',kind,':',name),values=pack_array(agent_id,kind,name,path,tokens,removed,ts,chars)),
-    (tool_invocations | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (tool_invocations_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
         | project row_type='tool',['project'],node_id,ts,key,values=pack_array(agent_id,ts,tool_name,output_bytes)),
-    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_prompts_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
         | project row_type='prompt',['project'],node_id,ts,key,values=pack_array(agent_id,ts,string_size(text))),
-    (session_loaded_files | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_loaded_files_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | summarize arg_max(_v, *) by ['project'],node_id,session_id,path,how
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
         | project row_type='loaded',['project'],node_id,ts,key=strcat(path,':',how),values=pack_array(path,how,detail,ts,agent_id))

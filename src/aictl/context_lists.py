@@ -99,6 +99,8 @@ def group(values: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
 # (``| invoke context_items_expanded()``): plain item rows as they are, and each pointer
 # row (its current version) replaced by the items of its list, which take the pointer's
 # session, agent, kind, project, tool, ts and _v. Reduce versions by the item key after it.
+# The items come as the views read them (session_context_items_secs: ts in epoch seconds, the
+# flags estimated and removed as 0/1); the items of a list are read the same way.
 EXPANSION_KQL = """let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
         name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
     let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'
@@ -110,7 +112,7 @@ EXPANSION_KQL = """let context_items_expanded = (items:(['project']:string,node_
             | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
                 | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
                 | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
-                    item_tokens=tokens,item_estimated=estimated,item_removed=removed)
+                    item_tokens=tokens,item_estimated=tolong(estimated),item_removed=tolong(removed))
                 on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
             | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
                 removed=item_removed

@@ -3,9 +3,11 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // The daemon writes a tool's sample when it changes and rewrites an unchanged one every 300 s
 // (SAMPLE_HEARTBEAT_S), so a sample holds until the tool's next one, at most hold seconds:
 // longer means the daemon stopped, and nothing is drawn.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let process_snapshots_secs = process_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let hold = 360.0;
 let width = (until - since) / grid;
-let samples = process_snapshots
+let samples = process_snapshots_secs
 | where (all_nodes or node_id == requested_node) and ts between ((since - hold) .. until)
 | summarize arg_max(_v, *) by node_id, ['project'], ts, pid
 | where not(coalesce(column_ifexists('_deleted', false), false)) and (not(restrict_tools) or tool in (requested_tools))

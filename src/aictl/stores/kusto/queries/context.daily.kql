@@ -1,10 +1,12 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real,
     calendar_starts:dynamic, calendar_days:dynamic, requested_tools:dynamic=dynamic([]),
     restrict_tools:bool=false, row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let calendar = print intervals=zip(calendar_days,array_slice(calendar_starts,0,-2),array_slice(calendar_starts,1,-1))
     | mv-expand interval=intervals
     | project day=tostring(interval[0]), day_start=toreal(interval[1]), day_end=toreal(interval[2]), join_key=1;
-requests
+requests_secs
 | where all_nodes or node_id == requested_node
 | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
 | summarize arg_max(_v, *) by ['project'],node_id,key

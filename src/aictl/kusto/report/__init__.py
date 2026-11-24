@@ -154,8 +154,10 @@ def _source(table: str, where: str, nodes: tuple[str, ...]) -> str:
     # before reducing versions; a tombstone on one node cannot hide another's row.
     ids = tuple("" if name.lower() == "legacy" else name.lower() for name in nodes)
     by_node = f" | where node_id in ({_strings(ids)})" if ids else ""
+    # Stored times are UTC datetimes and flags bools; the report queries read epoch seconds and 0/1.
     return (
-        f'{table} | extend node_id = column_ifexists("node_id", ""){by_node}'
+        f'{table} | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error)'
+        f' | extend node_id = column_ifexists("node_id", ""){by_node}'
         f" | summarize arg_max(_v, *) by node_id, id | where _deleted == false and {where}"
         " | extend report_session = tostring(pack_array(node_id, session_id)),"
         " report_stream = tostring(pack_array(node_id, session_id, agent_id))"

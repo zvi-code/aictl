@@ -1,6 +1,22 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let data_quality_status_secs = data_quality_status | extend updated_at = (updated_at - datetime(1970-01-01)) / 1s, last_ok_at = (last_ok_at - datetime(1970-01-01)) / 1s;
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let file_history_secs = file_history | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let files_secs = files | extend mtime = (mtime - datetime(1970-01-01)) / 1s, first_seen = (first_seen - datetime(1970-01-01)) / 1s, last_read = (last_read - datetime(1970-01-01)) / 1s, last_changed = (last_changed - datetime(1970-01-01)) / 1s;
+let path_defs_secs = path_defs | extend hidden = tolong(hidden);
+let process_defs_secs = process_defs | extend is_daemon = tolong(is_daemon), auto_start = tolong(auto_start), known_leak = tolong(known_leak);
+let process_snapshots_secs = process_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let processes_secs = processes | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let system_snapshots_secs = system_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s, settings_captured_at = (settings_captured_at - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let tool_stats_secs = tool_stats | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let event_count = (shard:long) {
-    events | where all_nodes or node_id == requested_node
+    events_secs | where all_nodes or node_id == requested_node
     | extend event_key=iff(isempty(source_key), strcat('legacy:', tostring(seq)), source_key)
     | where hash(event_key, 4) == shard
     | extend deleted=column_ifexists('_deleted', false)
@@ -9,12 +25,12 @@ let event_count = (shard:long) {
     | count
 };
 union hint.concurrency=1
-    (system_snapshots | where all_nodes or node_id == requested_node
+    (system_snapshots_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], ts
         | where not(coalesce(deleted, false))
         | summarize rows=count(), earliest_ts=min(ts), latest_ts=max(ts) | extend table='system_snapshots'),
-    (process_snapshots | where all_nodes or node_id == requested_node
+    (process_snapshots_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], ts, pid
         | where not(coalesce(deleted, false))
@@ -22,60 +38,60 @@ union hint.concurrency=1
     // Each event key hashes to one shard, so all of its versions are reduced together.
     (union hint.concurrency=1 (event_count(0)), (event_count(1)), (event_count(2)), (event_count(3))
         | summarize rows=sum(Count) | extend table='events'),
-    (files | where all_nodes or node_id == requested_node
+    (files_secs | where all_nodes or node_id == requested_node
         | summarize arg_max(_v, _deleted, size_bytes, tokens) by node_id, ['project'], path
         | where not(coalesce(_deleted, false))
         | summarize rows=count(), files_total_bytes=sum(size_bytes), files_total_tokens=sum(tokens) | extend table='files'),
-    (file_history | where all_nodes or node_id == requested_node
+    (file_history_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], path, ts
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='file_history'),
-    (file_write_events | where all_nodes or node_id == requested_node
+    (file_write_events_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
         | summarize arg_max(_v, _deleted) by node_id, ['project'], fact_key
         | where not(coalesce(_deleted, false))
         | summarize rows=count() | extend table='file_write_events'),
-    (data_quality_status | where all_nodes or node_id == requested_node
+    (data_quality_status_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], component, source
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='data_quality_status'),
-    (path_defs | where all_nodes or node_id == requested_node
+    (path_defs_secs | where all_nodes or node_id == requested_node
         | summarize arg_max(_v, _deleted) by node_id, ['project'], path_template, ai_tool
         | where not(coalesce(_deleted, false))
         | summarize rows=count() | extend table='path_defs'),
-    (process_defs | where all_nodes or node_id == requested_node
+    (process_defs_secs | where all_nodes or node_id == requested_node
         | summarize arg_max(_v, _deleted) by node_id, ['project'], process_name, ai_tool
         | where not(coalesce(_deleted, false))
         | summarize rows=count() | extend table='process_defs'),
-    (sessions | where all_nodes or node_id == requested_node
+    (sessions_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], session_id
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='sessions'),
-    (requests | where all_nodes or node_id == requested_node
+    (requests_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], fact_key
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='requests'),
-    (tool_invocations | where all_nodes or node_id == requested_node
+    (tool_invocations_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
         | summarize arg_max(_v, _deleted) by node_id, ['project'], fact_key
         | where not(coalesce(_deleted, false))
         | summarize rows=count() | extend table='tool_invocations'),
-    (processes | where all_nodes or node_id == requested_node
+    (processes_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], source_key
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='processes'),
-    (agents | where all_nodes or node_id == requested_node
+    (agents_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], session_id, agent_id
         | where not(coalesce(deleted, false))
         | summarize rows=count() | extend table='agents'),
-    (tool_stats | where all_nodes or node_id == requested_node
+    (tool_stats_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], ts, tool
         | where not(coalesce(deleted, false))

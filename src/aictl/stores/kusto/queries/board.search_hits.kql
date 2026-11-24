@@ -2,10 +2,14 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', since:real, until:real, session_keys:dynamic,
     search_text:string, extended:bool = false, row_limit:long
 );
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let facts = materialize(
-    union (session_prompts | extend fact_table='session_prompts'),
-          (tool_invocations | extend fact_table='tool_invocations'),
-          (file_write_events | extend fact_table='file_write_events')
+    union (session_prompts_secs | extend fact_table='session_prompts'),
+          (tool_invocations_secs | extend fact_table='tool_invocations'),
+          (file_write_events_secs | extend fact_table='file_write_events')
     | where all_nodes or node_id == requested_node
     | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)

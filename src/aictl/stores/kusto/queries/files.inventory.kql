@@ -1,9 +1,11 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
     requested_tool:string='', requested_path:string='', requested_paths:dynamic=dynamic([]),
     inventory_mode:string='all', project_path_key:string='', fold_project:bool=false, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let files_secs = files | extend mtime = (mtime - datetime(1970-01-01)) / 1s, first_seen = (first_seen - datetime(1970-01-01)) / 1s, last_read = (last_read - datetime(1970-01-01)) / 1s, last_changed = (last_changed - datetime(1970-01-01)) / 1s;
 let folded = (p:string) { iff(fold_project, trim_end(@'/+', replace_string(tolower(p), '\\', '/')), trim_end(@'/+', p)) };
 let cursor_row = parse_json(after_row);
-files
+files_secs
 | where all_nodes or node_id == requested_node
 | extend deleted=column_ifexists('_deleted',false)
 | summarize arg_max(_v,deleted,tool,category,scope,size_bytes,tokens,lines,mtime,meta,last_changed)

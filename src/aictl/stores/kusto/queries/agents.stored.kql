@@ -4,7 +4,9 @@ declare query_parameters(
 // The newest stored row of each agent of some sessions, with every column the writer takes:
 // a caller that adds a field to a row writes the row whole (agent_meta_backfill).
 // An agent id is unique only within its session: every key and dedup includes session_id.
-agents
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+agents_secs
 | where all_nodes or node_id == requested_node
 | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
 | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id

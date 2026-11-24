@@ -5,12 +5,10 @@ Each node has its own tables, and a stored function per logical table reads all 
 
 1. Read the database: the table schemas, the table details, the stored functions and the
    ``schema_version`` registry. Nothing is changed before the checks pass.
-2. Database-wide: a database still on the shared tables of layout 1 or older needs the
-   ``node_tables`` migration (and any older database-wide step). Without *migrate* this
-   raises, and no node writes. A node that finds another node running that migration
-   refuses to write (``MigrationInProgress``).
-3. This node: its own recorded layout decides (new, current, upgrade, migrate, reset,
-   newer); another node's layout is never an error here.
+2. Database-wide: a database still on the shared tables of layout 1 or older is reset
+   (``aictl db reset --all-nodes``); until then no node writes.
+3. This node: its own recorded layout decides (new, current, upgrade, reset, newer);
+   another node's layout is never an error here.
 4. Create or widen this node's tables in one ``.create-merge tables`` command, give new
    tables their docstring, apply retention and streaming policies, record this node's
    layout row.
@@ -47,7 +45,7 @@ _LAYOUT_COLUMNS = ("kind", "node_id", "version", "compatible_since", "data_epoch
 LAYOUT_QUERY = f"{quote(LAYOUT_TABLE)} | project {', '.join(quote(c) for c in _LAYOUT_COLUMNS)} | take 100000"
 # Tables earlier aictl versions created. They belong to aictl, and a reset drops them.
 LEGACY_OWNED = frozenset({"aictl_information_schema"})
-NODE_TABLES = "node_tables"  # the database-wide migration of layout 2, see migrations.py
+NODE_TABLES = "node_tables"  # the registry step of the database-wide copy that made the node tables (layout 3)
 _TYPES = {
     "System.Int32": "int",
     "System.Int64": "long",
@@ -308,15 +306,14 @@ class LayoutState:
     nodes: dict[str, N.Node] = field(default_factory=dict)
     legacy: dict[str, int | None] = field(default_factory=dict)  # shared tables named like logical ones
     renamed: dict[str, int | None] = field(default_factory=dict)  # legacy__ tables kept by the migration
-    settled: frozenset[str] = frozenset()  # database-wide migrations done
     views: dict[str, dict] = field(default_factory=dict)  # materialized views: name -> SourceTable, IsEnabled
 
     @property
     def verdict(self) -> str:
         if self.mode == SHARED:
             verdict = L.assess(self.shared, has_data=True)
-            return L.MIGRATE if verdict in L.COMPATIBLE else verdict
-        return L.assess(self.stored, has_data=self.has_data, settled=self.settled)
+            return L.RESET if verdict in L.COMPATIBLE else verdict
+        return L.assess(self.stored, has_data=self.has_data)
 
     @property
     def node(self) -> N.Node | None:
@@ -326,8 +323,7 @@ class LayoutState:
         verdict = self.verdict
         if self.mode == SHARED:
             return L.ERRORS[verdict](verdict, self.shared, cluster=cluster, database=database)
-        return L.ERRORS[verdict](verdict, self.stored, cluster=cluster, database=database, node=self.node_id,
-                                 settled=self.settled)
+        return L.ERRORS[verdict](verdict, self.stored, cluster=cluster, database=database, node=self.node_id)
 
     def node_list(self) -> list[dict]:
         return [node.as_dict() for _, node in sorted(self.nodes.items())]
@@ -438,11 +434,10 @@ def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
         mode = SHARED
     else:
         mode = EMPTY
-    settled = done if record is not None else frozenset()
 
     if mode == SHARED:
         return LayoutState(have, details, counts, shared, True, rows, functions, node_id, mode, shared, nodes,
-                           legacy, renamed, settled, views)
+                           legacy, renamed, views)
     mine = nodes.get(N.node_key(node_id))
     stored = mine.stored if mine is not None else None
     tables = set(mine.tables.values()) if mine is not None else set()
@@ -450,7 +445,7 @@ def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
     if stored is None and tables and not has_data:
         has_data = _rows_in(query, tables)
     return LayoutState(have, details, counts, stored, has_data, rows, functions, node_id, mode, shared, nodes,
-                       legacy, renamed, settled, views)
+                       legacy, renamed, views)
 
 
 def check_layout(client: Any, database: str, node_id: str = "") -> LayoutState:
@@ -520,10 +515,6 @@ def sync_functions(command: Command, query: Query, node_id: str, logical: Iterab
 
 
 # ── this node's tables ──────────────────────────────────────────────
-
-
-# migrate(...) is migrations.runner(...): .database(...) and .node(...)
-Migrate = Any
 
 
 def _created_docstrings(command: Command, node_id: str, key: str, created: Iterable[tuple[str, str]]) -> None:
@@ -632,49 +623,26 @@ def ensure_schema(
     tables: Mapping[str, Table] = TABLES,
     node_id: str = "",
     cluster: str = "",
-    migrate: Migrate | None = None,
     origin: str = "new",
     reset: bool = False,
 ) -> SchemaStatus:
     """Check the database and this node's layout, then create this node's tables and the functions.
 
     Nothing is created, widened or written before the checks pass. A database on the shared
-    tables, or this node's tables on an older incompatible layout, raises unless *migrate*
-    is given. Refuse incompatible column types. *reset*: this node's tables were just
+    tables, or this node's tables on an older incompatible layout, raises: such data is reset,
+    never converted. Refuse incompatible column types. *reset*: this node's tables were just
     dropped; start a new data epoch for it whatever its earlier layout rows say.
     """
     command, query = management(client, database), querying(client, database)
     state = inspect(command, query, node_id)
-    migrated = False
-    shared_before: L.StoredLayout | None = None
     if state.mode == SHARED:
-        from .migrations import lock_owner
-
-        owner = lock_owner(state.rows)
-        if owner is not None and owner != node_id and not getattr(migrate, "take_over", False):
-            raise L.MigrationInProgress(
-                f"Node {owner} runs the node_tables migration of {database}. This node does not write until it is "
-                "done; start it again afterwards (aictl db layout shows the progress).")
-        if state.verdict != L.MIGRATE or migrate is None:
-            raise state.error(cluster, database)
-        shared_before = state.shared or L.UNVERSIONED
-        epoch = state.shared.data_epoch if state.shared is not None and state.shared.data_epoch else uuid.uuid4().hex
-        command(f".create-merge table {quote(LAYOUT_TABLE)} ("
-                + ", ".join(f"{quote(c)}:{t}" for c, t in TABLES[LAYOUT_TABLE].columns) + ")",
-                "Database User (create) or Table Admin (alter)", "Create or widen schema_version")
-        migrate.database(state, epoch, node_id,
-                         sync=lambda: sync_functions(command, query, node_id, set(tables) | logical_tables()))
-        state = inspect(command, query, node_id)
-        migrated = True
-        if state.mode == SHARED:
-            raise StoreConfigurationError("The node_tables migration did not finish; run aictl db migrate again")
+        raise state.error(cluster, database)
 
     verdict = state.verdict
     if reset and state.mode != SHARED and verdict != L.NEWER:
         state = replace(state, stored=None, has_data=False)
         verdict = L.NEW
-    node_migrating = verdict == L.MIGRATE and migrate is not None
-    if verdict not in L.COMPATIBLE and not node_migrating:
+    if verdict not in L.COMPATIBLE:
         raise state.error(cluster, database)
     key = N.node_key(node_id)
     have, details = state.have, state.details
@@ -746,7 +714,7 @@ def ensure_schema(
     stored = state.stored
     has_epoch = stored is not None and bool(stored.data_epoch)
     epoch = stored.data_epoch if has_epoch else uuid.uuid4().hex
-    # A new epoch for data that was kept (a migration of unversioned data) keeps restart state.
+    # A new epoch for data that was kept (an upgrade of unversioned data) keeps restart state.
     kept = stored.epoch_kept_data if has_epoch else verdict != L.NEW
 
     def record(kind: str, detail: str, step: str = "", version: int = L.LAYOUT_VERSION, node: str = node_id,
@@ -757,29 +725,18 @@ def ensure_schema(
 
     if state.mode == EMPTY and database_record(state.rows) is None:
         record("database", "node tables", NODE_TABLES, compatible_since=L.NODE_TABLES_SINCE, node="")
-    if node_migrating:
-        assert migrate is not None
-        migrate.node(stored or L.UNVERSIONED, epoch, node_id, mapping,
-                     lambda change, migration, detail: record("migration", detail, migration.name, change.version))
-        record("layout", "migrate")
-    elif migrated and shared_before is not None and migrate is not None:
-        # The node tables were made from the shared ones: the per-node steps the shared layout predates
-        # run on this node's copies (the node's layout row already names this layout).
-        migrate.node(shared_before, epoch, node_id, mapping,
-                     lambda change, migration, detail: record("migration", detail, migration.name, change.version))
-    elif verdict == L.NEW:
+    if verdict == L.NEW:
         record("layout", origin)
     elif verdict == L.UPGRADE:
         record("layout", "upgrade")
     if verdict != L.CURRENT:
         log.info("Data layout %s recorded for node %s in %s (stored: %s; data epoch %s)", L.LAYOUT_VERSION, node_id,
                  database, L.describe(stored), epoch)
-    # After a migration, so a view built from stored rows is built from the migrated ones.
     ensure_current_views(command, state, node_id, {name: tables[name] for name in C.CURRENT_TABLES if name in mapping},
                          created={logical for logical, _ in created}, retained=retained)
     final = sync_functions(command, query, node_id, set(tables) | {n for node in state.nodes.values()
                                                                    for n in node.tables})
-    reported = L.MIGRATE if migrated or node_migrating else verdict
+    reported = verdict
     stored_now = final.stored or stored
     summary = {**L.summary(reported, stored, epoch, None, final.node_list(), final.legacy_list()),
                "epoch_kept_data": kept, "mode": final.mode}

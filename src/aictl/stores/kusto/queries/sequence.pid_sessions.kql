@@ -1,10 +1,13 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_pid:long, since:real, until:real, row_limit:long);
-let owners = sessions
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_processes_secs = session_processes | extend joined_at = (joined_at - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let owners = sessions_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'],node_id,session_id
     | where not(column_ifexists('_deleted',false)) and (isnull(ended_at) or ended_at >= since) and started_at <= until
     | distinct ['project'],node_id,session_id;
-session_processes
+session_processes_secs
 | where (all_nodes or node_id == requested_node) and pid == requested_pid
 | summarize arg_max(_v, *) by ['project'],node_id,session_id,pid
 | where not(column_ifexists('_deleted',false))

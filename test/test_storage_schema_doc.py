@@ -8,6 +8,7 @@ version, tombstone, ingestion and retention lines and a ``| column | type | mean
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -151,3 +152,108 @@ def test_example_queries_dedup_by_the_key_and_name_only_real_columns():
         assert names <= columns.keys(), f"{name}: {sorted(names - columns.keys())} are not columns"
         checked += 1
     assert checked >= 6
+
+
+def _meanings() -> list[tuple[str, str, str, str]]:
+    """(table, column, type, meaning) of every column row under a ## Tables heading."""
+    out, in_tables, current = [], False, None
+    for line in TEXT.splitlines():
+        if line.startswith("## "):
+            in_tables, current = line.startswith("## Tables"), None
+        elif in_tables and line.startswith("### "):
+            current = line[4:].strip()
+        elif current is not None and (match := _COLUMN_ROW.fullmatch(line)):
+            out.append((current, match[1], match[2], match[3]))
+    return out
+
+
+# A real is a duration or an amount: its unit is in its name or stated in its meaning.
+_UNIT_NAME = re.compile(r"(_ms|Ms|_usd|Usd|_mb|_percent|_rate)$")
+_UNIT_WORDS = re.compile(r"\b(USD|ms|milliseconds|seconds|percent|per second|0 to 1|units?|MiB|MB|bytes)\b")
+
+
+def test_every_time_is_a_utc_datetime_and_every_real_states_its_unit():
+    rows = _meanings()
+    assert len(rows) == sum(len(logical_columns(name)) for name in LOGICAL)
+    not_utc = [f"{t}.{c}" for t, c, typ, meaning in rows if typ == "datetime" and "UTC" not in meaning]
+    assert not_utc == [], "a datetime column's meaning says it is UTC"
+    no_unit = [f"{t}.{c}" for t, c, typ, meaning in rows
+               if typ == "real" and not _UNIT_NAME.search(c) and not _UNIT_WORDS.search(meaning)]
+    assert no_unit == [], "a real column names its unit"
+
+
+# What a time is called when it is stored as a number: the old mistake of layouts 6 and older.
+_TIME_NAME = re.compile(r"^(ts|first_ts|last_ts|mtime|.*_at|first_seen|last_seen|last_read|last_changed|covered_through)$")
+
+
+# Columns named like a time that are not one, each with the reason its doc row states.
+_NOT_A_TIME = {
+    ("process_defs", "starts_at"): "text of a process definition: when its process starts, not a point in time",
+    ("process_defs", "stops_at"): "text of a process definition: when its process stops, not a point in time",
+}
+
+
+@pytest.mark.parametrize("name", sorted(LOGICAL))
+def test_no_time_is_stored_as_a_number_and_no_flag_as_a_count(name):
+    wrong = [(c, t) for c, t in logical_columns(name)
+             if _TIME_NAME.match(c) and t != "datetime" and (name, c) not in _NOT_A_TIME]
+    assert wrong == [], f"{name}: a point in time is a datetime"
+    flags = [(c, t) for c, t in logical_columns(name) if re.match(r"^(is_|has_)", c) and t != "bool"]
+    assert flags == [], f"{name}: a flag is a bool"
+
+
+# ── the doc, the code and a database created from the code ─────────────────
+# A database created from the definitions answers `.show table T cslschema` with the type Kusto gave each
+# column. The answers are recorded (AICTL_RECORD_KUSTO=1, AICTL_PARITY_DB=aictl_perf_test, as docs/testing.md
+# says) in CREATED; the test compares them with the code and with this page. A change to the definitions
+# changes the fingerprint, and the test asks for the recording to be made again from the new code.
+CREATED = Path(__file__).resolve().parent / "recordings" / "kusto" / "test_storage_schema_doc" / "created_schema.json"
+_SCHEMA_NODE = "schema-doc-check"
+
+
+def _record_created_schema() -> None:
+    import os
+
+    from aictl.kusto import KustoSettings
+    from aictl.stores.kusto import nodes as N
+    from aictl.stores.kusto.client import KustoClientFactory, Result, quote
+    from aictl.stores.kusto.schema import create_node_tables, management
+
+    database = os.environ["AICTL_PARITY_DB"]
+    assert database == "aictl_perf_test", "record against the scratch database only"
+    client = KustoClientFactory.client(KustoSettings(os.environ["AICTL_KUSTO_CLUSTER"], database))
+    command = management(client, database)
+    key = N.node_key(_SCHEMA_NODE)
+    names = sorted(name for name in LOGICAL if name not in N.SHARED_TABLES)
+    physical = {name: N.physical(name, key) for name in names}
+    drop = f".drop tables ({', '.join(quote(t) for t in physical.values())}) ifexists"
+    command(drop, "Database Admin", "Drop the tables of the schema check")
+    create_node_tables(command, _SCHEMA_NODE, {name: logical_columns(name) for name in names}, {})
+    created = {}
+    try:
+        for name, table in physical.items():
+            response = command(f".show table {quote(table)} cslschema", "Database Viewer", "Read a table schema")
+            schema = str(Result.from_response(response).dicts()[0]["Schema"])
+            # A column named like a KQL keyword is shown quoted: ['project'].
+            created[name] = [[column.strip("[]'"), kind] for column, kind in (part.split(":", 1) for part in schema.split(","))]
+    finally:
+        command(drop, "Database Admin", "Drop the tables of the schema check")
+    CREATED.parent.mkdir(parents=True, exist_ok=True)
+    CREATED.write_text(json.dumps({"fingerprint": L.fingerprint(), "tables": created}, indent=1, sort_keys=True) + "\n")
+
+
+def test_a_database_created_from_the_code_has_the_types_of_the_code_and_this_page():
+    import os
+
+    from aictl.stores.kusto import nodes as N
+
+    if os.environ.get("AICTL_RECORD_KUSTO") == "1":
+        _record_created_schema()
+    recorded = json.loads(CREATED.read_text(encoding="utf-8"))
+    assert recorded["fingerprint"] == L.fingerprint(), (
+        "The table definitions changed since the database schema was recorded: record it again "
+        "(AICTL_RECORD_KUSTO=1 AICTL_PARITY_DB=aictl_perf_test, docs/testing.md)")
+    created = {name: [tuple(column) for column in columns] for name, columns in recorded["tables"].items()}
+    assert set(created) == LOGICAL - N.SHARED_TABLES
+    assert created == {name: list(logical_columns(name)) for name in created}
+    assert {name: SECTIONS[name]["columns"] for name in created} == created

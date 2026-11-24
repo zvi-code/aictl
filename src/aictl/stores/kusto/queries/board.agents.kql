@@ -5,15 +5,19 @@ declare query_parameters(
 // 'agent': one subagent, with its newest tool call (to say what it does now and whether a result is still out);
 // 'spawn': one Agent/Task call that started a subagent, with the caller's description, agent type and model.
 // An agent id is unique only within its session: every key, join and dedup of agents includes session_id.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let agents_text_secs = agents_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let tasks = union isfuzzy=true
     (datatable(['project']:string, node_id:string, session_id:string, agent_id:string, _v:datetime, task:string,
         _deleted:bool)[]),
-    (agents_text | project ['project'], node_id, session_id=tostring(column_ifexists('session_id', '')), agent_id, _v,
+    (agents_text_secs | project ['project'], node_id, session_id=tostring(column_ifexists('session_id', '')), agent_id, _v,
         task, _deleted=column_ifexists('_deleted', false))
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(coalesce(_deleted, false))
     | project ['project'], node_id, session_id, agent_id, retained_task=task;
-let calls = tool_invocations
+let calls = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
     | where not(tool_name startswith_cs 'permission:')
@@ -41,7 +45,7 @@ let spawns = calls
         description, agent_type=coalesce(tostring(args.subagent_type), tostring(args.agent_type)),
         spawn_model=tostring(args.model), spawn_prompt=substring(tostring(args.prompt), 0, 500),
         spawned_by=agent_id, spawn_tool_use_id=source_event_id;
-let subagents = agents
+let subagents = agents_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(coalesce(column_ifexists('_deleted', false), false))

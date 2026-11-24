@@ -2,10 +2,14 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', requested_session:string,
     prompt_ts:real, open_end:real, row_limit:long
 );
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let facts = materialize(
-    union (session_prompts | extend fact_table='session_prompts'),
-          (requests | extend fact_table='requests'),
-          (tool_invocations | extend fact_table='tool_invocations')
+    union (session_prompts_secs | extend fact_table='session_prompts'),
+          (requests_secs | extend fact_table='requests'),
+          (tool_invocations_secs | extend fact_table='tool_invocations')
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by fact_table, ['project'], node_id, fact_key

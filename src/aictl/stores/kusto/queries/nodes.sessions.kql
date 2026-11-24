@@ -2,8 +2,10 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', requested_project:string = '',
     since:real, until:real, node_limit:long, session_limit:long, row_limit:long
 );
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
 let current = materialize(
-    sessions
+    sessions_secs
     | where all_nodes or node_id == requested_node
     | where isempty(requested_project) or ['project'] == requested_project
     | summarize arg_max(_v, *) by ['project'], node_id, session_id

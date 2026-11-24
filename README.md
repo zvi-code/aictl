@@ -141,45 +141,26 @@ Remote sign-in uses the Azure CLI by default. aictl creates the tables and sets 
 
 Since layout 3, each node (each machine that writes) has its own tables, named `<table>__<node key>`. A stored function with the name of each logical table reads the tables of all nodes. `aictl db layout` shows the layout this aictl needs, the layout stored for this node, and every node in the database.
 
-### Upgrading and migrating the stored data
+### Moving to a new layout of the stored data
 
-The stored data has a layout version. When a new aictl needs a different layout, it stops at start, says so, and names the command to run. It does not change or delete stored data without a yes (`--yes`, an answer at the prompt of an interactive `aictl daemon serve`, or `auto_migrate = true` under `[storage]`, which allows a migration at start but never a reset).
+The stored data has a layout version. When a new aictl needs a layout that breaks compatibility, it stops at start, says so, and names the command to run. Stored rows are never converted: the node's data is deleted and read again from its session files. Nothing is deleted without a yes (`--yes`, or an answer at the prompt of an interactive `aictl daemon serve`).
 
-The migration is non-destructive. The old shared tables are renamed to `legacy__*` and kept until you drop them. The copy of each node's rows is checked (row count and a checksum of the key and version columns) before anything is switched.
+Run the commands with the new aictl on each machine that writes. Name the database with `--kusto-cluster` and `--kusto-database`, or set `AICTL_KUSTO_CLUSTER` and `AICTL_KUSTO_DATABASE` (or the `[storage]` keys) once. Every command below takes the two flags.
 
-Run the commands with the new aictl, on one machine. Name the database with `--kusto-cluster` and `--kusto-database`, or set `AICTL_KUSTO_CLUSTER` and `AICTL_KUSTO_DATABASE` (or the `[storage]` keys) once. Every command below takes the two flags.
-
-1. Stop every aictl daemon that writes to the database, on every machine.
+1. Stop the aictl daemon of the machine.
 2. Look at what is stored:
 
    ```bash
    aictl db layout --nodes
    ```
 
-3. See what the migration would do. This changes nothing:
+3. Delete this node's data and create its tables in the new layout:
 
    ```bash
-   aictl db migrate --dry-run
+   aictl db reset --yes
    ```
 
-4. Run it:
-
-   ```bash
-   aictl db migrate --yes
-   ```
-
-   If it is interrupted, run the same command again. It continues where it stopped: a step counts as done only when it is recorded as done, and an unfinished copy is made again. If another machine started the migration and stopped, add `--take-over` after you have stopped that machine.
-5. Check the result: `aictl db layout --nodes` shows the verdict `current`, every node, its tables, and the `legacy__*` tables that were kept.
-6. Upgrade aictl on every node and start the daemons. An older aictl (layout 2 or lower) refuses to start on the migrated database.
-7. When you are sure, drop the kept tables. This cannot be undone:
-
-   ```bash
-   aictl db migrate --drop-legacy
-   ```
-
-The alternative is `aictl db reset`, then reading the data again. It deletes this node's stored data (`--node ID` another node's, `--all-nodes` everything). The session folders on the machine are read again, so that history comes back. What arrived only live is lost: OpenTelemetry logs, metrics and traces, hook events and process samples, and any session whose files are gone. `aictl db migrate` keeps all of it, so use it when it applies.
-
-The steps, the verification and the `legacy__*` details are in [docs/kusto-cluster.md](docs/kusto-cluster.md#data-layout-version-compatibility-and-migrations).
+4. Start the daemon. It reads every session file still on the disk again (transcripts and tool stores); telemetry received before the reset, data whose session files are gone and data older than the retention period are not rebuilt.
 
 #### Reading the session files again
 
@@ -773,17 +754,14 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl db stats` | Show current logical counts, time range, and separate physical extent metadata |
 | `aictl db schema` | Print the Kusto table keys, columns, retention, and ingestion modes (`--markdown`, `--json`) |
 | `aictl db layout [--nodes]` | The stored layout of this node, the layout this aictl needs, the verdict, every node and the changelog; `--nodes` counts the rows by query and adds each node's tables, rows and last ingestion |
-| `aictl db migrate --dry-run` | Show each migration step, its commands and the rows it changes; change nothing |
-| `aictl db migrate --yes` | Upgrade the stored data to this aictl's layout and keep the history. Stop every writer first. See [Upgrading](#upgrading-and-migrating-the-stored-data) |
-| `aictl db migrate --take-over` | Continue a migration that another node started and stopped |
-| `aictl db migrate --drop-legacy` | Drop the `legacy__*` tables a finished migration kept |
+| `aictl db reset --yes` | Delete this node's stored data and create its tables again; the daemon then reads the session files again. Needed when a new aictl's layout breaks compatibility. See [Moving to a new layout](#moving-to-a-new-layout-of-the-stored-data) |
 | `aictl db retention` | Show how long each class of data is kept, as configured and on the cluster, with table sizes (sealed extents only) |
 | `aictl db retention set CLASS PERIOD` | Keep a class for a period, such as `24h` or `365d` |
 | `aictl db trim-text` | Soft-delete records from text tables for this node |
 | `aictl db reread --all` | Read session files again and store their rows again (`--tool`, `--since`, `--session`, `--dry-run`, `--dry-run --types`). See [Reading the session files again](#reading-the-session-files-again) |
 | `aictl db index` | Everything this node's readers find: tool homes, session locations and how far each file was read, the sessions on disk against the sessions stored (`--ids` lists the gaps), projects and context folders (`--root`, `--project`, `--no-store`, `--json`). Works with the daemon stopped; the dashboard's Index screen shows the same live |
 | `aictl db reimport-sessions --resumed` | Read again only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |
-| `aictl db reset` | Delete this node's stored data and start it again (`--node ID`, `--all-nodes`). Prefer `aictl db migrate` when it applies |
+| `aictl db reset` | Delete this node's stored data and start it again (`--node ID`, `--all-nodes`) |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |
 | `aictl reinstall` | Rebuild UI + reinstall Python package so code changes take effect |
 | `aictl reinstall --build-ui` | Also build the dashboard when its source has no local changes |
@@ -869,7 +847,7 @@ File access is inferred from tool-call arguments, so files touched by shell comm
 
 `aictl db layout`, `migrate`, `reset` and `report` take `--kusto-cluster URL` and `--kusto-database NAME`. The default is the configured store.
 
-`aictl db layout` takes `--nodes`. `aictl db migrate` takes `--dry-run`, `-y` / `--yes`, `--take-over`, `--slice-days N` (copy in slices of N days of ingestion time, 1 to 31, default 1) and `--drop-legacy`. See [Upgrading](#upgrading-and-migrating-the-stored-data).
+`aictl db layout` takes `--nodes`. See [Moving to a new layout](#moving-to-a-new-layout-of-the-stored-data).
 
 `aictl db reset` deletes the aictl tables of one node (default: this node) and creates them again. `--node ID` picks another node and `--all-nodes` resets every node and the registry. Use `-y` / `--yes` to skip the confirmation prompt. Stop the writers of what is reset first.
 

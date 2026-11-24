@@ -1,6 +1,9 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real = 0.0, until:real = 1.0e20,
                          report_mode:string, include_unreported:bool = false, row_limit:long);
-let snapshots = materialize(system_snapshots
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let system_snapshots_secs = system_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s, settings_captured_at = (settings_captured_at - datetime(1970-01-01)) / 1s;
+let snapshots = materialize(system_snapshots_secs
     | where (all_nodes or node_id == requested_node) and ts between (since .. until)
     | where report_mode != 'runtime' or isnotempty(node_id)
     | project node_id, ['project'], ts, _v, deleted=column_ifexists('_deleted', false),
@@ -19,7 +22,7 @@ let snapshots = materialize(system_snapshots
               capture=capture_mode, ingestion=ingestion_mode, retention_days, content_retention_days,
               active_sessions=live_sessions, active_processes, cpu_percent=host_cpu_percent,
               memory_used_mb=host_memory_used_mb, memory_total_mb=host_memory_total_mb,
-              inbound_bps=live_in_rate, outbound_bps=live_out_rate, counter_sample=node_health_counters);
+              inbound_bps=live_in_rate, outbound_bps=live_out_rate, counter_sample=tostring(node_health_counters));
 // Take the top row per node without a fleet-wide sort/row number or a lossy composite key.
 let reported = materialize(snapshots
     | partition hint.strategy=native by node_id (
@@ -36,7 +39,7 @@ let reported = materialize(snapshots
       ) on node_id
     | project-away node_id1);
 union reported,
-      (sessions | where include_unreported and (all_nodes or node_id == requested_node)
+      (sessions_secs | where include_unreported and (all_nodes or node_id == requested_node)
         | join kind=leftanti (reported | project node_id) on node_id
         | project node_id, ['project'], session_id, _v, deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted) by node_id, ['project'], session_id

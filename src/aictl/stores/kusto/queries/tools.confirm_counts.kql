@@ -4,7 +4,9 @@ declare query_parameters(
 );
 // The calls with a confirmation value, counted per session, tool and value in the cluster.
 // The waits of approved and denied calls come back whole, so that percentiles stay exact.
-let raw_calls = () { tool_invocations
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let raw_calls = () { tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
 };

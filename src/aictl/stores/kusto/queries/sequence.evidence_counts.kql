@@ -1,5 +1,7 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string, row_limit:long);
-session_steps
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
+session_steps_secs
 | where session_id == requested_session and (all_nodes or node_id == requested_node)
 | summarize arg_max(_v, *) by ['project'], node_id, step_key
 | where not(coalesce(column_ifexists('_deleted', false), false))

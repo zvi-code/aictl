@@ -584,8 +584,8 @@ TABLES: tuple[Table, ...] = (
         _cols(
             ("Timestamp", "datetime", "Time of the row the text came from"),
             ("PayloadId", "string", "SHA-256 of the full text as UTF-8"),
-            ("ChunkNo", "int", "Position of this chunk, from 0"),
-            ("ChunkCount", "int", "Number of chunks of the text"),
+            ("ChunkNo", "long", "Position of this chunk, from 0"),
+            ("ChunkCount", "long", "Number of chunks of the text"),
             ("TotalBytes", "long", "Size of the full text in UTF-8 bytes"),
             ("PayloadKind", "string", "Attribute key the text came from, or body"),
             ("SourceTable", "string", "Table of the row the text came from"),

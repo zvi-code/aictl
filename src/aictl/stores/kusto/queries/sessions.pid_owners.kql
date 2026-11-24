@@ -1,7 +1,9 @@
 declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, pids:dynamic, row_limit:long
 );
-session_processes
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_processes_secs = session_processes | extend joined_at = (joined_at - datetime(1970-01-01)) / 1s;
+session_processes_secs
 | where (all_nodes or node_id == requested_node) and pid in (pids)
 | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
 | summarize arg_max(_v, *) by ['project'], node_id, session_id, pid

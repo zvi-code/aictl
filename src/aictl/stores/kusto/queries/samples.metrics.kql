@@ -1,5 +1,7 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', metric_prefix:string = '', row_limit:long);
-metrics
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let metrics_secs = metrics | extend ts = (ts - datetime(1970-01-01)) / 1s;
+metrics_secs
 | where (all_nodes or node_id == requested_node) and metric startswith metric_prefix
 | summarize arg_max(_v, *) by node_id, ['project'], metric, ts, seq
 | where not(coalesce(column_ifexists('_deleted', false), false))

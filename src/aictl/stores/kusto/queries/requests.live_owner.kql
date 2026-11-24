@@ -12,6 +12,7 @@ let crossed = current_rows | summarize copies=count() by dedup_key | where copie
 union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
 | where not(coalesce(_deleted, false))
+| extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error)
 | where iff(fold_project, trim_end(@'/+', replace_string(tolower(project_path), @'\', '/')), project_path) == project_path_key
 | order by ts desc, node_id asc, ['project'] asc, dedup_key asc
 | take row_limit

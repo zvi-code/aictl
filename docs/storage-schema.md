@@ -1,7 +1,7 @@
 # aictl storage schema (Kusto)
 
 This page is the contract for anyone who writes KQL against an aictl database. It describes
-data layout 4. The definitions live in the code:
+data layout 7. The definitions live in the code:
 [`stores/kusto/tables.py`](../src/aictl/stores/kusto/tables.py) (`TABLES`),
 [`stores/kusto/schema.py`](../src/aictl/stores/kusto/schema.py) (`logical_columns`),
 [`stores/kusto/otel.py`](../src/aictl/stores/kusto/otel.py) (the OTel tables),
@@ -16,9 +16,11 @@ whose meaning the writing code does not settle says "meaning not established".
 
 ## Layout version
 
-The current layout is `LAYOUT_VERSION = 6`; it reads nodes from
-`COMPATIBLE_SINCE = 6`. A change to tables, columns, keys or the meaning of
-stored values bumps the layout and adds a line here:
+The current layout is `LAYOUT_VERSION = 7`; it reads nodes from
+`COMPATIBLE_SINCE = 7`. A change to tables, columns, types, keys or the meaning of
+stored values bumps the layout and adds a line here. Stored rows are never converted: a
+node on a layout that breaks compatibility is reset (`aictl db reset`) and reads its
+session files again. The migrations that layouts 1 to 3 named were removed with layout 7.
 
 | layout | breaks compatibility | migration | change |
 |---|---|---|---|
@@ -27,7 +29,8 @@ stored values bumps the layout and adds a line here:
 | 3 | yes | `node_tables` | Each node writes its own tables (requests__&lt;node key&gt;, ...); a stored function named like each table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*. |
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 | 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran under, with the reported fields in detail; sessions written before have none. |
-| 6 | yes | `timed_tombstones` | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: the migration gives each such tombstone a new one with its row's time, then each start builds the views from the stored rows. |
+| 6 | yes | | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: such a node is reset. |
+| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. A column cannot change its type in place: a node of layout 6 or older is reset. |
 
 ### The `schema_version` registry
 
@@ -150,14 +153,35 @@ OTELLogs
 
 ### Times and types
 
-- Time columns of type `real` (`ts`, `started_at`, `mtime`, `covered_through`, ...) are
-  epoch seconds, UTC. Convert with `unixtime_seconds_todatetime(ts)`.
-- `_v`, `schema_version.written_at` and the OTel time columns are `datetime`.
-- Columns of type `string` that hold JSON (`detail`, `meta`, `tags`, `*_json`, `by_model`)
-  need `parse_json()`. The OTel attribute bags (`LogsAttributes`, `MetricAttributes`,
-  `TraceAttributes`, `ResourceAttributes`, `Events`, `Links`) and the `session_outcomes`
-  arrays are `dynamic`.
+Every column has the Kusto type of what it holds; each table section lists every column
+with its type, and a guard test compares those lists with the definitions in code and with
+the schema of a database created from them (`test/test_storage_schema_doc.py`).
+
+- Every point in time is a `datetime` in UTC: `ts`, `started_at`, `ended_at`, `mtime`, the
+  `*_at` columns, `_v`, the OTel time columns. Filter and bin them as datetimes:
+  `where ts > ago(1h)`, `bin(ts, 1d)`. The writer converts a collector's epoch seconds once,
+  at ingest, to the microsecond. A time a source did not know is stored as 1970-01-01 (epoch
+  0) where the column says so.
+- A duration is a `real` with its unit in the name: `duration_ms`, `ttft_ms`, `thinking_ms`
+  are milliseconds. An amount is a `real` with its unit in the name or the meaning
+  (`cost_usd` in USD, `*_mb` in MiB, `*_percent` in percent).
+- A count or a numeric id is a `long`; a flag is a `bool` (`is_error`, `completed`,
+  `estimated`, ...).
+- A JSON value that views read as a structure is `dynamic` (`events.detail`,
+  `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`,
+  `metrics.tags`, `system_snapshots.node_health_counters`, the OTel attribute bags and the
+  `session_outcomes` arrays): read its fields directly, `detail.session_id`. Other JSON is
+  `string` (`meta`, `*_json`, `by_model`, `tool_invocations_text.input`) and needs
+  `parse_json()`.
+- Text a column holds is a `string`, ids included, even when an id looks like a number
+  (`turn_id`).
 - A count that a source did not report is null, not 0, where the column says so.
+
+aictl's own views keep their parameters and their results in epoch seconds and 0/1, as the
+dashboard reads them: a view reads each table it uses through
+`let T_secs = T | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);`
+(a view of a current view converts right after its reduction), and names `T_secs` where it
+read `T`.
 
 ### Ingestion
 
@@ -174,7 +198,7 @@ materialized view per node table, and the function `requests_current` (`tool_inv
 unions the views of every node the functions include:
 
 - The view `T_current__<node key>` (folder `aictl/current`) over `T__<node key>` is
-  `T__<node key> | extend event_hour = bin(unixtime_seconds_todatetime(ts), 1h) | summarize arg_max(_v, *) by event_hour, ['project'], node_id, dedup_key`.
+  `T__<node key> | extend event_hour = bin(ts, 1h) | summarize arg_max(_v, *) by event_hour, ['project'], node_id, dedup_key`.
   It has every column of the table plus `event_hour` (`datetime`), and takes a new column of the
   table as the table does (`autoUpdateSchema`).
 - A query of it reads the materialized part and the rows not materialized yet, so a row is read
@@ -187,10 +211,10 @@ unions the views of every node the functions include:
   tombstones and apply the exact range:
 
 ```kql
-let since = 1795435200.0;  // epoch seconds, like ts
-let until = 1795438800.0;
+let since = datetime(2026-11-24 12:00);  // UTC, like ts
+let until = datetime(2026-11-24 13:00);
 let current_rows = requests_current
-    | where event_hour between (bin(unixtime_seconds_todatetime(since), 1h) - 1h .. unixtime_seconds_todatetime(until) + 1h);
+    | where event_hour between (bin(since, 1h) - 1h .. until + 1h);
 let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
 union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
@@ -334,8 +358,7 @@ sessions
 | summarize arg_max(_v, *) by ['project'], node_id, session_id
 | where not(coalesce(_deleted, false)) and isnull(ended_at)
 | project session_id, tool, ['title'], project_path, model,
-    started = unixtime_seconds_todatetime(started_at),
-    last_activity = unixtime_seconds_todatetime(last_activity_at)
+    started = started_at, last_activity = last_activity_at
 | order by last_activity desc
 ```
 
@@ -350,7 +373,7 @@ requests
 | where not(coalesce(_deleted, false))
 | summarize calls = count(), input_tokens = sum(input_tokens), output_tokens = sum(output_tokens),
     cache_read_tokens = sum(cache_read_tokens), cache_creation_tokens = sum(cache_creation_tokens),
-    cost_usd = sum(cost_usd), errors = countif(is_error != 0) by session_id, tool
+    cost_usd = sum(cost_usd), errors = countif(is_error) by session_id, tool
 | order by calls desc
 ```
 
@@ -360,7 +383,7 @@ Tool calls per MCP server and tool:
 tool_invocations
 | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
 | where not(coalesce(_deleted, false)) and isnotempty(mcp_server)
-| summarize calls = count(), errors = countif(is_error != 0), sessions = dcount(session_id),
+| summarize calls = count(), errors = countif(is_error), sessions = dcount(session_id),
     output_bytes = sum(output_bytes) by mcp_server, mcp_tool
 | order by calls desc
 ```
@@ -373,7 +396,7 @@ agents
 | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
 | where not(coalesce(_deleted, false)) and session_id == sid
 | project agent_id, parent_agent_id, parent_tool_use_id, spawn_depth, description, resolved_model, status,
-    completed, started = unixtime_seconds_todatetime(started_at), input_tokens, output_tokens
+    completed, started = started_at, input_tokens, output_tokens
 | order by started asc
 ```
 
@@ -404,8 +427,8 @@ session_context_items
 | extend name = iff(isempty(list_id), name, item), path = iff(isempty(list_id), path, item_path),
     tokens = iff(isempty(list_id), tokens, item_tokens), removed = iff(isempty(list_id), removed, item_removed)
 | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, kind, name
-| where removed == 0 and isnotempty(name)
-| project name, path, tokens, listed = unixtime_seconds_todatetime(ts)
+| where not(removed) and isnotempty(name)
+| project name, path, tokens, listed = ts
 | order by name asc
 ```
 
@@ -445,9 +468,9 @@ Sessions with `title_source` `prompt` lose the title when text is not kept.
 | `model` | string | Model of the session as a source reported it |
 | `git_branch` | string | Git branch of the session's folder, from the main transcript |
 | `git_commit` | string | meaning not established: no current writer sets a value |
-| `started_at` | real | Earliest start any source reported, epoch seconds, UTC |
-| `ended_at` | real | When the session ended, epoch seconds, UTC; null while no end is stored. Activity more than 5 s after it clears it (the session was resumed) |
-| `last_activity_at` | real | Last time the session did something (a transcript line, a request), epoch seconds, UTC; 0 when unknown |
+| `started_at` | datetime | Earliest start any source reported, UTC |
+| `ended_at` | datetime | When the session ended, UTC; null while no end is stored. Activity more than 5 s after it clears it (the session was resumed) |
+| `last_activity_at` | datetime | Last time the session did something (a transcript line, a request), UTC; 1970-01-01 (epoch 0) when unknown |
 | `end_reason` | string | Why `ended_at` is set: `hook`, `transcript`, `process_exit`, `switched` or `idle` (inferred). Empty while not ended |
 | `source` | string | The source of the evidence that last set the row's fields, for example `transcript`, `otel`, `hook`, `process`, `correlator`, or `copilot-session-store` for a Copilot session that only `session-store.db` holds (no events file). OTel and process evidence only fill empty fields |
 | `input_tokens` | long | Input tokens; the largest value any source reported |
@@ -502,13 +525,13 @@ Readers put it over `sessions`: a transcript count replaces other sources' count
 | `cost_reason` | string | Why the cost quality is what it is |
 | `unpriced_models` | string | JSON list of models without a price |
 | `billing_unit` | string | Unit the tool bills in |
-| `billing_amount` | real | Amount in `billing_unit` |
-| `premium_requests` | real | Premium requests |
+| `billing_amount` | real | Amount, in the unit that `billing_unit` names |
+| `premium_requests` | real | Premium requests, in Copilot premium request units (fractional: a model can cost less than one) |
 | `estimated_list_usd` | real | Estimated list price in USD |
-| `started_at` | real | First activity, epoch seconds, UTC |
-| `last_activity_at` | real | Last activity, epoch seconds, UTC |
+| `started_at` | datetime | First activity, UTC |
+| `last_activity_at` | datetime | Last activity, UTC |
 | `project_path` | string | Working folder |
-| `updated_at` | real | When the row was written, epoch seconds, UTC |
+| `updated_at` | datetime | When the row was written, UTC |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -531,7 +554,7 @@ Processes bound to a session.
 | `session_id` | string | The session |
 | `pid` | long | Process id bound to the session |
 | `tool` | string | Tool id |
-| `joined_at` | real | When the binding was observed, epoch seconds, UTC |
+| `joined_at` | datetime | When the binding was observed, UTC |
 | `role` | string | `lead` in current code |
 | `project` | string | Part of the key. The session's folder as the source reported it, or "" |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -556,7 +579,7 @@ Git commits made in a session's folder while the session ran.
 | `sha` | string | Commit hash: the full hash from `git`, the abbreviated hash a `git commit` output printed |
 | `author_name` | string | Commit author name; "" for a commit read from a `git commit` output |
 | `author_email` | string | Commit author email; "" for a commit read from a `git commit` output |
-| `ts` | real | Commit time, epoch seconds, UTC; for a commit read from a `git commit` output, the time of the call's result |
+| `ts` | datetime | Commit time, UTC; for a commit read from a `git commit` output, the time of the call's result |
 | `subject` | string | First line of the commit message; from a `git commit` output only while text is kept |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -583,10 +606,10 @@ The main agent has no row here. Other tables name it with `agent_id` "".
 | `session_id` | string | The session the subagent's lines belong to |
 | `tool` | string | Tool id |
 | `model` | string | Model the agent used |
-| `is_sidechain` | long | 1 for a subagent |
-| `started_at` | real | Earliest start observed, epoch seconds, UTC |
-| `ended_at` | real | End time, set only with evidence that the agent finished, epoch seconds, UTC |
-| `completed` | long | 1 only after evidence that the agent finished: a final reply, the caller's result with status `completed`, or Copilot `subagent.completed` / `subagent.failed` |
+| `is_sidechain` | bool | true for a subagent |
+| `started_at` | datetime | Earliest start observed, UTC |
+| `ended_at` | datetime | End time, set only with evidence that the agent finished, UTC |
+| `completed` | bool | true only after evidence that the agent finished: a final reply, the caller's result with status `completed`, or Copilot `subagent.completed` / `subagent.failed` |
 | `input_tokens` | long | Input tokens of the agent |
 | `output_tokens` | long | Output tokens of the agent |
 | `cache_read_tokens` | long | Cache read tokens of the agent |
@@ -604,7 +627,7 @@ The main agent has no row here. Other tables name it with `agent_id` "".
 | `cwd` | string | The folder the agent's own lines carry (a subagent can run in another worktree) |
 | `git_branch` | string | The branch the agent's own lines carry |
 | `worktree_path` | string | Claude Code `meta.json` `worktreePath` |
-| `observed_at` | real | Time of the observation `completed` and `ended_at` come from, epoch seconds, UTC. The latest observation wins |
+| `observed_at` | datetime | Time of the observation `completed` and `ended_at` come from, UTC. The latest observation wins |
 | `_deleted` | bool | Tombstone flag: true on a delete row, which carries only the key columns |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 
@@ -626,7 +649,7 @@ The prompt each subagent was given. Text.
 | `project` | string | Part of the key. The `project_path` of the agent's session row |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | real | Start of the agent, else its end, else the write time, epoch seconds, UTC |
+| `ts` | datetime | Start of the agent, else its end, else the write time, UTC |
 | `session_id` | string | The session |
 
 ### session_turns
@@ -645,8 +668,8 @@ One row per user turn of a Claude Code session (one `promptId`), its subagents i
 | `session_id` | string | The session |
 | `prompt_id` | string | Claude Code `promptId` of the turn |
 | `turn_index` | long | `turnPosition.turnIndex`, or the order of the turn in the session |
-| `ts` | real | First line of the turn, epoch seconds, UTC |
-| `ended_at` | real | Last line of the turn, epoch seconds, UTC |
+| `ts` | datetime | First line of the turn, UTC |
+| `ended_at` | datetime | Last line of the turn, UTC |
 | `tool` | string | `claude-code` |
 | `project_path` | string | Working folder |
 | `origin` | string | Claude Code `turnOrigin` / `origin.kind`, for example `human`, `task_notification`, `peer` |
@@ -661,7 +684,7 @@ One row per user turn of a Claude Code session (one `promptId`), its subagents i
 | `cache_creation_tokens` | long | Cache write tokens, summed |
 | `files_changed` | long | Distinct files edited or written |
 | `compactions` | long | Compactions |
-| `ended_with_api_error` | long | 1 when the last call of the turn failed |
+| `ended_with_api_error` | bool | true when the last call of the turn failed |
 | `thinking_chars` | long | Thinking characters of the turn's calls, summed |
 | `thinking_blocks` | long | Thinking blocks, summed |
 | `thinking_redacted` | long | Redacted thinking blocks, summed |
@@ -688,7 +711,7 @@ The row is put together from parts, one per source; a source read again replaces
 | `session_id` | string | The session |
 | `tool` | string | Tool id |
 | `project_path` | string | Working folder |
-| `ts` | real | Time of the newest part of the row, epoch seconds, UTC |
+| `ts` | datetime | Time of the newest part of the row, UTC |
 | `permission_modes` | dynamic | Array of permission modes seen (Claude Code `permissionMode`) |
 | `modes` | dynamic | Array of modes seen (Claude Code `mode`, Copilot `session.mode_changed`, VS Code `modeInfo`) |
 | `last_mode` | string | The last mode |
@@ -700,7 +723,7 @@ The row is put together from parts, one per source; a source read again replaces
 | `reported_cost_usd` | real | The tool's own cost figure, separate from aictl's `cost_usd` |
 | `reported_api_ms` | real | The tool's own API time in ms |
 | `reported_tool_ms` | real | The tool's own tool time in ms |
-| `premium_requests` | real | Copilot `totalPremiumRequests` |
+| `premium_requests` | real | Copilot `totalPremiumRequests`, in premium request units |
 | `hook_runs` | long | Hook runs (Claude Code `stop_hook_summary`, Copilot `hook.end`) |
 | `hook_failures` | long | Failed hook runs |
 | `compactions` | long | Compactions |
@@ -708,7 +731,7 @@ The row is put together from parts, one per source; a source read again replaces
 | `todos_completed` | long | Completed items of the last todo list |
 | `workflow_runs` | long | Claude Code workflow runs (`workflows/wf_*.json`) |
 | `workflows_failed` | long | Failed workflow runs |
-| `task_complete` | long | 1 when Copilot reported `session.task_complete` or VS Code ran `task_complete` |
+| `task_complete` | bool | true when Copilot reported `session.task_complete` or VS Code ran `task_complete` |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -733,7 +756,7 @@ Claude Code with `seq` 0 is from then and holds the last list seen, not one vers
 | `session_id` | string | The session |
 | `kind` | string | `checkpoint` (Copilot: title, overview, history, work done, technical details, important files, next steps), `task_summary`, `compact_summary`, `todo_list` (one version per list the tool sent: Claude `TodoWrite`, Copilot `update_todo`), `task_change` (one Claude `TaskCreate` or `TaskUpdate` call, its fields as sent) or `workflow_summary` |
 | `seq` | long | Version of the digest within its session, agent and kind, from 1 |
-| `ts` | real | Time of the digest, epoch seconds, UTC |
+| `ts` | datetime | Time of the digest, UTC |
 | `title` | string | Title of the digest, when it has one. KQL keyword: write `['title']` |
 | `text` | string | The summary, redacted. Over `large_payload_bytes` a preview; the whole text is in `file_blobs` under `text_hash` |
 | `tool` | string | Tool id |
@@ -760,7 +783,7 @@ One row per prompt given to an agent.
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `dedup_key` | string | Key of the prompt, set by the reader |
-| `ts` | real | When the prompt was given, epoch seconds, UTC |
+| `ts` | datetime | When the prompt was given, UTC |
 | `session_id` | string | The session |
 | `agent_id` | string | "" for a person's prompt to the main agent; the subagent id for a prompt to a subagent |
 | `tool` | string | Tool id |
@@ -788,7 +811,7 @@ The visible thinking text of model calls, one row per block. Text.
 |---|---|---|
 | `session_id` | string | The session |
 | `thinking_key` | string | Key of the block: the call's ids and the block's index |
-| `ts` | real | Time of the block, epoch seconds, UTC |
+| `ts` | datetime | Time of the block, UTC |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `request_key` | string | `dedup_key` of the `requests` row; "" when the source cannot tell the call |
 | `message_id` | string | Message id of the call |
@@ -821,8 +844,8 @@ How each file was touched in a session: read, edited or created, by which tool, 
 | `how` | string | `read`, `edited` or `created` |
 | `tool_name` | string | The tool that touched it, for example `Read`, `Edit`, `view` |
 | `count` | long | How often |
-| `first_ts` | real | First time, epoch seconds, UTC |
-| `ts` | real | Last time, epoch seconds, UTC |
+| `first_ts` | datetime | First time, UTC |
+| `ts` | datetime | Last time, UTC |
 | `tool` | string | Tool id |
 | `project_path` | string | Working folder |
 | `project` | string | Part of the key. The row's `project_path` |
@@ -846,7 +869,7 @@ Files a session loaded, as its own record shows.
 | `path` | string | Path of the loaded file |
 | `how` | string | `instructions`, `nested_memory`, `skill`, `custom_agent` or `system_prompt` |
 | `detail` | string | More about how the file was loaded, as the reader recorded it |
-| `ts` | real | When first seen, epoch seconds, UTC |
+| `ts` | datetime | When first seen, UTC |
 | `tool` | string | Tool id |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `project` | string | Part of the key. The row's `project_path` |
@@ -882,12 +905,12 @@ before layout 4, and rows of the other kinds, are one row per item.
 | `agent_id` | string | The subagent; "" for the main agent |
 | `kind` | string | `memory_file`, `skills`, `mcp_instructions`, `custom_agents`, `tools_listed`, `instruction_file`, `system_prompt_other` or `reset` |
 | `name` | string | Name of the item; "" for the total of its kind; `list:<list_id>` for a pointer row |
-| `ts` | real | When recorded, epoch seconds, UTC |
+| `ts` | datetime | When recorded, UTC |
 | `path` | string | File path of the item, when it has one |
 | `chars` | long | Characters of the item |
 | `tokens` | long | Tokens of the item |
-| `estimated` | long | 1 when `tokens` is estimated |
-| `removed` | long | 1 when the item was removed from the context |
+| `estimated` | bool | true when `tokens` is estimated |
+| `removed` | bool | true when the item was removed from the context |
 | `tool` | string | Tool id |
 | `project` | string | Part of the key. The row's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -919,8 +942,8 @@ is still pointed to, so retention does not drop a list that recent pointers name
 | `path` | string | File path of the item, when it has one |
 | `chars` | long | Characters of the item |
 | `tokens` | long | Tokens of the item |
-| `estimated` | long | 1 when `tokens` is estimated |
-| `removed` | long | 1 when the announcement removed the item from the context |
+| `estimated` | bool | true when `tokens` is estimated |
+| `removed` | bool | true when the announcement removed the item from the context |
 | `tool` | string | Tool id of the agent that first wrote the list; a reader takes the pointer's |
 | `project` | string | Part of the key. Always "": a list belongs to no project |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -942,10 +965,10 @@ One row per scanned session folder of a tool (Copilot CLI `session-state/<id>/`,
 | `session_id` | string | The session (the folder name) |
 | `tool` | string | Tool id |
 | `folder` | string | Absolute path of the session folder |
-| `signature` | real | The newest mtime of the folder and its direct subfolders at the scan |
+| `signature` | datetime | The newest mtime of the folder and its direct subfolders at the scan, UTC |
 | `files_total` | long | Number of files, also past the row cap |
 | `bytes_total` | long | Size of all files |
-| `scanned_at` | real | Time of the scan, epoch seconds, UTC |
+| `scanned_at` | datetime | Time of the scan, UTC |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -971,7 +994,7 @@ A removed file, and every file of a removed folder, is deleted with a tombstone.
 | `path` | string | Absolute file path |
 | `folder` | string | First folder part under the session folder; "" at the top |
 | `size_bytes` | long | Size at the scan |
-| `mtime` | real | Modification time at the scan, epoch seconds, UTC |
+| `mtime` | datetime | Modification time at the scan, UTC |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -995,10 +1018,10 @@ One row per session file found on disk, and how much of it has been read.
 | `session_id` | string | The session the file belongs to |
 | `tool` | string | Tool id |
 | `size_bytes` | long | Size at the last scan |
-| `mtime` | real | Modification time at the last scan, epoch seconds, UTC |
+| `mtime` | datetime | Modification time at the last scan, UTC |
 | `bytes_read` | long | How much of the file is stored |
 | `status` | string | `waiting`, `reading`, `complete` or `outside_window` (excluded by `history_days`) |
-| `indexed_at` | real | When the row was written, epoch seconds, UTC |
+| `indexed_at` | datetime | When the row was written, UTC |
 | `project` | string | Part of the key. Always "" |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1021,7 +1044,7 @@ The memory files of a session's project at a phase of the session.
 | `path` | string | Path of the memory file |
 | `sha` | string | SHA-256 of the content |
 | `content` | string | Not set here (null): the content is in `memory_snapshots_text` |
-| `ts` | real | Time of the snapshot, epoch seconds, UTC |
+| `ts` | datetime | Time of the snapshot, UTC |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1046,7 +1069,7 @@ The content of the memory files of `memory_snapshots`. Text.
 | `path` | string | Path of the memory file |
 | `sha` | string | SHA-256 of the content |
 | `content` | string | The file content |
-| `ts` | real | Time of the snapshot, epoch seconds, UTC |
+| `ts` | datetime | Time of the snapshot, UTC |
 | `project` | string | Part of the key. The root of the session's repository |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1072,7 +1095,7 @@ A call reported by OTel and read again from the transcript is stored once. The t
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `dedup_key` | string | Key of the model call: the source's call id, else a hash of the session, the embedded time or the token counts, the model and the source |
-| `ts` | real | When the call happened, from the source's own timestamp, epoch seconds, UTC |
+| `ts` | datetime | When the call happened, from the source's own timestamp, UTC |
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent that made the call; "" for the main agent |
 | `tool` | string | Tool id |
@@ -1086,7 +1109,7 @@ A call reported by OTel and read again from the transcript is stored once. The t
 | `cost_usd` | real | List-price cost in USD, rounded to 6 decimals; 0 when the model had no list price when stored (views price it on read); null when no cost can be known: a VS Code call whose source does not report the cached part of the prompt (views never price it) |
 | `duration_ms` | real | Duration of the call in ms, from telemetry |
 | `finish_reason` | string | Finish or stop reason |
-| `is_error` | long | 1 when the call failed |
+| `is_error` | bool | true when the call failed |
 | `error_type` | string | Error type of a failed call |
 | `http_status` | long | HTTP status of a failed call |
 | `source` | string | `transcript` for a call read from the tool's session file; otherwise the reporting source, for example `otel` |
@@ -1128,7 +1151,7 @@ Which turn of a Copilot CLI session each model call belongs to. Never a second c
 | column | type | meaning |
 |---|---|---|
 | `request_key` | string | `dedup_key` of the `requests` row |
-| `ts` | real | Time of the usage record, epoch seconds, UTC |
+| `ts` | datetime | Time of the usage record, UTC |
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `turn_id` | string | The turn of the agent the call belongs to |
@@ -1160,14 +1183,14 @@ One row per tool call, without its text.
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `dedup_key` | string | Key of the call: from the source's call id (for example the `tool_use_id`), else the embedded time, else the arguments |
-| `ts` | real | When the call started, epoch seconds, UTC |
+| `ts` | datetime | When the call started, UTC |
 | `session_id` | string | The session |
 | `request_id` | long | Always 0 in current code: no reader sets it. Use `request_key` |
 | `tool` | string | Tool id of the AI tool |
 | `tool_name` | string | Name of the tool that was called, for example `Bash`, `Read`, `mcp__<server>__<tool>` |
 | `project_path` | string | Working folder |
 | `pid` | long | Process id of the AI tool, when known |
-| `is_error` | long | 1 when the call failed |
+| `is_error` | bool | true when the call failed |
 | `duration_ms` | real | Duration in ms |
 | `source` | string | `transcript`, `copilot-session-store` (a shell command from Copilot's `session-store.db`, for a session with no events file), `hook` or `otel`. A transcript or store row replaces hook and OTel rows of the same session up to `tool_invocation_coverage.covered_through` |
 | `source_event_id` | string | The source's own id of the call, for example the `tool_use_id` |
@@ -1236,7 +1259,7 @@ How far the transcript has covered each session's tool calls.
 | column | type | meaning |
 |---|---|---|
 | `session_id` | string | The session |
-| `covered_through` | real | Time of the newest transcript tool call stored for the session, epoch seconds, UTC. Hook and OTel calls up to it are replaced by transcript rows |
+| `covered_through` | datetime | Time of the newest transcript tool call stored for the session, UTC. Hook and OTel calls up to it are replaced by transcript rows |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1278,7 +1301,7 @@ One row per use of a skill.
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `dedup_key` | string | Key of the use, set by the reader |
-| `ts` | real | Time of the use, epoch seconds, UTC |
+| `ts` | datetime | Time of the use, UTC |
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `tool` | string | Tool id |
@@ -1306,7 +1329,7 @@ Compactions and context splits as a tool's session file records them.
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `dedup_key` | string | Key of the event, set by the reader |
-| `ts` | real | Time of the event, epoch seconds, UTC |
+| `ts` | datetime | Time of the event, UTC |
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent; "" for the main agent |
 | `tool` | string | Tool id |
@@ -1338,7 +1361,7 @@ Compactions and context splits as a tool's session file records them.
 | `prompt_id` | string | The turn: Claude Code `promptId`, Copilot `interactionId`; "" when the source does not say |
 | `turn_index` | long | The turn's number in the session; null when not known |
 | `content_hash` | string | The `file_blobs.hash` of the text the event put into the context (a loaded memory file, an instruction update); "" when none. A loaded file matches a stored version of the file only when the tool loaded it whole |
-| `detail` | string | JSON of the event's other figures, never text: a truncation's limits, a tool baseline's `tool_count`, `memory_tools` and `context_tools`, an instruction update's `authority`, `lifetime`, `boundary`, `fallback`; for a `config.*` kind the event's fields under the tool's own names, only those it reported (`selectedModel`, `reasoningEffort`, `contextTier`, `copilotVersion`, `context`; `previousModel`, `newModel`, `previousReasoningEffort`, `source`; `previousMode`, `newMode`, `mode`, `allowAllPermissionMode`; `infoType`, `message`; feature flags' `flags`, `count`, `hash`, `previous_hash`; an assignment context's `hash`, `bytes`, `kind`; launch flags' `pid`, `started_at`, `count` and `flags`, each `{flag, value}` with the value masked, an inline JSON value replaced by `<redacted>` with its `bytes` and `hash`, a prompt flag `value_withheld`); "" when none |
+| `detail` | dynamic | JSON of the event's other figures, never text: a truncation's limits, a tool baseline's `tool_count`, `memory_tools` and `context_tools`, an instruction update's `authority`, `lifetime`, `boundary`, `fallback`; for a `config.*` kind the event's fields under the tool's own names, only those it reported (`selectedModel`, `reasoningEffort`, `contextTier`, `copilotVersion`, `context`; `previousModel`, `newModel`, `previousReasoningEffort`, `source`; `previousMode`, `newMode`, `mode`, `allowAllPermissionMode`; `infoType`, `message`; feature flags' `flags`, `count`, `hash`, `previous_hash`; an assignment context's `hash`, `bytes`, `kind`; launch flags' `pid`, `started_at`, `count` and `flags`, each `{flag, value}` with the value masked, an inline JSON value replaced by `<redacted>` with its `bytes` and `hash`, a prompt flag `value_withheld`); "" when none |
 | `rowid` | long | Legacy alias set by the writer: a number from the SHA-256 of the key values other than `project`. The same for every version of a row |
 | `_deleted` | bool | Always false: this table takes no delete rows. Kept for older readers |
 
@@ -1358,7 +1381,7 @@ One row per write-like file event of an agent.
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `dedup_key` | string | Key of the write: from the source, else a hash of the session, operation, path and event id or time. A Claude Code edit has one key from its tool call id and path argument, so its hook and its transcript line are one row |
-| `ts` | real | Time of the write, epoch seconds, UTC |
+| `ts` | datetime | Time of the write, UTC |
 | `session_id` | string | The session |
 | `tool` | string | Tool id |
 | `tool_name` | string | The tool that wrote, for example `Edit`, `Write` |
@@ -1370,7 +1393,7 @@ One row per write-like file event of an agent.
 | `source_event_id` | string | The source's id of the event, for example the tool call id |
 | `content_hash` | string | Hash of the written content, when known |
 | `size_bytes` | long | Size written, when known |
-| `detail` | string | JSON detail of the write; `{}` when text is not kept |
+| `detail` | dynamic | JSON detail of the write; `{}` when text is not kept |
 | `project` | string | Part of the key. The row's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1404,7 +1427,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | column | type | meaning |
 |---|---|---|
 | `step_key` | string | Key of the step: a hash of the session, the event id and the kind |
-| `ts` | real | Time of the event, epoch seconds, UTC |
+| `ts` | datetime | Time of the event, UTC |
 | `session_id` | string | The session |
 | `kind` | string | What the step is: `message`, `agent_prompt`, `turn`, `round`, `tool_call`, `tool_result`, `skill`, `agent`, `context`, `command`, `session_command` |
 | `tool` | string | `copilot-cli` |
@@ -1431,7 +1454,7 @@ Typed steps of a Copilot CLI session, from its `session-state/<id>/events.jsonl`
 | `after_tokens` | long | Tokens after a compaction or truncation |
 | `input_tokens` | long | Input tokens of a usage step, cached tokens included |
 | `output_tokens` | long | Output tokens of a usage step |
-| `estimated` | long | 1 when the token figures are estimated |
+| `estimated` | bool | true when the token figures are estimated |
 | `exit_code` | long | Exit code of a command |
 | `system_tokens` | long | System part of the context |
 | `conversation_tokens` | long | Conversation part of the context |
@@ -1457,7 +1480,7 @@ The text of session steps. Text.
 |---|---|---|
 | `step_key` | string | Joins `session_steps.step_key` |
 | `session_id` | string | The session |
-| `ts` | real | Time of the step, epoch seconds, UTC |
+| `ts` | datetime | Time of the step, UTC |
 | `text` | string | The step's text, redacted, at most 32768 characters; a value over `large_payload_bytes` is a preview, see `text_payloads` |
 | `project` | string | Part of the key. The step's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -1485,7 +1508,7 @@ The full text of large text values, in chunks. The row in the value's own table 
 | `chunk_count` | long | Number of chunks |
 | `total_bytes` | long | Size of the full text in UTF-8 bytes |
 | `session_id` | string | The session |
-| `ts` | real | Time of the source row, epoch seconds, UTC |
+| `ts` | datetime | Time of the source row, UTC |
 | `text` | string | This chunk, at most 200000 characters. Concatenate by `chunk_no` |
 | `project` | string | Part of the key. The source row's project |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -1511,8 +1534,8 @@ Messages of Copilot sessions from Copilot's session store. Text.
 | `source_table` | string | The table of Copilot's store the row came from |
 | `role` | string | Message role |
 | `content` | string | Message text, at most 20000 characters; "" when text is not kept or older than the `message` period |
-| `ts` | real | Time of the message, epoch seconds, UTC |
-| `ingested_at` | real | When aictl read it, epoch seconds, UTC |
+| `ts` | datetime | Time of the message, UTC |
+| `ingested_at` | datetime | When aictl read it, UTC |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1540,8 +1563,8 @@ A message read again under another session is deleted under the old one with a t
 | `role` | string | `user` or `assistant` |
 | `content` | string | Message text, bounded; "" when text is not kept or older than the `message` period |
 | `model` | string | Model id of the request |
-| `ts` | real | Time of the request, epoch seconds, UTC |
-| `ingested_at` | real | When aictl read it, epoch seconds, UTC |
+| `ts` | datetime | Time of the request, UTC |
+| `ingested_at` | datetime | When aictl read it, UTC |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1565,7 +1588,7 @@ Messages of Cursor conversations. Text.
 | `source_row_id` | long | Row id of the message in Cursor's store |
 | `role` | string | Message role |
 | `content` | string | Message text, at most 20000 characters; "" when text is not kept or older than the `message` period |
-| `ts` | real | Time of the message, epoch seconds, UTC |
+| `ts` | datetime | Time of the message, UTC |
 | `project` | string | Part of the key. The session's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1588,13 +1611,13 @@ The event log: monitor events, hook events and OTel events, without their text.
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | Time of the event, epoch seconds, UTC |
+| `ts` | datetime | Time of the event, UTC |
 | `tool` | string | Tool id |
 | `kind` | string | Event kind, for example `session_start`, `hook:<Event>`, `otel:health` |
 | `session_id` | string | The session, when known |
 | `pid` | long | Process id, when known |
 | `project_path` | string | `project_path`, `cwd` or `project` of the detail |
-| `detail` | string | JSON detail with text removed: text keys become `<key>_chars` lengths, strings over 256 characters too |
+| `detail` | dynamic | JSON detail with text removed: text keys become `<key>_chars` lengths, strings over 256 characters too |
 | `source_key` | string | Key of the event |
 | `seq` | long | A number from the hash of `source_key` |
 | `project` | string | Part of the key. `project_path` of the event |
@@ -1617,11 +1640,11 @@ The full detail of events whose detail had text. Text.
 | column | type | meaning |
 |---|---|---|
 | `source_key` | string | Joins `events.source_key` |
-| `detail` | string | JSON detail with its text; a value over `large_payload_bytes` is a preview, see `text_payloads` |
+| `detail` | dynamic | JSON detail with its text; a value over `large_payload_bytes` is a preview, see `text_payloads` |
 | `project` | string | Part of the key. As the `events` row |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | real | Time of the event, epoch seconds, UTC |
+| `ts` | datetime | Time of the event, UTC |
 
 <a id="version-38-hook-calls"></a>
 
@@ -1640,8 +1663,8 @@ One row per hook call the aictl hook handler reports.
 |---|---|---|
 | `id` | long | Equal to `rowid` |
 | `call_id` | string | The handler's call id; for a POST without one, `body:` and a hash of the body |
-| `ts` | real | Time of the call, epoch seconds, UTC |
-| `received_at` | real | Receive time, epoch seconds, UTC; `received_at - ts` is the delivery lag |
+| `ts` | datetime | Time of the call, UTC |
+| `received_at` | datetime | Receive time, UTC; `received_at - ts` is the delivery lag |
 | `format_version` | long | Wire format version; 0 for an older handler |
 | `tool` | string | Tool id |
 | `event` | string | aictl's event name |
@@ -1657,9 +1680,9 @@ One row per hook call the aictl hook handler reports.
 | `tool_use_id` | string | Tool call id of a tool event |
 | `permission_mode` | string | Permission mode |
 | `payload_bytes` | long | Bytes read from stdin |
-| `truncated` | long | 1 when the payload was over 16 MiB |
+| `truncated` | bool | true when the payload was over 16 MiB |
 | `payload` | string | `{}` when the text is kept (the payload is then in `hook_calls_text`); otherwise the payload as JSON with its text removed |
-| `wrapped` | long | 1 for a user hook run through `aictl hooks wrap` |
+| `wrapped` | bool | true for a user hook run through `aictl hooks wrap` |
 | `command_hash` | string | First 16 hex digits of the SHA-256 of the wrapped command |
 | `exit_code` | long | Exit code of the wrapped command; null when not wrapped |
 | `duration_ms` | real | Run time of the wrapped command in ms |
@@ -1693,7 +1716,7 @@ The text of hook calls: wrapped command, its output and the payload. Text, kept 
 | `project` | string | Part of the key. As the `hook_calls` row |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
-| `ts` | real | Time of the call, epoch seconds, UTC |
+| `ts` | datetime | Time of the call, UTC |
 
 ### metrics
 
@@ -1708,13 +1731,13 @@ Metric samples: one value of one named metric at one time.
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | Sample time, epoch seconds, UTC |
+| `ts` | datetime | Sample time, UTC |
 | `metric` | string | Dotted metric name |
-| `value` | real | The value |
+| `value` | real | The value, in the unit of its `metric` (the metric's name says it: `_ms`, `_mb`, `_percent`, a count) |
 | `tool` | string | `tool` or `aictl.tool` of the tags |
 | `project_path` | string | `project_path` or `cwd` of the tags |
 | `session_id` | string | `session_id` of the tags |
-| `tags` | string | JSON of the sample's tags |
+| `tags` | dynamic | JSON of the sample's tags |
 | `seq` | long | A number from the hash of the tags and the value |
 | `project` | string | Part of the key. `project_path` of the sample |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -1735,14 +1758,14 @@ Host-wide totals and node settings, sampled by the daemon.
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | Sample time, epoch seconds, UTC |
+| `ts` | datetime | Sample time, UTC |
 | `cpu_percent` | real | CPU percent of all AI tool processes |
 | `cpu_per_core` | string | JSON array of the CPU percent per core |
 | `memory_used_mb` | real | Memory of all AI tool processes in MB |
 | `memory_total_mb` | real | meaning not established: the writer does not set it |
 | `active_sessions` | long | meaning not established: the writer does not set it |
 | `active_processes` | long | Number of AI tool processes |
-| `ai_token_rate` | real | meaning not established: the writer does not set it |
+| `ai_token_rate` | real | meaning not established: the writer does not set it; tokens per second by its name |
 | `files` | long | Number of discovered context files |
 | `tokens` | long | Estimated tokens of the discovered files |
 | `mcp` | long | Number of MCP servers |
@@ -1758,11 +1781,11 @@ Host-wide totals and node settings, sampled by the daemon.
 | `ingestion_mode` | string | The configured Kusto ingestion mode |
 | `retention_days` | long | Retention in days of `system_snapshots` as the code defines it by default |
 | `content_retention_days` | long | Retention in days of `session_step_text` as the code defines it by default |
-| `settings_captured_at` | real | Time the settings columns were captured, epoch seconds, UTC |
+| `settings_captured_at` | datetime | Time the settings columns were captured, UTC |
 | `host_cpu_percent` | real | Average CPU percent over all cores of the host |
 | `host_memory_used_mb` | real | Used memory of the host in MB |
 | `host_memory_total_mb` | real | Total memory of the host in MB |
-| `node_health_counters` | string | JSON: `pid`, `at`, and the store transport and runtime counters of the daemon |
+| `node_health_counters` | dynamic | JSON: `pid`, `at`, and the store transport and runtime counters of the daemon |
 | `project` | string | Part of the key. Always "" |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1782,7 +1805,7 @@ CPU and memory of each AI tool, sampled by the daemon.
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | Sample time, epoch seconds, UTC |
+| `ts` | datetime | Sample time, UTC |
 | `pid` | long | Not a process id: a number derived from the tool name (`call_key(tool) % 2000000000`), one per tool |
 | `tool` | string | Tool id |
 | `cpu_percent` | real | CPU percent of the tool's processes, summed |
@@ -1809,7 +1832,7 @@ Per-tool usage totals from the tools' own stats (OTel, stats cache, events files
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | Sample time, epoch seconds, UTC |
+| `ts` | datetime | Sample time, UTC |
 | `tool` | string | Tool id |
 | `source` | string | Where the figures came from |
 | `confidence` | real | Confidence in the figures, 0 to 1 |
@@ -1893,10 +1916,10 @@ A file that is no longer found is deleted with a tombstone.
 | `size_bytes` | long | File size |
 | `tokens` | long | Estimated tokens |
 | `lines` | long | Line count of the read content; 0 when not read |
-| `mtime` | real | File modification time, epoch seconds, UTC |
-| `first_seen` | real | When first found, epoch seconds, UTC |
-| `last_read` | real | When the content was last read, epoch seconds, UTC; 0 when not read |
-| `last_changed` | real | When the file last changed, epoch seconds, UTC |
+| `mtime` | datetime | File modification time, UTC |
+| `first_seen` | datetime | When first found, UTC |
+| `last_read` | datetime | When the content was last read, UTC; 1970-01-01 (epoch 0) when not read |
+| `last_changed` | datetime | When the file last changed, UTC |
 | `meta` | string | JSON text of the discovery's metadata for the file |
 | `project` | string | Part of the key. The project path the file belongs to. "" for a file that lies in a project folder, and for every file of a tool that keeps its files outside the project folders and has no project path |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -1920,7 +1943,7 @@ Content of tracked context files, memory versions and large session summaries, b
 | `hash` | string | First 32 hex digits of the SHA-256 of the raw bytes. Joins `files.blob_hash` |
 | `content` | string | The file content as UTF-8 text |
 | `size_bytes` | long | Size of the raw bytes |
-| `created_at` | real | When the blob was stored, epoch seconds, UTC |
+| `created_at` | datetime | When the blob was stored, UTC |
 | `project` | string | Part of the key. Always "" |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1941,7 +1964,7 @@ A row each time a tracked file has a new version: the file was first seen, its c
 | column | type | meaning |
 |---|---|---|
 | `path` | string | Absolute file path |
-| `ts` | real | When the change was seen, epoch seconds, UTC; for a checkpoint's file, the checkpoint's time |
+| `ts` | datetime | When the change was seen, UTC; for a checkpoint's file, the checkpoint's time |
 | `blob_hash` | string | Hash of the content; joins `file_blobs.hash`. "" when no content was read. A checkpoint's file keeps its content in `file_blobs` only for memory and instruction files (`mechanism` set); for others a Copilot hash is the file's hash with no stored content |
 | `content_hash` | string | First 16 hex digits of the SHA-256 of the text. "" when no content was read |
 | `size_bytes` | long | Size |
@@ -1996,7 +2019,7 @@ Defined for the text of file history snapshots. No current aictl code writes it.
 | column | type | meaning |
 |---|---|---|
 | `path` | string | meaning not established: no current aictl code writes this table |
-| `ts` | real | meaning not established: no current aictl code writes this table |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `content` | string | meaning not established: no current aictl code writes this table |
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -2019,8 +2042,8 @@ The first 9 columns are the Collector's, in its order and casing. The rest are a
 
 | column | type | meaning |
 |---|---|---|
-| `Timestamp` | datetime | When the event occurred |
-| `ObservedTimestamp` | datetime | When the event was observed |
+| `Timestamp` | datetime | When the event occurred, UTC |
+| `ObservedTimestamp` | datetime | When the event was observed, UTC |
 | `TraceID` | string | Trace id, lowercase hex |
 | `SpanID` | string | Span id, lowercase hex |
 | `SeverityText` | string | Severity text as sent |
@@ -2074,7 +2097,7 @@ The first 9 columns are the Collector's, in its order and casing. The rest are a
 | `OrganizationId` | string | aictl: attribute organization.id (Claude Code), as already kept in the bag |
 | `UserAccountUuid` | string | aictl: attribute user.account_uuid (Claude Code), as already kept in the bag |
 | `project` | string | Part of the key. Always "" for rows aictl writes; null for the collector's rows |
-| `_v` | datetime | Version of the row, set by aictl's writer; null for the collector's rows |
+| `_v` | datetime | Version of the row, set by aictl's writer: a UTC time; null for the collector's rows |
 
 ### OTELMetrics
 
@@ -2091,16 +2114,16 @@ The first 9 columns are the Collector's, in its order and casing. The rest are a
 
 | column | type | meaning |
 |---|---|---|
-| `Timestamp` | datetime | Time of the data point |
+| `Timestamp` | datetime | Time of the data point, UTC |
 | `MetricName` | string | Metric name; _sum, _count, _bucket and quantile rows add a suffix |
 | `MetricType` | string | Gauge, Sum, Histogram, ExponentialHistogram or Summary |
 | `MetricUnit` | string | Unit of the metric |
 | `MetricDescription` | string | Description of the metric |
-| `MetricValue` | real | Value of the data point; null when not finite |
+| `MetricValue` | real | Value of the data point, in the unit `MetricUnit` names; null when not finite |
 | `Host` | string | Resource host.name, else the receiving host |
 | `ResourceAttributes` | dynamic | Resource attributes |
 | `MetricAttributes` | dynamic | Data point attributes plus scope.name, scope.version, le and qt |
-| `StartTime` | datetime | aictl: start of the aggregation interval; null when not sent |
+| `StartTime` | datetime | aictl: start of the aggregation interval; null when not sent, UTC |
 | `Temporality` | string | aictl: Delta, Cumulative or empty |
 | `Monotonic` | bool | aictl: whether a Sum is monotonic; null for other types |
 | `SessionId` | string | aictl: the session: session.id, sessionId or session_id, else gen_ai.conversation.id |
@@ -2126,7 +2149,7 @@ The first 9 columns are the Collector's, in its order and casing. The rest are a
 | `OrganizationId` | string | aictl: attribute organization.id (Claude Code), as already kept in the bag |
 | `UserAccountUuid` | string | aictl: attribute user.account_uuid (Claude Code), as already kept in the bag |
 | `project` | string | Part of the key. Always "" for rows aictl writes; null for the collector's rows |
-| `_v` | datetime | Version of the row, set by aictl's writer; null for the collector's rows |
+| `_v` | datetime | Version of the row, set by aictl's writer: a UTC time; null for the collector's rows |
 
 ### OTELTraces
 
@@ -2149,8 +2172,8 @@ The first 13 columns are the Collector's, in its order and casing. The rest are 
 | `SpanName` | string | Span name |
 | `SpanStatus` | string | STATUS_CODE_UNSET, STATUS_CODE_OK or STATUS_CODE_ERROR |
 | `SpanKind` | string | SPAN_KIND_UNSPECIFIED, INTERNAL, SERVER, CLIENT, PRODUCER or CONSUMER |
-| `StartTime` | datetime | Span start |
-| `EndTime` | datetime | Span end |
+| `StartTime` | datetime | Span start, UTC |
+| `EndTime` | datetime | Span end, UTC |
 | `ResourceAttributes` | dynamic | Resource attributes |
 | `TraceAttributes` | dynamic | Span attributes plus scope.name and scope.version |
 | `Events` | dynamic | Span events: EventName, Timestamp, EventAttributes |
@@ -2205,7 +2228,7 @@ The first 13 columns are the Collector's, in its order and casing. The rest are 
 | `AppVersion` | string | aictl: attribute app.version, else resource service.version |
 | `ReportedCustomAgentNames` | string | aictl: newline-separated names from github.copilot.context.custom_agent_names; null when not sent |
 | `project` | string | Part of the key. Always "" for rows aictl writes; null for the collector's rows |
-| `_v` | datetime | Version of the row, set by aictl's writer; null for the collector's rows |
+| `_v` | datetime | Version of the row, set by aictl's writer: a UTC time; null for the collector's rows |
 
 ### OTELPayloads
 
@@ -2220,10 +2243,10 @@ The text of OTel values too large for their row, in chunks.
 
 | column | type | meaning |
 |---|---|---|
-| `Timestamp` | datetime | Time of the row the text came from |
+| `Timestamp` | datetime | Time of the row the text came from, UTC |
 | `PayloadId` | string | SHA-256 of the full text as UTF-8 |
-| `ChunkNo` | int | Position of this chunk, from 0 |
-| `ChunkCount` | int | Number of chunks of the text |
+| `ChunkNo` | long | Position of this chunk, from 0 |
+| `ChunkCount` | long | Number of chunks of the text |
 | `TotalBytes` | long | Size of the full text in UTF-8 bytes |
 | `PayloadKind` | string | Attribute key the text came from, or body |
 | `SourceTable` | string | Table of the row the text came from |
@@ -2235,7 +2258,7 @@ The text of OTel values too large for their row, in chunks.
 | `Text` | string | This chunk of the text |
 | `node_id` | string | aictl: reporting daemon node, independent of the OTLP resource host |
 | `project` | string | Part of the key. Always "" for rows aictl writes; null for the collector's rows |
-| `_v` | datetime | Version of the row, set by aictl's writer; null for the collector's rows |
+| `_v` | datetime | Version of the row, set by aictl's writer: a UTC time; null for the collector's rows |
 
 ## Tables: Registry, status and catalogs
 
@@ -2248,7 +2271,7 @@ The registry of the data layout: layout rows of every node, migration steps, the
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `metrics` (default 365d)
-- Written by: management commands of `stores/kusto/schema.py` (`.set-or-append`) and `migrations.py`, at the start of a writing node
+- Written by: management commands of `stores/kusto/schema.py` (`.set-or-append`), at the start of a writing node
 
 This is a real table shared by all nodes, not a function over node tables. Its rows are a log: several rows can share a key, so do not deduplicate it by its key. Read the latest layout row per node with `aictl_nodes()`.
 
@@ -2261,7 +2284,7 @@ This is a real table shared by all nodes, not a function over node tables. Its r
 | `compatible_since` | long | The oldest layout that can read data of this version |
 | `aictl_version` | string | The aictl package version that wrote the row |
 | `data_epoch` | string | The data epoch of the node: a new random id after a reset or a new start, kept across upgrades and migrations |
-| `written_at` | datetime | Server time (`now()`) when the row was written |
+| `written_at` | datetime | Server time (`now()`) when the row was written, UTC |
 | `kind` | string | `layout` (a node's layout row; with step `node_tables/lock`, the migration lock), `migration` (a migration step), `database` (the database record) |
 | `step` | string | Empty on a plain layout row. The migration step name on a `migration` row; `node_tables/lock` on the lock row; `node_tables` on the database record |
 | `detail` | string | On a layout row, how the data epoch began: `new`, `reset`, `migrate` or `upgrade`. On a migration row, the result; a finished step starts with `done` |
@@ -2285,10 +2308,10 @@ Current health of each data source, collector, ingester or sink.
 | `status` | string | Status, for example `ok` |
 | `severity` | string | Severity, as the caller gives it |
 | `message` | string | Message |
-| `updated_at` | real | Time of the report, epoch seconds, UTC |
-| `last_ok_at` | real | Last time the status was `ok`, epoch seconds, UTC |
+| `updated_at` | datetime | Time of the report, UTC |
+| `last_ok_at` | datetime | Last time the status was `ok`, UTC |
 | `count` | long | Number of reports so far |
-| `detail` | string | JSON detail |
+| `detail` | dynamic | JSON detail |
 | `project` | string | Part of the key. Always "" |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -2318,11 +2341,11 @@ The catalog of dashboard data points, from `data/datapoint-catalog.yaml` and `da
 | `unit` | string | Unit |
 | `update_freq` | string | Update frequency |
 | `otel_metric` | string | OTel metric name |
-| `dynamic_source` | long | 1 when the catalog marks a dynamic source |
+| `dynamic_source` | bool | true when the catalog marks a dynamic source |
 | `source_dynamic` | string | JSON of the dynamic source, built at run time |
 | `query` | string | The data point's query |
 | `calc` | string | The data point's calculation |
-| `updated_at` | real | When the row changed, epoch seconds, UTC |
+| `updated_at` | datetime | When the row changed, UTC |
 | `project` | string | Part of the key. Always "" |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -2345,7 +2368,7 @@ minutes so that the Index screen of another node can show it. Read by the view `
 | column | type | meaning |
 |---|---|---|
 | `key` | string | What the row holds: `index_breakdown` |
-| `value` | real | When the breakdown was computed (epoch seconds) |
+| `value` | datetime | When the breakdown was computed, UTC |
 | `text` | string | The breakdown as JSON, with its session id lists and file lists cut to stay under 700 KB |
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -2368,8 +2391,8 @@ Defined for the tools aictl knows. No current aictl code writes it.
 | `vendor` | string | meaning not established: no current aictl code writes this table |
 | `host` | string | meaning not established: no current aictl code writes this table |
 | `display_name` | string | meaning not established: no current aictl code writes this table |
-| `first_seen_at` | real | meaning not established: no current aictl code writes this table |
-| `last_seen_at` | real | meaning not established: no current aictl code writes this table |
+| `first_seen_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
+| `last_seen_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -2391,8 +2414,8 @@ Defined for the projects aictl knows. No current aictl code writes it.
 | `name` | string | meaning not established: no current aictl code writes this table |
 | `git_remote` | string | meaning not established: no current aictl code writes this table |
 | `git_branch` | string | meaning not established: no current aictl code writes this table |
-| `first_seen_at` | real | meaning not established: no current aictl code writes this table |
-| `last_seen_at` | real | meaning not established: no current aictl code writes this table |
+| `first_seen_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
+| `last_seen_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -2417,8 +2440,8 @@ Defined for AI tool processes. No current aictl code writes it.
 | `cwd` | string | meaning not established: no current aictl code writes this table |
 | `cmdline` | string | meaning not established: no current aictl code writes this table |
 | `ppid` | long | meaning not established: no current aictl code writes this table |
-| `started_at` | real | meaning not established: no current aictl code writes this table |
-| `ended_at` | real | meaning not established: no current aictl code writes this table |
+| `started_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
+| `ended_at` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `exit_code` | long | meaning not established: no current aictl code writes this table |
 | `source` | string | meaning not established: no current aictl code writes this table |
 | `meta` | string | meaning not established: no current aictl code writes this table |
@@ -2440,7 +2463,7 @@ Defined for tool configuration values. No current aictl code writes it.
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | meaning not established: no current aictl code writes this table |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `tool` | string | meaning not established: no current aictl code writes this table |
 | `project_path` | string | meaning not established: no current aictl code writes this table |
 | `key` | string | meaning not established: no current aictl code writes this table |
@@ -2463,12 +2486,12 @@ Defined for environment variables seen by tools. No current aictl code writes it
 
 | column | type | meaning |
 |---|---|---|
-| `ts` | real | meaning not established: no current aictl code writes this table |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `project_path` | string | meaning not established: no current aictl code writes this table |
 | `tool` | string | meaning not established: no current aictl code writes this table |
 | `key` | string | meaning not established: no current aictl code writes this table |
 | `value` | string | meaning not established: no current aictl code writes this table |
-| `is_secret` | long | meaning not established: no current aictl code writes this table |
+| `is_secret` | bool | meaning not established: no current aictl code writes this table |
 | `source` | string | meaning not established: no current aictl code writes this table |
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
@@ -2492,7 +2515,7 @@ Defined as a mirror of the path catalog CSV files. No current aictl code writes 
 | `vendor` | string | meaning not established: no current aictl code writes this table |
 | `host` | string | meaning not established: no current aictl code writes this table |
 | `platform` | string | meaning not established: no current aictl code writes this table |
-| `hidden` | long | meaning not established: no current aictl code writes this table |
+| `hidden` | bool | meaning not established: no current aictl code writes this table |
 | `scope` | string | meaning not established: no current aictl code writes this table |
 | `category` | string | meaning not established: no current aictl code writes this table |
 | `sent_to_llm` | string | meaning not established: no current aictl code writes this table |
@@ -2530,15 +2553,15 @@ Defined as a mirror of the process catalog CSV files. No current aictl code writ
 | `process_type` | string | meaning not established: no current aictl code writes this table |
 | `runtime` | string | meaning not established: no current aictl code writes this table |
 | `parent_process` | string | meaning not established: no current aictl code writes this table |
-| `starts_at` | string | meaning not established: no current aictl code writes this table |
-| `stops_at` | string | meaning not established: no current aictl code writes this table |
-| `is_daemon` | long | meaning not established: no current aictl code writes this table |
-| `auto_start` | long | meaning not established: no current aictl code writes this table |
+| `starts_at` | string | meaning not established: no current aictl code writes or reads this table. Kept as text: a process definition names when its process starts or stops, not a point in time |
+| `stops_at` | string | meaning not established: no current aictl code writes or reads this table. Kept as text: a process definition names when its process starts or stops, not a point in time |
+| `is_daemon` | bool | meaning not established: no current aictl code writes this table |
+| `auto_start` | bool | meaning not established: no current aictl code writes this table |
 | `listens_port` | string | meaning not established: no current aictl code writes this table |
 | `outbound_targets` | string | meaning not established: no current aictl code writes this table |
 | `memory_idle_mb` | string | meaning not established: no current aictl code writes this table |
 | `memory_active_mb` | string | meaning not established: no current aictl code writes this table |
-| `known_leak` | long | meaning not established: no current aictl code writes this table |
+| `known_leak` | bool | meaning not established: no current aictl code writes this table |
 | `leak_pattern` | string | meaning not established: no current aictl code writes this table |
 | `zombie_risk` | string | meaning not established: no current aictl code writes this table |
 | `cleanup_command` | string | meaning not established: no current aictl code writes this table |
@@ -2569,7 +2592,7 @@ A node creates this table only when the database already has it. Its stored func
 |---|---|---|
 | `id` | long | meaning not established: no current aictl code writes this table |
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `requests.dedup_key` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `requests.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `requests.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `requests.session_id` has the same name |
 | `agent_id` | string | meaning not established: no current aictl code writes this table; `requests.agent_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `requests.tool` has the same name |
@@ -2583,7 +2606,7 @@ A node creates this table only when the database already has it. Its stored func
 | `cost_usd` | real | meaning not established: no current aictl code writes this table; `requests.cost_usd` has the same name |
 | `duration_ms` | real | meaning not established: no current aictl code writes this table; `requests.duration_ms` has the same name |
 | `finish_reason` | string | meaning not established: no current aictl code writes this table; `requests.finish_reason` has the same name |
-| `is_error` | long | meaning not established: no current aictl code writes this table; `requests.is_error` has the same name |
+| `is_error` | bool | meaning not established: no current aictl code writes this table; `requests.is_error` has the same name |
 | `error_type` | string | meaning not established: no current aictl code writes this table; `requests.error_type` has the same name |
 | `http_status` | long | meaning not established: no current aictl code writes this table; `requests.http_status` has the same name |
 | `source` | string | meaning not established: no current aictl code writes this table; `requests.source` has the same name |
@@ -2593,15 +2616,15 @@ A node creates this table only when the database already has it. Its stored func
 | `max_prompt_tokens` | long | meaning not established: no current aictl code writes this table; `requests.max_prompt_tokens` has the same name |
 | `request_bytes` | long | meaning not established: no current aictl code writes this table; `requests.request_bytes` has the same name |
 | `available_tools` | long | meaning not established: no current aictl code writes this table; `requests.available_tools` has the same name |
-| `source_ts` | real | meaning not established: no current aictl code writes this table |
+| `source_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `observation_id` | string | meaning not established: no current aictl code writes this table |
 | `observation_source` | string | meaning not established: no current aictl code writes this table |
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2627,14 +2650,14 @@ A node creates this table only when the database already has it. Its stored func
 |---|---|---|
 | `id` | long | meaning not established: no current aictl code writes this table |
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `tool_invocations.dedup_key` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `tool_invocations.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `tool_invocations.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `tool_invocations.session_id` has the same name |
 | `request_id` | long | meaning not established: no current aictl code writes this table; `tool_invocations.request_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `tool_invocations.tool` has the same name |
 | `tool_name` | string | meaning not established: no current aictl code writes this table; `tool_invocations.tool_name` has the same name |
 | `project_path` | string | meaning not established: no current aictl code writes this table; `tool_invocations.project_path` has the same name |
 | `pid` | long | meaning not established: no current aictl code writes this table; `tool_invocations.pid` has the same name |
-| `is_error` | long | meaning not established: no current aictl code writes this table; `tool_invocations.is_error` has the same name |
+| `is_error` | bool | meaning not established: no current aictl code writes this table; `tool_invocations.is_error` has the same name |
 | `duration_ms` | real | meaning not established: no current aictl code writes this table; `tool_invocations.duration_ms` has the same name |
 | `source` | string | meaning not established: no current aictl code writes this table; `tool_invocations.source` has the same name |
 | `source_event_id` | string | meaning not established: no current aictl code writes this table; `tool_invocations.source_event_id` has the same name |
@@ -2644,15 +2667,15 @@ A node creates this table only when the database already has it. Its stored func
 | `exit_code` | long | meaning not established: no current aictl code writes this table; `tool_invocations.exit_code` has the same name |
 | `input_bytes` | long | meaning not established: no current aictl code writes this table; `tool_invocations.input_bytes` has the same name |
 | `output_bytes` | long | meaning not established: no current aictl code writes this table; `tool_invocations.output_bytes` has the same name |
-| `source_ts` | real | meaning not established: no current aictl code writes this table |
+| `source_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `observation_id` | string | meaning not established: no current aictl code writes this table |
 | `observation_source` | string | meaning not established: no current aictl code writes this table |
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2683,8 +2706,8 @@ A node creates this table only when the database already has it. Its stored func
 | `model` | string | meaning not established: no current aictl code writes this table; `sessions.model` has the same name |
 | `git_branch` | string | meaning not established: no current aictl code writes this table; `sessions.git_branch` has the same name |
 | `git_commit` | string | meaning not established: no current aictl code writes this table; `sessions.git_commit` has the same name |
-| `started_at` | real | meaning not established: no current aictl code writes this table; `sessions.started_at` has the same name |
-| `ended_at` | real | meaning not established: no current aictl code writes this table; `sessions.ended_at` has the same name |
+| `started_at` | datetime | meaning not established: no current aictl code writes this table; `sessions.started_at` has the same name; UTC |
+| `ended_at` | datetime | meaning not established: no current aictl code writes this table; `sessions.ended_at` has the same name; UTC |
 | `source` | string | meaning not established: no current aictl code writes this table; `sessions.source` has the same name |
 | `input_tokens` | long | meaning not established: no current aictl code writes this table; `sessions.input_tokens` has the same name |
 | `output_tokens` | long | meaning not established: no current aictl code writes this table; `sessions.output_tokens` has the same name |
@@ -2694,15 +2717,15 @@ A node creates this table only when the database already has it. Its stored func
 | `request_count` | long | meaning not established: no current aictl code writes this table; `sessions.request_count` has the same name |
 | `tool_call_count` | long | meaning not established: no current aictl code writes this table; `sessions.tool_call_count` has the same name |
 | `files_modified` | long | meaning not established: no current aictl code writes this table; `sessions.files_modified` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `observation_id` | string | meaning not established: no current aictl code writes this table |
 | `observation_source` | string | meaning not established: no current aictl code writes this table |
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2730,10 +2753,10 @@ A node creates this table only when the database already has it. Its stored func
 | `session_id` | string | meaning not established: no current aictl code writes this table; `agents.session_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `agents.tool` has the same name |
 | `model` | string | meaning not established: no current aictl code writes this table; `agents.model` has the same name |
-| `is_sidechain` | long | meaning not established: no current aictl code writes this table; `agents.is_sidechain` has the same name |
-| `started_at` | real | meaning not established: no current aictl code writes this table; `agents.started_at` has the same name |
-| `ended_at` | real | meaning not established: no current aictl code writes this table; `agents.ended_at` has the same name |
-| `completed` | long | meaning not established: no current aictl code writes this table; `agents.completed` has the same name |
+| `is_sidechain` | bool | meaning not established: no current aictl code writes this table; `agents.is_sidechain` has the same name |
+| `started_at` | datetime | meaning not established: no current aictl code writes this table; `agents.started_at` has the same name; UTC |
+| `ended_at` | datetime | meaning not established: no current aictl code writes this table; `agents.ended_at` has the same name; UTC |
+| `completed` | bool | meaning not established: no current aictl code writes this table; `agents.completed` has the same name |
 | `input_tokens` | long | meaning not established: no current aictl code writes this table; `agents.input_tokens` has the same name |
 | `output_tokens` | long | meaning not established: no current aictl code writes this table; `agents.output_tokens` has the same name |
 | `cache_read_tokens` | long | meaning not established: no current aictl code writes this table; `agents.cache_read_tokens` has the same name |
@@ -2745,9 +2768,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2791,21 +2814,21 @@ A node creates this table only when the database already has it. Its stored func
 | `cost_reason` | string | meaning not established: no current aictl code writes this table; `session_usage.cost_reason` has the same name |
 | `unpriced_models` | string | meaning not established: no current aictl code writes this table; `session_usage.unpriced_models` has the same name |
 | `billing_unit` | string | meaning not established: no current aictl code writes this table; `session_usage.billing_unit` has the same name |
-| `billing_amount` | real | meaning not established: no current aictl code writes this table; `session_usage.billing_amount` has the same name |
-| `premium_requests` | real | meaning not established: no current aictl code writes this table; `session_usage.premium_requests` has the same name |
+| `billing_amount` | real | meaning not established: no current aictl code writes this table; `session_usage.billing_amount` has the same name, in the unit `billing_unit` names |
+| `premium_requests` | real | meaning not established: no current aictl code writes this table; `session_usage.premium_requests` has the same name, in premium request units |
 | `estimated_list_usd` | real | meaning not established: no current aictl code writes this table; `session_usage.estimated_list_usd` has the same name |
-| `started_at` | real | meaning not established: no current aictl code writes this table; `session_usage.started_at` has the same name |
-| `last_activity_at` | real | meaning not established: no current aictl code writes this table; `session_usage.last_activity_at` has the same name |
+| `started_at` | datetime | meaning not established: no current aictl code writes this table; `session_usage.started_at` has the same name; UTC |
+| `last_activity_at` | datetime | meaning not established: no current aictl code writes this table; `session_usage.last_activity_at` has the same name; UTC |
 | `project_path` | string | meaning not established: no current aictl code writes this table; `session_usage.project_path` has the same name |
-| `updated_at` | real | meaning not established: no current aictl code writes this table; `session_usage.updated_at` has the same name |
+| `updated_at` | datetime | meaning not established: no current aictl code writes this table; `session_usage.updated_at` has the same name; UTC |
 | `observation_id` | string | meaning not established: no current aictl code writes this table |
 | `observation_source` | string | meaning not established: no current aictl code writes this table |
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2832,7 +2855,7 @@ A node creates this table only when the database already has it. Its stored func
 | `session_id` | string | meaning not established: no current aictl code writes this table; `session_processes.session_id` has the same name |
 | `pid` | long | meaning not established: no current aictl code writes this table; `session_processes.pid` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `session_processes.tool` has the same name |
-| `joined_at` | real | meaning not established: no current aictl code writes this table; `session_processes.joined_at` has the same name |
+| `joined_at` | datetime | meaning not established: no current aictl code writes this table; `session_processes.joined_at` has the same name; UTC |
 | `role` | string | meaning not established: no current aictl code writes this table; `session_processes.role` has the same name |
 | `trace_id` | string | meaning not established: no current aictl code writes this table |
 | `project_path` | string | meaning not established: no current aictl code writes this table |
@@ -2841,9 +2864,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2869,7 +2892,7 @@ A node creates this table only when the database already has it. Its stored func
 |---|---|---|
 | `id` | long | meaning not established: no current aictl code writes this table |
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `session_prompts.dedup_key` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `session_prompts.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `session_prompts.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `session_prompts.session_id` has the same name |
 | `agent_id` | string | meaning not established: no current aictl code writes this table; `session_prompts.agent_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `session_prompts.tool` has the same name |
@@ -2881,9 +2904,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2909,7 +2932,7 @@ A node creates this table only when the database already has it. Its stored func
 |---|---|---|
 | `id` | long | meaning not established: no current aictl code writes this table |
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `skill_uses.dedup_key` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `skill_uses.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `skill_uses.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `skill_uses.session_id` has the same name |
 | `agent_id` | string | meaning not established: no current aictl code writes this table; `skill_uses.agent_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `skill_uses.tool` has the same name |
@@ -2921,9 +2944,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2949,7 +2972,7 @@ A node creates this table only when the database already has it. Its stored func
 |---|---|---|
 | `id` | long | meaning not established: no current aictl code writes this table |
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `file_write_events.dedup_key` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `file_write_events.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `file_write_events.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `file_write_events.session_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `file_write_events.tool` has the same name |
 | `tool_name` | string | meaning not established: no current aictl code writes this table; `file_write_events.tool_name` has the same name |
@@ -2967,9 +2990,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -2995,7 +3018,7 @@ A node creates this table only when the database already has it. Its stored func
 |---|---|---|
 | `id` | long | meaning not established: no current aictl code writes this table |
 | `dedup_key` | string | meaning not established: no current aictl code writes this table; `context_events.dedup_key` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `context_events.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `context_events.ts` has the same name; UTC |
 | `session_id` | string | meaning not established: no current aictl code writes this table; `context_events.session_id` has the same name |
 | `agent_id` | string | meaning not established: no current aictl code writes this table; `context_events.agent_id` has the same name |
 | `tool` | string | meaning not established: no current aictl code writes this table; `context_events.tool` has the same name |
@@ -3014,9 +3037,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -3044,7 +3067,7 @@ A node creates this table only when the database already has it. Its stored func
 | `path` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.path` has the same name |
 | `how` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.how` has the same name |
 | `detail` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.detail` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `session_loaded_files.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `session_loaded_files.ts` has the same name; UTC |
 | `tool` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.tool` has the same name |
 | `agent_id` | string | meaning not established: no current aictl code writes this table; `session_loaded_files.agent_id` has the same name |
 | `project_path` | string | meaning not established: no current aictl code writes this table |
@@ -3053,9 +3076,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |
@@ -3083,7 +3106,7 @@ A node creates this table only when the database already has it. Its stored func
 | `agent_id` | string | meaning not established: no current aictl code writes this table; `session_context_items.agent_id` has the same name |
 | `kind` | string | meaning not established: no current aictl code writes this table; `session_context_items.kind` has the same name |
 | `name` | string | meaning not established: no current aictl code writes this table; `session_context_items.name` has the same name |
-| `ts` | real | meaning not established: no current aictl code writes this table; `session_context_items.ts` has the same name |
+| `ts` | datetime | meaning not established: no current aictl code writes this table; `session_context_items.ts` has the same name; UTC |
 | `path` | string | meaning not established: no current aictl code writes this table; `session_context_items.path` has the same name |
 | `chars` | long | meaning not established: no current aictl code writes this table; `session_context_items.chars` has the same name |
 | `tokens` | long | meaning not established: no current aictl code writes this table; `session_context_items.tokens` has the same name |
@@ -3096,9 +3119,9 @@ A node creates this table only when the database already has it. Its stored func
 | `source_entity_id` | string | meaning not established: no current aictl code writes this table |
 | `producer_id` | string | meaning not established: no current aictl code writes this table |
 | `source_revision` | long | meaning not established: no current aictl code writes this table |
-| `event_time` | datetime | meaning not established: no current aictl code writes this table |
-| `received_time` | datetime | meaning not established: no current aictl code writes this table |
-| `retention_ts` | real | meaning not established: no current aictl code writes this table |
+| `event_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `received_time` | datetime | meaning not established: no current aictl code writes this table; UTC by its type |
+| `retention_ts` | datetime | meaning not established: no current aictl code writes this table; UTC |
 | `presence` | string | meaning not established: no current aictl code writes this table |
 | `source_presence_known` | bool | meaning not established: no current aictl code writes this table |
 | `serialized_fields` | string | meaning not established: no current aictl code writes this table |

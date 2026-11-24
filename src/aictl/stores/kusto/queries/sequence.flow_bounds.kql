@@ -8,22 +8,36 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', requeste
 //   until): the start of a turn about page_rows records back, or since when fewer remain; and the
 //   stamp of that page. older: whether any record lies below the oldest segment.
 // - last_turn: the start of the newest turn, where the open-ended segment can be split.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let context_events_secs = context_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let copilot_session_messages_secs = copilot_session_messages | extend ts = (ts - datetime(1970-01-01)) / 1s, ingested_at = (ingested_at - datetime(1970-01-01)) / 1s;
+let cursor_session_messages_secs = cursor_session_messages | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_digests_secs = session_digests | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_step_text_secs = session_step_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let vscode_chat_messages_secs = vscode_chat_messages | extend ts = (ts - datetime(1970-01-01)) / 1s, ingested_at = (ingested_at - datetime(1970-01-01)) / 1s;
 let bound_count = array_length(segment_bounds);
 let before = iff(bound_count > 0, todouble(segment_bounds[0]), until);
 let versions = materialize(union
-    (requests | project session_id,node_id,ts,_v,key=strcat('r:',iff(isempty(dedup_key),tostring(id),dedup_key))),
-    (tool_invocations | project session_id,node_id,ts,_v,key=strcat('t:',iff(isempty(dedup_key),tostring(id),dedup_key))),
-    (session_prompts | project session_id,node_id,ts,_v,key=strcat('p:',iff(isempty(dedup_key),tostring(id),dedup_key))),
-    (events | project session_id,node_id,ts,_v,key=strcat('e:',iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key))),
-    (context_events | project session_id,node_id,ts,_v,key=strcat('c:',iff(isempty(dedup_key),tostring(id),dedup_key))),
-    (session_steps | project session_id,node_id,ts,_v,key=strcat('s:',step_key)),
-    (session_step_text | project session_id,node_id,ts,_v,key=strcat('x:',step_key)),
-    (session_digests | project session_id,node_id,ts,_v,key=strcat('d:',agent_id,':',kind,':',tostring(seq))),
-    (copilot_session_messages | project session_id,node_id,ts,_v,key=strcat('m:',source_table,':',tostring(source_row_id))),
-    (cursor_session_messages | project session_id,node_id,ts,_v,key=strcat('u:',iff(isempty(source_key),tostring(source_row_id),source_key))),
-    (vscode_chat_messages | project session_id,node_id,ts,_v,key=strcat('v:',source_file,':',tostring(source_row_id))),
-    (agents | project session_id,node_id,ts=coalesce(ended_at,started_at),_v,key=strcat('a:',agent_id)),
-    (sessions | project session_id,node_id,ts=coalesce(ended_at,started_at),_v,key='session')
+    (requests_secs | project session_id,node_id,ts,_v,key=strcat('r:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (tool_invocations_secs | project session_id,node_id,ts,_v,key=strcat('t:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (session_prompts_secs | project session_id,node_id,ts,_v,key=strcat('p:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (events_secs | project session_id,node_id,ts,_v,key=strcat('e:',iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key))),
+    (context_events_secs | project session_id,node_id,ts,_v,key=strcat('c:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (session_steps_secs | project session_id,node_id,ts,_v,key=strcat('s:',step_key)),
+    (session_step_text_secs | project session_id,node_id,ts,_v,key=strcat('x:',step_key)),
+    (session_digests_secs | project session_id,node_id,ts,_v,key=strcat('d:',agent_id,':',kind,':',tostring(seq))),
+    (copilot_session_messages_secs | project session_id,node_id,ts,_v,key=strcat('m:',source_table,':',tostring(source_row_id))),
+    (cursor_session_messages_secs | project session_id,node_id,ts,_v,key=strcat('u:',iff(isempty(source_key),tostring(source_row_id),source_key))),
+    (vscode_chat_messages_secs | project session_id,node_id,ts,_v,key=strcat('v:',source_file,':',tostring(source_row_id))),
+    (agents_secs | project session_id,node_id,ts=coalesce(ended_at,started_at),_v,key=strcat('a:',agent_id)),
+    (sessions_secs | project session_id,node_id,ts=coalesce(ended_at,started_at),_v,key='session')
 | where session_id == requested_session and (all_nodes or node_id == requested_node)
 | where isnull(ts) or ts < until
 // The session row comes with every segment read: a change to it is a change of the newest segment.
@@ -39,9 +53,9 @@ let records = versions
     | summarize arg_max(_v, ts) by key;
 let cutoff = toscalar(records | top page_rows by ts desc | summarize iff(count() < page_rows, real(null), min(ts)));
 let turn_starts = union
-    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_prompts_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | where isempty(agent_id) | project ts),
-    (session_steps | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_steps_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | where role == 'user' and kind == 'message' | project ts)
     | where ts > since and ts < before;
 let turn_start = toscalar(turn_starts | where isnotnull(cutoff) and ts <= cutoff | summarize max(ts));
@@ -50,9 +64,9 @@ let page_start = iff(isnull(cutoff) or isnull(turn_start), since, turn_start);
 let page_versions = toscalar(versions | where ts >= page_start and (ts < before or bound_count == 0)
     | summarize pack_array(count(), tostring(max(_v))));
 let newest_turn = toscalar(union
-    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_prompts_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | where isempty(agent_id) | project ts),
-    (session_steps | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_steps_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | where role == 'user' and kind == 'message' | project ts)
     | where ts > since and ts < until | summarize max(ts));
 print stamps=coalesce(toscalar(stamps), dynamic([])), page_lo=page_start, page_stamp=page_versions,

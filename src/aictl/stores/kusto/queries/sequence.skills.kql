@@ -1,18 +1,22 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
     since:real, until:real, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_loaded_files_secs = session_loaded_files | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
+let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
-let steps = session_steps
+let steps = session_steps_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
     | where not(column_ifexists('_deleted',false)) and kind == 'skill' and ts >= since and ts < until
     | project ['project'], node_id, part='steps', ts, name, key=step_key, row_type='evidence', values=pack_array(ts,agent_id,name,phase,source,step_key,turn_id,'');
-let uses = skill_uses
+let uses = skill_uses_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
     | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until
     | project ['project'], node_id, part='uses', ts, name, key=dedup_key, row_type='evidence',
         values=pack_array(ts,agent_id,name,iff(trigger=='context-load','loaded','invoked'),'skill_uses',dedup_key,'','');
-let loaded = session_loaded_files
+let loaded = session_loaded_files_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, path, how
     | where not(column_ifexists('_deleted',false)) and how == 'skill' and ts >= since and ts < until

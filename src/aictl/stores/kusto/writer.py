@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import threading
@@ -10,7 +11,7 @@ import time
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..base import InvalidRowError, Row, StoreError
@@ -53,7 +54,8 @@ def _column_type(value: Any, kind: str) -> bool:
     if kind == "string":
         return isinstance(value, str)
     if kind == "bool":
-        return isinstance(value, bool)
+        # A collector's 0/1 flag is a bool; the writer stores it as one (stored_value).
+        return isinstance(value, bool) or (type(value) is int and value in (0, 1))
     if kind == "long":
         return type(value) is int and -(2**63) <= value < 2**63
     if kind == "int":
@@ -69,8 +71,45 @@ def _column_type(value: Any, kind: str) -> bool:
             except ValueError:
                 return False
             return True
-        return False
+        # Collectors keep times as epoch seconds; the writer stores them as UTC datetimes.
+        return type(value) in (float, int) and math.isfinite(value) and _EPOCH_MIN <= value <= _EPOCH_MAX
     return kind == "dynamic"
+
+
+# The epoch seconds a time column accepts: 1970 to 2200. A time outside is a unit error
+# (milliseconds), which the writer refuses rather than storing a date centuries away.
+_EPOCH_MIN = 0.0
+_EPOCH_MAX = 7_258_118_400.0
+
+
+def epoch_datetime(seconds: float) -> str:
+    """Epoch seconds as the ISO UTC text Kusto ingests into a ``datetime`` column, to the microsecond.
+
+    The one conversion of a time at ingest: equal floats give equal text, so a time in a key stays
+    one key."""
+    us = round(seconds * 1_000_000)
+    stamp = datetime.fromtimestamp(us // 1_000_000, tz=timezone.utc).replace(microsecond=us % 1_000_000, tzinfo=None)
+    return stamp.isoformat(timespec="microseconds") + "Z"
+
+
+def stored_value(value: Any, kind: str) -> Any:
+    """*value*, valid for a column of *kind* (``_column_type``), as it is stored: epoch seconds as a UTC
+    datetime, a 0/1 flag as a bool, JSON text in a ``dynamic`` column as its structure."""
+    if value is None:
+        return None
+    if kind == "datetime" and type(value) in (float, int):
+        return epoch_datetime(value)
+    if kind == "bool":
+        return bool(value)
+    if kind == "dynamic" and isinstance(value, (str, bytes)):
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except ValueError:
+            # Not JSON: keep the text as a JSON string value rather than lose it.
+            return value
+    return value
 
 
 class KustoWriter:
@@ -138,8 +177,10 @@ class KustoWriter:
                 ts = None
                 if spec := TRIM_TIMESTAMPS.get(name):
                     ts = row.get(spec[0])
-                    if ts is not None and spec[1] == "datetime":
-                        ts = (datetime.fromisoformat(ts.replace("Z", "+00:00")) if isinstance(ts, str) else ts).timestamp()
+                    if isinstance(ts, str):
+                        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if isinstance(ts, datetime):
+                        ts = (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).timestamp()
                 item = _Pending(line, len(line) + 1, ts)  # json_line returns ASCII.
                 queue = self._queues.setdefault(name, _Queue())
                 if item.size > min(self._max_bytes, _BATCH_BYTES):
@@ -183,7 +224,7 @@ class KustoWriter:
             if not valid:
                 raise InvalidRowError(f"{name}.{column} expects {columns[column]}")
         record = dict.fromkeys(columns)
-        record.update(row)
+        record.update({column: stored_value(value, columns[column]) for column, value in row.items()})
         record.update(node_id=self._node_id, **{table.version: next_version()})
         if name in LEGACY_COLUMNS:
             identity = "\x00".join(str(record[key]) for key in table.key if key != "project")

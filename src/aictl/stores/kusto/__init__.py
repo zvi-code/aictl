@@ -49,12 +49,6 @@ def read_only_layout(client: Any, settings: KustoSettings) -> dict[str, Any]:
     return state.summary(verdict, warning)
 
 
-def _auto_migrate() -> bool:
-    from ...platforms import load_config
-
-    return bool(getattr(load_config(), "auto_migrate", False))
-
-
 def open_store(settings: KustoSettings | None = None, *, capture: bool = True, read_only: bool = False,
                trim_before=lambda: 0.0) -> Store:
     from .writer import KustoWriter
@@ -72,20 +66,17 @@ def open_store(settings: KustoSettings | None = None, *, capture: bool = True, r
         return Store(writer=KustoWriter(None, node_id=settings.node_id, capture=False))
 
     from .client import KustoClientFactory
-    from .migrations import runner
     from .reader import KustoReader
     from .schema import ensure_schema
     from .tables import tables_with_retention
 
     modes = _configured_modes(settings)
     client = KustoClientFactory.client(settings)
-    # Writes start only after the layout check: an incompatible layout raises here, unless
-    # [storage] auto_migrate allows the migration to run.
-    migrate = runner(client, settings.database, lambda line: log.warning("%s", line)) if _auto_migrate() else None
+    # Writes start only after the layout check: an incompatible layout raises here.
     # The retention the user configured is what the schema applies.
     configured = {"tables": tables_with_retention(settings.retention)} if settings.retention else {}
     schema = ensure_schema(client, settings.database, modes=modes, node_id=settings.node_id,
-                           cluster=settings.cluster, migrate=migrate, **configured)
+                           cluster=settings.cluster, **configured)
     if not schema.streaming_available:
         modes = {name: "queued" if mode == "streaming" else mode for name, mode in modes.items()}
     # The writer names logical tables; the ingester writes this node's tables (nodes.py).

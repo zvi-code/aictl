@@ -1,12 +1,23 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
-let request_facts = requests
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let files_secs = files | extend mtime = (mtime - datetime(1970-01-01)) / 1s, first_seen = (first_seen - datetime(1970-01-01)) / 1s, last_read = (last_read - datetime(1970-01-01)) / 1s, last_changed = (last_changed - datetime(1970-01-01)) / 1s;
+let process_snapshots_secs = process_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_usage_secs = session_usage | extend started_at = (started_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s, updated_at = (updated_at - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let request_facts = requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | summarize arg_max(_v, deleted, tool, cache_read_tokens, cache_creation_tokens, duration_ms, ttft_ms)
         by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false))
     | project tool, cache_read_tokens, cache_creation_tokens, duration_ms, ttft_ms;
-let usage = session_usage
+let usage = session_usage_secs
     | where all_nodes or node_id == requested_node
     | extend deleted=column_ifexists('_deleted', false)
     | summarize arg_max(_v, deleted, tool, cache_read_tokens, cache_creation_tokens)
@@ -18,7 +29,7 @@ union hint.concurrency=1
         | summarize cr=max(cache_read_tokens), cw=max(cache_creation_tokens), reply=max(duration_ms), ttft=max(ttft_ms) by tool
         | extend fact_names=pack_array('requests', iff(cr > 0, 'cache_read', ''), iff(cw > 0, 'cache_write', ''),
                                   iff(reply > 0, 'reply_latency', ''), iff(ttft > 0, 'ttft', ''))),
-    (tool_invocations | where all_nodes or node_id == requested_node
+    (tool_invocations_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
                  is_call=not(tool_name startswith_cs 'permission:'), has_confirm=isnotempty(confirm)
         | summarize arg_max(_v, deleted, tool, is_call, has_confirm, duration_ms) by ['project'], node_id, fact_key
@@ -27,36 +38,36 @@ union hint.concurrency=1
                     duration=max(duration_ms) by tool
         | extend fact_names=pack_array('tool_rows', iff(calls > 0, 'tool_calls', ''), iff(confirms > 0, 'confirms', ''),
                                   iff(duration > 0, 'tool_duration', ''))),
-    (session_prompts | where all_nodes or node_id == requested_node
+    (session_prompts_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
                  has_text=isnotempty(text), has_file=isnotempty(prompt_file)
         | summarize arg_max(_v, deleted, tool, has_text, has_file) by ['project'], node_id, fact_key
         | where not(coalesce(deleted, false))
         | summarize texts=countif(has_text), files=countif(has_file) by tool
         | extend fact_names=pack_array('prompts', iff(texts > 0, 'prompt_text', ''), iff(files > 0, 'prompt_files', ''))),
-    (skill_uses | where all_nodes or node_id == requested_node
+    (skill_uses_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted, tool) by ['project'], node_id, fact_key
         | where not(coalesce(deleted, false)) | distinct tool | extend fact_names=dynamic(['skills'])),
-    (agents | where all_nodes or node_id == requested_node
+    (agents_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted, tool, is_sidechain) by ['project'], node_id, session_id, agent_id
         | where not(coalesce(deleted, false)) and is_sidechain == 1
         | distinct tool | extend fact_names=dynamic(['subagents'])),
-    (sessions | where all_nodes or node_id == requested_node
+    (sessions_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted, tool) by ['project'], node_id, session_id
         | where not(coalesce(deleted, false)) | distinct tool | extend fact_names=dynamic(['sessions'])),
-    (process_snapshots | where all_nodes or node_id == requested_node
+    (process_snapshots_secs | where all_nodes or node_id == requested_node
         | extend deleted=column_ifexists('_deleted', false)
         | summarize arg_max(_v, deleted, tool) by ['project'], node_id, ts, pid
         | where not(coalesce(deleted, false))
         | distinct tool | extend fact_names=dynamic(['processes'])),
-    (files | where all_nodes or node_id == requested_node
+    (files_secs | where all_nodes or node_id == requested_node
         | summarize arg_max(_v, _deleted, category, tool) by ['project'], node_id, path
         | where not(coalesce(_deleted, false)) and category contains 'memory'
         | distinct tool | extend fact_names=dynamic(['memory_files'])),
-    (file_write_events | where all_nodes or node_id == requested_node
+    (file_write_events_secs | where all_nodes or node_id == requested_node
         | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
         | extend has_lines=isnotnull(parse_json(detail).lines_added)
         | summarize arg_max(_v, _deleted, tool, has_lines) by ['project'], node_id, fact_key

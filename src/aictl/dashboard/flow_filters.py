@@ -78,7 +78,8 @@ def session_kql_url(settings, sid: str, since: float | None, until: float | None
     if cluster.scheme != "https" or not cluster.hostname or cluster.username or cluster.password:
         return None
     bounds = "".join(
-        f" | where ts {op} {float(t)!r}" for t, op in ((since, ">="), (until, "<")) if t is not None and math.isfinite(t)
+        f" | where ts {op} unixtime_seconds_todatetime({float(t)!r})" for t, op in ((since, ">="), (until, "<"))
+        if t is not None and math.isfinite(t)
     )
     query = (
         f"let sid = {json.dumps(sid)};\n"
@@ -87,7 +88,7 @@ def session_kql_url(settings, sid: str, since: float | None, until: float | None
         # `_deleted` is null on rows written before tombstones, so a bare not(_deleted) would drop them.
         "| summarize arg_max(_v, *) by step_key\n| where not(coalesce(column_ifexists('_deleted', false), false))\n"
         "| top 500 by ts desc\n| order by ts asc, step_key asc\n"
-        "| project event_time=unixtime_seconds_todatetime(ts), node_id, ['kind'], phase, name, agent_id, turn_id, round_id, "
+        "| project event_time=ts, node_id, ['kind'], phase, name, agent_id, turn_id, round_id, "
         "tool_call_id, trace_id, context_tokens, context_limit, input_tokens, output_tokens, source_order"
     )
     return f"https://{cluster.netloc}/{quote(settings.database, safe='')}?" + urlencode({"web": "1", "autorun": "false", "query": query})

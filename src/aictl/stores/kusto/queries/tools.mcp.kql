@@ -7,12 +7,14 @@ declare query_parameters(
 // The dashboard groups the names by MCP server, so every figure here can be added up:
 // durations come as a histogram (bucket b counts calls of about 10^(b/20) ms, within 6 %),
 // and sessions of server tools as a set of session hashes.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let wanted = (t:real, n:string, s:string, client:string) {
     t between (since .. until) and isnotempty(s)
     and (not(restrict_sessions) or strcat(strlen(n), ':', n, s) in (session_keys))
     and (not(restrict_tools) or client in (requested_tools))
 };
-let versions = tool_invocations
+let versions = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key);
 // A call's newest version is in the window only if one of its versions is.

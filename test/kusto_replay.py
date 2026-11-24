@@ -23,6 +23,7 @@ from aictl.stores.kusto.current import view_query as current_view_query
 from aictl.stores.kusto.reader import KustoReader
 from aictl.stores.kusto.recorded import RecordedKustoClient, UnrecordedQueryError
 from aictl.stores.kusto.tables import TABLES
+from aictl.stores.kusto.writer import stored_value
 
 DATABASE = "aictl_perf_test"
 CLUSTER = os.environ.get("AICTL_KUSTO_CLUSTER", "https://example.swedencentral.dev.kusto.windows.net")
@@ -50,6 +51,8 @@ def _json(value):
 
 
 def _cell(value, typ):
+    # Rows hold what collectors produce (epoch seconds, 0/1 flags, JSON text); store them as the writer does.
+    value = stored_value(value, typ)
     if typ == "string":
         return _json("" if value is None else str(value))
     if typ == "bool" and value is not None:
@@ -125,7 +128,7 @@ class Facts:
             chunks, digest = [], hashlib.sha256()
             for start in range(0, len(rows), 400):
                 cells = [
-                    [row.get(k, defaults[k]) for k in inline]
+                    [stored_value(row.get(k, defaults[k]), typ) for k, typ in inline.items()]
                     for row in rows[start:start + 400]
                 ]
                 raw = bind(_json(cells)).encode("utf-8")

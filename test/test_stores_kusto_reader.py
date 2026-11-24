@@ -226,7 +226,7 @@ def test_schema_names_required_role_when_retention_is_denied():
 def test_open_store_applies_streaming_fallback_to_writer(monkeypatch):
     from aictl.stores.kusto import schema
 
-    def provision(_, database, *, modes, node_id, cluster, migrate):
+    def provision(_, database, *, modes, node_id, cluster):
         assert database == SETTINGS.database and node_id == SETTINGS.node_id and cluster == SETTINGS.cluster
         assert modes["files"] == modes["metrics"] == "streaming"
         assert modes["file_history"] == "queued"

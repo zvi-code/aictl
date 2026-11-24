@@ -2,14 +2,17 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // A tool result stays in the conversation and is sent again with every later request of the same session
 // and agent. Bytes carried = result bytes x later requests: an upper bound, since compaction and truncation
 // of the context are not counted. Only requests and calls in the period count.
-let reqs = requests
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let reqs = requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
     | project node_id, session_id, agent_id, ts, is_request=1, tool='', tool_name='', output_bytes=long(null);
-let calls = tool_invocations
+let calls = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, output_bytes

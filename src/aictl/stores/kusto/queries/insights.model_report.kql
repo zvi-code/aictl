@@ -26,16 +26,19 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // request sorts before a call at the same ts, since it comes before the calls it asks for, and requests at one ts
 // sort by a hash of their key so the result is stable. The order is taken over all rows of those sessions before
 // any filter. A call with no request before it, or whose request has no model, is not attributed.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let Day = 86400000.0;
 // Sessions first: only the rows of sessions with a request or call version in the period are reduced, plus every
 // tombstone (an old tombstone can carry an empty session_id). The period applies again after the reduction.
 // When the period starts at or before the first row, every session counts and the filter is skipped.
 let active = toscalar(union
-        (requests | where (all_nodes or node_id == requested_node) and ts >= since and ts < until | distinct session_id),
-        (tool_invocations | where (all_nodes or node_id == requested_node) and ts >= since and ts < until | distinct session_id)
+        (requests_secs | where (all_nodes or node_id == requested_node) and ts >= since and ts < until | distinct session_id),
+        (tool_invocations_secs | where (all_nodes or node_id == requested_node) and ts >= since and ts < until | distinct session_id)
     | summarize make_set(session_id));
-let everything = since <= toscalar(union (requests | project ts), (tool_invocations | project ts) | summarize min(ts));
-let all_calls = materialize(tool_invocations
+let everything = since <= toscalar(union (requests_secs | project ts), (tool_invocations_secs | project ts) | summarize min(ts));
+let all_calls = materialize(tool_invocations_secs
     | where (all_nodes or node_id == requested_node)
         and (everything or session_id in (active) or coalesce(column_ifexists('_deleted', false), false))
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
@@ -53,7 +56,7 @@ let all_calls = materialize(tool_invocations
 let event_calls = all_calls | where not(store);
 let event_called = toscalar(event_calls | summarize make_set(session_id));
 // The requests in the period, and every request of a session with a tool call in the period.
-let reqs = materialize(requests
+let reqs = materialize(requests_secs
     | where (all_nodes or node_id == requested_node)
         and (everything or session_id in (active) or coalesce(column_ifexists('_deleted', false), false))
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)

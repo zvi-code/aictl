@@ -11,6 +11,7 @@ let crossed = current_rows | summarize copies=count() by dedup_key | where copie
 union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
 | where not(coalesce(_deleted, false))
+| extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error)
 | where isempty(agent_id)
 | summarize arg_max(ts, finish_reason) by node_id, session_id
 | where finish_reason in ('end_turn', 'stop', 'stop_sequence')

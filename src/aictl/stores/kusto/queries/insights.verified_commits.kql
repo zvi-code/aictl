@@ -25,6 +25,8 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // no file (unknown_change). own_unseen repeats the split with only the committing agent's own edits and tests.
 // A session whose shell calls carry no command text (capture not full on its node) is left out of
 // every count but sessions_no_text: none of its commits can be seen and most test runs cannot.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let EditTools = dynamic(['edit', 'write', 'multiedit', 'notebookedit', 'create', 'apply_patch', 'str_replace_editor',
     'str_replace_based_edit_tool', 'create_file', 'replace_string_in_file', 'multi_replace_string_in_file',
     'insert_edit_into_file', 'edit_file', 'edit_notebook_file', 'copilot_replacestring', 'copilot_multireplacestring',
@@ -52,7 +54,7 @@ let NotSourceRe = @'(?i)\.(?:md|mdx|markdown|rst|txt|adoc|json|jsonl|ndjson|csv|
 // (since October 2026, and from session-store.db). Claude Code reports failure only, and a run it started in
 // the background reports success at launch; VS Code keeps an exit code only for a failed command.
 let PassTools = dynamic(['copilot-cli', 'copilot-desktop']);
-let versions = tool_invocations
+let versions = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | where tool_name in~ (EditTools) or tool_name in~ (ShellTools) or tool_name in~ (TestTools);
 // Keys first: the sessions with a call in the period, then every version of their calls.

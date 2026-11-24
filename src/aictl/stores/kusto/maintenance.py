@@ -66,7 +66,7 @@ def schema_rows():
 
 # Do not soft-delete raw signals that also hold counts or timings.
 TRIM_TIMESTAMPS = {
-    name: ("ts", "real") for name in (
+    name: ("ts", "datetime") for name in (
         "agents_text", "events_text", "file_history_text", "hook_calls_text", "memory_snapshots_text",
         "session_prompts", "session_step_text", "session_digests", "session_thinking",
     )
@@ -226,38 +226,6 @@ def reset_store(settings, tables: list[str] | None = None, *, node: str | None =
     return status
 
 
-def migrate_store(settings, *, dry_run: bool, echo=print, take_over: bool = False, slice_days: int = 1):
-    """Run, or with *dry_run* only count and print, the migrations from the stored layout to this one."""
-    from . import _configured_modes
-    from .migrations import run, runner
-    from .schema import SHARED, ensure_schema
-    from .tables import tables_with_retention
-
-    client = KustoClientFactory.client(settings)
-    state = check_layout(client, settings.database, settings.node_id)
-    verdict, stored = state.verdict, state.stored
-    if verdict in (L.NEWER, L.RESET):
-        raise state.error(settings.cluster, settings.database)
-    if verdict != L.MIGRATE:
-        echo(f"Nothing to migrate: the stored layout of node {settings.node_id} is {L.describe(stored)} and this "
-             f"aictl writes layout {L.LAYOUT_VERSION} ({verdict}).")
-        return verdict, []
-    configured = tables_with_retention(settings.retention) if settings.retention else None
-    migrate = runner(client, settings.database, echo, take_over=take_over, slice_days=slice_days, tables=configured)
-    if dry_run:
-        if state.mode == SHARED:
-            epoch = stored.data_epoch if stored is not None and stored.data_epoch else "(new epoch)"
-            return verdict, migrate.database(state, epoch, settings.node_id, dry_run=True)
-        return verdict, run(stored or L.UNVERSIONED, count=migrate.query, execute=migrate.command,
-                            record=lambda *_: None, dry_run=True, echo=echo, scope="node")
-    kwargs = {"tables": configured} if configured else {}
-    status = ensure_schema(client, settings.database, modes=_configured_modes(settings), node_id=settings.node_id,
-                           cluster=settings.cluster, migrate=migrate, **kwargs)
-    sync_data_epoch(restart_directory(settings.cluster, settings.database, settings.node_id), status.data_epoch,
-                    kept_data=status.epoch_kept_data)
-    return verdict, status
-
-
 def legacy_tables(settings) -> list[tuple[str, int, int]]:
     """The shared tables the node_tables migration kept (legacy__*): name, rows, sealed extent bytes.
 
@@ -272,17 +240,3 @@ def legacy_tables(settings) -> list[tuple[str, int, int]]:
             for name in sorted(state.renamed)]
 
 
-def drop_legacy(settings, tables: list[str]) -> str:
-    """Drop the legacy__ tables the user confirmed, once the node_tables migration has finished."""
-    from .migrations import legacy_drop_command
-    from .schema import NODE_TABLES, NODES, done_steps, management
-
-    client = KustoClientFactory.client(settings)
-    state = check_layout(client, settings.database, settings.node_id)
-    if state.mode != NODES or NODE_TABLES not in done_steps(state.rows):
-        raise StoreError("The node_tables migration has not finished; the legacy tables are still the only copy")
-    if wrong := [t for t in tables if t not in state.renamed]:
-        raise StoreError(f"Not a legacy table of the migration: {', '.join(wrong)}")
-    text = legacy_drop_command(tables)
-    management(client, settings.database)(text, "Database Admin", "Drop the legacy shared tables")
-    return text

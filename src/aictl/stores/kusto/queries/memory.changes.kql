@@ -2,9 +2,11 @@
 // hashes and sizes of the content before and after (file_blobs). Pages by after_row.
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_project:string='',
     requested_session:string, requested_agent:string='', after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
 let wanted_agent = requested_agent;
-file_write_events
+file_write_events_secs
 // session_id is carried by every tombstone, so it may filter before the versions are reduced.
 | where session_id == requested_session and (all_nodes or node_id == requested_node)
     and (isempty(requested_project) or ['project'] == requested_project)

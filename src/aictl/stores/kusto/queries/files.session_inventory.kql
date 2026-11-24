@@ -1,7 +1,9 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='',
     requested_tool:string='', requested_path:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let files_secs = files | extend mtime = (mtime - datetime(1970-01-01)) / 1s, first_seen = (first_seen - datetime(1970-01-01)) / 1s, last_read = (last_read - datetime(1970-01-01)) / 1s, last_changed = (last_changed - datetime(1970-01-01)) / 1s;
 let path_prefix = trim_end(@'/+', replace_string(requested_path, '\\', '/'));
-files
+files_secs
 | where all_nodes or node_id == requested_node
 | summarize arg_max(_v, *) by ['project'], node_id, path
 | where not(column_ifexists('_deleted', false))

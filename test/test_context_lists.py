@@ -154,8 +154,11 @@ def test_every_view_that_reads_context_items_expands_the_pointers():
     assert readers, "no view reads session_context_items"
     for name, text in readers.items():
         assert EXPANSION_KQL in text, f"{name} must carry context_lists.EXPANSION_KQL as it is"
-        legs = re.findall(r"session_context_items\b[^\n]*\n\s*\| invoke context_items_expanded\(\)", text)
-        assert len(legs) == text.count("session_context_items"), f"{name}: every read of the table expands it"
+        # A view reads the table as session_context_items_secs (times in epoch seconds, docs/storage-schema.md).
+        code = re.sub(r"let session_context_items_secs = session_context_items \| extend [^\n]*\n", "", text)
+        legs = re.findall(r"session_context_items(?:_secs)?\b[^\n]*\n\s*\| invoke context_items_expanded\(\)", code)
+        reads = re.findall(r"session_context_items(?:_secs)?\b", code)
+        assert len(legs) == len(reads), f"{name}: every read of the table expands it"
 
 
 def test_the_expansion_matches_the_pointer_names():

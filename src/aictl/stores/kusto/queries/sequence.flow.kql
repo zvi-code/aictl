@@ -1,25 +1,40 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
     since:real, until:real, keep_text:bool=true, text_floor:real=0.0, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
+let agents_text_secs = agents_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let context_events_secs = context_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let copilot_session_messages_secs = copilot_session_messages | extend ts = (ts - datetime(1970-01-01)) / 1s, ingested_at = (ingested_at - datetime(1970-01-01)) / 1s;
+let cursor_session_messages_secs = cursor_session_messages | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_digests_secs = session_digests | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_step_text_secs = session_step_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let vscode_chat_messages_secs = vscode_chat_messages | extend ts = (ts - datetime(1970-01-01)) / 1s, ingested_at = (ingested_at - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
-let session_rows = materialize(sessions
+let session_rows = materialize(sessions_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, session_id
     | where not(column_ifexists('_deleted', false)));
 // Records are read in the requested time window before their versions are reduced: ts is in the
 // tombstone scope of requests and tool calls, and the other windowed tables have no tombstones.
-let calls = materialize(requests
+let calls = materialize(requests_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | where ts >= since and ts < until
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted', false)));
-let prompts = materialize(session_prompts
+let prompts = materialize(session_prompts_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | where ts >= since and ts < until
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted', false)));
-let flow_tools = materialize(tool_invocations
+let flow_tools = materialize(tool_invocations_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | where ts >= since and ts < until
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key)
@@ -33,54 +48,54 @@ let tool_text = union isfuzzy=true
     | summarize arg_max(_v, *) by ['project'], node_id, dedup_key
     | where not(_deleted)
     | project ['project'], node_id, key=dedup_key, retained_input=input, retained_result=result_summary, retained_target=target;
-let steps = materialize(session_steps
+let steps = materialize(session_steps_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | where ts >= since and ts < until
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
     | where not(column_ifexists('_deleted', false)));
-let step_text = session_step_text
+let step_text = session_step_text_secs
     | where keep_text and session_id == requested_session and (all_nodes or node_id == requested_node)
     | where ts >= since and ts < until
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
     | where not(column_ifexists('_deleted', false)) and ts >= text_floor
     | project ['project'], node_id, session_id, step_key, retained=text;
 let message_rows = union
-    (copilot_session_messages | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (copilot_session_messages_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | where ts >= since and ts < until
         | summarize arg_max(_v, *) by ['project'], node_id, source_table, source_row_id
         | where not(column_ifexists('_deleted',false))
         | project ['project'], node_id, ts, role, content, model='', key=strcat('copilot:',source_table,':',source_row_id)),
-    (vscode_chat_messages | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (vscode_chat_messages_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | summarize arg_max(_v, *) by ['project'], node_id, session_id, source_file, source_row_id
         | where not(column_ifexists('_deleted',false))
         | project ['project'], node_id, ts, role, content, model, key=strcat('vscode:',source_file,':',source_row_id)),
-    (cursor_session_messages | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (cursor_session_messages_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | where ts >= since and ts < until
         | extend key=iff(isempty(source_key),tostring(source_row_id),source_key)
         | summarize arg_max(_v, *) by ['project'], node_id, key
         | where not(column_ifexists('_deleted',false))
         | project ['project'], node_id, ts, role, content, model='', key=strcat('cursor:',key));
-let agent_rows = materialize(agents
+let agent_rows = materialize(agents_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(column_ifexists('_deleted',false)) and agent_id != requested_session
     | where (started_at >= since and started_at < until) or (ended_at >= since and ended_at < until));
 let tasks = union isfuzzy=true
     (datatable(['project']:string,node_id:string,session_id:string,agent_id:string,_v:datetime,ts:real,task:string,_deleted:bool)[]),
-    (agents_text | project ['project'], node_id, session_id=column_ifexists('session_id',''), agent_id, _v, ts, task,
+    (agents_text_secs | project ['project'], node_id, session_id=column_ifexists('session_id',''), agent_id, _v, ts, task,
         _deleted=column_ifexists('_deleted',false))
     | where keep_text and (all_nodes or node_id == requested_node) and session_id == requested_session
     | where agent_id in (agent_rows | project agent_id)
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(_deleted) and ts >= text_floor
     | project ['project'], node_id, session_id, agent_id, retained_task=task;
-let session_events = materialize(context_events
+let session_events = materialize(context_events_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | where ts < until
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted',false)));
-let known_events = events
+let known_events = events_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key), deleted=column_ifexists('_deleted',false)
     | summarize arg_max(_v, deleted) by ['project'],node_id,key
@@ -89,7 +104,7 @@ let known_events = events
 // The session's tool is that of its first model call, wherever the window starts: read only for
 // a session whose row names no tool.
 let session_tool = toscalar(session_rows | where isnotempty(tool) | count) > 0;
-let first_tool = requests
+let first_tool = requests_secs
     | where not(session_tool)
     | where session_id == requested_session and (all_nodes or node_id == requested_node) and isnotempty(tool)
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
@@ -117,7 +132,7 @@ union
         | project row_type='native', ts, key=step_key, source_order, node_id, ['project'],
                   values=pack_array(ts,kind,role,step_key,turn_id,text_status,retained,agent_id)),
     // What the agent said it achieved when it ended a task (Copilot CLI session.task_complete summary).
-    (session_digests
+    (session_digests_secs
         | where keep_text and session_id == requested_session and (all_nodes or node_id == requested_node) and kind == 'task_summary'
         | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, kind, seq
         | where not(column_ifexists('_deleted', false)) and ts >= since and ts < until and ts >= text_floor

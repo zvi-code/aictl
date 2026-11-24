@@ -5,9 +5,11 @@ declare query_parameters(
     real_calls:bool = true, inclusive_end:bool = true, requested_skill:string = '',
     restrict_tools:bool = false, requested_tools:dynamic = dynamic([]), after_row:string = '', row_limit:long
 );
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let cursor_row = parse_json(after_row);
 let calls = materialize(
-    tool_invocations
+    tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | where isempty(requested_session) or session_id == requested_session
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)

@@ -54,7 +54,10 @@ class RowIngester(Protocol):
 
 
 def json_value(value: object) -> object:
-    """A value as JSON can carry it. Datetimes become ISO text, bytes UTF-8 text, NaN null."""
+    """A value as JSON can carry it. Datetimes become ISO text in UTC, bytes UTF-8 text, NaN null.
+
+    A dict or list stays a JSON object or array: the writer passes one only for a ``dynamic``
+    column, which Kusto stores as the structure (a JSON string would stay a string)."""
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
@@ -68,8 +71,10 @@ def json_value(value: object) -> object:
         return value.isoformat()
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).decode("utf-8", errors="replace")
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value)
+    if isinstance(value, dict):
+        return {str(k): json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_value(v) for v in value]
     return str(value)
 
 

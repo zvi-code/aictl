@@ -3,7 +3,9 @@ declare query_parameters(
     since:real = real(null), until:real = real(null), requested_tool:string = '',
     requested_kinds:dynamic = dynamic([]), requested_session:string = '', raw_session:bool = false, row_limit:long
 );
-events
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+events_secs
 | where (all_nodes or node_id == requested_node) and (isempty(requested_project) or ['project'] == requested_project)
 | where (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
 | where (isempty(requested_tool) or tool == requested_tool) and (array_length(requested_kinds) == 0 or kind in (requested_kinds))

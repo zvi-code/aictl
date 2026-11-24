@@ -1,6 +1,8 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
 // What the next tool call of the same session and agent is after a failed call, and runs of consecutive
 // failed calls. Calls compare by tool name and a hash of their target, so no target text leaves the cluster.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let failure_runs = (calls:(node_id:string, session_id:string, agent_id:string, ts:real, fact_key:string, failed:bool)) {
     // A run: consecutive calls of one session and agent, in time order, that all failed. Each call gets its run's id.
     calls
@@ -16,7 +18,7 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
     | summarize calls=count(), tool=take_any(tool), node_id=take_any(node_id), session_id=take_any(session_id) by run
     | where calls >= 3
 };
-let calls = tool_invocations
+let calls = tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
              target_hash=hash(column_ifexists('target', ''))

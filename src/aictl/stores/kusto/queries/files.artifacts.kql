@@ -1,15 +1,19 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real=0.0, until:real=1.0e20,
     session_keys:dynamic, counts_only:bool=false, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_artifacts_secs = session_artifacts | extend mtime = (mtime - datetime(1970-01-01)) / 1s;
+let session_folders_secs = session_folders | extend scanned_at = (scanned_at - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
-let index_rows = materialize(session_artifacts
+let index_rows = materialize(session_artifacts_secs
     | where (all_nodes or node_id == requested_node) and strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
     | summarize arg_max(_v, *) by ['project'],node_id,session_id,path
     | where not(column_ifexists('_deleted',false)) and (isnull(mtime) or mtime between (since .. until)));
-let folder_rows = session_folders
+let folder_rows = session_folders_secs
     | where (all_nodes or node_id == requested_node) and strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
     | summarize arg_max(_v, *) by ['project'],node_id,session_id
     | where not(column_ifexists('_deleted',false)) and (isnull(scanned_at) or scanned_at between (since .. until));
-let writes = file_write_events
+let writes = file_write_events_secs
     | where (all_nodes or node_id == requested_node) and strcat(strlen(node_id),':',node_id,session_id) in (session_keys)
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'],node_id,key

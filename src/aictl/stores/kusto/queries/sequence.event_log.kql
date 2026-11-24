@@ -1,6 +1,9 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real, requested_session:string='',
     requested_tool:string='', requested_pid:long=0, requested_kinds:dynamic=dynamic([]), row_limit:long);
-let raw_events = () { events
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let events_text_secs = events_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let raw_events = () { events_secs
     | where all_nodes or node_id == requested_node
     | extend event_key=iff(isempty(source_key),strcat(ts,':',tool,':',kind,':',seq),source_key),
              deleted=column_ifexists('_deleted',false)
@@ -12,8 +15,8 @@ let matches_filters = (event_ts:real, event_tool:string, event_pid:long, event_k
     and (array_length(requested_kinds) == 0 or event_kind in (requested_kinds))
 };
 let retained = () { union isfuzzy=true
-    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:string,_deleted:bool)[]),
-    (events_text | project ['project'],node_id,source_key,_v,detail,_deleted=column_ifexists('_deleted',false))
+    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:dynamic,_deleted:bool)[]),
+    (events_text_secs | project ['project'],node_id,source_key,_v,detail,_deleted=column_ifexists('_deleted',false))
     | where (all_nodes or node_id == requested_node) and isnotempty(source_key)
 };
 // A correction can move an event out of the window or change its session.
@@ -65,4 +68,4 @@ page
 | join kind=leftouter retained_text on ['project'],node_id,source_key
 | extend detail=coalesce(retained_detail,detail)
 | order by ts desc,node_id asc,seq asc,tool asc,kind asc,event_key asc
-| project ts,tool,kind,detail,session_id,pid
+| project ts,tool,kind,detail=tostring(detail),session_id,pid

@@ -4,14 +4,17 @@
 // A summary over large_payload_bytes is a preview here; summary_hash names its whole text in file_blobs.
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_project:string='',
     requested_session:string, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let context_events_secs = context_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_digests_secs = session_digests | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
-let digests = session_digests
+let digests = session_digests_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,seq
     | where kind in ('compact_summary','checkpoint')
     | project digest_project=['project'], digest_node=node_id, digest_agent=agent_id, digest_kind=kind, digest_seq=seq,
         summary_title=['title'], summary=['text'], summary_hash=text_hash, summary_bytes=text_bytes;
-context_events
+context_events_secs
 // context_events takes no delete rows, and a key's versions are one event of one session.
 | where session_id == requested_session and (all_nodes or node_id == requested_node)
     and (isempty(requested_project) or ['project'] == requested_project)
@@ -30,6 +33,6 @@ context_events
 | take row_limit
 | project node_id, ts, key, ['kind'], agent_id, tool, ['trigger'], checkpoint_no, message_id, files_count,
     lines_added, lines_removed, before_tokens, after_tokens, dropped_messages, dropped_tokens,
-    cumulative_dropped_tokens, preserved_messages, path, tool_call_id, prompt_id, turn_index, detail,
+    cumulative_dropped_tokens, preserved_messages, path, tool_call_id, prompt_id, turn_index, detail=tostring(detail),
     summary_kind, summary_seq, summary_title, summary, summary_hash, summary_bytes,
     _page_cursor=tostring(pack_array(ts,key,node_id,['project']))

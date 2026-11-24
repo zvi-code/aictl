@@ -1,5 +1,7 @@
 declare query_parameters(requested_project:string = '', requested_node:string = '', row_limit:long);
-system_snapshots
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let system_snapshots_secs = system_snapshots | extend ts = (ts - datetime(1970-01-01)) / 1s, settings_captured_at = (settings_captured_at - datetime(1970-01-01)) / 1s;
+system_snapshots_secs
 | where isempty(requested_project) or ['project'] == requested_project
 | where isempty(requested_node) or node_id == requested_node
 | summarize by ['project'], node_id, ts

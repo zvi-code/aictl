@@ -1,6 +1,8 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', restrict_tools:bool = false,
                          requested_tools:dynamic = dynamic([]), row_limit:long);
-let current = materialize(session_processes
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_processes_secs = session_processes | extend joined_at = (joined_at - datetime(1970-01-01)) / 1s;
+let current = materialize(session_processes_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by node_id, ['project'], session_id, pid
     | where not(coalesce(column_ifexists('_deleted', false), false))

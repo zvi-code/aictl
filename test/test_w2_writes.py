@@ -8,14 +8,14 @@ import pytest
 
 from aictl.dashboard.otel_receiver import OtelReceiver
 from aictl.ingesters.transcript_usage import TranscriptUsageIngester
-from aictl.stores.kusto.otel_sink import OtelExportWriter
 from aictl.orchestrator import SnapshotPersistence
 from aictl.records import SessionRow
 from aictl.session_facts import SessionFacts
 from aictl.sink import OtelMetricGate
 from aictl.state_file import StateFile
+from aictl.stores.kusto.otel_sink import OtelExportWriter
 from aictl.stores.kusto.recorded import RecordedKustoClient
-from aictl.stores.kusto.writer import KustoWriter
+from aictl.stores.kusto.writer import KustoWriter, epoch_datetime
 from aictl.tool_calls import ToolCalls
 
 
@@ -73,8 +73,9 @@ def test_transcript_lifecycle_replay_without_queries(writer, tmp_path):
     writer.flush()
     tables = dict(client.ingestions)
     assert not any(t["last_error"] for t in writer.health()["tables"].values())
-    assert all(r["pid"] == 7 and abs(r["started_at"] - now) < 0.000002 for r in tables["sessions"])
-    assert tables["sessions"][-1]["ended_at"] == now + 5
+    # Times are sent as UTC datetimes, converted once by the writer.
+    assert all(r["pid"] == 7 and r["started_at"] == epoch_datetime(now) for r in tables["sessions"])
+    assert tables["sessions"][-1]["ended_at"] == epoch_datetime(now + 5)
     assert tables["session_usage"][-1]["output_tokens"] == 3
     assert tables["requests"][0]["source"] == "transcript"
     assert len({r["rowid"] for r in tables["requests"]}) == 1

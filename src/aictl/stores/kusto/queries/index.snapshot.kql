@@ -1,7 +1,9 @@
 // The index breakdown each node's daemon publishes (index_breakdown.py): one row per node, the
 // newest version. maintenance_state takes no delete rows.
 declare query_parameters(all_nodes:bool=true, requested_node:string='', row_limit:long);
-maintenance_state
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let maintenance_state_secs = maintenance_state | extend value = (value - datetime(1970-01-01)) / 1s;
+maintenance_state_secs
 | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
 | summarize arg_max(_v, *) by ['project'], node_id, key
 | where not(coalesce(column_ifexists('_deleted', false), false))

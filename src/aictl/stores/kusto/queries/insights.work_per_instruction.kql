@@ -15,6 +15,11 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // A person's turn with neither a call nor a reply recorded after it is unread (the log did not cover it): it is not an
 // instruction. Chains are cut in time order (a person's turn first at equal times) before the period selects them by
 // their start; rows before the period can only belong to chains that started before it.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let ask_names = dynamic(['ask_user', 'askuser', 'ask_question', 'askuserquestion', 'vscode_askquestions']);
 let agent_names = dynamic(['Agent', 'Task', 'task', 'runSubagent', 'run_subagent']);
 let store_source = 'copilot-session-store';
@@ -22,7 +27,7 @@ let day_s = 86400.0;
 // A wait shorter than this is a prompt the person sent while the agent was still working, logged when the agent took
 // it: it is counted as queued, not as an answer.
 let queued_s = 2.0;
-let prompts = materialize(session_prompts
+let prompts = materialize(session_prompts_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false),
              head=substring(text, 0, 100), text_chars=strlen(text)
@@ -52,12 +57,12 @@ let openers = starts
     | project node_id, tool, opening, opener_template=true;
 // Copilot assistant turn ends, and the marker of a session known only from session-store.db. session_steps has no
 // tombstone, so it is filtered before the version reduction.
-let steps = materialize(session_steps
+let steps = materialize(session_steps_secs
     | where all_nodes or node_id == requested_node
     | where tool in ('copilot-cli', 'copilot-desktop') and source in ('assistant.turn_end', store_source)
     | project ['project'], node_id, step_key, _v, ts, session_id, agent_id, source
     | summarize arg_max(_v, *) by ['project'], node_id, step_key);
-let calls = materialize(tool_invocations
+let calls = materialize(tool_invocations_secs
     | where all_nodes or node_id == requested_node
     // A tombstone written with its key only has no ts: it must reach the reduction.
     | where (ts >= since or isnull(ts)) and (isempty(agent_id) or agent_id == session_id)
@@ -84,7 +89,7 @@ let in_period = materialize(marked
     | project node_id, session_id, tool, scripted=not(person) or coalesce(opener_template, false),
               store=coalesce(store, false), start_text=text_chars > 0);
 let led = in_period | where not(scripted) and not(store) | project node_id, session_id, tool;
-let model_calls = materialize(requests
+let model_calls = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | where (ts >= since or isnull(ts)) and (isempty(agent_id) or agent_id == session_id)
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)

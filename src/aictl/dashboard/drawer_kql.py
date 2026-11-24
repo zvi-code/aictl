@@ -12,21 +12,21 @@ from ..data.model_pricing import canonical_model_id
 from ..stores.kusto.tables import TABLES
 
 _VERSION = "_v:datetime _deleted:bool"
-_SESSION = "session_id:string ts:real"
+_SESSION = "session_id:string ts:datetime"
 _SCHEMA = {
     "session_steps": f"step_key:string {_SESSION} ['kind']:string phase:string name:string turn_id:string "
     f"agent_id:string context_tokens:long context_limit:long before_tokens:long after_tokens:long {_VERSION}",
     "requests": f"rowid:long {_SESSION} model:string input_tokens:long output_tokens:long cache_read_tokens:long "
     f"cache_creation_tokens:long cost_usd:real {_VERSION}",
-    "tool_invocations": f"rowid:long {_SESSION} tool_name:string is_error:long duration_ms:real {_VERSION}",
+    "tool_invocations": f"rowid:long {_SESSION} tool_name:string is_error:bool duration_ms:real {_VERSION}",
     "OTELTraces": "StartTime:datetime SessionId:string TraceID:string SpanID:string Model:string ToolName:string "
     "OperationName:string InputTokens:long OutputTokens:long",
-    "agents": f"agent_id:string session_id:string model:string started_at:real ended_at:real description:string "
+    "agents": f"agent_id:string session_id:string model:string started_at:datetime ended_at:datetime description:string "
     f"status:string resolved_model:string parent_agent_id:string spawn_depth:long completed:bool {_VERSION}",
     "turn_request_links": f"request_key:string {_SESSION} agent_id:string turn_id:string root_session_id:string "
     f"root_turn_id:string basis:string {_VERSION}",
     "session_step_text": f"step_key:string session_id:string ['text']:string {_VERSION}",
-    "sessions": f"session_id:string started_at:real {_VERSION}",
+    "sessions": f"session_id:string started_at:datetime {_VERSION}",
 }
 _PROMPT = f"step_key:string {_SESSION} ['kind']:string role:string ['source']:string phase:string turn_id:string text_status:string {_VERSION}"
 _COMMAND = f"{_PROMPT} name:string tool_call_id:string agent_id:string exit_code:long"
@@ -146,8 +146,19 @@ def _canonical_model(column: str) -> str:
     return f'iff({lower} startswith "claude-", replace_string({lower}, ".", "-"), {column})'
 
 
+# Stored times are UTC datetimes and flags bools (docs/storage-schema.md); the queries below read the
+# times as epoch seconds, like the time bounds they are given, and the flags as 0/1.
+_EPOCH = ("ts", "started_at", "ended_at")
+_FLAGS = ("is_error",)
+
+
 def _source(table: str, fields: str, node: str | None = None) -> str:
     union = f"union isfuzzy=true (datatable(node_id:string, {', '.join(fields.split())})[]), {table}"
+    names = _columns(fields)
+    read = [f"{c}=({c} - datetime(1970-01-01)) / 1s" for c in _EPOCH if c in names]
+    read += [f"{c}=tolong({c})" for c in _FLAGS if c in names]
+    if read:
+        union += "\n| extend " + ", ".join(read)
     return union if node is None else f"{union}\n| where node_id == {_literal(node)}"
 
 

@@ -6,7 +6,7 @@ can apply a time range, so a 15-minute read costs what a 30-day read costs. For 
 ``CURRENT_TABLES`` each node table ``T__<key>`` has a materialized view ``T_current__<key>``:
 
     T__<key>
-    | extend event_hour = bin(unixtime_seconds_todatetime(ts), 1h)
+    | extend event_hour = bin(ts, 1h)
     | summarize arg_max(_v, *) by event_hour, ['project'], node_id, dedup_key
 
 and the stored function ``T_current`` unions the views of every node the functions include
@@ -71,7 +71,7 @@ def view_query(table: str, source: str, key_columns: Iterable[str]) -> str:
     """The view's query over *source* (a node table, or a stand-in for one in tests)."""
     time = CURRENT_TABLES[table]
     keys = ", ".join(quote(column) if column == "project" else column for column in key_columns)
-    return (f"{source}\n| extend {HOUR} = bin(unixtime_seconds_todatetime({time}), 1h)\n"
+    return (f"{source}\n| extend {HOUR} = bin({time}, 1h)\n"
             f"| summarize arg_max(_v, *) by {HOUR}, {keys}")
 
 

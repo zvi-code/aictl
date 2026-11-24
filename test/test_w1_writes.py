@@ -14,7 +14,7 @@ from aictl.sink import SampleSink
 from aictl.state_file import StateFile
 from aictl.stores import Store
 from aictl.stores.kusto.recorded import RecordedKustoClient
-from aictl.stores.kusto.writer import KustoWriter
+from aictl.stores.kusto.writer import KustoWriter, epoch_datetime
 from aictl.stores.testing import MemoryWriter
 from aictl.tool_calls import ToolCalls, call_key, write_size_fills
 from aictl.tools import ResourceFile
@@ -56,7 +56,7 @@ def test_tool_calls_ingest_without_queries(tmp_path, monkeypatch):
     assert (row["source"], row["duration_ms"], row["is_error"], row["confirm"]) == ("transcript", 1000, 1, "")
     assert [r for r in sent["tool_invocations_text"] if r["project"] == "repo"][-1]["result_summary"] == "failure"
     assert sent["tool_invocation_sizes"][0]["output_bytes"] == 7
-    assert sent["tool_invocation_coverage"][0]["covered_through"] == 12
+    assert sent["tool_invocation_coverage"][0]["covered_through"] == epoch_datetime(12)  # stored as a UTC datetime
 
 
 def test_file_inventory_changes_removals_and_restart(tmp_path):

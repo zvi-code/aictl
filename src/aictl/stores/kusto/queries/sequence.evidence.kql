@@ -2,12 +2,15 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', requeste
     since:real=0.0, until:real=1.0e20, keep_text:bool=true, text_floor:real=0.0,
     evidence_filters:dynamic=dynamic({}), search_terms:dynamic=dynamic([]), context_group:string='',
     page_offset:long=0, include_detail:bool=false, include_spans:bool=false, row_limit:long);
-let retained = session_step_text
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_step_text_secs = session_step_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
+let retained = session_step_text_secs
     | where keep_text and session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
     | where not(column_ifexists('_deleted',false)) and ts >= text_floor
     | project ['project'], node_id, session_id, step_key, content=text;
-let steps = session_steps
+let steps = session_steps_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
     | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until

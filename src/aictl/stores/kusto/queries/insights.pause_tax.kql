@@ -2,7 +2,9 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // The pause before each model request: the time since the previous request of the same session and agent
 // ended. Only requests in the period count, so the first request of each session and agent in the period
 // has no pause. A prompt cache entry lapses after about 5 minutes without use.
-let calls = materialize(requests
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let calls = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, input_tokens,

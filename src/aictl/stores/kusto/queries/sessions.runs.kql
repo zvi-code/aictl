@@ -2,12 +2,15 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', requested_tool:string, requested_path:string,
     since:real, until:real, row_limit:long
 );
-let usage = session_usage
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_usage_secs = session_usage | extend started_at = (started_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s, updated_at = (updated_at - datetime(1970-01-01)) / 1s;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+let usage = session_usage_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'], node_id, session_id
     | where not(coalesce(column_ifexists('_deleted', false), false))
     | project ['project'], node_id, usage_session=tolower(session_id), usage_input=input_tokens, usage_output=output_tokens;
-sessions
+sessions_secs
 | where all_nodes or node_id == requested_node
 | summarize arg_max(_v, *) by ['project'], node_id, session_id
 | where not(coalesce(column_ifexists('_deleted', false), false))

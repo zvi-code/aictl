@@ -1,19 +1,25 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
     since:real=0.0, until:real=1.0e20, after_row:string='', row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let events_text_secs = events_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let cursor_row = parse_json(after_row);
-let calls = materialize(requests
+let calls = materialize(requests_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'],node_id,key
     | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until);
-let ev = materialize(events
+let ev = materialize(events_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key)
     | summarize arg_max(_v, *) by ['project'],node_id,key
     | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until);
 let texts = union isfuzzy=true
-    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:string,_deleted:bool)[]),
-    (events_text | project ['project'], node_id, source_key, _v, detail, _deleted=column_ifexists('_deleted',false))
+    (datatable(['project']:string,node_id:string,source_key:string,_v:datetime,detail:dynamic,_deleted:bool)[]),
+    (events_text_secs | project ['project'], node_id, source_key, _v, detail, _deleted=column_ifexists('_deleted',false))
     | where (all_nodes or node_id == requested_node) and source_key in (ev | project source_key)
     | summarize arg_max(_v, *) by ['project'],node_id,source_key
     | where not(_deleted)
@@ -21,14 +27,14 @@ let texts = union isfuzzy=true
 let signals = materialize(ev
     | join kind=leftouter texts on ['project'],node_id,key
     | extend detail=coalesce(retained_detail,detail)
-    | project ['project'], node_id, ts, kind, key, detail);
+    | project ['project'], node_id, ts, kind, key, detail=tostring(detail));
 let source_calls = materialize(union
     (calls | where source == 'transcript' | project ts),
-    (tool_invocations | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (tool_invocations_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and source == 'transcript' and ts >= since and ts < until | project ts),
-    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    (session_prompts_secs | where session_id == requested_session and (all_nodes or node_id == requested_node)
         | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
         | summarize arg_max(_v, *) by ['project'],node_id,key
         | where not(column_ifexists('_deleted',false)) and ts >= since and ts < until | project ts));

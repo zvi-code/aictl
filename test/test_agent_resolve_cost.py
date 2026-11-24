@@ -17,7 +17,9 @@ QUERY = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "k
 
 def branches(text: str) -> dict[str, str]:
     """The pipeline of each table the union reads, up to its reduction."""
-    return {m.group(1): m.group(2) for m in re.finditer(r"\(\s*(\w+)\s*\n(.*?)\| summarize arg_max", text, re.S)}
+    # A table is read as T_secs (its times in epoch seconds, docs/storage-schema.md): name it T.
+    return {m.group(1).removesuffix("_secs"): m.group(2)
+            for m in re.finditer(r"\(\s*(\w+)\s*\n(.*?)\| summarize arg_max", text, re.S)}
 
 
 def test_every_branch_selects_the_agent_before_it_reduces_versions():

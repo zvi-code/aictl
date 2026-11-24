@@ -3,8 +3,10 @@
 // indexed before seen_since (the node's daemon start) is a file that daemon did not find. Pages by after_row.
 declare query_parameters(all_nodes:bool=true, requested_node:string='', seen_since:real=0.0, after_row:string='',
     row_limit:long);
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_sources_secs = session_sources | extend mtime = (mtime - datetime(1970-01-01)) / 1s, indexed_at = (indexed_at - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
-session_sources
+session_sources_secs
 | where all_nodes or node_id == requested_node
 | summarize arg_max(_v, *) by ['project'], node_id, source_file
 | where not(coalesce(column_ifexists('_deleted', false), false))
