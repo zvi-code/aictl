@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, lazy, Loading, Show, untrack } from 'solid-js'
-import type { FlowSummary, TurnMark } from '../../data/contract.gen'
+import type { DetailAgentFlow, FlowSummary, TurnMark } from '../../data/contract.gen'
 import { fmtDur, fmtMs, fmtN, fmtUsd } from '../../design/format'
 import { Box, BoxControls, createBoxes, HiddenBoxes } from '../../ui/Box'
 import { Icon } from '../../ui/Icon'
@@ -7,10 +7,11 @@ import { Menu } from '../../ui/Menu'
 import { PanelState } from '../../ui/PanelState'
 import { Segmented } from '../../ui/Segmented'
 import { Tooltip } from '../../ui/Tooltip'
+import { json } from '../../panels/data'
 import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowModel'
 import { createHover, DroppedNotice, HoverCard, OlderButtons, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { ThinkingBlocks } from '../ThinkingBlocks'
-import { FLOW_PAGE, flowPages } from '../flowPages'
+import { FLOW_PAGE, flowPages, readDownTo } from '../flowPages'
 import { definitions, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
 import { collapseRuns, repeatsOf, scalesOf, tracksOf, workCounts, type ChartRow } from '../chartModel'
 import { chartColumns, FlowChart, WorkKey } from '../FlowChart'
@@ -173,18 +174,34 @@ export default function Flow(props: TabProps) {
     const step = steps().find(item => item.events.includes(event))
     if (step) { uncover(step.id); select(step.id); setReveal({ id: step.id }) }
   }
-  // A reference from another tab selects its step, reading older windows until the event is loaded.
+  // A reference from another tab selects its step, reading older windows until the event is loaded. A model call
+  // named by its time (callAt) asks the server for its position first and reads down to it in large windows.
   let found: object | undefined
+  let located: object | undefined
+  const [locating, setLocating] = createSignal(false)
+  const locate = async (reference: object, at: number) => {
+    setLocating(true)
+    try {
+      await readDownTo(read()?.data?.summary?.flow_epoch,
+        () => json<DetailAgentFlow>(untrack(() => agentPath(props, '/flow', { ...applied(), at, limit: 1 }))),
+        target => reference === located ? pages.loadOlder(target) : Promise.resolve())
+    } finally {
+      setLocating(false)
+    }
+  }
   const reference = createMemo(() => props.entry.flowRef ?? (props.entry.failedAt != null ? { field: 'failed_at', id: String(props.entry.failedAt) }
     : props.entry.callAt != null ? { field: 'call_at', id: String(props.entry.callAt) } : undefined))
   createEffect(() => ({ reference: reference(), events: model().events, more: pages.more(),
-    failed: pages.problem() || pages.dropped(), ready: read()?.data != null }), current => {
+    failed: pages.problem() || pages.dropped(), ready: read()?.data != null, locating: locating() }), current => {
     const reference = current.reference
-    if (!reference || !current.ready || found === reference) return
+    if (!reference || !current.ready || found === reference || current.locating) return
     const event = current.events.find(item => matchesReference(item, reference))
     if (event) { found = reference; setMissing(false); show(event); return }
-    if (current.more && !current.failed) void pages.loadOlder()
-    else setMissing(true)
+    // A failed or dropped read says so itself (with Retry); only a flow read to its start lacks the event.
+    if (current.failed) return
+    if (!current.more) { setMissing(true); return }
+    if (reference.field === 'call_at' && located !== reference) { located = reference; void locate(reference, Number(reference.id)) }
+    else void pages.loadOlder()
   })
 
   const update = <K extends keyof Filter>(key: K, value: Filter[K]) => {

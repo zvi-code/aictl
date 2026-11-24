@@ -131,3 +131,24 @@ export function flowPages(head: Accessor<DetailAgentFlow | undefined>, key: Acce
 
   return { events, oldest, first, more, complete, unloaded, matched, loading, problem, dropped, retry, loadOlder }
 }
+
+/**
+ * Read the flow down to the event of a time in large windows instead of one window at a time: `probe` reads the flow
+ * with `at` and limit 1, which makes the server read its older segments down to that time and state the event's
+ * position (summary.at_offset); `loadOlder` then reads down to that position. A position from a read of another epoch
+ * does not fit the loaded windows and is not used, and a failed probe leaves the caller to look window by window.
+ * Resolves to whether it read down to a position.
+ */
+export async function readDownTo(epoch: string | undefined, probe: () => Promise<DetailAgentFlow>,
+  loadOlder: (target: number) => Promise<void>): Promise<boolean> {
+  let data: DetailAgentFlow
+  try {
+    data = await probe()
+  } catch {
+    return false
+  }
+  const target = data.summary?.at_offset
+  if (target == null || data.summary?.flow_epoch !== epoch) return false
+  await loadOlder(target)
+  return true
+}

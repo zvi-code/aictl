@@ -272,7 +272,7 @@ def route(db, scope, path, query, params, now, *, reader=None):
                     raise ScopeError("whole must be 0 or 1")
                 status, body = flow_projection.agent_flow(
                     reported, aid, lo, hi, now=now, limit=integer("limit", flow_projection.FLOW_DEFAULT_EVENTS, flow_projection.MAX_FLOW_EVENTS),
-                    offset=position("offset"), failed=failed == "1", history=history, whole=whole == "1",
+                    offset=position("offset"), failed=failed == "1", history=history, whole=whole == "1", at=number("at"),
                     **{k: one(k) for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
                 )
                 return result(status, {**body, "node_id": label(node)})

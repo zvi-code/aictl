@@ -11,7 +11,6 @@ import {
   type FlowRow, type Metric, type Step, type StepKind,
 } from './flowSteps'
 import { clip } from './shared'
-import { reportsThinking } from './thinkingModel'
 import { VirtualList } from './VirtualList'
 import styles from './flow.module.css'
 
@@ -320,7 +319,7 @@ export function StepInspector(props: {
     <Show when={step().call}>{request => <>
       <h4 class={styles.inspectorSection}>Model request</h4>
       <Facts items={requestFacts(request())} />
-      <Show when={props.thinking && reportsThinking(request())}>
+      <Show when={props.thinking}>
         <h4 class={styles.inspectorSection}>Thinking</h4>
         {props.thinking!(request())}
       </Show>

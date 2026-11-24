@@ -4046,6 +4046,13 @@ class TestAgentTranscript:
         # Positions before the first read are negative: a flow read whole has none, so the window starts at 0.
         status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&offset=-5&limit=2")
         assert status == 200 and json.loads(body)["summary"]["offset"] == 0 and json.loads(body)["summary"]["first_offset"] == 0
+        # Opened at a subagent's model call (a thinking search result): the route states its position in the session flow.
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&at={NOW - DAY + 60}&limit=1")
+        assert status == 200, body
+        at = json.loads(body)["summary"]["at_offset"]
+        status, body, _ = _http(f"{server}/api/board/agent/flow?id=flow-s&offset={at}&limit=1")
+        assert [(e["type"], e["ts"], e.get("agent_id")) for e in json.loads(body)["turns"]] == [("api_call", NOW - DAY + 60, "sub-f")]
+        assert _http(f"{server}/api/board/agent/flow?id=flow-s&at=soon")[0] == 400
         assert _http(f"{server}/api/board/agent/flow?id=flow-s&offset=soon")[0] == 400
         assert _http(f"{server}/api/board/agent/flow")[0] == 400
         assert _http(f"{server}/api/board/agent/flow?id=flow-s&since=soon")[0] == 400

@@ -165,3 +165,25 @@ def test_a_live_update_reads_only_the_segment_that_changed():
     assert reads and all(params["since"] >= T + 1101 for params in reads)  # the newest turns, not the session
     assert grown["turns"][-1]["ts"] > same["turns"][-1]["ts"]
     assert grown["summary"]["flow_epoch"] == same["summary"]["flow_epoch"]
+
+
+def test_a_flow_opened_at_a_model_call_reads_down_to_it_and_states_its_position():
+    # A thinking search result opens the flow at its call: one read with `at` reads the older segments down to the
+    # call's time and states its position, and a window from that position holds the call (no walk window by window).
+    session = Session(turns=20)
+    db = session.store()
+    _, newest = flow_projection.agent_flow(db, SID, now=T + 10_000)
+    call = T + 100 * 2 + 3  # a model call of the third turn, far older than the newest segment
+    assert all(e["ts"] > call for e in newest["turns"])
+    _, located = flow_projection.agent_flow(db, SID, now=T + 10_000, at=call, limit=1)
+    summary = located["summary"]
+    assert summary["flow_epoch"] == newest["summary"]["flow_epoch"]
+    position = summary["at_offset"]
+    assert position is not None and position >= summary["first_offset"] and position < 0
+    _, window = flow_projection.agent_flow(db, SID, now=T + 10_000, offset=position, limit=1)
+    [event] = window["turns"]
+    assert (event["type"], event["ts"]) == ("api_call", call)
+    # A time between events names the first event at or after it.
+    _, between = flow_projection.agent_flow(db, SID, now=T + 10_000, at=call + 0.25, limit=1)
+    _, after = flow_projection.agent_flow(db, SID, now=T + 10_000, offset=between["summary"]["at_offset"], limit=1)
+    assert after["turns"][0]["ts"] >= call + 0.25

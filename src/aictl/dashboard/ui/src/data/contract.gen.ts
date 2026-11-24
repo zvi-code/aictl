@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 4831d381842713bbb7e28eccfb5eac256c29ff05c9742964eb39ad61b1bf190f
+// Schema digest: 3661732aa17fcbf936a7283a7e2e5477eab8bc8535680c24dadadcd54a3105cc
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -2399,6 +2399,7 @@ export type FlowSummary = {
   omitted_events?: number;
   offset?: number;
   matched_events?: number;
+  at_offset?: number | null;
   first_offset?: number;
   older_events?: boolean;
   complete?: boolean;

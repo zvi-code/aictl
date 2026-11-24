@@ -953,6 +953,7 @@ def agent_flow(
     offset: int | None = None,
     history: HistoryScope | None = None,
     whole: bool = False,
+    at: float | None = None,
 ) -> tuple[int, dict]:
     """The session flow of a board agent: ``{turns, summary}`` like ``build_session_flow``.
 
@@ -967,6 +968,10 @@ def agent_flow(
     A subagent id gives the steps of that subagent alone (``flow_scope.kind`` "agent"), so the
     summary counts what the subagent did; ``whole`` gives the whole session of its main agent.
     Events carry ``step`` and model calls ``request_n``, numbered over the scope before filters.
+
+    ``at`` (seconds) names a time to open the flow at: the server reads older segments until one holds it, and
+    ``summary.at_offset`` is the position of the model call of that time (within a millisecond), else of the
+    first event at or after it, so a window read from that position shows it without walking back window by window.
     """
     now = time.time() if now is None else now
     history = history or HistoryScope.local(db)
@@ -987,7 +992,7 @@ def agent_flow(
         load_older = False
         while True:
             found = _session_flow(db, agent_id, lo, hi, legacy_flow, history, open_end=until is None,
-                                  reuse=offset is not None, load_older=load_older, meta=meta)
+                                  reuse=offset is not None or at is not None, load_older=load_older, meta=meta)
             if found is None:
                 return 404, {"error": "No such agent"}
             sid, records, source = found
@@ -1005,12 +1010,17 @@ def agent_flow(
             if own is not None:
                 # A subagent's prompt is the task its main agent gave it.
                 summary["total_turns"] = sum(1 for e in events if e["type"] == "subagent")
-            if offset is None or not meta.get("older"):
+            if (offset is None and at is None) or not meta.get("older"):
                 break
-            # A window that starts before the loaded events reads the next older segment first.
-            base = sum(1 for e in events if e["ts"] < meta["anchor"])
-            if int(offset) >= -base:
-                break
+            if at is not None:
+                # The oldest loaded segment starts at or before the asked time: the event is loaded.
+                if meta.get("lo", lo) <= at:
+                    break
+            else:
+                # A window that starts before the loaded events reads the next older segment first.
+                base = sum(1 for e in events if e["ts"] < meta["anchor"])
+                if int(offset) >= -base:
+                    break
             load_older = True
         _rebase(events, meta.get("anchor", lo))
     capture = capture_mode(db, default="full")
@@ -1031,6 +1041,8 @@ def agent_flow(
     summary["older_events"] = bool(meta.get("older"))
     summary["complete"] = not meta.get("older")
     summary["flow_epoch"] = meta.get("epoch", "")
+    if at is not None:
+        summary["at_offset"] = _position_at(matches, at) - base if matches else None
     marks = _turn_marks(matches)
     for mark in marks:
         mark["offset"] -= base
@@ -1040,6 +1052,14 @@ def agent_flow(
                  "capture_mode": capture,
                  "node_id": settings.node_id if settings else None,
                  "session_kql_url": session_kql_url(settings, sid, since, until)}
+
+
+def _position_at(events: list[dict], at: float) -> int:
+    """Index of the model call at ``at`` (within a millisecond), else of the first event at or after it, else the last."""
+    call = next((i for i, e in enumerate(events) if e["type"] == "api_call" and abs(e["ts"] - at) < 1e-3), None)
+    if call is not None:
+        return call
+    return next((i for i, e in enumerate(events) if e["ts"] >= at), len(events) - 1)
 
 
 def _rebase(events: list[dict], anchor: float) -> None:

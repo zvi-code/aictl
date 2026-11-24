@@ -584,6 +584,12 @@ def test_scoped_drilldowns_and_search_pagination(history):
     assert history.call("/agent", id="child")[0] == 400
     assert history.call("/agent", id=sid, scope="local")[0] == 400
     assert history.call("/agent/flow", id=aid)[1]["session_id"] == sid
+    # A thinking search result opens the flow at its model call (here a subagent call): the fleet route states its position.
+    status, located = history.call("/agent/flow", id=aid, at=1601, limit=1)
+    assert status == 200, located
+    located = located["summary"]
+    window = history.call("/agent/flow", id=aid, offset=located["at_offset"], limit=1)[1]["turns"]
+    assert [(e["type"], e["ts"]) for e in window] == [("api_call", 1601)]
     assert "shared prompt host-b" in json.dumps(history.call("/agent/transcript", id=aid)[1])
     assert history.call("/prompt", session_id=sid, ts=1600)[0] == 200
     _, evidence = history.call("/api/session-evidence", session_id=sid, step_key="step", agent_id=aid)

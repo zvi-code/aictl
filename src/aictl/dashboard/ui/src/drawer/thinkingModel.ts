@@ -5,7 +5,7 @@ import { fmtNum } from '../design/format'
 
 export type ThinkingBlock = DetailThinking['blocks'][number]
 
-/** Whether the call reported thinking: only then does the inspector read its blocks. */
+/** Whether the call reported thinking: the inspector then reads its blocks at once, else when asked. */
 export const reportsThinking = (call: FlowEvent) => !!(call.thinking_chars || call.reasoning_tokens)
 
 /** The query of the read of one call's blocks: the session, the call's time and its agent ("" for the main agent). */
@@ -27,6 +27,7 @@ export function blockNote(block: ThinkingBlock): string {
 
 /** What a call that reported thinking says when none of its blocks is stored. */
 export function missingNote(call: FlowEvent): string {
+  if (!reportsThinking(call)) return 'No thinking text is stored for this call.'
   const size = call.thinking_chars ? `${fmtNum(call.thinking_chars)} characters`
     : call.reasoning_tokens ? `${fmtNum(call.reasoning_tokens)} tokens` : 'thinking'
   return `The model reported ${size} of thinking for this call; no block of its text is stored now ` +

@@ -31,6 +31,7 @@
     "omitted_events": {"type": "integer"},
     "offset": {"type": "integer"},
     "matched_events": {"type": "integer"},
+    "at_offset": {"type": ["integer", "null"], "description": "With at: the position of the model call at that time, else of the first event at or after it; the flow has read older segments down to it."},
     "first_offset": {"type": "integer", "description": "Position of the oldest event read so far. Positions count from where the flow's first read started, so older events have negative positions."},
     "older_events": {"type": "boolean", "description": "Older events exist that are not read yet; a window before first_offset reads them."},
     "complete": {"type": "boolean", "description": "Every event of the range is read, and the totals cover the whole range."},

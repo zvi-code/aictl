@@ -122,7 +122,8 @@ class SessionRoutes:
             offset = int(self._qs_get("offset")) if self._qs_get("offset") else None
             if offset is not None and abs(offset) > 10**9:
                 raise ValueError("offset is out of range")
-            if any(not math.isfinite(x) or x < 0 for x in (since, until) if x is not None):
+            at = self._qs_float_opt("at")
+            if any(not math.isfinite(x) or x < 0 for x in (since, until, at) if x is not None):
                 raise ValueError("Time bounds must be finite Unix timestamps")
             if since is not None and until is not None and since >= until:
                 raise ValueError("The end must be after the start")
@@ -134,7 +135,7 @@ class SessionRoutes:
                 raise ValueError("whole must be 0 or 1")
             status, payload = agent_flow(
                 self._db, agent_id, since, until, limit=limit, offset=offset, failed=failed == "1",
-                history=history, whole=whole == "1",
+                history=history, whole=whole == "1", at=at,
                 **{k: self._qs_get(k, "") for k in ("q", "category", "tool_name", "flow_agent", "skill_name", "skill_phase")},
             )
         except ValueError as exc:
