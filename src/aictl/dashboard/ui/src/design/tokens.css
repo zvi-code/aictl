@@ -69,6 +69,11 @@
   --color-chart-2: #bc5123;
   --color-chart-3: #16835d;
   --color-chart-4: #9c6900;
+  /* 5-8 with 1-4: one colour per ranked repository on the Insights cards (purple, cyan, magenta, brown). */
+  --color-chart-5: #7b4fc4;
+  --color-chart-6: #0b7b8f;
+  --color-chart-7: #b33f80;
+  --color-chart-8: #86563a;
   --chart-grid-color: #dfded7;
   --elevation-1: 0 1px 3px #16203426;
   --elevation-2: 0 8px 24px #16203440;
@@ -99,6 +104,10 @@
   --color-chart-2: #ed8455;
   --color-chart-3: #42bd91;
   --color-chart-4: #deb043;
+  --color-chart-5: #b597f2;
+  --color-chart-6: #4cc3d9;
+  --color-chart-7: #f07cbf;
+  --color-chart-8: #cf9c74;
   --chart-grid-color: #383835;
   --elevation-1: 0 1px 3px #080c15a0;
   --elevation-2: 0 8px 24px #080c15bf;

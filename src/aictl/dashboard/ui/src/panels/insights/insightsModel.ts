@@ -13,6 +13,7 @@ import type { FlowsBody } from './flowsModel'
 import type { SkillsBody } from './skillsModel'
 import type { McpBody } from './mcpModel'
 import type { KqlBody } from './kqlModel'
+import type { RepoSegment, RepoSplit } from './repoSplit'
 
 export type { QueryBlock }
 export type CardId = 'pause' | 'carry' | 'subagents' | 'failures' | 'rereads' | 'time' | 'context' | 'orientation' | 'fixed' | 'problems'
@@ -31,7 +32,7 @@ export type Base<C extends CardId> = {
   card: C; view: string; range: { since: number; until: number }
   data_range: { first_ts: Num; last_ts: Num }; computed_at: number; query: QueryBlock
   sessions: InsightSession[]; tool_labels?: Record<string, string>; node_scope?: { kind: string; node_id: string | null }
-}
+} & RepoSplit
 /** What every card's answer carries, for a card whose own types live in its own model file. */
 export type InsightBase<C extends CardId> = Base<C>
 export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
@@ -56,10 +57,14 @@ export type PauseBody = Base<'pause'> & {
     causes?: PauseCauseRow[]; cause?: PauseCauseLead | null
   }
 }
-export type CarryName = { tool: string; tool_name: string; calls: number; output_bytes: number; carried_bytes: number; avg_later_requests: Num }
+export type CarryName = {
+  tool: string; tool_name: string; calls: number; output_bytes: number; carried_bytes: number; avg_later_requests: Num
+  /** Its parts per repository (output_bytes, carried_bytes), repoSplit.ts. */
+  repos?: RepoSegment[]
+}
 export type CarryBody = Base<'carry'> & {
   tool_names: CarryName[]
-  tools: { tool: string; calls: number; reported: number; output_bytes: Num; carried_bytes: Num }[]
+  tools: { tool: string; calls: number; reported: number; output_bytes: Num; carried_bytes: Num; repos?: RepoSegment[] }[]
   summary: { output_bytes: Num; carried_bytes: Num; top: CarryName | null; not_reported: string[] }
 }
 type Side = { requests: number; priced: number; cost_usd: Num }
@@ -89,11 +94,15 @@ export type TimeTool = {
   calls: number; untimed_calls: number; overlong_calls: number; overlong_ms: number; tool_ms: Num
   /** Requests that report reasoning tokens (0 when none), their reasoning and output tokens, and reasoning / output. */
   reasoning_requests?: number; reasoning_tokens?: Num; reasoning_output_tokens?: Num; reasoning_share?: Num
+  /** Model plus tool-call time, and its parts per repository (time_ms, model_ms, tool_ms), repoSplit.ts. */
+  time_ms?: Num; repos?: RepoSegment[]
 }
 export type ProgramGroup = 'program' | 'shell' | 'waiting' | 'unrecorded'
 export type TimeProgram = {
   group: ProgramGroup; program: string | null; calls: number; untimed: number; overlong: number
   duration_ms: Num; p50_ms: Num; p95_ms: Num; failure_share: Num
+  /** Its summed time per repository (duration_ms), repoSplit.ts. */
+  repos?: RepoSegment[]
 }
 export type TimeBody = Base<'time'> & {
   tools: TimeTool[]; programs: TimeProgram[]

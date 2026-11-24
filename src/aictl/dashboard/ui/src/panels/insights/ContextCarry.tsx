@@ -4,35 +4,47 @@ import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { carryHero, bytes, carryFinding, carryHover, carryToolHover, count, plural, type CarryBody, toolLabel, type Label } from './insightsModel'
 import styles from './Insights.module.css'
+import { RepoLegend } from './RepoLegend'
+import { hasOther, repoParts } from './repoSplit'
 
+const MEASURE = { output: 'result bytes', carried: 'bytes sent again (upper bound)' }
+
+/** Each tool name's bar, in segments per repository (repo_order colours) where the server split it. */
 function nameRows(body: CarryBody, label: Label, of: 'output' | 'carried'): BarRow[] {
-  return body.tool_names.map(row => ({
-    key: `${row.tool}:${row.tool_name}`, label: toolDisplayName(row.tool_name),
-    sub: `${label(row.tool)} · ${plural(row.calls, 'call')}${of === 'carried' ? ` · ≈ ${count(row.avg_later_requests)} later requests` : ''}`,
-    total: bytes(of === 'output' ? row.output_bytes : row.carried_bytes),
-    parts: [{ key: of, label: of === 'output' ? 'result bytes' : 'bytes sent again (upper bound)', tone: of === 'output' ? 2 : 0,
-      value: of === 'output' ? row.output_bytes : row.carried_bytes, text: bytes(of === 'output' ? row.output_bytes : row.carried_bytes),
-      hover: carryHover(row, label) }],
-  }))
+  return body.tool_names.map(row => {
+    const key = of === 'output' ? 'output_bytes' : 'carried_bytes'
+    const name = `${toolDisplayName(row.tool_name)} (${label(row.tool)}), ${MEASURE[of]}`
+    return {
+      key: `${row.tool}:${row.tool_name}`, label: toolDisplayName(row.tool_name),
+      sub: `${label(row.tool)} · ${plural(row.calls, 'call')}${of === 'carried' ? ` · ≈ ${count(row.avg_later_requests)} later requests` : ''}`,
+      total: bytes(row[key]),
+      parts: row.repos?.length ? repoParts(row.repos, key, body.repo_order, value => bytes(value), name, MEASURE[of], carryHover(row, label))
+        : [{ key: of, label: MEASURE[of], tone: of === 'output' ? 2 : 0, value: row[key], text: bytes(row[key]), hover: carryHover(row, label) }],
+    }
+  })
 }
 
 function toolRows(body: CarryBody, label: Label): BarRow[] {
   return body.tools.map(row => ({
     key: row.tool, label: label(row.tool), sub: `${fmtNum(row.reported)} of ${plural(row.calls, 'call')} with a size`,
     total: row.output_bytes == null ? 'result size not reported' : `${bytes(row.output_bytes)} · up to ${bytes(row.carried_bytes)} again`,
-    parts: row.output_bytes == null ? [] : [{ key: 'output', label: 'result bytes', value: row.output_bytes, tone: 2,
-      text: bytes(row.output_bytes), hover: carryToolHover(row, label) }],
+    parts: row.output_bytes == null ? [] : row.repos?.length
+      ? repoParts(row.repos, 'output_bytes', body.repo_order, value => bytes(value), `${label(row.tool)}, ${MEASURE.output}`, MEASURE.output,
+        carryToolHover(row, label))
+      : [{ key: 'output', label: 'result bytes', value: row.output_bytes, tone: 2, text: bytes(row.output_bytes),
+        hover: carryToolHover(row, label) }],
   }))
 }
 
 function CarryBars(props: { body: CarryBody; label: Label }) {
   return <>
+    <RepoLegend split={props.body} other={hasOther([...props.body.tool_names, ...props.body.tools])} />
     <Bars name="carry-output" title="Result bytes per tool name (the 10 with the largest estimate)"
-      axis="Length: bytes the results had, as the source recorded them, linear from 0." rows={nameRows(props.body, props.label, 'output')} />
+      axis="Length: bytes the results had, as the source recorded them, linear from 0; a segment per repository." rows={nameRows(props.body, props.label, 'output')} />
     <Bars name="carry-carried" title="Bytes sent again with later requests per tool name (estimate, upper bound)"
-      axis="Length: result bytes × later requests of the same session and agent, linear from 0; hover for the formula."
+      axis="Length: result bytes × later requests of the same session and agent, linear from 0; a segment per repository."
       rows={nameRows(props.body, props.label, 'carried')} />
-    <Bars name="carry-tools" title="Result bytes per tool" axis="Length: bytes, linear from 0; beside it the upper-bound estimate."
+    <Bars name="carry-tools" title="Result bytes per tool" axis="Length: bytes, linear from 0, a segment per repository; beside it the upper-bound estimate."
       rows={toolRows(props.body, props.label)} />
     <Show when={props.body.summary.not_reported.length}>
       <p class={styles.note}>Result size not reported by: {props.body.summary.not_reported.map(props.label).join(', ')}.</p>

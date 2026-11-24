@@ -1,15 +1,24 @@
 import { For, Show } from 'solid-js'
 import { Tooltip } from '../../ui/Tooltip'
 import styles from './Bars.module.css'
+import { OTHER } from './repoSplit'
 
-/** One segment of a bar: its value sets its length, its text is written on it, its hover holds the figures behind it. */
-export type BarPart = { key: string; label: string; value: number | null; text: string; hover: string; tone: number }
+/**
+ * One segment of a bar: its value sets its length, its text is written on it, its hover holds the figures behind it.
+ * `repo`: the segment is one repository's part (repoSplit.ts), coloured by its colour index instead of `tone`, and its
+ * text is written only where the segment is wide enough to hold it.
+ */
+export type BarPart = { key: string; label: string; value: number | null; text: string; hover: string; tone: number; repo?: number }
 /** One bar: a label, the segments (one for a plain bar), and the value written beside it. */
 export type BarRow = { key: string; label: string; title?: string; sub?: string; parts: BarPart[]; total: string }
 export type LegendItem = { label: string; tone: number }
 
 const TONES = 10
 const toneClass = (tone: number) => styles[`t${((tone % TONES) + TONES) % TONES}`]
+/** A repository's colour (repoSplit.repoColour): 0-7 the chart colours, OTHER grey. */
+export const repoClass = (colour: number) => colour === OTHER ? styles.rOther : styles[`r${colour}`]
+/** A repository segment narrower than this share of the lane shows its value on hover only. */
+const LABELLED = 0.12
 const amount = (row: BarRow) => row.parts.reduce((sum, part) => sum + Math.max(0, part.value ?? 0), 0)
 
 /**
@@ -38,10 +47,14 @@ export function Bars(props: {
         <span class={styles.name} title={row.title}>{row.label}<Show when={row.sub}><small>{row.sub}</small></Show></span>
         <span class={styles.lane}>
           <span class={styles.stack} role="group" aria-label={`${row.label}: ${row.total}`} style={{ 'inline-size': `${length(row).toFixed(2)}%` }}>
-            <For each={row.parts.filter(part => (part.value ?? 0) > 0)}>{part => <span class={`${styles.part} ${toneClass(part.tone)}`}
-              style={{ 'flex-grow': String(part.value) }} data-part={part.key}>
+            <For each={row.parts.filter(part => (part.value ?? 0) > 0)}>{part => <span
+              class={`${styles.part} ${part.repo == null ? toneClass(part.tone) : `${styles.repoPart} ${repoClass(part.repo)}`}`}
+              style={{ 'flex-grow': String(part.value) }} data-part={part.key}
+              data-repo={part.repo == null ? undefined : String(part.repo)}>
               <Tooltip class={styles.partButton} label={`${row.label}, ${part.label}: ${part.text}`} text={part.hover}
-                onClick={() => undefined}><span class={styles.partText}>{part.text}</span></Tooltip>
+                onClick={() => undefined}><span class={styles.partText}>
+                  {part.repo == null || (part.value ?? 0) / Math.max(amount(row), 1e-12) * length(row) / 100 >= LABELLED ? part.text : ''}
+                </span></Tooltip>
             </span>}</For>
           </span>
         </span>

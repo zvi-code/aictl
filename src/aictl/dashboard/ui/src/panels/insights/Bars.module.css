@@ -40,3 +40,15 @@
 .t7 { background: var(--color-border); }
 .t8 { background: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface)); }
 .t9 { background: color-mix(in srgb, var(--color-success) 60%, var(--color-surface)); }
+/* Repositories (repoSplit.ts): the eight chart colours in rank order, grey for every other repository. A thin line of the
+   surface parts two neighbouring repositories. */
+.repoPart + .repoPart { box-shadow: inset var(--border-size) 0 0 var(--color-surface); }
+.r0 { background: color-mix(in srgb, var(--color-chart-1) 70%, var(--color-surface)); }
+.r1 { background: color-mix(in srgb, var(--color-chart-2) 70%, var(--color-surface)); }
+.r2 { background: color-mix(in srgb, var(--color-chart-3) 70%, var(--color-surface)); }
+.r3 { background: color-mix(in srgb, var(--color-chart-4) 70%, var(--color-surface)); }
+.r4 { background: color-mix(in srgb, var(--color-chart-5) 70%, var(--color-surface)); }
+.r5 { background: color-mix(in srgb, var(--color-chart-6) 70%, var(--color-surface)); }
+.r6 { background: color-mix(in srgb, var(--color-chart-7) 70%, var(--color-surface)); }
+.r7 { background: color-mix(in srgb, var(--color-chart-8) 70%, var(--color-surface)); }
+.rOther { background: var(--color-border); }
