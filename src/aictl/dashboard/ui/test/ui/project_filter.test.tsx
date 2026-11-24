@@ -9,7 +9,7 @@ import { detailPath, panelData } from '../../src/panels/data'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import { DEFAULT_FINDER, finderRequest } from '../../src/panels/overview/sessionFinder'
 import type { PanelContext } from '../../src/panels/types'
-import { matchProjects, matchRepos, ProjectChips, ProjectPicker, toggled, type ProjectEntry, type RepoEntry } from '../../src/shell/ProjectPicker'
+import { matchProjects, matchRepos, nodeNote, ProjectChips, ProjectPicker, toggled, type ProjectEntry, type RepoEntry } from '../../src/shell/ProjectPicker'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
 
@@ -133,8 +133,8 @@ describe('PRJ-02 · Every screen sends the chosen projects', () => {
 
 describe('PRJ-03 · The picker and the chips', () => {
   const entries: ProjectEntry[] = [
-    { project: ALPHA, name: 'alpha', sessions: 12, last_ts: 2000, nodes: 1 },
-    { project: '/src/Beta-Service', name: 'Beta-Service', sessions: 3, last_ts: 1000, nodes: 2 },
+    { project: ALPHA, name: 'alpha', sessions: 12, last_ts: 2000, nodes: 1, node_ids: ['mac'] },
+    { project: '/src/Beta-Service', name: 'Beta-Service', sessions: 3, last_ts: 1000, nodes: 2, node_ids: ['mac', 'win'] },
   ]
   it('finds a project by any part of its path, in the order listed', () => {
     expect(matchProjects(entries, '').map(entry => entry.name)).toEqual(['alpha', 'Beta-Service'])
@@ -143,10 +143,17 @@ describe('PRJ-03 · The picker and the chips', () => {
     expect(matchProjects(entries, 'nothing')).toEqual([])
   })
 
+  it('names the nodes of an entry only when the list holds more than one node', () => {
+    expect(nodeNote(['mac'], true)).toBe(' · on mac')
+    expect(nodeNote(['mac', 'win'], true)).toBe(' · on 2 nodes: mac, win')
+    expect(nodeNote(['mac'], false)).toBe('')
+    expect(nodeNote([], true)).toBe('')
+  })
+
   it('finds a repository by its folder or a member folder, and switches one entry at a time', () => {
-    const repo: RepoEntry = { root: REPO, name: 'repo', sessions: 4, last_ts: 3000, members: [
-      { project: REPO, name: 'repo', sessions: 2, last_ts: 3000, evidence: "the repository's own folder" },
-      { project: '/work/repo-hotfix', name: 'repo-hotfix', sessions: 2, last_ts: 2500, evidence: 'a commit made there names this repository (git)' },
+    const repo: RepoEntry = { root: REPO, name: 'repo', sessions: 4, last_ts: 3000, node_ids: ['mac'], members: [
+      { project: REPO, name: 'repo', sessions: 2, last_ts: 3000, node_ids: ['mac'], evidence: "the repository's own folder" },
+      { project: '/work/repo-hotfix', name: 'repo-hotfix', sessions: 2, last_ts: 2500, node_ids: ['mac'], evidence: 'a commit made there names this repository (git)' },
     ] }
     expect(matchRepos([repo], 'hotfix')).toEqual([repo])
     expect(matchRepos([repo], 'alpha')).toEqual([])
@@ -178,13 +185,13 @@ describe('PRJ-03 · The picker and the chips', () => {
   it('lists the repositories with their folders and every project, and several can be chosen', async () => {
     const catalog = {
       projects: [
-        { project: REPO, name: 'repo', sessions: 2, last_ts: 3000, nodes: 1 },
-        { project: '/work/repo-hotfix', name: 'repo-hotfix', sessions: 2, last_ts: 2500, nodes: 1 },
-        { project: ALPHA, name: 'alpha', sessions: 12, last_ts: 2000, nodes: 1 },
+        { project: REPO, name: 'repo', sessions: 2, last_ts: 3000, nodes: 1, node_ids: ['mac'] },
+        { project: '/work/repo-hotfix', name: 'repo-hotfix', sessions: 2, last_ts: 2500, nodes: 1, node_ids: ['mac'] },
+        { project: ALPHA, name: 'alpha', sessions: 12, last_ts: 2000, nodes: 2, node_ids: ['mac', 'win'] },
       ],
-      repos: [{ root: REPO, name: 'repo', sessions: 4, last_ts: 3000, members: [
-        { project: REPO, name: 'repo', sessions: 2, last_ts: 3000, evidence: "the repository's own folder" },
-        { project: '/work/repo-hotfix', name: 'repo-hotfix', sessions: 2, last_ts: 2500, evidence: 'a commit made there names this repository (git)' },
+      repos: [{ root: REPO, name: 'repo', sessions: 4, last_ts: 3000, node_ids: ['mac'], members: [
+        { project: REPO, name: 'repo', sessions: 2, last_ts: 3000, node_ids: ['mac'], evidence: "the repository's own folder" },
+        { project: '/work/repo-hotfix', name: 'repo-hotfix', sessions: 2, last_ts: 2500, node_ids: ['mac'], evidence: 'a commit made there names this repository (git)' },
       ] }],
       truncated: false,
     }
@@ -205,6 +212,11 @@ describe('PRJ-03 · The picker and the chips', () => {
       expect(repos.textContent).toContain('2 folders')
       expect(repos.querySelector('[aria-label="Folders of repo"]')!.textContent).toContain('/work/repo-hotfix')
       expect(repos.querySelector('[title*="a commit made there"]')).not.toBeNull()
+      // Two nodes are in the list, so each entry names the nodes its sessions ran on.
+      const rows = [...picker.host.querySelectorAll('[aria-label="Projects"] li')].map(row => row.textContent)
+      expect(rows[0]).toContain(' · on mac')
+      expect(rows[2]).toContain(' · on 2 nodes: mac, win')
+      expect(repos.textContent).toContain(' · on mac')
       const boxes = [...picker.host.querySelectorAll<HTMLInputElement>('[aria-label="Projects"] input[type=checkbox]')]
       expect(boxes.map(box => box.checked)).toEqual([false, false, false])
       boxes[2].click()

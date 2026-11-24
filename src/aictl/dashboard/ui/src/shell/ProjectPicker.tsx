@@ -7,10 +7,10 @@ import { Icon } from '../ui/Icon'
 import styles from './Shell.module.css'
 
 /** One entry of `GET /api/board/projects`: a project value as stored, its sessions and its last activity. */
-export type ProjectEntry = { project: string; name: string; sessions: number; last_ts: number | null; nodes: number }
+export type ProjectEntry = { project: string; name: string; sessions: number; last_ts: number | null; nodes: number; node_ids: string[] }
 /** A repository with two or more stored projects: its folder, its worktrees and folders, and why each belongs. */
-export type RepoMember = { project: string; name: string; sessions: number; last_ts: number | null; evidence: string }
-export type RepoEntry = { root: string; name: string; members: RepoMember[]; sessions: number; last_ts: number | null }
+export type RepoMember = { project: string; name: string; sessions: number; last_ts: number | null; evidence: string; node_ids: string[] }
+export type RepoEntry = { root: string; name: string; members: RepoMember[]; sessions: number; last_ts: number | null; node_ids: string[] }
 export type ProjectCatalog = { projects: ProjectEntry[]; repos: RepoEntry[]; truncated: boolean }
 
 // The list draws this many matches at most; typing narrows it.
@@ -29,6 +29,13 @@ export function matchProjects(entries: readonly ProjectEntry[], text: string): P
 export function matchRepos(entries: readonly RepoEntry[], text: string): RepoEntry[] {
   const words = wordsOf(text)
   return entries.filter(entry => matches(entry.root, words) || entry.members.some(member => matches(member.project, words)))
+}
+
+/** The nodes an entry's sessions ran on, by name. Written only when the list holds more than one node: the same
+    path on two nodes is one entry, and without the names nothing tells two nodes' folders apart. */
+export function nodeNote(nodeIds: readonly string[], several: boolean) {
+  if (!several || !nodeIds.length) return ''
+  return nodeIds.length === 1 ? ` · on ${nodeIds[0]}` : ` · on ${fmtN(nodeIds.length)} nodes: ${nodeIds.join(', ')}`
 }
 
 /** The address after one entry is switched on or off; the other chosen entries stay. */
@@ -60,6 +67,7 @@ export function ProjectPicker(props: { ctx: PanelContext }) {
   const current = () => catalog()?.key === path() ? catalog() : undefined
   const projects = createMemo(() => matchProjects(current()?.value?.projects ?? [], typed()))
   const repos = createMemo(() => matchRepos(current()?.value?.repos ?? [], typed()))
+  const several = createMemo(() => new Set((current()?.value?.projects ?? []).flatMap(entry => entry.node_ids)).size > 1)
   const chosen = () => ctx.filters()
   const label = () => {
     const { projects, repos } = chosen()
@@ -101,7 +109,7 @@ export function ProjectPicker(props: { ctx: PanelContext }) {
               <label class={styles.projectEntry} title={repo().root}>
                 <input type="checkbox" checked={chosen().repos.includes(repo().root)} onChange={() => toggleRepo(repo().root)} />
                 <span class={styles.projectName}>{repo().name} <span class={styles.projectFacts}>
-                  · {fmtN(repo().members.length)} folders · {facts(repo())}</span></span>
+                  · {fmtN(repo().members.length)} folders · {facts(repo())}{nodeNote(repo().node_ids, several())}</span></span>
                 <span class={styles.projectPath}>{repo().root}</span>
               </label>
               {/* Folded: a repository can hold dozens of worktrees, and the list must stay scannable. */}
@@ -111,7 +119,7 @@ export function ProjectPicker(props: { ctx: PanelContext }) {
                   <For each={repo().members} keyed={member => member.project}>{member =>
                     <li class={styles.projectMember} title={`${member().project}\n${member().evidence}`}>
                       <span>{member().project}</span>
-                      <span class={styles.projectFacts}>{facts(member())} · {member().evidence}</span>
+                      <span class={styles.projectFacts}>{facts(member())}{nodeNote(member().node_ids, several())} · {member().evidence}</span>
                     </li>}</For>
                 </ul>
               </details>
@@ -129,7 +137,7 @@ export function ProjectPicker(props: { ctx: PanelContext }) {
               <input type="checkbox" checked={chosen().projects.includes(entry().project)} onChange={() => toggleProject(entry().project)} />
               <span class={styles.projectName}>{entry().name}</span>
               <span class={styles.projectPath}>{entry().project}</span>
-              <span class={styles.projectFacts}>{facts(entry())}{entry().nodes > 1 ? ` · ${fmtN(entry().nodes)} nodes` : ''}</span>
+              <span class={styles.projectFacts}>{facts(entry())}{nodeNote(entry().node_ids, several())}</span>
             </label></li>}</For>
         </ul>
         <Show when={projects().length > SHOWN}><p class={styles.projectNote}>{fmtN(projects().length - SHOWN)} more: type to narrow the list.</p></Show>

@@ -37,7 +37,7 @@ _VIEWS = {
     "analytics.tools": (f"{_TIME} restrict_tools requested_tools", "row_type hidden count tool_name cli_tool avg_ms p95_ms error_count"),
     "analytics.profiles": (_TIME, "session_id tool project_path model started_at input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd request_count tool_call_count tokens_source tokens_quality cost_quality"),
     "health.nodes": ("requested_project requested_node", "node_id samples last_sample"),
-    "projects.catalog": ("all_nodes requested_node", "row_type project_path sessions last_ts nodes root evidence"),
+    "projects.catalog": ("all_nodes requested_node", "row_type project_path sessions last_ts nodes node_ids root evidence"),
     "health.totals": ("all_nodes requested_node", "table rows earliest_ts latest_ts files_total_bytes files_total_tokens"),
     "health.sample_buckets": ("", "start"),
     "health.sample_count": ("since until null_timestamp", "rows"),

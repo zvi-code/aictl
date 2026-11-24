@@ -270,13 +270,16 @@ def test_two_spellings_of_one_windows_folder_are_one_project_and_never_break_the
     # second member had no evidence.
     from aictl.dashboard.project_filter import EVIDENCE, one_per_folder, repositories
 
-    def item(path, sessions, last_ts, nodes=1):
-        return {"project": path, "name": path.replace("/", "\\").split("\\")[-1], "sessions": sessions, "last_ts": last_ts, "nodes": nodes}
+    def item(path, sessions, last_ts, nodes=1, node_ids=("win",)):
+        return {"project": path, "name": path.replace("/", "\\").split("\\")[-1], "sessions": sessions, "last_ts": last_ts, "nodes": nodes,
+                "node_ids": list(node_ids)}
 
-    listed = one_per_folder([item("C:\\OSS\\app", 3, 50.0), item("c:\\oss\\app", 9, 40.0, nodes=2), item("C:/OSS/app", 1, None),
+    listed = one_per_folder([item("C:\\OSS\\app", 3, 50.0), item("c:\\oss\\app", 9, 40.0, nodes=2, node_ids=("cpc", "win")), item("C:/OSS/app", 1, None, node_ids=("mac",)),
                              item("C:\\OSS\\other", 2, 10.0), item("/srv/App", 1, 5.0), item("/srv/app", 1, 6.0)])
     assert [(p["project"], p["sessions"], p["last_ts"], p["nodes"]) for p in listed] == [
-        ("c:\\oss\\app", 13, 50.0, 2), ("C:\\OSS\\other", 2, 10.0, 1), ("/srv/App", 1, 5.0, 1), ("/srv/app", 1, 6.0, 1)]
+        ("c:\\oss\\app", 13, 50.0, 3), ("C:\\OSS\\other", 2, 10.0, 1), ("/srv/App", 1, 5.0, 1), ("/srv/app", 1, 6.0, 1)]
+    # One folder on three nodes is one entry that names all three.
+    assert listed[0]["node_ids"] == ["cpc", "mac", "win"]
 
     # Even when both spellings reach the grouping (older callers), it answers: both are the repository's own folder.
     both = [item("C:\\OSS\\app", 3, 50.0), item("c:\\oss\\app", 9, 40.0)]
@@ -332,6 +335,18 @@ def _repo_store(store, *, members=(REPO, COMMITTED, AGENT_TREE, LOOKALIKE)):
         if project == REPO:
             store.insert("agents", session_id=sid, agent_id="sub", tool="claude-code", project=REPO,
                          worktree_path=AGENT_TREE, started_at=NOW - 480)
+
+
+def test_the_picker_names_the_nodes_of_each_folder_in_the_fleet_scope(kusto_store):
+    # The same path on two nodes is one entry: without the node names nothing tells the nodes' folders apart.
+    for sid, path, node in [("a1", "/work/shared", None), ("a2", "/work/shared", "node-two"), ("b1", "/work/far", "node-two")]:
+        kusto_store.insert("sessions", session_id=sid, tool="codex-cli", project_path=path, project=path, started_at=1000.0,
+                           last_activity_at=2000.0, **({"node_id": node} if node else {}))
+    fleet = _get(kusto_store, "/api/board/projects", scope="fleet")
+    named = {p["project"]: p["node_ids"] for p in fleet["projects"]}
+    assert named["/work/far"] == ["node-two"]
+    assert len(named["/work/shared"]) == 2 and "node-two" in named["/work/shared"]
+    assert {p["project"]: p["nodes"] for p in fleet["projects"]} == {"/work/shared": 2, "/work/far": 1}
 
 
 def test_the_picker_lists_the_repository_with_its_members(kusto_store):

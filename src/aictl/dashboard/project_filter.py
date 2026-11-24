@@ -133,6 +133,8 @@ def catalog(history: HistoryScope) -> dict:
     projects = one_per_folder([{
         "project": row["project_path"], "name": project_name(row["project_path"]), "sessions": int(row["sessions"] or 0),
         "last_ts": row["last_ts"], "nodes": int(row["nodes"] or 0),
+        # The nodes whose sessions ran in the folder: the same path on two nodes is one entry, named for both.
+        "node_ids": [node for node in (row.get("node_ids") or "").split(",") if node],
     } for row in result.rows if row["row_type"] == "project"])
     evidence = [row for row in result.rows if row["row_type"] == "root"]
     # This node's own git folders are evidence only for this node's paths.
@@ -155,7 +157,8 @@ def one_per_folder(projects: list[dict]) -> list[dict]:
         if item["sessions"] > known["sessions"]:
             known["project"], known["name"] = item["project"], item["name"]
         known["sessions"] += item["sessions"]
-        known["nodes"] = max(known["nodes"], item["nodes"])
+        known["node_ids"] = sorted({*known.get("node_ids", ()), *item.get("node_ids", ())})
+        known["nodes"] = max(known["nodes"], item["nodes"], len(known["node_ids"]))
         known["last_ts"] = max((ts for ts in (known["last_ts"], item["last_ts"]) if ts is not None), default=None)
     return list(merged.values())
 
@@ -232,13 +235,14 @@ def repositories(projects: list[dict], evidence: list[dict], *, local: bool) -> 
         groups.append({
             "root": root, "name": project_name(root),
             "members": sorted(({"project": m, "name": facts[m]["name"], "sessions": facts[m]["sessions"],
-                                "last_ts": facts[m]["last_ts"],
+                                "last_ts": facts[m]["last_ts"], "node_ids": facts[m].get("node_ids", []),
                                 # The root may be listed under another spelling than its members name it by.
                                 "evidence": EVIDENCE["root" if project_key(m) == root_key else parent[m][1]]}
                                for m in members),
                               key=lambda m: (project_key(m["project"]) != root_key, -(m["last_ts"] or 0), m["project"])),
             "sessions": sum(r["sessions"] for r in rows),
             "last_ts": max((r["last_ts"] for r in rows if r["last_ts"] is not None), default=None),
+            "node_ids": sorted({node for r in rows for node in r.get("node_ids", ())}),
         })
     groups.sort(key=lambda g: (-(g["last_ts"] or 0), g["root"]))
     return groups

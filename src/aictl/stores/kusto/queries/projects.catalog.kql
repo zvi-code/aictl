@@ -17,7 +17,8 @@ let s = materialize(sessions_secs
     | project node_id, session_id, project_path=['project'],
         active_ts=max_of(coalesce(last_activity_at, 0.0), coalesce(ended_at, 0.0), coalesce(started_at, 0.0)));
 let folders = s
-    | summarize sessions=count(), last_ts=max(active_ts), nodes=dcount(node_id) by project_path
+    | summarize sessions=count(), last_ts=max(active_ts), nodes=dcount(node_id), node_set=make_set(node_id, 16) by project_path
+    | extend node_ids=strcat_array(array_sort_asc(node_set), ',')
     | extend last_ts=iff(last_ts > 0, last_ts, real(null)), row_type='project', root='', evidence='';
 let commit_roots = session_commits_secs
     | where all_nodes or node_id == requested_node
@@ -28,7 +29,7 @@ let commit_roots = session_commits_secs
     | join kind=inner (s | project node_id, session_id, project_path) on node_id, session_id
     | where root != project_path
     | summarize sessions=dcount(strcat(node_id, '/', session_id)) by project_path, root
-    | extend row_type='root', evidence='commit';
+    | extend row_type='root', evidence='commit', node_ids='';
 let worktree_roots = agents_secs
     | where all_nodes or node_id == requested_node
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
@@ -38,8 +39,8 @@ let worktree_roots = agents_secs
     | join kind=inner (s | project node_id, session_id, root=project_path) on node_id, session_id
     | where root != project_path
     | summarize sessions=dcount(strcat(node_id, '/', session_id)) by project_path, root
-    | extend row_type='root', evidence='worktree';
+    | extend row_type='root', evidence='worktree', node_ids='';
 union folders, commit_roots, worktree_roots
 | order by row_type asc, last_ts desc nulls last, project_path asc, evidence asc, root asc
 | take row_limit
-| project row_type, project_path, sessions, last_ts, nodes, root, evidence
+| project row_type, project_path, sessions, last_ts, nodes, node_ids, root, evidence
