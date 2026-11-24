@@ -107,7 +107,7 @@ const NOTE = 'Agent working time is the sum of a session\'s turns that start in 
 
 export default function Durations(props: CardProps) {
   untrack(() => props.ctx)
-  return <InsightCard<DurationBody> {...props} card="durations" title="Where session time goes" tab="flow" filtered
+  return <InsightCard<DurationBody> {...props} card="durations" tab="flow" filtered
     hero={durationHero}
     finding={durationFinding}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>

@@ -105,7 +105,7 @@ type Row = Record<string, unknown>
 export default function Flows(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<FlowsBody> {...props} card="flows" title="Flows" tab="flow"
+  return <InsightCard<FlowsBody> {...props} card="flows" tab="flow"
     hero={flowsHero}
     finding={flowsFinding}
     visual={body => <Visual body={body} label={label} />}

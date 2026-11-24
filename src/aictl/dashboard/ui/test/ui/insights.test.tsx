@@ -211,7 +211,7 @@ function context(states: (card: string) => State, opened: string[] = []) {
 }
 const ready = (card: string): State => ({ data: bodies[card], status: 'ready', error: null })
 const props = (ctx: PanelContext) => ({ ctx, boxes: createBoxes('test-insights'), since: base.range.since, until: base.range.until })
-const card = (host: Element, id: string) => host.querySelector(`[data-box="insight-${id}"]`)!
+const card = (host: Element, id: string) => host.querySelector(`#insight-${id}`)!
 
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights&range=all') })
 

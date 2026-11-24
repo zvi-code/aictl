@@ -92,7 +92,7 @@ const flows = {
 describe('INS-RW · Flows split by repository', () => {
   it('draws the legend once, keeps the ending bar by outcome and adds a bar per ending split by repository', () => {
     const { host, dispose } = mount(() => <Flows {...props(ready(flows))} />)
-    const box = host.querySelector('[data-box="insight-flows"]')!
+    const box = host.querySelector('#insight-flows')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     // The bar by outcome stays as it was.
@@ -111,7 +111,7 @@ describe('INS-RW · Flows split by repository', () => {
 
   it('splits the last steps, paths, cycles and tools by repository, and adds a project bar by repository', () => {
     const { host, dispose } = mount(() => <Flows {...props(ready(flows))} />)
-    const box = host.querySelector('[data-box="insight-flows"]')!
+    const box = host.querySelector('#insight-flows')!
     const repos = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-row] [data-part]`)].map(part => part.getAttribute('data-repo'))
     expect(repos('last-committed')).toEqual(['0', '1'])
     expect(repos('last-no_change')).toEqual(['0', String(OTHER)])
@@ -135,7 +135,7 @@ describe('INS-RW · Flows split by repository', () => {
 
   it('draws the old single bars when the answer carries no split', () => {
     const { host, dispose } = mount(() => <Flows {...props(ready(unsplit(flows)))} />)
-    const box = host.querySelector('[data-box="insight-flows"]')!
+    const box = host.querySelector('#insight-flows')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="endings-repos"]')).toBeNull()
     expect(box.querySelector('[data-chart="projects-repos"]')).toBeNull()
@@ -163,7 +163,7 @@ const autonomy = {
 describe('INS-RW · Work per instruction split by repository', () => {
   it('keeps the wait bar split at 5 minutes and adds a bar of the waits by repository; the run bar stays whole', () => {
     const { host, dispose } = mount(() => <WorkPerInstruction {...props(ready(autonomy))} />)
-    const box = host.querySelector('[data-box="insight-autonomy"]')!
+    const box = host.querySelector('#insight-autonomy')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     expect(box.querySelector('[data-wait="claude-code"] [data-under]')).not.toBeNull()
     const row = box.querySelector('[data-chart="autonomy-waits-repos"] [data-row="claude-code"]')!
@@ -180,7 +180,7 @@ describe('INS-RW · Work per instruction split by repository', () => {
 
   it('draws no repository bar and no legend without a split', () => {
     const { host, dispose } = mount(() => <WorkPerInstruction {...props(ready(unsplit(autonomy)))} />)
-    const box = host.querySelector('[data-box="insight-autonomy"]')!
+    const box = host.querySelector('#insight-autonomy')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="autonomy-waits-repos"]')).toBeNull()
     expect(box.querySelectorAll('[data-wait="claude-code"] [data-under], [data-wait="claude-code"] [data-over]').length).toBe(2)
@@ -215,7 +215,7 @@ const verified = {
 describe('INS-RW · Verified before commit split by repository', () => {
   it('keeps the bars by class and by test, and adds a commit bar and a session bar by repository', () => {
     const { host, dispose } = mount(() => <VerifiedCommits {...props(ready(verified))} />)
-    const box = host.querySelector('[data-box="insight-verified"]')!
+    const box = host.querySelector('#insight-verified')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     expect([...box.querySelectorAll('[data-tool="claude-code"] [data-segment]')].map(part => part.getAttribute('data-segment')))
@@ -241,7 +241,7 @@ describe('INS-RW · Verified before commit split by repository', () => {
     expect(one.host.querySelector('[data-chart="verified-commits-repos"]')).toBeNull()
     one.dispose()
     const { host, dispose } = mount(() => <VerifiedCommits {...props(ready(unsplit(verified)))} />)
-    const box = host.querySelector('[data-box="insight-verified"]')!
+    const box = host.querySelector('#insight-verified')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="verified-commits-repos"]')).toBeNull()
     expect(box.querySelector('[data-chart="verified-sessions-repos"]')).toBeNull()
@@ -276,7 +276,7 @@ const durations = {
 describe('INS-RW · Where session time goes split by repository', () => {
   it('marks each repository row with its colour and splits the tool and model time by repository', () => {
     const { host, dispose } = mount(() => <Durations {...props(ready(durations))} />)
-    const box = host.querySelector('[data-box="insight-durations"]')!
+    const box = host.querySelector('#insight-durations')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     // Working and waiting keep their colours; the row carries its repository's colour, and its hover says so.
@@ -303,7 +303,7 @@ describe('INS-RW · Where session time goes split by repository', () => {
 
   it('draws the old bars without a split', () => {
     const { host, dispose } = mount(() => <Durations {...props(ready(unsplit(durations)))} />)
-    const box = host.querySelector('[data-box="insight-durations"]')!
+    const box = host.querySelector('#insight-durations')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-repo-mark]')).toBeNull()
     expect(box.querySelector('[data-chart="tools"] [data-bar="pytest"] [data-value]')!.textContent).toBe('4 h · 200%')
@@ -340,7 +340,7 @@ const changes = {
 describe('INS-RW · What the agents changed split by repository', () => {
   it('colours the files bar of each repository, splits kinds, rewritten files and bins by repository', () => {
     const { host, dispose } = mount(() => <Changes {...props(ready(changes))} />)
-    const box = host.querySelector('[data-box="insight-changes"]')!
+    const box = host.querySelector('#insight-changes')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     const files = box.querySelector('[data-chart="files"]')!
@@ -373,7 +373,7 @@ describe('INS-RW · What the agents changed split by repository', () => {
 
   it('draws the old bars and columns without a split', () => {
     const { host, dispose } = mount(() => <Changes {...props(ready(unsplit(changes)))} />)
-    const box = host.querySelector('[data-box="insight-changes"]')!
+    const box = host.querySelector('#insight-changes')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-repo-mark]')).toBeNull()
     expect(box.querySelector('[data-chart="kinds"] [data-bar="source"]')).not.toBeNull()

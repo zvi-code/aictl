@@ -68,7 +68,7 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
 
   return <div data-screen="thinking" class={styles.screen}>
     <header class={styles.heading}>
-      <h1>Thinking</h1>
+      <h1>Search: thinking text</h1>
       <p>{describe()}. The visible thinking text of model calls, for the chosen tools, model, projects and nodes.</p>
     </header>
 

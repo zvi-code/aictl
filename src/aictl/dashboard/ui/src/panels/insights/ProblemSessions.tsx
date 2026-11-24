@@ -146,7 +146,7 @@ type Row = Record<string, unknown>
 export default function ProblemSessions(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<ProblemBody> {...props} card="problems" title="Problem sessions" tab="errors"
+  return <InsightCard<ProblemBody> {...props} card="problems" tab="errors"
     hero={problemHero}
     finding={body => problemFinding(body, label)}
     visual={body => <>

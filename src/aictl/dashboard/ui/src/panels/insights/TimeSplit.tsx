@@ -78,7 +78,7 @@ const programAxis = (body: TimeBody) => body.programs.some(row => row.repos?.len
 export default function TimeSplit(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<TimeBody> {...props} card="time" title="Where the time goes" tab="tools"
+  return <InsightCard<TimeBody> {...props} card="time" tab="tools"
     hero={timeHero}
     finding={body => timeFinding(body, label)}
     visual={body => <>

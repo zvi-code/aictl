@@ -142,7 +142,7 @@ describe('INS-11 · Verified before commit', () => {
     const opened: string[] = []
     const ctx = context({ data: fleet, status: 'ready', error: null }, opened)
     const { host, dispose } = mount(() => <VerifiedCommits {...props(ctx)} />)
-    const box = host.querySelector('[data-box="insight-verified"]')!
+    const box = host.querySelector('#insight-verified')!
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('52%')
     const row = box.querySelector('[data-tool="copilot-cli"]')!
     expect(row.textContent).toContain('copilot-cli · 506 commits')

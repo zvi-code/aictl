@@ -48,7 +48,7 @@ const props = (ctx: PanelContext) => ({ ctx, boxes: createBoxes('test-repo-failu
 function draw(Card: (p: CardProps) => JSX.Element, card: string, data: unknown) {
   const given = props(context({ data, status: 'ready', error: null }))
   const { host, dispose } = mount(() => <Card {...given} />)
-  return { box: host.querySelector(`[data-box="insight-${card}"]`)!, dispose }
+  return { box: host.querySelector(`#insight-${card}`)!, dispose }
 }
 const texts = (nodes: Iterable<Element>, read: (node: Element) => string | null) => [...nodes].map(read)
 const repos = (row: Element) => texts(row.querySelectorAll('[data-part]'), part => part.getAttribute('data-repo'))

@@ -102,7 +102,7 @@ const NOTE = 'A change is a file write event of the period that an agent made (a
 
 export default function Changes(props: CardProps) {
   untrack(() => props.ctx)
-  return <InsightCard<ChangeBody> {...props} card="changes" title="What the agents changed" tab="flow" filtered
+  return <InsightCard<ChangeBody> {...props} card="changes" tab="flow" filtered
     hero={changeHero}
     finding={changeFinding}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>

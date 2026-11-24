@@ -167,6 +167,7 @@
 .sections a:focus-visible { outline: var(--focus-size) solid var(--color-focus); }
 .sectionText { display: grid; min-inline-size: 0; line-height: var(--leading-tight); }
 .sectionText > span { overflow: hidden; text-overflow: ellipsis; }
+.sectionGroup { padding: var(--space-4) var(--space-4) var(--space-1); color: var(--color-muted); font-size: var(--text-xs); font-weight: var(--weight-strong); }
 .sectionStat { display: none; font-size: var(--text-xs); font-variant-numeric: tabular-nums; color: var(--color-muted); font-weight: normal; }
 .work { min-inline-size: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--space-4); }
 .work h1 { margin: 0 0 var(--space-5); font-size: var(--text-2xl); }

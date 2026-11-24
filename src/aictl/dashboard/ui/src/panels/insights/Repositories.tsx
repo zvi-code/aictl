@@ -105,7 +105,7 @@ const NOTE = 'A session counts when it made a model request or a tool call in th
 
 export default function Repositories(props: CardProps) {
   const ctx = untrack(() => props.ctx)
-  return <InsightCard<RepoBody> {...props} card="repos" title="Work by repository" tab="flow" filtered
+  return <InsightCard<RepoBody> {...props} card="repos" tab="flow" filtered
     hero={repoHero}
     finding={repoFinding}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>

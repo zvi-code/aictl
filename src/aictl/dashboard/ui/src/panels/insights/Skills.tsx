@@ -51,7 +51,7 @@ const skillRow = (item: SkillRow, small: boolean): Row => ({
 export default function Skills(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<SkillsBody> {...props} card="skills" title="Skills" tab="flow"
+  return <InsightCard<SkillsBody> {...props} card="skills" tab="flow"
     hero={skillsHero}
     finding={body => skillsFinding(body, label)}
     visual={body => <Visual body={body} label={label} />}

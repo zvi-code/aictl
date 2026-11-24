@@ -11,7 +11,6 @@ import PauseTax from '../../src/panels/insights/PauseTax'
 import { DEFAULT_FINDER, finderRequest } from '../../src/panels/overview/sessionFinder'
 import type { PanelContext } from '../../src/panels/types'
 import { matchProjects, matchRepos, nodeNote, ProjectChips, ProjectPicker, toggled, type ProjectEntry, type RepoEntry } from '../../src/shell/ProjectPicker'
-import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
 
 const ALPHA = '/work/alpha', BETA = '/work/beta', REPO = '/work/repo'
@@ -122,8 +121,7 @@ describe('PRJ-02 · Every screen sends the chosen projects', () => {
     } as unknown as PanelContext
     layoutHeaders()
     history.replaceState(null, '', '/?screen=insights&range=all')
-    const boxes = createBoxes('test-project-filter')
-    const { dispose } = mount(() => <PauseTax ctx={ctx} boxes={boxes} since={0} until={100} />)
+    const { dispose } = mount(() => <PauseTax ctx={ctx} since={0} until={100} />)
     try {
       const card = requested.find(path => path.startsWith('/api/board/insights/pause'))
       expect(card).toBeDefined()

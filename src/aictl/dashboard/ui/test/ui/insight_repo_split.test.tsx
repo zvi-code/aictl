@@ -117,7 +117,7 @@ describe('INS-RS · Bars split by repository, one colour per repository for the 
   it('draws Context carry with a segment per repository on each bar and the legend once above the charts', () => {
     const ctx = context({ data: carry, status: 'ready', error: null })
     const { host, dispose } = mount(() => <ContextCarry {...props(ctx)} />)
-    const box = host.querySelector('[data-box="insight-carry"]')!
+    const box = host.querySelector('#insight-carry')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect([...box.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
     for (const chart of ['carry-output', 'carry-carried', 'carry-tools']) {
@@ -139,7 +139,7 @@ describe('INS-RS · Bars split by repository, one colour per repository for the 
     const plain = { ...carry, repo_order: [], repo_others: null,
       tool_names: carry.tool_names.map(row => ({ ...row, repos: undefined })) } as unknown as CarryBody
     const { host, dispose } = mount(() => <ContextCarry {...props(context({ data: plain, status: 'ready', error: null }))} />)
-    const box = host.querySelector('[data-box="insight-carry"]')!
+    const box = host.querySelector('#insight-carry')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect([...box.querySelectorAll('[data-chart="carry-output"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['output'])
     dispose()
@@ -147,7 +147,7 @@ describe('INS-RS · Bars split by repository, one colour per repository for the 
 
   it('draws Where the time goes with the split by kind kept and a second bar per tool split by repository', () => {
     const { host, dispose } = mount(() => <TimeSplit {...props(context({ data: time, status: 'ready', error: null }))} />)
-    const box = host.querySelector('[data-box="insight-time"]')!
+    const box = host.querySelector('#insight-time')!
     expect([...box.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
     // The bar by kind stays as it was.
     expect([...box.querySelectorAll('[data-chart="time-tools"] [data-part]')].map(part => part.getAttribute('data-part')))

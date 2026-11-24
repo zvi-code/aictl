@@ -94,7 +94,7 @@ describe('INS-20 · Flows', () => {
   it('draws how sessions ended, the last steps, the transition matrix, cycles, paths and projects, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Flows {...props(context({ data: flows, status: 'ready', error: null }, opened))} />)
-    const box = host.querySelector('[data-box="insight-flows"]')!
+    const box = host.querySelector('#insight-flows')!
     const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('30%')
     expect(value('endings')).toEqual(['28 committed · 0 changed files, no commit · 12 changed no file'])
@@ -164,7 +164,7 @@ describe('INS-21 · Skills', () => {
   it('draws uses, turn cost, what followed, listings, unused skills, projects and tools, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Skills {...props(context({ data: skills, status: 'ready', error: null }, opened))} />)
-    const box = host.querySelector('[data-box="insight-skills"]')!
+    const box = host.querySelector('#insight-skills')!
     const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('927')
     expect(value('uses')).toEqual(['142 uses'])
@@ -222,7 +222,7 @@ describe('INS-22 · MCP servers', () => {
   it('draws calls, time, bytes, server tools, listings and projects for the servers with enough calls, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Mcp {...props(context({ data: mcpBody, status: 'ready', error: null }, opened))} />)
-    const box = host.querySelector('[data-box="insight-mcp"]')!
+    const box = host.querySelector('#insight-mcp')!
     const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
     expect(value('calls')).toEqual(['650 calls · 29 failed (4%)'])
     expect(box.querySelector('[data-chart="calls"] [data-row="kusto"]')!.textContent).toContain('13 sessions · 48 projects')
@@ -293,7 +293,7 @@ describe('INS-23 · Kusto queries', () => {
   it('draws routes, failure kinds, kinds, targets, shapes, projects and large results, shows the full text on expand, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Kql {...props(context({ data: kqlBody, status: 'ready', error: null }, opened))} />)
-    const box = host.querySelector('[data-box="insight-kql"]')!
+    const box = host.querySelector('#insight-kql')!
     const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('40')
     expect(value('routes')).toEqual(['30 runs (75%)', '5 runs (13%)', '5 runs (13%)'])

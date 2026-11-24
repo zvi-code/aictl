@@ -69,7 +69,7 @@ function ReadBars(props: { body: RereadBody; label: Label }) {
 export default function Rereads(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<RereadBody> {...props} card="rereads" title="Repeated file reads" tab="tools"
+  return <InsightCard<RereadBody> {...props} card="rereads" tab="tools"
     hero={rereadHero}
     finding={body => rereadFinding(body)}
     visual={body => <ReadBars body={body} label={label} />}

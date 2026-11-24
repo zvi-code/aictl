@@ -55,7 +55,7 @@ function CarryBars(props: { body: CarryBody; label: Label }) {
 export default function ContextCarry(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<CarryBody> {...props} card="carry" title="Context carry" tab="context"
+  return <InsightCard<CarryBody> {...props} card="carry" tab="context"
     hero={carryHero}
     finding={body => carryFinding(body, label)}
     visual={body => <CarryBars body={body} label={label} />}

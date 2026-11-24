@@ -89,7 +89,6 @@ def _dashboard_requests(root):
             "/api/board/insights/autonomy",
             "/api/board/insights/verified",
             "/api/board/insights/models",
-            "/api/board/insights/summary",
             "/api/board/insights/repos", "/api/board/insights/durations", "/api/board/insights/changes",
             "/api/board/insights/flows", "/api/board/insights/skills", "/api/board/insights/mcp", "/api/board/insights/kql",
         )},

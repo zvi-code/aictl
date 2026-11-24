@@ -117,7 +117,7 @@ type Row = Record<string, unknown>
 export default function FixedContext(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<FixedBody> {...props} card="fixed" title="Fixed context overhead" tab="context"
+  return <InsightCard<FixedBody> {...props} card="fixed" tab="context"
     hero={fixedHero}
     finding={body => fixedFinding(body, label)}
     visual={body => <KindBars body={body} label={label} />}

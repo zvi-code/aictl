@@ -122,7 +122,7 @@ beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '',
 describe('INS-RS · Context group cards split by repository', () => {
   it('Context weight: keeps the bucket bars, adds per-tool and per-bucket bars by repository, splits small steps', () => {
     const { host, dispose } = mount(() => <ContextWeight {...props(context)} />)
-    const box = host.querySelector('[data-box="insight-context"]')!
+    const box = host.querySelector('#insight-context')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     expect([...box.querySelectorAll('[data-chart="context-requests"] [data-part]')].map(part => part.getAttribute('data-part')))
@@ -147,7 +147,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Context weight: a body without repos draws the old bars only', () => {
     const { host, dispose } = mount(() => <ContextWeight {...props(strip(context))} />)
-    const box = host.querySelector('[data-box="insight-context"]')!
+    const box = host.querySelector('#insight-context')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="context-requests-repos"]')).toBeNull()
     expect([...box.querySelectorAll('[data-chart="context-small"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['small'])
@@ -156,7 +156,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Orientation: keeps the edit bar, adds sessions and no-edit cost by repository, colours a project that is a repository', () => {
     const { host, dispose } = mount(() => <Orientation {...props(orientation)} />)
-    const box = host.querySelector('[data-box="insight-orientation"]')!
+    const box = host.querySelector('#insight-orientation')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     expect([...box.querySelectorAll('[data-chart="orientation-tools"] [data-part]')].map(part => part.getAttribute('data-part')))
       .toEqual(['edited', 'never'])
@@ -177,7 +177,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Orientation: a body without repos draws the old bars only', () => {
     const { host, dispose } = mount(() => <Orientation {...props(strip(orientation))} />)
-    const box = host.querySelector('[data-box="insight-orientation"]')!
+    const box = host.querySelector('#insight-orientation')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="orientation-tools-repos"]')).toBeNull()
     expect(repoAttrs(box.querySelector('[data-chart="orientation-requests"] [data-row]')!)).toEqual([null])
@@ -186,7 +186,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Repeated file reads: keeps the first/again bar, adds reads and reads again by repository, splits files read 5+ times', () => {
     const { host, dispose } = mount(() => <Rereads {...props(rereads)} />)
-    const box = host.querySelector('[data-box="insight-rereads"]')!
+    const box = host.querySelector('#insight-rereads')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     expect([...box.querySelectorAll('[data-chart="reread-reads"] [data-part]')].map(part => part.getAttribute('data-part')))
       .toEqual(['first', 'again'])
@@ -207,7 +207,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Repeated file reads: a body without repos draws the old bars only', () => {
     const { host, dispose } = mount(() => <Rereads {...props(strip(rereads))} />)
-    const box = host.querySelector('[data-box="insight-rereads"]')!
+    const box = host.querySelector('#insight-rereads')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="reread-reads-repos"]')).toBeNull()
     expect([...box.querySelectorAll('[data-chart="reread-files"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['files'])
@@ -216,7 +216,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Fixed context overhead: keeps the kind bar, adds per-tool and per-kind averages by repository, says what is not split', () => {
     const { host, dispose } = mount(() => <FixedContext {...props(fixed)} />)
-    const box = host.querySelector('[data-box="insight-fixed"]')!
+    const box = host.querySelector('#insight-fixed')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
     expect([...box.querySelectorAll('[data-chart="fixed-kinds"] [data-part]')].map(part => part.getAttribute('data-part')))
       .toEqual(['instruction_file', 'skills'])
@@ -238,7 +238,7 @@ describe('INS-RS · Context group cards split by repository', () => {
 
   it('Fixed context overhead: a body without repos draws the old bars only', () => {
     const { host, dispose } = mount(() => <FixedContext {...props(strip(fixed))} />)
-    const box = host.querySelector('[data-box="insight-fixed"]')!
+    const box = host.querySelector('#insight-fixed')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="fixed-kinds-repos"]')).toBeNull()
     expect(box.querySelector('[data-not-split]')).toBeNull()

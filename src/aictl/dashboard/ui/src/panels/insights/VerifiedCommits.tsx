@@ -155,7 +155,7 @@ const NOTE = 'What is counted. A commit is a successful shell call that runs git
 export default function VerifiedCommits(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<VerifiedBody> {...props} card="verified" title="Verified before commit" tab="flow"
+  return <InsightCard<VerifiedBody> {...props} card="verified" tab="flow"
     hero={verifiedHero}
     finding={body => verifiedFinding(body, label)}
     visual={body => <CommitBars body={body} label={label} />}

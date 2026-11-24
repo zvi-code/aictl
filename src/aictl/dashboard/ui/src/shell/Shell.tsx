@@ -10,6 +10,7 @@ import { drawerStack } from '../drawer/navigation'
 import { at, detailPath, json, panelData, statuses, topic } from '../panels/data'
 import { FIND_EVENT, rowState } from '../panels/overview/sessionFinder'
 import type { DetailSessions } from '../data/contract.gen'
+import { insightGroups, insightView } from '../panels/insights/views'
 import { sections } from '../panels/layout'
 import type { Command, NodeScope, PanelContext } from '../panels/types'
 import { AppShell } from '../ui/AppShell'
@@ -36,16 +37,17 @@ const Thinking = lazy(() => import('./Thinking'))
 const Settings = lazy(() => import('./Settings'))
 const Index = lazy(() => import('./Index'))
 const Drawer = lazy(() => import('../drawer/DrawerView'))
-const screenNames = { board: 'Overview', health: 'Health', insights: 'Insights', thinking: 'Thinking', index: 'Index', settings: 'Settings' }
-// The top row names three places. Health holds the store's index and the settings as its parts, and Insights holds
-// the search of thinking text: each part keeps its own address (`screen=`), so links to it still open it.
+const screenNames = { board: 'Overview', health: 'Health', insights: 'Insights', thinking: 'Search', index: 'Index', settings: 'Settings' }
+// The top row names the places. Health holds the store's index and the settings as its parts; each part keeps its
+// own address (`screen=`), so links to it still open it. Search holds the search of thinking text (`screen=thinking`).
 const places: { id: Screen; holds: Screen[] }[] = [
   { id: 'board', holds: ['board'] },
   { id: 'health', holds: ['health', 'index', 'settings'] },
-  { id: 'insights', holds: ['insights', 'thinking'] },
+  { id: 'insights', holds: ['insights'] },
+  { id: 'thinking', holds: ['thinking'] },
 ]
 const partNames: Partial<Record<Screen, string>> = {
-  health: 'Nodes and store', index: 'Index', settings: 'Settings', insights: 'Cards', thinking: 'Thinking text',
+  health: 'Nodes and store', index: 'Index', settings: 'Settings',
 }
 const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', insights: 'spark', thinking: 'search', index: 'sources', settings: 'settings' }
 const sectionGlyphs: Record<string, Glyph> = {
@@ -74,6 +76,8 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   const [revision, bump] = createSignal(0)
   const [theme, setTheme] = createSignal<Theme>(stored('aictl-theme', ['light', 'dark'], 'light'))
   const [rail, setRail] = createSignal(stored('aictl-shell-rail', ['open', 'closed'], 'closed') === 'open')
+  // The list of analyses is the only way from one Insights view to another, so it starts open.
+  const [viewList, setViewList] = createSignal(stored('aictl-insights-list', ['open', 'closed'], 'open') === 'open')
   const [order, setOrder] = createSignal(sections.board.map(section => section.id))
   const [palette, setPalette] = createSignal(false)
   const [custom, setCustom] = createSignal(false)
@@ -232,6 +236,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   createEffect(() => screen() === 'board' ? boardRangePatch(search()) : undefined, patch => { if (patch) go(nextAddress(patch), true) })
   createEffect(theme, value => { document.documentElement.dataset.theme = value; remember('aictl-theme', value) })
   createEffect(rail, value => remember('aictl-shell-rail', value ? 'open' : 'closed'))
+  createEffect(viewList, value => remember('aictl-insights-list', value ? 'open' : 'closed'))
   const transport = createMemo(() => boardLiveRequest(filters(), tools(), screen(), startedAt))
   createEffect(() => [scope(), transport().query, transport().history, paused()] as const, ([current]) => {
     if (current !== 'local') { client.stop(); return }
@@ -389,10 +394,15 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   const center = <Show when={screen() === 'board'}>
     <BoardControls ctx={ctx} clear={clear} text={findText()} search={searchFor} />
   </Show>
-  // The section list of Overview opens from the top-left corner, where it stays while the page scrolls.
-  const lead = <Show when={screen() === 'board'}>
-    <button class={styles.iconButton} type="button" aria-label="Sections" title={rail() ? 'Hide the section list' : 'Show the section list'}
-      aria-controls="overview-sections" aria-expanded={rail() ? 'true' : 'false'} onClick={() => setRail(old => !old)}>
+  // The list of the page opens from the top-left corner, where it stays while the page scrolls: the sections of
+  // Overview, the analyses of Insights.
+  const listed = () => screen() === 'board' ? rail() : screen() === 'insights' ? viewList() : false
+  const shownView = createMemo(() => insightView(query().searchParams.get('view')).id)
+  const lead = <Show when={screen() === 'board' || screen() === 'insights'}>
+    <button class={styles.iconButton} type="button" aria-label={screen() === 'board' ? 'Sections' : 'Analyses'}
+      title={`${listed() ? 'Hide' : 'Show'} the list of ${screen() === 'board' ? 'sections' : 'analyses'}`}
+      aria-controls={screen() === 'board' ? 'overview-sections' : 'insight-views'} aria-expanded={listed() ? 'true' : 'false'}
+      onClick={() => screen() === 'board' ? setRail(old => !old) : setViewList(old => !old)}>
       <Icon glyph="menu" /></button>
   </Show>
   return <AppShell title="aictl" actions={actions} center={center} lead={lead}
@@ -401,7 +411,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
       <button class={styles.screen} type="button" aria-current={place.holds.includes(screen()) ? 'page' : undefined}
         onClick={() => { if (!place.holds.includes(screen())) changeScreen(place.id) }}>
         <Icon glyph={screenGlyphs[place.id]} />{screenNames[place.id]}</button>}</For></nav>}>
-    <div class={styles.work} data-rail={rail() && screen() === 'board' ? '' : undefined}>
+    <div class={styles.work} data-rail={listed() ? '' : undefined}>
         <Show when={screen() === 'board'}>
           <nav class={styles.sections} id="overview-sections" aria-label="Overview sections" hidden={!rail()}>
             <For each={sectionList()} keyed={section => section.id}>{section => {
@@ -413,6 +423,17 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
                 <span class={styles.sectionText}><span>{section().title}</span>
                   <Show when={stat()}><span class={styles.sectionStat} id={`rail-stat-${section().id}`} aria-hidden="true">{stat()}</span></Show></span></a>
             }}</For>
+          </nav>
+        </Show>
+        <Show when={screen() === 'insights'}>
+          <nav class={styles.sections} id="insight-views" aria-label="Analyses" hidden={!viewList()}>
+            <For each={insightGroups()}>{group => <>
+              <span class={styles.sectionGroup}>{group.group}</span>
+              <For each={group.views}>{view =>
+                <a href={mergeSearch(search(), { view: view.id })} aria-current={shownView() === view.id ? 'location' : undefined}
+                  title={view.title} onClick={event => { event.preventDefault(); navigate({ view: view.id }); window.scrollTo(0, 0) }}>
+                  <span class={styles.sectionText}><span>{view.title}</span></span></a>}</For>
+            </>}</For>
           </nav>
         </Show>
         <div class={styles.canvas}>

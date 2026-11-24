@@ -13,7 +13,6 @@ import PauseTax from '../../src/panels/insights/PauseTax'
 import { DEFAULT_FINDER, finderRequest } from '../../src/panels/overview/sessionFinder'
 import type { PanelContext } from '../../src/panels/types'
 import Index from '../../src/shell/Index'
-import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
 
 const scopeOf = (path: string) => new URL(path, 'http://x').searchParams.get('scope')
@@ -74,8 +73,7 @@ describe('SCOPE-01 · With no scope in the address every screen asks for All nod
     const asked: string[] = []
     const board = context([])
     const ctx = { ...board.ctx, detail: recording(asked) } as PanelContext
-    const boxes = createBoxes('test-default-scope')
-    const view = mount(() => <PauseTax ctx={ctx} boxes={boxes} since={0} until={100} />)
+    const view = mount(() => <PauseTax ctx={ctx} since={0} until={100} />)
     try {
       const card = asked.find(path => path.startsWith('/api/board/insights/pause'))
       expect(card).toBeDefined()

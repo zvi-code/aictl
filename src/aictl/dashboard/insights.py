@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from . import insights_flows, insights_work
@@ -39,9 +38,7 @@ CARDS = {
     "mcp": "insights.mcp",
     "kql": "insights.kql",
 }
-# The findings summary: one ranked list built from the answers of these cards (no view of its own).
-SUMMARY_CARDS = ("problems", "orientation", "context", "pause", "subagents", "verified", "rereads", "failures")
-ROUTES = {**{f"/api/board/insights/{card}": card for card in CARDS}, "/api/board/insights/summary": "summary"}
+ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
 LONG_PAUSE = ("5_60m", "over_60m")
 # The causes of a long pause, in the order insights.pause_tax tests them (the first that holds is the cause).
@@ -1387,118 +1384,8 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
 }
 
 
-def _top(projects: list[dict], key: str) -> dict | None:
-    """The project that carries the most of a finding's stake, with its sessions; none without a named project."""
-    named = [row for row in projects if row.get("project") and _n(row.get(key)) > 0]
-    if not named:
-        return None
-    top = max(named, key=lambda row: _n(row[key]))
-    return {"name": top["project"], "sessions": top.get("sessions"), "stake": top[key]}
-
-
-def _finding(kind: str, card: str, stake: Any, *, unit: str = "usd", share: float | None = None, sessions: Any = None,
-             project: dict | None = None, session: dict | None = None, opens: str = "sessions", **detail: Any) -> dict | None:
-    """One line of the summary; none when the card holds no evidence of it in the period (a stake of none or 0)."""
-    if not isinstance(stake, (int, float)) or isinstance(stake, bool) or stake <= 0:
-        return None
-    return {"kind": kind, "card": card, "unit": unit, "stake": float(stake), "share": share,
-            "sessions": _count(sessions), "project": project, "session": session, "opens": opens, "detail": detail}
-
-
-def findings(answers: dict[str, dict]) -> dict:
-    """The findings summary: what the cards found, each with its stake, ranked by stake.
-
-    A finding priced at list price ranks before a finding that is a count (no price is known for it), by dollars; the
-    counts rank by their share. A card that could not be read adds no finding. The stakes overlap (a session that never
-    edited can also be flagged and use subagents), so they are not to be added together.
-    """
-    problems, orientation, context, pause, subagent, verified, reread, failure = (
-        answers.get(card) or {} for card in SUMMARY_CARDS)
-    total = (problems.get("summary") or {}).get("cost_usd")
-
-    def part(stake: Any) -> float | None:
-        return _ratio(_n(stake), total) if isinstance(stake, (int, float)) and total else None
-
-    found: list[dict | None] = []
-    if problems:
-        s = problems["summary"]
-        found.append(_finding("problem_sessions", "problems", s["flagged_cost_usd"], share=part(s["flagged_cost_usd"]),
-                              sessions=s["flagged"], project=_top(problems["projects"], "cost_usd"), multi=s["multi"]))
-        top = problems.get("top_session")
-        if top:
-            found.append(_finding("top_session", "problems", top["cost_usd"], share=part(top["cost_usd"]), sessions=1,
-                                  project={"name": top["project"], "sessions": 1, "stake": top["cost_usd"]} if top["project"] else None,
-                                  session={key: top[key] for key in ("session_id", "node_id", "tool")}, opens="session",
-                                  signals=top["signals"]))
-    if orientation:
-        s = orientation["summary"]
-        found.append(_finding("never_edited", "orientation", s["never_cost_usd"], share=part(s["never_cost_usd"]),
-                              sessions=s["never"], project=_top(orientation.get("never_projects", []), "cost_usd"), opens="card",
-                              unpriced_requests=s.get("unpriced_requests")))
-    if context:
-        s = context["summary"]
-        found.append(_finding("heavy_context", "context", s["heavy_cost_usd"], share=part(s["heavy_cost_usd"]),
-                              sessions=s.get("heavy_sessions"), project=_top(context.get("projects", []), "cost_usd"),
-                              requests=s["heavy_requests"], request_share=s["heavy_share"]))
-        found.append(_finding("small_steps", "context", s["small_cost_usd"], share=part(s["small_cost_usd"]), opens="card",
-                              requests=s["small_requests"]))
-    if pause:
-        s = pause["summary"]
-        item = _finding("pause_tax", "pause", s["extra_usd"], share=part(s["extra_usd"]), sessions=s.get("sessions"),
-                        project=_top(pause.get("projects", []), "extra_usd"), requests=s["requests"],
-                        cost_usd=s["cost_usd"], baseline_usd=s["baseline_usd"])
-        if item:
-            # What the long pauses were: the card's own finding words it the same way.
-            item["cause"] = s.get("cause")
-        found.append(item)
-    if subagent:
-        s = subagent["summary"]
-        found.append(_finding("subagents", "subagents", s["subagent_cost_usd"], share=part(s["subagent_cost_usd"]),
-                              sessions=s.get("sessions"), project=_top(subagent.get("projects", []), "cost_usd"),
-                              subagents=s["subagents"], requests=s["subagent_requests"]))
-    if verified:
-        s = verified["summary"]
-        found.append(_finding("untested", "verified", s["untested_sessions"], unit="sessions", sessions=s["untested_sessions"],
-                              share=_ratio(_n(s["untested_sessions"]), _n(s["edit_sessions"])), edit_sessions=s["edit_sessions"]))
-    if reread:
-        s = reread["summary"]
-        found.append(_finding("rereads", "rereads", s["repeat_reads"], unit="reads", share=s["repeat_share"],
-                              reads=s["reads"], repeat_bytes=s["repeat_bytes"], files_5plus=s["files_5plus"]))
-    if failure:
-        s = failure["summary"]
-        found.append(_finding("failure_runs", "failures", s["streaks"], unit="runs",
-                              share=_ratio(s["streak_calls"], s["failures"]), streak_calls=s["streak_calls"],
-                              failures=s["failures"], longest=s["longest"]))
-    ranked = sorted((item for item in found if item), key=lambda item: (
-        item["unit"] != "usd", -item["stake"] if item["unit"] == "usd" else -_n(item["share"])))
-    return {"total_usd": total, "findings": ranked}
-
-
-def summary(filters: Filters, now: float | None = None, *, history: HistoryScope) -> tuple[int, dict]:
-    """The findings summary for the board's period: the cards' own reads (answered from the view cache when the cards
-    already ran them), shaped as each card shapes them, then ranked. A card whose read fails is named, not guessed."""
-    params = {"since": filters.since, "until": filters.until}
-
-    def answer(card: str) -> dict | None:
-        try:
-            return SHAPES[card](READS[card](history, params))
-        except Exception:  # noqa: BLE001 - one failed read leaves its findings out; the others still show
-            return None
-
-    with ThreadPoolExecutor(max_workers=len(SUMMARY_CARDS)) as pool:
-        answers = dict(zip(SUMMARY_CARDS, pool.map(answer, SUMMARY_CARDS)))
-    return 200, {
-        "card": "summary", "range": params, "computed_at": time.time() if now is None else now,
-        **session_names(history, findings({card: body for card, body in answers.items() if body is not None})),
-        "missing": [card for card, body in answers.items() if body is None],
-        "tool_labels": {},
-    }
-
-
 def insight(card: str, filters: Filters, now: float | None = None, *, history: HistoryScope) -> tuple[int, dict]:
     """One card: its figures for the board's period, the sessions to open, and the KQL that produced them."""
-    if card == "summary":
-        return summary(filters, now, history=history)
     if card not in CARDS:
         return 404, {"error": "No such insight"}
     view = CARDS[card]

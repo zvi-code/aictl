@@ -67,7 +67,7 @@ function context(state: DetailState<unknown> | undefined, opened: string[] = [])
 const props = (ctx: PanelContext) => ({ ctx, boxes: createBoxes('test-autonomy'), since: body.range.since, until: body.range.until })
 const card = (data: AutonomyBody = body, opened: string[] = []) => {
   const mounted = mount(() => <WorkPerInstruction {...props(context({ data, status: 'ready', error: null }, opened))} />)
-  return { ...mounted, card: mounted.host.querySelector('[data-box="insight-autonomy"]')! }
+  return { ...mounted, card: mounted.host.querySelector('#insight-autonomy')! }
 }
 
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights&range=all') })

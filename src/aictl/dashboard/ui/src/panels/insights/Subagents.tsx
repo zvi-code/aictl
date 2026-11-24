@@ -86,7 +86,7 @@ function Visual(props: { body: SubagentBody; label: Label }) {
 export default function Subagents(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<SubagentBody> {...props} card="subagents" title="Spend in subagents" tab="team"
+  return <InsightCard<SubagentBody> {...props} card="subagents" tab="team"
     hero={subagentHero}
     finding={body => subagentFinding(body, label)}
     visual={body => <Visual body={body} label={label} />}

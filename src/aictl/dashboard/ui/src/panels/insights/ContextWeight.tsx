@@ -103,7 +103,7 @@ type Row = Record<string, unknown>
 export default function ContextWeight(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<ContextBody> {...props} card="context" title="Context weight" tab="context"
+  return <InsightCard<ContextBody> {...props} card="context" tab="context"
     hero={contextHero}
     finding={body => contextFinding(body, label)}
     visual={body => <Stacks body={body} label={label} />}

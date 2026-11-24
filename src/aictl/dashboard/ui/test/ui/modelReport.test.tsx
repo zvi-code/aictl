@@ -170,7 +170,7 @@ describe('MOD-01 · The finding states the measured costs and failure shares and
 describe('MOD-02 · The card draws, per tool, one chart per measure across its models', () => {
   it('writes each model\'s cost, failure share, requests and tokens, with a hover on every bar', () => {
     const { host, dispose } = mount(() => <ModelReport {...props(context({ data: body, status: 'ready', error: null }))} />)
-    const box = host.querySelector('[data-box="insight-models"]')!
+    const box = host.querySelector('#insight-models')!
     expect(box.querySelector('[data-hero] strong')?.textContent).toBe('4.4×')
     expect(box.querySelector('[data-finding]')?.textContent).toContain('not the models.')
     const cli = box.querySelector('[data-tool="copilot-cli"]')!

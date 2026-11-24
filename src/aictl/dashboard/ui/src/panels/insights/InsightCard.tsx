@@ -1,8 +1,7 @@
-import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, Show, untrack } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import { stamp } from '../../design/format'
 import { kustoLink } from '../../drawer/kqlLink'
-import { Box, type Boxes } from '../../ui/Box'
 import { CodeView } from '../../ui/CodeView'
 import { Table } from '../../ui/Table'
 import type { Field } from '../../ui/tableModel'
@@ -11,11 +10,11 @@ import { States } from '../kinds/States'
 import type { PanelContext, Read } from '../types'
 import { learnToolLabels, toolLabel, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
 import { evidenceNote, fewText, withEvidence } from './evidence'
-import { revealed } from './summaryModel'
 import { sessionBranch, sessionHover, sessionName } from './sessionName'
+import { insightView } from './views'
 import styles from './Insights.module.css'
 
-export type CardProps = { ctx: PanelContext; boxes: Boxes; since: number; until: number }
+export type CardProps = { ctx: PanelContext; since: number; until: number }
 
 /** "Show KQL": the view's text with the values the card used, and a link that opens it unrun. */
 export function KqlDisclosure(props: { query: QueryBlock; copy: (text: string) => void }) {
@@ -39,12 +38,9 @@ export function periodText(body: InsightBody) {
   return `Period: ${since}${data} · computed at ${stamp(body.computed_at, true)}`
 }
 
-/**
- * One finding: its own request, loaded when the card first comes into view, with its own loading and
- * error state, so one slow or failed card never holds up another.
- */
+/** One analysis as a view of its own: its request, its loading and error state, its chart and its details. */
 export function InsightCard<T extends InsightBody>(props: CardProps & {
-  card: CardId; title: string; tab: string
+  card: CardId; tab: string
   finding: (body: T) => string
   hero?: (body: T) => Hero | undefined
   visual: (body: T) => JSX.Element
@@ -55,18 +51,8 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   filtered?: boolean
 }) {
   const { ctx } = untrack(() => props)
-  const [seen, setSeen] = createSignal(typeof IntersectionObserver === 'undefined')
-  let element: HTMLHeadingElement | undefined
-  createEffect(seen, already => {
-    if (already || !element) return
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) setSeen(true)
-    }, { rootMargin: '200px' })
-    observer.observe(element)
-    return () => observer.disconnect()
-  })
+  const title = untrack(() => insightView(props.card).title)
   const path = createMemo(() => {
-    if (!seen()) return undefined
     const query = new URLSearchParams({ since: String(props.since), until: String(props.until) })
     const tools = props.filtered ? ctx.tools() : null
     if (tools) query.set('tool', tools.length ? tools.join(',') : '-')
@@ -80,24 +66,21 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
     return value.node_scope?.kind === ctx.scope() && (ctx.scope() !== 'node' || value.node_scope?.node_id === ctx.nodeId()) ? value : undefined
   }
   const result = (): Read => {
-    if (!seen()) return { state: 'loading', message: 'Loads when the card comes into view.' }
     if (read()?.data && !data()) return { state: 'error', message: 'The server did not confirm the requested node scope.' }
-    const value = detailRead(read(), data(), false, `the ${props.title} query`)
-    return value.state === 'error' ? { ...value, message: `Could not load ${props.title}: ${value.message ?? 'The request failed.'}` }
+    const value = detailRead(read(), data(), false, `the ${title} query`)
+    return value.state === 'error' ? { ...value, message: `Could not load ${title}: ${value.message ?? 'The request failed.'}` }
       : value.state === 'stale' ? { ...value, updatedAt: data()?.computed_at } : value
   }
   createEffect(() => data()?.tool_labels, labels => { learnToolLabels(labels) })
   const body = () => data()!
   // What the headline, the visual and its coloured cells may use: groups below the card's minimum are taken out.
   const shown = createMemo(() => data() ? withEvidence(data()!) : undefined)
-  // A finding of the summary asked for this card's sessions: open them once (the person can close them again).
-  const opened = () => revealed()?.card === props.card && revealed()?.sessions === true
   const sessionFields = createMemo((): Field<InsightSession>[] => [{
     id: 'session_id', label: 'Session', read: row => sessionName(row), hint: row => sessionHover(row),
     action: { label: row => `Open session ${sessionName(row)}`, run: row => ctx.openAgent(row.session_id, props.tab) },
   }, { id: 'git_branch', label: 'Branch', read: row => sessionBranch(row) || undefined }, ...props.sessionFields])
-  return <Box boxes={props.boxes} id={`insight-${props.card}`} label={props.title} class={styles.card} corner
-    controls={['fold', 'full', 'hide']} head={<h2 ref={element} data-insight={props.card}>{props.title}</h2>}>
+  return <section class={styles.view} id={`insight-${props.card}`} aria-labelledby={`insight-${props.card}-title`}>
+    <h1 id={`insight-${props.card}-title`} data-insight={props.card}>{title}</h1>
     <States result={result} retry={read.retry}>
       <p class={styles.meta} data-period>{periodText(body())}</p>
       <Show when={props.hero?.(shown()!.body)}>{hero => <p class={styles.hero} data-hero>
@@ -107,16 +90,16 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
       <Show when={shown()!.few.length}>
         <p class={styles.note} data-few>{fewText(shown()!.few, toolLabel)}</p>
       </Show>
-      <details class={styles.more} data-more open={opened() || undefined}>
+      <details class={styles.more} data-more>
         <summary>Details: sessions ({body().sessions.length}), data table, KQL, how this is measured</summary>
       <details class={styles.disclosure} data-method>
         <summary>How this is measured</summary>
         <p class={styles.note}>{props.note}{evidenceNote(props.card)}</p>
       </details>
-      <details class={styles.disclosure} data-sessions open={opened() || undefined}>
+      <details class={styles.disclosure} data-sessions>
         <summary>Open sessions ({body().sessions.length})</summary>
         <Show when={body().sessions.length} fallback={<p class={styles.note}>No session in this period.</p>}>
-          <Table label={`${props.title}: sessions`} fields={sessionFields()} rows={body().sessions} pageSize={10}
+          <Table label={`${title}: sessions`} fields={sessionFields()} rows={body().sessions} pageSize={10}
             rowId={row => `${row.node_id ?? ''}\u0000${row.session_id}`} />
         </Show>
       </details>
@@ -128,7 +111,7 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
       <KqlDisclosure query={body().query} copy={ctx.copy} />
       </details>
     </States>
-  </Box>
+  </section>
 }
 
 /** A numeric table column that shows a value the source does not report as not reported. */

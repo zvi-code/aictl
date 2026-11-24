@@ -116,7 +116,7 @@ describe('Work by repository', () => {
     const requested: string[] = [], opened: string[] = []
     const ctx = context({ data: { ...body, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null }, requested, opened)
     const { host, dispose } = mount(() => <Repositories {...props(ctx)} />)
-    const box = host.querySelector('[data-box="insight-repos"]')!
+    const box = host.querySelector('#insight-repos')!
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('$500')
     const spend = box.querySelector('[data-chart="spend"]')!
     expect(spend.querySelector('figcaption')!.textContent).toBe('Spend at list price per repository (US dollars)')
@@ -207,7 +207,7 @@ describe('Where session time goes', () => {
   it('draws working and waiting time, percentiles, tools and models, and keeps wall-clock length in the detail', () => {
     const ctx = context({ data: { ...durations, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
     const { host, dispose } = mount(() => <Durations {...props(ctx)} />)
-    const box = host.querySelector('[data-box="insight-durations"]')!
+    const box = host.querySelector('#insight-durations')!
     const work = box.querySelector('[data-chart="work"]')!
     expect(work.querySelector('figcaption')!.textContent).toBe('Agent working time and waiting time per repository (hours)')
     expect([...work.querySelectorAll('[data-bar="loop"] [data-value]')].map(value => value.textContent)).toEqual(['worked 20 h · 80%', 'waited 5 h'])
@@ -299,7 +299,7 @@ describe('What the agents changed', () => {
   it('draws titled charts with values and hovers, greys a small repository, and points to the commit check', () => {
     const ctx = context({ data: { ...changes, node_scope: { kind: 'fleet', node_id: null } }, status: 'ready', error: null })
     const { host, dispose } = mount(() => <Changes {...props(ctx)} />)
-    const box = host.querySelector('[data-box="insight-changes"]')!
+    const box = host.querySelector('#insight-changes')!
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('101')
     const writes = box.querySelector('[data-chart="writes"]')!
     expect(writes.querySelector('figcaption')!.textContent).toBe('File writes per repository, by whether a commit of the same session followed')

@@ -9,7 +9,6 @@ import {
 } from '../../src/panels/insights/insightsModel'
 import { modelFinding, modelHero, type ModelBody } from '../../src/panels/insights/modelReportModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
-import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
 
 // One large group (copilot-cli) and one group of 2 sessions (copilot-desktop) whose figures are the extreme ones, so a
@@ -116,10 +115,9 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
       openAgent() {}, detail: (path: () => string | undefined) => Object.assign(() => path()
         ? { data: body, status: 'ready', error: null } as DetailState<unknown> : undefined, { retry() {} }),
     } as unknown as PanelContext
-    const boxes = createBoxes('test-evidence')
-    const { host, dispose } = mount(() => <ProblemSessions ctx={ctx} boxes={boxes} since={0} until={10} />)
+    const { host, dispose } = mount(() => <ProblemSessions ctx={ctx} since={0} until={10} />)
     flush()
-    const box = host.querySelector('[data-box="insight-problems"]')!
+    const box = host.querySelector('#insight-problems')!
     expect(box.querySelector('[data-by-tool]')!.textContent).toBe(`By tool: ${BIG} 549 of 5,484 sessions (10%).`)
     expect(box.querySelector('[data-hero]')!.textContent).not.toContain(SMALL)
     expect(box.querySelector('[data-finding]')!.textContent).not.toContain(SMALL)

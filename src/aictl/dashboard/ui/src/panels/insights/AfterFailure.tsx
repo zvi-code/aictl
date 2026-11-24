@@ -67,7 +67,7 @@ const split = (body: FailureBody) => body.tools.some(tool => tool.repos?.length)
 export default function AfterFailure(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<FailureBody> {...props} card="failures" title="After a failure" tab="errors"
+  return <InsightCard<FailureBody> {...props} card="failures" tab="errors"
     hero={failureHero}
     finding={body => failureFinding(body, label)}
     visual={body => <>

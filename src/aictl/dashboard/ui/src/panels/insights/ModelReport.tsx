@@ -179,7 +179,7 @@ function tableRows(body: ModelBody, label: Label): Row[] {
 export default function ModelReport(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<ModelBody> {...props} card="models" title="Model report on your own work" tab="flow"
+  return <InsightCard<ModelBody> {...props} card="models" tab="flow"
     hero={body => modelHero(body, label)}
     finding={body => modelFinding(body, label)}
     visual={body => <ModelCharts body={body} label={label} />}

@@ -83,7 +83,7 @@ type Row = Record<string, unknown>
 export default function Orientation(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<OrientationBody> {...props} card="orientation" title="Orientation cost by repository" tab="flow"
+  return <InsightCard<OrientationBody> {...props} card="orientation" tab="flow"
     hero={orientationHero}
     finding={body => orientationFinding(body)}
     visual={body => <ProjectBars body={body} label={label} />}

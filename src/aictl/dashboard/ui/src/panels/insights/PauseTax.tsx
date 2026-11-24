@@ -191,7 +191,7 @@ type Row = Record<string, unknown>
 export default function PauseTax(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<PauseBody> {...props} card="pause" title="Pause tax" tab="flow"
+  return <InsightCard<PauseBody> {...props} card="pause" tab="flow"
     hero={pauseHero}
     finding={body => pauseFinding(body, label)}
     visual={body => <Visual body={body} label={label} />}

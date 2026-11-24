@@ -172,7 +172,7 @@ function figure(id: string, label: string, format: (value: number) => string): F
 export default function WorkPerInstruction(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<AutonomyBody> {...props} card="autonomy" title="Work per instruction" tab="flow"
+  return <InsightCard<AutonomyBody> {...props} card="autonomy" tab="flow"
     hero={body => autonomyHero(body, leadTool(body), label)}
     finding={body => autonomyFinding(body, leadTool(body), label)}
     visual={body => <Visual body={body} label={label} />}

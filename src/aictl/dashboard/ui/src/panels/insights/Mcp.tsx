@@ -57,7 +57,7 @@ const serverRows = (item: McpServer, small: boolean): Row[] => [item, ...item.ca
 export default function Mcp(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
-  return <InsightCard<McpBody> {...props} card="mcp" title="MCP servers" tab="tools"
+  return <InsightCard<McpBody> {...props} card="mcp" tab="tools"
     hero={mcpHero}
     finding={body => mcpFinding(body, label)}
     visual={body => <Visual body={body} label={label} />}
