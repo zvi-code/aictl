@@ -1,4 +1,4 @@
-import { Show, untrack } from 'solid-js'
+import { Show } from 'solid-js'
 import { fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { Bars as SplitBars } from './Bars'
@@ -90,7 +90,6 @@ const NOTE = 'A change is a file write event of the period that an agent made (a
   'field marks them. The page\'s project, tool and model filters apply.'
 
 export default function Changes(props: CardProps) {
-  const ctx = untrack(() => props.ctx)
   const [mode, setMode] = useColourBy()
   return <InsightCard<ChangeBody> {...props} card="changes" tab="flow" filtered
     hero={changeHero}

@@ -2,11 +2,7 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-<<<<<<< HEAD
-import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd, projectName } from '../../design/format'
-=======
-import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd } from '../../design/format'
->>>>>>> 6bf01728 (Draw Orientation cost as dot rows per project and one switch between edit and repository)
+import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { parseFilters, PERIODS, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'

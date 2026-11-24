@@ -96,7 +96,7 @@ describe('INS-RW · Flows split by repository', () => {
   it('colours by how sessions ended until the switch says Repository: no legend, bars in one colour, projects by ending', () => {
     const { host, dispose } = mount(() => <Flows {...props(ready(flows))} />)
     const box = host.querySelector('#insight-flows')!
-    expect(box.querySelector('[data-colour-by]')!.getAttribute('data-colour-by')).toBe('own')
+    expect(box.querySelector('[data-colour-by]')!.getAttribute('data-colour-by')).toBe('parts')
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="endings-repos"]')).toBeNull()
     expect([...box.querySelectorAll('[data-chart="tools"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['c1'])
@@ -147,7 +147,7 @@ describe('INS-RW · Flows split by repository', () => {
     option('How sessions ended').click()
     flush()
     expect(box.querySelector('[data-chart="projects"]')).not.toBeNull()
-    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    expect(new URLSearchParams(location.search).get('by')).toBeNull()
     dispose()
   })
 

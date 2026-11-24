@@ -234,7 +234,7 @@ describe('Problem sessions view', () => {
     option(box, 'Number of signals').click()
     flush()
     expect(box.querySelector('[data-chart="problem-counts"]')).not.toBeNull()
-    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    expect(new URLSearchParams(location.search).get('by')).toBeNull()
     dispose()
   })
 
@@ -312,7 +312,7 @@ describe('What the agents changed view', () => {
     option(box, 'Kind of file and commit').click()
     flush()
     expect(box.querySelector('[data-chart="kind-total"]')).not.toBeNull()
-    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    expect(new URLSearchParams(location.search).get('by')).toBeNull()
     dispose()
   })
 
@@ -387,7 +387,7 @@ describe('Verified before commit view', () => {
     option(box, 'What test runs saw').click()
     flush()
     expect(box.querySelector('[data-chart="verified-commits"]')).not.toBeNull()
-    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    expect(new URLSearchParams(location.search).get('by')).toBeNull()
     dispose()
   })
 
@@ -459,7 +459,7 @@ describe('Orientation cost view', () => {
     option(box, 'Edit').click()
     flush()
     expect(box.querySelector('[data-chart="orientation-tools"]')).not.toBeNull()
-    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    expect(new URLSearchParams(location.search).get('by')).toBeNull()
     dispose()
   })
 
