@@ -6,11 +6,14 @@ import { Tooltip } from '../../ui/Tooltip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
   autonomyFinding, autonomyHero, binDay, canTrend, figuresText, leadTool, measuredTools, MIN_MULTI, MIN_TREND_BINS,
-  MIN_TREND_SESSIONS, MIN_WAITS, queuedText, runHover, runRange, runText, runTop, silence, trendBins, trendHover, waitHover,
-  waitSplit, waitText,
+  medianNote, MIN_TREND_SESSIONS, MIN_WAITS, queuedText, runHover, runRange, runText, runTop, silence, trendBins, trendHover,
+  waitHover, waitRepoRows, waitSplit, waitText,
   type AutonomyBody, type AutonomyTool,
 } from './autonomyModel'
+import { Bars } from './Bars'
 import { NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther } from './repoSplit'
 import base from './Insights.module.css'
 import styles from './WorkPerInstruction.module.css'
 
@@ -26,7 +29,7 @@ function Mark(props: { class: string; style?: JSX.CSSProperties; text: string; h
 }
 
 /** One tool on the shared linear axis: a bar to the median longest run, a thin line on to the 90th percentile. */
-function RunRow(props: { tool: AutonomyTool; top: number; label: Label }) {
+function RunRow(props: { tool: AutonomyTool; top: number; label: Label; note: string }) {
   const run = () => runRange(props.tool)
   return <li class={base.barRow} data-run={props.tool.tool}>
     <span class={base.barName}>{props.label(props.tool.tool)}
@@ -35,11 +38,11 @@ function RunRow(props: { tool: AutonomyTool; top: number; label: Label }) {
       <Show when={run()} fallback={<span class={styles.text}>{NOT_REPORTED}</span>}>{range => <>
         <span class={styles.track} role="group" aria-label={`${props.label(props.tool.tool)}: ${runText(props.tool)}`}>
           <Mark class={range().all ? styles.runAll : styles.run} style={{ 'inline-size': pct(range().p50, props.top) }} data="median"
-            wide={range().p50 / props.top >= 0.12} text={fmtNum(range().p50)} hover={runHover(props.tool, props.label)} />
+            wide={range().p50 / props.top >= 0.12} text={fmtNum(range().p50)} hover={runHover(props.tool, props.label) + props.note} />
           <Show when={range().p90 != null && range().p90! > range().p50}>
             <Mark class={range().all ? styles.tailAll : styles.tail} data="p90" wide={false}
               style={{ 'inset-inline-start': pct(range().p50, props.top), 'inline-size': pct(range().p90! - range().p50, props.top) }}
-              text={`90th percentile ${fmtNum(range().p90)}`} hover={runHover(props.tool, props.label)} />
+              text={`90th percentile ${fmtNum(range().p90)}`} hover={runHover(props.tool, props.label) + props.note} />
           </Show>
         </span>
         <span class={styles.text} data-run-text>{runText(props.tool)}</span>
@@ -99,7 +102,7 @@ function TrendRow(props: { body: AutonomyBody; tool: AutonomyTool; label: Label 
         <polyline class={styles.line} points={rows().map(row => `${x(row.bin_ts).toFixed(1)},${y(row.p50_multi!).toFixed(1)}`).join(' ')} />
         <For each={rows()}>{(row, i) => <g data-point={row.bin_ts}>
           <circle class={styles.dot} cx={x(row.bin_ts)} cy={y(row.p50_multi!)} r={marked().has(i()) ? 3 : 2}>
-            <title>{trendHover(row, props.body.bin_unit)}</title>
+            <title>{trendHover(row, props.body.bin_unit) + medianNote(props.body)}</title>
           </circle>
           <Show when={marked().has(i())}>
             <text x={x(row.bin_ts)} y={y(row.p50_multi!) - 6} text-anchor="middle">{fmtNum(row.p50_multi)}</text>
@@ -122,9 +125,10 @@ function Visual(props: { body: AutonomyBody; label: Label }) {
       <p class={base.note}>Prompts are stored from {stamp(props.body.prompts_from, true)}; no session before that can be read.</p>
     </Show>
     <Show when={measured().length}>
+      <RepoLegend split={props.body} other={hasOther(props.body.tools)} />
       <h3 class={base.subhead}>Longest run of tool calls between a person's turns, per session (tool calls)</h3>
       <ol class={base.bars} aria-label="Longest run of tool calls between a person's turns, per tool">
-        <For each={measured()}>{tool => <RunRow tool={tool} top={top()} label={props.label} />}</For>
+        <For each={measured()}>{tool => <RunRow tool={tool} top={top()} label={props.label} note={medianNote(props.body)} />}</For>
       </ol>
       <div class={styles.scaleRow} aria-hidden="true" data-run-axis><span />
         <span class={styles.scale}><span>0</span><span>{fmtNum(top())} tool calls</span></span></div>
@@ -142,6 +146,9 @@ function Visual(props: { body: AutonomyBody; label: Label }) {
       <ol class={base.bars} aria-label="Answered waits split at 5 minutes, per tool">
         <For each={measured()}>{tool => <WaitRow tool={tool} label={props.label} />}</For>
       </ol>
+      <Bars name="autonomy-waits-repos" title="Answered waits per tool, by repository (waits)"
+        axis="Length: answered waits, one linear scale for every tool from 0; a segment per repository. Beside it: all waits · those over 5 minutes."
+        rows={waitRepoRows(props.body, props.label)} />
       <h3 class={base.subhead}>Median longest run per {props.body.bin_unit ?? 'bin'} (tool calls; sessions with 2 or more
         {' '}instructions; {props.body.bin_unit ?? 'bin'}s with {MIN_TREND_SESSIONS} or more such sessions)</h3>
       <ol class={base.bars} aria-label={`Median longest run of tool calls per ${props.body.bin_unit ?? 'bin'}, per tool`}>

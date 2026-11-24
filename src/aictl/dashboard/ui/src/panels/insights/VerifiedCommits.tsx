@@ -4,10 +4,13 @@ import { fmtNum, fmtShare, stamp } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
 import { Tooltip } from '../../ui/Tooltip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
+import { Bars } from './Bars'
 import { NOT_REPORTED, toolLabel, type Label } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther } from './repoSplit'
 import {
-  SEGMENTS, passMissingText, segmentHover, segmentText, sessionHover, sessionSplit, shareText, untestedText, verifiedFinding,
-  verifiedHero, type VerifiedBody, type VerifiedTool,
+  commitRepoRows, SEGMENTS, passMissingText, segmentHover, segmentText, sessionHover, sessionRepoRows, sessionSplit, shareText,
+  untestedText, verifiedFinding, verifiedHero, type VerifiedBody, type VerifiedTool,
 } from './verifiedModel'
 import styles from './Insights.module.css'
 import own from './VerifiedCommits.module.css'
@@ -33,6 +36,8 @@ function CommitBars(props: { body: VerifiedBody; label: Label }) {
   const idle = () => props.body.tools.filter(tool => tool.commits === 0)
   const parts = (tool: VerifiedTool) => SEGMENTS.filter(segment => segment.count(tool))
   return <>
+    <RepoLegend split={props.body} other={hasOther([...props.body.tools,
+      ...props.body.tools.map(tool => ({ repos: tool.session_repos }))])} />
     <h3 class={styles.subhead}>Agent commits per tool, by what test runs saw before each commit (commits; share of the tool's commits)</h3>
     <ul class={styles.legend}>
       <For each={SEGMENTS}>{segment => <li><span class={`${styles.swatch} ${own[segment.id]}`} />{segment.label}</li>}</For>
@@ -64,6 +69,9 @@ function CommitBars(props: { body: VerifiedBody; label: Label }) {
         </li>}</For>
       </ol>
     </Show>
+    <Bars name="verified-commits-repos" title="Agent commits per tool, by repository (commits)"
+      axis="Length: agent commits, one linear scale for every tool from 0; a segment per repository. Hover a segment for its commits by class."
+      rows={commitRepoRows(props.body, props.label)} />
     <Show when={idle().length}>
       <p class={styles.note}>No commit in this period by {idle().map(tool => props.label(tool.tool)).join(', ')}.</p>
     </Show>
@@ -97,6 +105,9 @@ function SessionBars(props: { body: VerifiedBody; label: Label }) {
         </span>
       </li>}</For>
     </ol>
+    <Bars name="verified-sessions-repos" title="Sessions that changed source files, per tool, by repository (sessions)"
+      axis="Length: sessions that changed source files, one linear scale for every tool from 0; a segment per repository."
+      rows={sessionRepoRows(props.body, props.label)} />
   </Show>
 }
 

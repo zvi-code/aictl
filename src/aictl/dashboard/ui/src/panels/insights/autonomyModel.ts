@@ -4,7 +4,9 @@
 // "not reported", never 0.
 import { dayLabel, fmtDur, fmtNum, fmtShare } from '../../design/format'
 import { EVIDENCE } from './evidence'
+import type { BarRow } from './Bars'
 import { count, NOT_REPORTED, plural, type Hero, type InsightBase, type Label } from './insightsModel'
+import { notSplitNote, repoParts, type RepoSegment } from './repoSplit'
 
 type Num = number | null
 export type BinUnit = 'day' | 'week' | 'month'
@@ -19,6 +21,8 @@ export type AutonomyTool = AutonomyFigures & {
   active: number; prompted: number; scripted: number; store_only: number; start_unread: number; no_calls: number; unread: number
   unread_sessions: number
   instructions: number; calls: number; delegated: number; one_instruction: number; mean_multi: Num; resumed: number; no_stop: number
+  /** The answered waits per repository (repoSplit.ts): `waits`, `over_5m`. */
+  repos?: RepoSegment[]
 }
 export type AutonomyBin = AutonomyFigures & { bin_ts: number }
 export type AutonomyBody = InsightBase<'autonomy'> & {
@@ -216,3 +220,23 @@ export function autonomyFinding(body: AutonomyBody, tool: AutonomyTool | undefin
  * of it was left out. */
 export const silence = (tool: AutonomyTool) => tool.reported ? 'no measured session (every session was left out)'
   : 'not reported (aictl does not read this tool\'s prompts)'
+
+/** What the hover of a median (the run bar, a trend dot) adds when the card's other bars are split by repository. */
+export const medianNote = (body: AutonomyBody) => body.repo_order?.length ? ` ${notSplitNote('median')}` : ''
+
+/** Per tool, its answered waits in a segment per repository, each with how many of them took more than 5 minutes; the
+ * second bar under the wait bar. Only tools the server split. */
+export function waitRepoRows(body: AutonomyBody, label: Label): BarRow[] {
+  return measuredTools(body).filter(tool => tool.repos?.length && tool.waits > 0).map(tool => {
+    const name = label(tool.tool)
+    const detail = `${name}: ${plural(tool.waits, 'answered wait')} in all, ${tool.over_5m == null ? NOT_REPORTED : fmtNum(tool.over_5m)} ` +
+      'after more than 5 minutes. A wait runs from the agent\'s stop to the person\'s next prompt.'
+    const parts = repoParts(tool.repos, 'waits', body.repo_order, value => plural(value, 'wait'), `${name}, answered waits`, 'answered waits')
+      .map(part => {
+        const over = tool.repos!.find(segment => `repo:${segment.repo}` === part.key)?.over_5m
+        return { ...part, hover: `${part.hover} ${typeof over === 'number' ? fmtNum(over) : NOT_REPORTED} of them after more than 5 minutes. ${detail}` }
+      })
+    return { key: tool.tool, label: name, sub: plural(tool.waits, 'answered wait'), parts,
+      total: `${fmtNum(tool.waits)} · ${tool.over_5m == null ? NOT_REPORTED : fmtNum(tool.over_5m)} over 5 min` }
+  })
+}

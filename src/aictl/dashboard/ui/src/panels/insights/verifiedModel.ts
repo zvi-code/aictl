@@ -1,7 +1,9 @@
 // ─── Verified before commit — the payload of /api/board/insights/verified and its sentence ─
 // A count the tool does not record is null and reads "not reported", never 0.
 import { fmtNum, fmtShare } from '../../design/format'
-import { plural, type Base, type Hero, type Label } from './insightsModel'
+import type { BarRow } from './Bars'
+import { NOT_REPORTED, plural, type Base, type Hero, type Label } from './insightsModel'
+import { repoParts, type RepoSegment } from './repoSplit'
 
 type Num = number | null
 export type VerifiedTool = {
@@ -13,6 +15,10 @@ export type VerifiedTool = {
   classified: Num; unseen: Num; checked: boolean; unseen_share: Num; own_unseen_share: Num; unchecked: Num
   /** Whether the tool records an exit code of 0, so that it can report a pass at all. */
   pass_tool: boolean
+  /** The commit bar per repository (repoSplit.ts): `commits` and every class count; [] when commits are not reported. */
+  repos?: RepoSegment[]
+  /** The session bar per repository: `edit_sessions`, `untested_sessions`. */
+  session_repos?: RepoSegment[]
 }
 export type VerifiedBody = Base<'verified'> & {
   tools: VerifiedTool[]
@@ -149,4 +155,46 @@ export function verifiedHero(body: VerifiedBody): Hero | undefined {
   if ((s.no_change ?? 0) >= s.classified) return undefined
   return { value: fmtShare(s.unseen_share),
     label: `of classified agent commits were made after source changes no test run saw (${fmtNum(s.unseen)} of ${fmtNum(s.classified)})` }
+}
+
+const segmentCount = (segment: RepoSegment, key: string) => typeof segment[key] === 'number' ? segment[key] as number : null
+/** One repository's commits by class, in the order of the bar above: "Tested, passed 3 · … · Not classified 1". A class the
+ * tool does not record reads "not reported". */
+export function repoClasses(segment: RepoSegment) {
+  return SEGMENTS.map(item => {
+    const n = item.id === 'unclassified'
+      ? (segmentCount(segment, 'not_recorded') ?? 0) + (segmentCount(segment, 'unknown_change') ?? 0) : segmentCount(segment, item.id)
+    return `${item.label} ${n == null ? NOT_REPORTED : fmtNum(n)}`
+  }).join(' · ')
+}
+
+/** Each repository's part of a bar, with `extra` (that repository's other figures) before `detail` (the bar's own). */
+function splitParts(segments: RepoSegment[], key: string, body: VerifiedBody, unit: string, bar: string, measure: string,
+  extra: (segment: RepoSegment) => string, detail: string) {
+  return repoParts(segments, key, body.repo_order, value => plural(value, unit), bar, measure).map(part => {
+    const segment = segments.find(item => `repo:${item.repo}` === part.key)!
+    return { ...part, hover: `${part.hover} ${extra(segment)} ${detail}` }
+  })
+}
+
+/** Per tool with commits, its commits in a segment per repository: the second bar under the bar by class. */
+export function commitRepoRows(body: VerifiedBody, label: Label): BarRow[] {
+  return body.tools.filter(tool => tool.commits && tool.repos?.length).map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: shareText(tool), total: commits(tool.commits ?? 0),
+    parts: splitParts(tool.repos!, 'commits', body, 'commit', `${label(tool.tool)}, agent commits`, 'agent commits',
+      segment => `By what test runs saw: ${repoClasses(segment)}.`,
+      `${label(tool.tool)}: ${commits(tool.commits ?? 0)} in all.`),
+  }))
+}
+
+/** Per tool, its sessions that changed source files in a segment per repository: the second bar under tested / untested. */
+export function sessionRepoRows(body: VerifiedBody, label: Label): BarRow[] {
+  return body.tools.filter(tool => tool.edit_sessions && tool.session_repos?.length).map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: untestedText(tool), total: plural(tool.edit_sessions ?? 0, 'session'),
+    parts: splitParts(tool.session_repos!, 'edit_sessions', body, 'session', `${label(tool.tool)}, sessions that changed source files`,
+      'sessions that changed source files', segment => {
+        const untested = segmentCount(segment, 'untested_sessions')
+        return `${untested == null ? NOT_REPORTED : fmtNum(untested)} of them ran no recognised test.`
+      }, `${label(tool.tool)}: ${untestedText(tool)}.`),
+  }))
 }
