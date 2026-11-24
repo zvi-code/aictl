@@ -1,0 +1,18 @@
+/* A heat grid: a header row, a header column, and one shaded cell per pair with its value written in it. */
+.figure { display: grid; gap: var(--space-2); margin: 0; min-inline-size: 0; align-content: start; }
+.title { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.note { margin: 0; color: var(--color-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.scroll { overflow-x: auto; min-inline-size: 0; }
+.grid { display: grid; gap: 2px; font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.line { display: contents; }
+.head { padding: var(--space-1) var(--space-2); font-weight: var(--weight-medium); overflow-wrap: anywhere; align-self: end; }
+.head small { display: block; color: var(--color-muted); font-weight: normal; }
+.corner { color: var(--color-muted); font-weight: normal; }
+.rowHead { align-self: center; }
+.cell, .blank { display: grid; align-content: center; justify-items: center; min-block-size: 2.75rem; padding: var(--space-1); border-radius: var(--radius-sm); }
+.cell { color: var(--color-text); border: var(--border-size) solid var(--color-border-subtle); }
+.cell strong { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.cell small { color: var(--color-text); }
+.blank { border: var(--border-size) dashed var(--color-border-subtle); }
+.hatched { color: var(--color-muted); font-style: italic; background: repeating-linear-gradient(45deg, transparent 0 4px, var(--color-border-subtle) 4px 5px); }
+.hatched small { color: var(--color-muted); }

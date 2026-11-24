@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import Flows from '../../src/panels/insights/Flows'
 import type { FlowsBody } from '../../src/panels/insights/flowsModel'
@@ -90,57 +91,77 @@ const flows = {
 } as unknown as FlowsBody
 
 describe('INS-RW · Flows split by repository', () => {
-  it('draws the legend once, keeps the ending bar by outcome and adds a bar per ending split by repository', () => {
+  const byRepo = () => history.replaceState(null, '', '/?screen=insights&range=all&view=flows&by=repo')
+
+  it('colours by how sessions ended until the switch says Repository: no legend, bars in one colour, projects by ending', () => {
+    const { host, dispose } = mount(() => <Flows {...props(ready(flows))} />)
+    const box = host.querySelector('#insight-flows')!
+    expect(box.querySelector('[data-colour-by]')!.getAttribute('data-colour-by')).toBe('own')
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-chart="endings-repos"]')).toBeNull()
+    expect([...box.querySelectorAll('[data-chart="tools"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['c1'])
+    expect([...box.querySelectorAll('[data-chart="projects"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['c3', 'c1', 'c4'])
+    expect(box.querySelector('[data-chart="projects"] [data-value]')!.textContent).toBe('20 · 2 · 8')
+    // The flow names each band's sessions per repository in its hover, whatever the colour.
+    expect(box.querySelector('[data-band="finish:committed"] title')!.textContent).toBe('Last step report done → committed: 28 of 28 ' +
+      'sessions (100%), 70% of all 40 sessions; $150 at list price. By repository: app 20 (71% of these, 80% of its own; $120), ' +
+      'docs 8 (29% of these; $30.00).')
+    dispose()
+  })
+
+  it('by repository: the legend once, a bar per ending and per project split by repository, and split cycles, paths and tools', () => {
+    byRepo()
     const { host, dispose } = mount(() => <Flows {...props(ready(flows))} />)
     const box = host.querySelector('#insight-flows')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    // The bar by outcome stays as it was.
-    expect([...box.querySelectorAll('[data-chart="endings"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['c3', 'c4'])
+    const repos = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-row] [data-part]`)].map(part => part.getAttribute('data-repo'))
     const ended = box.querySelector('[data-chart="endings-repos"]')!
     expect([...ended.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['committed', 'no_change'])
-    const committed = ended.querySelector('[data-row="committed"]')!
-    expect([...committed.querySelectorAll('[data-part]')].map(part => [part.getAttribute('data-part'), part.getAttribute('data-repo')]))
-      .toEqual([['repo:/src/app', '0'], ['repo:/src/docs', '1']])
-    expect(committed.querySelector('[data-value]')!.textContent).toBe('28 sessions')
-    expect(committed.querySelector('[data-part="repo:/src/app"] title')!.textContent).toBe('Committed — app (/src/app): 20 sessions · ' +
+    expect(repos('endings-repos')).toEqual(['0', '1', '0', String(OTHER)])
+    expect(ended.querySelector('[data-row="committed"] [data-value]')!.textContent).toBe('28 sessions')
+    expect(ended.querySelector('[data-part="repo:/src/app"] title')!.textContent).toBe('Committed — app (/src/app): 20 sessions · ' +
       '71% of this bar. $120 at list price. Committed: 28 of 40 sessions (70%), $150 at list price.')
-    expect(ended.querySelector('.axis, p')!.textContent).toContain('A segment per repository.')
-    dispose()
-  })
-
-  it('splits the last steps, paths, cycles and tools by repository, and adds a project bar by repository', () => {
-    const { host, dispose } = mount(() => <Flows {...props(ready(flows))} />)
-    const box = host.querySelector('#insight-flows')!
-    const repos = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-row] [data-part]`)].map(part => part.getAttribute('data-repo'))
-    expect(repos('last-committed')).toEqual(['0', '1'])
-    expect(repos('last-no_change')).toEqual(['0', String(OTHER)])
+    expect(ended.textContent).toContain('A segment per repository.')
     expect(repos('first-paths')).toEqual(['0', '1'])
     expect(repos('cycles')).toEqual(['0', String(OTHER)])
     expect(repos('tools')).toEqual(['0', '1', String(OTHER)])
-    expect(box.querySelector('[data-chart="last-committed"] [data-part="repo:/src/app"] title')!.textContent).toBe('Committed, last step ' +
-      'report done — app (/src/app): 20 sessions · 71% of this bar · 80% of app own sessions. $120 at list price. Committed, last step ' +
-      'report done: 28 of 28 sessions (100%), $150 at list price.')
     expect(box.querySelector('[data-chart="tools"] [data-part="repo:"] title')!.textContent).toMatch(/^copilot-cli — Other repositories \(every repository outside the 8 with the highest cost, summed\): 100 tool calls · 11% of this bar\. Working time 33 min\. /)
-    // The project bar by outcome stays; its counts are written beside it; the second bar splits its sessions.
-    expect([...box.querySelectorAll('[data-chart="projects"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['c3', 'c1', 'c4'])
-    expect(box.querySelector('[data-chart="projects"] [data-value]')!.textContent).toBe('20 · 2 · 8')
+    expect(box.querySelector('[data-chart="projects"]')).toBeNull()
     expect(repos('projects-repos')).toEqual(['0', String(OTHER)])
     expect(box.querySelector('[data-chart="projects-repos"] [data-part="repo:/src/app"] title')!.textContent).toContain(
       'alpha — app (/src/app): 24 sessions · 80% of this bar. Of them 18 committed, 2 changed files without a commit, 4 changed no file.')
-    // The transition matrix is not split.
-    expect(box.querySelector('[data-transitions]')!.textContent).toContain('Not split by repository.')
     dispose()
   })
 
-  it('draws the old single bars when the answer carries no split', () => {
+  it('switches between the two encodings and keeps the choice in the address', () => {
+    const navigated: unknown[] = []
+    const ctx = Object.assign(ready(flows), { navigate: (patch: unknown) => navigated.push(patch) })
+    const { host, dispose } = mount(() => <Flows {...props(ctx)} />)
+    const box = host.querySelector('#insight-flows')!
+    const option = (name: string) => [...box.querySelectorAll('[data-colour-by] button')].find(button => button.textContent === name) as HTMLButtonElement
+    option('Repository').click()
+    flush()
+    expect(box.querySelector('[data-colour-by]')!.getAttribute('data-colour-by')).toBe('repo')
+    expect(box.querySelector('[data-chart="projects-repos"]')).not.toBeNull()
+    option('How sessions ended').click()
+    flush()
+    expect(box.querySelector('[data-chart="projects"]')).not.toBeNull()
+    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    dispose()
+  })
+
+  it('draws the single bars and offers no switch when the answer carries no split', () => {
+    byRepo()
     const { host, dispose } = mount(() => <Flows {...props(ready(unsplit(flows)))} />)
     const box = host.querySelector('#insight-flows')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="endings-repos"]')).toBeNull()
     expect(box.querySelector('[data-chart="projects-repos"]')).toBeNull()
     expect([...box.querySelectorAll('[data-chart="tools"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['c1'])
     expect(box.querySelector('[data-chart="tools"] p')!.textContent).not.toContain('repository')
+    expect(box.querySelector('[data-band="finish:committed"] title')!.textContent).not.toContain('By repository')
     dispose()
   })
 })

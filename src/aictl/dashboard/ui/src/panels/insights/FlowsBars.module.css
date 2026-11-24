@@ -22,11 +22,3 @@
 .ink { fill: var(--color-text); background: var(--color-text); }
 /* A repository's part (repoSplit.ts): filled inline with its colour; a thin line of the surface parts two neighbours. */
 .repo { stroke: var(--color-surface); stroke-width: 1; vector-effect: non-scaling-stroke; }
-
-/* The transition matrix of the Flows card: one row per step kind, one column per next step kind. */
-.matrixScroll { overflow-x: auto; min-inline-size: 0; }
-.matrix { display: block; inline-size: 100%; max-inline-size: 40rem; block-size: auto; overflow: visible; }
-.matrix text { font-family: var(--font-ui); font-size: var(--text-xs); fill: var(--color-text); }
-.matrix .dim { fill: var(--color-muted); }
-.cell { fill: var(--color-chart-1); }
-.blank { fill: var(--color-raised); }

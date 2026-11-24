@@ -1,8 +1,10 @@
 // ─── Flows — the payload of /api/board/insights/flows, the sentence it states and the rows of its charts ─
 // A group with too little data is listed by the server as too small and never gets its own bar.
-import { fmtNum, projectName } from '../../design/format'
+import { fmtNum, fmtShare, projectName } from '../../design/format'
+import type { FlowLink, FlowNode } from './charts/FlowDiagram'
+import type { HeatColumn, HeatRow } from './charts/HeatGrid'
 import { axisText, barTop, type BarLegend, type BarPart, type BarRow, type BarTone } from './flowBarModel'
-import { hours, money, plural, share, type Base, type Hero, type Label } from './insightsModel'
+import { hours, money, plural, share, type Base, type Label } from './insightsModel'
 import { repoColour, repoHover, repoName, type RepoSegment } from './repoSplit'
 
 type Num = number | null
@@ -58,20 +60,16 @@ export const MIN_SESSIONS = 10
 const SHOWN_FROM = 8
 const SHOWN = 6
 
-/** The sessions by how they ended, their list price, and the working time in cycles: counts only. */
+/** The one line under the title: what the view measures, in technical terms; no figure, no comparison. */
 export function flowsFinding(body: FlowsBody) {
-  const s = body.summary
-  if (!s.sessions) return 'No tool call in this period.'
-  if (!s.enough) return `${plural(s.sessions, 'session')} in this period; the card states its figures from ${MIN_SESSIONS} sessions. ` +
-    'The charts show the sessions there are.'
-  return `${plural(s.sessions, 'session')} in this period: ${fmtNum(s.committed)} committed, ${fmtNum(s.changed)} changed files ` +
-    `without a commit, ${fmtNum(s.no_change)} (${share(s.no_change_share)}) changed no file. The sessions that changed no file ` +
-    `cost ${money(s.no_change_cost)} at list price (${share(s.no_change_cost_share)} of ${money(s.cost_usd)}). Working time in ` +
-    `cycles of two alternating steps: ${workTime(s.cycle_seconds)} of ${workTime(s.working_seconds)} (${share(s.cycle_share)}).`
+  if (!body.summary.sessions) return 'No tool call in this period.'
+  return 'Each tool call is one step (read, edit, test run, commit, …); counts are sessions, calls and working time of the ' +
+    'sessions with a tool call in the period.'
 }
 
-export const flowsHero = (body: FlowsBody): Hero | undefined => body.summary.enough && body.summary.no_change_share != null
-  ? { value: share(body.summary.no_change_share), label: `of ${plural(body.summary.sessions, 'session')} changed no file` } : undefined
+/** Under the charts when the period has too few sessions to compare: the count and the minimum. */
+export const fewSessions = (body: FlowsBody) => body.summary.sessions && !body.summary.enough
+  ? `${plural(body.summary.sessions, 'session')} in this period, fewer than the ${MIN_SESSIONS} the view needs to compare.` : ''
 
 const endedTotal = (body: FlowsBody) => OUTCOMES.reduce((sum, outcome) => sum + body.endings[outcome].sessions, 0)
 
@@ -82,17 +80,6 @@ export function outcomeHover(body: FlowsBody, outcome: FlowOutcome) {
     `${money(ending.cost_usd)} at list price`
 }
 
-/** One stacked bar of all sessions, split by how they ended. */
-export function endingRows(body: FlowsBody): BarRow[] {
-  const total = endedTotal(body)
-  if (!total) return []
-  return [{
-    key: 'all', name: 'All sessions', sub: plural(total, 'session'),
-    parts: OUTCOMES.map(outcome => ({ value: body.endings[outcome].sessions, tone: OUTCOME_TONES[outcome], hover: outcomeHover(body, outcome) })),
-    text: OUTCOMES.map(outcome => `${fmtNum(body.endings[outcome].sessions)} ${OUTCOME_LABELS[outcome].toLowerCase()}`).join(' · '),
-    hover: OUTCOMES.map(outcome => outcomeHover(body, outcome)).join('; '),
-  }]
-}
 /** The parts of a bar per repository for one measure of its segments, each with repoHover, `extra` (that segment's
  * other figures) and `detail` (the bar's own hover); none when the answer carries no split. */
 export function flowRepoParts(body: FlowsBody, segments: readonly RepoSegment[] | undefined, key: string, format: (value: number) => string,
@@ -120,21 +107,6 @@ export function endingRepoRows(body: FlowsBody): BarRow[] {
   })
 }
 export const endingLegend: BarLegend = OUTCOMES.map(outcome => ({ tone: OUTCOME_TONES[outcome], label: OUTCOME_LABELS[outcome] }))
-
-/** Per outcome, the main agent's last step: sessions and list price. */
-export function lastStepRows(body: FlowsBody, outcome: FlowOutcome): BarRow[] {
-  const ending = body.endings[outcome]
-  return ending.last_steps.slice(0, SHOWN).map(item => {
-    const hover = `${OUTCOME_LABELS[outcome]}, last step ${step(item.step)}: ${fmtNum(item.sessions)} of ${plural(ending.sessions, 'session')} ` +
-      `(${share(ratio(item.sessions, ending.sessions))}), ${money(item.cost_usd)} at list price`
-    const parts = item.repos?.length
-      ? flowRepoParts(body, item.repos, 'sessions', sessions, `${OUTCOME_LABELS[outcome]}, last step ${step(item.step)}`, 'sessions',
-        `${hover}.`, segmentCost)
-      : [{ value: item.sessions, tone: OUTCOME_TONES[outcome], hover }]
-    return { key: item.step, name: step(item.step), parts,
-      text: `${plural(item.sessions, 'session')} · ${money(item.cost_usd)}`, hover }
-  })
-}
 
 export type MatrixCell = { to: Step | 'rest'; calls: number; share: number; hover: string }
 export type MatrixRow = { from: Step; calls: number; cells: (MatrixCell | null)[] }
@@ -175,6 +147,7 @@ export function cycleRows(body: FlowsBody): BarRow[] {
     const hover = `${cycleName(cycle.pair)}: ${plural(cycle.loops, 'cycle')} in ${plural(cycle.sessions, 'session')}, ` +
       `${plural(cycle.rounds, 'round')} and ${plural(cycle.calls, 'call')} in all; working time ${workTime(cycle.seconds)}, ` +
       `${share(cycle.time_share)} of the working time of all tool calls (${workTime(body.summary.working_seconds)}). ` +
+      `All cycles together: ${workTime(body.summary.cycle_seconds)} (${share(body.summary.cycle_share)}). ` +
       'A cycle is two steps taking turns 3 rounds or more.'
     return { key: cycle.pair.join('-'), name: cycleName(cycle.pair), sub: `${plural(cycle.rounds, 'round')} · ${plural(cycle.sessions, 'session')}`,
       parts: cycle.repos?.length ? flowRepoParts(body, cycle.repos, 'seconds', workTime, cycleName(cycle.pair), 'working time', hover)
@@ -251,4 +224,94 @@ export function tooSmall(body: FlowsBody, label: Label) {
   const unflagged = s.unflagged_tests ? ` ${plural(s.unflagged_tests, 'command line')} named a test runner without starting with one; ` +
     'they count as commands, not test runs.' : ''
   return ((parts.length ? `Too small to compare: ${parts.join('; ')}.` : '') + tests + unflagged).trim()
+}
+
+// ─── The full-width view: the flow from last step to ending, the transition grid, and one encoding at a time ─
+
+/**
+ * "By repository: app 20 (71% of these, 80% of its own; $120), docs 8 (29% of these; $30)." for one measure of a mark's
+ * segments, with each segment's list price where it carries one; '' when the mark is not split.
+ */
+export function repoBreakdown(body: FlowsBody, segments: readonly RepoSegment[] | undefined, key: string, format: (value: number) => string) {
+  const parts = (segments ?? []).flatMap(segment => {
+    const value = segment[key]
+    if (typeof value !== 'number' || value <= 0) return []
+    const part = segment.share?.[key], own = segment.of_repo?.[key]
+    const shares = [part == null ? '' : `${fmtShare(part)} of these`, own == null ? '' : `${fmtShare(own)} of its own`].filter(Boolean)
+    const cost = typeof segment.cost_usd === 'number' ? money(segment.cost_usd) : ''
+    const more = [shares.join(', '), cost].filter(Boolean).join('; ')
+    return [`${repoName(body.repo_order, segment.repo)} ${format(value)}${more ? ` (${more})` : ''}`]
+  })
+  return parts.length ? ` By repository: ${parts.join(', ')}.` : ''
+}
+
+/** The answer with no split by repository on the bars that are drawn in one colour when the view colours by its own parts. */
+export function withoutRepos(body: FlowsBody): FlowsBody {
+  const strip = <T extends Split>(rows: T[]) => rows.map(row => ({ ...row, repos: undefined }))
+  return { ...body, cycles: strip(body.cycles), first_paths: strip(body.first_paths), last_paths: strip(body.last_paths), tools: strip(body.tools) }
+}
+
+/** Whether any bar of the answer is split by repository: the view then offers the colour switch. */
+export const flowsSplit = (body: FlowsBody) => OUTCOMES.some(outcome => body.endings[outcome].repos?.length) ||
+  [...body.cycles, ...body.first_paths, ...body.last_paths, ...body.projects, ...body.tools].some(row => row.repos?.length)
+
+const OUTCOME_COLOURS: Record<FlowOutcome, string> = {
+  committed: 'var(--color-chart-3)', changed: 'var(--color-chart-1)', no_change: 'var(--color-chart-4)',
+}
+const OTHER_STEP = 'other'
+
+/**
+ * The sessions as a flow from the main agent's last step (left) to how the session ended (right). The server lists the
+ * most frequent last steps of each ending; the rest of an ending's sessions flow from "other last steps".
+ */
+export function endingFlow(body: FlowsBody): { left: FlowNode[]; right: FlowNode[]; links: FlowLink[] } {
+  const total = endedTotal(body)
+  const links: FlowLink[] = OUTCOMES.flatMap(outcome => {
+    const ending = body.endings[outcome], name = OUTCOME_LABELS[outcome].toLowerCase()
+    const listed = ending.last_steps.slice(0, SHOWN)
+    const rest = ending.sessions - listed.reduce((sum, item) => sum + item.sessions, 0)
+    const rows = listed.map((item): FlowLink => ({
+      from: item.step, to: outcome, value: item.sessions, colour: OUTCOME_COLOURS[outcome],
+      hover: `Last step ${step(item.step)} → ${name}: ${fmtNum(item.sessions)} of ${plural(ending.sessions, 'session')} ` +
+        `(${share(ratio(item.sessions, ending.sessions))}), ${share(ratio(item.sessions, total))} of all ${plural(total, 'session')}; ` +
+        `${money(item.cost_usd)} at list price.` + repoBreakdown(body, item.repos, 'sessions', fmtNum),
+    }))
+    return rest > 0 ? [...rows, { from: OTHER_STEP, to: outcome, value: rest, colour: OUTCOME_COLOURS[outcome],
+      hover: `Another last step → ${name}: ${fmtNum(rest)} of ${plural(ending.sessions, 'session')} ` +
+        `(${share(ratio(rest, ending.sessions))}); last steps not among the ${fmtNum(listed.length)} listed for this ending.` }] : rows
+  })
+  const sum = (from: string) => links.filter(link => link.from === from).reduce((all, link) => all + link.value, 0)
+  const steps = [...new Set(links.map(link => link.from))]
+  const ordered = [...steps.filter(item => item !== OTHER_STEP).sort((a, b) => sum(b) - sum(a)), ...steps.filter(item => item === OTHER_STEP)]
+  const left = ordered.map((item): FlowNode => {
+    const n = sum(item), name = item === OTHER_STEP ? 'other last steps' : step(item as Step)
+    const by = OUTCOMES.flatMap(outcome => {
+      const value = links.find(link => link.from === item && link.to === outcome)?.value ?? 0
+      return value ? [`${OUTCOME_LABELS[outcome].toLowerCase()} ${fmtNum(value)}`] : []
+    })
+    return { key: item, name, text: plural(n, 'session'),
+      hover: `Last step ${name}: ${fmtNum(n)} of ${plural(total, 'session')} (${share(ratio(n, total))}); ${by.join(', ')}.` }
+  })
+  const right = OUTCOMES.filter(outcome => body.endings[outcome].sessions).map((outcome): FlowNode => {
+    const ending = body.endings[outcome]
+    const of = ending.cost_usd != null && body.summary.cost_usd ? ` (${share(ending.cost_usd / body.summary.cost_usd)} of ${money(body.summary.cost_usd)})` : ''
+    return { key: outcome, name: OUTCOME_LABELS[outcome], colour: OUTCOME_COLOURS[outcome],
+      text: `${fmtNum(ending.sessions)} · ${share(ratio(ending.sessions, total))} · ${money(ending.cost_usd)}`,
+      hover: `${outcomeHover(body, outcome)}${of}.${repoBreakdown(body, ending.repos, 'sessions', fmtNum)}` }
+  })
+  return { left, right, links }
+}
+
+/** The transition matrix as heat-grid rows: share of the row's calls written in the cell, the count under it. */
+export function transitionGrid(body: FlowsBody): { columns: HeatColumn[]; rows: HeatRow[] } {
+  const matrix = transitionMatrix(body)
+  return {
+    columns: matrix.columns.map(column => ({ key: column, name: columnName(column),
+      title: column === 'rest' ? 'Next steps not among the 4 most frequent of the row, summed' : undefined })),
+    rows: matrix.rows.map(row => ({
+      key: row.from, name: step(row.from), sub: plural(row.calls, 'call'),
+      cells: row.cells.map(cell => cell ? { key: `${row.from}:${cell.to}`, text: fmtShare(cell.share), sub: fmtNum(cell.calls),
+        level: cell.share, hover: `${cell.hover}.` } : null),
+    })),
+  }
 }
