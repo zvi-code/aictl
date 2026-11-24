@@ -182,13 +182,22 @@ class BoardRoutes:
     def _serve_board_index(self) -> None:
         """Everything the daemon found and indexed: this node live, another node or the fleet from the store.
 
-        ``project`` (repeatable) keeps the stored sessions and project folders of those exact project values."""
+        ``project`` (repeatable) keeps the stored sessions and project folders of those exact project values;
+        ``repo`` (repeatable) stands for the projects of that repository, as on every other route."""
         from ..index_breakdown import breakdown
+        from .project_filter import requested_projects, requested_repos, resolve
 
         params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
         try:
             scope = parse_scope(params)
-            body = breakdown(self.server, scope, project_filter=[p for p in params.get("project", []) if p and p != "all"])
+            history = HistoryScope.local(self.server.store)
+            if scope.kind != "local":
+                history = HistoryScope(history.reader, scope.node, qualified=True)
+            chosen = resolve(history, requested_projects(params), requested_repos(params))
+            body = breakdown(self.server, scope, project_filter=list(chosen))
+        except BoardRequestError as exc:
+            self._json_response({"error": str(exc)}, status=400)
+            return
         except ScopeError as exc:
             self._json_response({"error": str(exc), "reason": exc.reason}, status=exc.status)
             return
