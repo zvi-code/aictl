@@ -363,6 +363,7 @@ _VIEWS = {
         "no_model effort_reported unattributed call_only_sessions store_calls store_sessions unsplit_calls "
         "unsplit_sessions recorded_calls tool_name node_id session_id models computed_at",
     ),
+    "insights.session_names": ("all_nodes requested_node session_keys", "node_id session_id title git_branch project_path"),
     "insights.repo_rank": (_TIME, "row_type repo name rank cost_usd requests sessions repos first_ts last_ts computed_at"),
     "insights.repositories": (
         f"{_TIME} restrict_tools requested_tools requested_models step",
@@ -550,6 +551,8 @@ _CACHE_TTL_S = {
     "insights.model_report": _INSIGHT_TTL_S,
     # One order of repositories for the whole Insights screen: every card's answer reads it, so it is read once.
     "insights.repo_rank": _INSIGHT_TTL_S,
+    # The names of the sessions a card answer lists, read once per answer (insights.session_names()).
+    "insights.session_names": _INSIGHT_TTL_S,
     "insights.repositories": _INSIGHT_TTL_S,
     "insights.durations": _INSIGHT_TTL_S,
     "insights.changes": _INSIGHT_TTL_S,

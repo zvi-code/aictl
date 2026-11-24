@@ -304,6 +304,7 @@ BOUNDED = {
                       "paths, 20 projects, 20 sessions and one meta row; at most 9 repository rows per tool and per cycle",
     "insights.skills": "25 skills, 10 unused listed skills, per tool, 20 projects, 10 sessions and one meta row",
     "insights.mcp": "25 servers, 40 server tools, 200 listed servers, 20 projects, 10 sessions and one meta row",
+    "insights.session_names": "one row per requested session",
     "insights.kql": "per tool, per kind and verb, per failure kind, 15 targets, 15 shapes, 20 projects, 10 sessions, 50 repeats, 10 large results and one meta row",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",

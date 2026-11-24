@@ -122,6 +122,69 @@ def repo_order(history: HistoryScope, params: dict) -> dict:
     }
 
 
+# ── Session names: what a session is about, on every session row of a card answer ──
+# A card's view gives a session by its id only. After the card is shaped, every row of the answer that carries a
+# session_id (the sessions list, a top session, a finding's session, ...) gets the session's stored title, git_branch
+# and, when the row has none, project_path: one read of insights.session_names for the ids the answer holds.
+SESSION_NAME_FIELDS = ("title", "git_branch")
+
+
+def _session_rows(value: Any) -> list[dict]:
+    """Every dict inside *value* (dicts and lists, any depth) that carries a session_id."""
+    found: list[dict] = []
+    if isinstance(value, dict):
+        if isinstance(value.get("session_id"), str) and value["session_id"]:
+            found.append(value)
+        for item in value.values():
+            found.extend(_session_rows(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_session_rows(item))
+    return found
+
+
+def _session_key(history: HistoryScope, row: dict) -> str | None:
+    """The stored key of a row's session (strlen(node_id):node_id session_id), as the views' session_keys hold it."""
+    if history.qualified:
+        try:
+            node, raw = history.split(row["session_id"])
+        except Exception:  # noqa: BLE001 - an id of another node, or not a pair: the row gets no name
+            return None
+    else:
+        node, raw = row.get("node_id") if row.get("node_id") is not None else history.node, row["session_id"]
+    node = node or ""
+    return f"{len(node)}:{node}{raw}"
+
+
+def session_names(history: HistoryScope, shape: dict) -> dict:
+    """Put on every session row of *shape* whose session is stored its title and git_branch (None when not stored), and
+    project_path when the row has none; a row whose session has no stored row stays as it is. One read for the whole
+    answer; none when the answer holds no session. A failed read leaves the rows as they are: the card still answers."""
+    rows = _session_rows(shape)
+    keys = {key for row in rows if (key := _session_key(history, row))}
+    if not keys:
+        return shape
+    try:
+        found = history.read("insights.session_names", session_keys=sorted(keys), limit=len(keys))
+    except Exception:  # noqa: BLE001 - the rows stay without names; the card's figures are unaffected
+        return shape
+    by_node = {(str(item.get("node_id") or ""), item.get("session_id")): item for item in found}
+    # A row with no node_id is matched by its id alone, when only one node has that id.
+    by_id: dict[Any, dict | None] = {}
+    for item in found:
+        by_id[item.get("session_id")] = None if item.get("session_id") in by_id else item
+    for row in rows:
+        node = row.get("node_id")
+        item = by_node.get((str(node or ""), row["session_id"])) if node is not None else by_id.get(row["session_id"])
+        if item is None:  # no stored session row: the row stays as the card gave it
+            continue
+        for field in SESSION_NAME_FIELDS:
+            row[field] = item.get(field) or None
+        if not row.get("project_path") and item.get("project_path"):
+            row["project_path"] = item["project_path"]
+    return shape
+
+
 def repo_splits(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
     """A card's repo_split rows by bar: (tool, split_key) -> its rows, one per repository ('' for every other one)."""
     found: dict[tuple[str, str], list[dict]] = {}
@@ -1426,7 +1489,7 @@ def summary(filters: Filters, now: float | None = None, *, history: HistoryScope
         answers = dict(zip(SUMMARY_CARDS, pool.map(answer, SUMMARY_CARDS)))
     return 200, {
         "card": "summary", "range": params, "computed_at": time.time() if now is None else now,
-        **findings({card: body for card, body in answers.items() if body is not None}),
+        **session_names(history, findings({card: body for card, body in answers.items() if body is not None})),
         "missing": [card for card, body in answers.items() if body is None],
         "tool_labels": {},
     }
@@ -1445,6 +1508,7 @@ def insight(card: str, filters: Filters, now: float | None = None, *, history: H
     node = {} if history.node is None else {"all_nodes": False, "requested_node": history.node}
     repos = repo_order(history, params)
     shape = SHAPES[card](rows, repos["repo_order"]) if card in REPO_SPLIT_CARDS else SHAPES[card](rows)
+    shape = session_names(history, shape)
     return 200, {
         "card": card, "view": view, **repos,
         "range": {"since": filters.since, "until": filters.until},
