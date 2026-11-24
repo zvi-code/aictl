@@ -191,8 +191,8 @@ describe('INS-11 · Work per instruction draws the runs on one strip, the waits 
     const { card: root, dispose } = card()
     const waits = root.querySelector('[data-chart="autonomy-waits"]')!
     const claudeWait = waits.querySelector('[data-row="claude-code"]')!
-    expect(claudeWait.querySelector<HTMLElement>('[data-part="under"]')!.style.flexGrow).toBe('56')
-    expect(claudeWait.querySelector<HTMLElement>('[data-part="over"]')!.style.flexGrow).toBe('24')
+    expect(claudeWait.querySelector<HTMLElement>('[data-part="under"]')!.style.flexGrow).toBe('70')
+    expect(claudeWait.querySelector<HTMLElement>('[data-part="over"]')!.style.flexGrow).toBe('30')
     expect([...claudeWait.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['56 · 70%', '24 · 30%'])
     expect(claudeWait.querySelector('[data-part="over"] [role="tooltip"]')!.textContent).toBe(waitHover(claude, 'over', label))
     expect(claudeWait.querySelector('[data-total]')!.textContent).toBe('median wait 1 min 50 s')
