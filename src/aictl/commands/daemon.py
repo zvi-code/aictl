@@ -13,6 +13,7 @@ from pathlib import Path
 
 import click
 
+from ..cli_context import removed_db_option
 from ..kusto import (
     INGESTION_ENV,
     TABLE_INGESTION_ENV,
@@ -60,8 +61,8 @@ REPORTING_INTERVAL_S = 30.0
     default=True,
     help="With --headless: take hook events and OpenTelemetry on the port and store them (default on)",
 )
-@click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
-@click.option("--kusto-cluster", default=None, help="Serve from this Kusto cluster instead of SQLite (URL; http://localhost:8080 for the emulator)")
+@removed_db_option
+@click.option("--kusto-cluster", default=None, help="Serve from this Kusto cluster (URL; http://localhost:8080 for the emulator)")
 @click.option("--kusto-database", default=None, help="The Kusto database (default aictl)")
 @click.option(
     "--kusto-ingestion",
@@ -90,7 +91,6 @@ def serve(
     interval,
     open_browser,
     include_live_monitor,
-    db_path,
     kusto_cluster,
     kusto_database,
     kusto_ingestion,
@@ -156,7 +156,6 @@ def serve(
             err=True,
         )
 
-    db_path = db_path or cfg.effective_db_path()
     pid_file = cfg.effective_pid_file()
 
     if show_status:
@@ -180,7 +179,6 @@ def serve(
             include_live_monitor,
             pid_file,
             cfg,
-            db_path=db_path,
             headless=headless,
             receiver=receiver,
         )
@@ -202,7 +200,6 @@ def serve(
                 root,
                 interval=interval,
                 include_live_monitor=include_live_monitor,
-                db_path=db_path,
                 receive_at=(host, port) if receiver else None,
             )
         else:
@@ -213,7 +210,6 @@ def serve(
                 interval=interval,
                 open_browser=open_browser,
                 include_live_monitor=include_live_monitor,
-                db_path=db_path,
             )
     except (StoreLayoutError, RestartStateError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -277,7 +273,7 @@ def _env_port() -> int | None:
 
 
 def _start_daemon(
-    root_dir, host, port, interval, include_live_monitor, pid_file, cfg, *, db_path=None, headless=False,
+    root_dir, host, port, interval, include_live_monitor, pid_file, cfg, *, headless=False,
     receiver=True,
 ):
     """Fork to background and run the server (or headless collector)."""
@@ -306,7 +302,7 @@ def _start_daemon(
 
     if IS_WINDOWS:
         _start_daemon_windows(
-            root_dir, host, port, interval, include_live_monitor, pid_file, log_file, db_path=db_path,
+            root_dir, host, port, interval, include_live_monitor, pid_file, log_file,
             headless=headless, receiver=receiver,
         )
         return
@@ -351,7 +347,6 @@ def _start_daemon(
                 root,
                 interval=interval,
                 include_live_monitor=include_live_monitor,
-                db_path=db_path,
                 receive_at=(host, port) if receiver else None,
             )
         else:
@@ -364,14 +359,13 @@ def _start_daemon(
                 interval=interval,
                 open_browser=False,
                 include_live_monitor=include_live_monitor,
-                db_path=db_path,
             )
     finally:
         pid_file.unlink(missing_ok=True)
 
 
 def _start_daemon_windows(
-    root_dir, host, port, interval, include_live_monitor, pid_file, log_file, *, db_path=None, headless=False,
+    root_dir, host, port, interval, include_live_monitor, pid_file, log_file, *, headless=False,
     receiver=True,
 ):
     """Windows has no fork: start ``aictl daemon serve`` again as a background process."""
@@ -380,8 +374,6 @@ def _start_daemon_windows(
     argv = [sys.executable, "-m", "aictl.cli", "daemon", "serve", "--root", str(Path(root_dir).resolve())]
     argv += ["--port", str(port), "--host", host, "--interval", str(interval), "--no-open"]
     argv.append("--monitor" if include_live_monitor else "--no-monitor")
-    if db_path:
-        argv += ["--db", str(db_path)]
     if headless:
         argv.append("--headless")
         if not receiver:
@@ -599,8 +591,7 @@ def _ingesters_status() -> list[dict[str, str]]:
 
     from ..dashboard.ingester_runner import ingester_status_for_doctor
 
-    cfg = load_config()
-    for entry in ingester_status_for_doctor(cfg.effective_db_path()):
+    for entry in ingester_status_for_doctor():
         last_ts = entry.get("last_poll_ts") or 0.0
         if entry.get("enabled") and last_ts:
             status = "available"
@@ -641,7 +632,7 @@ def dashboard(root_dir, interval, include_live_monitor, port, host):
     """Launch a live terminal dashboard showing AI tool resources.
 
     Automatically connects to a running 'aictl serve' instance for
-    richer data (SQLite history, persistent sessions, events).
+    richer data (stored history, persistent sessions, events).
     Falls back to standalone collection if no server is running.
     """
     cfg = load_config()

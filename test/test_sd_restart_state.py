@@ -55,7 +55,7 @@ def test_doctor_uses_the_copilot_source_checkpoint(tmp_path, monkeypatch):
     state = StateFile(tmp_path / "copilot_messages.json")
     when = time.time() - 3
     save_checkpoint(state, source, {"cursor": {"messages": 1}, "last_poll_ts": when})
-    [status] = ingester_runner.ingester_status_for_doctor(tmp_path / "unused-history.db")
+    [status] = ingester_runner.ingester_status_for_doctor()
     assert status["last_poll_ts"] == when
     assert status["last_poll_age_s"] >= 3
 

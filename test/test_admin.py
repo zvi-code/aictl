@@ -235,6 +235,7 @@ class TestDbReset:
 
         result = runner.invoke(db, ["--db", str(db_file), "reset", "--yes"])
         assert result.exit_code != 0
+        assert "kusto_cluster" in result.output and "no longer has a SQLite store" in result.output
         assert db_file.stat().st_size == 1024
 
     # The confirmation, the table list and the scoping of `db reset` are in test_store_layout.py.

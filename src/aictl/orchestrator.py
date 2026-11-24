@@ -671,7 +671,6 @@ class CollectionService:
         *,
         interval: float = 5.0,
         include_live_monitor: bool = True,
-        db_path: Path | str | None = None,
         reporting_only: bool = False,
     ) -> None:
         self.root = root
@@ -888,7 +887,6 @@ def start_collector(
     *,
     interval: float = 5.0,
     include_live_monitor: bool = True,
-    db_path: Path | str | None = None,
     receive_at: tuple[str, int] | None = None,
 ) -> None:
     """Run a reporting node: collect and write to the store, serve nothing. Blocks until Ctrl-C.
@@ -902,7 +900,6 @@ def start_collector(
         root,
         interval=interval,
         include_live_monitor=include_live_monitor,
-        db_path=db_path,
         reporting_only=True,
     )
     # The stores, then the port, then the first snapshot: posts are taken from the first second.
@@ -955,7 +952,6 @@ def start_server(
     interval: float = 5.0,
     open_browser: bool = True,
     include_live_monitor: bool = True,
-    db_path: Path | str | None = None,
 ) -> None:
     """Start the dashboard HTTP server. Blocks until Ctrl-C.
 
@@ -970,7 +966,6 @@ def start_server(
         root,
         interval=interval,
         include_live_monitor=include_live_monitor,
-        db_path=db_path,
     )
     # Open the stores, then the port, then collect: a relaunch closes the port only for the
     # time the process takes to start. Hooks and OpenTelemetry are taken from the first

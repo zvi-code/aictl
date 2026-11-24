@@ -434,7 +434,7 @@ def test_the_daemon_start_turns_on_lazy_discovery(tmp_path, monkeypatch):
         raise RuntimeError("stop")
 
     monkeypatch.setattr(orchestrator, "collect", stop_here)
-    service = orchestrator.CollectionService(tmp_path, include_live_monitor=False, db_path=tmp_path / "h.db")
+    service = orchestrator.CollectionService(tmp_path, include_live_monitor=False)
     with pytest.raises(RuntimeError):
         service.start(quiet=True)
     assert seen == [True]

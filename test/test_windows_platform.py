@@ -196,7 +196,7 @@ def test_start_daemon_on_windows_respawns_without_fork(monkeypatch, tmp_path):
 
     monkeypatch.setattr(daemon, "spawn_detached_windows", fake_spawn)
     cfg = types.SimpleNamespace(effective_log_file=lambda: tmp_path / "d" / "aictl.log")
-    daemon._start_daemon(".", "127.0.0.1", 8484, 5.0, True, pid_file, cfg, db_path=None, headless=True)
+    daemon._start_daemon(".", "127.0.0.1", 8484, 5.0, True, pid_file, cfg, headless=True)
     assert argv_seen[1:5] == ["-m", "aictl.cli", "daemon", "serve"]
     assert "--headless" in argv_seen and "--no-open" in argv_seen and "--monitor" in argv_seen
     # The respawned argv has to parse: --daemon absent, every option known to the command.

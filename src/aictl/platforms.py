@@ -648,16 +648,15 @@ pid_file = ""  # Empty = auto (aictl.pid next to this file)
 log_file = ""  # Empty = auto (aictl.log next to this file)
 
 [storage]
-db_path = ""  # Empty = auto (history.db next to this file)
-flush_interval = 10.0  # Seconds between batch writes to SQLite
+flush_interval = 10.0  # Seconds between batch writes to the store
 retention_days = 30  # Delete data older than this
 history_days = 0  # Read session files changed in the last N days; 0 = every session file still on disk
 capture = "full"  # full: text kept but bounded | metadata: no text | off: memory only, no files
-max_total_mb = 1024  # Budget for DB + WAL + logs; oldest data is evicted first
+max_total_mb = 1024  # Budget for logs; oldest data is evicted first
 content_retention_days = 14  # capture = "full": blank conversation text older than this
 large_payload_bytes = 32768  # a text value larger than this keeps a preview; its full text goes to text_payloads
-# A Kusto (Azure Data Explorer) cluster instead of SQLite: every table lives in one
-# database there and the daemon serves from it alone. Empty = SQLite.
+# The Kusto (Azure Data Explorer) cluster that holds every table in one database. Empty = no stored
+# history: the daemon serves live runtime data only.
 kusto_cluster = ""  # e.g. https://mycluster.westus.kusto.windows.net, or http://localhost:8080 for the emulator
 kusto_database = "aictl"
 kusto_auth = "auto"  # auto (Azure CLI login; none for a local emulator) | azcli | device | managed-identity | none
@@ -728,7 +727,6 @@ class AictlConfig:
     log_file: str = ""
 
     # storage
-    db_path: str = ""
     flush_interval: float = 10.0
     retention_days: int = 30
     history_days: int = 0
@@ -754,11 +752,6 @@ class AictlConfig:
         from .stores.kusto.tables import RETENTION_DEFAULTS
 
         return {**RETENTION_DEFAULTS, **self.retention}
-
-    def effective_db_path(self) -> Path:
-        if self.db_path:
-            return Path(self.db_path)
-        return config_dir() / "history.db"
 
     def effective_pid_file(self) -> Path:
         if self.pid_file:
@@ -794,7 +787,6 @@ _CONFIG_MAP: dict[str, list[tuple[str, str, type]]] = {
         ("log_file", "log_file", str),
     ],
     "storage": [
-        ("db_path", "db_path", str),
         ("flush_interval", "flush_interval", float),
         ("retention_days", "retention_days", int),
         ("history_days", "history_days", int),
@@ -882,6 +874,18 @@ def load_config() -> AictlConfig:
     return cfg
 
 
+_REMOVED_DB_PATH_WARNED: set[str] = set()
+
+
+def _warn_removed_db_path(path: Path) -> None:
+    """Say once per process that an old ``[storage] db_path`` is ignored: aictl has no SQLite store."""
+    if str(path) not in _REMOVED_DB_PATH_WARNED:
+        _REMOVED_DB_PATH_WARNED.add(str(path))
+        logging.getLogger(__name__).warning(
+            "%s: [storage] db_path is ignored. aictl stores history in Kusto only; "
+            "set kusto_cluster and kusto_database in [storage]. Remove db_path.", path)
+
+
 def _load_config_file() -> AictlConfig:
     cfg = AictlConfig()
     path = config_path()
@@ -906,6 +910,9 @@ def _load_config_file() -> AictlConfig:
             pass
 
     _drop_legacy_monitor_defaults(data)
+
+    if "db_path" in data.get("storage", {}):
+        _warn_removed_db_path(path)
 
     for section, fields in _CONFIG_MAP.items():
         sec = data.get(section, {})
@@ -998,13 +1005,12 @@ def show_config() -> str:
         f"  log_file        = {cfg.effective_log_file()}",
         "",
         "[storage]",
-        f"  db_path         = {cfg.effective_db_path()}",
         f"  flush_interval  = {cfg.flush_interval}",
         f"  retention_days  = {cfg.retention_days}",
         f"  capture         = {cfg.capture}",
         f"  max_total_mb    = {cfg.max_total_mb}",
         f"  content_retention_days = {cfg.content_retention_days}",
-        f"  kusto_cluster   = {cfg.kusto_cluster or '(none: SQLite)'}",
+        f"  kusto_cluster   = {cfg.kusto_cluster or '(none: live data only)'}",
         f"  kusto_database  = {cfg.kusto_database}",
         f"  kusto_ingestion = {cfg.kusto_ingestion}",
         f"  kusto_table_ingestion = {cfg.kusto_table_ingestion}",

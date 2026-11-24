@@ -148,7 +148,7 @@ def test_start_server_opens_the_port_before_it_collects(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_DashboardHTTPServer", Capture)
     monkeypatch.setattr(orchestrator.CollectionService, "run", slow_part)
     monkeypatch.setattr(orchestrator, "_kill_stale_server", lambda port: None)
-    orchestrator.start_server(tmp_path, port=port, open_browser=False, include_live_monitor=False, db_path=tmp_path / "h.db")
+    orchestrator.start_server(tmp_path, port=port, open_browser=False, include_live_monitor=False)
     # The ingesters and their backfills read every session file; they start after the snapshot.
     assert seen == {"open": True, "ready": False, "ingesters while collecting": {}}
     assert servers[0].ready.is_set()  # set once the slow part is done

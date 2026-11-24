@@ -1068,6 +1068,7 @@ def parse_cursor_telemetry(
     try:
         # On Windows, VS Code/Cursor holds an exclusive lock on the vscdb.
         # Copy to temp file to avoid "file handle in use" errors.
+        source_db = vscdb
         if IS_WINDOWS:
             import shutil
             import tempfile
@@ -1078,10 +1079,10 @@ def parse_cursor_telemetry(
             except (OSError, PermissionError) as exc:
                 log.debug("cursor vscdb copy failed: %s", exc)
                 return None
-            db_path = str(tmp)
-        else:
-            db_path = f"file:{vscdb}?mode=ro"
-        conn = sqlite3.connect(db_path if "file:" in db_path else db_path, uri="file:" in db_path, timeout=3)
+            source_db = tmp
+        conn = open_readonly(source_db, "cursor telemetry")
+        if conn is None:
+            return None
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(

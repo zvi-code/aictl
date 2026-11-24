@@ -11,7 +11,7 @@ Everything here is read-only over the scanned files, and everything scanned is
 data. Nothing found is ever executed: hook commands and MCP servers are parsed,
 never run. The only write is ``context-baseline.json`` in aictl's config dir,
 which holds hashes and metadata and no file contents. It does not depend on
-``history.db``, so it works in every ``[storage] capture`` mode.
+the store, so it works in every ``[storage] capture`` mode.
 """
 
 from __future__ import annotations
@@ -1541,9 +1541,10 @@ def _collect_copilot_desktop(inv: _Inventory, findings: list[Finding], path: Pat
 
         inv.dynamic(tool, f"{path}#unavailable", "app-store", SQLITE_UNAVAILABLE, transient=True)
         return
-    try:
-        conn = sqlite3.connect(f"file:{path}?immutable=1", uri=True, timeout=0.5)
-    except sqlite3.Error:
+    from .ingesters._common import open_readonly
+
+    conn = open_readonly(path, "copilot-desktop")
+    if conn is None:
         inv.dynamic(tool, f"{path}#unreadable", "app-store", "The app's database could not be opened read-only", transient=True)
         return
     try:

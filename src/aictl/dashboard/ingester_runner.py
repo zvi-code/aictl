@@ -315,7 +315,7 @@ def collect_status(handles: dict[str, IngesterHandle] | None) -> list[dict]:
     return [h.status() for h in handles.values()]
 
 
-def ingester_status_for_doctor(db_path: Path | str | None = None) -> list[dict]:
+def ingester_status_for_doctor() -> list[dict]:
     """Report source presence and the last checkpoint without opening history."""
     from ..stores import configured_destination
 

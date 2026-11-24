@@ -12,7 +12,7 @@ from pathlib import Path
 
 import click
 
-from ..cli_context import CliContext
+from ..cli_context import CliContext, removed_db_option
 from ..kusto import kusto_settings
 from ..platforms import config_path, show_config, write_default_config
 from ..stores.base import StoreError
@@ -23,17 +23,14 @@ from ..stores.kusto.tables import RETENTION_CLASSES
 
 
 @click.group()
-@click.option("--db", "db_path", default=None, type=click.Path(), hidden=True)
+@removed_db_option
 @click.pass_context
-def db(ctx, db_path):
+def db(ctx):
     """Inspect or maintain stored history."""
     ctx.ensure_object(CliContext)
-    ctx.obj.db_path = db_path
 
 
 def _admin_settings(ctx):
-    if ctx.obj and ctx.obj.db_path:
-        raise click.ClickException("This operation no longer supports --db. Configure a Kusto store.")
     settings = kusto_settings()
     if settings is None:
         raise click.ClickException("No store configured")
@@ -1216,9 +1213,9 @@ def _reinstall_detached_windows(install_cmd: list[str], root: Path, env: dict[st
 @click.option(
     "--source-type", default=None, type=click.Choice(["raw", "deduced", "aggregated"]), help="Filter by source type"
 )
-@click.option("--db", "db_path", default=None, type=click.Path(), help="Path to SQLite history database")
+@removed_db_option
 @click.pass_context
-def catalog(ctx, out_path, fmt, tab, source_type, db_path):
+def catalog(ctx, out_path, fmt, tab, source_type):
     """Datapoint catalog — explanations, queries, sources for every dashboard metric.
 
     \b
@@ -1234,7 +1231,6 @@ def catalog(ctx, out_path, fmt, tab, source_type, db_path):
       aictl catalog validate               # check for gaps
     """
     ctx.ensure_object(CliContext)
-    ctx.obj.db_path = db_path
     if ctx.invoked_subcommand is not None:
         return
 
