@@ -353,3 +353,26 @@ export function StepInspector(props: { step: Step; close: () => void; evidence?:
     </Show>
   </section>
 }
+
+type Paging = {
+  more: () => boolean; complete: () => boolean; loading: () => boolean; dropped: () => boolean; unloaded: () => number
+  loadOlder: (target?: number) => Promise<void> | undefined
+}
+
+/** The buttons that read older events. They are not offered while a dropped window waits for a retry. */
+export function OlderButtons(props: { pages: Paging }) {
+  const pages = () => props.pages
+  return <Show when={pages().more() && !pages().dropped()}>
+    <button type="button" class={styles.button} disabled={pages().loading()} onClick={() => void pages().loadOlder()}>
+      <Icon glyph="up" small />{pages().complete() ? `Load older (${fmtN(pages().unloaded())} events not loaded)` : 'Load older'}</button>
+    <button type="button" class={styles.button} disabled={pages().loading()} onClick={() => void pages().loadOlder(-Infinity)}>Load all</button>
+  </Show>
+}
+
+/** Said when a requested window came from another read of the flow than the newest one and was dropped. */
+export function DroppedNotice(props: { dropped: () => boolean; retry: () => void }) {
+  return <Show when={props.dropped()}>
+    <p class={styles.problem} role="alert">The server read this flow again, so older events could not be added.
+      <button type="button" class={styles.button} onClick={() => props.retry()}>Retry</button></p>
+  </Show>
+}

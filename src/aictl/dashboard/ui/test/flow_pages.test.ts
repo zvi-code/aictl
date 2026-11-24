@@ -64,4 +64,31 @@ describe('FLOW-PAGES · a flow read newest first', () => {
     expect(pages.oldest()).toBe(5)
     dispose()
   })
+
+  it('says so when a requested window comes from another read of the flow, and reads nothing more until a retry', async () => {
+    const { flowPages } = await import('../src/drawer/flowPages')
+    read = -5
+    reads.length = 0
+    const { pages, dispose } = createRoot(dispose => {
+      // The newest window is of epoch e2, the older windows the server answers are of e1.
+      const [head] = createSignal<DetailAgentFlow | undefined>(window(5, 5, 'e2'))
+      return { pages: flowPages(createMemo(() => head()), () => 'k', (offset, limit) => `/flow?offset=${offset}&limit=${limit}`), dispose }
+    })
+    flush()
+    expect(pages.dropped()).toBe(false)
+    await pages.loadOlder()
+    flush()
+    expect(pages.dropped()).toBe(true)
+    expect(pages.oldest()).toBe(5)
+    const asked = reads.length
+    await pages.loadOlder()
+    await pages.loadOlder(-Infinity)
+    expect(reads.length).toBe(asked)
+    pages.retry()
+    flush()
+    expect(pages.dropped()).toBe(false)
+    await pages.loadOlder()
+    expect(reads.length).toBe(asked + 1)
+    dispose()
+  })
 })

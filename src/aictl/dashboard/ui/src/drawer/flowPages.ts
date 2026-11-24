@@ -31,6 +31,8 @@ export function flowPages(head: Accessor<DetailAgentFlow | undefined>, key: Acce
   const [older, setOlder] = createSignal<Older>()
   const [loading, setLoading] = createSignal(false)
   const [problem, setProblem] = createSignal('')
+  /** A requested window was dropped: it came from another read of the flow than the newest one. */
+  const [dropped, setDropped] = createSignal(false)
   let last: { key: string; epoch: string; start: number; events: readonly FlowEvent[] } | undefined
   let running: Promise<void> | undefined
 
@@ -39,6 +41,7 @@ export function flowPages(head: Accessor<DetailAgentFlow | undefined>, key: Acce
     const start = windowStart(data)
     const epoch = epochOf(data)
     const previous = last?.key === current && last.epoch === epoch ? last : undefined
+    if (last?.key !== current) setDropped(false)
     last = { key: current, epoch, start, events: data.turns }
     if (older() && (older()!.key !== current || older()!.epoch !== epoch)) setOlder(undefined)
     if (!previous || start <= previous.start) return
@@ -78,7 +81,7 @@ export function flowPages(head: Accessor<DetailAgentFlow | undefined>, key: Acce
   /** Read older windows down to position `target`, or one more window when no target is given.
    * `-Infinity` reads the whole flow. */
   function loadOlder(target?: number) {
-    if (running) return running
+    if (running || dropped()) return running ?? Promise.resolve()
     const current = key()
     const epoch = head() ? epochOf(head()!) : ''
     let from = oldest()
@@ -94,8 +97,10 @@ export function flowPages(head: Accessor<DetailAgentFlow | undefined>, key: Acce
           const data = await json<DetailAgentFlow>(endpoint(offset, from - offset))
           if (key() !== current) return
           if (epochOf(data) !== epoch) {
-            // The server started this flow again: its positions are new, so start over from the head.
+            // The server started this flow again: its positions are new, so the window does not fit.
+            // Say so and stop offering older events until a retry reads the flow's newest ones again.
             setOlder(undefined)
+            setDropped(true)
             return
           }
           const start = windowStart(data)
@@ -121,5 +126,8 @@ export function flowPages(head: Accessor<DetailAgentFlow | undefined>, key: Acce
     return running
   }
 
-  return { events, oldest, first, more, complete, unloaded, matched, loading, problem, loadOlder }
+  /** Forget a dropped window, so older events can be asked for again. */
+  const retry = () => { setDropped(false); setProblem('') }
+
+  return { events, oldest, first, more, complete, unloaded, matched, loading, problem, dropped, retry, loadOlder }
 }
