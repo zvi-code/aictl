@@ -1,108 +1,79 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, fmtShare, projectName } from '../../design/format'
+import { BarChart } from './FlowsBars'
+import { axisText, barTop } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  cycleName, flowsFinding, flowsHero, OUTCOME_LABELS, STEP_LABELS, stepPath, tooSmall, workTime,
+  columnName, cycleAxis, cycleName, cycleRows, endingLegend, endingRows, flowsFinding, flowsHero, flowToolRows, lastStepRows,
+  OUTCOME_LABELS, OUTCOMES, pathRows, projectRows, step, tooSmall, transitionMatrix, workTime,
   type FlowOutcome, type FlowsBody, type Step,
 } from './flowsModel'
 import { money, plural, share, toolLabel, type Label } from './insightsModel'
 import styles from './Insights.module.css'
+import bars from './FlowsBars.module.css'
 
-const OUTCOMES: FlowOutcome[] = ['committed', 'changed', 'no_change']
-const OUTCOME_CLASS: Record<FlowOutcome, string> = { committed: 'o1', changed: 'o3', no_change: 'o0' }
-const SHOWN_FROM = 6
-const step = (value: Step) => STEP_LABELS[value] ?? value
+const LEFT = 120, CELL = 58, ROW = 32, HEAD = 64
 
-/** Sessions by how they ended: committed, changed files only, changed nothing; then the steps those that changed nothing stopped on. */
-function Endings(props: { body: FlowsBody }) {
-  const total = () => {
-    const endings = props.body.endings
-    return OUTCOMES.reduce((sum, outcome) => sum + endings[outcome].sessions, 0)
-  }
-  return <section class={styles.flow} data-endings>
-    <h3 class={styles.subhead}>How sessions ended</h3>
-    <div class={styles.split} role="img" aria-label={OUTCOMES.map(outcome =>
-      `${OUTCOME_LABELS[outcome]}: ${plural(props.body.endings[outcome].sessions, 'session')}`).join(', ')}>
-      <For each={OUTCOMES}>{outcome => <span class={styles[OUTCOME_CLASS[outcome]]}
-        style={{ 'inline-size': `${total() ? props.body.endings[outcome].sessions / total() * 100 : 0}%` }}
-        title={`${OUTCOME_LABELS[outcome]}: ${plural(props.body.endings[outcome].sessions, 'session')}, ` +
-          `${money(props.body.endings[outcome].cost_usd)} at list price`} />}</For>
-    </div>
-    <ul class={styles.legend}>
-      <For each={OUTCOMES}>{outcome => <li><span class={`${styles.swatch} ${styles[OUTCOME_CLASS[outcome]]}`} />
-        {OUTCOME_LABELS[outcome]} · {fmtNum(props.body.endings[outcome].sessions)} · {money(props.body.endings[outcome].cost_usd)}</li>}</For>
-    </ul>
-    <Show when={props.body.endings.no_change.last_steps.length}>
-      <p class={styles.note}>Sessions that changed nothing stopped on: {props.body.endings.no_change.last_steps.slice(0, 5)
-        .map(item => `${step(item.step)} ${fmtNum(item.sessions)} (${money(item.cost_usd)})`).join(' · ')}</p>
+/** What follows each kind of step: one row per step kind, one column per next step kind, share and count in each cell. */
+function Matrix(props: { body: FlowsBody }) {
+  const matrix = () => transitionMatrix(props.body)
+  const width = () => LEFT + matrix().columns.length * CELL
+  const height = () => HEAD + matrix().rows.length * ROW
+  return <figure class={bars.figure} data-transitions>
+    <figcaption class={bars.title}>Next step after each kind of step (share of the step's calls, and count)</figcaption>
+    <Show when={matrix().rows.length} fallback={<p class={bars.empty}>No step kind with 30 or more calls.</p>}>
+      <div class={bars.matrixScroll}>
+        <svg class={bars.matrix} width={width()} height={height()} viewBox={`0 0 ${width()} ${height()}`} role="img"
+          aria-label="Transition matrix: rows are the step, columns the next step of the same agent">
+          <text class={bars.dim} x={0} y={HEAD - 8}>step ↓ · next step →</text>
+          <For each={matrix().columns}>{(column, i) => <text x={LEFT + i() * CELL + CELL / 2} y={HEAD - 8}
+            transform={`rotate(-35 ${LEFT + i() * CELL + CELL / 2} ${HEAD - 8})`}>{columnName(column)}</text>}</For>
+          <For each={matrix().rows}>{(row, r) => <g data-from={row.from}>
+            <text x={0} y={HEAD + r() * ROW + 13}>{step(row.from)}</text>
+            <text class={bars.dim} x={0} y={HEAD + r() * ROW + 26}>{plural(row.calls, 'call')}</text>
+            <For each={row.cells}>{(cell, c) => <Show when={cell} fallback={<rect class={bars.blank} x={LEFT + c() * CELL + 1}
+              y={HEAD + r() * ROW + 1} width={CELL - 2} height={ROW - 2}><title>{`After ${step(row.from)}: ${columnName(matrix().columns[c()])} ` +
+                'is not among its 4 most frequent next steps'}</title></rect>}>{value => <g data-cell={`${row.from}:${value().to}`}>
+              <rect class={bars.cell} x={LEFT + c() * CELL + 1} y={HEAD + r() * ROW + 1} width={CELL - 2} height={ROW - 2}
+                fill-opacity={0.12 + 0.5 * value().share}><title>{value().hover}</title></rect>
+              <text x={LEFT + c() * CELL + CELL / 2} y={HEAD + r() * ROW + 14} text-anchor="middle">{fmtShare(value().share)}</text>
+              <text class={bars.dim} x={LEFT + c() * CELL + CELL / 2} y={HEAD + r() * ROW + 26} text-anchor="middle">{fmtNum(value().calls)}</text>
+            </g>}</Show>}</For>
+          </g>}</For>
+        </svg>
+      </div>
+      <p class={bars.axis}>Cell shade grows with the share. Blank: not among the step's 4 most frequent next steps; "other" sums the rest.
+        {' '}What follows a failed call is in the card After a failure.</p>
     </Show>
-  </section>
+  </figure>
 }
 
-/** After each kind of step, the 4 most frequent next steps of the same agent, as bars of their share. */
-function Transitions(props: { body: FlowsBody }) {
-  return <section class={styles.flow} data-transitions>
-    <h3 class={styles.subhead}>What follows each step</h3>
-    <ul class={styles.bars}>
-      <For each={props.body.transitions.slice(0, SHOWN_FROM)}>{row => <li class={styles.barRow}>
-        <span class={styles.barName}>Next after {step(row.from_step)}<small>{plural(row.calls, 'call')}</small></span>
-        <span class={styles.barTrack}>
-          <For each={row.next}>{next => <span class={styles.bar}
-            title={`${step(row.from_step)} → ${step(next.to_step)}: ${plural(next.calls, 'call')}, ${fmtShare(next.share)}`}>
-            <span class={`${styles.fill} ${styles.carried}`} style={{ 'inline-size': `${Math.max(2, next.share * 100)}%` }} />
-            {step(next.to_step)} {fmtShare(next.share)}
-          </span>}</For>
-        </span>
-      </li>}</For>
-    </ul>
-    <p class={styles.note}>What follows a failed call is in the card After a failure.</p>
-  </section>
-}
-
-function Lists(props: { body: FlowsBody }) {
-  return <div class={styles.lists}>
-    <section>
-      <h3 class={styles.subhead}>Cycles that repeat</h3>
-      <Show when={props.body.cycles.length} fallback={<p class={styles.note}>No cycle seen in 3 or more sessions.</p>}>
-        <ol class={styles.rankList} data-cycles>
-          <For each={props.body.cycles.slice(0, 5)}>{cycle => <li>
-            <span>{cycleName(cycle.pair)}</span>
-            <span>{plural(cycle.rounds, 'round')} · {plural(cycle.sessions, 'session')} · {workTime(cycle.seconds)} ({share(cycle.time_share)})</span>
-          </li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>How sessions start</h3>
-      <Show when={props.body.first_paths.length} fallback={<p class={styles.note}>No start shared by 3 or more sessions.</p>}>
-        <ol class={styles.rankList} data-first-paths>
-          <For each={props.body.first_paths.slice(0, 5)}>{path => <li>
-            <span>{stepPath(path.steps)}</span><span>{plural(path.sessions, 'session')}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>How sessions end</h3>
-      <Show when={props.body.last_paths.length} fallback={<p class={styles.note}>No end shared by 3 or more sessions.</p>}>
-        <ol class={styles.rankList} data-last-paths>
-          <For each={props.body.last_paths.slice(0, 5)}>{path => <li>
-            <span>{stepPath(path.steps)}</span><span>{plural(path.sessions, 'session')}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>By project</h3>
-      <Show when={props.body.projects.length} fallback={<p class={styles.note}>No project with 5 or more sessions.</p>}>
-        <ol class={styles.rankList} data-projects>
-          <For each={props.body.projects.slice(0, 8)}>{row => <li>
-            <span>{projectName(row.project)}</span>
-            <span>{plural(row.sessions, 'session')} · {fmtNum(row.no_change)} changed nothing ({share(row.no_change_share)},
-              {' '}{money(row.no_change_cost)}) · cycles {workTime(row.cycle_seconds)}</span>
-          </li>}</For>
-        </ol>
-      </Show>
-    </section>
-  </div>
+function Visual(props: { body: FlowsBody; label: Label }) {
+  const ended = () => OUTCOMES.filter(outcome => props.body.endings[outcome].last_steps.length)
+  const stepAxis = (outcome: FlowOutcome) => axisText('sessions', fmtNum(barTop(lastStepRows(props.body, outcome))))
+  return <>
+    <BarChart data="endings" title="How sessions ended (sessions)" rows={endingRows(props.body)} legend={endingLegend}
+      axis="One bar of all sessions, split by how they ended." empty="No session ended in this period." />
+    <div class={styles.lists}>
+      <For each={ended()}>{outcome => <BarChart data={`last-${outcome}`} title={`Last step: ${OUTCOME_LABELS[outcome].toLowerCase()}`}
+        rows={lastStepRows(props.body, outcome)} axis={stepAxis(outcome)} />}</For>
+    </div>
+    <Matrix body={props.body} />
+    <BarChart data="cycles" title="Cycles of two alternating steps, by working time" rows={cycleRows(props.body)}
+      axis={cycleAxis(props.body)} empty="No cycle seen in 3 or more sessions." />
+    <div class={styles.lists}>
+      <BarChart data="first-paths" title="First steps of sessions (sessions)" rows={pathRows(props.body, 'first')}
+        axis={axisText('sessions', fmtNum(barTop(pathRows(props.body, 'first'))))} empty="No start shared by 3 or more sessions." />
+      <BarChart data="last-paths" title="Last steps of sessions (sessions)" rows={pathRows(props.body, 'last')}
+        axis={axisText('sessions', fmtNum(barTop(pathRows(props.body, 'last'))))} empty="No end shared by 3 or more sessions." />
+    </div>
+    <BarChart data="projects" title="Sessions per project, by how they ended (committed · changed · changed no file)"
+      rows={projectRows(props.body)} legend={endingLegend} axis={axisText('sessions', fmtNum(barTop(projectRows(props.body))))}
+      empty="No project with 5 or more sessions." />
+    <BarChart data="tools" title="Tool calls per tool" rows={flowToolRows(props.body, props.label)}
+      axis={axisText('tool calls', fmtNum(barTop(flowToolRows(props.body, props.label))))} empty="No tool call in this period." />
+    <Show when={tooSmall(props.body, props.label)}>{text => <p class={styles.note} data-small>{text()}</p>}</Show>
+  </>
 }
 
 type Row = Record<string, unknown>
@@ -113,24 +84,19 @@ export default function Flows(props: CardProps) {
   return <InsightCard<FlowsBody> {...props} card="flows" title="Flows" tab="flow"
     hero={flowsHero}
     finding={flowsFinding}
-    visual={body => <>
-      <Endings body={body} />
-      <Transitions body={body} />
-      <Lists body={body} />
-      <Show when={tooSmall(body, label)}>{text => <p class={styles.note} data-small>{text()}</p>}</Show>
-    </>}
+    visual={body => <Visual body={body} label={label} />}
     note={'Each tool call is one step, by the first rule that holds: ask the person (AskUserQuestion, ask_user); report done ' +
       '(task_complete); subagent (a call that starts or talks to one); MCP tool (an MCP server\'s tool); skill; test run (the ' +
       'stored test-run flag: the command\'s first program is a test runner); commit (a successful git commit, the rule of ' +
       'Verified before commit); edit (an edit tool, or create and create_file); command; search; read; web fetch; other. A ' +
       'path joins repeats of one step into one and follows the main agent: its first 4 and last 3 steps. A transition is a ' +
-      'call and the next call of the same session and agent. A session committed when any agent of it committed, changed ' +
-      'when any agent edited a file, else it changed nothing; it ends on its main agent\'s last step. A cycle is two steps ' +
-      'taking turns 3 rounds or more (A B A B A B); its working time runs from each call to the next of the same agent, ' +
-      'with any pause over 5 minutes counted as 5 minutes. Cost is the list price of the session\'s requests in the period, ' +
-      'not a bill. Too small to compare: a project with fewer than 5 sessions, a path or cycle of fewer than 3 sessions, ' +
-      'the steps after a kind with fewer than 30 calls; a period with fewer than 10 sessions states no finding. A project ' +
-      'is the last folder of the session\'s working folder.'}
+      'call and the next call of the same session and agent; the server lists the 4 most frequent next steps of each step. A ' +
+      'session committed when any agent of it committed, changed when any agent edited a file, else it changed no file; it ' +
+      'ends on its main agent\'s last step. A cycle is two steps taking turns 3 rounds or more (A B A B A B); its working time ' +
+      'runs from each call to the next of the same agent, with any pause over 5 minutes counted as 5 minutes. Cost is the list ' +
+      'price of the session\'s requests in the period, not a bill. Too small to compare: a project with fewer than 5 sessions, ' +
+      'a path or cycle of fewer than 3 sessions, the steps after a kind with fewer than 30 calls; a period with fewer than 10 ' +
+      'sessions states no figures in its sentence. A project is the last folder of the session\'s working folder.'}
     table={{
       label: 'Flows: what follows each step',
       rows: body => body.transitions.flatMap(row => row.next.map((next): Row => ({

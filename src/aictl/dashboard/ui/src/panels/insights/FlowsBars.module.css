@@ -1,0 +1,29 @@
+/* Labelled bar charts of the Flows, Skills, MCP and Kusto cards: name, bar on one linear scale, value written beside. */
+.figure { display: grid; gap: var(--space-2); margin: 0; min-inline-size: 0; }
+.title { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.empty { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-5); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); color: var(--color-muted); }
+.swatch { display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); margin-inline-end: var(--space-2); vertical-align: middle; }
+.rows { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.row { display: grid; grid-template-columns: minmax(7rem, 12rem) minmax(4rem, 1fr) minmax(6rem, auto); gap: var(--space-1) var(--space-3); align-items: center; font-size: var(--text-xs); min-inline-size: 0; }
+.name { overflow-wrap: anywhere; }
+.name small { display: block; color: var(--color-muted); }
+.track { display: block; inline-size: 100%; block-size: var(--space-4); background: var(--color-raised); border-radius: var(--radius-sm); overflow: visible; }
+.value { font-variant-numeric: tabular-nums; color: var(--color-text); overflow-wrap: anywhere; }
+.axis { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }
+.tick { stroke: var(--color-text); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.c1 { fill: var(--color-chart-1); background: var(--color-chart-1); }
+.c2 { fill: var(--color-chart-2); background: var(--color-chart-2); }
+.c3 { fill: var(--color-chart-3); background: var(--color-chart-3); }
+.c4 { fill: var(--color-chart-4); background: var(--color-chart-4); }
+.good { fill: var(--color-success); background: var(--color-success); }
+.bad { fill: var(--color-danger); background: var(--color-danger); }
+.muted { fill: var(--color-muted); background: var(--color-muted); }
+
+/* The transition matrix of the Flows card: one row per step kind, one column per next step kind. */
+.matrixScroll { overflow-x: auto; min-inline-size: 0; }
+.matrix { display: block; inline-size: 100%; max-inline-size: 40rem; block-size: auto; overflow: visible; }
+.matrix text { font-family: var(--font-ui); font-size: var(--text-xs); fill: var(--color-text); }
+.matrix .dim { fill: var(--color-muted); }
+.cell { fill: var(--color-chart-1); }
+.blank { fill: var(--color-raised); }

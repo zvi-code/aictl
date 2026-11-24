@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import Flows from '../../src/panels/insights/Flows'
-import { flowsFinding, flowsHero, tooSmall, type FlowsBody } from '../../src/panels/insights/flowsModel'
+import {
+  cycleRows, flowsFinding, flowsHero, outcomeHover, pathRows, projectRows, tooSmall, transitionMatrix, type FlowsBody,
+} from '../../src/panels/insights/flowsModel'
 import Kql from '../../src/panels/insights/Kql'
 import { kqlCoverage, kqlFinding, kqlHero, type KqlBody } from '../../src/panels/insights/kqlModel'
 import Mcp from '../../src/panels/insights/Mcp'
@@ -54,36 +56,59 @@ const props = (ctx: PanelContext) => ({ ctx, boxes: createBoxes('test-work'), si
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights&range=all') })
 
 describe('INS-20 · Flows', () => {
-  it('states the share of sessions that changed nothing with its cost, the step they stop on and the costliest cycle', () => {
-    expect(flowsFinding(flows)).toBe('12 of 40 sessions (30%) ended without changing a file, costing $50.00 at list price (25% of the ' +
-      "period's cost); 8 of them stopped on a read. The costliest cycle is edit ⇄ test run: 40 rounds in 6 sessions, 1 h of working " +
-      'time (20% of all).')
-    expect(flowsHero(flows)).toEqual({ value: '30%', label: 'of sessions changed nothing' })
+  it('states the sessions by how they ended, their list price and the working time in cycles, without a conclusion', () => {
+    expect(flowsFinding(flows)).toBe('40 sessions in this period: 28 committed, 0 changed files without a commit, 12 (30%) changed ' +
+      'no file. The sessions that changed no file cost $50.00 at list price (25% of $200). Working time in cycles of two ' +
+      'alternating steps: 1 h of 5 h (20%).')
+    expect(flowsHero(flows)).toEqual({ value: '30%', label: 'of 40 sessions changed no file' })
   })
 
-  it('states no finding for too few sessions and names the groups too small to compare in one line', () => {
+  it('states the count for too few sessions and names the groups too small to compare in one line', () => {
     const few = { ...flows, summary: { ...flows.summary, sessions: 6, enough: false } } as FlowsBody
-    expect(flowsFinding(few)).toBe('Only 6 sessions in this period: too few to state a finding (the card needs 10).')
+    expect(flowsFinding(few)).toBe('6 sessions in this period; the card states its figures from 10 sessions. The charts show the ' +
+      'sessions there are.')
     expect(flowsHero(few)).toBeUndefined()
     expect(tooSmall(flows, label)).toBe('Too small to compare: 1 project with fewer than 5 sessions; 1 cycle seen in fewer than 3 ' +
-      'sessions; 1 path of fewer than 3 sessions; steps after ask the person (fewer than 30 calls). Copilot CLI has no recognised ' +
-      'test run, so no test step is shown for it. 4 command lines named a test runner but did not start with one, so they count ' +
-      'as commands, not test runs.')
+      'sessions; 1 path of fewer than 3 sessions; steps after ask the person (fewer than 30 calls). No recognised test run: ' +
+      'Copilot CLI. 4 command lines named a test runner without starting with one; they count as commands, not test runs.')
   })
 
-  it('draws how sessions ended, what follows each step, cycles, paths and projects, and opens a session', () => {
+  it('builds the hover text of an outcome, a transition, a cycle, a path and a project', () => {
+    expect(outcomeHover(flows, 'no_change')).toBe('Changed no file: 12 of 40 sessions (30%), $50.00 at list price')
+    const matrix = transitionMatrix(flows)
+    expect(matrix.columns).toEqual(['edit', 'test', 'rest'])
+    expect(matrix.rows[0].cells.map(cell => cell?.calls)).toEqual([15, 30, 5])
+    expect(matrix.rows[0].cells[1]!.hover).toBe('After edit: the next call was test run 30 times, 60% of 50 calls of edit')
+    expect(matrix.rows[0].cells[2]!.hover).toBe('After edit: the next call was another step kind (not among the 4 listed) 5 times, ' +
+      '10% of 50 calls of edit')
+    expect(cycleRows(flows)[0].hover).toBe('edit ⇄ test run: 9 cycles in 6 sessions, 40 rounds and 120 calls in all; working time ' +
+      '1 h, 20% of the working time of all tool calls (5 h). A cycle is two steps taking turns 3 rounds or more.')
+    expect(pathRows(flows, 'first')[0].hover).toBe('First 4 steps skill → read: 20 of 40 sessions (50%); repeats of one step count once')
+    expect(projectRows(flows)[0].parts[2].hover).toBe('alpha, changed no file: 10 of 30 sessions (33%), $45.00 at list price')
+  })
+
+  it('draws how sessions ended, the last steps, the transition matrix, cycles, paths and projects, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Flows {...props(context({ data: flows, status: 'ready', error: null }, opened))} />)
     const box = host.querySelector('[data-box="insight-flows"]')!
+    const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('30%')
-    expect(box.querySelector('[data-endings]')!.textContent).toContain('Changed nothing · 12 · $50.00')
-    expect(box.querySelector('[data-endings]')!.textContent).toContain('stopped on: read 8 ($40.00) · MCP tool 4 ($10.00)')
-    expect(box.querySelector('[data-transitions]')!.textContent).toContain('Next after edit')
-    expect(box.querySelector('[data-transitions]')!.textContent).toContain('test run 60%')
+    expect(value('endings')).toEqual(['28 committed · 0 changed files, no commit · 12 changed no file'])
+    expect(box.querySelector('[data-chart="endings"] rect[data-part="c4"] title')!.textContent)
+      .toBe('Changed no file: 12 of 40 sessions (30%), $50.00 at list price')
+    expect(value('last-no_change')).toEqual(['8 sessions · $40.00', '4 sessions · $10.00'])
+    expect(box.querySelector('[data-chart="last-changed"]')).toBeNull()
+    const cell = box.querySelector('[data-cell="edit:test"]')!
+    expect([...cell.querySelectorAll('text')].map(node => node.textContent)).toEqual(['60%', '30'])
+    expect(cell.querySelector('title')!.textContent).toContain('60% of 50 calls of edit')
     expect(box.querySelector('[data-transitions]')!.textContent).toContain('After a failure')
-    expect(box.querySelector('[data-cycles]')!.textContent).toContain('edit ⇄ test run40 rounds · 6 sessions · 1 h (20%)')
-    expect(box.querySelector('[data-first-paths]')!.textContent).toContain('skill → read')
-    expect(box.querySelector('[data-projects]')!.textContent).toContain('alpha30 sessions · 10 changed nothing (33%, $45.00)')
+    expect(value('cycles')).toEqual(['1 h (20%)'])
+    expect(box.querySelector('[data-chart="cycles"] [data-row]')!.textContent).toContain('edit ⇄ test run40 rounds · 6 sessions')
+    expect(value('first-paths')).toEqual(['20 sessions (50%)'])
+    expect(box.querySelector('[data-chart="last-paths"]')!.textContent).toContain('No end shared by 3 or more sessions.')
+    expect(value('projects')).toEqual(['20 · 0 · 10'])
+    expect(value('tools')).toEqual(['900 calls · 5 h'])
+    expect(box.querySelector('[data-chart="tools"]')!.textContent).toContain('Bar length: tool calls, linear scale from 0 to 900.')
     expect(box.querySelector('[data-small]')!.textContent).toMatch(/^Too small to compare/)
     const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-cycle'))
     open!.click()
