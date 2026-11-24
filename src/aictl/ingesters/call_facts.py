@@ -1875,6 +1875,9 @@ class CopilotFacts:
         # The request row of each recent call, by apiCallId: its message comes after its usage record
         # and adds the thinking counts. Values: (row, visible chars, visible blocks, redacted blocks).
         self._calls_by_api: dict[str, list] = {}
+        # The reasoning of a call whose usage record has not been read yet, by apiCallId: its counts (visible chars,
+        # visible blocks, redacted blocks, in the places a call entry holds them) and its thinking rows, which get the call's key when the record comes.
+        self._pending_thinking: dict[str, list] = {}
         # The interactionId of the person's current turn, and the hash of each agent's last feature flag set.
         self.interaction = ""
         self._flag_sets: dict[str, str] = {}
@@ -2159,6 +2162,8 @@ class CopilotFacts:
         model = str(usage.get("model") or self.model)
         billable = max(0, raw - read - write)
         key = copilot_call_key(self.sid, tokens, n)
+        api = step_api_id(usage.get("apiCallId")) or str(usage.get("apiCallId") or "")
+        pending = self._pending_thinking.pop(api, None) if api else None
         request = (
             fact_rows.RequestRow(
                 dedup_key=key,
@@ -2189,6 +2194,12 @@ class CopilotFacts:
                 prompt_id=self.interaction,
             )
         )
+        if pending is not None:
+            # The reasoning came first: the call gets its counts, and its thinking rows its key (the same
+            # thinking_key, so each is a newer version of its row).
+            request = replace(request, thinking_chars=pending[1], thinking_blocks=pending[2], thinking_redacted=pending[3])
+            for row in pending[4]:
+                self.buffer.add_thinking(replace(row, request_key=key))
         self.buffer.add_request(request)
         self._give_request_key(step_api_id(usage.get("apiCallId")), key)
         if (turn := self._turn_rows.get(self.interaction)) is not None:
@@ -2199,7 +2210,8 @@ class CopilotFacts:
             turn.cache_creation_tokens += write
             self._touch_turn(turn, ts)
         if usage.get("apiCallId"):
-            self._calls_by_api[step_api_id(usage.get("apiCallId")) or str(usage["apiCallId"])] = [request, 0, 0, 0, key]
+            counts = pending[1:4] if pending is not None else [0, 0, 0]
+            self._calls_by_api[step_api_id(usage.get("apiCallId")) or str(usage["apiCallId"])] = [request, *counts, key]
             while len(self._calls_by_api) > 256:
                 self._calls_by_api.pop(next(iter(self._calls_by_api)))
         if self.steps and link is not None:
@@ -2268,24 +2280,31 @@ class CopilotFacts:
             return
         api = step_api_id(data.get("apiCallId")) or str(data.get("apiCallId") or "")
         call = self._calls_by_api.get(api) if api else None
+        # A call whose usage record is still to come keeps its reasoning until the record gives the call's key.
+        pending = self._pending_thinking.setdefault(api, [None, 0, 0, 0, []]) if api and call is None else None
+        counts = call if call is not None else pending
         key = call[4] if call else ""
-        if call is not None:
-            call[1] += len(text)
-            call[2] += 1 if text else 0
-            call[3] += hidden
-            row = call[0]
-            if row is not None:
-                # The usage record's row, again with the thinking it had.
-                call[0] = replace(row, thinking_chars=call[1], thinking_blocks=call[2], thinking_redacted=call[3])
-                self.buffer.add_request(call[0])
+        if counts is not None:
+            counts[1] += len(text)
+            counts[2] += 1 if text else 0
+            counts[3] += hidden
+        if call is not None and call[0] is not None:
+            # The usage record's row, again with the thinking it had.
+            call[0] = replace(call[0], thinking_chars=call[1], thinking_blocks=call[2], thinking_redacted=call[3])
+            self.buffer.add_request(call[0])
         if text:
-            index = call[2] - 1 if call is not None else 0
+            index = counts[2] - 1 if counts is not None else 0
             message = str(data.get("messageId") or "")
-            self.buffer.add_thinking(fact_rows.SessionThinkingRow(
+            row = fact_rows.SessionThinkingRow(
                 session_id=self.sid, thinking_key=fact_rows._dedup_key("copilot-thinking", self.sid, api or message, str(index)),
                 ts=ts, agent_id=agent_id, request_key=key, message_id=message, turn_index=self._turn_index(),
                 block_index=index, model=str(data.get("model") or self.model), chars=len(text), text=digest_text(text, THINKING_TEXT_MAX),
-                tool="copilot-cli", project_path=self.cwd))
+                tool="copilot-cli", project_path=self.cwd)
+            self.buffer.add_thinking(row)
+            if pending is not None:
+                pending[4].append(row)
+        while len(self._pending_thinking) > 256:
+            self._pending_thinking.pop(next(iter(self._pending_thinking)))
 
     def _shutdown(self, data: dict, ts: float) -> None:
         """The session's own totals at shutdown. A resumed session states them again, so the last one counts."""

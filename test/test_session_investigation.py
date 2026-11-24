@@ -928,6 +928,40 @@ class TestThinking:
         )
         assert "OPAQUE-SECRET" not in json.dumps(facts.writer.operations)
 
+    def test_copilot_reasoning_before_its_usage_record_gets_the_call_key(self, tmp_path):
+        # The reasoning messages of call a1 come before its usage record: when the record is read, the call gets
+        # their counts and each thinking row a newer version with the call's key (the same thinking_key).
+        write_lines(copilot_events(tmp_path), [
+            ev("session.start", 900, {"context": {"cwd": "/work/cli"}}),
+            ev("user.message", 800, {"content": "x", "interactionId": "i1"}),
+            ev("assistant.message", 790, {"messageId": "m1", "apiCallId": "a1", "model": MODEL, "content": "",
+                                          "reasoningText": "First thought"}),
+            ev("assistant.message", 789, {"messageId": "m2", "apiCallId": "a1", "model": MODEL, "content": "",
+                                          "reasoningText": "Second thought here"}),
+            usage_record(788, api="a1", reasoningTokens=9),
+            # No usage record ever names a2: its reasoning stays without a call.
+            ev("assistant.message", 787, {"messageId": "m3", "apiCallId": "a2", "model": MODEL, "content": "",
+                                          "reasoningText": "Orphan one"}),
+            ev("assistant.message", 786, {"messageId": "m4", "apiCallId": "a2", "model": MODEL, "content": "",
+                                          "reasoningText": "Orphan two"}),
+        ])
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        request = one([r for r in table(facts, "requests") if r["thinking_tokens"] == 9])
+        assert (request["thinking_chars"], request["thinking_blocks"]) == (len("First thought") + len("Second thought here"), 2)
+        rows = sorted(table(facts, "session_thinking"), key=lambda r: r["ts"])
+        assert [(r["text"], r["request_key"], r["block_index"]) for r in rows] == [
+            ("First thought", request["dedup_key"], 0), ("Second thought here", request["dedup_key"], 1),
+            ("Orphan one", "", 0), ("Orphan two", "", 1)]
+        assert len({r["thinking_key"] for r in rows}) == 4
+
+    def test_copilot_reasoning_after_its_usage_record_keeps_one_version_per_block(self, tmp_path):
+        copilot_thinking(tmp_path)
+        facts = Facts()
+        ingester(facts, tmp_path).poll()
+        request = one([r for r in table(facts, "requests") if r["thinking_tokens"] == 50])
+        assert [r["request_key"] for r in facts.writer.written("session_thinking")] == [request["dedup_key"]]
+
     def test_vscode_thinking_parts_count_on_the_turn_request(self, tmp_path):
         workspace_json(tmp_path)
         request = {
