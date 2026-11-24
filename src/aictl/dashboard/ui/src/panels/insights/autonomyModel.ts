@@ -41,10 +41,15 @@ const names = (items: readonly string[]) => items.length < 2 ? items.join('') : 
 /** A bin starts at a UTC day, week or month: name the UTC day, whatever the viewer's zone. */
 export const binDay = (ts: number) => dayLabel(ts + new Date(ts * 1000).getTimezoneOffset() * 60)
 
-/** The tools with a measured session, the most sessions first; the first is the tool the card leads with. */
+/** The tools with a measured session, the most sessions first: the order of the card's rows. */
 export const measuredTools = (body: AutonomyBody) => body.tools.filter(tool => tool.sessions > 0)
   .sort((a, b) => b.sessions - a.sessions || b.multi_sessions - a.multi_sessions)
-export const leadTool = (body: AutonomyBody): AutonomyTool | undefined => measuredTools(body)[0]
+/**
+ * The tool the card leads with: the one with the most sessions of two or more instructions, which is what the
+ * headline figure is a median of. A tool with many single-instruction sessions would lead with "too few sessions".
+ */
+export const leadTool = (body: AutonomyBody): AutonomyTool | undefined =>
+  [...measuredTools(body)].sort((a, b) => b.multi_sessions - a.multi_sessions || b.sessions - a.sessions)[0]
 
 /** The multi-instruction median is shown only with enough sessions behind it. */
 export const enoughMulti = (row: AutonomyFigures) => row.multi_sessions >= MIN_MULTI && row.p50_multi != null

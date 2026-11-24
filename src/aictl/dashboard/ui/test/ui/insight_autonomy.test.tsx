@@ -72,11 +72,14 @@ const card = (data: AutonomyBody = body, opened: string[] = []) => {
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights&range=all') })
 
 describe('INS-11 · Work per instruction states its figures from the response', () => {
-  it('leads with the tool with the most sessions, its multi-instruction median, the trend and the wait', () => {
-    // The card's evidence rule takes the small tool out before the lead is chosen; the most sessions lead, not the server's pick.
+  it('leads with the tool with the most multi-instruction sessions, its median, the trend and the wait', () => {
+    // The card's evidence rule takes the small tool out before the lead is chosen; the headline is a median over
+    // sessions with 2 or more instructions, so the tool with the most of those leads, not the server's pick.
     const shown = { ...body, tools: [cli, claude, codex], summary: { ...body.summary, lead: 'copilot-cli' } }
     expect(leadTool(shown)!.tool).toBe('claude-code')
-    expect(leadTool({ ...shown, tools: [claude, { ...cli, sessions: 45 }] })!.tool).toBe('copilot-cli')
+    // Many sessions that ran on one instruction do not make a tool the lead: it would lead with "too few sessions".
+    expect(leadTool({ ...shown, tools: [claude, { ...cli, sessions: 45 }] })!.tool).toBe('claude-code')
+    expect(leadTool({ ...shown, tools: [claude, { ...cli, multi_sessions: 19 }] })!.tool).toBe('copilot-cli')
     expect(autonomyHero(shown, claude, label)).toEqual({ value: '25 calls', label: "median longest run of tool calls between a " +
       "person's turns, claude-code sessions with 2 or more instructions (n=18); 90th percentile 110 calls" })
     expect(autonomyFinding(shown, claude, label)).toBe('In claude-code sessions with two or more instructions (18), the longest run ' +
