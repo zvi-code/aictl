@@ -68,17 +68,24 @@ or an HTTP request thread.
 
 The dashboard rebuilds from its views and reads no row hints, so the reader runs in
 table mode unless `ReaderConfig(row_hints=True)`. Table mode publishes changed
-tables only, and sends one query per poll: it captures `cursor_current()`, probes
-every cursor table up to it and stamps the recent rows of streaming tables
-(count, count without a cursor, latest ingestion time) in a single `print`. A
-poll runs every `idle_poll_s` (12 s) while nothing but `BACKGROUND_TABLES`
-(metrics and other rows written on a timer) changes, and every `busy_poll_s`
-(1 s) for `busy_window_s` after the probe saw another table change, or after this
-process stored rows (`local_write`, called by the table ingester; queued
-ingestion keeps the busy pace for `queued_window_s`). Policies are read with one
-`.show table * policy ingestiontime`; reconciliation is one query that counts
-each table's rows a cursor frontier already covers, every
-`reconcile_interval_s`, and resyncs a table whose count changed. A batch whose
+tables only, and sends one query per poll: it captures `cursor_current()` and
+probes the due tables up to it in a single `print`. An arm reads its table only
+when the cursor moved past that table's frontier, so with nothing stored a poll
+reads no table; when it does read, a large table costs a fraction of a CPU second
+however small the range (measured on this cluster), so tables are probed by tier:
+the tables a live board waits for on every poll, streaming tables every
+`slow_poll_s` (30 s), `BACKGROUND_TABLES` (metrics and other rows written on a
+timer) every `background_poll_s` (60 s). A streaming table this process wrote to
+is probed every third busy poll and its recent rows are stamped (count, count
+without a cursor, latest ingestion time), because streaming rows are queryable
+before their cursor is assigned. A poll runs every `idle_poll_s` (12 s), and every
+`busy_poll_s` (2 s) for `busy_window_s` after the probe saw a table other than a
+background one change, or after this process stored rows (`local_write`, called
+by the table ingester; queued ingestion keeps the busy pace for
+`queued_window_s`). Policies are read with one `.show table * policy
+ingestiontime`; reconciliation is one query, every `table_reconcile_s`, that
+counts each table's rows a cursor frontier already covers and resyncs a table
+whose count changed. A batch whose
 changed tables are all background tables carries `background=True`; session
 flows are not read again for it. Row-hint mode keeps the key and winner pages
 described below.

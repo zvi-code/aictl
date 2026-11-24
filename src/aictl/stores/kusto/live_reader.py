@@ -74,8 +74,12 @@ class ReaderConfig:
     # Table mode: the poll interval while nothing but background tables changes, and while the
     # store is busy (a local write, or a change the probe saw in a table that is not background).
     idle_poll_s: float = 12.0
-    busy_poll_s: float = 1.0
+    busy_poll_s: float = 2.0
     busy_window_s: float = 30.0
+    # Streaming and background tables are large and probed less often (see _due_tables).
+    slow_poll_s: float = 30.0
+    background_poll_s: float = 60.0
+    table_reconcile_s: float = 900.0
     # A local write through queued ingestion becomes visible minutes after it is acknowledged.
     queued_window_s: float = 300.0
 
@@ -333,6 +337,9 @@ class SharedKustoReader:
         # Table mode: when the next probe and reconciliation are due, and until when the store is busy.
         self._tick_next = 0.0
         self._busy_until = 0.0
+        self._slow_next = self._background_next = self._local_next = 0.0
+        # Until when each table this process wrote to is probed (and previewed) on every poll.
+        self._local_until: dict[str, float] = {}
         self._counts: dict[str, tuple[Any, ...]] = {}
         self._lock = threading.RLock()
         self._poll_lock = threading.Lock()
@@ -457,7 +464,9 @@ class SharedKustoReader:
         queued = self.settings.ingestion_mode(table) == "queued"
         window = self.config.queued_window_s if queued else self.config.busy_window_s
         with self._lock:
-            self._busy_until = max(self._busy_until, time.monotonic() + window)
+            until = time.monotonic() + window
+            self._busy_until = max(self._busy_until, until)
+            self._local_until[table] = max(self._local_until.get(table, 0.0), until)
             self._tick_next = 0.0
         self._wake.set()
 
@@ -999,12 +1008,46 @@ class SharedKustoReader:
         except Exception:  # noqa: BLE001 - settings without per-table modes have no streaming tables
             return False
 
-    def _tick_step(self) -> bool:
-        if time.monotonic() < self._tick_next:
-            return False
+    def _due_tables(self, now: float) -> tuple[list[str], list[str]]:
+        """The cursor tables this poll probes, and the streaming ones among them it previews.
+
+        A probe arm reads its table's ingestion times however small its cursor range, so a large
+        table costs a fraction of a CPU second each time: the tables a live board waits for are
+        probed each poll, streaming tables (large, written every few seconds) every slow_poll_s,
+        and the timer-written background tables every background_poll_s. A streaming table this
+        process wrote to is probed and previewed every third busy poll while that write is recent."""
         names = sorted(self._cursor_tables - self._cursor_retries.keys())
+        slow = now >= self._slow_next
+        background = now >= self._background_next
+        local_pass = now >= self._local_next
+        due, previews = [], []
+        for name in names:
+            local = local_pass and now < self._local_until.get(name, 0.0)
+            if name in BACKGROUND_TABLES:
+                if background:
+                    due.append(name)
+            elif self._streaming(name):
+                if slow or local:
+                    due.append(name)
+                if local:
+                    previews.append(name)
+            else:
+                due.append(name)
+        if slow:
+            self._slow_next = now + self.config.slow_poll_s
+        if background:
+            self._background_next = now + self.config.background_poll_s
+        if local_pass and previews:
+            self._local_next = now + 3 * self.config.busy_poll_s
+        return due, previews
+
+    def _tick_step(self) -> bool:
+        now = time.monotonic()
+        if now < self._tick_next:
+            return False
+        names, previews = self._due_tables(now)
         try:
-            self._probe_all(names)
+            self._probe_all(names, previews)
         except _QueryMemoryError:
             # Too large for one query: capture the cursor alone and probe in groups this time.
             upper, anchor = self._read_cursor()
@@ -1016,16 +1059,20 @@ class SharedKustoReader:
         self._tick_next = time.monotonic() + (self.config.busy_poll_s if busy else self.config.idle_poll_s)
         return True
 
-    def _probe_all(self, names: list[str]) -> None:
-        """Capture the cursor, probe every cursor table up to it and stamp the streaming tables' recent rows."""
+    def _probe_all(self, names: list[str], previews: list[str]) -> None:
+        """Capture the cursor, probe *names* up to it and stamp the recent rows of *previews*.
+
+        An arm reads its table only when the cursor moved past the table's frontier: with
+        nothing stored anywhere, a poll reads no table."""
         node = node_predicate(self.settings.node_id)
         arms = ["aictl_live_cursor=aictl_upper", "aictl_live_now=tostring(now())"]
         for index, name in enumerate(names):
+            lower = _text(self._frontier[name])
             arms.append(
-                f"aictl_hit_{index}=isnotnull(toscalar({quote(name)} | where cursor_after({_text(self._frontier[name])})"
-                f" and cursor_before_or_at(aictl_upper) | where {node} | project hit=1 | take 1))"
+                f"aictl_hit_{index}=aictl_upper != {lower} and isnotnull(toscalar({quote(name)}"
+                f" | where aictl_upper != {lower} | where cursor_after({lower}) and cursor_before_or_at(aictl_upper)"
+                f" | where {node} | project hit=1 | take 1))"
             )
-        previews = [name for name in names if self._streaming(name)]
         for index, name in enumerate(previews):
             # Streaming rows are queryable before their cursor is assigned (up to a minute later).
             arms.append(
@@ -1112,7 +1159,7 @@ class SharedKustoReader:
                     self._last_reconcile_at[name] = time.time()
             if changed:
                 self._publish("resync", tables=tuple(changed), reason="reconcile")
-        self._reconcile_next = time.monotonic() + self.config.reconcile_interval_s
+        self._reconcile_next = time.monotonic() + self.config.table_reconcile_s
         return True
 
     def _policy_all(self) -> None:
@@ -1175,7 +1222,7 @@ class SharedKustoReader:
             self._dedup_bytes = 0
             self._capture_next = self._preview_next = self._reconcile_next = 0.0
             self._schema_next = self._policy_next = 0.0
-            self._tick_next = 0.0
+            self._tick_next = self._slow_next = self._background_next = self._local_next = 0.0
             self._counts.clear()
         self._publish("resync", tables=self._requested, reason="reader_recovery")
 

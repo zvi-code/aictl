@@ -50,6 +50,8 @@ class FakeCluster:
         self.rows: dict[str, list[dict]] = {name: [] for name in TABLES}
         self.queries: list[str] = []
         self.commands: list[str] = []
+        # Probe arms that read their table: the cursor moved past the table's frontier.
+        self.reads: dict[str, int] = {}
 
     def write(self, table, *, assigned=True):
         if assigned:
@@ -73,8 +75,13 @@ class FakeCluster:
             return _response({"aictl_live_cursor": f"c{self.position}", "aictl_live_now": "2026-11-24T10:00:00+00:00"})
         if query.startswith("let aictl_upper=cursor_current();"):
             row = {"aictl_live_cursor": f"c{self.position}", "aictl_live_now": "2026-11-24T10:00:00+00:00"}
-            for arm, name, lower in re.findall(r"(aictl_hit_\d+)=isnotnull\(toscalar\(\['(\w+)'\] \| where cursor_after\(\"c(\d+)\"\)", query):
+            arms = re.findall(r'(aictl_hit_\d+)=aictl_upper != "c(\d+)" and isnotnull\(toscalar\(\[\'(\w+)\'\] '
+                              r'\| where aictl_upper != "c\d+" \| where cursor_after\("c(\d+)"\)', query)
+            assert len(arms) == query.count("aictl_hit_")
+            for arm, guard, name, lower in arms:
+                assert guard == lower
                 row[arm] = any(r["cursor"] is not None and r["cursor"] > int(lower) for r in self.rows[name])
+                self.reads[name] = self.reads.get(name, 0) + (self.position != int(lower))
             for arm, name in re.findall(r"(aictl_preview_\d+)=toscalar\(\['(\w+)'\]", query):
                 recent = self.rows[name]
                 pending = [r for r in recent if r["ingestion"] is None]
@@ -139,10 +146,13 @@ def test_an_idle_feed_sends_at_most_six_queries_a_minute_whatever_the_number_of_
     sent = requests_and_commands(cluster) - before
     assert sent <= 6 * 60, f"{sent} queries in an idle hour"
     assert not [b for b in batches if b.kind == "changes"]
-    # One probe covers every table: no per-table or per-group probe, no key or winner pages.
+    # One probe a poll, no per-table or per-group probe, no key or winner pages; every table is probed
+    # at least once a minute, and with nothing stored no arm reads its table.
     probes = [q for q in cluster.queries if q.startswith("let aictl_upper")]
-    assert probes and all(q.count("cursor_after(") == len(TABLES) for q in probes)
+    assert probes and all(q.count("cursor_after(") <= len(TABLES) for q in probes)
+    assert sum("['metrics'] |" in q for q in probes) >= 59
     assert not any("aictl_live_key" in q for q in cluster.queries)
+    assert not any(cluster.reads.values())
 
 
 def test_background_tables_alone_keep_the_feed_at_the_idle_pace_but_are_still_published(clock):
@@ -183,16 +193,25 @@ def test_a_write_to_a_background_table_does_not_wake_the_feed(clock):
     assert reader._next_wait() == waiting
 
 
-def test_streaming_rows_without_a_cursor_are_published_from_the_preview_stamp(clock):
+def test_local_streaming_rows_without_a_cursor_are_published_from_the_preview_stamp(clock):
     cluster = FakeCluster()
     reader, _ = ready_reader(cluster)
     run_for(reader, clock, 30)
     cluster.write("events", assigned=False)
-    clock[0] += reader._next_wait()
+    reader.local_write("events")
     batches = reader.poll_once()
     assert any(b.kind == "changes" and "events" in b.changed_tables for b in batches)
     frontier = reader.latest_status().frontier["events"]
     assert frontier == f"c{cluster.position}"  # the preview never moves a frontier past the cursor
+
+
+def test_streaming_rows_of_another_process_are_published_once_their_cursor_is_assigned(clock):
+    cluster = FakeCluster()
+    reader, _ = ready_reader(cluster)
+    run_for(reader, clock, 30)
+    cluster.write("events")
+    batches = run_for(reader, clock, reader.config.slow_poll_s + 1)
+    assert any(b.kind == "changes" and "events" in b.changed_tables for b in batches)
 
 
 def test_rows_removed_from_a_covered_range_resync_the_table_at_reconciliation(clock):
@@ -201,7 +220,7 @@ def test_rows_removed_from_a_covered_range_resync_the_table_at_reconciliation(cl
     cluster.write("requests")
     run_for(reader, clock, 30)
     cluster.rows["requests"].clear()
-    batches = run_for(reader, clock, reader.config.reconcile_interval_s + 1)
+    batches = run_for(reader, clock, reader.config.table_reconcile_s + 1)
     assert any(b.kind == "resync" and b.reason == "reconcile" and b.changed_tables == ("requests",) for b in batches)
 
 
