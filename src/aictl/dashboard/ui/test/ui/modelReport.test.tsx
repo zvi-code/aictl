@@ -3,7 +3,8 @@ import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import ModelReport from '../../src/panels/insights/ModelReport'
 import {
-  costText, effortCost, logPlace, modelFinding, modelHero, rateText, type ModelBody, type ModelFigures, type ModelRow,
+  barWidth, costHover, costText, effortCost, modelFinding, modelHero, rateHover, rateText, tokenHover, tokenParts, tokenText, volumeHover,
+  type ModelBody, type ModelFigures, type ModelRow, type ModelTool,
 } from '../../src/panels/insights/modelReportModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { drawerPatch, nextAddress } from '../../src/shell/viewState'
@@ -84,7 +85,11 @@ describe('MOD-01 · The finding states the measured costs and failure shares and
   it('compares the dearest and cheapest priced model of the busiest tool, with each model\'s dates when they differ', () => {
     expect(modelFinding(body, label)).toBe('In Copilot CLI, gpt-6-astra cost 4.4× as much per priced request as gemini-4-argon at ' +
       'list price ($0.327 against $0.075) (gpt-6-astra Nov 14–Nov 20, gemini-4-argon Nov 16–Nov 20), and 2.9% of its tool ' +
-      'calls were marked failed against 2.6%. They worked on different tasks, so this describes the work recorded here, not the models.')
+      'calls were marked failed against 2.6%. Each model worked on its own tasks: the figures describe the work recorded here, not the models.')
+    // Neutral wording: the card states the figures and names no model better or worse.
+    for (const text of [modelFinding(body, label), modelHero(body, label)!.label]) {
+      expect(text).not.toMatch(/better|worse|cheaper|dearer|best|worst|should|only/)
+    }
     expect(modelHero(body, label)).toEqual({ value: '4.4×',
       label: 'the cost per priced request of gpt-6-astra against gemini-4-argon in Copilot CLI, at list price: $0.327 against ' +
         '$0.075; gpt-6-astra cost $42.50 in 10 sessions, gemini-4-argon $10.00 in 10 sessions' })
@@ -134,37 +139,77 @@ describe('MOD-01 · The finding states the measured costs and failure shares and
     expect(rateText(partly)).toBe('131 calls in 2 sessions, too few sessions for a failure share')
     expect(rateText({ ...partly, calls: 60, call_sessions: 5 })).toBe('60 calls')
     expect(rateText(storeOnly)).toBe('calls not recorded')
-    expect(logPlace(0.075, 0.075, 0.9)).toBe(0)
-    expect(logPlace(0.9, 0.075, 0.9)).toBe(1)
-    expect(logPlace(0.3, 0.3, 0.3)).toBe(0.5)
+    expect(barWidth(0.075, 0.3)).toBe('25.00%')
+    expect(barWidth(0.3, 0.3)).toBe('100.00%')
+    expect(barWidth(1, 0)).toBe('0.00%')
+  })
+
+  it('builds the hover of every kind of mark from the figures behind it', () => {
+    expect(costHover(astra, 'Copilot CLI')).toBe('gpt-6-astra in Copilot CLI: $0.327 per priced request at list price; $42.50 over ' +
+      '130 priced of 556 requests (23%) in 10 sessions; used Nov 14–Nov 20. A cost per request needs 20 priced requests; list ' +
+      'price, not a bill.')
+    expect(costHover(vscodeUnpriced, 'Copilot in VS Code')).toMatch(/^gpt-5.5 in Copilot in VS Code: not priced/)
+    expect(rateHover(astra, 'Copilot CLI')).toBe('gpt-6-astra in Copilot CLI: 116 of 4,000 tool calls marked failed (2.9%); 2 refused, ' +
+      '10 with no exit code; calls in 9 of 10 sessions with recorded calls. Most failed: bash 70, view 46. A failure share needs ' +
+      '100 calls in 3 sessions.')
+    expect(rateHover(vscodeSplit, 'Copilot in VS Code')).toContain('(at least 8.9%); a floor: shell commands without an exit code')
+    expect(rateHover(storeOnly, 'Copilot CLI')).toBe('claude-opus-4-8 in Copilot CLI: tool calls not recorded (calls recorded in 0 of 4 sessions).')
+    const cliTool = body.tools[0] as ModelTool
+    expect(volumeHover(astra, cliTool, 'Copilot CLI')).toBe("gpt-6-astra in Copilot CLI: 556 of the tool's 1,000 requests (56%) in " +
+      '10 sessions; 130 priced; used Nov 14–Nov 20; 250 reasoning tokens. A model is compared when it was seen in 10 or more sessions.')
+    expect(tokenParts(astra).map(part => part.id)).toEqual(['input', 'write', 'read', 'output'])
+    expect(tokenParts(vscodeSplit).map(part => part.id)).toEqual(['input', 'read', 'output'])
+    expect(tokenParts({ ...astra, cache_reported: 0, unsplit_prompt_per_request: 60_000 }).map(part => part.id)).toEqual(['prompt', 'output'])
+    expect(tokenText(astra)).toBe('50 input not from cache · 900 cache write · 40 k cache read · 600 output')
+    expect(tokenHover(astra, tokenParts(astra)[2], 'Copilot CLI')).toBe('gpt-6-astra in Copilot CLI: cache read 40 k tokens per request, ' +
+      '96% of 42 k; averaged over 100 requests that report the cache split.')
+    expect(tokenHover(vscodeSplit, tokenParts(vscodeSplit)[0], 'Copilot in VS Code')).toContain('Cache writes are not reported by this tool.')
   })
 })
 
-describe('MOD-02 · The card draws one row per model, grouped by tool', () => {
-  it('shows each model\'s cost, failure figure, efforts and what the tool does not record', () => {
+describe('MOD-02 · The card draws, per tool, one chart per measure across its models', () => {
+  it('writes each model\'s cost, failure share, requests and tokens, with a hover on every bar', () => {
     const { host, dispose } = mount(() => <ModelReport {...props(context({ data: body, status: 'ready', error: null }))} />)
     const box = host.querySelector('[data-box="insight-models"]')!
     expect(box.querySelector('[data-hero] strong')?.textContent).toBe('4.4×')
     expect(box.querySelector('[data-finding]')?.textContent).toContain('not the models.')
-    const row = (tool: string, name: string) => box.querySelector(`[data-tool="${tool}"] [data-model="${name}"]`)!
-    expect(row('copilot-cli', 'gpt-6-astra').querySelector('[data-cost]')?.textContent).toBe('$0.327 · priced 130 of 556')
-    expect(row('copilot-cli', 'gpt-6-astra').querySelector('[data-rate]')?.textContent).toBe('2.9% of 4,000 calls failedbash 60% · view 40%')
+    const cli = box.querySelector('[data-tool="copilot-cli"]')!
+    expect([...cli.querySelectorAll('[data-measure] figcaption')].map(caption => caption.textContent)).toEqual([
+      'Cost per priced request, $ at list pricelinear, $0 to $0.327',
+      'Failure share of tool calls, % of calls marked failed by the toollinear, 0% to 2.9%',
+      'Requests and sessions per model (the evidence behind the figures above)linear, 0 to 556 requests',
+      'Tokens per request, averagelinear, 0 to 42 k tokens'])
+    const cost = cli.querySelector('[data-cost-model="gpt-6-astra"]')!
+    expect(cost.querySelector('[data-cost]')?.textContent).toBe('$0.327 · priced 130 of 556')
+    expect((cost.querySelector('[role="tooltip"]')!.closest('[style]') as HTMLElement).style.inlineSize).toBe('100.00%')
+    expect(cost.querySelector('[role="tooltip"]')?.textContent).toBe(costHover(astra, 'Copilot CLI'))
+    expect((cli.querySelector('[data-cost-model="gemini-4-argon"] [role="tooltip"]')!.closest('[style]') as HTMLElement).style.inlineSize)
+      .toBe('22.94%')
     // Two efforts with 20 requests or more make a strip; the effort with 5 requests is left out of it.
-    expect(Array.from(row('copilot-cli', 'gpt-6-astra').querySelectorAll('[data-efforts] li')).map(li => li.textContent))
+    expect(Array.from(cost.querySelectorAll('[data-efforts] li')).map(li => li.textContent))
       .toEqual(['high $0.076 · 300 reasoning tokens', 'medium $0.078 · 120 reasoning tokens'])
+    const rate = cli.querySelector('[data-rate-model="gpt-6-astra"]')!
+    expect(rate.querySelector('[data-rate]')?.textContent).toBe('2.9% of 4,000 calls failedmost failed: bash 70 · view 46')
+    expect(rate.querySelector('[role="tooltip"]')?.textContent).toBe(rateHover(astra, 'Copilot CLI'))
+    const volume = cli.querySelector('[data-volume-model="gpt-6-astra"]')!
+    expect(volume.querySelector('[data-volume]')?.textContent).toBe('556 requests · 10 sessionsNov 14–Nov 20')
+    expect(volume.querySelector('[role="tooltip"]')?.textContent).toBe(volumeHover(astra, body.tools[0] as ModelTool, 'Copilot CLI'))
+    const tokens = cli.querySelector('[data-token-model="gpt-6-astra"]')!
+    expect([...tokens.querySelectorAll('[data-token]')].map(part => part.getAttribute('data-token'))).toEqual(['input', 'write', 'read', 'output'])
+    expect(tokens.querySelector('[data-token="read"] [role="tooltip"]')?.textContent).toBe(tokenHover(astra, tokenParts(astra)[2], 'Copilot CLI'))
+    expect(tokens.querySelector('[data-tokens]')?.textContent).toBe(tokenText(astra))
     // Models seen in fewer than 10 sessions are not drawn or compared: they are named in one line.
-    expect(box.querySelector('[data-tool="copilot-cli"] [data-model="claude-opus-4-8"]')).toBeNull()
-    expect(box.querySelector('[data-tool="copilot-cli"] [data-model="claude-sonnet-5"]')).toBeNull()
+    expect(box.querySelector('[data-cost-model="claude-sonnet-5"]')).toBeNull()
+    expect(box.querySelector('[data-tool="copilot-cli"] [data-rate-model="claude-opus-4-8"]')).toBeNull()
     expect(box.querySelector('[data-few]')?.textContent).toBe('claude-opus-4-8 (Copilot CLI): 4 sessions, too few to compare; ' +
       'claude-sonnet-5 (Copilot CLI): 6 sessions, too few to compare.')
-    expect(row('copilot-vscode', 'claude-opus-4-8').querySelector('[data-rate]')?.textContent).toContain('at least 8.9%')
-    expect(row('copilot-vscode', 'gpt-5.5').querySelector('[data-cost]')?.textContent).toBe('not priced')
-    expect(row('copilot-vscode', 'gpt-5.5').querySelector('[data-helper]')).not.toBeNull()
-    expect(row('copilot-vscode', 'gpt-5.5').querySelector('[role="img"]')).toBeNull()
-    // The dots sit on one log scale: the cheapest at the left edge, the dearest at the right.
-    const place = (tool: string, name: string) => (row(tool, name).querySelector('[role="img"] span') as HTMLElement).style.insetInlineStart
-    expect([place('copilot-cli', 'gemini-4-argon'), place('copilot-vscode', 'claude-opus-4-8')]).toEqual(['0.00%', '100.00%'])
-    expect(box.querySelector('[data-tool="copilot-cli"] [data-footer]')?.textContent).toBe('3 requests with no model · 250 calls in ' +
+    const vscode = box.querySelector('[data-tool="copilot-vscode"]')!
+    expect(vscode.querySelector('[data-rate-model="claude-opus-4-8"] [data-rate]')?.textContent).toContain('at least 8.9%')
+    expect(vscode.querySelector('[data-rate-model="claude-opus-4-8"] button')?.getAttribute('aria-label')).toBe('at least 8.9%')
+    expect(vscode.querySelector('[data-cost-model="gpt-5.5"] [data-cost]')?.textContent).toBe('not priced')
+    expect(vscode.querySelector('[data-cost-model="gpt-5.5"] [data-helper]')).not.toBeNull()
+    expect(vscode.querySelector('[data-cost-model="gpt-5.5"] [role="tooltip"]')).toBeNull()
+    expect(cli.querySelector('[data-footer]')?.textContent).toBe('3 requests with no model · 250 calls in ' +
       '42 sessions read from the session store: shell commands only, not attributed')
     expect(box.querySelector('[data-tool="codex-cli"]')).toBeNull()
     expect(box.querySelector('[data-not-reported]')?.textContent).toContain('thinking time by Copilot CLI, Copilot in VS Code, Codex CLI')

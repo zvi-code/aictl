@@ -2,8 +2,8 @@
 // Per tool and model: requests, cost per priced request, tokens per request, thinking or reasoning, effort and
 // the failure share of the tool calls the model's requests asked for. It describes the work recorded here, not a
 // controlled comparison. A figure a tool does not record is null and reads "not reported" or "not recorded".
-import { dayLabel, fmtMs, fmtN, fmtNum, fmtRate, fmtTimes, fmtUsdEach } from '../../design/format'
-import { withEvidence } from './evidence'
+import { dayLabel, fmtMs, fmtN, fmtNum, fmtRate, fmtShare, fmtTimes, fmtUsdEach } from '../../design/format'
+import { MODEL_SESSIONS, withEvidence } from './evidence'
 import { money, NOT_REPORTED, plural, type Base, type Hero, type Label } from './insightsModel'
 
 type Num = number | null
@@ -91,7 +91,7 @@ export const shownEfforts = (row: ModelRow) => row.efforts.filter(effort => effo
 export const datesText = (row: ModelFigures) => row.first_ts == null || row.last_ts == null ? NOT_REPORTED
   : dayLabel(row.first_ts) === dayLabel(row.last_ts) ? dayLabel(row.first_ts) : `${dayLabel(row.first_ts)}–${dayLabel(row.last_ts)}`
 
-const NOT_A_COMPARISON = 'They worked on different tasks, so this describes the work recorded here, not the models.'
+const NOT_A_COMPARISON = 'Each model worked on its own tasks: the figures describe the work recorded here, not the models.'
 const REAL_WORK = 'This describes real work, not a controlled comparison.'
 
 function failureClause(high: ModelRow, low: ModelRow) {
@@ -173,10 +173,73 @@ export function modelHero(body: ModelBody, label: Label, lead = leadOf(body)): H
     (apart(high, low) ? '. Their periods do not overlap: one was used only after the other' : '') }
 }
 
-/** Where a model's dot sits on a log scale from the cheapest to the dearest cost per request on the card: 0 to 1. */
-export function logPlace(value: number, low: number, high: number) {
-  if (!(low > 0) || !(high > low)) return 0.5
-  return (Math.log(value) - Math.log(low)) / (Math.log(high) - Math.log(low))
+/** A bar's length on a linear scale from 0 to the largest value of its chart: "42.50%". */
+export const barWidth = (value: number, top: number) => `${(top > 0 ? Math.max(0, Math.min(1, value / top)) * 100 : 0).toFixed(2)}%`
+
+const used = (row: ModelFigures) => datesText(row) === NOT_REPORTED ? '' : `; used ${datesText(row)}`
+
+/** The hover of a model's cost bar: the cost per priced request, the total, how many requests are priced, and the rule. */
+export function costHover(row: ModelRow, tool: string) {
+  const head = `${row.model} in ${tool}: `
+  if (!row.priced) return `${head}not priced (no request of it has a known list price); ${plural(row.requests, 'request')}` +
+    ` in ${plural(row.sessions, 'session')}${used(row)}.`
+  return `${head}${perRequest(row.cost_per_request)} per priced request at list price; ${money(row.cost_usd)} over ` +
+    `${fmtNum(row.priced)} priced of ${plural(row.requests, 'request')} (${fmtShare(row.priced / row.requests)}) in ` +
+    `${plural(row.sessions, 'session')}${used(row)}. A cost per request needs ${PER_REQUEST} priced requests; list price, not a bill.`
+}
+
+/** The hover of a model's failure bar: failed of all calls, the floor note, refused and unknown calls, the sessions and the rule. */
+export function rateHover(row: ModelRow, tool: string) {
+  const head = `${row.model} in ${tool}: `
+  if (row.calls == null) return `${head}tool calls not recorded (calls recorded in ${fmtNum(row.recorded_sessions)} of ` +
+    `${plural(row.sessions, 'session')}).`
+  const share = row.failure_share == null ? `no failure share (${rateText(row)})`
+    : `${fmtNum(row.failures ?? 0)} of ${plural(row.calls, 'tool call')} marked failed (${row.at_least ? 'at least ' : ''}${fmtRate(row.failure_share)})`
+  const floor = row.at_least ? '; a floor: shell commands without an exit code count as failed only when the tool said so' : ''
+  const failing = row.failing.length ? ` Most failed: ${row.failing.map(item => `${item.tool_name} ${fmtNum(item.failures)}`).join(', ')}.` : ''
+  return `${head}${share}${floor}; ${fmtNum(row.refused ?? 0)} refused, ${fmtNum(row.exit_unknown ?? 0)} with no exit code; calls in ` +
+    `${fmtNum(row.call_sessions ?? 0)} of ${plural(row.recorded_sessions, 'session')} with recorded calls.${failing} A failure share ` +
+    `needs ${RATE_CALLS} calls in ${RATE_SESSIONS} sessions.`
+}
+
+/** "556 requests · 10 sessions", written at a model's request bar. */
+export const volumeText = (row: ModelRow) => `${plural(row.requests, 'request')} · ${plural(row.sessions, 'session')}`
+
+/** The hover of a model's request bar: its requests against the tool's, sessions, priced requests, dates, thinking and the rule. */
+export function volumeHover(row: ModelRow, tool: ModelTool, label: string) {
+  const thought = thoughtText(row)
+  return `${row.model} in ${label}: ${fmtNum(row.requests)} of the tool's ${plural(tool.requests, 'request')} ` +
+    `(${fmtShare(tool.requests ? row.requests / tool.requests : null)}) in ${plural(row.sessions, 'session')}; ` +
+    `${fmtNum(row.priced)} priced${used(row)}${thought ? `; ${thought}` : ''}` +
+    `${row.helper ? '; tagged helper: 2 or fewer requests per session and no tool call' : ''}. A model is compared when it ` +
+    `was seen in ${fmtNum(MODEL_SESSIONS)} or more sessions.`
+}
+
+export type TokenPart = { id: 'input' | 'write' | 'read' | 'output' | 'prompt'; label: string; value: number }
+/** A model's average tokens per request, split by the cache where the tool reports the split, else the whole prompt. */
+export function tokenParts(row: ModelFigures): TokenPart[] {
+  const parts: (TokenPart | null)[] = row.cache_reported > 0 ? [
+    row.input_per_request == null ? null : { id: 'input', label: 'Input not from cache', value: row.input_per_request },
+    row.cache_write_per_request == null ? null : { id: 'write', label: 'Cache write', value: row.cache_write_per_request },
+    row.cache_read_per_request == null ? null : { id: 'read', label: 'Cache read', value: row.cache_read_per_request },
+  ] : [row.unsplit_prompt_per_request == null ? null : { id: 'prompt', label: 'Whole prompt (no cache split)', value: row.unsplit_prompt_per_request }]
+  parts.push(row.output_per_request == null ? null : { id: 'output', label: 'Output', value: row.output_per_request })
+  return parts.filter((part): part is TokenPart => part != null)
+}
+export const tokenTotal = (row: ModelFigures) => tokenParts(row).reduce((sum, part) => sum + part.value, 0)
+
+/** "50 input · 900 cache write · 40 k cache read · 600 output", written at a model's token bar. */
+export const tokenText = (row: ModelFigures) => tokenParts(row).length
+  ? tokenParts(row).map(part => `${fmtN(part.value)} ${part.label.toLowerCase()}`).join(' · ') : NOT_REPORTED
+
+/** The hover of one part of a model's token bar. */
+export function tokenHover(row: ModelRow, part: TokenPart, tool: string) {
+  const total = tokenTotal(row)
+  const over = row.cache_reported > 0 ? `${plural(row.cache_reported, 'request')} that report the cache split`
+    : `${plural(row.requests, 'request')}`
+  const write = row.cache_reported > 0 && !row.cache_write_reported ? ' Cache writes are not reported by this tool.' : ''
+  return `${row.model} in ${tool}: ${part.label.toLowerCase()} ${fmtN(part.value)} tokens per request, ${fmtShare(total ? part.value / total : null)} ` +
+    `of ${fmtN(total)}; averaged over ${over}.${write}`
 }
 
 /** Every measure a tool does not record, in words, for the line under the visual. */

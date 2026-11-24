@@ -1,14 +1,26 @@
 import { For, Show, untrack } from 'solid-js'
-import { fmtN, fmtNum, fmtRate, fmtShare } from '../../design/format'
+import type { JSX } from '@solidjs/web'
+import { fmtN, fmtNum, fmtRate, fmtUsdEach } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
+import { Tooltip } from '../../ui/Tooltip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { money, NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
 import {
-  costText, datesText, effortCost, logPlace, modelFinding, modelHero, notReportedText, perRequest, rateText, shownEfforts, thoughtText,
-  tokensEach, type ModelBody, type ModelFigures, type ModelRow, type ModelTool,
+  barWidth, costHover, costText, datesText, effortCost, modelFinding, modelHero, notReportedText, perRequest, rateHover, rateText,
+  shownEfforts, thoughtText, tokenHover, tokenParts, tokenText, tokenTotal, tokensEach, volumeHover, volumeText,
+  type ModelBody, type ModelFigures, type ModelRow, type ModelTool,
 } from './modelReportModel'
 import styles from './ModelReport.module.css'
 import shared from './Insights.module.css'
+
+/** One mark of an HTML bar: its value written on it (visually hidden when the mark is too narrow), its detail on hover. */
+function Mark(props: { class: string; style?: JSX.CSSProperties; text: string; hover: string; wide: boolean; attrs?: Record<string, string> }) {
+  return <span class={`${props.class} ${styles.mark}`} style={props.style} {...props.attrs ?? {}}>
+    <Tooltip label={props.text} text={props.hover} class={styles.hit} onClick={() => {}}>
+      <span class={props.wide ? undefined : styles.clip}>{props.text}</span>
+    </Tooltip>
+  </span>
+}
 
 /** Copilot sessions read only from the session store, and other calls the card counts per tool but gives to no model. */
 function toolFooter(tool: ModelTool) {
@@ -24,52 +36,98 @@ function toolFooter(tool: ModelTool) {
   return parts.filter(Boolean).join(' · ')
 }
 
-/** One row per model, grouped by tool: a dot on a log scale of cost per priced request, then its tool calls. */
-function ModelRows(props: { body: ModelBody; label: Label }) {
-  const costs = () => props.body.tools.flatMap(tool => tool.models.map(model => model.cost_per_request))
-    .filter((value): value is number => value != null)
-  const low = () => Math.min(...costs())
-  const high = () => Math.max(...costs())
-  const busiest = () => Math.max(1, ...props.body.tools.flatMap(tool => tool.models.map(model => model.requests)))
-  const size = (requests: number) => `calc(var(--space-2) + ${(Math.sqrt(requests / busiest()) * 0.75).toFixed(3)}rem)`
-  const recorded = (model: ModelRow) => model.calls != null && model.recorded_sessions < model.sessions
-    ? `calls recorded in ${fmtNum(model.recorded_sessions)} of ${plural(model.sessions, 'session')}` : ''
-  const failing = (model: ModelRow) => model.failing.map(item => `${item.tool_name} ${fmtShare(item.share)}`).join(' · ')
+/** One small chart of a tool: a title naming the measure and its scale, then one row per model. */
+function Measure(props: { title: string; scale: string; children: JSX.Element; data: string }) {
+  return <figure class={styles.measure} {...{ [`data-measure`]: props.data }}>
+    <figcaption>{props.title}<small>{props.scale}</small></figcaption>
+    <ol class={styles.rows}>{props.children}</ol>
+  </figure>
+}
+
+/** Per tool, one chart per measure across its models: cost per priced request, failure share of tool calls, requests and
+ * sessions, and tokens per request. Linear scales from 0 to the largest value of the chart; every value written. */
+function ModelCharts(props: { body: ModelBody; label: Label }) {
+  const failing = (model: ModelRow) => model.failing.map(item => `${item.tool_name} ${fmtNum(item.failures)}`).join(' · ')
   return <>
     <div class={styles.tools}>
-      <For each={props.body.tools.filter(tool => tool.models.length)}>{tool => <section class={styles.tool} data-tool={tool.tool}>
-        <h3>{props.label(tool.tool)}<small>{plural(tool.requests, 'request')}</small></h3>
-        <ol class={styles.models}>
-          <For each={tool.models}>{model => <li class={styles.model} data-model={model.model}>
-            <span class={styles.name}>{model.model}
-              <Show when={model.helper}><span class={styles.tag} data-helper>helper</span></Show>
-              <small>{plural(model.requests, 'request')} · {plural(model.sessions, 'session')}</small></span>
-            <span class={styles.scale}>
-              <Show when={model.cost_per_request != null}>
-                <span class={styles.track} role="img" aria-label={`${model.model}: ${costText(model)} per priced request`}>
-                  <span class={styles.dot} style={{
-                    'inset-inline-start': `${(logPlace(model.cost_per_request!, low(), high()) * 100).toFixed(2)}%`,
-                    'inline-size': size(model.requests), 'block-size': size(model.requests),
-                  }} />
-                </span>
+      <For each={props.body.tools.filter(tool => tool.models.length)}>{tool => {
+        const name = () => props.label(tool.tool)
+        const costTop = () => Math.max(0, ...tool.models.map(model => model.cost_per_request ?? 0))
+        const rateTop = () => Math.max(0, ...tool.models.map(model => model.failure_share ?? 0))
+        const requestTop = () => Math.max(1, ...tool.models.map(model => model.requests))
+        const tokenTop = () => Math.max(0, ...tool.models.map(model => tokenTotal(model)))
+        return <section class={styles.tool} data-tool={tool.tool}>
+          <h3>{name()}<small>{plural(tool.requests, 'request')}{tool.sessions == null ? '' : ` · ${plural(tool.sessions, 'session')}`}
+            {' '}· {plural(tool.models.length, 'model')} compared</small></h3>
+          <Measure title="Cost per priced request, $ at list price" data="cost"
+            scale={costTop() ? `linear, $0 to ${fmtUsdEach(costTop())}` : 'no model priced'}>
+            <For each={tool.models}>{model => <li class={styles.row} data-cost-model={model.model}>
+              <span class={styles.name}>{model.model}<Show when={model.helper}><span class={styles.tag} data-helper>helper</span></Show></span>
+              <span class={styles.track}>
+                <Show when={model.cost_per_request != null}>
+                  <Mark class={styles.cost} style={{ 'inline-size': barWidth(model.cost_per_request!, costTop()) }} wide={false}
+                    text={perRequest(model.cost_per_request)} hover={costHover(model, name())} />
+                </Show>
+              </span>
+              <span class={model.cost_per_request == null ? styles.unpriced : styles.value} data-cost>{costText(model)}</span>
+              <Show when={shownEfforts(model).length >= 2}>
+                <ul class={styles.chips} aria-label={`${model.model} by effort`} data-efforts>
+                  <For each={shownEfforts(model)}>{effort => <li>{effort.effort} {effortCost(effort)}
+                    {thoughtText(effort) ? ` · ${thoughtText(effort)}` : ''}</li>}</For>
+                </ul>
               </Show>
-              <span class={model.cost_per_request == null ? styles.unpriced : undefined} data-cost>{costText(model)}</span>
-            </span>
-            <span class={styles.figure} data-rate>{rateText(model)}
-              <Show when={recorded(model)}>{text => <small>{text()}</small>}</Show>
-              <Show when={failing(model)}>{text => <small>{text()}</small>}</Show>
-            </span>
-            <Show when={shownEfforts(model).length >= 2}>
-              <ul class={styles.chips} aria-label={`${model.model} by effort`} data-efforts>
-                <For each={shownEfforts(model)}>{effort => <li>{effort.effort} {effortCost(effort)}
-                  {thoughtText(effort) ? ` · ${thoughtText(effort)}` : ''}</li>}</For>
-              </ul>
-            </Show>
-          </li>}</For>
-        </ol>
-        <Show when={toolFooter(tool)}>{text => <p class={styles.footer} data-footer>{text()}</p>}</Show>
-      </section>}</For>
+            </li>}</For>
+          </Measure>
+          <Measure title="Failure share of tool calls, % of calls marked failed by the tool" data="rate"
+            scale={rateTop() ? `linear, 0% to ${fmtRate(rateTop())}` : 'no model has a failure share'}>
+            <For each={tool.models}>{model => <li class={styles.row} data-rate-model={model.model}>
+              <span class={styles.name}>{model.model}</span>
+              <span class={styles.track}>
+                <Show when={model.failure_share != null}>
+                  <Mark class={model.at_least ? styles.floor : styles.rate} style={{ 'inline-size': barWidth(model.failure_share!, rateTop()) }}
+                    wide={false} text={`${model.at_least ? 'at least ' : ''}${fmtRate(model.failure_share)}`} hover={rateHover(model, name())} />
+                </Show>
+              </span>
+              <span class={styles.value} data-rate>{rateText(model)}
+                <Show when={failing(model)}>{text => <small>most failed: {text()}</small>}</Show></span>
+            </li>}</For>
+          </Measure>
+          <Measure title="Requests and sessions per model (the evidence behind the figures above)" data="volume"
+            scale={`linear, 0 to ${fmtNum(requestTop())} requests`}>
+            <For each={tool.models}>{model => <li class={styles.row} data-volume-model={model.model}>
+              <span class={styles.name}>{model.model}</span>
+              <span class={styles.track}>
+                <Mark class={styles.volume} style={{ 'inline-size': barWidth(model.requests, requestTop()) }} wide={false}
+                  text={volumeText(model)} hover={volumeHover(model, tool, name())} />
+              </span>
+              <span class={styles.value} data-volume>{volumeText(model)}<small>{datesText(model)}</small></span>
+            </li>}</For>
+          </Measure>
+          <Measure title="Tokens per request, average" data="tokens"
+            scale={tokenTop() ? `linear, 0 to ${fmtN(tokenTop())} tokens` : 'not reported'}>
+            <For each={tool.models}>{model => <li class={styles.row} data-token-model={model.model}>
+              <span class={styles.name}>{model.model}</span>
+              <span class={styles.track}>
+                <span class={styles.stack} style={{ 'inline-size': barWidth(tokenTotal(model), tokenTop()) }}>
+                  <For each={tokenParts(model)}>{part => <Mark class={styles[part.id]} attrs={{ 'data-token': part.id }}
+                    style={{ 'flex-grow': String(part.value) }} wide={false} text={`${part.label} ${fmtN(part.value)}`}
+                    hover={tokenHover(model, part, name())} />}</For>
+                </span>
+              </span>
+              <span class={styles.value} data-tokens>{tokenText(model)}</span>
+            </li>}</For>
+          </Measure>
+          <Show when={toolFooter(tool)}>{text => <p class={styles.footer} data-footer>{text()}</p>}</Show>
+        </section>
+      }}</For>
     </div>
+    <ul class={shared.legend}>
+      <li><span class={`${shared.swatch} ${styles.input}`} />Input not from cache</li>
+      <li><span class={`${shared.swatch} ${styles.write}`} />Cache write</li>
+      <li><span class={`${shared.swatch} ${styles.read}`} />Cache read</li>
+      <li><span class={`${shared.swatch} ${styles.prompt}`} />Whole prompt (no cache split)</li>
+      <li><span class={`${shared.swatch} ${styles.output}`} />Output</li>
+    </ul>
     <Show when={notReportedText(props.body, props.label)}>{text => <p class={shared.note} data-not-reported>Not reported: {text()}.</p>}</Show>
   </>
 }
@@ -124,7 +182,7 @@ export default function ModelReport(props: CardProps) {
   return <InsightCard<ModelBody> {...props} card="models" title="Model report on your own work" tab="flow"
     hero={body => modelHero(body, label)}
     finding={body => modelFinding(body, label)}
-    visual={body => <ModelRows body={body} label={label} />}
+    visual={body => <ModelCharts body={body} label={label} />}
     note={'Requests count in the period their time falls in; each tool call is attributed to the request just before it in ' +
       'the same session and agent (it agrees with Claude Code\'s stored link and Copilot\'s turn model in almost every case; in ' +
       'Copilot in VS Code a chat-title model can take a few calls). Model names are ' +

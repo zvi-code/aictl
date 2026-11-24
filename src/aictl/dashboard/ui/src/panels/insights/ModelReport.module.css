@@ -1,28 +1,47 @@
-/* The model report: one row per model, grouped by tool; a dot on a log scale of cost per priced request. */
-.tools { display: grid; gap: var(--space-5); }
-.tool { display: grid; gap: var(--space-2); min-inline-size: 0; }
+/* The model report: per tool, one small chart per measure across its models, each on a linear scale from 0. */
+.tools { display: grid; gap: var(--space-6); }
+.tool { display: grid; gap: var(--space-4); min-inline-size: 0; }
 .tool h3 { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-medium); }
 .tool h3 small { margin-inline-start: var(--space-2); color: var(--color-muted); font-weight: normal; }
-.models { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
-.model {
-  display: grid; grid-template-columns: minmax(7rem, 11rem) minmax(6rem, 1fr) minmax(8rem, 13rem);
-  gap: var(--space-1) var(--space-3); align-items: start; font-size: var(--text-xs); min-inline-size: 0;
+.measure { display: grid; gap: var(--space-2); margin: 0; min-inline-size: 0; }
+.measure figcaption { font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.measure figcaption small { margin-inline-start: var(--space-2); color: var(--color-muted); font-weight: normal; }
+.rows { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.row {
+  display: grid; grid-template-columns: minmax(7rem, 11rem) minmax(6rem, 1fr) minmax(8rem, 14rem);
+  gap: var(--space-1) var(--space-3); align-items: center; font-size: var(--text-xs); min-inline-size: 0;
   font-variant-numeric: tabular-nums;
 }
 .name { overflow-wrap: anywhere; }
-.name small, .figure small { display: block; color: var(--color-muted); }
+.value { overflow-wrap: anywhere; }
+.value small { display: block; color: var(--color-muted); }
 .tag {
   display: inline-block; margin-inline-start: var(--space-1); padding: 0 var(--space-1); color: var(--color-muted);
   border: var(--border-size) solid var(--color-border); border-radius: var(--radius-sm);
 }
-.scale { display: grid; gap: var(--space-1); min-inline-size: 0; }
-.track { position: relative; block-size: var(--space-5); border-block-end: var(--border-size) solid var(--color-border); }
-.dot {
-  position: absolute; inset-block-start: 50%; transform: translate(-50%, -50%); border-radius: 50%;
-  background: var(--color-chart-1); opacity: .8;
-}
+.track { position: relative; display: flex; block-size: var(--space-4); min-inline-size: 0; border-inline-start: var(--border-size) solid var(--color-border); }
+.track > span { display: block; block-size: 100%; }
+.cost { background: var(--color-chart-1); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.rate { background: var(--color-chart-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+/* A failure share that is a floor: the same colour, hatched. */
+.floor { background: repeating-linear-gradient(45deg, var(--color-chart-2) 0 3px, var(--color-raised) 3px 5px); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.volume { background: var(--color-chart-3); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.stack { display: flex; overflow: hidden; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.stack > span { display: block; block-size: 100%; flex-basis: 0; min-inline-size: 0; }
+.input { background: var(--color-chart-1); }
+.write { background: var(--color-chart-4); }
+.read { background: color-mix(in srgb, var(--color-chart-3) 55%, var(--color-surface)); }
+.prompt { background: var(--color-muted); }
+.output { background: var(--color-chart-2); }
 .unpriced { color: var(--color-muted); }
-.figure { overflow-wrap: anywhere; }
+/* A mark holds a button that fills it: its detail on hover or focus. */
+.mark > span { display: flex; inline-size: 100%; block-size: 100%; }
+.hit {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: center; inline-size: 100%; block-size: 100%;
+  overflow: hidden; white-space: nowrap; font-size: var(--text-xs); color: var(--color-text); cursor: default;
+}
+.hit:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
+.clip { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .chips { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
 .chips li {
   padding: 0 var(--space-2); border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-sm);
@@ -30,6 +49,6 @@
 }
 .footer { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }
 @media (max-width: 40rem) {
-  .model { grid-template-columns: minmax(0, 1fr); }
+  .row { grid-template-columns: minmax(0, 1fr); }
   .chips { grid-column: auto; }
 }
