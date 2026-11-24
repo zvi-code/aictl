@@ -5,7 +5,9 @@ import {
   cycleRows, flowsFinding, flowsHero, outcomeHover, pathRows, projectRows, tooSmall, transitionMatrix, type FlowsBody,
 } from '../../src/panels/insights/flowsModel'
 import Kql from '../../src/panels/insights/Kql'
-import { kqlCoverage, kqlFinding, kqlHero, type KqlBody } from '../../src/panels/insights/kqlModel'
+import {
+  kqlCoverage, kqlFinding, kqlHero, largeHover, runHover, shapeHover, type KqlBody,
+} from '../../src/panels/insights/kqlModel'
 import Mcp from '../../src/panels/insights/Mcp'
 import { callHover, mcpCoverage, mcpFinding, mcpHero, timeHover, type McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
@@ -263,30 +265,50 @@ const kqlBody = {
 } as unknown as KqlBody
 
 describe('INS-23 · Kusto queries', () => {
-  it('states the runs, the changes of schema or data, the failure kind, the repeats, the large results and the blind spot', () => {
-    expect(kqlFinding(kqlBody)).toBe('The agents ran Kusto 40 times in 5 sessions, taking 2 h. 6 runs changed schema or data (.create). ' +
-      '10% failed, most often syntax error (3). One query shape was run 3 times in 1 session that ran it 3 times or more. 1 result ' +
-      'of 100 KB or more brought 250 KB into the context. 6 command lines named kusto or kql but were not recognised as a run.')
-    expect(kqlHero(kqlBody)).toEqual({ value: '6', label: 'Kusto runs changed schema or data, of 40 runs' })
+  it('states the runs, changes of schema or data, failures, large results and the command lines not recognised', () => {
+    expect(kqlFinding(kqlBody)).toBe('40 recognised Kusto runs in 5 sessions, 2 h of run time: 6 changed schema or data (.create), ' +
+      '4 failed (10%), 1 result of 100 KB or more (250 KB). 6 command lines named kusto or kql and were not recognised as a run.')
+    expect(kqlHero(kqlBody)).toEqual({ value: '40', label: 'recognised Kusto runs in 5 sessions' })
     expect(kqlCoverage(kqlBody, label)).toBe('Recognised: 30 through an MCP tool, 5 by a Kusto command line, 5 by a script with an ' +
       'inline query; 38 with query text kept. Not recognised (named kusto or kql): Copilot CLI 6.')
   })
 
-  it('states no finding for too few runs but still shows the blind spot', () => {
+  it('states the count for too few runs, with no failure share, and still shows the command lines not recognised', () => {
     const few = { ...kqlBody, summary: { ...kqlBody.summary, runs: 9, sessions: 2, enough: false, unrecognised: 9459 } } as KqlBody
-    expect(kqlFinding(few)).toBe('Only 9 recognised Kusto runs in 2 sessions: too few to compare (the card needs 20 in 3 sessions). ' +
-      '9,459 command lines named kusto or kql but were not recognised as a run.')
-    expect(kqlHero(few)).toBeUndefined()
+    expect(kqlFinding(few)).toBe('9 recognised Kusto runs in 2 sessions: 6 changed schema or data, 4 failed. The card compares ' +
+      'groups and gives a failure share from 20 runs in 3 sessions; the charts show the runs there are. 9,459 command lines named ' +
+      'kusto or kql and were not recognised as a run.')
+    expect(kqlHero(few)).toEqual({ value: '9', label: 'recognised Kusto runs in 2 sessions' })
   })
 
-  it('draws kinds, shapes, targets, failures and projects, shows the full text of a large result on expand, and opens a session', () => {
+  it('builds the hover text of a run group, a query shape and a large result', () => {
+    expect(runHover('.create', kqlBody.kinds[1])).toBe('.create: 6 runs in 1 session; 1 failed (17%); 6 changed schema or data; ' +
+      'run time 300 ms; 3 KB returned')
+    expect(shapeHover(kqlBody.shapes[0])).toBe('StormEvents | where State == ? | take ?: 3 runs in 1 session, 1 failed; 3 of the runs ' +
+      'in 1 session that ran it 3 times or more, up to 3 in one session')
+    const large = largeHover(kqlBody.large[0], label)
+    expect(large).toMatch(/^250 KB returned by a query run through MCP tool \(Copilot CLI\) at .+ in alpha$/)
+  })
+
+  it('draws routes, failure kinds, kinds, targets, shapes, projects and large results, shows the full text on expand, and opens a session', () => {
     const opened: string[] = []
     const { host, dispose } = mount(() => <Kql {...props(context({ data: kqlBody, status: 'ready', error: null }, opened))} />)
     const box = host.querySelector('[data-box="insight-kql"]')!
-    expect(box.querySelector('[data-kind=".create"]')!.textContent).toContain('changes schema or data')
-    expect(box.querySelector('[data-shapes]')!.textContent).toContain('StormEvents | where State == ? | take ?3 runs · 1 session · up to 3 in one session')
-    expect(box.querySelector('[data-targets]')!.textContent).toContain('help.kusto.windows.net · Samples35 runs · 6 changes')
-    expect(box.querySelector('[data-failures]')!.textContent).toContain('syntax error3 runs')
+    const value = (chart: string) => [...box.querySelectorAll(`[data-chart="${chart}"] [data-value]`)].map(node => node.textContent)
+    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('40')
+    expect(value('routes')).toEqual(['30 runs (75%)', '5 runs (13%)', '5 runs (13%)'])
+    expect(value('failures')).toEqual(['3 runs', '1 run'])
+    expect(value('kinds')).toEqual(['30 runs · 1 failed', '6 runs · 1 failed', '4 runs · 1 failed'])
+    const create = box.querySelector('[data-chart="kinds"] [data-row=".create"]')!
+    expect(create.textContent).toContain('changes schema or data')
+    expect(create.querySelector('rect[data-part="c4"]')).not.toBeNull()
+    expect(create.querySelector('rect[data-part="bad"] title')!.textContent).toBe('.create: 1 of 6 runs failed (17%)')
+    expect(box.querySelector('[data-chart="targets"]')!.textContent).toContain('help.kusto.windows.net · Samples')
+    expect(value('targets')).toEqual(['35 runs · 1 failed'])
+    expect(value('shapes')).toEqual(['3 runs'])
+    expect(box.querySelector('[data-chart="shapes"]')!.textContent).toContain('query · 1 session · up to 3 in one session')
+    expect(value('projects')).toEqual(['40 runs · 1 failed'])
+    expect(value('large')).toEqual(['250 KB'])
     const large = box.querySelector('[data-large] details')!
     expect(large.textContent).toContain('250 KB · query')
     expect(large.textContent).toContain('Events | take 100000')

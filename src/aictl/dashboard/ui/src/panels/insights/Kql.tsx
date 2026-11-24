@@ -1,81 +1,25 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
 import { CodeView } from '../../ui/CodeView'
+import { BarChart } from './FlowsBars'
+import { axisText, barTop, type BarRow } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { bytes, hours, plural, share, toolLabel, type Label } from './insightsModel'
-import { FAILURE_LABELS, kindName, kqlCoverage, kqlFinding, kqlHero, type KqlBody } from './kqlModel'
+import { bytes, hours, share, toolLabel, type Label } from './insightsModel'
+import {
+  failureRows, kindLegend, kindName, kindRows, kqlCoverage, kqlFinding, kqlHero, kqlProjectRows, largeRows, routeRows, runLegend, shapeLegend,
+  shapeRows, targetRows, type KqlBody,
+} from './kqlModel'
 import styles from './Insights.module.css'
 
-/** Runs by kind and verb as bars: changes of schema or data apart from reads and queries. */
-function Kinds(props: { body: KqlBody }) {
-  const largest = () => Math.max(0, ...props.body.kinds.map(item => item.runs))
-  return <section class={styles.flow} data-kinds>
-    <h3 class={styles.subhead}>Queries and management commands</h3>
-    <ul class={styles.bars}>
-      <For each={props.body.kinds.slice(0, 8)}>{item => <li class={styles.barRow} data-kind={kindName(item.kind, item.verb)}>
-        <span class={styles.barName}>{kindName(item.kind, item.verb)}<small>{item.change ? 'changes schema or data' : 'reads'}</small></span>
-        <span class={styles.bar} title={`${kindName(item.kind, item.verb)}: ${plural(item.runs, 'run')}, ${fmtNum(item.failures)} failed, ` +
-          `${hours(item.sum_ms)}, ${bytes(item.output_bytes)} returned`}>
-          <span class={`${styles.fill} ${item.change ? styles.carried : styles.produced}`}
-            style={{ 'inline-size': `${largest() ? Math.max(2, item.runs / largest() * 100) : 0}%` }} />
-          {plural(item.runs, 'run')} · {fmtNum(item.failures)} failed
-        </span>
-      </li>}</For>
-    </ul>
-  </section>
-}
+const runs = (rows: BarRow[]) => axisText('runs', fmtNum(barTop(rows)))
 
-function Lists(props: { body: KqlBody }) {
-  return <div class={styles.lists}>
-    <section>
-      <h3 class={styles.subhead}>Queries run most (literals as ?)</h3>
-      <Show when={props.body.shapes.length} fallback={<p class={styles.note}>No run kept its query text.</p>}>
-        <ol class={styles.rankList} data-shapes>
-          <For each={props.body.shapes.slice(0, 5)}>{shape => <li>
-            <span><code>{shape.snippet}</code></span>
-            <span>{plural(shape.runs, 'run')} · {plural(shape.sessions, 'session')}
-              {shape.most_in_session ? ` · up to ${fmtNum(shape.most_in_session)} in one session` : ''}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>Clusters and databases</h3>
-      <Show when={props.body.targets.length} fallback={<p class={styles.note}>No run named its cluster.</p>}>
-        <ol class={styles.rankList} data-targets>
-          <For each={props.body.targets.slice(0, 5)}>{row => <li>
-            <span>{row.cluster ?? 'cluster not named'} · {row.database ?? 'database not named'}</span>
-            <span>{plural(row.runs, 'run')} · {fmtNum(row.changes)} changes · {fmtNum(row.failures)} failed</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>Why runs failed</h3>
-      <Show when={props.body.failure_kinds.length} fallback={<p class={styles.note}>No run failed.</p>}>
-        <ol class={styles.rankList} data-failures>
-          <For each={props.body.failure_kinds}>{row => <li>
-            <span>{FAILURE_LABELS[row.failure] ?? row.failure}</span><span>{plural(row.runs, 'run')}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-    <section>
-      <h3 class={styles.subhead}>By project</h3>
-      <Show when={props.body.projects.length} fallback={<p class={styles.note}>No project with 5 runs.</p>}>
-        <ol class={styles.rankList} data-projects>
-          <For each={props.body.projects.slice(0, 8)}>{row => <li>
-            <span>{projectName(row.project)}</span>
-            <span>{plural(row.runs, 'run')} · {fmtNum(row.changes)} changes · {fmtNum(row.failures)} failed · {plural(row.sessions, 'session')}</span></li>}</For>
-        </ol>
-      </Show>
-    </section>
-  </div>
-}
-
-/** The runs that brought 100 KB or more into the context: a snippet each, the full query text on expand. */
-function Large(props: { body: KqlBody }) {
+/** The runs that brought 100 KB or more into the context: their bytes as bars, then the full query text of each on expand. */
+function Large(props: { body: KqlBody; label: Label }) {
   return <Show when={props.body.large.length}>
     <section class={styles.flow} data-large>
-      <h3 class={styles.subhead}>Results of 100 KB or more</h3>
-      <For each={props.body.large.slice(0, 5)}>{run => <details class={styles.disclosure}>
+      <BarChart data="large" title="Results of 100 KB or more (bytes per run)" rows={largeRows(props.body, props.label)}
+        axis={axisText('bytes returned', bytes(barTop(largeRows(props.body, props.label))))} />
+      <For each={props.body.large.slice(0, 6)}>{run => <details class={styles.disclosure}>
         <summary>{bytes(run.output_bytes)} · {kindName(run.kind, run.verb)} · <code>{run.snippet || 'text not kept'}</code></summary>
         <Show when={run.text} fallback={<p class={styles.note}>The query text was not kept.</p>}>
           <CodeView label="Query text of the run" text={run.text} wrap />
@@ -83,6 +27,27 @@ function Large(props: { body: KqlBody }) {
       </details>}</For>
     </section>
   </Show>
+}
+
+function Visual(props: { body: KqlBody; label: Label }) {
+  return <>
+    <div class={styles.lists}>
+      <BarChart data="routes" title="Recognised runs by route" rows={routeRows(props.body)} axis={runs(routeRows(props.body))}
+        empty="No recognised Kusto run in this period." />
+      <BarChart data="failures" title="Failed runs by kind of failure" rows={failureRows(props.body)} axis={runs(failureRows(props.body))}
+        empty="No run failed." />
+    </div>
+    <BarChart data="kinds" title="Runs by kind and management verb, failed and not" rows={kindRows(props.body)} legend={kindLegend}
+      axis={runs(kindRows(props.body))} empty="No recognised Kusto run in this period." />
+    <BarChart data="targets" title="Runs per cluster and database" rows={targetRows(props.body)} legend={runLegend}
+      axis={runs(targetRows(props.body))} empty="No run named its cluster." />
+    <BarChart data="shapes" title="Query shapes run most (literals as ?)" rows={shapeRows(props.body)} legend={shapeLegend}
+      axis={runs(shapeRows(props.body))} empty="No run kept its query text." />
+    <BarChart data="projects" title="Runs per project" rows={kqlProjectRows(props.body)} legend={runLegend} axis={runs(kqlProjectRows(props.body))}
+      empty="No project with 5 runs." />
+    <Large body={props.body} label={props.label} />
+    <p class={styles.note} data-coverage>{kqlCoverage(props.body, props.label)}</p>
+  </>
 }
 
 type Row = Record<string, unknown>
@@ -93,12 +58,7 @@ export default function Kql(props: CardProps) {
   return <InsightCard<KqlBody> {...props} card="kql" title="Kusto queries" tab="tools"
     hero={kqlHero}
     finding={kqlFinding}
-    visual={body => <>
-      <Kinds body={body} />
-      <Lists body={body} />
-      <Large body={body} />
-      <p class={styles.note} data-coverage>{kqlCoverage(body, label)}</p>
-    </>}
+    visual={body => <Visual body={body} label={label} />}
     note={'A run is recognised from the call: an MCP tool whose server or tool name contains kusto, kql or adx; a command line ' +
       'that runs Kusto.Cli, kusto-cli, kql, az kusto query or az kusto script (az kusto cluster and database commands manage ' +
       'the Azure resource and run no KQL); or a command line, not a text tool such as grep or sed, that names a Kusto cluster ' +
@@ -108,7 +68,7 @@ export default function Kql(props: CardProps) {
       'with a dot or reads like a query. A text starting with a dot is a management command; create, alter, drop, ingest, ' +
       'set, append, delete, purge, rename, move, replace, clear, attach, detach and update change schema or data. A shape is ' +
       'the text with string, number, timespan and datetime literals replaced by ?. Failure kinds are read from the stored ' +
-      'error summary. Too small to compare: a period with fewer than 20 runs in 3 sessions (no finding, no failure share), a ' +
+      'error summary. Too small to compare: a period with fewer than 20 runs in 3 sessions (counts only, no failure share), a ' +
       'project with fewer than 5 runs.'}
     table={{
       label: 'Kusto runs by kind',
