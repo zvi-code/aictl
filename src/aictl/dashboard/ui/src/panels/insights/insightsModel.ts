@@ -2,7 +2,7 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
-import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, projectName } from '../../design/format'
+import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd, projectName } from '../../design/format'
 import { parseFilters, PERIODS, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'
@@ -893,9 +893,9 @@ const hero = (value: Num, format: (value: number) => string, label: string): Her
 export const pauseHero = (body: PauseBody) => body.summary.requests ? hero(body.summary.cost_usd, fmtUsd,
   `at list price for the ${plural(body.summary.requests, 'request')} that followed a pause of 5 minutes or more` +
   (body.summary.sessions ? ` in ${plural(body.summary.sessions, 'session')}` : '')) : undefined
-export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_bytes, body.summary.output_bytes), fmtTimes,
-  `estimate (upper bound) of how many times a byte of a tool result was sent again with later requests: ` +
-  `${bytes(body.summary.output_bytes)} of results, up to ${bytes(body.summary.carried_bytes)} sent again`)
+/** The measured total of the view: result bytes over the calls with a size; the estimate is not a headline. */
+export const carryHero = (body: CarryBody) => hero(body.summary.output_bytes, fmtBytes,
+  `of tool results in ${plural(body.tools.reduce((sum, tool) => sum + tool.reported, 0), 'call')} with a recorded size`)
 export const subagentHero = (body: SubagentBody) => hero(body.summary.subagent_share, fmtShare,
   `of the cost at list price is in subagent requests: ${money(body.summary.subagent_cost_usd)} of ` +
   `${money(body.summary.main_cost_usd == null ? null : body.summary.main_cost_usd + (body.summary.subagent_cost_usd ?? 0))}`)

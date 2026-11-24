@@ -280,12 +280,14 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(carryBox.textContent).toContain('74 GB')
     expect(carryBox.textContent).toContain('Result size not reported by: codex-cli.')
     expect(carryBox.textContent).toContain('upper bound')
-    expect(carryBox.querySelector('[data-chart="carry-carried"] [data-total]')!.textContent).toBe('74 GB')
-    expect(carryBox.querySelector('[data-chart="carry-carried"] [role="tooltip"]')!.textContent).toBe('Bash (claude-code): 1,000 calls ' +
+    const carried = carryBox.querySelector('[data-chart="carry-names"] [data-lane="1"]')!
+    expect(carried.querySelector('[data-total]')!.textContent).toBe('up to 74 GB')
+    expect(carried.querySelector('[role="tooltip"]')!.textContent).toBe('Bash (claude-code): 1,000 calls ' +
       'returned 457 MB. Estimate, upper bound: each result × the later requests of the same session and agent (162 on average) = ' +
-      '74 GB; compaction and truncation are not taken into account.')
-    expect(carryBox.querySelector('[data-chart="carry-tools"] [data-row="claude-code"] [data-total]')!.textContent)
-      .toBe('457 MB · up to 74 GB again')
+      '74 GB; compaction and truncation are not taken into account. All tools: 457 MB of results, up to 74 GB sent again ' +
+      '(162× the result bytes, estimate).')
+    expect([...carryBox.querySelectorAll('[data-chart="carry-tools"] [data-row="claude-code"] [data-total]')].map(total => total.textContent))
+      .toEqual(['457 MB', 'up to 74 GB'])
     // Subagents: cost and requests split per tool, values on the segments; the sessions with the largest subagent cost.
     const subBox = card(host, 'subagents')
     const subCost = subBox.querySelector('[data-chart="subagent-cost"] [data-row="claude-code"]')!

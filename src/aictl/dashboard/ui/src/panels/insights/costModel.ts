@@ -1,14 +1,14 @@
 // ─── The marks of the cost views (Pause tax, Context carry, Context weight, Fixed context overhead) ─
 // Pure functions: each builds the columns, rows or marks of one chart and the hover of every mark, in one of two
 // encodings: coloured by the view's own parts, or a segment per repository (repoSplit.ts). Tests read them directly.
-import { fmtDur, fmtNum, projectName } from '../../design/format'
+import { fmtDur, fmtNum, fmtTimes, projectName, toolDisplayName } from '../../design/format'
 import type { BarPart, BarRow } from './Bars'
 import type { Column } from './charts/Columns'
 import type { PairedRow } from './charts/PairedBars'
 import {
-  BUCKET_LABELS, CAUSE_LABELS, causeText, leftOut, money, pauseBucketHover, pauseCallHover, pauseCauseBars, pauseCauseHover, pauseEstimate,
-  pauseEstimateHover, pauseMeasuredHover, pauseProjectHover, pauseProjects, plural, share, type Bucket, type Label, type PauseBody,
-  type PauseCause,
+  BUCKET_LABELS, bytes, CAUSE_LABELS, carryHover, carryToolHover, causeText, count, leftOut, money, pauseBucketHover, pauseCallHover,
+  pauseCauseBars, pauseCauseHover, pauseEstimate, pauseEstimateHover, pauseMeasuredHover, pauseProjectHover, pauseProjects, plural, share,
+  type Bucket, type CarryBody, type Label, type PauseBody, type PauseCause,
 } from './insightsModel'
 import { notSplitNote, repoParts, type RepoSegment } from './repoSplit'
 import type { ColourBy } from './charts/ColourBy'
@@ -150,4 +150,62 @@ export function pauseCallRows(body: PauseBody, by: ColourMode, label: Label): Ba
           hover: pauseCallHover(row, label) }],
     }
   })
+}
+
+// ─── Context carry ──────────────────────────────────────────────────────────────────
+
+export function carryLine() {
+  return 'Bytes of tool results as the sources recorded them, and an estimate (upper bound) of those bytes sent again with ' +
+    'later requests of the same session and agent.'
+}
+
+export const carrySplit = (body: CarryBody) => anyRepos([...body.tool_names, ...body.tools])
+
+/** The hover line of every estimate mark: the whole period, and how many times a result byte was sent again at most. */
+export function carryTotalsText(body: CarryBody) {
+  const s = body.summary
+  const times = ratio(s.carried_bytes, s.output_bytes)
+  return `All tools: ${bytes(s.output_bytes)} of results, up to ${bytes(s.carried_bytes)} sent again ` +
+    `(${times == null ? 'not reported' : `${fmtTimes(times)} the result bytes`}, estimate).`
+}
+
+export const NOT_REPORTED_SIZE = 'result size not reported'
+const MEASURE = { output: 'result bytes', carried: 'bytes sent again (upper bound)' }
+type CarrySizes = { output_bytes: number | null; carried_bytes: number | null; repos?: RepoSegment[] }
+
+/** One lane of a carry row: result bytes, or the estimate; a segment per repository when `by` is repo and the row is split. */
+function carryCell(body: CarryBody, row: CarrySizes, of: 'output' | 'carried', by: ColourMode, name: string, hover: string) {
+  const key = of === 'output' ? 'output_bytes' : 'carried_bytes'
+  const value = row[key]
+  if (value == null) return { parts: [], total: NOT_REPORTED_SIZE }
+  return {
+    total: of === 'output' ? bytes(value) : `up to ${bytes(value)}`,
+    parts: by === 'repo' && row.repos?.length
+      ? repoParts(row.repos, key, body.repo_order, value => bytes(value), `${name}, ${MEASURE[of]}`, MEASURE[of], hover)
+      : [{ key: of, label: MEASURE[of], tone: of === 'output' ? 2 : 0, value, text: bytes(value), hover }],
+  }
+}
+
+/** Per tool name (the 10 with the largest estimate): result bytes beside the bytes sent again, each lane on its own scale. */
+export function carryNameRows(body: CarryBody, by: ColourMode, label: Label): PairedRow[] {
+  const totals = carryTotalsText(body)
+  return body.tool_names.map(row => {
+    const name = `${toolDisplayName(row.tool_name)} (${label(row.tool)})`
+    return {
+      key: `${row.tool}:${row.tool_name}`, label: toolDisplayName(row.tool_name),
+      sub: `${label(row.tool)} · ${plural(row.calls, 'call')} · ≈ ${count(row.avg_later_requests)} later requests`,
+      cells: [carryCell(body, row, 'output', by, name, carryHover(row, label)),
+        carryCell(body, row, 'carried', by, name, `${carryHover(row, label)} ${totals}`)],
+    }
+  })
+}
+
+/** Per tool: result bytes beside the bytes sent again; a tool that reports no result size is a row with no bar. */
+export function carryToolRows(body: CarryBody, by: ColourMode, label: Label): PairedRow[] {
+  const totals = carryTotalsText(body)
+  return body.tools.map(row => ({
+    key: row.tool, label: label(row.tool), sub: `${fmtNum(row.reported)} of ${plural(row.calls, 'call')} with a size`,
+    cells: [carryCell(body, row, 'output', by, label(row.tool), carryToolHover(row, label)),
+      carryCell(body, row, 'carried', by, label(row.tool), `${carryToolHover(row, label)} ${totals}`)],
+  }))
 }

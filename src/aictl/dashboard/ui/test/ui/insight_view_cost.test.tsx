@@ -6,10 +6,11 @@ import type { JSX } from '@solidjs/web'
 import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
+import ContextCarry from '../../src/panels/insights/ContextCarry'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
-import { pauseColumns, pauseLine } from '../../src/panels/insights/costModel'
-import type { PauseBody } from '../../src/panels/insights/insightsModel'
+import { carryLine, carryNameRows, pauseColumns, pauseLine } from '../../src/panels/insights/costModel'
+import type { CarryBody, PauseBody } from '../../src/panels/insights/insightsModel'
 import { OTHER, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { UrlPatch } from '../../src/data/urlState'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -192,6 +193,81 @@ describe('INS-VIEW-COST · Pause tax', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(text(box.querySelectorAll('[data-chart="pause-requests-claude-code"] [data-total]'))).toEqual(['600', '300', '80', '20'])
     expect(pauseColumns(plain, plain.tools[0], 'cost', 'repo', tool => tool).every(column => column.parts.length === 1)).toBe(true)
+    dispose()
+  })
+})
+
+// ─── Context carry ───────────────────────────────────────────────────────────────────────────────────────────────────
+const carryName = (tool: string, name: string, calls: number, output: number, later: number) => ({
+  tool, tool_name: name, calls, output_bytes: output, carried_bytes: output * later, avg_later_requests: later,
+  repos: segments({ output_bytes: [output * 0.6, output * 0.3, output * 0.1], carried_bytes: [output * later * 0.6, output * later * 0.3, output * later * 0.1] }),
+})
+const carry = {
+  ...base, card: 'carry', repo_order: order, repo_others: others,
+  tool_names: [carryName('claude-code', 'Read', 400, 20_000_000, 50), carryName('claude-code', 'Bash', 300, 5_000_000, 80)],
+  tools: [{ tool: 'claude-code', calls: 800, reported: 700, output_bytes: 25_000_000, carried_bytes: 1_400_000_000,
+    repos: segments({ output_bytes: [15e6, 7.5e6, 2.5e6], carried_bytes: [840e6, 420e6, 140e6] }) },
+  { tool: 'codex-cli', calls: 150, reported: 0, output_bytes: null, carried_bytes: null }],
+  summary: { output_bytes: 25_000_000, carried_bytes: 1_400_000_000, top: null, not_reported: ['codex-cli'] },
+} as unknown as CarryBody
+
+describe('INS-VIEW-COST · Context carry', () => {
+  it('says what is measured in one line, and leads with the measured result bytes, not the estimate', () => {
+    const { box, dispose } = draw(ContextCarry, 'carry', carry)
+    expect(box.querySelector('[data-finding]')!.textContent).toBe(carryLine())
+    expect(words(carryLine())).toBeLessThanOrEqual(30)
+    expect(box.querySelector('[data-hero]')!.textContent).toBe('25 MBof tool results in 700 calls with a recorded size')
+    dispose()
+  })
+
+  it('draws a row per tool name with the result bytes and the estimate in two lanes, each on its own scale', () => {
+    const { box, dispose } = draw(ContextCarry, 'carry', carry)
+    const chart = box.querySelector('[data-chart="carry-names"]')!
+    expect(text(chart.querySelectorAll('[role="columnheader"]'))).toEqual(['', 'Result bytes', 'Sent again, estimate (upper bound)'])
+    expect(attr(chart.querySelectorAll('[data-row]'), 'data-row')).toEqual(['claude-code:Read', 'claude-code:Bash'])
+    expect(text(chart.querySelectorAll('[data-row] [data-total]'))).toEqual(['20 MB', 'up to 1 GB', '5 MB', 'up to 400 MB'])
+    expect([...chart.querySelectorAll<HTMLElement>('[data-row] [role="group"]')].map(stack => stack.style.inlineSize))
+      .toEqual(['100.00%', '100.00%', '25.00%', '40.00%'])
+    expect(chart.querySelector('[data-row="claude-code:Bash"] small')!.textContent).toBe('claude-code · 300 calls · ≈ 80 later requests')
+    expect(attr(chart.querySelectorAll('[data-lane]'), 'data-estimate')).toEqual([null, '', null, ''])
+    // A tool that records no result size has a row with no bar, and is named under the charts.
+    const codex = box.querySelector('[data-chart="carry-tools"] [data-row="codex-cli"]')!
+    expect(text(codex.querySelectorAll('[data-total]'))).toEqual(['result size not reported', 'result size not reported'])
+    expect(codex.querySelectorAll('[data-part]')).toHaveLength(0)
+    expect(box.querySelector('[data-not-reported]')!.textContent).toBe('Result size not reported by: codex-cli.')
+    dispose()
+  })
+
+  it('switches both lanes to a segment per repository', () => {
+    const patches: UrlPatch[] = []
+    const { box, dispose } = draw(ContextCarry, 'carry', carry, patches)
+    expect(text(box.querySelectorAll('[data-parts-legend] li'))).toEqual(['Result bytes, recorded', 'Sent again, estimate (upper bound)'])
+    switchTo(box, 'repo')
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
+    const row = box.querySelector('[data-chart="carry-names"] [data-row="claude-code:Read"]')!
+    expect(attr(row.querySelectorAll('[data-lane="0"] [data-part]'), 'data-repo')).toEqual(['0', '1', String(OTHER)])
+    expect(attr(row.querySelectorAll('[data-lane="1"] [data-part]'), 'data-repo')).toEqual(['0', '1', String(OTHER)])
+    expect(tip(row.querySelector('[data-lane="0"]')!, 'repo:/work/wiki')).toMatch(/^Read \(claude-code\), result bytes — wiki \(\/work\/wiki\): 6 MB · 30% of this bar\. /)
+    dispose()
+  })
+
+  it('gives the result and the estimate marks a hover with their figures and the formula', () => {
+    const { box, dispose } = draw(ContextCarry, 'carry', carry)
+    const row = box.querySelector('[data-chart="carry-tools"] [data-row="claude-code"]')!
+    expect(tip(row, 'output')).toBe('claude-code: 800 calls, 700 with a size, 25 MB of results; up to 1.4 GB sent again (estimate, upper bound).')
+    expect(tip(row, 'carried')).toBe('claude-code: 800 calls, 700 with a size, 25 MB of results; up to 1.4 GB sent again (estimate, upper ' +
+      'bound). All tools: 25 MB of results, up to 1.4 GB sent again (56× the result bytes, estimate).')
+    expect(tip(box.querySelector('[data-chart="carry-names"] [data-row="claude-code:Read"]')!, 'output')).toBe('Read (claude-code): 400 calls ' +
+      'returned 20 MB. Estimate, upper bound: each result × the later requests of the same session and agent (50 on average) = 1 GB; ' +
+      'compaction and truncation are not taken into account.')
+    dispose()
+  })
+
+  it('draws a body without a split by repository with no switch', () => {
+    const { box, dispose } = draw(ContextCarry, 'carry', unsplit(carry))
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(attr(box.querySelectorAll('[data-chart="carry-names"] [data-part]'), 'data-part')).toEqual(['output', 'carried', 'output', 'carried'])
+    expect(carryNameRows(unsplit(carry), 'repo', tool => tool)[0].cells[0].parts.map(part => part.key)).toEqual(['output'])
     dispose()
   })
 })

@@ -115,33 +115,35 @@ describe('INS-RS · Bars split by repository, one colour per repository for the 
   })
 
   it('draws Context carry with a segment per repository on each bar and the legend once above the charts', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=carry&by=repo')
     const ctx = context({ data: carry, status: 'ready', error: null })
     const { host, dispose } = mount(() => <ContextCarry {...props(ctx)} />)
     const box = host.querySelector('#insight-carry')!
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect([...box.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
-    for (const chart of ['carry-output', 'carry-carried', 'carry-tools']) {
-      const parts = [...box.querySelectorAll(`[data-chart="${chart}"] [data-row] [data-part]`)]
-      expect(parts.map(part => part.getAttribute('data-repo')), chart).toEqual(['0', '1', String(OTHER)])
+    for (const chart of ['carry-names', 'carry-tools']) for (const lane of ['0', '1']) {
+      const parts = [...box.querySelectorAll(`[data-chart="${chart}"] [data-row] [data-lane="${lane}"] [data-part]`)]
+      expect(parts.map(part => part.getAttribute('data-repo')), `${chart} ${lane}`).toEqual(['0', '1', String(OTHER)])
     }
-    const carried = box.querySelector('[data-chart="carry-carried"] [data-row]')!
-    expect(carried.querySelector('[data-total]')!.textContent).toBe('10 MB')
-    // Wide segments write their value; the "other" segment (10% of the lane) shows it on hover only.
-    expect([...carried.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['7 MB', '2 MB', ''])
+    const carried = box.querySelector('[data-chart="carry-names"] [data-row] [data-lane="1"]')!
+    expect(carried.querySelector('[data-total]')!.textContent).toBe('up to 10 MB')
     expect(carried.querySelector('[data-part="repo:/src/app"] [role="tooltip"]')!.textContent).toBe('Bash (claude-code), bytes sent ' +
       'again (upper bound) — app (/src/app): 7 MB · 70% of this bar · 70% of app own bytes sent again (upper bound). Bash ' +
       '(claude-code): 100 calls returned 1 MB. Estimate, upper bound: each result × the later requests of the same session and ' +
-      'agent (10 on average) = 10 MB; compaction and truncation are not taken into account.')
+      'agent (10 on average) = 10 MB; compaction and truncation are not taken into account. All tools: 1 MB of results, up to ' +
+      '10 MB sent again (10× the result bytes, estimate).')
     dispose()
   })
 
   it('keeps a bar whole when the answer carries no split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=carry&by=repo')
     const plain = { ...carry, repo_order: [], repo_others: null,
-      tool_names: carry.tool_names.map(row => ({ ...row, repos: undefined })) } as unknown as CarryBody
+      tool_names: carry.tool_names.map(row => ({ ...row, repos: undefined })),
+      tools: carry.tools.map(row => ({ ...row, repos: undefined })) } as unknown as CarryBody
     const { host, dispose } = mount(() => <ContextCarry {...props(context({ data: plain, status: 'ready', error: null }))} />)
     const box = host.querySelector('#insight-carry')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect([...box.querySelectorAll('[data-chart="carry-output"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['output'])
+    expect([...box.querySelectorAll('[data-chart="carry-names"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['output', 'carried'])
     dispose()
   })
 
