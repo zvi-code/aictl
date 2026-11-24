@@ -220,8 +220,8 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     const label = (tool: string) => tool
     expect(pauseFinding(pause, label)).toBe(PAUSE_TEXT)
     expect(carryFinding(carry, label)).toContain('up to 74 GB in all; Bash (claude-code) alone produced 457 MB')
-    expect(subagentFinding(subagents, label)).toBe('4 subagents made 30 requests costing $63.00 at list price, 63% of all cost; ' +
-      'in claude-code, subagents were 63% of its cost.')
+    expect(subagentFinding(subagents, label)).toBe('4 subagents made 30 requests; they cost $63.00 at list price, 63% of the cost ' +
+      'of all requests (main agents and subagents). claude-code (the tool with the most requests): subagents 63% of its cost.')
     expect(failureFinding(failures, label)).toBe('Of 5,000 failed tool calls (claude-code), 4,933 had a next call by the same ' +
       'agent: identical call, failed: 1,233; identical call, succeeded: 400; changed call, failed: 300; changed call, succeeded: ' +
       '2,000; another tool: 1,000. 71 runs of 3 or more failed calls in a row, 245 calls in all, the longest 8 calls.')
@@ -278,9 +278,17 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     expect(carryBox.textContent).toContain('74 GB')
     expect(carryBox.textContent).toContain('Result size not reported by: codex-cli.')
     expect(carryBox.textContent).toContain('upper bound')
-    // Subagents: a split bar; an unpriced tool says not reported.
+    // Subagents: cost and requests split per tool, values on the segments; the sessions with the largest subagent cost.
     const subBox = card(host, 'subagents')
-    expect(subBox.querySelector('[aria-label="claude-code: main agent $37.00, subagents $63.00"]')).not.toBeNull()
+    const subCost = subBox.querySelector('[data-chart="subagent-cost"] [data-row="claude-code"]')!
+    expect([...subCost.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['$37.00', '$63.00'])
+    expect(subCost.querySelector('[data-total]')!.textContent).toBe('$100')
+    expect(subCost.querySelector('[data-part="subagents"] [role="tooltip"]')!.textContent).toBe('claude-code, subagents (4 subagents): ' +
+      '300 requests (75% of 400; 300 priced), $63.00 at list price (63% of $100).')
+    expect([...subBox.querySelectorAll('[data-chart="subagent-requests"] [data-row="claude-code"] [data-part] button')]
+      .map(part => part.textContent)).toEqual(['100', '300'])
+    expect(subBox.querySelector('[data-chart="subagent-sessions"] [role="tooltip"]')!.textContent).toBe('Session s-sub (claude-code): ' +
+      '4 subagents made 30 requests costing $63.00 at list price; its main agent cost $37.00.')
     expect(subBox.querySelector('[data-few]')?.textContent).toBe('codex-cli: 3 requests, too few to compare.')
     // Failures: a stacked bar of what followed each failed call, a segment per outcome and one for no next call.
     const flow = card(host, 'failures')
@@ -586,11 +594,13 @@ describe('INS-08 · Fixed context overhead', () => {
 
 describe('INS-09 · Problem sessions', () => {
   it('states the flagged share, the most frequent pair and the most frequent signal from the response', () => {
-    expect(problemFinding(problems, tool => tool)).toBe('868 of 2,537 sessions (34%) showed at least one problem signal, costing ' +
-      '$36 k at list price; 709 showed two or more, most often failure streak with hook failure (670 sessions). The costliest are ' +
-      'in alpha: 673 flagged sessions costing $632 (2% of the flagged cost). The most ' +
-      'frequent is failure streak in copilot-cli: 742 sessions, 34% of its sessions.')
-    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of the sessions of tools that report a problem signal showed at least ' +
+    expect(problemFinding(problems, tool => tool)).toBe('868 of 2,537 sessions (34%) of the tools that record the signals recorded ' +
+      'at least one of the six; their requests cost $36 k at list price. 709 recorded two or more; the pair in the most sessions ' +
+      'is failure streak with hook failure (670 sessions). Project with the largest cost of flagged sessions: alpha, 673 sessions, ' +
+      '$632 (2% of the flagged cost). Signal in the most sessions of copilot-cli (the tool with the most sessions): failure streak, ' +
+      '742 sessions, 34% of its sessions.')
+    expect(problemFinding(problems, tool => tool)).not.toMatch(/problem|costliest/)
+    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of the sessions of tools that record the six signals recorded at least ' +
       'one: 868 of 2,537 sessions, $36 k at list price' })
     const none = { ...problems, tools: [problems.tools[2]], pairs: [], projects: [],
       summary: { sessions: 0, flagged: 0, flagged_share: null, multi: 0, flagged_cost_usd: null, not_reporting: ['codex-cli'] } } as ProblemBody
@@ -615,9 +625,25 @@ describe('INS-09 · Problem sessions', () => {
     expect(box.querySelector('[data-few-projects]')!.textContent).toBe('Summed into other projects, too few sessions to compare: tiny (3 sessions).')
     expect(box.querySelector('[data-by-tool]')!.textContent).toBe('By tool: copilot-cli 802 of 2,159 sessions (37%) · claude-code 66 of 378 sessions (17%).')
     expect(box.textContent).toContain('No signal is recorded by codex-cli; left out.')
-    const pairs = box.querySelectorAll('[data-pairs] li')
-    expect(pairs[0].textContent).toBe('Failure streak + hook failure670 sessions · $438')
-    expect(pairs[1].textContent).toContain('430 sessions · not reported')
+    expect(streak[0].getAttribute('title')).toBe('alpha, failure streak: 600 sessions, 72% of its 836 sessions. Rule: 3 or more ' +
+      'failed tool calls in a row by one agent.')
+    const pairs = box.querySelectorAll('[data-chart="problem-pairs"] [data-row]')
+    expect(pairs[0].textContent).toContain('Failure streak + hook failure')
+    expect(pairs[0].querySelector('[data-total]')!.textContent).toBe('670 sessions · $438')
+    expect(pairs[0].querySelector('[role="tooltip"]')!.textContent).toBe('Failure streak and hook failure in the same session: ' +
+      '670 sessions (77% of the 868 flagged sessions), their requests cost $438 at list price.')
+    expect(pairs[1].querySelector('[data-total]')!.textContent).toBe('430 sessions · not reported')
+    // Per tool: sessions by number of signals, and one chart of the six signals with a signal not recorded named as such.
+    const counts = box.querySelector('[data-chart="problem-counts"] [data-row="copilot-cli"]')!
+    expect([...counts.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['683', '119', '1,357'])
+    expect(counts.querySelector('[data-part="one"] [role="tooltip"]')!.textContent).toBe('copilot-cli: 119 sessions with exactly one ' +
+      'signal, 6% of its 2,159 sessions; all its flagged sessions cost $6,014 of $16 k at list price.')
+    const signals = box.querySelector('[data-chart="problem-signals-copilot-cli"]')!
+    expect(signals.querySelector('[data-row="failure_streak"] [data-total]')!.textContent).toBe('742 · 34%')
+    expect(signals.querySelector('[data-row="api_error"] [data-total]')!.textContent).toBe('not recorded by this tool')
+    expect(signals.querySelector('[data-row="failure_streak"] [role="tooltip"]')!.textContent).toBe('copilot-cli, failure streak: ' +
+      '742 of 2,159 sessions (34%); their requests cost $1,591 at list price. Rule: 3 or more failed tool calls in a row by one agent.')
+    expect(box.querySelector('[data-chart="problem-signals-codex-cli"]')).toBeNull()
     dispose()
   })
 

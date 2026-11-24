@@ -80,7 +80,7 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
     expect(fixedFinding(fixed, label)).toContain(`${BIG} sessions carry a median 12 k tokens`)
     expect(fixedHero(fixed)?.label).toContain(BIG)
     expect(problemFinding(shown<ProblemBody>('problems', { pairs: [], projects: [], summary: { sessions: 5486, flagged: 549, flagged_share: 0.1, multi: 0,
-      flagged_cost_usd: 1 } }), label)).toContain(`in ${BIG}`)
+      flagged_cost_usd: 1 } }), label)).toContain(`sessions of ${BIG} (the tool with the most sessions)`)
     expect(pauseFinding(shown<PauseBody>('pause', { summary: { tools: [BIG, SMALL], requests: 1000, cost_usd: 100, baseline_usd: 50 } }), label))
       .not.toContain(SMALL)
     // Models: only models seen in the minimum of sessions are compared, and the headline states the stake behind its ratio.

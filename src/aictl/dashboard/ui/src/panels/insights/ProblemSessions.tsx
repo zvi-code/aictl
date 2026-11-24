@@ -1,12 +1,50 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { EVIDENCE } from './evidence'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  money, plural, problemFinding, problemHero, share, SIGNAL_LABELS, SIGNALS, toolLabel,
-  type Label, type ProblemBody, type Signal,
+  money, plural, problemCellHover, problemCountHover, problemCounts, problemFinding, problemHero, problemPairHover, problemSignalHover,
+  share, SIGNAL_LABELS, SIGNALS, toolLabel,
+  type Label, type ProblemBody, type ProblemTool, type Signal,
 } from './insightsModel'
 import styles from './Insights.module.css'
+
+const SIGNAL_TONE: Record<Signal, number> = { compaction: 0, failure_streak: 8, failed_delegation: 1, api_error: 3, open_todos: 2, hook_failure: 5 }
+
+/** One tool: the sessions each signal flags, a signal it does not record named as such. */
+function signalRows(tool: ProblemTool, label: Label): BarRow[] {
+  return tool.signals.map(cell => ({
+    key: cell.signal, label: SIGNAL_LABELS[cell.signal],
+    total: cell.reported ? `${fmtNum(cell.sessions ?? 0)} · ${share(cell.share)}` : 'not recorded by this tool',
+    parts: cell.reported ? [{ key: cell.signal, label: 'sessions', value: cell.sessions, tone: SIGNAL_TONE[cell.signal],
+      text: fmtNum(cell.sessions ?? 0), hover: problemSignalHover(tool, cell, label) }] : [],
+  }))
+}
+
+/** Per tool, its sessions by how many signals they recorded. */
+function countRows(body: ProblemBody, label: Label): BarRow[] {
+  return body.tools.filter(tool => tool.reports).map(tool => {
+    const n = problemCounts(tool)
+    return {
+      key: tool.tool, label: label(tool.tool), total: plural(tool.sessions, 'session'),
+      parts: [
+        { key: 'multi', label: 'two or more signals', value: n.multi, tone: 8, text: fmtNum(n.multi), hover: problemCountHover(tool, 'multi', label) },
+        { key: 'one', label: 'one signal', value: n.one, tone: 5, text: fmtNum(n.one), hover: problemCountHover(tool, 'one', label) },
+        { key: 'none', label: 'no signal', value: n.none, tone: 7, text: fmtNum(n.none), hover: problemCountHover(tool, 'none', label) },
+      ],
+    }
+  })
+}
+
+function pairRows(body: ProblemBody): BarRow[] {
+  return body.pairs.map(pair => ({
+    key: pair.signals.join('+'), label: `${SIGNAL_LABELS[pair.signals[0]]} + ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()}`,
+    total: `${plural(pair.sessions, 'session')} · ${money(pair.cost_usd)}`,
+    parts: [{ key: 'sessions', label: 'sessions with both', value: pair.sessions, tone: 1, text: fmtNum(pair.sessions),
+      hover: problemPairHover(pair, body.summary.flagged) }],
+  }))
+}
 
 /** The tint of a cell: the share of the project's sessions it flags, as a mix of the danger colour into the surface. */
 const tint = (share: number) => `color-mix(in srgb, var(--color-danger) ${Math.round(Math.min(1, share) * 50)}%, var(--color-surface))`
@@ -56,7 +94,7 @@ function SignalGrid(props: { body: ProblemBody; label: Label }) {
             const part = () => column.all ? sessions() / column.all : null
             return <span role="cell" class={styles.gridCell} data-cell={sessions()}
               style={part() == null ? undefined : { background: tint(part()!) }}
-              title={`${column.name}: ${plural(sessions(), 'session')}` + (part() == null ? '' : `, ${share(part())} of its sessions`)}>
+              title={problemCellHover(column.name, signal, sessions(), column.all)}>
               <strong>{fmtNum(sessions())}</strong><small>{part() == null ? '' : share(part())}</small>
             </span>
           }}</For>
@@ -72,19 +110,11 @@ function SignalGrid(props: { body: ProblemBody; label: Label }) {
     <Show when={props.body.summary.not_reporting.length}>
       <p class={styles.note}>No signal is recorded by {props.body.summary.not_reporting.map(props.label).join(', ')}; left out.</p>
     </Show>
-    <div class={styles.lists}>
-      <section>
-        <h3 class={styles.subhead}>Signals that come together</h3>
-        <Show when={props.body.pairs.length} fallback={<p class={styles.note}>No session showed two signals in this period.</p>}>
-          <ol class={styles.rankList} data-pairs>
-            <For each={props.body.pairs}>{pair => <li>
-              <span>{SIGNAL_LABELS[pair.signals[0]]} + {SIGNAL_LABELS[pair.signals[1]].toLowerCase()}</span>
-              <span>{plural(pair.sessions, 'session')} · {money(pair.cost_usd)}</span>
-            </li>}</For>
-          </ol>
-        </Show>
-      </section>
-    </div>
+    <Show when={props.body.pairs.length} fallback={<p class={styles.note}>No session recorded two signals in this period.</p>}>
+      <Bars name="problem-pairs" title="Two signals in the same session"
+        axis="Length: sessions that recorded both signals, linear from 0; beside it their cost at list price."
+        rows={pairRows(props.body)} />
+    </Show>
   </>
 }
 
@@ -96,8 +126,21 @@ export default function ProblemSessions(props: CardProps) {
   return <InsightCard<ProblemBody> {...props} card="problems" title="Problem sessions" tab="errors"
     hero={problemHero}
     finding={body => problemFinding(body, label)}
-    visual={body => <SignalGrid body={body} label={label} />}
-    note={'A flag is a signal worth opening, not a verdict. Repeated compaction: 3 or more compactions in the session. ' +
+    visual={body => <>
+      <Show when={countRows(body, label).length}>
+        <Bars name="problem-counts" title="Sessions by number of signals recorded, per tool" scale="whole"
+          legend={[{ label: 'Two or more signals', tone: 8 }, { label: 'One signal', tone: 5 }, { label: 'No signal', tone: 7 }]}
+          axis="Bar: the tool's sessions in the period (100%); segments: sessions with two or more, one or no signal."
+          rows={countRows(body, label)} />
+      </Show>
+      <For each={body.tools.filter(tool => tool.reports)}>{tool => <Bars name={`problem-signals-${tool.tool}`}
+        title={`${label(tool.tool)}: sessions per signal`}
+        axis={`Length: sessions that recorded the signal, linear from 0; beside it the count and its share of the tool's ${plural(tool.sessions, 'session')}.`}
+        rows={signalRows(tool, label)} />}</For>
+      <h3 class={styles.subhead}>Signals per project</h3>
+      <SignalGrid body={body} label={label} />
+    </>}
+    note={'A signal is an event the session recorded; the card counts the sessions with each. Repeated compaction: 3 or more compactions in the session. ' +
       'Failure streak: 3 or more failed tool calls in a row by one agent (as in After a failure). Failed delegation: a failed ' +
       'call that starts a subagent or task (Agent, Task, task, runSubagent) or collects one (read_agent, TaskOutput, ' +
       'SubagentHandback); task_complete and todo calls are not delegation. Ended on an API error: a turn that ended on an ' +

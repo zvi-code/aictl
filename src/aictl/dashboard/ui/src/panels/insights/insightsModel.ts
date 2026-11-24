@@ -363,9 +363,26 @@ export function subagentFinding(body: SubagentBody, label: Label) {
   if (!s.subagents) return 'No subagent ran in this period.'
   const top = [...body.tools].filter(tool => tool.subagents.agents).sort((a, b) =>
     (b.main.requests + b.subagents.requests) - (a.main.requests + a.subagents.requests))[0]
-  return `${fmtNum(s.subagents)} subagents made ${fmtNum(s.subagent_requests)} requests costing ${money(s.subagent_cost_usd)} at list price, ` +
-    `${share(s.subagent_share)} of all cost` +
-    (top ? `; in ${label(top.tool)}, subagents were ${share(top.subagent_share)} of its cost.` : '.') + leftOut(s.unpriced_requests)
+  return `${fmtNum(s.subagents)} subagents made ${fmtNum(s.subagent_requests)} requests; they cost ${money(s.subagent_cost_usd)} at list ` +
+    `price, ${share(s.subagent_share)} of the cost of all requests (main agents and subagents)` +
+    (top ? `. ${label(top.tool)} (the tool with the most requests): subagents ${share(top.subagent_share)} of its cost.` : '.') +
+    leftOut(s.unpriced_requests)
+}
+
+export function subagentSessionHover(row: InsightSession, label: Label) {
+  return `Session ${row.session_id} (${label(String(row.tool ?? ''))}): ${plural(Number(row.agents ?? 0), 'subagent')} made ` +
+    `${plural(Number(row.requests ?? 0), 'request')} costing ${money(typeof row.cost_usd === 'number' ? row.cost_usd : null)} at list ` +
+    `price; its main agent cost ${money(typeof row.main_cost === 'number' ? row.main_cost : null)}.`
+}
+
+/** The hover of one side of a tool's bar: its requests, agents and cost, and its share of the tool's cost or requests. */
+export function subagentHover(tool: SubagentTool, side: 'main' | 'subagents', label: Label) {
+  const part = side === 'main' ? tool.main : tool.subagents
+  const cost = (tool.main.cost_usd ?? 0) + (tool.subagents.cost_usd ?? 0)
+  const requests = tool.main.requests + tool.subagents.requests
+  const who = side === 'main' ? 'main agent' : `subagents (${plural(tool.subagents.agents, 'subagent')})`
+  return `${label(tool.tool)}, ${who}: ${plural(part.requests, 'request')} (${share(ratio(part.requests, requests))} of ${fmtNum(requests)}; ` +
+    `${fmtNum(part.priced)} priced), ${money(part.cost_usd)} at list price (${share(ratio(part.cost_usd, cost))} of ${money(cost)}).`
 }
 
 export function failureFinding(body: FailureBody, label: Label) {
@@ -560,18 +577,53 @@ export function problemFinding(body: ProblemBody, label: Label) {
   const lead = [...body.tools].filter(tool => tool.reports).sort((a, b) => b.sessions - a.sessions)[0]
   const top = (lead ? lead.signals.filter(cell => cell.reported && cell.sessions).map(cell => ({ tool: lead, cell })) : [])
     .sort((a, b) => (b.cell.sessions ?? 0) - (a.cell.sessions ?? 0))[0]
-  const flagged = `${fmtNum(s.flagged)} of ${plural(s.sessions, 'session')} (${share(s.flagged_share)}) showed at least one problem signal, ` +
-    `costing ${money(s.flagged_cost_usd)} at list price; ${fmtNum(s.multi)} showed two or more` +
-    (pair ? `, most often ${SIGNAL_LABELS[pair.signals[0]].toLowerCase()} with ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()} ` +
-      `(${plural(pair.sessions, 'session')})` : '') + '.'
-  const most = top ? ` The most frequent is ${SIGNAL_LABELS[top.cell.signal].toLowerCase()} in ${label(top.tool.tool)}: ` +
-    `${plural(top.cell.sessions ?? 0, 'session')}, ${share(top.cell.share)} of its sessions.` : ''
-  // Where the stake sits: the project whose flagged sessions cost the most.
+  const flagged = `${fmtNum(s.flagged)} of ${plural(s.sessions, 'session')} (${share(s.flagged_share)}) of the tools that record the ` +
+    `signals recorded at least one of the six; their requests cost ${money(s.flagged_cost_usd)} at list price. ` +
+    `${fmtNum(s.multi)} recorded two or more` +
+    (pair ? `; the pair in the most sessions is ${SIGNAL_LABELS[pair.signals[0]].toLowerCase()} with ` +
+      `${SIGNAL_LABELS[pair.signals[1]].toLowerCase()} (${plural(pair.sessions, 'session')})` : '') + '.'
+  const most = top ? ` Signal in the most sessions of ${label(top.tool.tool)} (the tool with the most sessions): ` +
+    `${SIGNAL_LABELS[top.cell.signal].toLowerCase()}, ${plural(top.cell.sessions ?? 0, 'session')}, ${share(top.cell.share)} of its sessions.` : ''
   const project = body.projects[0]
-  const where = project && project.cost_usd != null ? ` The costliest are in ${projectName(project.project)}: ` +
-    `${plural(project.sessions, 'flagged session')} costing ${money(project.cost_usd)}` +
+  const where = project && project.cost_usd != null ? ` Project with the largest cost of flagged sessions: ${projectName(project.project)}, ` +
+    `${plural(project.sessions, 'session')}, ${money(project.cost_usd)}` +
     (s.flagged_cost_usd ? ` (${share(project.cost_usd / s.flagged_cost_usd)} of the flagged cost).` : '.') : ''
   return flagged + where + most
+}
+
+/** What puts a session under each signal, as the view records it. */
+export const SIGNAL_RULES: Record<Signal, string> = {
+  compaction: '3 or more compactions in the session', failure_streak: '3 or more failed tool calls in a row by one agent',
+  failed_delegation: 'a failed call that starts or collects a subagent or task', api_error: 'a turn that ended on an API error',
+  open_todos: 'a todo list with items left open', hook_failure: 'a hook that failed',
+}
+/** The hover of one signal of one tool: its sessions, their share of the tool's sessions, their cost, and the rule. */
+export function problemSignalHover(tool: ProblemTool, cell: SignalCell, label: Label) {
+  if (!cell.reported) return `${label(tool.tool)}, ${SIGNAL_LABELS[cell.signal].toLowerCase()}: not recorded by this tool, so not counted.`
+  return `${label(tool.tool)}, ${SIGNAL_LABELS[cell.signal].toLowerCase()}: ${fmtNum(cell.sessions ?? 0)} of ${plural(tool.sessions, 'session')} ` +
+    `(${share(cell.share)}); their requests cost ${money(cell.cost_usd)} at list price. Rule: ${SIGNAL_RULES[cell.signal]}.`
+}
+/** A tool's sessions by how many signals they recorded: none, one, two or more. */
+export function problemCounts(tool: ProblemTool) {
+  const flagged = tool.flagged ?? 0, multi = tool.multi ?? 0
+  return { none: Math.max(0, tool.sessions - flagged), one: Math.max(0, flagged - multi), multi }
+}
+export function problemCountHover(tool: ProblemTool, part: 'none' | 'one' | 'multi', label: Label) {
+  const n = problemCounts(tool)[part]
+  const what = part === 'none' ? 'no signal' : part === 'one' ? 'exactly one signal' : 'two or more signals'
+  return `${label(tool.tool)}: ${plural(n, 'session')} with ${what}, ${share(ratio(n, tool.sessions))} of its ${plural(tool.sessions, 'session')}` +
+    (part === 'none' ? '.' : `; all its flagged sessions cost ${money(tool.flagged_cost_usd)} of ${money(tool.cost_usd)} at list price.`)
+}
+export function problemPairHover(pair: ProblemPair, flagged: number) {
+  return `${SIGNAL_LABELS[pair.signals[0]]} and ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()} in the same session: ` +
+    `${plural(pair.sessions, 'session')} (${share(ratio(pair.sessions, flagged))} of the ${fmtNum(flagged)} flagged sessions), ` +
+    `their requests cost ${money(pair.cost_usd)} at list price.`
+}
+/** The hover of a grid cell: one signal in one project (or every other project summed). */
+export function problemCellHover(project: string, signal: Signal, sessions: number, all: number | null) {
+  return `${project}, ${SIGNAL_LABELS[signal].toLowerCase()}: ${plural(sessions, 'session')}` +
+    (all == null ? ' (summed; no session total to take a share of).' : `, ${share(ratio(sessions, all))} of its ${plural(all, 'session')}.`) +
+    ` Rule: ${SIGNAL_RULES[signal]}.`
 }
 
 /** The wider bar of a pair sets the scale: a share from 0 to 1 of the largest value. */
@@ -618,7 +670,7 @@ export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_by
   `how often a byte of a tool result was sent again with later requests (upper bound): ${bytes(body.summary.output_bytes)} of ` +
   `results, up to ${bytes(body.summary.carried_bytes)} sent again`)
 export const subagentHero = (body: SubagentBody) => hero(body.summary.subagent_share, fmtShare,
-  `of the cost was spent in subagents: ${money(body.summary.subagent_cost_usd)} of ` +
+  `of the cost at list price is in subagent requests: ${money(body.summary.subagent_cost_usd)} of ` +
   `${money(body.summary.main_cost_usd == null ? null : body.summary.main_cost_usd + (body.summary.subagent_cost_usd ?? 0))}`)
 export const failureHero = (body: FailureBody) => body.summary.failures
   ? hero(body.summary.streaks, fmtNum, `runs of 3 or more failed calls in a row, among ${plural(body.summary.failures, 'failed tool call')} ` +
@@ -638,7 +690,7 @@ export const fixedHero = (body: FixedBody) => body.summary.never_used_share != n
   : fixedLead(body) ? hero(fixedLead(body)!.p50_tokens, value => `${fmtN(value)} tokens`,
     `median fixed context of a ${toolLabel(fixedLead(body)!.tool)} session before any work (estimated)`) : undefined
 export const problemHero = (body: ProblemBody) => hero(body.summary.flagged_share, fmtShare,
-  `of the sessions of tools that report a problem signal showed at least one: ${fmtNum(body.summary.flagged)} of ` +
+  `of the sessions of tools that record the six signals recorded at least one: ${fmtNum(body.summary.flagged)} of ` +
   `${plural(body.summary.sessions, 'session')}, ${money(body.summary.flagged_cost_usd)} at list price`)
 export function orientationHero(body: OrientationBody) {
   // The project with the most sessions that edit leads, not the one with the largest median.

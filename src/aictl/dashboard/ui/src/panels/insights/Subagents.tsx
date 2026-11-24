@@ -1,32 +1,51 @@
-import { For, untrack } from 'solid-js'
+import { Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
+import { Bars, type BarRow } from './Bars'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { subagentHero, money, share, subagentFinding, toolLabel, type Label, type SubagentBody } from './insightsModel'
-import styles from './Insights.module.css'
+import {
+  subagentHero, money, plural, share, subagentFinding, subagentHover, subagentSessionHover, toolLabel, type Label, type SubagentBody,
+} from './insightsModel'
 
-/** Per tool: one bar split into the cost of the main agent and the cost of its subagents. */
-function SplitBars(props: { body: SubagentBody; label: Label }) {
-  const part = (tool: SubagentBody['tools'][number], side: 'main' | 'subagents') => {
-    const total = (tool.main.cost_usd ?? 0) + (tool.subagents.cost_usd ?? 0)
-    return total > 0 ? `${((tool[side].cost_usd ?? 0) / total * 100).toFixed(2)}%` : '0%'
-  }
+const legend = [{ label: 'Main agent', tone: 2 }, { label: 'Subagents', tone: 1 }]
+const SESSIONS = 5
+
+function sideRows(body: SubagentBody, label: Label, of: 'cost' | 'requests'): BarRow[] {
+  return body.tools.map(tool => ({
+    key: tool.tool, label: label(tool.tool),
+    sub: of === 'cost' ? `${plural(tool.subagents.agents, 'subagent')} · ${share(tool.subagent_share)} of cost in subagents` : undefined,
+    total: of === 'cost' ? money(tool.main.cost_usd == null && tool.subagents.cost_usd == null ? null
+      : (tool.main.cost_usd ?? 0) + (tool.subagents.cost_usd ?? 0)) : plural(tool.main.requests + tool.subagents.requests, 'request'),
+    parts: (['main', 'subagents'] as const).map(side => ({
+      key: side, label: side === 'main' ? 'main agent' : 'subagents', tone: side === 'main' ? 2 : 1,
+      value: of === 'cost' ? tool[side].cost_usd : tool[side].requests,
+      text: of === 'cost' ? money(tool[side].cost_usd) : fmtNum(tool[side].requests), hover: subagentHover(tool, side, label),
+    })),
+  }))
+}
+
+/** The sessions with the largest subagent cost, as the answer lists them. */
+function sessionRows(body: SubagentBody, label: Label): BarRow[] {
+  return [...body.sessions].filter(row => typeof row.cost_usd === 'number')
+    .sort((a, b) => Number(b.cost_usd) - Number(a.cost_usd)).slice(0, SESSIONS).map(row => ({
+      key: row.session_id, label: `${label(String(row.tool ?? ''))} · ${row.session_id.slice(0, 8)}`, title: row.session_id,
+      sub: `${plural(Number(row.agents ?? 0), 'subagent')} · ${plural(Number(row.requests ?? 0), 'request')}`,
+      total: money(Number(row.cost_usd)),
+      parts: [{ key: 'cost', label: 'subagent cost', value: Number(row.cost_usd), tone: 1, text: money(Number(row.cost_usd)),
+        hover: subagentSessionHover(row, label) }],
+    }))
+}
+
+function Visual(props: { body: SubagentBody; label: Label }) {
   return <>
-    <ul class={styles.legend}>
-      <li><span class={`${styles.swatch} ${styles.main}`} />Main agent</li>
-      <li><span class={`${styles.swatch} ${styles.sub}`} />Subagents</li>
-    </ul>
-    <ol class={styles.bars} aria-label="Cost of the main agent and of subagents per tool">
-      <For each={props.body.tools}>{tool => <li class={styles.barRow}>
-        <span class={styles.barName}>{props.label(tool.tool)}<small>{fmtNum(tool.subagents.agents)} subagents · {share(tool.subagent_share)} of cost</small></span>
-        <span class={styles.barTrack}>
-          <span class={styles.split} role="img" aria-label={`${props.label(tool.tool)}: main agent ${money(tool.main.cost_usd)}, subagents ${money(tool.subagents.cost_usd)}`}>
-            <span class={styles.main} style={{ 'inline-size': part(tool, 'main') }} />
-            <span class={styles.sub} style={{ 'inline-size': part(tool, 'subagents') }} />
-          </span>
-          <span class={styles.splitText}>main {money(tool.main.cost_usd)} ({fmtNum(tool.main.requests)} requests) · subagents {money(tool.subagents.cost_usd)} ({fmtNum(tool.subagents.requests)} requests)</span>
-        </span>
-      </li>}</For>
-    </ol>
+    <Bars name="subagent-cost" title="Cost per tool: main agent and subagents" legend={legend}
+      axis="Length: cost at list price, one linear scale for every tool from $0." rows={sideRows(props.body, props.label, 'cost')} />
+    <Bars name="subagent-requests" title="Requests per tool: main agent and subagents" legend={legend} scale="whole"
+      axis="Bar: the tool's requests in the period (100%); segments: requests of the main agent and of subagents."
+      rows={sideRows(props.body, props.label, 'requests')} />
+    <Show when={sessionRows(props.body, props.label).length}>
+      <Bars name="subagent-sessions" title={`Sessions with the largest subagent cost (up to ${SESSIONS})`}
+        axis="Length: subagent cost of the session at list price, linear from $0." rows={sessionRows(props.body, props.label)} />
+    </Show>
   </>
 }
 
@@ -36,7 +55,7 @@ export default function Subagents(props: CardProps) {
   return <InsightCard<SubagentBody> {...props} card="subagents" title="Spend in subagents" tab="team"
     hero={subagentHero}
     finding={body => subagentFinding(body, label)}
-    visual={body => <SplitBars body={body} label={label} />}
+    visual={body => <Visual body={body} label={label} />}
     note={'A subagent request has an agent id that is set and differs from its session id. Cost is list price, not a bill; ' +
       'a tool whose requests carry no price shows "not reported". Only requests in the period count.'}
     table={{
