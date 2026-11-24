@@ -176,20 +176,19 @@ describe('INS-RS · Context group cards split by repository', () => {
     dispose()
   })
 
-  it('Fixed context overhead: keeps the kind bar, adds per-tool and per-kind averages by repository, says what is not split', () => {
+  it('Fixed context overhead: colours the averages per tool and per kind by repository, says what is not split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=fixed&by=repo')
     const { host, dispose } = mount(() => <FixedContext {...props(fixed)} />)
     const box = host.querySelector('#insight-fixed')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect([...box.querySelectorAll('[data-chart="fixed-kinds"] [data-part]')].map(part => part.getAttribute('data-part')))
-      .toEqual(['instruction_file', 'skills'])
-    const rows = [...box.querySelectorAll('[data-chart="fixed-kinds-repos"] [data-row]')]
+    const rows = [...box.querySelectorAll('[data-chart="fixed-kinds"] [data-row]')]
     expect(rows.map(row => row.getAttribute('data-row'))).toEqual(['claude-code', 'claude-code:instruction_file', 'claude-code:skills'])
     expect(repoAttrs(rows[0])).toEqual(ALL)
     expect(hover(rows[0], 'repo:/src/app')).toBe('claude-code, average fixed context — app (/src/app): 6.0 k tokens · 60% of this bar. 60 ' +
       'sessions in this repository; its tokens divided by all 100 sessions of the tool, so the segments add up to the bar\'s average. ' +
       'claude-code: average 10 k tokens per session over 100 sessions (estimated); median 9.0 k tokens, 90th percentile 15 k tokens. Not ' +
       'split by repository: the median of a whole is not the sum of the medians of its parts.')
-    expect(box.querySelector('[data-not-split]')!.textContent).toContain('Not split by repository')
+    expect(box.querySelector('[data-chart="fixed-spread"] [data-axis]')!.textContent).toContain('not split by repository')
     for (const chart of ['fixed-listing', 'fixed-files', 'fixed-skills']) {
       const tips = [...box.querySelectorAll(`[data-chart="${chart}"] [role="tooltip"]`)]
       expect(tips.length, chart).toBeGreaterThan(0)
@@ -198,12 +197,14 @@ describe('INS-RS · Context group cards split by repository', () => {
     dispose()
   })
 
-  it('Fixed context overhead: a body without repos draws the old bars only', () => {
+  it('Fixed context overhead: a body without repos draws the kind bars and no switch', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=fixed&by=repo')
     const { host, dispose } = mount(() => <FixedContext {...props(strip(fixed))} />)
     const box = host.querySelector('#insight-fixed')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect(box.querySelector('[data-chart="fixed-kinds-repos"]')).toBeNull()
-    expect(box.querySelector('[data-not-split]')).toBeNull()
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect([...box.querySelectorAll('[data-chart="fixed-kinds"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['instruction_file', 'skills'])
     expect(box.querySelector('[data-chart="fixed-files"] [role="tooltip"]')!.textContent).not.toContain('Not split')
     dispose()
   })

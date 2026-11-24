@@ -599,7 +599,13 @@ describe('INS-08 · Fixed context overhead', () => {
       'files: average 37 k tokens per session (362 sessions of the tool); median 38 k tokens and 2 items in the 362 sessions that ' +
       'record it (100%); estimated from item sizes.')
     expect(desktop.textContent).toContain('not reported: Memory files, Skill listing, MCP instructions, Custom agents, Deferred tool list')
-    expect(desktop.textContent).toContain('median 51 k tokens · 90th percentile 54 k tokens · 362 sessions · estimated')
+    expect(desktop.textContent).toContain('362 sessions · estimated')
+    // The median and 90th percentile of the whole are marks on one axis, their values beside them.
+    const spread = box.querySelector('[data-chart="fixed-spread"] [data-row="copilot-desktop"]')!
+    expect(spread.querySelector('[data-total]')!.textContent).toBe('51 k · 54 k')
+    expect(spread.querySelector('[data-mark="p90"] [role="tooltip"]')!.textContent).toBe('copilot-desktop, 90th percentile fixed ' +
+      'context per session: 54 k tokens (estimated). copilot-desktop: average 50 k tokens per session over 362 sessions (estimated); ' +
+      'median 51 k tokens, 90th percentile 54 k tokens.')
     const claude = kinds.querySelector('[data-row="claude-code"]')!
     expect(claude.querySelectorAll('[data-part]')).toHaveLength(5)
     expect(claude.textContent).toContain('not reported: Instruction files, Other system prompt')

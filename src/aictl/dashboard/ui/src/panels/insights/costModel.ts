@@ -11,6 +11,8 @@ import {
   leftOut, money, pauseBucketHover, pauseCallHover, pauseCauseBars, pauseCauseHover, pauseEstimate, pauseEstimateHover, pauseMeasuredHover,
   pauseProjectHover, pauseProjects, plural, repoPartsWith, segmentValue, share, SMALL_STEP_OUTPUT, smallRepoMore, smallStepHover, tokens,
   type Bucket, type CarryBody, type ContextBody, type ContextBucket, type ContextTool, type Label, type PauseBody, type PauseCause,
+  FIXED_KINDS, FIXED_LABELS, fixedFileHover, fixedKindHover, fixedListingHover, fixedRepoMore, fixedSkillHover, fixedToolHover,
+  NOT_REPORTED, NOT_SPLIT, type FixedBody,
 } from './insightsModel'
 import { notSplitNote, repoParts, type RepoSegment } from './repoSplit'
 import type { ColourBy } from './charts/ColourBy'
@@ -299,3 +301,103 @@ export function contextSmallRows(body: ContextBody, by: ColourMode, label: Label
   })
 }
 export const SMALL_TITLE = `Requests under ${SMALL_STEP_OUTPUT} output tokens, no thinking time`
+
+// ─── Fixed context overhead ─────────────────────────────────────────────────────────
+
+export function fixedLine() {
+  return 'Tokens each tool puts in a session\'s main-agent context before any work, by kind; estimated from item sizes, ' +
+    'per session over the tool\'s sessions.'
+}
+
+export const FIXED_TONE = [0, 2, 4, 1, 3, 6, 5]
+export const FIXED_LEGEND = FIXED_KINDS.map((kind, i) => ({ label: FIXED_LABELS[kind], tone: FIXED_TONE[i] }))
+const short = (value: number | null) => value == null ? '' : fmtN(value)
+
+export const fixedSplit = (body: FixedBody) => anyRepos([...body.tools, ...body.tools.flatMap(tool => tool.kinds)])
+
+/**
+ * Per tool, its average fixed context per session stacked by kind on one scale; or, coloured by repository, per tool its
+ * average in a segment per repository, then each kind's average the same way (a repository's tokens / all the tool's sessions).
+ */
+export function fixedKindRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+  if (by === 'repo') {
+    return body.tools.filter(tool => tool.repos?.length).flatMap(tool => [
+      { key: tool.tool, label: label(tool.tool), sub: `all kinds · ${plural(tool.sessions, 'session')}`, total: `average ${tokens(tool.avg_tokens)}`,
+        parts: repoPartsWith(tool.repos, 'avg_tokens', body.repo_order, value => tokens(value), `${label(tool.tool)}, average fixed context`,
+          'average fixed context', fixedToolHover(tool, label), segment => fixedRepoMore(tool, segment)) },
+      ...tool.kinds.filter(cell => cell.reported && cell.repos?.length).map(cell => ({
+        key: `${tool.tool}:${cell.kind}`, label: `${label(tool.tool)}: ${FIXED_LABELS[cell.kind]}`, total: `average ${tokens(cell.avg_tokens)}`,
+        parts: repoPartsWith(cell.repos, 'avg_tokens', body.repo_order, value => tokens(value),
+          `${label(tool.tool)}, ${FIXED_LABELS[cell.kind].toLowerCase()}, average per session`, 'average per session',
+          `${fixedKindHover(tool, cell, label)} ${notSplitNote('median')}`, segment => fixedRepoMore(tool, segment)),
+      })),
+    ])
+  }
+  return body.tools.map(tool => {
+    const missing = tool.kinds.filter(cell => !cell.reported).map(cell => FIXED_LABELS[cell.kind])
+    return {
+      key: tool.tool, label: label(tool.tool),
+      sub: plural(tool.sessions, 'session') + (tool.estimated ? ' · estimated' : '') +
+        (missing.length ? ` · ${NOT_REPORTED}: ${missing.join(', ')}` : ''),
+      total: `average ${tokens(tool.avg_tokens)}`,
+      parts: tool.kinds.filter(cell => cell.reported).map(cell => ({
+        key: cell.kind, label: FIXED_LABELS[cell.kind], value: cell.avg_tokens, tone: FIXED_TONE[FIXED_KINDS.indexOf(cell.kind)],
+        text: short(cell.avg_tokens), hover: fixedKindHover(tool, cell, label),
+      })),
+    }
+  })
+}
+
+/** Per tool: the median, 90th percentile and average of a session's whole fixed context on one axis of tokens. */
+export function fixedStripRows(body: FixedBody, by: ColourMode, label: Label): StripRow[] {
+  return body.tools.filter(tool => tool.p50_tokens != null || tool.avg_tokens != null).map(tool => {
+    const whole = fixedToolHover(tool, label)
+    const marks = [
+      { key: 'p50', label: 'median', value: tool.p50_tokens, shape: 'dot' as const },
+      { key: 'p90', label: '90th percentile', value: tool.p90_tokens, shape: 'tick' as const },
+      { key: 'avg', label: 'average', value: tool.avg_tokens, shape: 'ring' as const },
+    ]
+    return {
+      key: tool.tool, label: label(tool.tool), sub: plural(tool.sessions, 'session'),
+      total: `${short(tool.p50_tokens) || NOT_REPORTED} · ${short(tool.p90_tokens) || NOT_REPORTED}`,
+      marks: marks.map(mark => ({ ...mark, text: tokens(mark.value),
+        hover: `${label(tool.tool)}, ${mark.label} fixed context per session: ${tokens(mark.value)}${tool.estimated ? ' (estimated)' : ''}. ` +
+          (by === 'repo' ? whole : whole.replace(` ${notSplitNote('median')}`, '')) })),
+    }
+  })
+}
+
+const unsplit = (on: boolean, hover: string) => on ? `${hover} ${NOT_SPLIT}` : hover
+
+/** Per tool reporting its skill listing: the listing tokens of the skills used and not used in the period (100%). */
+export function fixedListingRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+  const repo = by === 'repo'
+  return body.skills.filter(row => row.listing_tokens != null).map(row => ({
+    key: row.tool, label: label(row.tool), sub: `${count(row.used)} of ${count(row.listed)} skills used`, total: tokens(row.listing_tokens),
+    parts: [
+      { key: 'used', label: 'skills used', value: row.listing_tokens! - (row.unused_tokens ?? 0), tone: 2,
+        text: short(row.listing_tokens! - (row.unused_tokens ?? 0)), hover: unsplit(repo, fixedListingHover(row, 'used', label)) },
+      { key: 'unused', label: 'skills not used', value: row.unused_tokens, tone: 7, text: short(row.unused_tokens),
+        hover: unsplit(repo, fixedListingHover(row, 'unused', label)) },
+    ],
+  }))
+}
+
+export function fixedFileRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+  return body.files.map(row => ({
+    key: `${row.tool}:${row.file}`, label: row.file, sub: `${label(row.tool)} · largest ${tokens(row.max_tokens)} · ${plural(row.sessions, 'session')}`,
+    total: `${tokens(row.avg_tokens)} per load`,
+    // Coloured by repository, a bar that is not split is grey: a chart colour would read as a repository's.
+    parts: [{ key: 'avg', label: 'tokens per load', value: row.avg_tokens, tone: by === 'repo' ? 7 : 0, text: short(row.avg_tokens),
+      hover: unsplit(by === 'repo', fixedFileHover(row, label)) }],
+  }))
+}
+
+export function fixedSkillRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+  return body.top_skills.map(row => ({
+    key: `${row.tool}:${row.name}`, label: row.name, sub: `${label(row.tool)} · ${plural(row.sessions, 'session')}`,
+    total: `${tokens(row.tokens)} · ${row.uses ? plural(row.uses, 'use') : 'no use in the period'}`,
+    parts: [{ key: 'tokens', label: 'listing tokens', value: row.tokens, tone: row.uses && by !== 'repo' ? 1 : 7, text: short(row.tokens),
+      hover: unsplit(by === 'repo', fixedSkillHover(row, label)) }],
+  }))
+}

@@ -8,10 +8,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
 import ContextCarry from '../../src/panels/insights/ContextCarry'
 import ContextWeight from '../../src/panels/insights/ContextWeight'
+import FixedContext from '../../src/panels/insights/FixedContext'
 import PauseTax from '../../src/panels/insights/PauseTax'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
-import { carryLine, carryNameRows, contextLine, pauseColumns, pauseLine } from '../../src/panels/insights/costModel'
-import type { CarryBody, ContextBody, PauseBody } from '../../src/panels/insights/insightsModel'
+import { carryLine, carryNameRows, contextLine, fixedKindRows, fixedLine, pauseColumns, pauseLine } from '../../src/panels/insights/costModel'
+import type { CarryBody, ContextBody, FixedBody, PauseBody } from '../../src/panels/insights/insightsModel'
 import { OTHER, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { UrlPatch } from '../../src/data/urlState'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -355,11 +356,100 @@ describe('INS-VIEW-COST · Context weight', () => {
     dispose()
   })
 
-  it('draws a body without a split by repository with no switch', () => {
+  it('draws a body without a split by repository with no switch, the columns whole', () => {
     const { box, dispose } = draw(ContextWeight, 'context', unsplit(weight))
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(attr(box.querySelectorAll('[data-chart="context-requests-claude-code"] [data-part]'), 'data-part'))
       .toEqual(['under_50k', '50_100k', '100_200k', '200_500k', 'over_500k'])
+    dispose()
+  })
+})
+
+// ─── Fixed context overhead ──────────────────────────────────────────────────────────────────────────────────────────
+const KINDS = ['instruction_file', 'memory_file', 'system_prompt_other', 'skills', 'mcp_instructions', 'custom_agents', 'tools_listed']
+const fixedCell = (kind: string, avg: number | null, p50: number | null) => avg == null
+  ? { kind, reported: false, sessions: null, session_share: null, p50_tokens: null, avg_tokens: null, p50_items: null, estimated: false }
+  : { kind, reported: true, sessions: 40, session_share: 1, p50_tokens: p50, avg_tokens: avg, p50_items: 3, estimated: true,
+    repos: segments({ sessions: [20, 12, 8], avg_tokens: [avg * 0.5, avg * 0.3, avg * 0.2] }) }
+const AVG: Record<string, [number, number] | null> = {
+  instruction_file: [4000, 4200], memory_file: [1000, 900], system_prompt_other: null, skills: [3000, 3100],
+  mcp_instructions: [1000, 800], custom_agents: null, tools_listed: [1000, 1000],
+}
+const fixedBody = {
+  ...base, card: 'fixed', repo_order: order, repo_others: others,
+  tools: [{ tool: 'claude-code', sessions: 40, p50_tokens: 9500, p90_tokens: 14_000, avg_tokens: 10_000, p50_skills: 30, estimated: true,
+    kinds: KINDS.map(kind => fixedCell(kind, AVG[kind]?.[0] ?? null, AVG[kind]?.[1] ?? null)),
+    repos: segments({ sessions: [20, 12, 8], avg_tokens: [5000, 3000, 2000] }) }],
+  skills: [{ tool: 'claude-code', listed: 40, used: 10, listing_tokens: 120_000, unused_tokens: 90_000, uses: 25, skills_used: 10, triggers: [] }],
+  top_skills: [{ tool: 'claude-code', name: 'pdf', sessions: 40, tokens: 12_000, uses: 4 }, { tool: 'claude-code', name: 'slides', sessions: 40, tokens: 8000, uses: 0 }],
+  files: [{ tool: 'claude-code', file: 'AGENTS.md', sessions: 40, loads: 44, avg_tokens: 3000, max_tokens: 3500, tokens: 132_000 }],
+  summary: { sessions: 40, heaviest: { tool: 'claude-code', p50_tokens: 9500 }, listed: 40, never_used: 30, never_used_share: 0.75,
+    listing_tokens: 120_000, unused_tokens: 90_000, listing_not_reported: [] },
+} as unknown as FixedBody
+
+describe('INS-VIEW-COST · Fixed context overhead', () => {
+  it('says what is measured in one line', () => {
+    const { box, dispose } = draw(FixedContext, 'fixed', fixedBody)
+    expect(box.querySelector('[data-finding]')!.textContent).toBe(fixedLine())
+    expect(words(fixedLine())).toBeLessThanOrEqual(30)
+    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('75%')
+    dispose()
+  })
+
+  it('stacks the average per session by kind, the kinds in their fixed order, one scale for every tool', () => {
+    const { box, dispose } = draw(FixedContext, 'fixed', fixedBody)
+    const row = box.querySelector('[data-chart="fixed-kinds"] [data-row="claude-code"]')!
+    expect(attr(row.querySelectorAll('[data-part]'), 'data-part')).toEqual(['instruction_file', 'memory_file', 'skills', 'mcp_instructions', 'tools_listed'])
+    expect(text(row.querySelectorAll('[data-part] button'))).toEqual(['4.0 k', '1.0 k', '3.0 k', '1.0 k', '1.0 k'])
+    expect(row.querySelector('[data-total]')!.textContent).toBe('average 10 k tokens')
+    expect(row.querySelector('small')!.textContent).toBe('40 sessions · estimated · not reported: Other system prompt, Custom agents')
+    expect(text(box.querySelectorAll('[data-chart="fixed-kinds"] [aria-label$="legend"] li'))).toHaveLength(7)
+    dispose()
+  })
+
+  it('marks the median, 90th percentile and average of the whole on one axis', () => {
+    const { box, dispose } = draw(FixedContext, 'fixed', fixedBody)
+    const row = box.querySelector('[data-chart="fixed-spread"] [data-row="claude-code"]')!
+    expect([...row.querySelectorAll<HTMLElement>('[data-mark]')].map(mark => [mark.dataset.mark, mark.style.insetInlineStart]))
+      .toEqual([['p50', '67.86%'], ['p90', '100.00%'], ['avg', '71.43%']])
+    expect(row.querySelector('[data-total]')!.textContent).toBe('9.5 k · 14 k')
+    expect(row.querySelector('[data-mark="avg"] [role="tooltip"]')!.textContent).toBe('claude-code, average fixed context per session: ' +
+      '10 k tokens (estimated). claude-code: average 10 k tokens per session over 40 sessions (estimated); median 9.5 k tokens, 90th ' +
+      'percentile 14 k tokens.')
+    dispose()
+  })
+
+  it('switches the kind bars to a bar per tool and kind with a segment per repository; the rest stays whole', () => {
+    const patches: UrlPatch[] = []
+    const { box, dispose } = draw(FixedContext, 'fixed', fixedBody, patches)
+    switchTo(box, 'repo')
+    expect(new URLSearchParams(location.search).get('by')).toBe('repo')
+    const rows = box.querySelectorAll('[data-chart="fixed-kinds"] [data-row]')
+    expect(attr(rows, 'data-row')).toEqual(['claude-code', 'claude-code:instruction_file', 'claude-code:memory_file', 'claude-code:skills',
+      'claude-code:mcp_instructions', 'claude-code:tools_listed'])
+    expect(attr(rows[0].querySelectorAll('[data-part]'), 'data-repo')).toEqual(['0', '1', String(OTHER)])
+    expect(tip(rows[1], 'repo:/work/wiki')).toMatch(/^claude-code, instruction files, average per session — wiki \(\/work\/wiki\): 1\.2 k tokens · 30% of this bar\. 12 sessions in this repository/)
+    // A bar that is not split turns grey, so no chart colour reads as a repository's.
+    expect(box.querySelector('[data-chart="fixed-files"] [data-part="avg"]')!.className).toContain('t7')
+    expect(tip(box.querySelector('[data-chart="fixed-listing"]')!, 'unused')).toMatch(/Not split by repository\.$/)
+    dispose()
+  })
+
+  it('gives the listing, the files and the skills a hover with their figures', () => {
+    const { box, dispose } = draw(FixedContext, 'fixed', fixedBody)
+    expect(tip(box.querySelector('[data-chart="fixed-listing"]')!, 'unused')).toBe('claude-code: listing of the 30 skills listed and not ' +
+      'used in the period, 90 k tokens of 120 k tokens (estimated).')
+    expect(tip(box.querySelector('[data-chart="fixed-files"]')!, 'avg')).toBe('AGENTS.md (claude-code): 3.0 k tokens per load on average, ' +
+      'largest 3.5 k tokens; 44 loads in 40 sessions, 132 k tokens in all (estimated).')
+    expect(text(box.querySelectorAll('[data-chart="fixed-skills"] [data-total]'))).toEqual(['12 k tokens · 4 uses', '8.0 k tokens · no use in the period'])
+    dispose()
+  })
+
+  it('draws a body without a split by repository with no switch', () => {
+    const { box, dispose } = draw(FixedContext, 'fixed', unsplit(fixedBody))
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(attr(box.querySelectorAll('[data-chart="fixed-kinds"] [data-row]'), 'data-row')).toEqual(['claude-code'])
+    expect(fixedKindRows(unsplit(fixedBody), 'repo', tool => tool)).toEqual([])
     dispose()
   })
 })
