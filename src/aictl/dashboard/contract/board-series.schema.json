@@ -60,6 +60,7 @@
     },
     "tests": {
       "type": "object",
+      "description": "Absent when the test runs could not be read; field_errors then names series.tests.",
       "properties": {
         "passed": {"type": "array", "items": {"type": ["integer", "null"]}},
         "failed": {"type": "array", "items": {"type": ["integer", "null"]}}
@@ -82,7 +83,6 @@
     "cached_share",
     "latency",
     "failures",
-    "tests",
     "cpu",
     "mem"
   ]

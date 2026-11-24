@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: f1137d3ea287f803cbd23a39de2cf9b0263f6b24d552cd7c78798c6fadd4d6b1
+// Schema digest: d8b525087bee27873203939ac53b67211c52eea3aff36fc20abee59043188390
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -409,7 +409,7 @@ export type BoardSeries = {
     tool: Array<number | null>;
     api: Array<number | null>;
   };
-  tests: {
+  tests?: {
     passed: Array<number | null>;
     failed: Array<number | null>;
   };

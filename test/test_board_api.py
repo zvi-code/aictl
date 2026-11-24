@@ -750,6 +750,58 @@ class TestStagedBoard:
         with pytest.raises(StoreError, match="timeout"):
             compute_board(db, _filters(), None, NOW)
 
+    @pytest.mark.parametrize(("view", "kind", "fields"), [
+        ("tools.activity_rows", "tests", {"tests", "tests_piped", "series.tests", "projects",
+                                          "loops", "attention", "agents", "kpis"}),
+        ("tools.activity_rows", "failures", {"errors", "loops", "attention", "agents", "kpis", "projects"}),
+        ("tools.activity_rows", "pending", {"agents", "confirms", "attention"}),
+        ("tools.confirm_counts", None, {"confirms"}),
+    ])
+    def test_a_failed_call_row_read_leaves_only_the_fields_that_need_it_out(self, db, monkeypatch, view, kind, fields):
+        """One read of call rows that fails or times out costs its fields, not the board; never a 0 in their place."""
+        from aictl.stores.base import StoreError
+
+        whole = _board(db)
+        reason = f"Kusto view {view} failed: timeout"
+        real = board_projection._Board._history_window
+
+        def window(self, name, **params):
+            if name == view and params.get("kind_filter") == kind:
+                raise StoreError(reason)
+            return real(self, name, **params)
+
+        monkeypatch.setattr(board_projection._Board, "_history_window", window)
+        field_errors = {}
+        payload = compute_board(db, _filters(), None, NOW, field_errors=field_errors)
+        assert set(field_errors) == fields
+        assert all(reason in text for text in field_errors.values())
+        top = {f for f in fields if "." not in f}
+        assert set(payload) == set(whole) - top
+        assert payload == {
+            k: ({s: v for s, v in value.items() if f"{k}.{s}" not in fields} if k == "series" else value)
+            for k, value in whole.items() if k not in top}
+        # Without a place for the reasons, the failed read fails the board as before.
+        with pytest.raises(StoreError, match="timeout"):
+            compute_board(db, _filters(), None, NOW)
+
+    def test_a_failed_loop_search_leaves_the_status_fields_out(self, db, monkeypatch):
+        from aictl.stores.base import StoreError
+
+        whole = _board(db)
+
+        def failing(self):
+            raise StoreError("Kusto view tools.activity_rows failed: timeout")
+
+        monkeypatch.setattr(board_projection._Board, "_load_loops", failing)
+        field_errors = {}
+        payload = compute_board(db, _filters(), None, NOW, field_errors=field_errors)
+        fields = {"loops", "attention", "agents", "kpis", "projects"}
+        assert field_errors == dict.fromkeys(fields, "Kusto view tools.activity_rows failed: timeout")
+        assert payload == {k: v for k, v in whole.items() if k not in fields}
+        # A status filter needs the loops to choose the sessions: then the whole board fails.
+        with pytest.raises(StoreError, match="timeout"):
+            compute_board(db, _filters(status="active"), None, NOW, field_errors={})
+
     def test_a_failed_chart_section_still_fails_the_board(self, db, monkeypatch):
         from aictl.stores.base import StoreError
 

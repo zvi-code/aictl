@@ -666,6 +666,31 @@ def test_scoped_board_answers_without_a_failed_optional_section(history, kusto_s
     assert board["kpis"]["tokens"] == 520 and len({r["id"] for r in board["prompts"]}) == 3
 
 
+def test_scoped_board_answers_without_a_failed_call_row_read(history, kusto_store, monkeypatch):
+    """A timed-out read of test runs leaves the fields that need it out; the rest of the fleet board answers."""
+    from test_contract import validate_detail
+
+    from aictl.dashboard import board_projection
+    from aictl.stores.base import StoreError
+
+    real = board_projection._Board._history_window
+    reason = "Kusto view tools.activity_rows failed: timeout"
+
+    def window(self, view, **params):
+        if view == "tools.activity_rows" and params.get("kind_filter") == "tests":
+            raise StoreError(reason)
+        return real(self, view, **params)
+
+    monkeypatch.setattr(board_projection._Board, "_history_window", window)
+    status, board = _serve_board(kusto_store, "scope=fleet&since=1000&until=2000&buckets=2")
+    assert status == 200
+    validate_detail("/api/history/board", board)
+    assert board["field_errors"]["tests"] == reason and board["field_errors"]["series.tests"] == reason
+    assert board["field_errors"]["kpis"].endswith(reason)
+    assert not {"tests", "tests_piped", "kpis", "agents", "loops"} & board.keys() and "tests" not in board["series"]
+    assert len({r["id"] for r in board["prompts"]}) == 3 and board["by_model"]
+
+
 def test_scoped_board_still_fails_when_an_early_section_fails(history, kusto_store, monkeypatch):
     from aictl.dashboard import board_projection
     from aictl.stores.base import StoreError

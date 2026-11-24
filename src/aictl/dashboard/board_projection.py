@@ -474,6 +474,10 @@ class _Board:
         self.process_status: dict[str, session_lifecycle.SessionStatus] = {}
         self.scope: set[str] = set()
         self._prefetched: dict[str, list[dict]] = {}
+        # Optional reads that failed, by name (``_OPTIONAL_READS``), with the reason. Only an
+        # optional board (``load(optional=True)``) lets them fail alone.
+        self.optional = False
+        self.unread: dict[str, str] = {}
         facts = facts or {}
         self.facts = facts
         self.tools_with_calls = {tool for tool, kinds in facts.items() if "tool_calls" in kinds}
@@ -499,8 +503,28 @@ class _Board:
         return rows
 
     def _prefetch(self, reads: list[tuple[str, dict]]) -> None:
-        """Read these windows side by side. The loaders then take each result once."""
-        _gather(self.conn, [lambda v=view, p=params: self._history_window(v, _prefetch=True, **p) for view, params in reads])
+        """Read these windows side by side. The loaders then take each result once.
+
+        A read named in ``_OPTIONAL_READS`` may fail alone when the board is *optional*: its
+        name and reason go to ``unread`` and the fields that need it are left out.
+        """
+        _gather(self.conn, [lambda v=view, p=params: self._optional(
+            _read_name(v, p), lambda: self._history_window(v, _prefetch=True, **p)) for view, params in reads])
+
+    def _optional(self, name: str | None, call: Any) -> Any:
+        """*call*'s result; a store failure of an optional read is recorded in ``unread`` instead."""
+        if not self.optional or name is None:
+            return call()
+        from ..stores.base import StoreError
+        from ..stores.kusto.client import query_memory_error
+
+        try:
+            return call()
+        except StoreError as exc:
+            if query_memory_error(exc):
+                raise  # _gather runs it once more, alone
+            self.unread[name] = str(exc) or type(exc).__name__
+            return None
 
     def _history_series(self, view: str, **params) -> list[dict]:
         if not self.scope:
@@ -514,7 +538,7 @@ class _Board:
     _prefetch_fallback = True
     _reads_confirms = True
 
-    def load(self, counts_only: bool = False, *, charts_only: bool = False) -> _Board:
+    def load(self, counts_only: bool = False, *, charts_only: bool = False, optional: bool = False) -> _Board:
         """Read the window, then apply the filters.
 
         *counts_only* leaves out the test runs, failures and loops: they change a row's
@@ -522,9 +546,14 @@ class _Board:
         the confirmation rows, and the loops unless a status filter needs them: no chart
         shows them.
 
+        *optional* lets the reads of ``_OPTIONAL_READS`` fail alone (``unread``); the
+        fields that need a failed read are named by ``unread_fields``. A status filter
+        needs the loops, so with one the loop search stays required.
+
         The reads that need only the window run side by side first; the session rows,
         which need the ids those reads find, run beside the loop search.
         """
+        self.optional = optional
         activity = not counts_only
         loops = activity and (not charts_only or self.f.status != "all")
         confirms = self._reads_confirms and not charts_only
@@ -545,7 +574,12 @@ class _Board:
         if activity:
             self._load_tests()
             self._load_failures()
-        _gather(self.conn, [self._load_identity, *([self._load_loops] if loops else [])])
+        _gather(self.conn, [self._load_identity, *([lambda: self._optional("loops", self._load_loops)] if loops else [])])
+        if self.f.status != "all" and self.unread.keys() & {"tests", "failures", "loops"}:
+            from ..stores.base import StoreError
+
+            # The status filter decides which sessions the whole board shows.
+            raise StoreError(next(self.unread[name] for name in ("tests", "failures", "loops") if name in self.unread))
         self._price_cells()
         self._match_live()
         if not charts_only:
@@ -915,6 +949,8 @@ class _Board:
 
     def _load_tests(self) -> None:
         """Calls that run a test command, with outcome. The prefilter only trims the scan."""
+        if "tests" in self.unread:
+            return
         fields = "session_id agent_id ts tool_name target is_error exit_code duration_ms".split()
         rows = (tuple(row[k] for k in fields) for row in self._history_window(
             "tools.activity_rows", kind_filter="tests", limit=ACTIVITY_PAGE_ROWS))
@@ -931,10 +967,13 @@ class _Board:
 
     def _load_confirms(self) -> None:
         """The confirmation values counted in the cluster, and the pending calls one by one with their target."""
-        self.confirm_counts = [
-            (row["session_id"], row["tool_name"], row["confirm"], row["calls"], exact_values(row, "waits", "wait_count"))
-            for row in self._history_window("tools.confirm_counts")
-        ]
+        if "confirm_counts" not in self.unread:
+            self.confirm_counts = [
+                (row["session_id"], row["tool_name"], row["confirm"], row["calls"], exact_values(row, "waits", "wait_count"))
+                for row in self._history_window("tools.confirm_counts")
+            ]
+        if "pending" in self.unread:
+            return
         fields = "session_id agent_id tool_name target ts confirm confirm_wait_ms".split()
         self.confirm_rows = [
             tuple(row[k] for k in fields) for row in self._history_window(
@@ -942,6 +981,8 @@ class _Board:
         ]
 
     def _load_failures(self) -> None:
+        if "failures" in self.unread:
+            return
         fields = "session_id agent_id tool_name target result_summary ts".split()
         self.failure_rows = [
             tuple(row[k] for k in fields) for row in self._history_window(
@@ -949,6 +990,10 @@ class _Board:
         ]
 
     def _load_loops(self) -> None:
+        if missing := [name for name in ("tests", "failures") if name in self.unread]:
+            # The loop candidates come from the test runs and failures; without them the loops are unknown.
+            self.unread["loops"] = f"Needs the {' and '.join(missing)} read: {self.unread[missing[0]]}"
+            return
         repeats: dict[tuple, int] = defaultdict(int)
         for sid, aid, name, target, _summary, _ts in self.failure_rows:
             repeats[(sid, aid, name, target)] += 1
@@ -3013,6 +3058,49 @@ _LATE_FIELDS = {
 LATE_FIELDS = tuple(sorted({field for fields in _LATE_FIELDS.values() for field in fields}))
 
 
+# The reads of the call rows that may fail alone, and the board fields computed from each. A
+# dotted name is one key of a field. The loops decide the looping status, so the agents, the
+# KPIs (running, idle, loops) and the attention list need them; the projects count tests and loops.
+_OPTIONAL_READS = {
+    "tests": ("tests", "tests_piped", "series.tests", "projects"),
+    "failures": ("errors",),
+    "loops": ("loops", "attention", "agents", "kpis", "projects"),
+    "pending": ("agents", "confirms", "attention"),
+    "confirm_counts": ("confirms",),
+}
+
+
+def _read_name(view: str, params: dict) -> str | None:
+    """The ``_OPTIONAL_READS`` name of a prefetched read, or None for a required read."""
+    if view == "tools.confirm_counts":
+        return "confirm_counts"
+    if view == "tools.activity_rows" and params.get("kind_filter") in _OPTIONAL_READS:
+        return params["kind_filter"]
+    return None
+
+
+def _unread_fields(unread: dict[str, str]) -> dict[str, str]:
+    """The board fields left out because a read they need failed, each with that read's reason."""
+    fields: dict[str, str] = {}
+    for name in _OPTIONAL_READS:
+        if name in unread:
+            for field in _OPTIONAL_READS[name]:
+                fields.setdefault(field, unread[name])
+    return fields
+
+
+def _without(payload: dict, fields: dict[str, str]) -> dict:
+    """*payload* without the named fields; a dotted name removes one key of a field."""
+    out = dict(payload)
+    for field in fields:
+        top, _, key = field.partition(".")
+        if key and isinstance(out.get(top), dict):
+            out[top] = {k: v for k, v in out[top].items() if k != key}
+        elif not key:
+            out.pop(top, None)
+    return out
+
+
 def _activity_facts(history: HistoryScope) -> dict[str, set[str]]:
     facts: dict[str, set[str]] = defaultdict(set)
     for row in history.read("board.activity_facts"):
@@ -3268,7 +3356,13 @@ def compute_board(
                            _live_projection=getattr(db, "_live_projection", False) is True)
     memo_key = str(getattr(db, "_path", "memory"))
     facts = _store_facts(memo_key, history)
-    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load(charts_only=charts_only)
+    board = _Board(conn, filters, now, snapshot, facts=facts, history=history).load(
+        charts_only=charts_only, optional=field_errors is not None)
+    unread = _unread_fields(board.unread)
+    if unread:
+        logger.warning("Board reads failed; their fields are left out: %s",
+                       mask_secrets("; ".join(f"{k}: {v}" for k, v in board.unread.items()))[:600])
+        field_errors.update(unread)
 
     # The sections read the loaded board and the store; none changes the board, so on a
     # cluster they run side by side. The charts need neither the rows nor the comparison.
@@ -3296,10 +3390,11 @@ def compute_board(
         agents = [] if charts_only else reads.result(len(early))
         early_fields, complete = _board_payload(db, board, history, facts, memo_key, now, agents, latency,
                                                 tool_section, errors_section, tests_section, resources, charts_only)
+        early_fields = _without(early_fields, unread)
         if complete is None:
             return early_fields
         if on_partial is not None:
-            on_partial(early_fields, list(LATE_FIELDS))
+            on_partial(early_fields, [name for name in LATE_FIELDS if name not in unread])
         failures: dict[int, Exception] | None = None if field_errors is None else {}
         first = len(early) + 1
         results = {name: reads.result(first + i, failures) for i, name in enumerate(late)}
@@ -3307,8 +3402,8 @@ def compute_board(
         if field_errors is not None and failures and (error := failures.get(first + i)) is not None:
             reason = str(error) or type(error).__name__
             logger.warning("Board section %s failed; its fields are left out: %s", name, mask_secrets(reason)[:600])
-            field_errors.update(dict.fromkeys(_LATE_FIELDS[name], reason))
-    return complete(results)
+            field_errors.update({field: reason for field in _LATE_FIELDS[name] if field not in unread})
+    return _without(complete(results), unread)
 
 
 def _board_payload(db: Any, board: _Board, history: HistoryScope, facts: dict, memo_key: str, now: float,
